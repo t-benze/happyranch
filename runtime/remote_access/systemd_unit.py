@@ -20,6 +20,8 @@ daemon, gateway, auth, schema, permission-model, or dependency change.
 """
 from __future__ import annotations
 
+from runtime.remote_access.package_diagnostics import diagnostic_error, diagnostic_scope
+
 from dataclasses import dataclass, field
 
 # Canonical least-privilege directive set. Every directive is load-bearing
@@ -92,7 +94,8 @@ def _quote_systemd_arg(arg: str) -> str:
     single quote is escaped as ``''`` inside a quoted word.
     """
     if any(c in arg for c in " \t'\"\\\n"):
-        return "'" + arg.replace("'", "''") + "'"
+        with diagnostic_scope("S100001", "managed_operational_error"):
+            return "'" + arg.replace("'", "''") + "'"
     return arg
 
 
@@ -109,7 +112,7 @@ def render_connector_unit(spec: ConnectorUnitSpec) -> str:
     lines.append(f"ExecStart={exec_line}")
     if spec.system:
         if not spec.user or not spec.group:
-            raise ValueError("system-mode connector unit requires user and group")
+            raise diagnostic_error("S000001", "managed_operational_error", ValueError("system-mode connector unit requires user and group"))
         lines.append(f"User={spec.user}")
         lines.append(f"Group={spec.group}")
     lines.append(f"RestartSec={spec.restart_sec}")

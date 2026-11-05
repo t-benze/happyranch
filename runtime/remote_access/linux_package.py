@@ -1,6 +1,8 @@
 """Deterministic Linux composite package for the managed embedded transport."""
 from __future__ import annotations
 
+from runtime.remote_access.package_diagnostics import diagnostic_error, diagnostic_scope
+
 import hashlib
 import io
 import json
@@ -117,11 +119,13 @@ def _managed_entry_deadline(seconds: int, *, entry_ns: int | None = None) -> int
     deadline = min(inherited if inherited is not None else limit, limit)
     carrier = os.environ.get("HAPPYRANCH_LIFECYCLE_DEADLINE_NS")
     if carrier is not None:
-        if re.fullmatch(r"[1-9][0-9]{0,18}", carrier) is None or int(carrier) > 2**63 - 1:
-            raise PackageError("managed_lifecycle_deadline")
-        deadline = min(deadline, int(carrier))
+        with diagnostic_scope("P100001", "managed_operational_error"):
+            if re.fullmatch(r"[1-9][0-9]{0,18}", carrier) is None or int(carrier) > 2**63 - 1:
+                raise diagnostic_error("P000001", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
+        with diagnostic_scope("P100002", "managed_operational_error"):
+            deadline = min(deadline, int(carrier))
     if deadline <= now:
-        raise PackageError("managed_lifecycle_deadline")
+        raise diagnostic_error("P000002", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
     return deadline
 
 
@@ -129,31 +133,37 @@ def _check_managed_holder() -> None:
     descriptor = _MANAGED_LOCK.get()
     deadline = _MANAGED_DEADLINE.get()
     if descriptor is None or deadline is None or time.monotonic_ns() >= deadline:
-        raise PackageError("managed_lifecycle_context_required")
-    observed = os.fstat(descriptor)
-    named = Path("/var/lib/happyranch-connector/lifecycle.lock").lstat()
+        raise diagnostic_error("P000003", "managed_lifecycle_context_required", PackageError("managed_lifecycle_context_required"))
+    with diagnostic_scope("P100003", "managed_operational_error"):
+        observed = os.fstat(descriptor)
+    with diagnostic_scope("P100004", "managed_operational_error"):
+        named = Path("/var/lib/happyranch-connector/lifecycle.lock").lstat()
     if (not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1
             or observed.st_size != 0 or stat.S_IMODE(observed.st_mode) != 0o600
             or (observed.st_dev, observed.st_ino, observed.st_uid) != (named.st_dev, named.st_ino, named.st_uid)):
-        raise PackageError("managed_lifecycle_context_required")
-    independent = os.open("/var/lib/happyranch-connector/lifecycle.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        raise diagnostic_error("P000004", "managed_lifecycle_context_required", PackageError("managed_lifecycle_context_required"))
+    with diagnostic_scope("P100005", "managed_operational_error"):
+        independent = os.open("/var/lib/happyranch-connector/lifecycle.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         try:
-            fcntl.flock(independent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with diagnostic_scope("P100006", "managed_operational_error"):
+                fcntl.flock(independent, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             pass
         else:
-            raise PackageError("managed_lifecycle_context_required")
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            raise diagnostic_error("P000005", "managed_lifecycle_context_required", PackageError("managed_lifecycle_context_required"))
+        with diagnostic_scope("P100007", "managed_operational_error"):
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     finally:
-        os.close(independent)
+        with diagnostic_scope("P100008", "managed_operational_error"):
+            os.close(independent)
     if time.monotonic_ns() >= deadline:
-        raise PackageError("managed_lifecycle_deadline")
+        raise diagnostic_error("P000006", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
 
 
 def _require_managed_package_context() -> None:
     if not _MANAGED_PACKAGE.get():
-        raise PackageError("managed_package_context_required")
+        raise diagnostic_error("P000007", "managed_package_context_required", PackageError("managed_package_context_required"))
     _check_managed_holder()
 
 
@@ -203,24 +213,24 @@ def _package_literal(value: object, choices: tuple[str, ...], *, nullable: bool 
         for literal in choices:
             if value == literal:
                 return literal
-    raise ValueError("private_diagnostic_invalid")
+    raise diagnostic_error("P000008", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
 
 
 def _package_integer(value: object, low: int, high: int) -> int | None:
     if value is None or type(value) is int and low <= value <= high:
         return value
-    raise ValueError("private_diagnostic_invalid")
+    raise diagnostic_error("P000009", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
 
 
 def _package_boolean(value: object) -> bool | None:
     if value is None or type(value) is bool:
         return value
-    raise ValueError("private_diagnostic_invalid")
+    raise diagnostic_error("P000010", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
 
 
 def _package_keys(value: object, keys: tuple[str, ...]) -> dict:
     if type(value) is not dict or set(value) != set(keys):
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000011", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     return value
 
 
@@ -228,28 +238,29 @@ def _package_loss_projection(value: object, order: tuple[str, ...] = _PACKAGE_LO
     if value is None:
         return None
     if type(value) is not list or len(value) > len(order):
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000012", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     result = [_package_literal(code, order) for code in value]
     if result != [code for code in order if code in result]:
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000013", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     return result
 
 
 def _package_json(raw: bytes, limit: int = 1024) -> object:
     if len(raw) > limit or any(b > 127 for b in raw):
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000014", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     def no_constant(_value: str) -> None:
-        raise ValueError("private_diagnostic_invalid")
-    value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys, parse_constant=no_constant)
+        raise diagnostic_error("P000015", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
+    with diagnostic_scope("P100009", "managed_operational_error"):
+        value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys, parse_constant=no_constant)
     pending = [(value, 0)]
     nodes = 0
     while pending:
         item, depth = pending.pop()
         nodes += 1
         if depth > 8 or nodes > 512 or type(item) not in (dict, list, str, int, bool, type(None)):
-            raise ValueError("private_diagnostic_invalid")
+            raise diagnostic_error("P000016", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
         if type(item) is str and (not item.isascii() or any(ord(c) < 32 for c in item)):
-            raise ValueError("private_diagnostic_invalid")
+            raise diagnostic_error("P000017", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
         if type(item) is dict:
             pending.extend((k, depth + 1) for k in item)
             pending.extend((v, depth + 1) for v in item.values())
@@ -284,12 +295,27 @@ def _package_process_projection(record: dict) -> dict[str, object]:
             or result["kill"] == "not_requested" and killed is not False
             or result["kill"] == "unknown" and killed is not None
             or result["kill"] in ("requested", "sent", "not_found", "failed") and killed is not True):
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000018", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     return result
 
 
+def _package_refusal_projection(value: object) -> dict[str, str] | None:
+    if value is None:
+        return None
+    record = _package_keys(value, ("category", "site"))
+    with diagnostic_scope("P100010", "managed_operational_error"):
+        from runtime.remote_access.package_diagnostic_codes import SITE_CATEGORIES
+    site = record["site"]
+    if type(site) is not str or SITE_CATEGORIES.get(site) != record["category"]:
+        raise diagnostic_error("P000019", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
+    return {"category": record["category"], "site": site}
+
+
 def _managed_package_child_projection(value: object) -> dict[str, object]:
-    child = _package_keys(value, ("reason", "diagnostic_state", "helper_exit", "deadline_elapsed", "kill_requested", "reaped", "reap_exit", "native", "process"))
+    keys = ("reason", "diagnostic_state", "helper_exit", "deadline_elapsed", "kill_requested", "reaped", "reap_exit", "native", "process")
+    extended = type(value) is dict and "refusal" in value
+    boundary = type(value) is dict and "boundary" in value
+    child = _package_keys(value, keys + (("refusal",) if extended else ()) + (("boundary",) if boundary else ()))
     result = {"reason": _package_literal(child["reason"], _PACKAGE_PRIVATE_REASONS, nullable=True),
               "diagnostic_state": _package_literal(child["diagnostic_state"], _PACKAGE_DIAGNOSTIC_STATES),
               "helper_exit": _package_integer(child["helper_exit"], -64, 255),
@@ -298,9 +324,19 @@ def _managed_package_child_projection(value: object) -> dict[str, object]:
               "reaped": _package_boolean(child["reaped"]),
               "reap_exit": _package_integer(child["reap_exit"], -64, 255),
               "process": _package_process_projection(child)}
+    if extended:
+        refusal = _package_keys(child["refusal"], ("category", "site"))
+        with diagnostic_scope("P100011", "managed_operational_error"):
+            from runtime.remote_access.package_diagnostic_codes import SITE_CATEGORIES
+        site = refusal["site"]
+        if type(site) is not str or SITE_CATEGORIES.get(site) != refusal["category"]:
+            raise diagnostic_error("P000020", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
+        result["refusal"] = {"category": refusal["category"], "site": site}
+    if boundary:
+        result["boundary"] = _package_refusal_projection(child["boundary"])
     n = _package_keys(child["native"], ("source", "state", "messages", "eof", "bytes_seen", "frames_seen", "redacted", "truncated", "losses", "read", "close"))
     if type(n["messages"]) is not list or len(n["messages"]) > 2 or type(n["redacted"]) is not bool or type(n["truncated"]) is not bool:
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000021", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     native = {
         "source": _package_literal(n["source"], ("nested_frozen_stderr",)),
         "state": _package_literal(n["state"], ("observed", "empty", "private_only", "unavailable", "redacted", "truncated", "error")),
@@ -347,7 +383,7 @@ def _managed_package_child_projection(value: object) -> dict[str, object]:
             or native["close"] == "error" and not has("CE")
             or (native["frames_seen"] or native["messages"]) and not native["bytes_seen"]
             or (has("UN", "U8", "CT", "PE", "SD", "CX") or any(m in _PACKAGE_NATIVE_SENTENCES[:2] for m in native["messages"])) and not native["redacted"]):
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000022", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     expected = ("contradictory" if has("CX") else "malformed" if has("U8", "CT", "PE", "SD", "JS")
                 else "unavailable" if has("RE", "CE", "TL") or not complete or result["process"]["writer_close"] != "ok"
                 else "truncated" if truncated else "unallowlisted" if has("UN")
@@ -356,13 +392,13 @@ def _managed_package_child_projection(value: object) -> dict[str, object]:
             or expected == "observed" and (result["reason"] is None or result["reaped"] is not True or result["helper_exit"] != 78 or result["reap_exit"] != 78)
             or expected == "observed" and native["frames_seen"] < len(native["messages"]) + 1
             or expected != "observed" and result["reason"] is not None):
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000023", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     result["native"] = native
     return result
 
 
 def _empty_managed_package_diagnostic() -> dict[str, object]:
-    return {"reason": None, "diagnostic_state": "unavailable", "helper_exit": None,
+    return {"refusal": None, "boundary": None, "reason": None, "diagnostic_state": "unavailable", "helper_exit": None,
             "deadline_elapsed": None, "kill_requested": False, "reaped": False, "reap_exit": None,
             "outcome": "unknown", "process": {"launch": "not_attempted", "wait": "not_attempted", "wait_error": None, "kill": "not_requested", "writer_close": "not_opened"},
             "transport": {"bytes_seen": None, "stdout_seen": None, "frames_seen": None, "eof": None, "read": "not_started", "close": "not_opened", "losses": None}, "stages": []}
@@ -379,14 +415,19 @@ def _managed_package_identities_projection(value: object) -> dict[str, object]:
               and type(item[1]) is str and re.fullmatch(r"[0-9a-f]{64}", item[1]) is not None):
             result[key] = [item[0], item[1]]
         else:
-            raise ValueError("private_diagnostic_invalid")
+            raise diagnostic_error("P000024", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     result["verified"] = _package_boolean(record["verified"])
     if result["verified"] is True and any(result[k] is None for k in ("tar", "connector", "sidecar", "wheel", "manifest")):
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000025", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     return result
 
 
 def _managed_package_diagnostic_projection(value: object) -> dict[str, object]:
+    # Historical records retain unknown origin; no site is backfilled.
+    if type(value) is dict and "refusal" not in value:
+        value = {**value, "refusal": None}
+    if type(value) is dict and "boundary" not in value:
+        value = {**value, "boundary": None}
     d = _package_keys(value, tuple(_empty_managed_package_diagnostic()))
     result = {"reason": _package_literal(d["reason"], _PACKAGE_REASONS, nullable=True),
               "diagnostic_state": _package_literal(d["diagnostic_state"], _PACKAGE_DIAGNOSTIC_STATES),
@@ -396,6 +437,8 @@ def _managed_package_diagnostic_projection(value: object) -> dict[str, object]:
               "reaped": _package_boolean(d["reaped"]), "reap_exit": _package_integer(d["reap_exit"], -64, 255),
               "outcome": _package_literal(d["outcome"], ("success", "refused", "deadline", "response_invalid", "unknown")),
               "process": _package_process_projection(d)}
+    result["refusal"] = _package_refusal_projection(d["refusal"])
+    result["boundary"] = _package_refusal_projection(d["boundary"])
     t = _package_keys(d["transport"], ("bytes_seen", "stdout_seen", "frames_seen", "eof", "read", "close", "losses"))
     transport = {"bytes_seen": _package_integer(t["bytes_seen"], 0, 4097),
                  "stdout_seen": _package_integer(t["stdout_seen"], 0, 4097),
@@ -405,23 +448,23 @@ def _managed_package_diagnostic_projection(value: object) -> dict[str, object]:
                  "losses": _package_loss_projection(t["losses"])}
     if ((transport["bytes_seen"] or 0) + (transport["stdout_seen"] or 0) > 4097
             or transport["eof"] is True and transport["read"] != "eof"):
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000026", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     result["transport"] = transport
     stages = d["stages"]
     if type(stages) is not list or len(stages) > 3:
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000027", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     result["stages"] = []
     last = -1
     failed = False
     for triple in stages:
         if type(triple) is not list or len(triple) != 3:
-            raise ValueError("private_diagnostic_invalid")
+            raise diagnostic_error("P000028", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
         stage = _package_literal(triple[0], _PACKAGE_STAGES)
         outcome = _package_literal(triple[1], ("success", "failure"))
         child = _managed_package_child_projection(triple[2])
         index = _PACKAGE_STAGES.index(stage)
         if index <= last or failed or outcome == "success" and (child["helper_exit"] != 0 or child["reaped"] is not True or child["deadline_elapsed"] is True or child["process"]["writer_close"] != "ok" or child["process"]["wait_error"] is not False):
-            raise ValueError("private_diagnostic_invalid")
+            raise diagnostic_error("P000029", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
         last, failed = index, outcome == "failure"
         result["stages"].append([stage, outcome, child])
     if result["diagnostic_state"] in ("observed", "absent"):
@@ -429,28 +472,28 @@ def _managed_package_diagnostic_projection(value: object) -> dict[str, object]:
         if (transport["losses"] != [] or transport["eof"] is not True or transport["read"] != "eof"
                 or transport["close"] != "ok" or transport["bytes_seen"] is None or transport["stdout_seen"] is None
                 or transport["bytes_seen"] + transport["stdout_seen"] > 4096 or result["reaped"] is not True):
-            raise ValueError("private_diagnostic_invalid")
+            raise diagnostic_error("P000030", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
         if result["diagnostic_state"] == "observed":
             if reason is None or result["helper_exit"] != 78:
-                raise ValueError("private_diagnostic_invalid")
+                raise diagnostic_error("P000031", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
             if reason in _PACKAGE_STAGES:
                 count = _PACKAGE_STAGES.index(reason) + 1
                 if not failed or not result["stages"] or result["stages"][-1][0] != reason:
-                    raise ValueError("private_diagnostic_invalid")
+                    raise diagnostic_error("P000032", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
                 frames = count
             else:
                 count = (1 if reason in ("inhibit_policy", "inhibit_deadline", "manager_stop", "reacquire_pair", "stopped_admission_deadline", "stopped_current") else 2 if reason == "retire_policy" else 3 if reason in ("final_refresh", "final_current") else 0)
                 if failed:
-                    raise ValueError("private_diagnostic_invalid")
+                    raise diagnostic_error("P000033", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
                 frames = count + 1
         else:
             if reason is not None or result["helper_exit"] != 0 or failed:
-                raise ValueError("private_diagnostic_invalid")
+                raise diagnostic_error("P000034", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
             count, frames = 3, 3
         if [v[0] for v in result["stages"]] != list(_PACKAGE_STAGES[:count]) or transport["frames_seen"] != frames:
-            raise ValueError("private_diagnostic_invalid")
+            raise diagnostic_error("P000035", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     elif result["reason"] is not None:
-        raise ValueError("private_diagnostic_invalid")
+        raise diagnostic_error("P000036", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     return result
 
 
@@ -467,14 +510,16 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
             or executable == "/proc/self/fd/6" and operation != "managed-package-check"
             or executable != _MANAGED_EXECUTABLE and operation == "managed-lifecycle"
             or operation not in {"managed-package", "managed-run-check", "managed-stopped-check", "managed-package-check", "managed-lifecycle"}):
-        raise PackageError("managed_lifecycle_operation_invalid")
+        raise diagnostic_error("P000037", "managed_lifecycle_operation_invalid", PackageError("managed_lifecycle_operation_invalid"))
     deadline = request["deadline_ns"]
     if type(deadline) is not int or deadline <= time.monotonic_ns():
-        raise PackageError("managed_lifecycle_deadline")
-    raw = json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
+        raise diagnostic_error("P000038", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
+    with diagnostic_scope("P100012", "managed_operational_error"):
+        raw = json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
     if len(raw) > 4096 or time.monotonic_ns() >= deadline:
-        raise PackageError("managed_lifecycle_refused")
-    diagnostic = (_package_diagnostic if _package_diagnostic is not None else {}) if operation == "managed-package" else None
+        raise diagnostic_error("P000039", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused"))
+    package_check = operation == "managed-package-check" and _package_diagnostic is not None
+    diagnostic = (_package_diagnostic if _package_diagnostic is not None else {}) if operation == "managed-package" or package_check else None
     if diagnostic is not None:
         diagnostic.update(_empty_managed_package_diagnostic())
         diagnostic["outcome"] = "refused"
@@ -482,6 +527,8 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     transport = diagnostic["transport"] if diagnostic is not None else {}
     losses: set[str] = set()
     stages: list[list[object]] = []
+    bare_refusal = None
+    bare_boundary = None
     bare: str | None = None
     failure_seen = False
     frame = bytearray()
@@ -493,24 +540,38 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     result = bytearray()
 
     def accept_frame(raw_frame: bytes) -> None:
-        nonlocal bare, failure_seen
+        nonlocal bare, failure_seen, bare_refusal, bare_boundary
         if diagnostic_lines > 4:
             losses.update(("CX", "TL"))
             return
         if raw_frame.startswith(b"managed_package_refusal:"):
-            reason = next((r for r in _PACKAGE_REASONS if raw_frame == b"managed_package_refusal:" + r.encode("ascii") + b"\n"), None)
+            fields = raw_frame[:-1].split(b":")
+            candidate_refusal = candidate_boundary = None
+            if len(fields) in (3, 4):
+                try:
+                    with diagnostic_scope("P100013", "managed_operational_error"):
+                        candidate_refusal = _package_refusal_projection({"category": "managed_lifecycle_refused", "site": fields[2].decode("ascii")})
+                        if len(fields) == 4:
+                            candidate_boundary = _package_refusal_projection({"category": "managed_lifecycle_refused", "site": fields[3].decode("ascii")})
+                except (ValueError, UnicodeError):
+                    losses.add("TL")
+                    return
+                raw_frame = b"managed_package_refusal:" + fields[1] + b"\n"
+            with diagnostic_scope("P100014", "managed_operational_error"):
+                reason = next((r for r in _PACKAGE_REASONS if raw_frame == b"managed_package_refusal:" + r.encode("ascii") + b"\n"), None)
             if reason is None:
                 losses.add("TL")
             elif bare is not None or failure_seen:
                 losses.add("CX")
             else:
                 bare = reason
+                bare_refusal, bare_boundary = candidate_refusal, candidate_boundary
             return
         try:
             success = raw_frame.startswith(b"managed_package_child_observation:")
             prefix = b"managed_package_child_observation:" if success else b"managed_package_child_refusal:"
             if not raw_frame.startswith(prefix):
-                raise ValueError
+                raise diagnostic_error("P000040", "managed_operational_error", ValueError)
             record = _package_json(raw_frame[len(prefix):-1])
             if type(record) is dict and "version" not in record and not success:
                 # Literal historical H envelope. Validate its exact old grammar;
@@ -521,23 +582,23 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 state = _package_literal(child["diagnostic_state"], _PACKAGE_DIAGNOSTIC_STATES)
                 for key in ("deadline_elapsed", "kill_requested", "reaped"):
                     if type(child[key]) is not bool:
-                        raise ValueError
+                        raise diagnostic_error("P000041", "managed_operational_error", ValueError)
                 for key in ("helper_exit", "reap_exit"):
                     _package_integer(child[key], -64, 255)
                 if child["helper_exit"] != child["reap_exit"] or not child["reaped"] and child["helper_exit"] is not None:
-                    raise ValueError
+                    raise diagnostic_error("P000042", "managed_operational_error", ValueError)
                 if state == "observed":
                     _package_literal(child["reason"], _PACKAGE_PRIVATE_REASONS)
                     if not child["reaped"] or child["helper_exit"] != 78:
-                        raise ValueError
+                        raise diagnostic_error("P000043", "managed_operational_error", ValueError)
                 elif child["reason"] is not None:
-                    raise ValueError
+                    raise diagnostic_error("P000044", "managed_operational_error", ValueError)
                 losses.add("TL")
                 return
             key = "stage" if success else "reason"
             record = _package_keys(record, ("version", key, "child"))
             if type(record["version"]) is not int or record["version"] != 1:
-                raise ValueError
+                raise diagnostic_error("P000045", "managed_operational_error", ValueError)
             stage = _package_literal(record[key], _PACKAGE_STAGES)
             child = _managed_package_child_projection(record["child"])
             if (bare is not None or failure_seen or stages and _PACKAGE_STAGES.index(stage) <= _PACKAGE_STAGES.index(stages[-1][0])):
@@ -565,7 +626,8 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
         writer_fds.discard(descriptor)
         reader_fds.discard(descriptor)
         try:
-            os.close(descriptor)
+            with diagnostic_scope("P100015", "managed_operational_error"):
+                os.close(descriptor)
         except OSError:
             if diagnostic is not None:
                 losses.add("CE")
@@ -584,15 +646,19 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     child: int | None = None
     unwinding = False
     try:
-        source_read, source_write = os.pipe2(os.O_CLOEXEC)
+        with diagnostic_scope("P200001", "managed_operational_error"):
+            source_read, source_write = os.pipe2(os.O_CLOEXEC)
         writer_fds.add(source_write)
         process["writer_close"] = "unknown"
-        output_read, output_write = os.pipe2(os.O_CLOEXEC)
+        with diagnostic_scope("P200002", "managed_operational_error"):
+            output_read, output_write = os.pipe2(os.O_CLOEXEC)
         writer_fds.add(output_write)
         reader_fds.add(output_read)
-        null = os.open(os.devnull, os.O_RDWR | os.O_CLOEXEC)
+        with diagnostic_scope("P100016", "managed_operational_error"):
+            null = os.open(os.devnull, os.O_RDWR | os.O_CLOEXEC)
         if diagnostic is not None:
-            error_read, error_write = os.pipe2(os.O_CLOEXEC)
+            with diagnostic_scope("P200003", "managed_operational_error"):
+                error_read, error_write = os.pipe2(os.O_CLOEXEC)
             writer_fds.add(error_write)
             reader_fds.add(error_read)
             diagnostic_read, diagnostic_close = "unknown", "unknown"
@@ -600,16 +666,18 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                    2: error_write if diagnostic is not None else null, **descriptor_map}
         actions = []
         for target, source in mapping.items():
-            duplicate = fcntl.fcntl(source, fcntl.F_DUPFD_CLOEXEC, 10)
+            with diagnostic_scope("P100017", "managed_operational_error"):
+                duplicate = fcntl.fcntl(source, fcntl.F_DUPFD_CLOEXEC, 10)
             duplicates.append(duplicate)
             if target in (1, 2):
                 writer_fds.add(duplicate)
             actions.append((os.POSIX_SPAWN_DUP2, duplicate, target))
         environment = {k: v for k, v in os.environ.items() if k != "NOTIFY_SOCKET"}
         if time.monotonic_ns() >= deadline:
-            raise PackageError("managed_lifecycle_deadline")
+            raise diagnostic_error("P000046", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
         process["launch"] = "failed"
-        child = os.posix_spawn(executable, [executable, operation], environment, file_actions=actions)
+        with diagnostic_scope("P200004", "managed_operational_error"):
+            child = os.posix_spawn(executable, [executable, operation], environment, file_actions=actions)
         process.update(launch="started", wait="pending")
         while duplicates:
             close_owned(duplicates.pop())
@@ -618,88 +686,100 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
         if error_write >= 0:
             descriptor, error_write = error_write, -1
             close_owned(descriptor)
-        if time.monotonic_ns() >= deadline or os.write(source_write, raw) != len(raw):
-            raise PackageError("managed_lifecycle_refused")
+        with diagnostic_scope("P100018", "managed_operational_error"):
+            if time.monotonic_ns() >= deadline or os.write(source_write, raw) != len(raw):
+                raise diagnostic_error("P000047", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused"))
         descriptor, source_write = source_write, -1
         close_owned(descriptor)
-        os.set_blocking(output_read, False)
-        with selectors.DefaultSelector() as selector:
-            selector.register(output_read, selectors.EVENT_READ)
-            if diagnostic is not None:
-                os.set_blocking(error_read, False)
-                selector.register(error_read, selectors.EVENT_READ)
-            while selector.get_map():
-                remaining = (deadline - time.monotonic_ns()) / 1_000_000_000
-                if remaining <= 0:
-                    raise PackageError("managed_lifecycle_deadline")
-                ready = selector.select(remaining)
-                if not ready:
-                    raise PackageError("managed_lifecycle_deadline")
-                for key, _events in ready:
-                    is_output = key.fd == output_read
-                    available = 4096 - len(result) - diagnostic_bytes
-                    if available < 0:
-                        raise PackageError("managed_lifecycle_response_invalid")
-                    piece = os.read(key.fd, available + 1 if is_output else min(256, available + 1))
-                    if not piece:
-                        selector.unregister(key.fd)
-                        if not is_output:
-                            diagnostic_eof, diagnostic_read = True, "eof"
-                            if frame or frame_overflow:
-                                losses.update(("PE", "TL"))
-                        continue
-                    if is_output:
-                        result.extend(piece)
-                        if len(result) + diagnostic_bytes > 4096:
-                            if diagnostic is not None:
-                                losses.update(("BL", "TL"))
-                            raise PackageError("managed_lifecycle_response_invalid")
-                    else:
-                        diagnostic_bytes += len(piece)
-                        if diagnostic_bytes + len(result) > 4096:
-                            losses.update(("BL", "TL"))
-                            diagnostic_read = "limit"
-                            frame.clear()
-                            selector.unregister(error_read)
-                            descriptor, error_read = error_read, -1
-                            close_owned(descriptor)
+        with diagnostic_scope("P100019", "managed_operational_error"):
+            os.set_blocking(output_read, False)
+        with diagnostic_scope("P200005", "managed_operational_error"):
+            with selectors.DefaultSelector() as selector:
+                with diagnostic_scope("P200006", "managed_operational_error"):
+                    selector.register(output_read, selectors.EVENT_READ)
+                if diagnostic is not None:
+                    with diagnostic_scope("P100020", "managed_operational_error"):
+                        os.set_blocking(error_read, False)
+                    with diagnostic_scope("P200007", "managed_operational_error"):
+                        selector.register(error_read, selectors.EVENT_READ)
+                while selector.get_map():
+                    remaining = (deadline - time.monotonic_ns()) / 1_000_000_000
+                    if remaining <= 0:
+                        raise diagnostic_error("P000048", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
+                    with diagnostic_scope("P200008", "managed_operational_error"):
+                        ready = selector.select(remaining)
+                    if not ready:
+                        raise diagnostic_error("P000049", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
+                    for key, _events in ready:
+                        is_output = key.fd == output_read
+                        available = 4096 - len(result) - diagnostic_bytes
+                        if available < 0:
+                            raise diagnostic_error("P000050", "managed_lifecycle_response_invalid", PackageError("managed_lifecycle_response_invalid"))
+                        with diagnostic_scope("P100021", "managed_operational_error"):
+                            piece = os.read(key.fd, available + 1 if is_output else min(256, available + 1))
+                        if not piece:
+                            with diagnostic_scope("P200009", "managed_operational_error"):
+                                selector.unregister(key.fd)
+                            if not is_output:
+                                diagnostic_eof, diagnostic_read = True, "eof"
+                                if frame or frame_overflow:
+                                    losses.update(("PE", "TL"))
                             continue
-                        for byte in piece:
-                            if len(frame) < 1024:
-                                frame.append(byte)
-                            else:
-                                frame_overflow = True
-                            if byte == 10:
-                                diagnostic_lines += 1
-                                if diagnostic_lines > 4:
-                                    losses.update(("CX", "TL"))
-                                elif frame_overflow:
-                                    losses.update(("FL", "TL"))
-                                else:
-                                    accept_frame(bytes(frame))
+                        if is_output:
+                            result.extend(piece)
+                            if len(result) + diagnostic_bytes > 4096:
+                                if diagnostic is not None:
+                                    losses.update(("BL", "TL"))
+                                raise diagnostic_error("P000051", "managed_lifecycle_response_invalid", PackageError("managed_lifecycle_response_invalid"))
+                        else:
+                            diagnostic_bytes += len(piece)
+                            if diagnostic_bytes + len(result) > 4096:
+                                losses.update(("BL", "TL"))
+                                diagnostic_read = "limit"
                                 frame.clear()
-                                frame_overflow = False
+                                with diagnostic_scope("P200010", "managed_operational_error"):
+                                    selector.unregister(error_read)
+                                descriptor, error_read = error_read, -1
+                                close_owned(descriptor)
+                                continue
+                            for byte in piece:
+                                if len(frame) < 1024:
+                                    frame.append(byte)
+                                else:
+                                    frame_overflow = True
+                                if byte == 10:
+                                    diagnostic_lines += 1
+                                    if diagnostic_lines > 4:
+                                        losses.update(("CX", "TL"))
+                                    elif frame_overflow:
+                                        losses.update(("FL", "TL"))
+                                    else:
+                                        accept_frame(bytes(frame))
+                                    frame.clear()
+                                    frame_overflow = False
         while True:
             try:
-                reaped, status = os.waitpid(child, os.WNOHANG)
+                with diagnostic_scope("P200011", "managed_operational_error"):
+                    reaped, status = os.waitpid(child, os.WNOHANG)
             except BaseException:
                 process.update(wait="failed", wait_error=True)
                 raise
             if reaped:
                 child = None
-                helper_exit = os.waitstatus_to_exitcode(status)
+                with diagnostic_scope("P200012", "managed_operational_error"):
+                    helper_exit = os.waitstatus_to_exitcode(status)
                 elapsed = time.monotonic_ns() >= deadline
                 process.update(wait="reaped", wait_error=helper_exit != 0)
                 if diagnostic is not None:
                     diagnostic.update(helper_exit=helper_exit, deadline_elapsed=elapsed,
                                       reaped=True, reap_exit=helper_exit)
                 if helper_exit != 0 or elapsed:
-                    raise PackageError("managed_lifecycle_refused")
+                    raise diagnostic_error("P000052", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused"))
                 if diagnostic is not None:
                     diagnostic["outcome"] = "success"
                 return bytes(result)
             if time.monotonic_ns() >= deadline:
-                raise PackageError("managed_lifecycle_deadline")
+                raise diagnostic_error("P000053", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
             time.sleep(max(0, min(0.01, (deadline - time.monotonic_ns()) / 1_000_000_000)))
     except BaseException as exc:
         unwinding = True
@@ -720,7 +800,8 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                     process["kill"] = "requested"
                     if diagnostic is not None:
                         diagnostic["kill_requested"] = True
-                    os.kill(child, signal.SIGKILL)
+                    with diagnostic_scope("P100022", "managed_operational_error"):
+                        os.kill(child, signal.SIGKILL)
                     process["kill"] = "sent"
                 except ProcessLookupError:
                     process["kill"] = "not_found"
@@ -728,13 +809,15 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                     process["kill"] = "failed"
                     raise
                 try:
-                    _pid, status = os.waitpid(child, 0)
+                    with diagnostic_scope("P200013", "managed_operational_error"):
+                        _pid, status = os.waitpid(child, 0)
                 except BaseException:
                     process.update(wait="failed", wait_error=True)
                     raise
                 process.update(wait="reaped", wait_error=True)
                 if diagnostic is not None:
-                    diagnostic.update(reaped=True, reap_exit=os.waitstatus_to_exitcode(status))
+                    with diagnostic_scope("P200014", "managed_operational_error"):
+                        diagnostic.update(reaped=True, reap_exit=os.waitstatus_to_exitcode(status))
         except BaseException:
             unwinding = True
             raise
@@ -765,7 +848,7 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 expected = None
                 reason = None
                 if helper_exit == 0:
-                    expected = list(_PACKAGE_STAGES)
+                    expected = [] if package_check else list(_PACKAGE_STAGES)
                     if bare is not None or failure_seen:
                         losses.add("CX")
                 elif helper_exit == 78:
@@ -775,7 +858,7 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                     elif bare is not None:
                         reason = bare
                         count = (1 if bare in ("inhibit_policy", "inhibit_deadline", "manager_stop", "reacquire_pair", "stopped_admission_deadline", "stopped_current") else 2 if bare == "retire_policy" else 3 if bare in ("final_refresh", "final_current") else 0)
-                        expected = list(_PACKAGE_STAGES[:count])
+                        expected = [] if package_check else list(_PACKAGE_STAGES[:count])
                         if bare in _PACKAGE_STAGES:
                             losses.add("TL")
                     else:
@@ -789,66 +872,82 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 diagnostic.update(reason=reason if not losses else None,
                                   diagnostic_state=("observed" if reason else "absent") if not losses else "contradictory" if "CX" in losses else "unavailable",
                                   stages=stages)
+                diagnostic["refusal"] = bare_refusal or next((triple[2].get("refusal") for triple in reversed(stages) if triple[1] == "failure"), None)
+                diagnostic["boundary"] = bare_boundary or next((triple[2].get("boundary") for triple in reversed(stages) if triple[1] == "failure"), None)
                 transport.update(bytes_seen=diagnostic_bytes, stdout_seen=len(result), frames_seen=min(diagnostic_lines, 4), eof=diagnostic_eof,
                                  read=diagnostic_read, close=diagnostic_close, losses=[code for code in _PACKAGE_LOSSES if code in losses])
                 if close_error is not None and not unwinding:
                     diagnostic["outcome"] = "refused"
             if close_error is not None and not unwinding:
-                raise PackageError("managed_lifecycle_refused") from close_error
+                raise diagnostic_error("P000054", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused")) from close_error
 
 
 def _managed_guard_probe(kind: str, descriptor: int, deadline: int) -> None:
     request = {"version": 2, "operation": kind, "operation_id": secrets.token_hex(16), "deadline_ns": deadline}
     executable = "/proc/self/fd/6" if kind == "package" else _MANAGED_EXECUTABLE
     mapping = {3: descriptor, 6: 6} if kind == "package" else {3: descriptor}
-    _spawn_fixed_lifecycle(executable, "managed-" + kind + "-check", request, mapping)
+    guard_diagnostic = {} if kind == "package" else None
+    try:
+        _spawn_fixed_lifecycle(executable, "managed-" + kind + "-check", request, mapping,
+                               _package_diagnostic=guard_diagnostic)
+    except Exception as error:
+        if guard_diagnostic is not None:
+            from runtime.remote_access.package_diagnostics import diagnostic_propagate
+            diagnostic_propagate(guard_diagnostic.get("refusal"), error)
+        raise
     if time.monotonic_ns() >= deadline:
-        raise PackageError("managed_lifecycle_deadline")
+        raise diagnostic_error("P000055", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
 
 
 @contextmanager
 def managed_body_guard(kind: str, *, entry_ns: int | None = None):
     """BODY-owned fixed helper exclusion, including direct Python calls."""
     if kind not in {"run", "stopped"}:
-        raise PackageError("managed_lifecycle_operation_invalid")
+        raise diagnostic_error("P000056", "managed_lifecycle_operation_invalid", PackageError("managed_lifecycle_operation_invalid"))
     previous = _MANAGED_LOCK.get()
     deadline = _managed_entry_deadline(60 if kind == "stopped" else 120, entry_ns=entry_ns)
     if kind == "run":
         # This observation ONLY shortens preparation/lock waiting. The Go
         # guard still proves the actual current ControlPID ancestry and the
         # independent installed/loaded reader still supplies authority.
-        from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
+        with diagnostic_scope("P100023", "managed_operational_error"):
+            from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
         bound = min(deadline / 1_000_000_000, time.monotonic() + 1)
         if time.monotonic() >= bound:
-            raise PackageError("managed_lifecycle_deadline")
-        child = subprocess.Popen(["/usr/bin/systemctl", "show", "happyranch-tsnet-sidecar.service",
-                                  "--property=InvocationID", "--property=InactiveExitTimestampMonotonic"],
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                 pass_fds=(() if previous is None else (previous,)),
-                                 env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"})
+            raise diagnostic_error("P000057", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
+        with diagnostic_scope("P100024", "managed_operational_error"):
+            child = subprocess.Popen(["/usr/bin/systemctl", "show", "happyranch-tsnet-sidecar.service",
+                                      "--property=InvocationID", "--property=InactiveExitTimestampMonotonic"],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     pass_fds=(() if previous is None else (previous,)),
+                                     env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"})
         try:
             raw, overflow = _capture_bounded_query_output(child, bound)
             remaining = bound - time.monotonic()
-            if overflow or remaining <= 0 or child.wait(timeout=remaining) != 0:
-                raise PackageError("managed_lifecycle_refused")
+            with diagnostic_scope("P100025", "managed_operational_error"):
+                if overflow or remaining <= 0 or child.wait(timeout=remaining) != 0:
+                    raise diagnostic_error("P000058", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused"))
         finally:
-            _close_and_reap_query_process(child, bound, managed=True)
+            with diagnostic_scope("P100026", "managed_operational_error"):
+                _close_and_reap_query_process(child, bound, managed=True)
         try:
-            rows = raw.decode("ascii").split("\n")
+            with diagnostic_scope("P100027", "managed_operational_error"):
+                rows = raw.decode("ascii").split("\n")
             values = dict(row.split("=", 1) for row in rows[:-1])
         except ValueError as exc:
-            raise PackageError("managed_lifecycle_refused") from exc
+            raise diagnostic_error("P000059", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused")) from exc
         if (len(rows) != 3 or rows[-1] or set(values) != {"InvocationID", "InactiveExitTimestampMonotonic"}
                 or values["InvocationID"] != os.environ.get("INVOCATION_ID")
                 or re.fullmatch(r"[0-9a-f]{32}", values["InvocationID"]) is None
                 or values["InvocationID"] == "0" * 32
                 or re.fullmatch(r"[1-9][0-9]{0,15}", values["InactiveExitTimestampMonotonic"]) is None):
-            raise PackageError("managed_lifecycle_refused")
-        activation = int(values["InactiveExitTimestampMonotonic"]) * 1000
+            raise diagnostic_error("P000060", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused"))
+        with diagnostic_scope("P100028", "managed_operational_error"):
+            activation = int(values["InactiveExitTimestampMonotonic"]) * 1000
         now = time.monotonic_ns()
         deadline = min(deadline, activation + 120_000_000_000)
         if activation > now or now >= deadline or time.monotonic() >= bound:
-            raise PackageError("managed_lifecycle_deadline")
+            raise diagnostic_error("P000061", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
     if previous is not None:
         deadline_token = _MANAGED_DEADLINE.set(deadline)
         try:
@@ -869,17 +968,19 @@ def managed_body_guard(kind: str, *, entry_ns: int | None = None):
                 _MANAGED_DECLARATION.reset(declaration_token)
             _MANAGED_DEADLINE.reset(deadline_token)
         return
-    descriptor = os.open("/var/lib/happyranch-connector/lifecycle.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with diagnostic_scope("P100029", "managed_operational_error"):
+        descriptor = os.open("/var/lib/happyranch-connector/lifecycle.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     deadline_token = _MANAGED_DEADLINE.set(deadline)
     lock_token = _MANAGED_LOCK.set(descriptor)
     try:
         while True:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with diagnostic_scope("P100030", "managed_operational_error"):
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
                 if time.monotonic_ns() >= deadline:
-                    raise PackageError("managed_lifecycle_deadline")
+                    raise diagnostic_error("P000062", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
                 time.sleep(0.01)
         _check_managed_holder()
         declaration = _installed_managed_contract(deadline_ns=deadline)
@@ -902,7 +1003,8 @@ def managed_body_guard(kind: str, *, entry_ns: int | None = None):
         # retain exclusion until their actual completion, even on parent loss.
         _MANAGED_LOCK.reset(lock_token)
         _MANAGED_DEADLINE.reset(deadline_token)
-        os.close(descriptor)
+        with diagnostic_scope("P100031", "managed_operational_error"):
+            os.close(descriptor)
 
 
 def _package_sealing_constants() -> tuple[int, int, int, int]:
@@ -911,7 +1013,7 @@ def _package_sealing_constants() -> tuple[int, int, int, int]:
     # GET=base+10, SEAL/SHRINK/GROW/WRITE=1/2/4/8; linux/memfd.h flags=1/2.
     # These are Linux ABI arguments only, never an emulation of missing support.
     if sys.platform != "linux":
-        raise PackageError("package_input_invalid")
+        raise diagnostic_error("P000063", "package_input_invalid", PackageError("package_input_invalid"))
     required = (getattr(fcntl, "F_SEAL_WRITE", 0x0008)
                 | getattr(fcntl, "F_SEAL_GROW", 0x0004)
                 | getattr(fcntl, "F_SEAL_SHRINK", 0x0002)
@@ -923,7 +1025,7 @@ def _package_sealing_constants() -> tuple[int, int, int, int]:
 
 def _managed_package_outer(package: Path | None, operation: str, deadline: int) -> dict[str, object]:
     if os.geteuid() != 0 or operation not in {"package-install", "package-uninstall"}:
-        raise PackageError("managed_package_context_required")
+        raise diagnostic_error("P000064", "managed_package_context_required", PackageError("managed_package_context_required"))
     if operation == "package-install":
         require_credential_capability(Path("/etc/happyranch/daemon.token"), expected_uid=os.geteuid())
         enrollment = Path("/etc/happyranch/enrollment.key")
@@ -935,21 +1037,25 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
         add_seals, _get_seals, required, flags = _package_sealing_constants()
         create = getattr(os, "memfd_create", None)
         if not callable(create):
-            raise PackageError("package_input_invalid")
+            raise diagnostic_error("P000065", "package_input_invalid", PackageError("package_input_invalid"))
         try:
             descriptor = create(name, flags)
             descriptors.append(descriptor)
             view = memoryview(raw)
             while view:
-                count = os.write(descriptor, view)
+                with diagnostic_scope("P100032", "managed_operational_error"):
+                    count = os.write(descriptor, view)
                 if count <= 0:
-                    raise PackageError("package_input_invalid")
+                    raise diagnostic_error("P000066", "package_input_invalid", PackageError("package_input_invalid"))
                 view = view[count:]
-            os.fchmod(descriptor, 0o755 if executable else 0o600)
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            fcntl.fcntl(descriptor, add_seals, required)
+            with diagnostic_scope("P100033", "managed_operational_error"):
+                os.fchmod(descriptor, 0o755 if executable else 0o600)
+            with diagnostic_scope("P200015", "managed_operational_error"):
+                os.lseek(descriptor, 0, os.SEEK_SET)
+            with diagnostic_scope("P100034", "managed_operational_error"):
+                fcntl.fcntl(descriptor, add_seals, required)
         except OSError as exc:
-            raise PackageError("package_input_invalid") from exc
+            raise diagnostic_error("P000067", "package_input_invalid", PackageError("package_input_invalid")) from exc
         return descriptor
 
     unwinding = False
@@ -960,7 +1066,8 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
             # connector copies under original A/current proof before admission;
             # package extraction/transaction/temp/stage still follows B.
             _require_package_source(package)
-            incoming_bytes = package.read_bytes()
+            with diagnostic_scope("P100035", "managed_operational_error"):
+                incoming_bytes = package.read_bytes()
             diagnostic = _MANAGED_PACKAGE_DIAGNOSTIC.get()
             identities = {key: None for key in ("tar", "connector", "sidecar", "wheel", "manifest", "verified")}
             if diagnostic is not None:
@@ -992,19 +1099,22 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
             _installed_managed_contract(deadline_ns=deadline, _package=True)
             prefix, _units, _dropin, _empty_prior = _package_managed_history(deadline)
             if prefix is None:
-                raise PackageError("managed_lifecycle_incompatible")
+                raise diagnostic_error("P000068", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
             incoming = sealed("happyranch-unused-package", b"unused")
-            connector = sealed("happyranch-connector", (prefix / "bin/happyranch-connector").read_bytes(), True)
-            executable = sealed("happyranch-tsnet-sidecar", (prefix / "bin/happyranch-tsnet-sidecar").read_bytes(), True)
+            with diagnostic_scope("P100036", "managed_operational_error"):
+                connector = sealed("happyranch-connector", (prefix / "bin/happyranch-connector").read_bytes(), True)
+            with diagnostic_scope("P100037", "managed_operational_error"):
+                executable = sealed("happyranch-tsnet-sidecar", (prefix / "bin/happyranch-tsnet-sidecar").read_bytes(), True)
             mapping = {3: incoming, 4: connector, 5: executable}
             path = "/proc/self/fd/5"
         request = {"version": 2, "operation": operation, "operation_id": secrets.token_hex(16), "deadline_ns": deadline}
         raw = _spawn_fixed_lifecycle(path, "managed-package", request, mapping,
                                      _package_diagnostic=_MANAGED_PACKAGE_DIAGNOSTIC.get())
         try:
-            result = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+            with diagnostic_scope("P100038", "managed_operational_error"):
+                result = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
             if not isinstance(result, dict):
-                raise PackageError("managed_lifecycle_response_invalid")
+                raise diagnostic_error("P000069", "managed_lifecycle_response_invalid", PackageError("managed_lifecycle_response_invalid"))
         except BaseException:
             diagnostic = _MANAGED_PACKAGE_DIAGNOSTIC.get()
             if diagnostic is not None:
@@ -1014,6 +1124,14 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
     except BaseException as exc:
         unwinding = True
         diagnostic = _MANAGED_PACKAGE_DIAGNOSTIC.get()
+        if diagnostic is not None and diagnostic.get("refusal") is None:
+            from runtime.remote_access.package_diagnostics import exception_refusal
+            refusal = exception_refusal(exc)
+            if refusal is not None:
+                diagnostic["refusal"] = {"category": refusal[0], "site": refusal[1]}
+                marked = getattr(exc, "_managed_package_boundary", getattr(exc, "_managed_package_refusal", None))
+                if marked is not None and marked != refusal:
+                    diagnostic["boundary"] = {"category": marked[0], "site": marked[1]}
         if diagnostic is not None and isinstance(exc, PackageError) and "_initiating" not in diagnostic:
             category = next((c for c in _PACKAGE_ERROR_CATEGORIES if len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] == c), None)
             diagnostic["_initiating"] = {"kind": "package_error", "category": category, "status": 1}
@@ -1025,7 +1143,8 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
             # Relinquish before close; never retry a possibly reused number.
             descriptor = descriptors.pop()
             try:
-                os.close(descriptor)
+                with diagnostic_scope("P100039", "managed_operational_error"):
+                    os.close(descriptor)
             except OSError as exc:
                 if close_error is None:
                     close_error = exc
@@ -1033,7 +1152,7 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
             diagnostic = _MANAGED_PACKAGE_DIAGNOSTIC.get()
             if diagnostic is not None:
                 diagnostic["outcome"] = "refused"
-            raise PackageError("managed_lifecycle_refused") from close_error
+            raise diagnostic_error("P000070", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused")) from close_error
 
 
 def _nonmanaged_owner_destination(path: Path) -> Path:
@@ -1181,28 +1300,29 @@ def managed_lifecycle(operation: str, *, expected_installation: str | None = Non
     """
     entry_ns = time.monotonic_ns()
     if operation not in {"start", "stop", "restart", "enable", "disable", "status", "reconcile"}:
-        raise PackageError("managed_lifecycle_operation_invalid")
+        raise diagnostic_error("P000071", "managed_lifecycle_operation_invalid", PackageError("managed_lifecycle_operation_invalid"))
     deadline = _managed_entry_deadline(45, entry_ns=entry_ns)
     if deadline_ns is not None:
         deadline = min(deadline, deadline_ns)
     if deadline <= time.monotonic_ns():
-        raise PackageError("managed_lifecycle_deadline")
+        raise diagnostic_error("P000072", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
     request = {"version": 2, "operation": operation, "expected_installation": expected_installation,
                "expected_revision": expected_revision, "operation_id": operation_id or secrets.token_hex(16),
                "deadline_ns": deadline}
     try:
         raw = _spawn_fixed_lifecycle(_MANAGED_EXECUTABLE, "managed-lifecycle", request, {})
-        report = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        with diagnostic_scope("P100040", "managed_operational_error"):
+            report = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
         if (not isinstance(report, dict) or set(report) != {"version", "state", "operation_id"}
                 or type(report["version"]) is not int or report["version"] != 2
                 or report["operation_id"] != request["operation_id"]
                 or report["state"] not in {"stopped", "boot_prepared", "starting", "ready", "retiring", "deferred", "rate_exhausted_until", "blocked", "unavailable"}):
-            raise PackageError("managed_lifecycle_response_invalid")
+            raise diagnostic_error("P000073", "managed_lifecycle_response_invalid", PackageError("managed_lifecycle_response_invalid"))
         if time.monotonic_ns() >= deadline:
-            raise PackageError("managed_lifecycle_deadline")
+            raise diagnostic_error("P000074", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
         return report
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        raise PackageError("managed_lifecycle_refused") from exc
+        raise diagnostic_error("P000075", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused")) from exc
 
 
 def credential_capability(
@@ -1282,17 +1402,17 @@ class CompositeServiceManager:
         try:
             deadline = _MANAGED_DEADLINE.get()
             if deadline is None or time.monotonic_ns() >= deadline:
-                raise PackageError("managed_lifecycle_deadline")
+                raise diagnostic_error("P000076", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
             argv = ["/usr/bin/systemctl" if self._systemctl == "systemctl" else self._systemctl, *args]
             result = self._run(argv, check=True, text=True, capture_output=True,
                                timeout=max(0, (deadline - time.monotonic_ns()) / 1_000_000_000),
                                env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
                                pass_fds=(() if _MANAGED_LOCK.get() is None else (_MANAGED_LOCK.get(),)))
             if time.monotonic_ns() >= deadline:
-                raise PackageError("managed_lifecycle_deadline")
+                raise diagnostic_error("P000077", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
             return result
         except (OSError, subprocess.SubprocessError) as exc:
-            raise PackageError("service_manager_failed") from exc
+            raise diagnostic_error("P000078", "service_manager_failed", PackageError("service_manager_failed")) from exc
 
     def start_ready(self) -> None:
         deadline = _managed_entry_deadline(45)
@@ -1300,13 +1420,13 @@ class CompositeServiceManager:
         try:
             report = managed_lifecycle("start")
             if report["state"] != "ready":
-                raise PackageError("service_not_ready")
+                raise diagnostic_error("P000079", "service_not_ready", PackageError("service_not_ready"))
             for unit in UNITS[:2]:
                 result = self._call("show", unit, "--property=ActiveState", "--value")
                 if result.stdout.strip() != "active":
-                    raise PackageError("service_not_ready")
+                    raise diagnostic_error("P000080", "service_not_ready", PackageError("service_not_ready"))
             if time.monotonic_ns() >= deadline:
-                raise PackageError("managed_lifecycle_deadline")
+                raise diagnostic_error("P000081", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
         finally:
             _MANAGED_DEADLINE.reset(token)
 
@@ -1318,33 +1438,34 @@ class CompositeServiceManager:
         token = _MANAGED_DEADLINE.set(deadline)
         try:
             if unit not in UNITS[:2]:
-                raise PackageError("service_unit_invalid")
+                raise diagnostic_error("P000082", "service_unit_invalid", PackageError("service_unit_invalid"))
             managed_lifecycle("restart")
             result = self._call("show", unit, "--property=ActiveState", "--value")
             if result.stdout.strip() != "active":
-                raise PackageError("service_not_ready")
+                raise diagnostic_error("P000083", "service_not_ready", PackageError("service_not_ready"))
             if time.monotonic_ns() >= deadline:
-                raise PackageError("managed_lifecycle_deadline")
+                raise diagnostic_error("P000084", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
         finally:
             _MANAGED_DEADLINE.reset(token)
 
 
 def render_composite_units(prefix: str = "/opt/happyranch") -> dict[str, str]:
-    connector = render_connector_unit(ConnectorUnitSpec(
-        exec_start=(f"{prefix}/bin/happyranch-tsnet-sidecar", "supervise-connector",
-                    f"{prefix}/bin/happyranch-connector", "run", "--managed", "--config",
-                    "/etc/happyranch/connector.json"),
-        user="happyranch", group="happyranch",
-        daemon_token_path="/etc/happyranch/daemon.token",
-    )).replace(
-        "After=network-online.target",
-        "After=network-online.target\nWants=happyranch-tsnet-sidecar.service\n"
-        "PartOf=happyranch-managed.target happyranch-tsnet-sidecar.service\nStartLimitIntervalSec=0",
-    ).replace("RestartSec=1", "RestartSec=30").replace(
-        "TimeoutStopSec=10", "TimeoutStartSec=120\nTimeoutStopSec=35\nTimeoutAbortSec=35\n"
-        "KillMode=mixed\nWatchdogSignal=SIGUSR2\nRestartMode=normal\nRestartPreventExitStatus="
-        + " ".join(str(code) for code in range(2, 256)),
-    ).replace("WantedBy=multi-user.target", "WantedBy=happyranch-managed.target")
+    with diagnostic_scope("P100041", "managed_operational_error"):
+        connector = render_connector_unit(ConnectorUnitSpec(
+            exec_start=(f"{prefix}/bin/happyranch-tsnet-sidecar", "supervise-connector",
+                        f"{prefix}/bin/happyranch-connector", "run", "--managed", "--config",
+                        "/etc/happyranch/connector.json"),
+            user="happyranch", group="happyranch",
+            daemon_token_path="/etc/happyranch/daemon.token",
+        )).replace(
+            "After=network-online.target",
+            "After=network-online.target\nWants=happyranch-tsnet-sidecar.service\n"
+            "PartOf=happyranch-managed.target happyranch-tsnet-sidecar.service\nStartLimitIntervalSec=0",
+        ).replace("RestartSec=1", "RestartSec=30").replace(
+            "TimeoutStopSec=10", "TimeoutStartSec=120\nTimeoutStopSec=35\nTimeoutAbortSec=35\n"
+            "KillMode=mixed\nWatchdogSignal=SIGUSR2\nRestartMode=normal\nRestartPreventExitStatus="
+            + " ".join(str(code) for code in range(2, 256)),
+        ).replace("WantedBy=multi-user.target", "WantedBy=happyranch-managed.target")
     sidecar = """[Unit]
 Description=HappyRanch embedded tsnet sidecar
 After=network-online.target
@@ -1405,8 +1526,9 @@ WantedBy=multi-user.target
     lines = connector.splitlines()
     connector = "\n".join(line for index, line in enumerate(lines)
                             if line != "RestartSec=30" or line not in lines[:index]) + "\n"
-    connector = connector.replace("StateDirectory=happyranch-connector\n",
-                                  "StateDirectory=happyranch-connector\nStateDirectoryMode=0700\n")
+    with diagnostic_scope("P100042", "managed_operational_error"):
+        connector = connector.replace("StateDirectory=happyranch-connector\n",
+                                      "StateDirectory=happyranch-connector\nStateDirectoryMode=0700\n")
     return {UNITS[0]: connector, UNITS[1]: sidecar, UNITS[2]: target}
 
 
@@ -1417,11 +1539,11 @@ def _sha(raw: bytes) -> str:
 def _sbom(inventory: Mapping[str, object], version: str) -> bytes:
     modules = inventory.get("modules")
     if not isinstance(modules, list) or not modules:
-        raise PackageError("inventory_invalid")
+        raise diagnostic_error("P300001", "inventory_invalid", PackageError("inventory_invalid"))
     components = []
     for item in modules:
         if not isinstance(item, dict):
-            raise PackageError("inventory_invalid")
+            raise diagnostic_error("P300002", "inventory_invalid", PackageError("inventory_invalid"))
         try:
             components.append({
                 "type": "library", "name": item["module"], "version": item["version"],
@@ -1433,11 +1555,12 @@ def _sbom(inventory: Mapping[str, object], version: str) -> bytes:
                 ],
             })
         except KeyError as exc:
-            raise PackageError("inventory_invalid") from exc
+            raise diagnostic_error("P300003", "inventory_invalid", PackageError("inventory_invalid")) from exc
     payload = {"bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1,
                "metadata": {"component": {"type": "application", "name": "happyranch-linux", "version": version}},
                "components": sorted(components, key=lambda item: (item["name"], item["version"]))}
-    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    with diagnostic_scope("P300004", "managed_operational_error"):
+        return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
 
 
 def build_linux_package(output: Path, sidecar: Path, connector: Path, wheel: Path,
@@ -1482,20 +1605,21 @@ def build_linux_package(output: Path, sidecar: Path, connector: Path, wheel: Pat
 
 def _validate_evidence(inventory: Mapping[str, object], notices: bytes) -> None:
     try:
-        text = notices.decode("utf-8")
+        with diagnostic_scope("P100043", "managed_operational_error"):
+            text = notices.decode("utf-8")
         if set(inventory) != {"schema_version", "artifact", "generator", "modules"} or type(inventory.get("schema_version")) is not int or inventory["schema_version"] != 1:
-            raise PackageError("inventory_invalid")
+            raise diagnostic_error("P000085", "inventory_invalid", PackageError("inventory_invalid"))
         artifact = inventory["artifact"]
         if (not isinstance(artifact, dict) or set(artifact) != {"goos", "goarch", "cgo_enabled", "package"}
                 or artifact != {"goos": "linux", "goarch": "amd64", "cgo_enabled": False,
                                 "package": "happyranch/linux-tsnet-sidecar"}
                 or inventory["generator"] != "tools/generate_inventory.py"):
-            raise PackageError("inventory_invalid")
+            raise diagnostic_error("P000086", "inventory_invalid", PackageError("inventory_invalid"))
         modules = inventory["modules"]
         if not isinstance(modules, list) or not modules:
-            raise PackageError("inventory_invalid")
+            raise diagnostic_error("P000087", "inventory_invalid", PackageError("inventory_invalid"))
     except (UnicodeDecodeError, KeyError, TypeError) as exc:
-        raise PackageError("notice_invalid") from exc
+        raise diagnostic_error("P000088", "notice_invalid", PackageError("notice_invalid")) from exc
     blocks = text.split("\n---\n")
     seen: dict[str, tuple[str, str]] = {}
     for block in blocks:
@@ -1508,14 +1632,15 @@ def _validate_evidence(inventory: Mapping[str, object], notices: bytes) -> None:
             license_text = "\n".join(lines[fence + 1:end]).rstrip() + "\n"
         except ValueError:
             license_text = ""
-        if not digest or not license_text or _sha(license_text.encode()) != digest:
-            if any(line.startswith("- ") for line in lines):
-                raise PackageError("notice_invalid")
+        with diagnostic_scope("P100044", "managed_operational_error"):
+            if not digest or not license_text or _sha(license_text.encode()) != digest:
+                if any(line.startswith("- ") for line in lines):
+                    raise diagnostic_error("P000089", "notice_invalid", PackageError("notice_invalid"))
         for line in lines:
             if line.startswith("- ") and "@" in line:
                 coordinate = line[2:].strip()
                 if coordinate in seen or not spdx or not digest:
-                    raise PackageError("notice_invalid")
+                    raise diagnostic_error("P000090", "notice_invalid", PackageError("notice_invalid"))
                 seen[coordinate] = (spdx, digest)
     required = ("module", "version", "sum", "source", "spdx", "license_sha256", "relationship")
     if any(not isinstance(item, dict) or set(item) != set(required)
@@ -1524,91 +1649,98 @@ def _validate_evidence(inventory: Mapping[str, object], notices: bytes) -> None:
            or item["relationship"] != "statically-linked-linux-build-input"
            or not item["sum"].startswith("h1:")
            or len(item["license_sha256"]) != 64 for item in modules):
-        raise PackageError("inventory_invalid")
+        raise diagnostic_error("P000091", "inventory_invalid", PackageError("inventory_invalid"))
     expected = {f"{item['module']}@{item['version']}": (item["spdx"], item["license_sha256"]) for item in modules}
     if len(expected) != len(modules):
-        raise PackageError("inventory_invalid")
+        raise diagnostic_error("P000092", "inventory_invalid", PackageError("inventory_invalid"))
     if seen != expected:
-        raise PackageError("notice_inventory_mismatch")
+        raise diagnostic_error("P000093", "notice_inventory_mismatch", PackageError("notice_inventory_mismatch"))
 
 
 def _read_verified(package: Path) -> tuple[dict[str, bytes], dict[str, object]]:
     _require_package_source(package)
     files: dict[str, bytes] = {}
     modes: dict[str, int] = {}
-    with tarfile.open(package) as archive:
-        for member in archive.getmembers():
-            path = PurePosixPath(member.name)
-            if not member.isfile() or path.is_absolute() or not path.parts or ".." in path.parts or path.parts[0] != PREFIX:
-                raise PackageError("archive_member_invalid")
-            relative = str(path.relative_to(PREFIX))
-            if relative in files:
-                raise PackageError("archive_duplicate_member")
-            if member.uid != 0 or member.gid != 0 or member.uname != "root" or member.gname != "root":
-                raise PackageError("archive_owner_invalid")
-            files[relative] = archive.extractfile(member).read()
-            modes[relative] = member.mode & 0o7777
+    with diagnostic_scope("P100045", "managed_operational_error"):
+        with tarfile.open(package) as archive:
+            with diagnostic_scope("P100046", "managed_operational_error"):
+                for member in archive.getmembers():
+                    path = PurePosixPath(member.name)
+                    if not member.isfile() or path.is_absolute() or not path.parts or ".." in path.parts or path.parts[0] != PREFIX:
+                        raise diagnostic_error("P000094", "archive_member_invalid", PackageError("archive_member_invalid"))
+                    relative = str(path.relative_to(PREFIX))
+                    if relative in files:
+                        raise diagnostic_error("P000095", "archive_duplicate_member", PackageError("archive_duplicate_member"))
+                    if member.uid != 0 or member.gid != 0 or member.uname != "root" or member.gname != "root":
+                        raise diagnostic_error("P000096", "archive_owner_invalid", PackageError("archive_owner_invalid"))
+                    with diagnostic_scope("P100047", "managed_operational_error"):
+                        files[relative] = archive.extractfile(member).read()
+                    modes[relative] = member.mode & 0o7777
     try:
-        manifest = json.loads(files["manifest.json"], object_pairs_hook=_reject_duplicate_keys)
+        with diagnostic_scope("P100048", "managed_operational_error"):
+            manifest = json.loads(files["manifest.json"], object_pairs_hook=_reject_duplicate_keys)
         contract = manifest.get("managed_lifecycle_contract")
         if (not isinstance(contract, dict) or contract != MANAGED_LIFECYCLE_CONTRACT
                 or any(type(value) is not int for value in contract.values())):
-            raise PackageError("managed_lifecycle_incompatible")
+            raise diagnostic_error("P000097", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
         if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1 or manifest["architecture"] != "linux-amd64" or type(manifest["version"]) is not str or not manifest["version"]:
-            raise PackageError("manifest_invalid")
+            raise diagnostic_error("P000098", "manifest_invalid", PackageError("manifest_invalid"))
         entries = manifest["files"]
         if not isinstance(entries, list) or type(manifest["sidecar_dependency_count"]) is not int:
-            raise PackageError("manifest_invalid")
+            raise diagnostic_error("P000099", "manifest_invalid", PackageError("manifest_invalid"))
         expected_paths = set(files) - {"manifest.json"}
         declared_paths = {item["path"] for item in entries}
         if len(entries) != len(declared_paths) or declared_paths != expected_paths:
-            raise PackageError("manifest_membership_mismatch")
+            raise diagnostic_error("P000100", "manifest_membership_mismatch", PackageError("manifest_membership_mismatch"))
         if declared_paths != set(PAYLOAD_MODES):
-            raise PackageError("manifest_path_invalid")
-        expected_modes = {name: int(mode, 8) for name, mode in PAYLOAD_MODES.items()}
+            raise diagnostic_error("P000101", "manifest_path_invalid", PackageError("manifest_path_invalid"))
+        with diagnostic_scope("P100049", "managed_operational_error"):
+            expected_modes = {name: int(mode, 8) for name, mode in PAYLOAD_MODES.items()}
         expected_modes["manifest.json"] = 0o644
         if any(modes[name] != mode for name, mode in expected_modes.items()):
-            raise PackageError("archive_mode_invalid")
+            raise diagnostic_error("P000102", "archive_mode_invalid", PackageError("archive_mode_invalid"))
         for item in entries:
             if not isinstance(item, dict) or set(item) != {"path", "sha256", "mode"} or any(type(item[k]) is not str for k in item):
-                raise PackageError("manifest_invalid")
+                raise diagnostic_error("P000103", "manifest_invalid", PackageError("manifest_invalid"))
             path = PurePosixPath(item["path"])
             if path.is_absolute() or ".." in path.parts or str(path) != item["path"] or item["path"] not in PAYLOAD_MODES:
-                raise PackageError("manifest_path_invalid")
+                raise diagnostic_error("P000104", "manifest_path_invalid", PackageError("manifest_path_invalid"))
             if item["mode"] != PAYLOAD_MODES[item["path"]]:
-                raise PackageError("manifest_mode_invalid")
+                raise diagnostic_error("P000105", "manifest_mode_invalid", PackageError("manifest_mode_invalid"))
             if _sha(files[item["path"]]) != item["sha256"]:
-                raise PackageError("manifest_hash_mismatch")
-        inventory = json.loads(files["share/dependency-inventory.json"])
+                raise diagnostic_error("P000106", "manifest_hash_mismatch", PackageError("manifest_hash_mismatch"))
+        with diagnostic_scope("P100050", "managed_operational_error"):
+            inventory = json.loads(files["share/dependency-inventory.json"])
         if manifest["sidecar_dependency_count"] != len(inventory["modules"]):
-            raise PackageError("manifest_count_invalid")
-        sbom = json.loads(files["share/sbom.cdx.json"])
+            raise diagnostic_error("P000107", "manifest_count_invalid", PackageError("manifest_count_invalid"))
+        with diagnostic_scope("P100051", "managed_operational_error"):
+            sbom = json.loads(files["share/sbom.cdx.json"])
         if not isinstance(sbom, dict):
-            raise PackageError("sbom_invalid")
+            raise diagnostic_error("P000108", "sbom_invalid", PackageError("sbom_invalid"))
         if (type(sbom.get("version")) is not int or sbom.get("bomFormat") != "CycloneDX"
                 or sbom.get("specVersion") != "1.5" or not isinstance(sbom.get("components"), list)):
-            raise PackageError("sbom_invalid")
+            raise diagnostic_error("P000109", "sbom_invalid", PackageError("sbom_invalid"))
         def component_tuple(c: object) -> tuple[object, ...]:
-            if not isinstance(c, dict): raise PackageError("sbom_invalid")
+            if not isinstance(c, dict): raise diagnostic_error("P000110", "sbom_invalid", PackageError("sbom_invalid"))
             props = c.get("properties")
             licenses = c.get("licenses")
             if not isinstance(props, list) or not isinstance(licenses, list) or len(licenses) != 1:
-                raise PackageError("sbom_invalid")
+                raise diagnostic_error("P000111", "sbom_invalid", PackageError("sbom_invalid"))
             prop_map = {p.get("name"): p.get("value") for p in props if isinstance(p, dict)}
             try: spdx = licenses[0]["license"]["id"]
-            except (KeyError, TypeError): raise PackageError("sbom_invalid")
+            except (KeyError, TypeError): raise diagnostic_error("P000112", "sbom_invalid", PackageError("sbom_invalid"))
             return (c.get("name"), c.get("version"), c.get("purl"), spdx,
                     prop_map.get("happyranch:go.sum"), prop_map.get("happyranch:license-sha256"))
         components = {component_tuple(c) for c in sbom["components"]}
         inventory_coordinates = {(m["module"], m["version"], f"pkg:golang/{m['module']}@{m['version']}",
                                   m["spdx"], m["sum"], m["license_sha256"]) for m in inventory["modules"]}
         if len(components) != len(sbom["components"]) or components != inventory_coordinates:
-            raise PackageError("sbom_inventory_mismatch")
+            raise diagnostic_error("P000113", "sbom_inventory_mismatch", PackageError("sbom_inventory_mismatch"))
         _validate_evidence(inventory, files["share/THIRD_PARTY_NOTICES.md"])
     except PackageError:
         raise
     except (KeyError, TypeError, ValueError) as exc:
-        raise PackageError("manifest_invalid") from exc
+        raise diagnostic_error("P000114", "manifest_invalid", PackageError("manifest_invalid")) from exc
     return files, manifest
 
 
@@ -1623,19 +1755,20 @@ def _require_package_operand(path: Path, *, directory: bool | None = None,
     """
     path = Path(path)
     if ".." in path.parts:
-        raise PackageError("managed_lifecycle_owner_unknown")
+        raise diagnostic_error("P000115", "managed_lifecycle_owner_unknown", PackageError("managed_lifecycle_owner_unknown"))
     _assert_safe_root_ancestry(path)
     if path == Path("/"):
         if directory is False:
-            raise PackageError("managed_lifecycle_owner_unknown")
+            raise diagnostic_error("P000116", "managed_lifecycle_owner_unknown", PackageError("managed_lifecycle_owner_unknown"))
         return
     if link_object:
         try:
-            metadata = path.lstat()
+            with diagnostic_scope("P100052", "managed_operational_error"):
+                metadata = path.lstat()
         except FileNotFoundError:
             pass
         except OSError as exc:
-            raise PackageError("managed_lifecycle_owner_unknown") from exc
+            raise diagnostic_error("P000117", "managed_lifecycle_owner_unknown", PackageError("managed_lifecycle_owner_unknown")) from exc
         else:
             if stat.S_ISLNK(metadata.st_mode):
                 # Check the containing namespace, not the link's target.
@@ -1651,14 +1784,17 @@ def _require_package_source(package: Path) -> None:
     if (package.parent == Path("/proc/self/fd")
             and re.fullmatch(r"[0-9]+", package.name) is not None):
         try:
-            descriptor = int(package.name)
-            metadata = os.fstat(descriptor)
+            with diagnostic_scope("P100053", "managed_operational_error"):
+                descriptor = int(package.name)
+            with diagnostic_scope("P100054", "managed_operational_error"):
+                metadata = os.fstat(descriptor)
             _add_seals, get_seals, required, _flags = _package_sealing_constants()
-            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 0
-                    or fcntl.fcntl(descriptor, get_seals) & required != required):
-                raise PackageError("package_input_invalid")
+            with diagnostic_scope("P100055", "managed_operational_error"):
+                if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 0
+                        or fcntl.fcntl(descriptor, get_seals) & required != required):
+                    raise diagnostic_error("P000118", "package_input_invalid", PackageError("package_input_invalid"))
         except OSError as exc:
-            raise PackageError("package_input_invalid") from exc
+            raise diagnostic_error("P000119", "package_input_invalid", PackageError("package_input_invalid")) from exc
         return
     _require_package_operand(package, directory=False)
 
@@ -1673,7 +1809,7 @@ def _managed_package_root(root: Path) -> bool:
     if root == Path("/"):
         return True
     if ".." in root.parts:
-        raise PackageError("managed_package_context_required")
+        raise diagnostic_error("P000120", "managed_package_context_required", PackageError("managed_package_context_required"))
     _assert_safe_root_ancestry(root)
     destinations = (root, root / "opt/happyranch", root / "etc/systemd/system",
                     *(root / "etc/systemd/system" / name for name in UNITS),
@@ -1689,7 +1825,7 @@ def _managed_package_root(root: Path) -> bool:
         _require_package_operand(selected)
         destination = _nonmanaged_owner_destination(selected)
         if destination != Path(os.path.abspath(selected)):
-            raise PackageError("managed_package_context_required")
+            raise diagnostic_error("P000121", "managed_package_context_required", PackageError("managed_package_context_required"))
         for fixed in protected:
             # Ancestors catch directory aliases even when a fixed leaf is
             # absent; individual leaves also catch existing hard-link aliases.
@@ -1697,12 +1833,12 @@ def _managed_package_root(root: Path) -> bool:
                     for parent in (destination, *destination.parents))
                     or any(_nonmanaged_owner_same_path(destination, parent)
                            for parent in fixed.parents)):
-                raise PackageError("managed_package_context_required")
+                raise diagnostic_error("P000122", "managed_package_context_required", PackageError("managed_package_context_required"))
             left, right = destination, fixed
             while left.name == right.name and left.parent != left and right.parent != right:
                 left, right = left.parent, right.parent
                 if _nonmanaged_owner_same_path(left, right):
-                    raise PackageError("managed_package_context_required")
+                    raise diagnostic_error("P000123", "managed_package_context_required", PackageError("managed_package_context_required"))
     return False
 
 
@@ -1734,30 +1870,35 @@ def _seam(guard, stage: str, operation: str, path: Path) -> None:
 def _unlink(path: Path, guard, operation: str) -> None:
     _require_package_operand(path, link_object=True)
     _seam(guard, "before", operation, path)
-    os.unlink(path)
+    with diagnostic_scope("P100056", "managed_operational_error"):
+        os.unlink(path)
     _seam(guard, "after", operation, path)
 
 
 def _write_file(path: Path, raw: bytes, mode: int, guard, operation: str) -> None:
     _require_package_operand(path, directory=False)
     _seam(guard, "before", operation, path)
-    descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-        mode,
-    )
+    with diagnostic_scope("P100057", "managed_operational_error"):
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            mode,
+        )
     try:
         view = memoryview(raw)
         while view:
-            written = os.write(descriptor, view)
+            with diagnostic_scope("P100058", "managed_operational_error"):
+                written = os.write(descriptor, view)
             view = view[written:]
     finally:
-        os.close(descriptor)
+        with diagnostic_scope("P100059", "managed_operational_error"):
+            os.close(descriptor)
     _seam(guard, "after", operation, path)
     _require_package_operand(path, directory=False)
     _seam(guard, "before", f"{operation}:chmod", path)
-    os.chmod(path, mode)
+    with diagnostic_scope("P100060", "managed_operational_error"):
+        os.chmod(path, mode)
     _seam(guard, "after", f"{operation}:chmod", path)
 
 
@@ -1765,13 +1906,15 @@ def _copy_file(source: Path, destination: Path, guard, operation: str) -> None:
     _require_package_operand(source, directory=False)
     _require_package_operand(destination, directory=False)
     _seam(guard, "before", operation, destination)
-    shutil.copy2(source, destination)
+    with diagnostic_scope("P100061", "managed_operational_error"):
+        shutil.copy2(source, destination)
     _seam(guard, "after", operation, destination)
 
 
 def _backup_inventory(path: Path) -> dict:
     _require_package_operand(path, directory=False)
-    return {"sha256": _sha(path.read_bytes()), "mode": stat.S_IMODE(path.lstat().st_mode)}
+    with diagnostic_scope("P100062", "managed_operational_error"):
+        return {"sha256": _sha(path.read_bytes()), "mode": stat.S_IMODE(path.lstat().st_mode)}
 
 
 def _backup_intact(path: Path, expected: object) -> bool:
@@ -1781,11 +1924,13 @@ def _backup_intact(path: Path, expected: object) -> bool:
     if not isinstance(expected, dict) or not path.is_file() or path.is_symlink():
         return False
     try:
-        metadata = path.lstat()
-        return (
-            stat.S_IMODE(metadata.st_mode) == expected["mode"]
-            and _sha(path.read_bytes()) == expected["sha256"]
-        )
+        with diagnostic_scope("P100063", "managed_operational_error"):
+            metadata = path.lstat()
+        with diagnostic_scope("P100064", "managed_operational_error"):
+            return (
+                stat.S_IMODE(metadata.st_mode) == expected["mode"]
+                and _sha(path.read_bytes()) == expected["sha256"]
+            )
     except OSError:
         return False
 
@@ -1796,7 +1941,8 @@ def _backup_present(path: Path) -> bool:
 
 def _path_file_identity(path: Path) -> dict:
     _require_package_operand(path, directory=False)
-    return {"sha256": _sha(path.read_bytes()), "mode": stat.S_IMODE(path.lstat().st_mode)}
+    with diagnostic_scope("P100065", "managed_operational_error"):
+        return {"sha256": _sha(path.read_bytes()), "mode": stat.S_IMODE(path.lstat().st_mode)}
 
 
 def _planned_payload_inventory(files: Mapping[str, bytes], system_service: bool) -> dict:
@@ -1809,10 +1955,11 @@ def _planned_payload_inventory(files: Mapping[str, bytes], system_service: bool)
     for name, raw in files.items():
         if name.startswith("systemd/"):
             continue
-        mode = (0o644 if system_service else 0o600) if name == "manifest.json" else (
-            int(PAYLOAD_MODES[name], 8) if system_service
-            else (0o700 if name.startswith("bin/") else 0o600)
-        )
+        with diagnostic_scope("P100066", "managed_operational_error"):
+            mode = (0o644 if system_service else 0o600) if name == "manifest.json" else (
+                int(PAYLOAD_MODES[name], 8) if system_service
+                else (0o700 if name.startswith("bin/") else 0o600)
+            )
         entries[name] = {"type": "file", "mode": mode, "sha256": _sha(raw)}
     return {"root_mode": root_mode, "entries": entries}
 
@@ -1825,27 +1972,32 @@ def _inventory_tree(path: Path, *, metadata_only: bool = False) -> dict:
     or compared as a transaction identity.
     """
     _require_package_operand(path, directory=True)
-    root_mode = stat.S_IMODE(path.lstat().st_mode)
+    with diagnostic_scope("P100067", "managed_operational_error"):
+        root_mode = stat.S_IMODE(path.lstat().st_mode)
     entries: dict[str, dict] = {}
     stack: list[tuple[Path, str]] = [(path, "")]
     while stack:
         base, prefix = stack.pop()
-        for entry in sorted(base.iterdir(), key=lambda item: item.name):
-            _require_package_operand(entry, link_object=True)
-            relative = f"{prefix}{entry.name}"
-            metadata = entry.lstat()
-            if stat.S_ISLNK(metadata.st_mode):
-                entries[relative] = {"type": "link", "target": os.readlink(entry)}
-            elif stat.S_ISDIR(metadata.st_mode):
-                entries[relative] = {"type": "dir", "mode": stat.S_IMODE(metadata.st_mode)}
-                stack.append((entry, f"{relative}/"))
-            elif stat.S_ISREG(metadata.st_mode):
-                entries[relative] = {
-                    "type": "file", "mode": stat.S_IMODE(metadata.st_mode),
-                    **({"sha256": _sha(entry.read_bytes())} if not metadata_only else {}),
-                }
-            else:
-                entries[relative] = {"type": "other"}
+        with diagnostic_scope("P100068", "managed_operational_error"):
+            for entry in sorted(base.iterdir(), key=lambda item: item.name):
+                _require_package_operand(entry, link_object=True)
+                relative = f"{prefix}{entry.name}"
+                with diagnostic_scope("P100069", "managed_operational_error"):
+                    metadata = entry.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    with diagnostic_scope("P100070", "managed_operational_error"):
+                        entries[relative] = {"type": "link", "target": os.readlink(entry)}
+                elif stat.S_ISDIR(metadata.st_mode):
+                    entries[relative] = {"type": "dir", "mode": stat.S_IMODE(metadata.st_mode)}
+                    stack.append((entry, f"{relative}/"))
+                elif stat.S_ISREG(metadata.st_mode):
+                    with diagnostic_scope("P100071", "managed_operational_error"):
+                        entries[relative] = {
+                            "type": "file", "mode": stat.S_IMODE(metadata.st_mode),
+                            **({"sha256": _sha(entry.read_bytes())} if not metadata_only else {}),
+                        }
+                else:
+                    entries[relative] = {"type": "other"}
     return {"root_mode": root_mode, "entries": entries}
 
 
@@ -1853,7 +2005,8 @@ def _tree_matches(path: Path, inventory: object) -> bool:
     if not isinstance(inventory, dict):
         return False
     try:
-        metadata = path.lstat()
+        with diagnostic_scope("P100072", "managed_operational_error"):
+            metadata = path.lstat()
         if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             return False
         if stat.S_IMODE(metadata.st_mode) != inventory.get("root_mode"):
@@ -1878,7 +2031,8 @@ def _tree_is_owned_partial(path: Path, inventory: object) -> bool:
     if not isinstance(entries, dict):
         return False
     try:
-        metadata = path.lstat()
+        with diagnostic_scope("P100073", "managed_operational_error"):
+            metadata = path.lstat()
     except OSError:
         return False
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
@@ -1899,13 +2053,15 @@ def _file_matches(path: Path, identity: object) -> bool:
     if not isinstance(identity, dict):
         return False
     try:
-        metadata = path.lstat()
+        with diagnostic_scope("P100074", "managed_operational_error"):
+            metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             return False
-        return (
-            stat.S_IMODE(metadata.st_mode) == identity.get("mode")
-            and _sha(path.read_bytes()) == identity.get("sha256")
-        )
+        with diagnostic_scope("P100075", "managed_operational_error"):
+            return (
+                stat.S_IMODE(metadata.st_mode) == identity.get("mode")
+                and _sha(path.read_bytes()) == identity.get("sha256")
+            )
     except OSError:
         return False
 
@@ -1966,13 +2122,14 @@ def _assert_safe_root_ancestry(root: Path) -> None:
     for part in target.parts[1:-1]:
         current = current / part
         try:
-            metadata = current.lstat()
+            with diagnostic_scope("P100076", "managed_operational_error"):
+                metadata = current.lstat()
         except FileNotFoundError:
             return
         except OSError as exc:
-            raise PackageError("transaction_state_invalid") from exc
+            raise diagnostic_error("P000124", "transaction_state_invalid", PackageError("transaction_state_invalid")) from exc
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000125", "transaction_state_invalid", PackageError("transaction_state_invalid"))
 
 
 def _assert_safe_target(root: Path, path: Path, *, directory: bool | None = None) -> None:
@@ -1988,38 +2145,40 @@ def _assert_safe_target(root: Path, path: Path, *, directory: bool | None = None
     _require_package_operand(root, directory=True)
     _require_package_operand(path, directory=directory)
     try:
-        metadata = root.lstat()
+        with diagnostic_scope("P100077", "managed_operational_error"):
+            metadata = root.lstat()
     except OSError as exc:
-        raise PackageError("transaction_state_invalid") from exc
+        raise diagnostic_error("P000126", "transaction_state_invalid", PackageError("transaction_state_invalid")) from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000127", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     try:
         relative = path.relative_to(root)
     except ValueError as exc:
-        raise PackageError("transaction_state_invalid") from exc
+        raise diagnostic_error("P000128", "transaction_state_invalid", PackageError("transaction_state_invalid")) from exc
     current = root
     parts = relative.parts
     for index, part in enumerate(parts):
         current = current / part
         try:
-            child = current.lstat()
+            with diagnostic_scope("P100078", "managed_operational_error"):
+                child = current.lstat()
         except FileNotFoundError:
             return
         except OSError as exc:
-            raise PackageError("transaction_state_invalid") from exc
+            raise diagnostic_error("P000129", "transaction_state_invalid", PackageError("transaction_state_invalid")) from exc
         if stat.S_ISLNK(child.st_mode):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000130", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if index != len(parts) - 1:
             if not stat.S_ISDIR(child.st_mode):
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000131", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         elif directory is True:
             if not stat.S_ISDIR(child.st_mode):
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000132", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         elif directory is False:
             if not stat.S_ISREG(child.st_mode):
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000133", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         elif not (stat.S_ISDIR(child.st_mode) or stat.S_ISREG(child.st_mode)):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000134", "transaction_state_invalid", PackageError("transaction_state_invalid"))
 
 
 def _record_paths(root: Path, record: Mapping[str, object]) -> list[tuple[Path, bool]]:
@@ -2056,23 +2215,26 @@ def _replace(source: Path, destination: Path, guard, operation: str) -> None:
         if path.is_dir():
             _inventory_tree(path, metadata_only=True)
     _seam(guard, "before", operation, destination)
-    os.replace(source, destination)
+    with diagnostic_scope("P100079", "managed_operational_error"):
+        os.replace(source, destination)
     _seam(guard, "after", operation, destination)
 
 
 def _ensure_dir(path: Path, mode: int, guard, operation: str) -> bool:
     _require_package_operand(path, directory=True)
     if path.is_symlink():
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000135", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if path.exists():
         if not path.is_dir():
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000136", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         return False
     _seam(guard, "before", f"{operation}:mkdir", path)
-    path.mkdir()
+    with diagnostic_scope("P100080", "managed_operational_error"):
+        path.mkdir()
     _seam(guard, "after", f"{operation}:mkdir", path)
     _seam(guard, "before", f"{operation}:chmod", path)
-    path.chmod(mode)
+    with diagnostic_scope("P100081", "managed_operational_error"):
+        path.chmod(mode)
     _seam(guard, "after", f"{operation}:chmod", path)
     return True
 
@@ -2090,10 +2252,12 @@ def _remove_tree(path: Path, guard, operation: str) -> None:
         if selected.is_symlink() or selected.is_file():
             _unlink(selected, guard, f"{operation}:unlink")
             return
-        for entry in sorted(selected.iterdir()):
-            remove(entry)
+        with diagnostic_scope("P100082", "managed_operational_error"):
+            for entry in sorted(selected.iterdir()):
+                remove(entry)
         _seam(guard, "before", f"{operation}:rmdir", selected)
-        selected.rmdir()
+        with diagnostic_scope("P100083", "managed_operational_error"):
+            selected.rmdir()
         _seam(guard, "after", f"{operation}:rmdir", selected)
 
     remove(path)
@@ -2106,35 +2270,42 @@ def _write_record(root: Path, record: dict, guard) -> None:
     _assert_record_paths_safe(root, record)
     marker = root / TRANSACTION_MARKER
     temporary = _record_temp(root)
-    raw = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+    with diagnostic_scope("P100084", "managed_operational_error"):
+        raw = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
     _seam(guard, "before", "record_temp_create", temporary)
-    descriptor = os.open(
-        temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
+    with diagnostic_scope("P100085", "managed_operational_error"):
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
     try:
         _seam(guard, "after", "record_temp_create", temporary)
         _seam(guard, "before", "record_temp_write", temporary)
         view = memoryview(raw)
         while view:
-            written = os.write(descriptor, view)
+            with diagnostic_scope("P100086", "managed_operational_error"):
+                written = os.write(descriptor, view)
             view = view[written:]
         _seam(guard, "after", "record_temp_write", temporary)
         _seam(guard, "before", "record_temp_fsync", temporary)
-        os.fsync(descriptor)
+        with diagnostic_scope("P100087", "managed_operational_error"):
+            os.fsync(descriptor)
         _seam(guard, "after", "record_temp_fsync", temporary)
     finally:
-        os.close(descriptor)
+        with diagnostic_scope("P100088", "managed_operational_error"):
+            os.close(descriptor)
     _require_package_operand(temporary, directory=False)
     _seam(guard, "before", "record_temp_chmod", temporary)
-    os.chmod(temporary, 0o600)
+    with diagnostic_scope("P100089", "managed_operational_error"):
+        os.chmod(temporary, 0o600)
     _seam(guard, "after", "record_temp_chmod", temporary)
     _require_package_operand(temporary, directory=False)
     _require_package_operand(marker, directory=False)
     _seam(guard, "before", "record_replace", marker)
-    os.replace(temporary, marker)
+    with diagnostic_scope("P100090", "managed_operational_error"):
+        os.replace(temporary, marker)
     _seam(guard, "after", "record_replace", marker)
 
 
@@ -2154,7 +2325,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000137", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         result[key] = value
     return result
 
@@ -2194,81 +2365,82 @@ def _validate_progress(record: Mapping[str, object]) -> None:
     if phase == "preparing":
         empty_units = {unit: None for unit in UNITS}
         if record["backups"] != {"payload": None, "units": empty_units, "dropin": None}:
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000138", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if published or record["dropin_published"]:
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000139", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         return
     if phase == "rolling_back":
         # A rollback may have consumed any subset of the recorded backups;
         # per-path identity classification already refuses unexplained gaps.
         return
     if not _backups_complete(record):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000140", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if phase in {"prepared", "payload_retained", "payload_published"}:
         if published or record["dropin_published"]:
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000141", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     elif phase == "units_publishing":
         if record["dropin_published"]:
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000142", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     elif phase == "dropin_publishing":
         if set(published) != set(UNITS):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000143", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if record["dropin_published"] and record["new_dropin"] is None:
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000144", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     elif phase == "committed":
         if set(published) != set(UNITS):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000145", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if record["dropin_published"] != (record["new_dropin"] is not None):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000146", "transaction_state_invalid", PackageError("transaction_state_invalid"))
 
 
 def _load_record(root: Path, marker: Path) -> dict:
     """Strictly classify an existing record; any ambiguity is refused unchanged."""
     _assert_safe_target(root, marker, directory=False)
     try:
-        record = json.loads(
-            marker.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys
-        )
+        with diagnostic_scope("P100091", "managed_operational_error"):
+            record = json.loads(
+                marker.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys
+            )
     except PackageError:
         raise
     except (OSError, ValueError) as exc:
-        raise PackageError("transaction_state_invalid") from exc
+        raise diagnostic_error("P000147", "transaction_state_invalid", PackageError("transaction_state_invalid")) from exc
     if not isinstance(record, dict) or set(record) != _TRANSACTION_KEYS:
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000148", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if type(record["schema_version"]) is not int or record["schema_version"] != TRANSACTION_SCHEMA_VERSION:
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000149", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     attempt = record["attempt_id"]
     if not isinstance(attempt, str) or _ATTEMPT_ID_PATTERN.fullmatch(attempt) is None:
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000150", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if record["root"] != str(root):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000151", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if not isinstance(record["phase"], str) or record["phase"] not in _TRANSACTION_PHASES:
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000152", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if any(type(record[key]) is not bool for key in ("payload_present", "dropin_present", "dropin_published")):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000153", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     units = record["units"]
     if not isinstance(units, dict) or set(units) != set(UNITS) or any(type(value) is not bool for value in units.values()):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000154", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     created = record["created_parents"]
     if not isinstance(created, list) or any(not isinstance(item, str) for item in created):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000155", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if len(set(created)) != len(created):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000156", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if any(
         not item or item.startswith("/")
         or ".." in PurePosixPath(item).parts
         for item in created
     ):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000157", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if any(item not in _allowed_created_parents(record) for item in created):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000158", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     published = record["published_units"]
     if not isinstance(published, list) or any(not isinstance(unit, str) for unit in published):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000159", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if len(set(published)) != len(published):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000160", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if any(unit not in UNITS for unit in published):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000161", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     # The writer always records the concrete allocated stage before any
     # mutation.  A missing/null stage identity is an unreachable, incomplete
     # record: accepting it would let recovery discard the marker while leaving
@@ -2277,37 +2449,37 @@ def _load_record(root: Path, marker: Path) -> dict:
     # place), so only the identity is validated here, never the path's presence.
     stage = record["stage"]
     if not isinstance(stage, str) or not stage:
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000162", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     stage_path = Path(stage)
     if stage != str(stage_path) or stage_path.parent != Path(root):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000163", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     prefix = f"{_STAGE_PREFIX}{attempt}-"
     if not stage_path.name.startswith(prefix):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000164", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if _STAGE_SUFFIX_PATTERN.fullmatch(stage_path.name[len(prefix):]) is None:
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000165", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if not _valid_inventory(record["new_payload"]):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000166", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     new_units = record["new_units"]
     if not isinstance(new_units, dict) or set(new_units) != set(UNITS):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000167", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if any(not _valid_file_identity(identity) for identity in new_units.values()):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000168", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if record["new_dropin"] is not None and not _valid_file_identity(record["new_dropin"]):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000169", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     backups = record["backups"]
     if not isinstance(backups, dict) or set(backups) != {"payload", "units", "dropin"}:
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000170", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if backups["payload"] is not None and not _valid_inventory(backups["payload"]):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000171", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     backup_units = backups["units"]
     if not isinstance(backup_units, dict) or set(backup_units) != set(UNITS):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000172", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     for entry in [*backup_units.values(), backups["dropin"]]:
         if entry is None:
             continue
         if not _valid_file_identity(entry):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000173", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     _validate_progress(record)
     return record
 
@@ -2325,10 +2497,12 @@ def _remove_created_parents(root: Path, record: dict, guard) -> None:
     for relative in sorted(record["created_parents"], key=lambda item: len(PurePosixPath(item).parts), reverse=True):
         path = root / relative
         _assert_safe_target(root, path, directory=True)
-        if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
-            _seam(guard, "before", "created_parent_remove", path)
-            path.rmdir()
-            _seam(guard, "after", "created_parent_remove", path)
+        with diagnostic_scope("P100092", "managed_operational_error"):
+            if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
+                _seam(guard, "before", "created_parent_remove", path)
+                with diagnostic_scope("P100093", "managed_operational_error"):
+                    path.rmdir()
+                _seam(guard, "after", "created_parent_remove", path)
 
 
 def _cleanup_owned(root: Path, record: dict, guard) -> None:
@@ -2371,18 +2545,18 @@ def _classify_payload(root: Path, record: dict) -> str:
     old_payload = record["backups"]["payload"]
     if record["payload_present"]:
         if old_payload is None:
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000174", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if _backup_present(payload_backup):
             if not _tree_matches(payload_backup, old_payload):
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000175", "transaction_state_invalid", PackageError("transaction_state_invalid"))
             return "already" if _tree_matches(opt, old_payload) else "restore"
         if _tree_matches(opt, old_payload):
             return "already"
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000176", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if old_payload is not None or _backup_present(payload_backup):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000177", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if opt.is_symlink():
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000178", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if not opt.exists():
         return "nothing"
     if _tree_matches(opt, record["new_payload"]):
@@ -2392,7 +2566,7 @@ def _classify_payload(root: Path, record: dict) -> str:
     # inventory is genuine resumable progress rather than foreign content.
     if record["phase"] == "rolling_back" and _tree_is_owned_partial(opt, record["new_payload"]):
         return "remove"
-    raise PackageError("transaction_state_invalid")
+    raise diagnostic_error("P000179", "transaction_state_invalid", PackageError("transaction_state_invalid"))
 
 
 def _classify_units(root: Path, record: dict) -> dict[str, str]:
@@ -2405,26 +2579,26 @@ def _classify_units(root: Path, record: dict) -> dict[str, str]:
         expected = record["backups"]["units"][unit]
         if record["units"][unit]:
             if expected is None:
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000180", "transaction_state_invalid", PackageError("transaction_state_invalid"))
             if _backup_present(saved):
                 if not _backup_intact(saved, expected):
-                    raise PackageError("transaction_state_invalid")
+                    raise diagnostic_error("P000181", "transaction_state_invalid", PackageError("transaction_state_invalid"))
                 actions[unit] = "already" if _file_matches(target, expected) else "restore"
             elif _file_matches(target, expected):
                 actions[unit] = "already"
             else:
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000182", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         else:
             if expected is not None:
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000183", "transaction_state_invalid", PackageError("transaction_state_invalid"))
             if target.is_symlink():
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000184", "transaction_state_invalid", PackageError("transaction_state_invalid"))
             if not target.exists():
                 actions[unit] = "nothing"
             elif unit in record["published_units"]:
                 actions[unit] = "remove"
             else:
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000185", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     return actions
 
 
@@ -2436,23 +2610,23 @@ def _classify_dropin(root: Path, record: dict) -> str:
     expected = record["backups"]["dropin"]
     if record["dropin_present"]:
         if expected is None:
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000186", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if _backup_present(dropin_backup):
             if not _backup_intact(dropin_backup, expected):
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000187", "transaction_state_invalid", PackageError("transaction_state_invalid"))
             return "already" if _file_matches(dropin, expected) else "restore"
         if _file_matches(dropin, expected):
             return "already"
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000188", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if expected is not None or _backup_present(dropin_backup):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000189", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if dropin.is_symlink():
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000190", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if not dropin.exists():
         return "nothing"
     if record["dropin_published"]:
         return "remove"
-    raise PackageError("transaction_state_invalid")
+    raise diagnostic_error("P000191", "transaction_state_invalid", PackageError("transaction_state_invalid"))
 
 
 def _assert_committed_active_new(root: Path, record: Mapping[str, object]) -> None:
@@ -2469,24 +2643,24 @@ def _assert_committed_active_new(root: Path, record: Mapping[str, object]) -> No
     """
     opt = root / "opt/happyranch"
     if not _tree_matches(opt, record["new_payload"]):
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000192", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     units = root / "etc/systemd/system"
     new_units = record["new_units"]
     for unit in UNITS:
         if not _file_matches(units / unit, new_units[unit]):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000193", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     dropin = units / _DROPIN_SERVICE_DIR / _DROPIN_FILE_NAME
     if record["new_dropin"] is not None:
         if not _file_matches(dropin, record["new_dropin"]):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000194", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         return
     # No NEW drop-in was published: the unchanged-prior-drop-in branch must
     # still match its recorded prior identity, or be genuinely absent.
     if record["dropin_present"]:
         if not _file_matches(dropin, record["backups"]["dropin"]):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000195", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     elif dropin.exists() or dropin.is_symlink():
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000196", "transaction_state_invalid", PackageError("transaction_state_invalid"))
 
 
 def _restore_old(root: Path, record: dict, guard) -> None:
@@ -2530,7 +2704,8 @@ def _restore_old(root: Path, record: dict, guard) -> None:
             _remove_tree(opt, guard, "rollback_payload_remove")
         if managed:
             _require_managed_package_context()
-        opt.parent.mkdir(parents=True, exist_ok=True)
+        with diagnostic_scope("P100094", "managed_operational_error"):
+            opt.parent.mkdir(parents=True, exist_ok=True)
         if managed:
             _require_managed_package_context()
         _replace(payload_backup, opt, guard, "rollback_payload_restore")
@@ -2552,7 +2727,8 @@ def _restore_old(root: Path, record: dict, guard) -> None:
         if not dropin.parent.exists():
             if managed:
                 _require_managed_package_context()
-            dropin.parent.mkdir(parents=True, exist_ok=True)
+            with diagnostic_scope("P100095", "managed_operational_error"):
+                dropin.parent.mkdir(parents=True, exist_ok=True)
             if managed:
                 _require_managed_package_context()
         _replace(dropin_backup, dropin, guard, "rollback_dropin_restore")
@@ -2596,14 +2772,15 @@ def _recover_interrupted(root: Path, guard=None) -> None:
     if not root.exists() and not root.is_symlink():
         return
     if root.is_symlink() or not root.is_dir():
-        raise PackageError("transaction_state_invalid")
+        raise diagnostic_error("P000197", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     marker = root / TRANSACTION_MARKER
     _assert_safe_target(root, marker, directory=False)
     if not marker.exists():
         if marker.is_symlink():
-            raise PackageError("transaction_state_invalid")
-        if any(entry.name.startswith(_RESIDUE_PREFIXES) for entry in root.iterdir()):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000198", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+        with diagnostic_scope("P100096", "managed_operational_error"):
+            if any(entry.name.startswith(_RESIDUE_PREFIXES) for entry in root.iterdir()):
+                raise diagnostic_error("P000199", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         return
     record = _load_record(root, marker)
     _assert_record_paths_safe(root, record)
@@ -2631,24 +2808,26 @@ def install_linux_package(
     guard=None,
 ) -> dict[str, object]:
     if type(system_service) is not bool:
-        raise PackageError("install_mode_invalid")
+        raise diagnostic_error("P000200", "install_mode_invalid", PackageError("install_mode_invalid"))
     deadline = _managed_entry_deadline(180)
     managed = _managed_package_root(root)
     if system_service or managed:
         if not managed or not system_service or fault is not None or guard is not None:
-            raise PackageError("managed_package_context_required")
+            raise diagnostic_error("P000201", "managed_package_context_required", PackageError("managed_package_context_required"))
         if not _MANAGED_PACKAGE.get():
             return _managed_package_outer(package, "package-install", deadline)
         _require_managed_package_context()
     if system_service:
-        require_credential_capability(
-            root / "etc/happyranch/daemon.token", expected_uid=os.geteuid()
-        )
+        with diagnostic_scope("P300008", "managed_operational_error"):
+            require_credential_capability(
+                root / "etc/happyranch/daemon.token", expected_uid=os.geteuid()
+            )
         enrollment_source = root / "etc/happyranch/enrollment.key"
         if enrollment_source.exists() or enrollment_source.is_symlink():
-            require_credential_capability(
-                enrollment_source, expected_uid=os.geteuid()
-            )
+            with diagnostic_scope("P300009", "managed_operational_error"):
+                require_credential_capability(
+                    enrollment_source, expected_uid=os.geteuid()
+                )
     files, manifest = _read_verified(package)
     if system_service:
         _installed_managed_contract(deadline_ns=deadline, _package=True)
@@ -2659,7 +2838,8 @@ def install_linux_package(
     if _backup_present(opt):
         _inventory_tree(opt, metadata_only=True)
     _require_package_operand(root, directory=True)
-    root.mkdir(parents=True, exist_ok=True)
+    with diagnostic_scope("P100097", "managed_operational_error"):
+        root.mkdir(parents=True, exist_ok=True)
     units = root / "etc/systemd/system"
     dropin_dir = units / _DROPIN_SERVICE_DIR
     dropin = dropin_dir / _DROPIN_FILE_NAME
@@ -2689,10 +2869,12 @@ def install_linux_package(
     stage: Path | None = None
     try:
         _seam(guard, "before", "stage_create", root)
-        stage = Path(tempfile.mkdtemp(prefix=f"{_STAGE_PREFIX}{attempt_id}-", dir=root))
+        with diagnostic_scope("P100098", "managed_operational_error"):
+            stage = Path(tempfile.mkdtemp(prefix=f"{_STAGE_PREFIX}{attempt_id}-", dir=root))
         _seam(guard, "after", "stage_create", stage)
         _seam(guard, "before", "stage_chmod", stage)
-        stage.chmod(0o755 if system_service else 0o700)
+        with diagnostic_scope("P100099", "managed_operational_error"):
+            stage.chmod(0o755 if system_service else 0o700)
         _seam(guard, "after", "stage_chmod", stage)
         record = {
             "schema_version": TRANSACTION_SCHEMA_VERSION,
@@ -2723,11 +2905,12 @@ def install_linux_package(
                 continue
             target = stage / name
             _ensure_dir(target.parent, 0o755 if system_service else 0o700, guard, "stage_dir")
-            mode = int(PAYLOAD_MODES[name], 8) if system_service else (0o700 if name.startswith("bin/") else 0o600)
+            with diagnostic_scope("P100100", "managed_operational_error"):
+                mode = int(PAYLOAD_MODES[name], 8) if system_service else (0o700 if name.startswith("bin/") else 0o600)
             _write_file(target, raw, mode, guard, f"stage_payload:{name}")
         _write_file(stage / "manifest.json", files["manifest.json"], 0o644 if system_service else 0o600, guard, "stage_manifest")
         if not _tree_matches(stage, new_payload):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000202", "transaction_state_invalid", PackageError("transaction_state_invalid"))
 
         unit_backup = root / _UNIT_BACKUP_NAME
         _ensure_dir(unit_backup, 0o700, guard, "unit_backup")
@@ -2768,7 +2951,7 @@ def install_linux_package(
         for unit in UNITS:
             target = units / unit
             if not unit_present[unit] and (target.exists() or target.is_symlink()):
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000203", "transaction_state_invalid", PackageError("transaction_state_invalid"))
             # Publish the intent before the mutation so a torn write is still
             # classified as an owned NEW artifact by recovery.
             record = _publish(
@@ -2829,21 +3012,23 @@ def uninstall_linux_package(root: Path) -> None:
         if managed:
             _remove_tree(opt, None, "uninstall_payload")
         else:
-            shutil.rmtree(opt)
+            with diagnostic_scope("P100101", "managed_operational_error"):
+                shutil.rmtree(opt)
     for unit in UNITS:
         path = root / "etc/systemd/system" / unit
         if path.exists():
             if managed:
                 _unlink(path, None, "uninstall_unit")
             else:
-                path.unlink()
+                with diagnostic_scope("P100102", "managed_operational_error"):
+                    path.unlink()
     if managed:
         dropin = root / "etc/systemd/system" / _DROPIN_SERVICE_DIR / _DROPIN_FILE_NAME
         if dropin.exists():
             _unlink(dropin, None, "uninstall_dropin")
         _require_managed_package_context()
         if any(_backup_present(path) for path in (opt, *(root / "etc/systemd/system" / u for u in UNITS), dropin)):
-            raise PackageError("managed_uninstall_incomplete")
+            raise diagnostic_error("P000204", "managed_uninstall_incomplete", PackageError("managed_uninstall_incomplete"))
 
 
 def _package_managed_history(deadline_ns: int) -> tuple[Path | None, dict[str, Path], Path | None, bool]:
@@ -2860,7 +3045,7 @@ def _package_managed_history(deadline_ns: int) -> tuple[Path | None, dict[str, P
 
     def current() -> None:
         if time.monotonic_ns() >= deadline_ns:
-            raise PackageError("managed_lifecycle_deadline")
+            raise diagnostic_error("P000205", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
 
     def owned(path: Path, *, private_container: bool = False) -> None:
         current()
@@ -2871,68 +3056,79 @@ def _package_managed_history(deadline_ns: int) -> tuple[Path | None, dict[str, P
         while pending:
             current()
             selected = pending.pop()
-            metadata = selected.lstat()
+            with diagnostic_scope("P100103", "managed_operational_error"):
+                metadata = selected.lstat()
             if (metadata.st_uid != 0 or metadata.st_mode & 0o022
                     or stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1
                     or not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode))):
-                raise PackageError("managed_lifecycle_incompatible")
+                raise diagnostic_error("P000206", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
             if stat.S_ISDIR(metadata.st_mode):
                 if private_container and stat.S_IMODE(metadata.st_mode) != 0o700:
-                    raise PackageError("managed_lifecycle_incompatible")
-                pending.extend(selected.iterdir())
+                    raise diagnostic_error("P000207", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
+                with diagnostic_scope("P100104", "managed_operational_error"):
+                    pending.extend(selected.iterdir())
 
     for parent in (Path("/opt"), Path("/etc"), Path("/etc/systemd"), units):
         _assert_safe_target(root, parent, directory=True)
         if _backup_present(parent):
-            metadata = parent.lstat()
+            with diagnostic_scope("P100105", "managed_operational_error"):
+                metadata = parent.lstat()
             if metadata.st_uid != 0 or metadata.st_mode & 0o022:
-                raise PackageError("managed_lifecycle_incompatible")
+                raise diagnostic_error("P000208", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
     if _backup_present(dropin.parent):
         _assert_safe_target(root, dropin.parent, directory=True)
-        if stat.S_IMODE(dropin.parent.lstat().st_mode) != 0o755 or {p.name for p in dropin.parent.iterdir()} - {_DROPIN_FILE_NAME}:
-            raise PackageError("managed_lifecycle_incompatible")
+        with diagnostic_scope("P100106", "managed_operational_error"):
+            if stat.S_IMODE(dropin.parent.lstat().st_mode) != 0o755 or {p.name for p in dropin.parent.iterdir()} - {_DROPIN_FILE_NAME}:
+                raise diagnostic_error("P000209", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
     for path in (active, backup, saved_units, marker, _record_temp(root), dropin.parent):
         owned(path, private_container=path == saved_units)
     temporary = _record_temp(root)
-    if _backup_present(temporary) and stat.S_IMODE(temporary.lstat().st_mode) != 0o600:
-        raise PackageError("transaction_state_invalid")
+    with diagnostic_scope("P100107", "managed_operational_error"):
+        if _backup_present(temporary) and stat.S_IMODE(temporary.lstat().st_mode) != 0o600:
+            raise diagnostic_error("P000210", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if not _backup_present(marker):
-        if any(p.name.startswith(_RESIDUE_PREFIXES) for p in root.iterdir()):
-            raise PackageError("managed_transaction_pending")
+        with diagnostic_scope("P100108", "managed_operational_error"):
+            if any(p.name.startswith(_RESIDUE_PREFIXES) for p in root.iterdir()):
+                raise diagnostic_error("P000211", "managed_transaction_pending", PackageError("managed_transaction_pending"))
         if not _backup_present(active):
             if any(_backup_present(units / u) for u in UNITS) or _backup_present(dropin):
-                raise PackageError("managed_lifecycle_incompatible")
+                raise diagnostic_error("P000212", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
             return None, {}, None, True
         for unit in UNITS:
             owned(units / unit)
         owned(dropin)
         current()
         return active, {u: units / u for u in UNITS}, dropin if _backup_present(dropin) else None, False
-    if stat.S_IMODE(marker.lstat().st_mode) != 0o600:
-        raise PackageError("transaction_state_invalid")
+    with diagnostic_scope("P100109", "managed_operational_error"):
+        if stat.S_IMODE(marker.lstat().st_mode) != 0o600:
+            raise diagnostic_error("P000213", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     record = _load_record(root, marker)
     _assert_record_paths_safe(root, record)
     stage = Path(record["stage"])
     allowed = {marker.name, _record_temp(root).name, backup.name, saved_units.name, stage.name}
-    if any(p.name.startswith(_RESIDUE_PREFIXES) and p.name not in allowed for p in root.iterdir()):
-        raise PackageError("transaction_state_invalid")
+    with diagnostic_scope("P100110", "managed_operational_error"):
+        if any(p.name.startswith(_RESIDUE_PREFIXES) and p.name not in allowed for p in root.iterdir()):
+            raise diagnostic_error("P000214", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     owned(stage)
     # The exact declared NEW class is closed even when staging was interrupted
     # before its manifest was written. No arbitrary path/legacy inventory enters.
     new = record["new_payload"]
     names = {"bin", "share", "manifest.json"} | {n for n in PAYLOAD_MODES if not n.startswith("systemd/")}
     if new["root_mode"] != 0o755 or set(new["entries"]) != names:
-        raise PackageError("managed_lifecycle_incompatible")
+        raise diagnostic_error("P000215", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
     for name, identity in new["entries"].items():
         directory = name in {"bin", "share"}
-        mode = 0o755 if directory else 0o644 if name == "manifest.json" else int(PAYLOAD_MODES[name], 8)
+        with diagnostic_scope("P100111", "managed_operational_error"):
+            mode = 0o755 if directory else 0o644 if name == "manifest.json" else int(PAYLOAD_MODES[name], 8)
         if (identity.get("type") != ("dir" if directory else "file") or identity.get("mode") != mode
                 or not directory and re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]) is None):
-            raise PackageError("managed_lifecycle_incompatible")
-    rendered = render_composite_units()
-    expected_units = {u: {"mode": 0o644, "sha256": _sha(rendered[u].encode())} for u in UNITS}
+            raise diagnostic_error("P000216", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
+    with diagnostic_scope("P100112", "managed_operational_error"):
+        rendered = render_composite_units()
+    with diagnostic_scope("P100113", "managed_operational_error"):
+        expected_units = {u: {"mode": 0o644, "sha256": _sha(rendered[u].encode())} for u in UNITS}
     if record["new_units"] != expected_units or record["new_dropin"] not in (None, {"mode": 0o644, "sha256": _sha(_DROPIN_BYTES)}):
-        raise PackageError("managed_lifecycle_incompatible")
+        raise diagnostic_error("P000217", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
     if _backup_present(stage):
         if record["phase"] == "preparing":
             # The marker owns this exact allocated stage before its first file
@@ -2940,20 +3136,20 @@ def _package_managed_history(deadline_ns: int) -> tuple[Path | None, dict[str, P
             # Names/types/custody must still be a subset of the closed plan.
             partial = _inventory_tree(stage)
             if partial["root_mode"] != 0o755 or not set(partial["entries"]) <= set(new["entries"]):
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000218", "transaction_state_invalid", PackageError("transaction_state_invalid"))
             for name, identity in partial["entries"].items():
                 intended = new["entries"][name]
                 if identity["type"] != intended["type"] or identity["mode"] not in {intended["mode"], 0o700 if intended["type"] == "dir" or name.startswith("bin/") else 0o600}:
-                    raise PackageError("transaction_state_invalid")
+                    raise diagnostic_error("P000219", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         elif not _tree_is_owned_partial(stage, new):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000220", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if record["phase"] == "committed":
         _assert_committed_active_new(root, record)
         # Cleanup may already have consumed interior backup entries. Only an
         # exact surviving subset is owned, never arbitrary retained residue.
         old = record["backups"]["payload"]
         if _backup_present(backup) and (old is None or not _tree_is_owned_partial(backup, old)):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000221", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         prefix = active
         selected_units = {u: units / u for u in UNITS}
         selected_dropin = dropin if _backup_present(dropin) else None
@@ -2961,11 +3157,11 @@ def _package_managed_history(deadline_ns: int) -> tuple[Path | None, dict[str, P
         # No OLD mutation is possible before prepared. Validate actual OLD in
         # full below; incomplete copies remain private and must be its prefix.
         if _backup_present(backup):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000222", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if _backup_present(active) != record["payload_present"] or any(
                 _backup_present(units / u) != record["units"][u] for u in UNITS
         ) or _backup_present(dropin) != record["dropin_present"]:
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000223", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         prefix = active if record["payload_present"] else None
         selected_units = {u: units / u for u in UNITS} if prefix is not None else {}
         selected_dropin = dropin if record["dropin_present"] else None
@@ -2976,35 +3172,37 @@ def _package_managed_history(deadline_ns: int) -> tuple[Path | None, dict[str, P
         old = record["backups"]["payload"]
         prefix = (backup if _backup_present(backup) else active) if old is not None else None
         if prefix is not None and not _tree_matches(prefix, old):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000224", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if _backup_present(active) and not (
                 old is not None and _tree_matches(active, old)
                 or _tree_matches(active, new)
                 or record["phase"] == "rolling_back" and _tree_is_owned_partial(active, new)):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000225", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         selected_units = {}
         for unit in UNITS:
             identity = record["backups"]["units"][unit]
             if identity is not None:
                 selected_units[unit] = saved_units / unit if _backup_present(saved_units / unit) else units / unit
                 if not _file_matches(selected_units[unit], identity):
-                    raise PackageError("transaction_state_invalid")
+                    raise diagnostic_error("P000226", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         identity = record["backups"]["dropin"]
         selected_dropin = None if identity is None else (
             saved_units / _DROPIN_BACKUP_RELATIVE if _backup_present(saved_units / _DROPIN_BACKUP_RELATIVE) else dropin)
         if selected_dropin is not None and not _file_matches(selected_dropin, identity):
-            raise PackageError("transaction_state_invalid")
+            raise diagnostic_error("P000227", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if (prefix is None and selected_units or prefix is not None and set(selected_units) != set(UNITS)):
-        raise PackageError("managed_lifecycle_incompatible")
+        raise diagnostic_error("P000228", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
     # Validate fixed backups and in-progress active unit/drop-in writes, including
     # intent-before-truncation. Unknown files are preserved/refused before cleanup.
     if _backup_present(saved_units):
         expected_names = set(UNITS) | {_DROPIN_SERVICE_DIR}
-        if any(p.name not in expected_names for p in saved_units.iterdir()):
-            raise PackageError("transaction_state_invalid")
+        with diagnostic_scope("P100114", "managed_operational_error"):
+            if any(p.name not in expected_names for p in saved_units.iterdir()):
+                raise diagnostic_error("P000229", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         subdir = saved_units / _DROPIN_SERVICE_DIR
-        if _backup_present(subdir) and {p.name for p in subdir.iterdir()} - {_DROPIN_FILE_NAME}:
-            raise PackageError("transaction_state_invalid")
+        with diagnostic_scope("P100115", "managed_operational_error"):
+            if _backup_present(subdir) and {p.name for p in subdir.iterdir()} - {_DROPIN_FILE_NAME}:
+                raise diagnostic_error("P000230", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     for unit in (*UNITS, _DROPIN_BACKUP_RELATIVE):
         is_dropin = unit == _DROPIN_BACKUP_RELATIVE
         target = dropin if is_dropin else units / unit
@@ -3015,16 +3213,19 @@ def _package_managed_history(deadline_ns: int) -> tuple[Path | None, dict[str, P
             owned(path)
         if _backup_present(saved):
             if record["phase"] == "preparing":
-                if source is None or not source.read_bytes().startswith(saved.read_bytes()) or stat.S_IMODE(saved.lstat().st_mode) not in {0o600, stat.S_IMODE(source.lstat().st_mode)}:
-                    raise PackageError("transaction_state_invalid")
+                with diagnostic_scope("P100116", "managed_operational_error"):
+                    if source is None or not source.read_bytes().startswith(saved.read_bytes()) or stat.S_IMODE(saved.lstat().st_mode) not in {0o600, stat.S_IMODE(source.lstat().st_mode)}:
+                        raise diagnostic_error("P000231", "transaction_state_invalid", PackageError("transaction_state_invalid"))
             elif old_identity is None or not _file_matches(saved, old_identity):
-                raise PackageError("transaction_state_invalid")
+                raise diagnostic_error("P000232", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if _backup_present(target) and target != source:
-            planned = _DROPIN_BYTES if is_dropin else rendered[unit].encode()
+            with diagnostic_scope("P100117", "managed_operational_error"):
+                planned = _DROPIN_BYTES if is_dropin else rendered[unit].encode()
             published = record["dropin_published"] if is_dropin else unit in record["published_units"]
-            if not (_file_matches(target, old_identity) or published and planned.startswith(target.read_bytes())
-                    and stat.S_IMODE(target.lstat().st_mode) in {0o600, 0o644}):
-                raise PackageError("transaction_state_invalid")
+            with diagnostic_scope("P100118", "managed_operational_error"):
+                if not (_file_matches(target, old_identity) or published and planned.startswith(target.read_bytes())
+                        and stat.S_IMODE(target.lstat().st_mode) in {0o600, 0o644}):
+                    raise diagnostic_error("P000233", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     current()
     return prefix, selected_units, selected_dropin, not record["payload_present"] and not any(record["units"].values()) and not record["dropin_present"]
 
@@ -3043,75 +3244,95 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
 
     def current() -> None:
         if time.monotonic_ns() >= deadline:
-            raise PackageError("managed_lifecycle_deadline")
+            raise diagnostic_error("P000234", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
 
     def directory(path: Path, mode: int | None = None) -> None:
         current()
         _assert_safe_target(Path("/"), path, directory=True)
-        observed = path.lstat()
+        with diagnostic_scope("P100119", "managed_operational_error"):
+            observed = path.lstat()
         if (not stat.S_ISDIR(observed.st_mode) or observed.st_uid != 0
                 or observed.st_mode & 0o022
                 or mode is not None and stat.S_IMODE(observed.st_mode) != mode):
-            raise PackageError("managed_lifecycle_incompatible")
+            raise diagnostic_error("P000235", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
 
     def read(path: Path, mode: int, cap: int) -> bytes:
         current()
         _assert_safe_target(Path("/"), path, directory=False)
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with diagnostic_scope("P100120", "managed_operational_error"):
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
-            before = os.fstat(descriptor)
+            with diagnostic_scope("P100121", "managed_operational_error"):
+                before = os.fstat(descriptor)
             if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0
                     or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != mode
                     or not 0 < before.st_size <= cap):
-                raise PackageError("managed_lifecycle_incompatible")
-            with os.fdopen(os.dup(descriptor), "rb") as stream:
-                raw = stream.read(cap + 1)
-            after = os.fstat(descriptor)
-            named = path.lstat()
+                raise diagnostic_error("P000236", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
+            with diagnostic_scope("P100122", "managed_operational_error"):
+                with os.fdopen(os.dup(descriptor), "rb") as stream:
+                    with diagnostic_scope("P100123", "managed_operational_error"):
+                        raw = stream.read(cap + 1)
+            with diagnostic_scope("P100124", "managed_operational_error"):
+                after = os.fstat(descriptor)
+            with diagnostic_scope("P100125", "managed_operational_error"):
+                named = path.lstat()
             stable = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
             if (len(raw) != before.st_size or any(getattr(before, k) != getattr(after, k) for k in stable)
                     or (named.st_dev, named.st_ino) != (after.st_dev, after.st_ino)):
-                raise PackageError("managed_lifecycle_incompatible")
+                raise diagnostic_error("P000237", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
             current()
             return raw
         finally:
-            os.close(descriptor)
+            with diagnostic_scope("P100126", "managed_operational_error"):
+                os.close(descriptor)
 
     def properties(unit: str, names: tuple[str, ...]) -> dict[str, str]:
-        from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
+        with diagnostic_scope("P100127", "managed_operational_error"):
+            from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
         current()
         bound = min(deadline / 1_000_000_000, time.monotonic() + 1)
-        child = subprocess.Popen(["/usr/bin/systemctl", "show", unit, *["--property=" + n for n in names]],
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                 stderr=subprocess.DEVNULL,
-                                 env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
-                                 pass_fds=(() if _MANAGED_LOCK.get() is None else (_MANAGED_LOCK.get(),)))
+        with diagnostic_scope("P100128", "managed_operational_error"):
+            child = subprocess.Popen(["/usr/bin/systemctl", "show", unit, *["--property=" + n for n in names]],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL,
+                                     env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+                                     pass_fds=(() if _MANAGED_LOCK.get() is None else (_MANAGED_LOCK.get(),)))
         try:
             raw, overflow = _capture_bounded_query_output(child, bound)
             remaining = bound - time.monotonic()
-            if overflow or remaining <= 0 or child.wait(timeout=remaining) != 0:
-                raise PackageError("managed_manager_unavailable")
+            with diagnostic_scope("P100129", "managed_operational_error"):
+                if overflow:
+                    raise diagnostic_error("P000238", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+                if remaining <= 0:
+                    raise diagnostic_error("P300005", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+                query_status = child.wait(timeout=remaining)
+                if query_status == 1:
+                    raise diagnostic_error("P300006", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+                if query_status != 0:
+                    raise diagnostic_error("P300007", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
         finally:
-            _close_and_reap_query_process(child, min(bound, deadline / 1_000_000_000), managed=True)
+            with diagnostic_scope("P100130", "managed_operational_error"):
+                _close_and_reap_query_process(child, min(bound, deadline / 1_000_000_000), managed=True)
         current()
-        text = raw.decode("utf-8")
+        with diagnostic_scope("P100131", "managed_operational_error"):
+            text = raw.decode("utf-8")
         values: dict[str, str] = {}
         if not text.endswith("\n"):
-            raise PackageError("managed_manager_unavailable")
+            raise diagnostic_error("P000239", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
         for line in text[:-1].split("\n"):
             key, separator, value = line.partition("=")
             if (not separator or key not in names or key in values
                     or any(ord(c) < 32 or ord(c) == 127 for c in line)):
-                raise PackageError("managed_manager_unavailable")
+                raise diagnostic_error("P000240", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
             values[key] = value
         if set(values) != set(names):
-            raise PackageError("managed_manager_unavailable")
+            raise diagnostic_error("P000241", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
         return values
 
     try:
         if _package:
             if os.geteuid() != 0:
-                raise PackageError("managed_package_context_required")
+                raise diagnostic_error("P000242", "managed_package_context_required", PackageError("managed_package_context_required"))
             prefix, unit_sources, selected_dropin, empty_prior = _package_managed_history(deadline_ns or deadline)
         else:
             prefix = Path("/opt/happyranch")
@@ -3120,13 +3341,15 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             empty_prior = False
         current()
         fresh = prefix is None
-        private = not fresh and _package and stat.S_IMODE((prefix / "manifest.json").lstat().st_mode) == 0o600
+        with diagnostic_scope("P100132", "managed_operational_error"):
+            private = not fresh and _package and stat.S_IMODE((prefix / "manifest.json").lstat().st_mode) == 0o600
         evidence_mode = 0o600 if private else 0o644
         share_mode = 0o700 if private else 0o755
         if fresh:
             # Explicit package bootstrap/recovery only: loaded absence is checked
             # below and the Go owner independently checks exact empty records.
-            rendered = render_composite_units()
+            with diagnostic_scope("P100133", "managed_operational_error"):
+                rendered = render_composite_units()
             dropin_present = False
         else:
             for path in (Path("/opt"), Path("/etc"), Path("/etc/systemd"), Path("/etc/systemd/system")):
@@ -3134,82 +3357,93 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             directory(prefix, 0o755)
             directory(prefix / "bin", 0o755)
             directory(prefix / "share", share_mode)
-            if {p.name for p in prefix.iterdir()} != {"manifest.json", "bin", "share"}:
-                raise PackageError("managed_lifecycle_incompatible")
-            if {p.name for p in (prefix / "bin").iterdir()} != {"happyranch-connector", "happyranch-tsnet-sidecar"}:
-                raise PackageError("managed_lifecycle_incompatible")
-            if {p.name for p in (prefix / "share").iterdir()} != {PurePosixPath(p).name for p in PAYLOAD_MODES if p.startswith("share/")}:
-                raise PackageError("managed_lifecycle_incompatible")
-            manifest = json.loads(read(prefix / "manifest.json", evidence_mode, 16384),
-                                  object_pairs_hook=_reject_duplicate_keys)
+            with diagnostic_scope("P100134", "managed_operational_error"):
+                if {p.name for p in prefix.iterdir()} != {"manifest.json", "bin", "share"}:
+                    raise diagnostic_error("P000243", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
+            with diagnostic_scope("P100135", "managed_operational_error"):
+                if {p.name for p in (prefix / "bin").iterdir()} != {"happyranch-connector", "happyranch-tsnet-sidecar"}:
+                    raise diagnostic_error("P000244", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
+            with diagnostic_scope("P100136", "managed_operational_error"):
+                if {p.name for p in (prefix / "share").iterdir()} != {PurePosixPath(p).name for p in PAYLOAD_MODES if p.startswith("share/")}:
+                    raise diagnostic_error("P000245", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
+            with diagnostic_scope("P100137", "managed_operational_error"):
+                manifest = json.loads(read(prefix / "manifest.json", evidence_mode, 16384),
+                                      object_pairs_hook=_reject_duplicate_keys)
             if (type(manifest) is not dict or set(manifest) != {
                     "schema_version", "version", "architecture", "sidecar_dependency_count",
                     "managed_lifecycle_contract", "files"}
                     or type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1
                     or manifest["architecture"] != "linux-amd64"
                     or not isinstance(manifest["version"], str) or not manifest["version"]):
-                raise PackageError("managed_lifecycle_incompatible")
+                raise diagnostic_error("P000246", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
             contract = manifest["managed_lifecycle_contract"]
             if (type(contract) is not dict or contract != MANAGED_LIFECYCLE_CONTRACT
                     or any(type(value) is not int for value in contract.values())):
-                raise PackageError("managed_lifecycle_incompatible")
+                raise diagnostic_error("P000247", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
             entries = manifest["files"]
             if (type(entries) is not list or len(entries) != len(PAYLOAD_MODES)
                     or any(type(e) is not dict or set(e) != {"path", "sha256", "mode"} for e in entries)
                     or {e["path"] for e in entries} != set(PAYLOAD_MODES)):
-                raise PackageError("managed_lifecycle_incompatible")
-            rendered = render_composite_units()
+                raise diagnostic_error("P000248", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
+            with diagnostic_scope("P100138", "managed_operational_error"):
+                rendered = render_composite_units()
             payload: dict[str, bytes] = {}
             for entry in entries:
                 relative = entry["path"]
                 if (entry["mode"] != ("0o600" if private and not relative.startswith("bin/") else PAYLOAD_MODES[relative])
                         or not isinstance(entry["sha256"], str)
                         or re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]) is None):
-                    raise PackageError("managed_lifecycle_incompatible")
+                    raise diagnostic_error("P000249", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
                 path = (unit_sources[PurePosixPath(relative).name]
                         if relative.startswith("systemd/") else prefix / relative)
-                raw = read(path, int(entry["mode"], 8), 256 * 1024 * 1024)
+                with diagnostic_scope("P100139", "managed_operational_error"):
+                    raw = read(path, int(entry["mode"], 8), 256 * 1024 * 1024)
                 if _sha(raw) != entry["sha256"]:
-                    raise PackageError("managed_lifecycle_incompatible")
-                if relative.startswith("systemd/") and raw != rendered[path.name].encode():
-                    raise PackageError("managed_lifecycle_incompatible")
+                    raise diagnostic_error("P000250", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
+                with diagnostic_scope("P100140", "managed_operational_error"):
+                    if relative.startswith("systemd/") and raw != rendered[path.name].encode():
+                        raise diagnostic_error("P000251", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
                 payload[relative] = raw
-            inventory = json.loads(payload["share/dependency-inventory.json"], object_pairs_hook=_reject_duplicate_keys)
+            with diagnostic_scope("P100141", "managed_operational_error"):
+                inventory = json.loads(payload["share/dependency-inventory.json"], object_pairs_hook=_reject_duplicate_keys)
             _validate_evidence(inventory, payload["share/THIRD_PARTY_NOTICES.md"])
             if (type(manifest["sidecar_dependency_count"]) is not int
                     or manifest["sidecar_dependency_count"] != len(inventory["modules"])
                     or payload["share/sbom.cdx.json"] != _sbom(inventory, manifest["version"])):
-                raise PackageError("managed_lifecycle_incompatible")
-            for entry in (() if _package else Path("/").iterdir()):
-                current()
-                if entry.name.startswith(_RESIDUE_PREFIXES):
-                    raise PackageError("managed_transaction_pending")
+                raise diagnostic_error("P000252", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
+            with diagnostic_scope("P100142", "managed_operational_error"):
+                for entry in (() if _package else Path("/").iterdir()):
+                    current()
+                    if entry.name.startswith(_RESIDUE_PREFIXES):
+                        raise diagnostic_error("P000253", "managed_transaction_pending", PackageError("managed_transaction_pending"))
             dropin_dir = Path("/etc/systemd/system") / _DROPIN_SERVICE_DIR
             dropin_present = False
             if not _package and dropin_dir.exists():
                 directory(dropin_dir, None if _package else 0o755)
-                dropin_names = {p.name for p in dropin_dir.iterdir()}
+                with diagnostic_scope("P100143", "managed_operational_error"):
+                    dropin_names = {p.name for p in dropin_dir.iterdir()}
                 if dropin_names not in (set(), {_DROPIN_FILE_NAME}):
-                    raise PackageError("managed_lifecycle_incompatible")
+                    raise diagnostic_error("P000254", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
                 dropin_present = bool(dropin_names)
                 if dropin_present and read(dropin_dir / _DROPIN_FILE_NAME, 0o644, 256) != _DROPIN_BYTES:
-                    raise PackageError("managed_lifecycle_incompatible")
+                    raise diagnostic_error("P000255", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
             if _package:
                 dropin_present = selected_dropin is not None
-                if selected_dropin is not None and (stat.S_IMODE(selected_dropin.lstat().st_mode) not in {0o600, 0o644} or read(selected_dropin, stat.S_IMODE(selected_dropin.lstat().st_mode), 256) != _DROPIN_BYTES):
-                    raise PackageError("managed_lifecycle_incompatible")
+                with diagnostic_scope("P100144", "managed_operational_error"):
+                    if selected_dropin is not None and (stat.S_IMODE(selected_dropin.lstat().st_mode) not in {0o600, 0o644} or read(selected_dropin, stat.S_IMODE(selected_dropin.lstat().st_mode), 256) != _DROPIN_BYTES):
+                        raise diagnostic_error("P000256", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
         dropin_dir = Path("/etc/systemd/system") / _DROPIN_SERVICE_DIR
         for unit in UNITS:
             # An empty unexpected directory is also a changed unit input.
             if unit != UNITS[1] and (Path("/etc/systemd/system") / (unit + ".d")).exists():
-                raise PackageError("managed_lifecycle_incompatible")
+                raise diagnostic_error("P000257", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
             base = properties(unit, ("LoadState", "FragmentPath", "DropInPaths", "NeedDaemonReload",
                                      "Wants", "Requires", "BindsTo", "PartOf", "After", "Before", "Conflicts",
                                      "DefaultDependencies", "StopWhenUnneeded", "RefuseManualStart", "RefuseManualStop"))
             if fresh or _package and (empty_prior or _MANAGED_FRESH.get()):
                 if base["LoadState"] == "not-found":
                     if base["FragmentPath"] or base["DropInPaths"] or base["NeedDaemonReload"] != "no":
-                        raise PackageError("managed_loaded_contract_mismatch")
+                        raise diagnostic_error("P000258", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
                     continue
                 # An owned fresh transaction can already have published units
                 # observed by PID1. Any actually loaded selection must pass the
@@ -3218,14 +3452,14 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                 # Actual PID1 mapping is independently closed even while fixed
                 # disk units are in an owned intent-before-write transition.
                 if base["DropInPaths"] not in ("", str(dropin_dir / _DROPIN_FILE_NAME)):
-                    raise PackageError("managed_loaded_contract_mismatch")
+                    raise diagnostic_error("P000259", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
                 loaded_dropin = bool(base["DropInPaths"])
             else:
                 loaded_dropin = dropin_present
             if (base["LoadState"] != "loaded" or base["NeedDaemonReload"] not in (("no", "yes") if _package else ("no",))
                     or base["FragmentPath"] != str(Path("/etc/systemd/system") / unit)
                     or base["DropInPaths"] != (str(dropin_dir / _DROPIN_FILE_NAME) if unit == UNITS[1] and loaded_dropin else "")):
-                raise PackageError("managed_loaded_contract_mismatch")
+                raise diagnostic_error("P000260", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
             peers = set(UNITS) - {unit}
             selected = {name: set(base[name].split()) & peers for name in ("Wants", "Requires", "BindsTo", "PartOf", "After", "Before")}
             expected = ({"Wants": {UNITS[1]}, "Requires": set(), "BindsTo": set(),
@@ -3237,7 +3471,7 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                         {"Wants": {UNITS[0], UNITS[1]}, "Requires": set(), "BindsTo": set(),
                          "PartOf": set(), "After": {UNITS[0], UNITS[1]}, "Before": set()})
             if selected != expected:
-                raise PackageError("managed_loaded_contract_mismatch")
+                raise diagnostic_error("P000261", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
             # Account for the bounded v255 default graph as well as explicit
             # edges; unknown unrelated dependencies cannot disappear through a
             # peer-only projection.
@@ -3256,7 +3490,7 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                     or set(base["Conflicts"].split()) != {"shutdown.target"}
                     or base["DefaultDependencies"] != "yes"
                     or any(base[k] != "no" for k in ("StopWhenUnneeded", "RefuseManualStart", "RefuseManualStop"))):
-                raise PackageError("managed_loaded_contract_mismatch")
+                raise diagnostic_error("P000262", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
             if unit == UNITS[2]:
                 continue
             scalar = {
@@ -3278,7 +3512,7 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             if unit == UNITS[1]:
                 del scalar["RestartUSec"]
             if properties(unit, tuple(scalar)) != scalar:
-                raise PackageError("managed_loaded_contract_mismatch")
+                raise diagnostic_error("P000263", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
             commands = properties(unit, ("ExecStartEx", "ExecStartPreEx", "ExecStartPostEx", "LoadCredential", "RestartPreventExitStatus", "RestrictAddressFamilies", "SystemCallArchitectures"))
             unit_text = rendered[unit]
             for directive in ("ExecStart", "ExecStartPre", "ExecStartPost"):
@@ -3294,18 +3528,19 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                         or any(r[0] != r[1].split(" ", 1)[0]
                                or r[2].strip() != ("fully-privileged" if declaration.startswith("+") else "")
                                for r, declaration in zip(records, declared_raw))):
-                    raise PackageError("managed_loaded_contract_mismatch")
+                    raise diagnostic_error("P000264", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
             credentials = ("daemon.token:/etc/happyranch/daemon.token" if unit == UNITS[0]
                            else "enrollment.key:/etc/happyranch/enrollment.key" if loaded_dropin else "")
             prevented = " ".join(str(code) for code in range(2, 256)) if unit == UNITS[0] else ""
             if (commands["LoadCredential"] != credentials or commands["RestartPreventExitStatus"] != prevented
                     or set(commands["RestrictAddressFamilies"].split()) != {"AF_INET", "AF_INET6", "AF_UNIX", "AF_NETLINK"}
                     or commands["SystemCallArchitectures"] != "native"):
-                raise PackageError("managed_loaded_contract_mismatch")
+                raise diagnostic_error("P000265", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
         current()
-        return {"dropin_mode": int(PAYLOAD_MODES["systemd/" + UNITS[1]], 8), "dropin_directory_mode": 0o755}
+        with diagnostic_scope("P100145", "managed_operational_error"):
+            return {"dropin_mode": int(PAYLOAD_MODES["systemd/" + UNITS[1]], 8), "dropin_directory_mode": 0o755}
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
-        raise PackageError("managed_lifecycle_incompatible") from exc
+        raise diagnostic_error("P000266", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible")) from exc
 
 
 def require_managed_worker() -> None:
@@ -3328,28 +3563,32 @@ def managed_private_entry(operation: str) -> int:
     if operation == "eligibility":
         # These are the existing trust/config/policy readers, without the live
         # five-gate probe or a new credential/authorization algorithm.
-        from runtime.remote_access.state_store import StateStoreError
-        from runtime.remote_access.supervisor import (
-            ConnectorConfig, ConnectorConfigError, ConnectorSupervisor, PolicyLoadError,
-        )
+        with diagnostic_scope("P100146", "managed_operational_error"):
+            from runtime.remote_access.state_store import StateStoreError
+        with diagnostic_scope("P100147", "managed_operational_error"):
+            from runtime.remote_access.supervisor import (
+                ConnectorConfig, ConnectorConfigError, ConnectorSupervisor, PolicyLoadError,
+            )
         try:
-            import errno
-            deadline = int(os.environ.get("HAPPYRANCH_LIFECYCLE_DEADLINE_NS", "0"))
+            with diagnostic_scope("P100148", "managed_operational_error"):
+                import errno
+            with diagnostic_scope("P100149", "managed_operational_error"):
+                deadline = int(os.environ.get("HAPPYRANCH_LIFECYCLE_DEADLINE_NS", "0"))
             if deadline <= time.monotonic_ns():
-                raise PackageError("managed_lifecycle_deadline")
+                raise diagnostic_error("P000267", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
             inherited = _MANAGED_DEADLINE.get()
             deadline = min(deadline, inherited if inherited is not None else deadline)
             token = _MANAGED_DEADLINE.set(deadline)
             def current() -> None:
                 if time.monotonic_ns() >= deadline:
-                    raise PackageError("managed_lifecycle_deadline")
+                    raise diagnostic_error("P000268", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
             current()
             _installed_managed_contract(deadline_ns=deadline)
             current()
             config = ConnectorConfig.from_file(Path("/etc/happyranch/connector.json"))
             current()
             if config.managed is None or config.unit_name != UNITS[0] or not config.system:
-                raise PackageError("managed_configuration_invalid")
+                raise diagnostic_error("P000269", "managed_configuration_invalid", PackageError("managed_configuration_invalid"))
             supervisor = ConnectorSupervisor(config=config)
             current()
             # Observe the SAME expanded targets as the unchanged store. Only
@@ -3371,7 +3610,8 @@ def managed_private_entry(operation: str) -> int:
                     if index:
                         cursor = cursor / component
                     try:
-                        metadata = cursor.lstat()
+                        with diagnostic_scope("P100150", "managed_operational_error"):
+                            metadata = cursor.lstat()
                     except OSError as exc:
                         if exc.errno != errno.ENOENT:
                             raise
@@ -3386,10 +3626,10 @@ def managed_private_entry(operation: str) -> int:
                         if (not stat.S_ISREG(metadata.st_mode)
                                 or metadata.st_nlink != 1
                                 or stat.S_IMODE(metadata.st_mode) & 0o7077):
-                            raise PackageError("managed_identity_invalid")
+                            raise diagnostic_error("P000270", "managed_identity_invalid", PackageError("managed_identity_invalid"))
                     elif (not stat.S_ISDIR(metadata.st_mode)
                           or stat.S_IMODE(metadata.st_mode) & 0o022):
-                        raise PackageError("managed_identity_invalid")
+                        raise diagnostic_error("P000271", "managed_identity_invalid", PackageError("managed_identity_invalid"))
                     identity = (metadata.st_dev, metadata.st_ino,
                                 metadata.st_mode, metadata.st_nlink,
                                 metadata.st_uid, metadata.st_gid)
@@ -3401,17 +3641,17 @@ def managed_private_entry(operation: str) -> int:
 
             before = (trust_metadata(state_path), trust_metadata(anchor_path))
             if before[0][0] != before[1][0]:
-                raise PackageError("managed_identity_missing")
+                raise diagnostic_error("P000272", "managed_identity_missing", PackageError("managed_identity_missing"))
             current()
             state = supervisor.state_store.load()
             current()
             if state.connector_identity != supervisor._configured_identity():
-                raise PackageError("managed_identity_invalid")
+                raise diagnostic_error("P000273", "managed_identity_invalid", PackageError("managed_identity_invalid"))
             supervisor.load_policy()
             current()
             after = (trust_metadata(state_path), trust_metadata(anchor_path))
             if after != before:
-                raise PackageError("managed_identity_invalid")
+                raise diagnostic_error("P000274", "managed_identity_invalid", PackageError("managed_identity_invalid"))
             # Sampled bookends refuse observed movement, not every possible
             # intervening race/rollback. No retry, save or history claim follows.
             current()
@@ -3428,47 +3668,52 @@ def managed_private_entry(operation: str) -> int:
         reason = "effective_uid"
         try:
             if os.geteuid() != 0:
-                raise PackageError("managed_package_context_required")
+                raise diagnostic_error("P000275", "managed_package_context_required", PackageError("managed_package_context_required"))
             reason = "deadline"
-            deadline = int(os.environ.get("HAPPYRANCH_LIFECYCLE_DEADLINE_NS", "0"))
+            with diagnostic_scope("P100151", "managed_operational_error"):
+                deadline = int(os.environ.get("HAPPYRANCH_LIFECYCLE_DEADLINE_NS", "0"))
             now = time.monotonic_ns()
             if not now < deadline <= now + 180_000_000_000:
-                raise PackageError("managed_lifecycle_deadline")
+                raise diagnostic_error("P000276", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
             deadline_token = _MANAGED_DEADLINE.set(deadline)
             lock_token = _MANAGED_LOCK.set(3)
             package_token = _MANAGED_PACKAGE.set(True)
             try:
                 reason = "context_before"
                 _require_managed_package_context()
-                import sys
+                with diagnostic_scope("P100152", "managed_operational_error"):
+                    import sys
                 reason = "entry_input"
-                entry = sys.stdin.buffer.read(64)
+                with diagnostic_scope("P100153", "managed_operational_error"):
+                    entry = sys.stdin.buffer.read(64)
                 if entry == b"package-admission\n":
                     reason = "admission_contract"
                     _installed_managed_contract(deadline_ns=deadline, _package=True)
                     reason = "admission_history"
                     prefix, _units, _dropin, _empty_prior = _package_managed_history(deadline)
                     reason = "admission_dropin"
-                    if (operation == "package-install" and _dropin is not None
-                            and stat.S_IMODE(_dropin.lstat().st_mode) != 0o644
-                            and not Path("/etc/happyranch/enrollment.key").is_file()):
-                        # There is no authorized new drop-in publication in this
-                        # branch. Preserve private OLD; never silently widen it
-                        # or call the resulting NEW normal-reader compatible.
-                        raise PackageError("managed_lifecycle_incompatible")
+                    with diagnostic_scope("P100154", "managed_operational_error"):
+                        if (operation == "package-install" and _dropin is not None
+                                and stat.S_IMODE(_dropin.lstat().st_mode) != 0o644
+                                and not Path("/etc/happyranch/enrollment.key").is_file()):
+                            # There is no authorized new drop-in publication in this
+                            # branch. Preserve private OLD; never silently widen it
+                            # or call the resulting NEW normal-reader compatible.
+                            raise diagnostic_error("P000277", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
                     if operation == "package-uninstall":
                         reason = "uninstall_prefix"
                         if prefix is None:
-                            raise PackageError("managed_lifecycle_incompatible")
+                            raise diagnostic_error("P000278", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
                         reason = "uninstall_images"
-                        if (_sha((prefix / "bin/happyranch-connector").read_bytes()) != _sha(Path("/proc/self/exe").read_bytes())
-                                or _sha((prefix / "bin/happyranch-tsnet-sidecar").read_bytes()) != _sha(Path("/proc/self/fd/6").read_bytes())):
-                            raise PackageError("managed_lifecycle_incompatible")
+                        with diagnostic_scope("P100155", "managed_operational_error"):
+                            if (_sha((prefix / "bin/happyranch-connector").read_bytes()) != _sha(Path("/proc/self/exe").read_bytes())
+                                    or _sha((prefix / "bin/happyranch-tsnet-sidecar").read_bytes()) != _sha(Path("/proc/self/fd/6").read_bytes())):
+                                raise diagnostic_error("P000279", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
                     reason = "admission_context_after"
                     _require_managed_package_context()
                     return 0
                 if entry:
-                    raise PackageError("managed_package_context_required")
+                    raise diagnostic_error("P000280", "managed_package_context_required", PackageError("managed_package_context_required"))
                 reason = "body_guard_before"
                 _managed_guard_probe("package", 3, deadline)
                 reason = "body_history"
@@ -3488,7 +3733,8 @@ def managed_private_entry(operation: str) -> int:
                 reason = "body_guard_after"
                 _managed_guard_probe("package", 3, deadline)
                 reason = "body_response"
-                print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+                with diagnostic_scope("P100156", "managed_operational_error"):
+                    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
                 return 0
             finally:
                 # Keep the original failing boundary through successful resets.
@@ -3500,9 +3746,18 @@ def managed_private_entry(operation: str) -> int:
                 _MANAGED_LOCK.reset(lock_token)
                 _MANAGED_DEADLINE.reset(deadline_token)
                 reason = failed_reason
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError) as exc:
             try:
-                os.write(2, b"managed_private_refusal:" + reason.encode("ascii") + b"\n")
+                with diagnostic_scope("P100157", "managed_operational_error"):
+                    from runtime.remote_access.package_diagnostics import exception_refusal
+                refusal = exception_refusal(exc)
+                with diagnostic_scope("P100158", "managed_operational_error"):
+                    suffix = b"" if refusal is None else b":" + refusal[0].encode("ascii") + b":" + refusal[1].encode("ascii")
+                    marked = getattr(exc, "_managed_package_boundary", getattr(exc, "_managed_package_refusal", None))
+                    if refusal is not None and marked is not None and marked != refusal:
+                        suffix += b":" + marked[0].encode("ascii") + b":" + marked[1].encode("ascii")
+                with diagnostic_scope("P100159", "managed_operational_error"):
+                    os.write(2, b"managed_private_refusal:" + reason.encode("ascii") + suffix + b"\n")
             except OSError:
                 pass
             return 78

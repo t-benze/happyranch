@@ -2145,3 +2145,20 @@ Accepted13, A/B, original deadlines, custody and self-heal/reset579 behavior are
 unchanged. Publication/execution/cleanup HELD; UNKNOWN12372 and all original
 failure/consumed evidence persist. Root still owes renewed complete independent
 immutable-final review, same-subject SOURCE/STATIC QA and substantive delivery.
+
+
+## Literal refusal identity case (THR327seq82)
+
+The one focused check `app/linux/package/check_refusal_sites.py` observes the
+independent private diagnostic identity contract: distinct actual source refusal
+allocations must never share a site. Copying one adjacent deadline site's literal
+to another must fail with `duplicate refusal site`; byte-exact restoration must
+pass. No retained literal-allocation checker owns this cross-language contract;
+existing private-record validators check receive shapes and cannot find two
+producers sharing one valid identifier. The check needs no test-only production
+export, flag, seam or generated expected table, and imports no retired suite.
+Actual mutation/restoration hashes, commands, exits and source identity belong in
+the task evidence and draft PR description. Its passing result proves uniqueness
+only. Refusal coverage, propagation, frame/receipt limits, real failed-install
+retention, managed/current/READY and all dependent acceptance remain separately
+assessed. This adds no automated merge gate or managed/E2E execution authority.

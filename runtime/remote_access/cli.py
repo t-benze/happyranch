@@ -28,6 +28,8 @@ packaging + ceremony surface only.
 """
 from __future__ import annotations
 
+from runtime.remote_access.package_diagnostics import diagnostic_error, diagnostic_scope
+
 import argparse
 from contextlib import nullcontext
 import json
@@ -737,25 +739,28 @@ def _capture_bounded_query_output(
     claim about how many bytes the child produced.
     """
     if process.stdout is None:  # pragma: no cover - always created with PIPE
-        raise OSError("service state unavailable")
-    descriptor = process.stdout.fileno()
+        raise diagnostic_error("Q000001", "managed_operational_error", OSError("service state unavailable"))
+    with diagnostic_scope("Q100001", "managed_operational_error"):
+        descriptor = process.stdout.fileno()
     retention_limit = _SERVICE_QUERY_MAX_OUTPUT_BYTES + 1
     captured = bytearray()
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise OSError("service state unavailable")
+            raise diagnostic_error("Q000002", "managed_operational_error", OSError("service state unavailable"))
         try:
-            readable, _, _ = select.select([descriptor], [], [], remaining)
+            with diagnostic_scope("Q100002", "managed_operational_error"):
+                readable, _, _ = select.select([descriptor], [], [], remaining)
         except (OSError, ValueError) as exc:
-            raise OSError("service state unavailable") from exc
+            raise diagnostic_error("Q000003", "managed_operational_error", OSError("service state unavailable")) from exc
         if not readable:
-            raise OSError("service state unavailable")
+            raise diagnostic_error("Q000004", "managed_operational_error", OSError("service state unavailable"))
         allowance = retention_limit - len(captured)
         try:
-            chunk = os.read(descriptor, min(_SERVICE_QUERY_READ_CHUNK_BYTES, allowance))
+            with diagnostic_scope("Q100003", "managed_operational_error"):
+                chunk = os.read(descriptor, min(_SERVICE_QUERY_READ_CHUNK_BYTES, allowance))
         except OSError as exc:
-            raise OSError("service state unavailable") from exc
+            raise diagnostic_error("Q000005", "managed_operational_error", OSError("service state unavailable")) from exc
         if not chunk:
             return bytes(captured), False
         captured.extend(chunk)
@@ -778,29 +783,36 @@ def _close_and_reap_query_process(process: subprocess.Popen[bytes], deadline: fl
     """
     if process.stdout is not None:
         try:
-            process.stdout.close()
+            with diagnostic_scope("Q100004", "managed_operational_error"):
+                process.stdout.close()
         except OSError:
             pass
-    if process.poll() is None:
-        try:
-            process.kill()
-        except OSError:
-            pass
-    from runtime.remote_access.linux_package import _MANAGED_DEADLINE, _MANAGED_LOCK
+    with diagnostic_scope("Q100005", "managed_operational_error"):
+        if process.poll() is None:
+            try:
+                with diagnostic_scope("Q100006", "managed_operational_error"):
+                    process.kill()
+            except OSError:
+                pass
+    with diagnostic_scope("Q100007", "managed_operational_error"):
+        from runtime.remote_access.linux_package import _MANAGED_DEADLINE, _MANAGED_LOCK
     inherited = _MANAGED_DEADLINE.get()
     managed = managed or _MANAGED_LOCK.get() is not None
     reap_deadline = (min(deadline, inherited / 1_000_000_000 if inherited is not None else deadline) if managed
                      else max(deadline, time.monotonic()) + _SERVICE_QUERY_REAP_GRACE_SECONDS)
     try:
-        process.wait(timeout=max(0, reap_deadline - time.monotonic()))
+        with diagnostic_scope("Q100008", "managed_operational_error"):
+            process.wait(timeout=max(0, reap_deadline - time.monotonic()))
     except (subprocess.TimeoutExpired, OSError):
         pass
-    if process.poll() is None:
-        if managed:
-            # Refused observation; retain the original lock through actual
-            # child reap rather than unlocking over a running query/reload.
-            process.wait()
-        raise OSError("service state unavailable")
+    with diagnostic_scope("Q100009", "managed_operational_error"):
+        if process.poll() is None:
+            if managed:
+                # Refused observation; retain the original lock through actual
+                # child reap rather than unlocking over a running query/reload.
+                with diagnostic_scope("Q100010", "managed_operational_error"):
+                    process.wait()
+            raise diagnostic_error("Q000006", "managed_operational_error", OSError("service state unavailable"))
 
 
 def _observe_sidecar_stopped() -> None:

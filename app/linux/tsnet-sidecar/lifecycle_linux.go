@@ -143,38 +143,38 @@ func lifecycleID(s string) bool {
 func NewLifecycleID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", ErrLifecycle
+		return "", lifecycleDiagnosticError("G000001", ErrLifecycle)
 	}
 	s := hex.EncodeToString(b[:])
 	if !lifecycleID(s) {
-		return "", ErrLifecycle
+		return "", lifecycleDiagnosticError("G000002", ErrLifecycle)
 	}
 	return s, nil
 }
 func LifecycleNow() (int64, error) {
 	var t unix.Timespec
 	if unix.ClockGettime(unix.CLOCK_MONOTONIC, &t) != nil {
-		return 0, ErrLifecycle
+		return 0, lifecycleDiagnosticError("G000003", ErrLifecycle)
 	}
 	n := t.Nano()
 	if n <= 0 {
-		return 0, ErrLifecycle
+		return 0, lifecycleDiagnosticError("G000004", ErrLifecycle)
 	}
 	return n, nil
 }
 func LifecycleBoot() (string, error) {
 	f, err := os.Open("/proc/sys/kernel/random/boot_id")
 	if err != nil {
-		return "", ErrLifecycle
+		return "", lifecycleDiagnosticError("G000005", ErrLifecycle, err)
 	}
 	defer f.Close()
 	raw, err := io.ReadAll(io.LimitReader(f, 38))
 	if err != nil || len(raw) != 37 || raw[36] != '\n' {
-		return "", ErrLifecycle
+		return "", lifecycleDiagnosticError("G000006", ErrLifecycle)
 	}
 	s := strings.ReplaceAll(string(raw[:36]), "-", "")
 	if !lifecycleID(s) {
-		return "", ErrLifecycle
+		return "", lifecycleDiagnosticError("G000007", ErrLifecycle)
 	}
 	return s, nil
 }
@@ -213,76 +213,95 @@ func lifecycleOptionalID(p *string) bool { return p == nil || lifecycleID(*p) }
 func lifecycleSourceValid(s *LifecycleBootSource, boot, transition string) bool {
 	return s == nil || lifecycleID(s.OldBoot) && s.OldBoot != boot && lifecycleID(s.TransitionID) && s.TransitionID == transition
 }
-func lifecycleMainValid(m *LifecycleMain) bool {
+func lifecycleMainValid(m *LifecycleMain) bool { return lifecycleMainValidError(m) == nil }
+func lifecycleMainValidError(m *LifecycleMain) error {
 	if m.Version != 2 || !lifecyclePolicyValid(m.Policy) || !lifecycleID(m.RuntimeBoot) || !lifecycleID(m.BootTransitionID) ||
 		!lifecycleOptionalID(m.Generation) || !lifecycleOneOf(m.Phase, "boot_prepared", "idle", "live", "retiring", "blocked") ||
 		!lifecycleOneOf(m.Block, "none", "unknown_cleanup", "join_failed", "manager_refused", "io_failure", "invalid_state", "identity_loss") ||
 		!lifecycleSourceValid(m.BootSource, m.RuntimeBoot, m.BootTransitionID) {
-		return false
+		return lifecycleDiagnosticError("G300001", ErrLifecycle)
+
 	}
 	for _, p := range []*LifecycleProcess{m.Wrapper, m.Launcher, m.Worker, m.Sidecar} {
 		if !lifecycleProcessValid(p) {
-			return false
+			return lifecycleDiagnosticError("G300002", ErrLifecycle)
+
 		}
 	}
 	if m.Rate.Boot != m.RuntimeBoot || m.Rate.Spends == nil || len(m.Rate.Spends) > 3 {
-		return false
+		return lifecycleDiagnosticError("G300003", ErrLifecycle)
+
 	}
 	var prev int64
 	for _, n := range m.Rate.Spends {
 		if n <= 0 || n < prev {
-			return false
+			return lifecycleDiagnosticError("G300004", ErrLifecycle)
+
 		}
 		prev = n
 	}
 	if (m.Rate.LastEndNS == nil) != (m.Rate.NotBeforeNS == nil) {
-		return false
+		return lifecycleDiagnosticError("G300005", ErrLifecycle)
+
 	}
 	if m.Rate.LastEndNS != nil && (*m.Rate.LastEndNS <= 0 || *m.Rate.LastEndNS > math.MaxInt64-int64(120*time.Second) || *m.Rate.NotBeforeNS < *m.Rate.LastEndNS ||
 		*m.Rate.NotBeforeNS-*m.Rate.LastEndNS > int64(120*time.Second)) {
-		return false
+		return lifecycleDiagnosticError("G300006", ErrLifecycle)
+
 	}
 	if m.Health != nil && (m.Health.Sequence == 0 || m.Health.ValidUntilNS <= 0 || m.Phase != "live" || m.Worker == nil) {
-		return false
+		return lifecycleDiagnosticError("G300007", ErrLifecycle)
+
 	}
 	if m.Teardown != nil && (m.Teardown.BeganNS <= 0 || m.Teardown.BeganNS > math.MaxInt64-int64(30*time.Second) || m.Teardown.DeadlineNS != m.Teardown.BeganNS+int64(30*time.Second) || m.Phase != "retiring") {
-		return false
+		return lifecycleDiagnosticError("G300008", ErrLifecycle)
+
 	}
 	if m.Clean && (m.Phase != "idle" || m.Generation != nil || m.Wrapper != nil || m.Launcher != nil || m.Worker != nil || m.Sidecar != nil || m.Health != nil || m.Teardown != nil || m.Block != "none") {
-		return false
+		return lifecycleDiagnosticError("G300009", ErrLifecycle)
+
 	}
 	if m.Phase == "idle" && !m.Clean {
-		return false
+		return lifecycleDiagnosticError("G300010", ErrLifecycle)
+
 	}
 	if m.Phase == "boot_prepared" && (m.Clean || m.Generation != nil || m.Launcher != nil || m.Worker != nil || m.Sidecar != nil || m.Health != nil || m.Teardown != nil || m.Block != "none" || m.BootSource == nil || m.Wrapper == nil) {
-		return false
+		return lifecycleDiagnosticError("G300011", ErrLifecycle)
+
 	}
 	if m.Phase == "blocked" && (m.Clean || m.Block == "none" || m.Health != nil) {
-		return false
+		return lifecycleDiagnosticError("G300012", ErrLifecycle)
+
 	}
 	if m.Phase == "live" && (m.Clean || m.Generation == nil || m.Wrapper == nil || m.Block != "none") {
-		return false
+		return lifecycleDiagnosticError("G300013", ErrLifecycle)
+
 	}
 	if m.Phase == "retiring" && (m.Clean || m.Generation == nil || m.Wrapper == nil || m.Health != nil || m.Teardown == nil) {
-		return false
+		return lifecycleDiagnosticError("G300014", ErrLifecycle)
+
 	}
 	for _, p := range []*LifecycleProcess{m.Launcher, m.Worker} {
 		if p != nil && (m.Wrapper == nil || p.Invocation != m.Wrapper.Invocation) {
-			return false
+			return lifecycleDiagnosticError("G300015", ErrLifecycle)
+
 		}
 	}
 	if m.Worker != nil && m.Launcher == nil || m.Teardown != nil && m.Generation == nil || m.Generation == nil && (m.Launcher != nil || m.Worker != nil || m.Sidecar != nil) {
-		return false
+		return lifecycleDiagnosticError("G300016", ErrLifecycle)
+
 	}
 	if m.Health != nil && (m.Generation == nil || m.Launcher == nil || m.Sidecar == nil || m.Health.ValidUntilNS <= ManagedLeaseNS) {
-		return false
+		return lifecycleDiagnosticError("G300017", ErrLifecycle)
+
 	}
 	roles := []*LifecycleProcess{m.Wrapper, m.Launcher, m.Worker, m.Sidecar}
 	for i, a := range roles {
 		for j, b := range roles {
 			if i < j && a != nil && b != nil && (a.PID == b.PID || a.Invocation == b.Invocation && j == 3) {
 				if !(i == 1 && j == 2 && *a == *b) {
-					return false
+					return lifecycleDiagnosticError("G300018", ErrLifecycle)
+
 				}
 			}
 		}
@@ -290,101 +309,141 @@ func lifecycleMainValid(m *LifecycleMain) bool {
 	if m.Rate.LastEndNS != nil {
 		d := *m.Rate.NotBeforeNS - *m.Rate.LastEndNS
 		if d != int64(30*time.Second) && d != int64(60*time.Second) && d != int64(120*time.Second) {
-			return false
+			return lifecycleDiagnosticError("G300019", ErrLifecycle)
+
 		}
 	}
 	for i, n := range m.Rate.Spends {
 		if i > 0 && n == m.Rate.Spends[i-1] &&
 			(m.BootSource == nil || n != m.Rate.Spends[0] || m.Rate.LastEndNS == nil || n > *m.Rate.LastEndNS) {
-			return false
+			return lifecycleDiagnosticError("G300020", ErrLifecycle)
+
 		}
 	}
-	return true
+	return nil
+
 }
-func lifecycleSidecarValid(s *LifecycleSidecar) bool {
+func lifecycleSidecarValid(s *LifecycleSidecar) bool { return lifecycleSidecarValidError(s) == nil }
+func lifecycleSidecarValidError(s *LifecycleSidecar) error {
 	if s.Version != 2 || !lifecyclePolicyValid(s.Policy) || !lifecycleID(s.RuntimeBoot) || !lifecycleID(s.BootTransitionID) ||
 		!lifecycleOptionalID(s.Generation) || !lifecycleProcessValid(s.Binding) ||
 		!lifecycleOneOf(s.Outcome, "unstarted", "waiting", "admitted", "closed", "unknown") ||
 		!lifecycleOneOf(s.Failure, "none", "io_failure", "invalid_state", "identity_loss") ||
 		!lifecycleOneOf(s.CloseProof, "none", "cooperative", "kernel_absence") ||
 		!lifecycleSourceValid(s.BootSource, s.RuntimeBoot, s.BootTransitionID) || s.TerminalNS != nil && *s.TerminalNS <= 0 {
-		return false
+		return lifecycleDiagnosticError("G300022", ErrLifecycle)
+
 	}
 	if s.Outcome == "admitted" && (s.Generation == nil || s.Binding == nil || s.TerminalNS != nil || s.CloseProof != "none") {
-		return false
+		return lifecycleDiagnosticError("G300023", ErrLifecycle)
+
 	}
 	if s.Outcome == "closed" && (s.CloseProof == "none" || s.TerminalNS == nil) {
-		return false
+		return lifecycleDiagnosticError("G300024", ErrLifecycle)
+
 	}
 	if s.Outcome != "closed" && s.CloseProof != "none" {
-		return false
+		return lifecycleDiagnosticError("G300025", ErrLifecycle)
+
 	}
 	if s.Outcome == "unstarted" && (s.Binding != nil || s.Generation != nil || s.TerminalNS != nil) {
-		return false
+		return lifecycleDiagnosticError("G300026", ErrLifecycle)
+
 	}
 	if s.Outcome == "waiting" && (s.Binding == nil || s.TerminalNS != nil || s.CloseProof != "none") {
-		return false
+		return lifecycleDiagnosticError("G300027", ErrLifecycle)
+
 	}
 	if s.Generation != nil && s.Binding == nil || s.TerminalNS != nil && !lifecycleOneOf(s.Outcome, "closed", "unknown") {
-		return false
+		return lifecycleDiagnosticError("G300028", ErrLifecycle)
+
 	}
 	if lifecycleOneOf(s.Outcome, "closed", "unknown") && (s.Binding == nil || s.TerminalNS == nil) {
-		return false
+		return lifecycleDiagnosticError("G300029", ErrLifecycle)
+
 	}
 	if s.Failure != "none" && (s.Outcome != "unknown" || s.CloseProof != "none") {
-		return false
+		return lifecycleDiagnosticError("G300030",
+
+			// Validate current record relationships without mistaking a stale lease for
+			// fresh health. Expiry is a consumer predicate; future clocks are invalid.
+			// Old runtime clocks are range-checked by the independent record validators,
+			// never compared with this boot's monotonic clock.
+			ErrLifecycle)
+
 	}
-	return true
+	return nil
+
 }
 
-// Validate current record relationships without mistaking a stale lease for
-// fresh health. Expiry is a consumer predicate; future clocks are invalid.
-// Old runtime clocks are range-checked by the independent record validators,
-// never compared with this boot's monotonic clock.
 func (p *LifecyclePair) currentRecords(boot string, now int64) bool {
+	return p.currentRecordsError(boot, now) == nil
+}
+
+func (p *LifecyclePair) currentRecordsError(boot string, now int64) error {
+	var diagnosticOrigin error
 	m, s := &p.Main, &p.Sidecar
-	if now <= 0 || !lifecycleMainValid(m) || !lifecycleSidecarValid(s) || m.Policy != s.Policy || m.RuntimeBoot != boot || s.RuntimeBoot != boot ||
+	if now <= 0 || !lifecycleDiagnosticCheck(&diagnosticOrigin, lifecycleMainValidError(m)) || !lifecycleDiagnosticCheck(&diagnosticOrigin, lifecycleSidecarValidError(s)) || m.Policy != s.Policy || m.RuntimeBoot != boot || s.RuntimeBoot != boot ||
 		m.BootTransitionID != s.BootTransitionID || (m.BootSource == nil) != (s.BootSource == nil) {
-		return false
+		return lifecycleDiagnosticError("G300032", ErrLifecycle, diagnosticOrigin)
+
 	}
 	if m.BootSource != nil && *m.BootSource != *s.BootSource {
-		return false
+		return lifecycleDiagnosticError("G300033", ErrLifecycle, diagnosticOrigin)
+
 	}
 	for _, n := range m.Rate.Spends {
 		if n > now {
-			return false
+			return lifecycleDiagnosticError("G300034", ErrLifecycle, diagnosticOrigin)
+
 		}
 	}
 	if m.Rate.LastEndNS != nil && *m.Rate.LastEndNS > now || m.Teardown != nil && m.Teardown.BeganNS > now ||
 		m.Health != nil && (m.Health.ValidUntilNS > now && m.Health.ValidUntilNS-now > ManagedLeaseNS) || s.TerminalNS != nil && *s.TerminalNS > now {
-		return false
+		return lifecycleDiagnosticError(
+
+			// RetireClean may follow exact kernel peer absence without a sidecar
+			// writer: its old admitted generation is historical here. A new waiter
+			// still requires independently proven departure and the full entry census.
+			"G300035", ErrLifecycle, diagnosticOrigin)
+
 	}
-	// RetireClean may follow exact kernel peer absence without a sidecar
-	// writer: its old admitted generation is historical here. A new waiter
-	// still requires independently proven departure and the full entry census.
+
 	if m.Clean {
-		return s.Outcome != "waiting" || s.Generation == nil
+		if !(s.Outcome != "waiting" || s.Generation == nil) {
+			return lifecycleDiagnosticError("G300036", ErrLifecycle, diagnosticOrigin)
+		}
+		return nil
 	}
 	if m.Phase == "boot_prepared" {
-		return s.Outcome == "waiting" && s.Generation == nil && !s.Halt && s.Failure == "none"
+		if !(s.Outcome == "waiting" && s.Generation == nil && !s.Halt && s.Failure == "none") {
+			return lifecycleDiagnosticError("G300037", ErrLifecycle, diagnosticOrigin)
+		}
+		return nil
 	}
 	if m.Generation != nil {
 		if m.Phase == "live" && s.Generation != nil && m.Health == nil && m.Policy.Desired == "run" && !s.Halt && lifecycleOneOf(s.Outcome, "waiting", "admitted") {
-			return false
+			return lifecycleDiagnosticError("G300038", ErrLifecycle, diagnosticOrigin)
+
 		}
 		if m.Sidecar == nil || s.Binding == nil || *m.Sidecar != *s.Binding || s.Generation != nil && *m.Generation != *s.Generation {
-			return false
+			return lifecycleDiagnosticError("G300039", ErrLifecycle, diagnosticOrigin)
+
 		}
 		if s.Outcome == "unstarted" || s.Outcome == "admitted" && s.Generation == nil {
-			return false
+			return lifecycleDiagnosticError("G300040",
+
+				// A locked pair is short-lived. Never keep it across a manager job, Accept,
+				// Wait, scanner join, or handler progress. Same-UID hostile rewriting is outside
+				// the contract; ordinary inode/type/owner/link/mode drift still refuses.
+				ErrLifecycle, diagnosticOrigin)
+
 		}
 	}
-	return true
+	return nil
+
 }
 
-// A locked pair is short-lived. Never keep it across a manager job, Accept,
-// Wait, scanner join, or handler progress. Same-UID hostile rewriting is outside
-// the contract; ordinary inode/type/owner/link/mode drift still refuses.
 type LifecyclePair struct {
 	Main     LifecycleMain
 	Sidecar  LifecycleSidecar
@@ -398,7 +457,7 @@ func lifecycleDirectory(path string) (*os.File, error) {
 	// Check each component without following links, then retain the final fd.
 	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, errLifecycleIO
+		return nil, lifecycleDiagnosticError("G000008", errLifecycleIO)
 	}
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	for index, part := range parts {
@@ -406,20 +465,20 @@ func lifecycleDirectory(path string) (*os.File, error) {
 		unix.Close(fd)
 		if e != nil {
 			if e == unix.ENOENT || e == unix.ENOTDIR || e == unix.ELOOP {
-				return nil, errLifecycleInvalid
+				return nil, lifecycleDiagnosticError("G000009", errLifecycleInvalid)
 			}
-			return nil, errLifecycleIO
+			return nil, lifecycleDiagnosticError("G000010", errLifecycleIO)
 		}
 		fd = next
 		var st unix.Stat_t
 		finalState := index == len(parts)-1 && lifecycleOneOf(path, ManagedMainDirectory, ManagedSidecarDirectory)
 		if unix.Fstat(fd, &st) != nil {
 			unix.Close(fd)
-			return nil, errLifecycleIO
+			return nil, lifecycleDiagnosticError("G000011", errLifecycleIO)
 		}
 		if st.Mode&0022 != 0 || finalState && (st.Uid != lifecycleServiceUID() || st.Mode&07777 != 0700) || !finalState && st.Uid != 0 {
 			unix.Close(fd)
-			return nil, errLifecycleInvalid
+			return nil, lifecycleDiagnosticError("G000012", errLifecycleInvalid)
 		}
 	}
 	return os.NewFile(uintptr(fd), path), nil
@@ -427,75 +486,75 @@ func lifecycleDirectory(path string) (*os.File, error) {
 func lifecycleReadAt(dir *os.File, name string, dst any) error {
 	var parent unix.Stat_t
 	if unix.Fstat(int(dir.Fd()), &parent) != nil {
-		return errLifecycleIO
+		return lifecycleDiagnosticError("G000013", errLifecycleIO)
 	}
 	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		if err == unix.ENOENT || err == unix.ELOOP || err == unix.ENOTDIR {
-			return errLifecycleInvalid
+			return lifecycleDiagnosticError("G000014", errLifecycleInvalid)
 		}
-		return errLifecycleIO
+		return lifecycleDiagnosticError("G000015", errLifecycleIO)
 	}
 	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
 	var st unix.Stat_t
 	if unix.Fstat(fd, &st) != nil {
-		return errLifecycleIO
+		return lifecycleDiagnosticError("G000016", errLifecycleIO)
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&07777 != 0600 || st.Uid != parent.Uid || st.Nlink != 1 || st.Size <= 0 || st.Size > 4096 {
-		return errLifecycleInvalid
+		return lifecycleDiagnosticError("G000017", errLifecycleInvalid)
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, 4097))
 	if err != nil {
-		return errLifecycleIO
+		return lifecycleDiagnosticError("G000018", errLifecycleIO)
 	}
 	if len(raw) > 4096 || !utf8.Valid(raw) || len(raw) == 0 || raw[len(raw)-1] != '\n' {
-		return errLifecycleInvalid
+		return lifecycleDiagnosticError("G000019", errLifecycleInvalid)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(dst) != nil {
-		return errLifecycleInvalid
+		return lifecycleDiagnosticError("G000020", errLifecycleInvalid)
 	}
 	canonical, err := json.Marshal(dst)
 	if err != nil || !bytes.Equal(raw, append(canonical, '\n')) {
-		return errLifecycleInvalid
+		return lifecycleDiagnosticError("G000021", errLifecycleInvalid)
 	}
 	return nil
 }
 func OpenLifecycle(ctx context.Context) (*LifecyclePair, error) {
 	deadline, ok := ctx.Deadline()
 	if !ok || ctx.Err() != nil || !time.Now().Before(deadline) {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000022", ErrLifecycle)
 	}
 	p := &LifecyclePair{deadline: deadline}
 	var err error
 	p.mainDir, err = lifecycleDirectory(ManagedMainDirectory)
 	if err != nil {
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000023", err)
 	}
 	p.sideDir, err = lifecycleDirectory(ManagedSidecarDirectory)
 	if err != nil {
 		p.Close()
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000024", err)
 	}
 	fd, err := unix.Openat(int(p.mainDir.Fd()), managedLock, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		p.Close()
 		if err == unix.ENOENT || err == unix.ENOTDIR || err == unix.ELOOP {
-			return nil, errLifecycleInvalid
+			return nil, lifecycleDiagnosticError("G000025", errLifecycleInvalid)
 		}
-		return nil, errLifecycleIO
+		return nil, lifecycleDiagnosticError("G000026", errLifecycleIO)
 	}
 	p.lock = os.NewFile(uintptr(fd), managedLock)
 	var st, parent unix.Stat_t
 	if unix.Fstat(fd, &st) != nil || unix.Fstat(int(p.mainDir.Fd()), &parent) != nil {
 		p.Close()
-		return nil, errLifecycleIO
+		return nil, lifecycleDiagnosticError("G000027", errLifecycleIO)
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&07777 != 0600 || st.Nlink != 1 || st.Uid != parent.Uid || st.Size != 0 {
 		p.Close()
-		return nil, errLifecycleInvalid
+		return nil, lifecycleDiagnosticError("G000028", errLifecycleInvalid)
 	}
 	for {
 		err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
@@ -504,18 +563,18 @@ func OpenLifecycle(ctx context.Context) (*LifecyclePair, error) {
 		}
 		if err != unix.EWOULDBLOCK && err != unix.EAGAIN {
 			p.Close()
-			return nil, errLifecycleIO
+			return nil, lifecycleDiagnosticError("G000029", errLifecycleIO)
 		}
 		select {
 		case <-ctx.Done():
 			p.Close()
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000030", ErrLifecycle)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
 	if err = p.Refresh(); err != nil {
 		p.Close()
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000031", err)
 	}
 	return p, nil
 }
@@ -536,112 +595,116 @@ func (p *LifecyclePair) Close() {
 	}
 }
 func (p *LifecyclePair) Refresh() error {
+	var diagnosticOrigin error
 	if !time.Now().Before(p.deadline) {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000032", ErrLifecycle, diagnosticOrigin)
 	}
 	if err := lifecycleReadAt(p.mainDir, managedRecord, &p.Main); err != nil {
-		return err
+		return lifecycleDiagnosticError("G000033", err, diagnosticOrigin)
 	}
 	if err := lifecycleReadAt(p.sideDir, managedRecord, &p.Sidecar); err != nil {
-		return err
+		return lifecycleDiagnosticError("G000034", err, diagnosticOrigin)
 	}
-	if !lifecycleMainValid(&p.Main) || !lifecycleSidecarValid(&p.Sidecar) {
-		return errLifecycleInvalid
+	if !lifecycleDiagnosticCheck(&diagnosticOrigin, lifecycleMainValidError(&p.Main)) || !lifecycleDiagnosticCheck(&diagnosticOrigin, lifecycleSidecarValidError(&p.Sidecar)) {
+		return lifecycleDiagnosticError("G000035", errLifecycleInvalid, diagnosticOrigin)
 	}
 	for _, dir := range []*os.File{p.mainDir, p.sideDir} {
 		fd, err := unix.Openat(int(dir.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 		if err != nil {
-			return errLifecycleIO
+			return lifecycleDiagnosticError("G000036", errLifecycleIO, diagnosticOrigin)
 		}
 		f := os.NewFile(uintptr(fd), ".")
 		entries, err := f.Readdirnames(128)
 		f.Close()
 		if err != nil && err != io.EOF {
-			return errLifecycleIO
+			return lifecycleDiagnosticError("G000037", errLifecycleIO, diagnosticOrigin)
 		}
 		if len(entries) == 128 {
-			return errLifecycleInvalid
+			return lifecycleDiagnosticError("G000038", errLifecycleInvalid, diagnosticOrigin)
 		}
 		for _, name := range entries {
 			if strings.HasPrefix(name, ".lifecycle-") {
-				return errLifecycleInvalid
+				return lifecycleDiagnosticError("G000039", errLifecycleInvalid, diagnosticOrigin)
 			}
 		}
 	}
 	if !time.Now().Before(p.deadline) {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000040", ErrLifecycle, diagnosticOrigin)
 	}
 	return nil
 }
 func (p *LifecyclePair) publish(dir *os.File, value any) error {
 	if !time.Now().Before(p.deadline) {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000041", ErrLifecycle)
 	}
 	raw, err := json.Marshal(value)
 	if err != nil || len(raw)+1 > 4096 {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000042", ErrLifecycle)
 	}
 	raw = append(raw, '\n')
 	id, err := NewLifecycleID()
 	if err != nil {
-		return err
+		return lifecycleDiagnosticError("G000043", err)
 	}
 	name := ".lifecycle-" + id
 	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
 	if err != nil {
-		return errLifecycleIO
+		return lifecycleDiagnosticError("G000044", errLifecycleIO)
 	}
 	f := os.NewFile(uintptr(fd), name)
 	var parent unix.Stat_t
 	if unix.Fstat(int(dir.Fd()), &parent) != nil {
 		f.Close()
-		return errLifecycleIO
+		return lifecycleDiagnosticError("G000045", errLifecycleIO)
 	}
 	if os.Geteuid() == 0 && f.Chown(int(parent.Uid), int(parent.Gid)) != nil {
 		f.Close()
-		return errLifecycleIO
+		return lifecycleDiagnosticError("G000046", errLifecycleIO)
 	}
 	n, err := f.Write(raw)
 	if err != nil || n != len(raw) || f.Sync() != nil {
 		f.Close()
-		return errLifecycleIO
+		return lifecycleDiagnosticError("G000047", errLifecycleIO)
 	}
 	if f.Close() != nil {
-		return errLifecycleIO
+		return lifecycleDiagnosticError("G000048", errLifecycleIO)
 	}
 	if !time.Now().Before(p.deadline) {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000049", ErrLifecycle)
 	}
 	if unix.Renameat(int(dir.Fd()), name, int(dir.Fd()), managedRecord) != nil || dir.Sync() != nil {
-		return errLifecycleIO
+		return lifecycleDiagnosticError("G000050", errLifecycleIO)
 	}
 	if !time.Now().Before(p.deadline) {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000051", ErrLifecycle)
 	}
 	return nil
 }
 func (p *LifecyclePair) WriteMain() error {
-	if !lifecycleMainValid(&p.Main) {
-		return errLifecycleInvalid
+	var diagnosticOrigin error
+	if !lifecycleDiagnosticCheck(&diagnosticOrigin, lifecycleMainValidError(&p.Main)) {
+		return lifecycleDiagnosticError("G000052", errLifecycleInvalid, diagnosticOrigin)
 	}
-	return p.publish(p.mainDir, &p.Main)
+	return lifecycleDiagnosticError("G000053", p.publish(p.mainDir, &p.Main), diagnosticOrigin)
 }
 func (p *LifecyclePair) WriteSidecar() error {
-	if !lifecycleSidecarValid(&p.Sidecar) {
-		return errLifecycleInvalid
+	var diagnosticOrigin error
+	if !lifecycleDiagnosticCheck(&diagnosticOrigin, lifecycleSidecarValidError(&p.Sidecar)) {
+		return lifecycleDiagnosticError("G000054", errLifecycleInvalid, diagnosticOrigin)
 	}
-	return p.publish(p.sideDir, &p.Sidecar)
+	return lifecycleDiagnosticError("G000055", p.publish(p.sideDir, &p.Sidecar), diagnosticOrigin)
 }
 func (p *LifecyclePair) Eligible(boot string) error {
+	var diagnosticOrigin error
 	now, err := LifecycleNow()
 	if err != nil {
-		return err
+		return lifecycleDiagnosticError("G000056", err, diagnosticOrigin)
 	}
-	if !p.currentRecords(boot, now) {
-		return errLifecycleInvalid
+	if !lifecycleDiagnosticCheck(&diagnosticOrigin, p.currentRecordsError(boot, now)) {
+		return lifecycleDiagnosticError("G000057", errLifecycleInvalid, diagnosticOrigin)
 	}
 	if p.Main.Policy.Desired != "run" || p.Main.Policy.HardBlock != "none" || p.Sidecar.Halt || p.Sidecar.Failure != "none" || p.Sidecar.Outcome == "unknown" || p.Main.Block != "none" {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000058", ErrLifecycle, diagnosticOrigin)
 	}
 	return nil
 }
@@ -791,81 +854,81 @@ type LifecyclePin struct {
 
 func PinLifecycleProcess(identity LifecycleProcess) (*LifecyclePin, error) {
 	if !lifecycleProcessValid(&identity) {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000069", ErrLifecycle)
 	}
 	fd, err := unix.Open("/proc/"+strconv.Itoa(identity.PID), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		if err == unix.ENOENT {
-			return nil, errLifecycleIdentity
+			return nil, lifecycleDiagnosticError("G000070", errLifecycleIdentity)
 		}
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000071", ErrLifecycle)
 	}
 	p := &LifecyclePin{proc: os.NewFile(uintptr(fd), "proc"), pidfd: -1, Identity: identity, expectedUID: lifecycleServiceUID()}
 	p.pidfd, err = unix.PidfdOpen(identity.PID, 0)
 	if err != nil {
 		p.Close()
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000072", ErrLifecycle)
 	}
 	if p.Validate() != nil {
 		p.Close()
-		return nil, errLifecycleIdentity
+		return nil, lifecycleDiagnosticError("G000073", errLifecycleIdentity)
 	}
 	return p, nil
 }
 func (p *LifecyclePin) read(name string, cap int64) ([]byte, error) {
 	fd, err := unix.Openat(int(p.proc.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000074", ErrLifecycle, err)
 	}
 	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
 	raw, err := io.ReadAll(io.LimitReader(f, cap+1))
 	if err != nil || int64(len(raw)) > cap {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000075", ErrLifecycle)
 	}
 	return raw, nil
 }
 func (p *LifecyclePin) Validate() error {
 	if unix.PidfdSendSignal(p.pidfd, 0, nil, 0) != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000076", ErrLifecycle)
 	}
 	var st unix.Stat_t
 	if unix.Fstat(int(p.proc.Fd()), &st) != nil || st.Uid != p.expectedUID {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000077", ErrLifecycle)
 	}
 	raw, err := p.read("stat", 4096)
 	if err != nil {
-		return err
+		return lifecycleDiagnosticError("G000078", err)
 	}
 	end := bytes.LastIndexByte(raw, ')')
 	if end < 0 {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000079", ErrLifecycle)
 	}
 	fields := strings.Fields(string(raw[end+1:]))
 	if len(fields) < 20 || fields[0] == "Z" || fields[0] == "X" {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000080", ErrLifecycle)
 	}
 	ticks, err := strconv.ParseInt(fields[19], 10, 64)
 	if err != nil || ticks != p.Identity.StartTicks {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000081", ErrLifecycle)
 	}
 	return nil
 }
 func (p *LifecyclePin) Signal(ctx context.Context, sig unix.Signal) error {
 	if startupContextError(ctx) != nil || p.Validate() != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000082", ErrLifecycle)
 	}
 	// Identity work can consume the caller's ORIGINAL phase. Check absolute
 	// time as well as cancellation at the send boundary, even if its timer
 	// delivery is pending. This does not preempt an admitted kernel call.
 	if startupContextError(ctx) != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000083", ErrLifecycle)
 	}
 	if unix.PidfdSendSignal(p.pidfd, sig, nil, 0) != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000084", ErrLifecycle)
 	}
 	if startupContextError(ctx) != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000085", ErrLifecycle)
 	}
 	return nil
 }
@@ -919,43 +982,43 @@ func ManagedIdentityPreflight(c Config) error {
 	if _, err := os.Lstat(marker); os.IsNotExist(err) {
 		return nil
 	} else if err != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000091", ErrLifecycle, err)
 	}
 	if noSymlinkPath(marker) != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000092", ErrLifecycle)
 	}
 	st, err := os.Lstat(marker)
 	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || !ownedByCurrentUser(st) {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000093", ErrLifecycle)
 	}
 	// A consumed input must be absent. consumeInput remains the authoritative
 	// replay refusal; preflight does not remove or recreate either file.
 	if _, err = os.Lstat(c.CredentialFile); !os.IsNotExist(err) {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000094", ErrLifecycle)
 	}
 	path := filepath.Join(c.StateDir, "tailscaled.state")
 	if noSymlinkPath(path) != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000095", ErrLifecycle)
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000096", ErrLifecycle, err)
 	}
 	defer f.Close()
 	st, err = f.Stat()
 	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || !ownedByCurrentUser(st) || st.Size() <= 0 || st.Size() > 1<<20 {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000097", ErrLifecycle)
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
 	if err != nil || len(raw) > 1<<20 {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000098", ErrLifecycle)
 	}
 	defer clear(raw)
 	// Read the same snapshot/profile keys used by pinned v1.78.0. Reuse its
 	// Prefs/key decoders, without constructing the mutating FileStore/backend.
 	var snapshot map[ipn.StateKey][]byte
 	if json.Unmarshal(raw, &snapshot) != nil || snapshot == nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000099", ErrLifecycle)
 	}
 	defer func() {
 		for _, value := range snapshot {
@@ -964,36 +1027,36 @@ func ManagedIdentityPreflight(c Config) error {
 	}()
 	selected := ipn.StateKey(snapshot[ipn.CurrentProfileStateKey])
 	if selected == "" {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000100", ErrLifecycle)
 	}
 	var profiles map[ipn.ProfileID]*ipn.LoginProfile
 	if json.Unmarshal(snapshot[ipn.KnownProfilesStateKey], &profiles) != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000101", ErrLifecycle)
 	}
 	var profile *ipn.LoginProfile
 	for id, candidate := range profiles {
 		if candidate == nil || candidate.ID != id {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000102", ErrLifecycle)
 		}
 		if candidate.Key == selected {
 			if profile != nil {
-				return ErrLifecycle
+				return lifecycleDiagnosticError("G000103", ErrLifecycle)
 			}
 			profile = candidate
 		}
 	}
 	if profile == nil || profile.ControlURL != c.ControlURL || profile.NodeID == "" {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000104", ErrLifecycle)
 	}
 	var machine key.MachinePrivate
 	if machine.UnmarshalText(snapshot[ipn.MachineKeyStateKey]) != nil || machine.IsZero() {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000105", ErrLifecycle)
 	}
 	prefs := ipn.NewPrefs()
 	if ipn.PrefsFromBytes(snapshot[selected], prefs) != nil || prefs.Persist == nil ||
 		prefs.Persist.PrivateNodeKey.IsZero() || prefs.Persist.NodeID != profile.NodeID ||
 		prefs.ControlURL != c.ControlURL || prefs.Hostname != c.RoleIdentity || !prefs.WantRunning {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000106", ErrLifecycle)
 	}
 	return nil
 }
@@ -1022,12 +1085,12 @@ func LifecycleUnit(ctx context.Context, unit string, timing ...string) (map[stri
 	}
 	if len(timing) > 0 {
 		if unit != "happyranch-tsnet-sidecar.service" || len(timing) != 1 || timing[0] != "InactiveExitTimestampMonotonic" {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000109", ErrLifecycle)
 		}
 		names = append(names, timing[0])
 	}
 	if !lifecycleOneOf(unit, "happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target") {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000110", ErrLifecycle)
 	}
 	query, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
@@ -1042,30 +1105,30 @@ func LifecycleUnit(ctx context.Context, unit string, timing ...string) (map[stri
 	cmd.Stderr = io.Discard
 	cmd.WaitDelay = time.Second
 	if cmd.Run() != nil || query.Err() != nil || output.overflow {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000111", ErrLifecycle)
 	}
 	raw := output.b.String()
 	if !utf8.ValidString(raw) || !strings.HasSuffix(raw, "\n") {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000112", ErrLifecycle)
 	}
 	result := map[string]string{}
 	for _, line := range strings.Split(strings.TrimSuffix(raw, "\n"), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok || !lifecycleOneOf(key, names...) {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000113", ErrLifecycle)
 		}
 		if _, ok := result[key]; ok {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000114", ErrLifecycle)
 		}
 		for _, c := range line {
 			if c < 32 || c == 127 {
-				return nil, ErrLifecycle
+				return nil, lifecycleDiagnosticError("G000115", ErrLifecycle)
 			}
 		}
 		result[key] = value
 	}
 	if len(result) != len(names) || ctx.Err() != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000116", ErrLifecycle)
 	}
 	return result, nil
 }
@@ -1084,35 +1147,35 @@ func lifecycleJobs(ctx context.Context) (map[string]string, error) {
 	cmd.Stdout = &output
 	cmd.Stderr = io.Discard
 	if cmd.Run() != nil || query.Err() != nil || ctx.Err() != nil || output.overflow {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000117", ErrLifecycle)
 	}
 	raw := output.b.String()
 	if !utf8.ValidString(raw) || raw != "" && !strings.HasSuffix(raw, "\n") {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000118", ErrLifecycle)
 	}
 	jobs := map[string]string{}
 	ids := map[string]bool{}
 	for _, row := range strings.Split(strings.TrimSuffix(raw, "\n"), "\n") {
 		if row == "" {
 			if raw != "" {
-				return nil, ErrLifecycle
+				return nil, lifecycleDiagnosticError("G000119", ErrLifecycle)
 			}
 			continue
 		}
 		for _, c := range row {
 			if c < 32 || c == 127 {
-				return nil, ErrLifecycle
+				return nil, lifecycleDiagnosticError("G000120", ErrLifecycle)
 			}
 		}
 		fields := strings.Fields(row)
 		if len(fields) != 4 {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000121", ErrLifecycle)
 		}
 		id, e := strconv.ParseUint(fields[0], 10, 32)
 		if e != nil || id == 0 || strconv.FormatUint(id, 10) != fields[0] || ids[fields[0]] ||
 			!lifecycleOneOf(fields[1], "happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target") ||
 			jobs[fields[1]] != "" || !lifecycleOneOf(fields[3], "waiting", "running") {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000122", ErrLifecycle)
 		}
 		ids[fields[0]] = true
 		jobs[fields[1]] = strings.Join([]string{fields[0], fields[2], fields[3]}, " ")
@@ -1122,50 +1185,50 @@ func lifecycleJobs(ctx context.Context) (map[string]string, error) {
 func lifecycleManagerCurrent(ctx context.Context, initial bool) (map[string]map[string]string, error) {
 	before, e := lifecycleJobs(ctx)
 	if e != nil {
-		return nil, e
+		return nil, lifecycleDiagnosticError("G000123", e)
 	}
 	units := map[string]map[string]string{}
 	for _, unit := range []string{"happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target"} {
 		props, e := LifecycleUnit(ctx, unit)
 		if e != nil {
-			return nil, e
+			return nil, lifecycleDiagnosticError("G000124", e)
 		}
 		units[unit] = props
 		if props["ActiveState"] == "deactivating" {
-			return nil, errLifecycleInhibited
+			return nil, lifecycleDiagnosticError("G000125", errLifecycleInhibited)
 		}
 		job := strings.Fields(before[unit])
 		if len(job) != 0 && lifecycleOneOf(job[1], "stop", "restart", "try-restart", "reload-or-restart") {
-			return nil, errLifecycleInhibited
+			return nil, lifecycleDiagnosticError("G000126", errLifecycleInhibited)
 		}
 		if len(job) == 0 {
 			if props["Job"] != "" {
-				return nil, ErrLifecycle
+				return nil, lifecycleDiagnosticError("G000127", ErrLifecycle)
 			}
 		} else {
 			if !initial || job[1] != "start" || props["Job"] != job[0] ||
 				!(props["ActiveState"] == "activating" || props["ActiveState"] == "inactive" && props["SubState"] == "dead") {
-				return nil, ErrLifecycle
+				return nil, lifecycleDiagnosticError("G000128", ErrLifecycle)
 			}
 		}
 		if unit == "happyranch-managed.target" {
 			if !(props["ActiveState"] == "active" && props["SubState"] == "active" ||
 				props["ActiveState"] == "inactive" && props["SubState"] == "dead" || props["ActiveState"] == "activating" && len(job) != 0) {
-				return nil, ErrLifecycle
+				return nil, lifecycleDiagnosticError("G000129", ErrLifecycle)
 			}
 		}
 	}
 	after, e := lifecycleJobs(ctx)
 	if e != nil || len(before) != len(after) {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000130", ErrLifecycle)
 	}
 	for unit, job := range before {
 		if after[unit] != job {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000131", ErrLifecycle)
 		}
 	}
 	if ctx.Err() != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000132", ErrLifecycle)
 	}
 	return units, nil
 }
@@ -1179,18 +1242,25 @@ func LifecycleStopRequested(ctx context.Context) (bool, error) {
 	}
 	return false, e
 }
-func lifecycleFixedAbsent(ctx context.Context) bool {
+func lifecycleFixedAbsent(ctx context.Context) bool { return lifecycleFixedAbsentError(ctx) == nil }
+func lifecycleFixedAbsentError(ctx context.Context) error {
+	var diagnosticOrigin error
 	units, e := lifecycleManagerCurrent(ctx, false)
 	if e != nil {
-		return false
+		return lifecycleDiagnosticError("G300042", ErrLifecycle, diagnosticOrigin)
+
 	}
 	target := units["happyranch-managed.target"]
-	if target["ActiveState"] != "inactive" || target["SubState"] != "dead" || !LifecycleAbsent(ctx, "happyranch-connector.service", nil) ||
-		!LifecycleAbsent(ctx, "happyranch-tsnet-sidecar.service", nil) {
-		return false
+	if target["ActiveState"] != "inactive" || target["SubState"] != "dead" || !lifecycleDiagnosticCheck(&diagnosticOrigin, LifecycleAbsentError(ctx, "happyranch-connector.service", nil)) ||
+		!lifecycleDiagnosticCheck(&diagnosticOrigin, LifecycleAbsentError(ctx, "happyranch-tsnet-sidecar.service", nil)) {
+		return lifecycleDiagnosticError("G300043", ErrLifecycle, diagnosticOrigin)
+
 	}
 	final, e := lifecycleManagerCurrent(ctx, false)
-	return e == nil && final["happyranch-managed.target"]["ActiveState"] == "inactive" && final["happyranch-managed.target"]["SubState"] == "dead" && ctx.Err() == nil
+	if !(e == nil && final["happyranch-managed.target"]["ActiveState"] == "inactive" && final["happyranch-managed.target"]["SubState"] == "dead" && ctx.Err() == nil) {
+		return lifecycleDiagnosticError("G300044", ErrLifecycle, diagnosticOrigin)
+	}
+	return nil
 }
 
 func lifecycleCgroup(unit string) string { return "/system.slice/" + unit }
@@ -1200,23 +1270,23 @@ func lifecycleCgroupMembers(unit string) ([]int, error) {
 		return []int{}, nil
 	}
 	if err != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000134", ErrLifecycle, err)
 	}
 	defer file.Close()
 	raw, err := io.ReadAll(io.LimitReader(file, 4097))
 	if err != nil || len(raw) > 4096 {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000135", ErrLifecycle)
 	}
 	fields := strings.Fields(string(raw))
 	if len(fields) > 8 {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000136", ErrLifecycle)
 	}
 	result := make([]int, 0, len(fields))
 	seen := map[int]bool{}
 	for _, field := range fields {
 		n, err := strconv.Atoi(field)
 		if err != nil || n < 2 || n > math.MaxInt32 || strconv.Itoa(n) != field || seen[n] {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000137", ErrLifecycle)
 		}
 		seen[n] = true
 		result = append(result, n)
@@ -1227,23 +1297,23 @@ func ValidateLifecyclePin(ctx context.Context, pin *LifecyclePin, unit string, m
 	props, err := LifecycleUnit(ctx, unit)
 	if err != nil || props["InvocationID"] != pin.Identity.Invocation || props["ControlGroup"] != lifecycleCgroup(unit) {
 		if err != nil {
-			return err
+			return lifecycleDiagnosticError("G000138", err)
 		}
-		return errLifecycleIdentity
+		return lifecycleDiagnosticError("G000139", errLifecycleIdentity)
 	}
 	if main && props["MainPID"] != strconv.Itoa(pin.Identity.PID) {
-		return errLifecycleIdentity
+		return lifecycleDiagnosticError("G000140", errLifecycleIdentity)
 	}
 	if !lifecycleOneOf(props["ActiveState"], "active", "activating", "deactivating") {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000141", ErrLifecycle)
 	}
 	group, err := pin.read("cgroup", 4096)
 	if err != nil || string(group) != "0::"+lifecycleCgroup(unit)+"\n" || pin.Validate() != nil {
-		return errLifecycleIdentity
+		return lifecycleDiagnosticError("G000142", errLifecycleIdentity)
 	}
 	exe, err := unix.Openat(int(pin.proc.Fd()), "exe", unix.O_PATH|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000143", ErrLifecycle, err)
 	}
 	defer unix.Close(exe)
 	path := "/opt/happyranch/bin/happyranch-tsnet-sidecar"
@@ -1252,67 +1322,78 @@ func ValidateLifecyclePin(ctx context.Context, pin *LifecyclePin, unit string, m
 	}
 	expected, err := unix.Open(path, unix.O_PATH|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000144", ErrLifecycle, err)
 	}
 	defer unix.Close(expected)
 	var a, b unix.Stat_t
 	if unix.Fstat(exe, &a) != nil || unix.Fstat(expected, &b) != nil || a.Mode&unix.S_IFMT != unix.S_IFREG || a.Dev != b.Dev || a.Ino != b.Ino {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000145", ErrLifecycle)
 	}
 	again, err := LifecycleUnit(ctx, unit)
 	if err != nil || again["InvocationID"] != props["InvocationID"] || again["MainPID"] != props["MainPID"] || again["ControlGroup"] != props["ControlGroup"] {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000146", ErrLifecycle)
 	}
 	return nil
 }
 func LifecycleAbsent(ctx context.Context, unit string, pin *LifecyclePin) bool {
+	return LifecycleAbsentError(ctx, unit, pin) == nil
+}
+func LifecycleAbsentError(ctx context.Context, unit string, pin *LifecyclePin) error {
 	if !lifecycleOneOf(unit, "happyranch-connector.service", "happyranch-tsnet-sidecar.service") || pin != nil && !pin.Dead() {
-		return false
+		return lifecycleDiagnosticError("G300045", ErrLifecycle)
+
 	}
 	props, err := LifecycleUnit(ctx, unit)
 	if err != nil || props["MainPID"] != "0" || props["ControlPID"] != "0" || props["Job"] != "" ||
 		!(props["ActiveState"] == "inactive" && props["SubState"] == "dead" || props["ActiveState"] == "failed" && props["SubState"] == "failed") {
-		return false
+		return lifecycleDiagnosticError("G300046", ErrLifecycle)
+
 	}
 	members, err := lifecycleCgroupMembers(unit)
 	if err != nil || len(members) != 0 {
-		return false
+		return lifecycleDiagnosticError("G300047", ErrLifecycle)
+
 	}
 	again, e := LifecycleUnit(ctx, unit)
 	if e != nil || ctx.Err() != nil {
-		return false
+		return lifecycleDiagnosticError("G300048", ErrLifecycle)
+
 	}
 	for _, key := range lifecycleProperties {
 		if again[key] != props[key] {
-			return false
+			return lifecycleDiagnosticError("G300049",
+
+				// RunLifecyclePreflight reuses the existing installed Python readers. It never
+				// launches a worker, imports a test, repairs a transaction or passes an arbitrary
+				// command. The foreground worker repeats its credential capability after spend.
+				ErrLifecycle)
+
 		}
 	}
-	return true
+	return nil
+
 }
 
-// RunLifecyclePreflight reuses the existing installed Python readers. It never
-// launches a worker, imports a test, repairs a transaction or passes an arbitrary
-// command. The foreground worker repeats its credential capability after spend.
 func RunLifecyclePreflight(ctx context.Context) error {
 	deadline, ok := ctx.Deadline()
 	now, err := LifecycleNow()
 	if !ok || err != nil || ctx.Err() != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000147", ErrLifecycle)
 	}
 	cmd := exec.CommandContext(ctx, "/opt/happyranch/bin/happyranch-connector", "managed-private", "eligibility")
 	// Kernel observation precedes the remaining-Go-time sample: time spent
 	// preparing this request can only shorten the translated absolute bound.
 	remaining := time.Until(deadline)
 	if remaining <= 0 || int64(remaining) > math.MaxInt64-now {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000148", ErrLifecycle)
 	}
 	cmd.Env = append(os.Environ(), "HAPPYRANCH_LIFECYCLE_DEADLINE_NS="+strconv.FormatInt(now+int64(remaining), 10))
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	if ctx.Err() != nil || !time.Now().Before(deadline) {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000149", ErrLifecycle)
 	}
 	if cmd.Run() != nil || ctx.Err() != nil || !time.Now().Before(deadline) {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000150", ErrLifecycle)
 	}
 	return nil
 }
@@ -1378,18 +1459,24 @@ func lifecycleDeparted(identity *LifecycleProcess) bool {
 	return e == nil && ticks > 0 && ticks != identity.StartTicks
 }
 func lifecycleBootService(ctx context.Context, unit string, props map[string]string, identity *LifecycleProcess) bool {
+	return lifecycleBootServiceError(ctx, unit, props, identity) == nil
+}
+func lifecycleBootServiceError(ctx context.Context, unit string, props map[string]string, identity *LifecycleProcess) error {
 	members, e := lifecycleCgroupMembers(unit)
 	if e != nil {
-		return false
+		return lifecycleDiagnosticError("G300051", ErrLifecycle)
+
 	}
 	code, ce := strconv.Atoi(props["ExecMainCode"])
 	status, se := strconv.Atoi(props["ExecMainStatus"])
 	if ce != nil || se != nil || code < 0 || code > 3 || status < 0 || status > 255 || strconv.Itoa(code) != props["ExecMainCode"] || strconv.Itoa(status) != props["ExecMainStatus"] {
-		return false
+		return lifecycleDiagnosticError("G300052", ErrLifecycle)
+
 	}
 	retry := unit == "happyranch-connector.service" && props["MainPID"] == "0" && code == 1 && status == 1 && props["Result"] == "exit-code"
 	if !retry && (!lifecycleOneOf(props["Result"], "success", "signal") || code == 1 && status != 0) {
-		return false
+		return lifecycleDiagnosticError("G300053", ErrLifecycle)
+
 	}
 	allowed := map[int]bool{}
 	pins := []*LifecyclePin{}
@@ -1403,26 +1490,31 @@ func lifecycleBootService(ctx context.Context, unit string, props map[string]str
 	if props["MainPID"] != "0" {
 		pid, e := strconv.Atoi(props["MainPID"])
 		if e != nil || pid < 2 || strconv.Itoa(pid) != props["MainPID"] {
-			return false
+			return lifecycleDiagnosticError("G300054", ErrLifecycle)
+
 		}
 		pin, e := IdentifyLifecycleProcess(pid, props["InvocationID"])
 		if e != nil {
-			return false
+			return lifecycleDiagnosticError("G300055", ErrLifecycle)
+
 		}
 		pins = append(pins, pin)
 		if identity != nil && pin.Identity != *identity || ValidateLifecyclePin(ctx, pin, unit, true) != nil {
-			return false
+			return lifecycleDiagnosticError("G300056", ErrLifecycle)
+
 		}
 		command, e := pin.read("cmdline", 2048)
 		if e != nil {
-			return false
+			return lifecycleDiagnosticError("G300057", ErrLifecycle)
+
 		}
 		expected := "/opt/happyranch/bin/happyranch-tsnet-sidecar\x00--config\x00/etc/happyranch/sidecar.json\x00"
 		if unit == "happyranch-connector.service" {
 			expected = "/opt/happyranch/bin/happyranch-tsnet-sidecar\x00supervise-connector\x00/opt/happyranch/bin/happyranch-connector\x00run\x00--managed\x00--config\x00/etc/happyranch/connector.json\x00"
 		}
 		if string(command) != expected || !lifecycleOneOf(props["SubState"], "start", "start-post", "running") {
-			return false
+			return lifecycleDiagnosticError("G300058", ErrLifecycle)
+
 		}
 		mainCurrent = func() bool {
 			if ValidateLifecyclePin(ctx, pin, unit, true) != nil {
@@ -1433,17 +1525,19 @@ func lifecycleBootService(ctx context.Context, unit string, props map[string]str
 		}
 		allowed[pid] = true
 	} else if identity != nil {
-		return false
+		return lifecycleDiagnosticError("G300085", ErrLifecycle)
 	}
 	control := props["ControlPID"]
 	if control != "0" {
 		if unit != "happyranch-tsnet-sidecar.service" || props["ActiveState"] != "activating" || !lifecycleOneOf(props["SubState"], "start-pre", "start-post") ||
 			!lifecycleID(props["InvocationID"]) || props["ControlGroup"] != lifecycleCgroup(unit) {
-			return false
+			return lifecycleDiagnosticError("G300059", ErrLifecycle)
+
 		}
 		controlPID, e := strconv.Atoi(control)
 		if e != nil || controlPID < 2 || strconv.Itoa(controlPID) != control {
-			return false
+			return lifecycleDiagnosticError("G300060", ErrLifecycle)
+
 		}
 		helper := map[int]*LifecyclePin{}
 		parents := map[int]int{}
@@ -1455,42 +1549,42 @@ func lifecycleBootService(ctx context.Context, unit string, props map[string]str
 			fd := int(pin.proc.Fd())
 			var st unix.Stat_t
 			if unix.Fstat(fd, &st) != nil || st.Uid != pin.expectedUID || st.Uid != 0 && st.Uid != lifecycleServiceUID() {
-				return 0, false, ErrLifecycle
+				return 0, false, lifecycleDiagnosticError("G000151", ErrLifecycle)
 			}
 			raw, e := pin.read("stat", 4096)
 			if e != nil {
-				return 0, false, e
+				return 0, false, lifecycleDiagnosticError("G000152", e)
 			}
 			end := bytes.LastIndexByte(raw, ')')
 			if end < 0 {
-				return 0, false, ErrLifecycle
+				return 0, false, lifecycleDiagnosticError("G000153", ErrLifecycle)
 			}
 			fields := strings.Fields(string(raw[end+1:]))
 			if len(fields) < 20 {
-				return 0, false, ErrLifecycle
+				return 0, false, lifecycleDiagnosticError("G000154", ErrLifecycle)
 			}
 			ticks, e := strconv.ParseInt(fields[19], 10, 64)
 			if e != nil || ticks <= 0 || ticks != pin.Identity.StartTicks || pin.Validate() != nil {
-				return 0, false, ErrLifecycle
+				return 0, false, lifecycleDiagnosticError("G000155", ErrLifecycle)
 			}
 			parent, e := strconv.Atoi(fields[1])
 			if e != nil {
-				return 0, false, ErrLifecycle
+				return 0, false, lifecycleDiagnosticError("G000156", ErrLifecycle, e)
 			}
 			group, e := pin.read("cgroup", 4096)
 			if e != nil || string(group) != "0::"+lifecycleCgroup(unit)+"\n" {
-				return 0, false, ErrLifecycle
+				return 0, false, lifecycleDiagnosticError("G000157", ErrLifecycle)
 			}
 			command, e := pin.read("cmdline", 2048)
 			if e != nil {
-				return 0, false, e
+				return 0, false, lifecycleDiagnosticError("G000158", e)
 			}
 			args := []string{"/opt/happyranch/bin/happyranch-tsnet-sidecar", "managed-run-check"}
 			isConnector := pid == controlPID || string(command) != strings.Join(args, "\x00")+"\x00"
 			if isConnector {
 				if props["SubState"] == "start-post" {
 					if st.Uid != 0 {
-						return 0, false, ErrLifecycle
+						return 0, false, lifecycleDiagnosticError("G000159", ErrLifecycle)
 					}
 					args = []string{"/opt/happyranch/bin/happyranch-connector", "retire-enrollment-source", "--source", "/etc/happyranch/enrollment.key", "--marker", "/var/lib/happyranch-tsnet-sidecar/credential.consumed", "--dropin", "/etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf"}
 				} else if st.Uid == 0 {
@@ -1500,11 +1594,11 @@ func lifecycleBootService(ctx context.Context, unit string, props map[string]str
 				}
 			}
 			if string(command) != strings.Join(args, "\x00")+"\x00" {
-				return 0, false, ErrLifecycle
+				return 0, false, lifecycleDiagnosticError("G000160", ErrLifecycle)
 			}
 			actual, e := unix.Openat(fd, "exe", unix.O_PATH|unix.O_CLOEXEC, 0)
 			if e != nil {
-				return 0, false, e
+				return 0, false, lifecycleDiagnosticError("G000161", e)
 			}
 			expected, e := unix.Open(args[0], unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			var left, right unix.Stat_t
@@ -1514,7 +1608,7 @@ func lifecycleBootService(ctx context.Context, unit string, props map[string]str
 				unix.Close(expected)
 			}
 			if !same {
-				return 0, false, ErrLifecycle
+				return 0, false, lifecycleDiagnosticError("G000162", ErrLifecycle)
 			}
 			return parent, isConnector, nil
 		}
@@ -1524,38 +1618,46 @@ func lifecycleBootService(ctx context.Context, unit string, props map[string]str
 			}
 			fd, e := unix.Open("/proc/"+strconv.Itoa(pid), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			if e != nil {
-				return false
+				return lifecycleDiagnosticError("G300061", ErrLifecycle)
+
 			}
 			pin := &LifecyclePin{proc: os.NewFile(uintptr(fd), "boot-helper"), pidfd: -1, Identity: LifecycleProcess{PID: pid, Invocation: props["InvocationID"]}}
 			pins = append(pins, pin)
 			pin.pidfd, e = unix.PidfdOpen(pid, 0)
 			if e != nil {
-				return false
+				return lifecycleDiagnosticError("G300062", ErrLifecycle)
+
 			}
 			var st unix.Stat_t
 			if unix.Fstat(fd, &st) != nil {
-				return false
+				return lifecycleDiagnosticError("G300063", ErrLifecycle)
+
 			}
 			pin.expectedUID = st.Uid
 			raw, e := pin.read("stat", 4096)
 			if e != nil {
-				return false
+				return lifecycleDiagnosticError("G300064", ErrLifecycle)
+
 			}
 			end := bytes.LastIndexByte(raw, ')')
 			if end < 0 {
-				return false
+				return lifecycleDiagnosticError("G300065", ErrLifecycle)
+
 			}
 			fields := strings.Fields(string(raw[end+1:]))
 			if len(fields) < 20 {
-				return false
+				return lifecycleDiagnosticError("G300066", ErrLifecycle)
+
 			}
 			pin.Identity.StartTicks, e = strconv.ParseInt(fields[19], 10, 64)
 			if e != nil {
-				return false
+				return lifecycleDiagnosticError("G300067", ErrLifecycle)
+
 			}
 			parent, role, e := inspect(pid, pin)
 			if e != nil {
-				return false
+				return lifecycleDiagnosticError("G300068", ErrLifecycle)
+
 			}
 			helper[pid] = pin
 			parents[pid] = parent
@@ -1564,34 +1666,42 @@ func lifecycleBootService(ctx context.Context, unit string, props map[string]str
 		}
 		root := helper[controlPID]
 		if root == nil || !connector[controlPID] || parents[controlPID] != 1 {
-			return false
+			return lifecycleDiagnosticError("G300069", ErrLifecycle)
+
 		}
 		body := controlPID
 		probe := 0
 		for pid, pin := range helper {
 			if pin.expectedUID != root.expectedUID {
-				return false
+				return lifecycleDiagnosticError("G300070", ErrLifecycle)
+
 			}
 			if pid == controlPID {
 				continue
 			}
 			if connector[pid] {
 				if body != controlPID || parents[pid] != controlPID {
-					return false
+					return lifecycleDiagnosticError("G300071", ErrLifecycle)
+
 				}
 				body = pid
 			} else {
 				if probe != 0 {
-					return false
+					return lifecycleDiagnosticError("G300072", ErrLifecycle)
+
 				}
 				probe = pid
 			}
 		}
 		if probe != 0 && parents[probe] != body {
-			return false
+			return lifecycleDiagnosticError(
+
+				// Revalidate the retained parent pins and executable/argv/UID/cgroup.
+				// The final complete membership fence below applies to EVERY path.
+				"G300073", ErrLifecycle)
+
 		}
-		// Revalidate the retained parent pins and executable/argv/UID/cgroup.
-		// The final complete membership fence below applies to EVERY path.
+
 		helpersCurrent = func() bool {
 			for pid, pin := range helper {
 				parent, role, e := inspect(pid, pin)
@@ -1602,50 +1712,66 @@ func lifecycleBootService(ctx context.Context, unit string, props map[string]str
 			return ctx.Err() == nil
 		}
 		if !helpersCurrent() {
-			return false
+			return lifecycleDiagnosticError("G300074", ErrLifecycle)
+
 		}
 
 	}
 	for _, pid := range members {
 		if !allowed[pid] {
-			return false
+			return lifecycleDiagnosticError("G300075", ErrLifecycle)
+
 		}
 	}
 	if len(members) != len(allowed) {
-		return false
+		return lifecycleDiagnosticError("G300076", ErrLifecycle)
+
 	}
 	if len(members) == 0 && !(props["ActiveState"] == "inactive" && props["SubState"] == "dead" || props["ActiveState"] == "failed" && props["SubState"] == "failed" || props["ActiveState"] == "activating" && props["SubState"] == "start-pre") {
-		return false
+		return lifecycleDiagnosticError("G300077", ErrLifecycle)
+
 	}
 	if !mainCurrent() || !helpersCurrent() {
-		return false
+		return lifecycleDiagnosticError("G300078", ErrLifecycle)
+
 	}
 	for _, pin := range pins {
 		if pin.Validate() != nil {
-			return false
+			return lifecycleDiagnosticError(
+
+				// MainPID-only and empty/no-helper routes need the SAME complete reread.
+				// This is a bounded observation, not atomic protection after its fence.
+				"G300079", ErrLifecycle)
+
 		}
 	}
-	// MainPID-only and empty/no-helper routes need the SAME complete reread.
-	// This is a bounded observation, not atomic protection after its fence.
+
 	current, e := lifecycleCgroupMembers(unit)
 	if e != nil || len(current) != len(members) {
-		return false
+		return lifecycleDiagnosticError("G300080", ErrLifecycle)
+
 	}
 	for _, pid := range current {
 		if !allowed[pid] {
-			return false
+			return lifecycleDiagnosticError("G300081", ErrLifecycle)
+
 		}
 	}
 	again, e := LifecycleUnit(ctx, unit)
 	if e != nil {
-		return false
+		return lifecycleDiagnosticError("G300082", ErrLifecycle)
+
 	}
 	for _, key := range lifecycleProperties {
 		if again[key] != props[key] {
-			return false
+			return lifecycleDiagnosticError("G300083", ErrLifecycle)
+
 		}
 	}
-	return ctx.Err() == nil
+	if !(ctx.Err() == nil) {
+		return lifecycleDiagnosticError("G300084", ErrLifecycle)
+	}
+	return nil
 }
 func lifecycleBootCensus(ctx context.Context, p *LifecyclePair, self LifecycleProcess, boot string, main bool) error {
 	if !lifecyclePolicyEligible(p) || !lifecycleBootLinks(p) || RunLifecyclePreflight(ctx) != nil {
@@ -1876,14 +2002,14 @@ type lifecycleRequest struct {
 
 func lifecycleManager(ctx context.Context, operation string) error {
 	if !lifecycleOneOf(operation, "start", "stop", "enable", "disable") {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000206", ErrLifecycle)
 	}
 	cmd := exec.CommandContext(ctx, "/usr/bin/systemctl", operation, "happyranch-managed.target")
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C"}
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	cmd.WaitDelay = time.Second
 	if cmd.Run() != nil || ctx.Err() != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000207", ErrLifecycle)
 	}
 	return nil
 }
@@ -1906,12 +2032,12 @@ func lifecycleReconcileSource(p *LifecyclePair, boot string, now int64) bool {
 
 func (p *LifecyclePair) policyChange(desired string, enabled bool, id string) error {
 	if p.Main.Policy != p.Sidecar.Policy || p.Main.Policy.Revision == math.MaxInt64 {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000208", ErrLifecycle)
 	}
 	policy := p.Main.Policy
 	if policy.OperationID == id {
 		if policy.Desired != desired || policy.Enabled != enabled {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000209", ErrLifecycle)
 		}
 		return nil
 	}
@@ -1925,13 +2051,13 @@ func (p *LifecyclePair) policyChange(desired string, enabled bool, id string) er
 		p.Main.Health = nil
 		// Inhibition's sidecar half is first; a torn pair never enables.
 		if p.WriteSidecar() != nil || p.WriteMain() != nil {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000210", ErrLifecycle)
 		}
 	} else {
 		p.Sidecar.Halt = false
 		// For enabling, the sidecar unhalt is LAST.
 		if p.WriteMain() != nil || p.WriteSidecar() != nil {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000211", ErrLifecycle)
 		}
 	}
 	return nil
@@ -3080,55 +3206,55 @@ func (e *TSNetEngine) managedHealthy(ctx context.Context, c Config) bool {
 
 func IdentifyLifecycleProcess(pid int, invocation string) (*LifecyclePin, error) {
 	if pid < 2 || pid > math.MaxInt32 || !lifecycleID(invocation) {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000315", ErrLifecycle)
 	}
 	fd, err := unix.Open("/proc/"+strconv.Itoa(pid), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000316", ErrLifecycle, err)
 	}
 	pin := &LifecyclePin{proc: os.NewFile(uintptr(fd), "proc"), pidfd: -1, Identity: LifecycleProcess{PID: pid, Invocation: invocation}, expectedUID: lifecycleServiceUID()}
 	pin.pidfd, err = unix.PidfdOpen(pid, 0)
 	if err != nil {
 		pin.Close()
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000317", ErrLifecycle)
 	}
 	raw, err := pin.read("stat", 4096)
 	if err != nil {
 		pin.Close()
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000318", err)
 	}
 	end := bytes.LastIndexByte(raw, ')')
 	if end < 0 {
 		pin.Close()
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000319", ErrLifecycle)
 	}
 	fields := strings.Fields(string(raw[end+1:]))
 	if len(fields) < 20 {
 		pin.Close()
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000320", ErrLifecycle)
 	}
 	pin.Identity.StartTicks, err = strconv.ParseInt(fields[19], 10, 64)
 	if err != nil || pin.Validate() != nil {
 		pin.Close()
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000321", ErrLifecycle)
 	}
 	return pin, nil
 }
 func ValidateLifecycleWorker(ctx context.Context, worker *LifecyclePin, launcherPID int) error {
 	if ValidateLifecyclePin(ctx, worker, "happyranch-connector.service", false) != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000322", ErrLifecycle)
 	}
 	members, err := lifecycleCgroupMembers("happyranch-connector.service")
 	if err != nil || len(members) > 8 {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000323", ErrLifecycle)
 	}
 	unit, err := LifecycleUnit(ctx, "happyranch-connector.service")
 	if err != nil {
-		return err
+		return lifecycleDiagnosticError("G000324", err)
 	}
 	wrapperPID, err := strconv.Atoi(unit["MainPID"])
 	if err != nil || wrapperPID < 2 {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000325", ErrLifecycle)
 	}
 	allowed := map[int]bool{os.Getpid(): true, wrapperPID: true, launcherPID: true, worker.Identity.PID: true}
 	current := worker
@@ -3142,39 +3268,39 @@ func ValidateLifecycleWorker(ctx context.Context, worker *LifecyclePin, launcher
 		if current.Identity.PID == launcherPID {
 			for _, pid := range members {
 				if !allowed[pid] {
-					return ErrLifecycle
+					return lifecycleDiagnosticError("G000326", ErrLifecycle)
 				}
 			}
 			return nil
 		}
 		raw, err := current.read("stat", 4096)
 		if err != nil {
-			return err
+			return lifecycleDiagnosticError("G000327", err)
 		}
 		end := bytes.LastIndexByte(raw, ')')
 		if end < 0 {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000328", ErrLifecycle)
 		}
 		fields := strings.Fields(string(raw[end+1:]))
 		if len(fields) < 2 {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000329", ErrLifecycle)
 		}
 		parent, err := strconv.Atoi(fields[1])
 		if err != nil || parent < 2 || parent == wrapperPID || allowed[parent] && parent != launcherPID {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000330", ErrLifecycle)
 		}
 		next, err := IdentifyLifecycleProcess(parent, worker.Identity.Invocation)
 		if err != nil {
-			return err
+			return lifecycleDiagnosticError("G000331", err)
 		}
 		owned = append(owned, next)
 		allowed[parent] = true
 		current = next
 		if ValidateLifecyclePin(ctx, current, "happyranch-connector.service", false) != nil {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000332", ErrLifecycle)
 		}
 	}
-	return ErrLifecycle
+	return lifecycleDiagnosticError("G000333", ErrLifecycle)
 }
 
 func CheckManagedWorker() int {
@@ -3231,22 +3357,22 @@ func lifecycleEntryContext(input io.Reader, maximum time.Duration) (context.Cont
 	raw, err := io.ReadAll(io.LimitReader(input, 4097))
 	var request lifecyclePackageRequest
 	if err != nil || len(raw) > 4096 {
-		return nil, nil, request, ErrLifecycle
+		return nil, nil, request, lifecycleDiagnosticError("G000334", ErrLifecycle)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var shape map[string]json.RawMessage
 	if decoder.Decode(&request) != nil || json.Unmarshal(raw, &shape) != nil || len(shape) != 4 || request.Version != 2 || !lifecycleID(request.OperationID) {
-		return nil, nil, request, ErrLifecycle
+		return nil, nil, request, lifecycleDiagnosticError("G000335", ErrLifecycle)
 	}
 	canonical, e := json.Marshal(shape)
 	if e != nil || !bytes.Equal(raw, canonical) {
-		return nil, nil, request, ErrLifecycle
+		return nil, nil, request, lifecycleDiagnosticError("G000336", ErrLifecycle)
 	}
 	sampled := time.Now()
 	now, e := LifecycleNow()
 	if e != nil || request.DeadlineNS <= now || request.DeadlineNS-now > int64(maximum) {
-		return nil, nil, request, ErrLifecycle
+		return nil, nil, request, lifecycleDiagnosticError("G000337", ErrLifecycle)
 	}
 	deadline := sampled.Add(time.Duration(request.DeadlineNS - now))
 	if limit := entry.Add(maximum); limit.Before(deadline) {
@@ -3256,51 +3382,58 @@ func lifecycleEntryContext(input io.Reader, maximum time.Duration) (context.Cont
 	return ctx, cancel, request, nil
 }
 func lifecycleStoppedCurrent(ctx context.Context, p *LifecyclePair) bool {
+	return lifecycleStoppedCurrentError(ctx, p) == nil
+}
+
+func lifecycleStoppedCurrentError(ctx context.Context, p *LifecyclePair) error {
+	var diagnosticOrigin error
 	boot, err := LifecycleBoot()
 	now, clockErr := LifecycleNow()
-	return err == nil && clockErr == nil && p.currentRecords(boot, now) && p.Main.RuntimeBoot == boot && p.Sidecar.RuntimeBoot == boot && p.Main.BootTransitionID == p.Sidecar.BootTransitionID &&
-		p.stopped() && p.Main.Policy.HardBlock == "none" && p.Main.Block == "none" &&
-		lifecycleFixedAbsent(ctx) && ctx.Err() == nil
+	if !(err == nil && clockErr == nil && lifecycleDiagnosticCheck(&diagnosticOrigin, p.currentRecordsError(boot, now)) && p.Main.RuntimeBoot == boot && p.Sidecar.RuntimeBoot == boot && p.Main.BootTransitionID == p.Sidecar.BootTransitionID &&
+		p.stopped() && p.Main.Policy.HardBlock == "none" && p.Main.Block == "none" && lifecycleDiagnosticCheck(&diagnosticOrigin, lifecycleFixedAbsentError(ctx)) && ctx.Err() == nil) {
+		return lifecycleDiagnosticError("G100101", ErrLifecycle, diagnosticOrigin)
+	}
+	return nil
 }
 func lifecycleInheritedPair(ctx context.Context) (*LifecyclePair, error) {
 	inherited := os.NewFile(3, "fixed-lifecycle-holder")
 	var actual, named unix.Stat_t
 	if inherited == nil || unix.Fstat(3, &actual) != nil || unix.Lstat(ManagedMainDirectory+"/"+managedLock, &named) != nil ||
 		actual.Dev != named.Dev || actual.Ino != named.Ino || actual.Mode&unix.S_IFMT != unix.S_IFREG || actual.Mode&07777 != 0600 || actual.Nlink != 1 || actual.Size != 0 || actual.Uid != named.Uid {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G400008", ErrLifecycle)
 	}
 	// A distinct open description MUST be excluded, while the passed original
 	// MUST retain the existing exclusive flock. Never LOCK_UN the original.
 	separate, err := unix.Open(ManagedMainDirectory+"/"+managedLock, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G400007", ErrLifecycle)
 	}
 	e := unix.Flock(separate, unix.LOCK_EX|unix.LOCK_NB)
 	unix.Close(separate)
 	if e != unix.EWOULDBLOCK && e != unix.EAGAIN {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G400006", ErrLifecycle)
 	}
 	if unix.Flock(3, unix.LOCK_EX|unix.LOCK_NB) != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G400005", ErrLifecycle)
 	}
 	deadline, ok := ctx.Deadline()
 	if !ok {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G400004", ErrLifecycle)
 	}
 	p := &LifecyclePair{lock: inherited, deadline: deadline}
 	p.mainDir, err = lifecycleDirectory(ManagedMainDirectory)
 	if err != nil {
 		p.Close()
-		return nil, err
+		return nil, lifecycleDiagnosticError("G400003", err)
 	}
 	p.sideDir, err = lifecycleDirectory(ManagedSidecarDirectory)
 	if err != nil {
 		p.Close()
-		return nil, err
+		return nil, lifecycleDiagnosticError("G400002", err)
 	}
 	if p.Refresh() != nil {
 		p.Close()
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G400001", ErrLifecycle)
 	}
 	return p, nil
 }
@@ -3317,10 +3450,16 @@ func HandleLifecycleGuard(input io.Reader, kind string) int {
 	}
 	ctx, cancel, request, err := lifecycleEntryContext(input, maximum)
 	if err != nil {
+		if kind == "package" {
+			return lifecyclePackageRefusal("entry_context", "N100001", err)
+		}
 		return 78
 	}
 	defer cancel()
 	if request.Operation != kind {
+		if kind == "package" {
+			return lifecyclePackageRefusal("operation", "N100002")
+		}
 		return 78
 	}
 	if kind == "run" {
@@ -3342,11 +3481,21 @@ func HandleLifecycleGuard(input io.Reader, kind string) int {
 	}
 	p, err := lifecycleInheritedPair(ctx)
 	if err != nil {
+		if kind == "package" {
+			return lifecyclePackageRefusal("open_pair", "N100003", err)
+		}
 		return 78
 	}
 	defer p.Close()
-	if kind == "package" || kind == "stopped" {
-		if os.Geteuid() != 0 || (kind == "package" && !lifecyclePackageCurrent(ctx, p, true) || kind == "stopped" && !lifecycleStoppedCurrent(ctx, p)) {
+	if kind == "package" {
+		if os.Geteuid() != 0 {
+			return lifecyclePackageRefusal("effective_uid", "N100004")
+		}
+		if err := lifecyclePackageCurrentError(ctx, p, true); err != nil {
+			return lifecyclePackageRefusal("stopped_current", "N100005", err)
+		}
+	} else if kind == "stopped" {
+		if os.Geteuid() != 0 || !lifecycleStoppedCurrent(ctx, p) {
 			return 78
 		}
 	} else if kind == "run" {
@@ -3382,53 +3531,57 @@ func HandleLifecycleGuard(input io.Reader, kind string) int {
 		return 78
 	}
 	if ctx.Err() != nil {
+		if kind == "package" {
+			return lifecyclePackageRefusal("admission_deadline", "N100006")
+		}
 		return 78
 	}
 	return 0
 }
 func BootstrapLifecycle(ctx context.Context) (*LifecyclePair, error) {
+	var diagnosticOrigin error
 	if os.Geteuid() != 0 || ctx.Err() != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000346", ErrLifecycle, diagnosticOrigin)
 	}
 	for _, path := range []string{"/opt/happyranch", "/etc/systemd/system/happyranch-connector.service", "/etc/systemd/system/happyranch-tsnet-sidecar.service", "/etc/systemd/system/happyranch-managed.target", "/etc/systemd/system/happyranch-tsnet-sidecar.service.d", "/etc/systemd/system/happyranch-connector.service.d", "/etc/systemd/system/happyranch-managed.target.d"} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000347", ErrLifecycle, diagnosticOrigin)
 		}
 	}
 	entries, err := os.ReadDir("/")
 	if err != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000348", ErrLifecycle, err, diagnosticOrigin)
 	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".happyranch-") {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000349", ErrLifecycle, diagnosticOrigin)
 		}
 	}
 	// A fresh explicit bootstrap has no installed/loaded image. Actual PID1
 	// absence, jobs and cgroups are independent of those empty disk paths.
 	for _, unit := range []string{"happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target"} {
 		if !lifecyclePackageManagerAbsent(ctx, unit, true) {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000350", ErrLifecycle, diagnosticOrigin)
 		}
-		if unit != "happyranch-managed.target" && !LifecycleAbsent(ctx, unit, nil) {
-			return nil, ErrLifecycle
+		if unit != "happyranch-managed.target" && !lifecycleDiagnosticCheck(&diagnosticOrigin, LifecycleAbsentError(ctx, unit, nil)) {
+			return nil, lifecycleDiagnosticError("G000351", ErrLifecycle, diagnosticOrigin)
 		}
 	}
 	account, err := user.Lookup("happyranch")
 	if err != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000352", ErrLifecycle, err, diagnosticOrigin)
 	}
 	uid, err := strconv.Atoi(account.Uid)
 	if err != nil || uid <= 0 {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000353", ErrLifecycle, diagnosticOrigin)
 	}
 	gid, err := strconv.Atoi(account.Gid)
 	if err != nil || gid <= 0 {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000354", ErrLifecycle, diagnosticOrigin)
 	}
 	parent, err := lifecycleDirectory("/var/lib")
 	if err != nil {
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000355", err, diagnosticOrigin)
 	}
 	defer parent.Close()
 	for _, path := range []string{ManagedMainDirectory, ManagedSidecarDirectory} {
@@ -3437,16 +3590,16 @@ func BootstrapLifecycle(ctx context.Context) (*LifecyclePair, error) {
 		}
 		dir, e := lifecycleDirectory(path)
 		if e != nil {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000356", ErrLifecycle, e, diagnosticOrigin)
 		}
 		names, e := dir.Readdirnames(128)
 		dir.Close()
 		if e != nil && e != io.EOF || len(names) == 128 {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000357", ErrLifecycle, diagnosticOrigin)
 		}
 		for _, name := range names {
 			if name == managedRecord || name == managedLock || strings.HasPrefix(name, ".lifecycle-") {
-				return nil, ErrLifecycle
+				return nil, lifecycleDiagnosticError("G000358", ErrLifecycle, diagnosticOrigin)
 			}
 		}
 	}
@@ -3456,7 +3609,7 @@ func BootstrapLifecycle(ctx context.Context) (*LifecyclePair, error) {
 	// renamed lock, public path/FD option or temporary namespace is introduced.
 	fd, err := unix.Openat(int(parent.Fd()), ".", unix.O_TMPFILE|unix.O_RDWR|unix.O_CLOEXEC, 0600)
 	if err != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000359", ErrLifecycle, err, diagnosticOrigin)
 	}
 	p := &LifecyclePair{lock: os.NewFile(uintptr(fd), managedLock)}
 	success := false
@@ -3466,7 +3619,7 @@ func BootstrapLifecycle(ctx context.Context) (*LifecyclePair, error) {
 		}
 	}()
 	if unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB) != nil || p.lock.Chown(uid, gid) != nil || ctx.Err() != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000360", ErrLifecycle, diagnosticOrigin)
 	}
 	// Establish the fixed discoverable inode immediately after acquiring its
 	// parent. An exclusive mkdir loser does no mutation; an existing parent
@@ -3475,71 +3628,71 @@ func BootstrapLifecycle(ctx context.Context) (*LifecyclePair, error) {
 	st, e := os.Lstat(ManagedMainDirectory)
 	if os.IsNotExist(e) {
 		if unix.Mkdirat(int(parent.Fd()), filepath.Base(ManagedMainDirectory), 0700) != nil || os.Chown(ManagedMainDirectory, uid, gid) != nil {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000361", ErrLifecycle, diagnosticOrigin)
 		}
 	} else if e != nil || !st.IsDir() || st.Mode().Perm() != 0700 {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000362", ErrLifecycle, diagnosticOrigin)
 	}
 	p.mainDir, err = lifecycleDirectory(ManagedMainDirectory)
 	if err != nil {
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000363", err, diagnosticOrigin)
 	}
 	for _, name := range []string{managedRecord, managedLock} {
 		if _, e := os.Lstat(filepath.Join(ManagedMainDirectory, name)); !os.IsNotExist(e) {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000364", ErrLifecycle, diagnosticOrigin)
 		}
 	}
 	if ctx.Err() != nil || unix.Linkat(fd, "", int(p.mainDir.Fd()), managedLock, unix.AT_EMPTY_PATH) != nil || p.mainDir.Sync() != nil || parent.Sync() != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000365", ErrLifecycle, diagnosticOrigin)
 	}
 	st, e = os.Lstat(ManagedSidecarDirectory)
 	if os.IsNotExist(e) {
 		if ctx.Err() != nil || unix.Mkdirat(int(parent.Fd()), filepath.Base(ManagedSidecarDirectory), 0700) != nil || os.Chown(ManagedSidecarDirectory, uid, gid) != nil {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000366", ErrLifecycle, diagnosticOrigin)
 		}
 	} else if e != nil || !st.IsDir() || st.Mode().Perm() != 0700 {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000367", ErrLifecycle, diagnosticOrigin)
 	}
 	p.sideDir, err = lifecycleDirectory(ManagedSidecarDirectory)
 	if err != nil {
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000368", err, diagnosticOrigin)
 	}
 	for _, dir := range []*os.File{p.mainDir, p.sideDir} {
 		names, e := dir.Readdirnames(128)
 		if e != nil && e != io.EOF || len(names) == 128 {
-			return nil, ErrLifecycle
+			return nil, lifecycleDiagnosticError("G000369", ErrLifecycle, diagnosticOrigin)
 		}
 		for _, name := range names {
 			if name == managedRecord || name == managedLock && dir == p.sideDir || strings.HasPrefix(name, ".lifecycle-") {
-				return nil, ErrLifecycle
+				return nil, lifecycleDiagnosticError("G000370", ErrLifecycle, diagnosticOrigin)
 			}
 		}
 	}
 	if parent.Sync() != nil || ctx.Err() != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000371", ErrLifecycle, diagnosticOrigin)
 	}
 	installation, err := NewLifecycleID()
 	if err != nil {
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000372", err, diagnosticOrigin)
 	}
 	operation, err := NewLifecycleID()
 	if err != nil {
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000373", err, diagnosticOrigin)
 	}
 	transition, err := NewLifecycleID()
 	if err != nil {
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000374", err, diagnosticOrigin)
 	}
 	boot, err := LifecycleBoot()
 	if err != nil {
-		return nil, err
+		return nil, lifecycleDiagnosticError("G000375", err, diagnosticOrigin)
 	}
 	policy := LifecyclePolicy{InstallationID: installation, Revision: 1, OperationID: operation, Desired: "stopped", HardBlock: "none"}
 	p.deadline, _ = ctx.Deadline()
 	p.Main = LifecycleMain{Version: 2, Policy: policy, RuntimeBoot: boot, BootTransitionID: transition, Phase: "idle", Clean: true, Block: "none", Rate: LifecycleRate{Boot: boot, Spends: []int64{}}}
 	p.Sidecar = LifecycleSidecar{Version: 2, Policy: policy, RuntimeBoot: boot, BootTransitionID: transition, Halt: true, Outcome: "unstarted", Failure: "none", CloseProof: "none"}
 	if p.WriteSidecar() != nil || p.WriteMain() != nil || ctx.Err() != nil {
-		return nil, ErrLifecycle
+		return nil, lifecycleDiagnosticError("G000376", ErrLifecycle, diagnosticOrigin)
 	}
 	success = true
 	return p, nil
@@ -3548,8 +3701,12 @@ func BootstrapLifecycle(ctx context.Context) (*LifecyclePair, error) {
 // Targets do not expose service-only PID/invocation properties. The package
 // absence reader requests the exact common property set for all three units.
 func lifecyclePackageManagerAbsent(ctx context.Context, unit string, fresh bool) bool {
+	return lifecyclePackageManagerAbsentError(ctx, unit, fresh) == nil
+}
+
+func lifecyclePackageManagerAbsentError(ctx context.Context, unit string, fresh bool) error {
 	if !lifecycleOneOf(unit, "happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target") {
-		return false
+		return lifecycleDiagnosticError("G100201", ErrLifecycle)
 	}
 	names := []string{"LoadState", "FragmentPath", "DropInPaths", "ActiveState", "SubState", "Job"}
 	query, cancel := context.WithTimeout(ctx, time.Second)
@@ -3564,58 +3721,68 @@ func lifecyclePackageManagerAbsent(ctx context.Context, unit string, fresh bool)
 	cmd.Stdout = &output
 	cmd.Stderr = io.Discard
 	if cmd.Run() != nil || query.Err() != nil || output.overflow {
-		return false
+		return lifecycleDiagnosticError("G100202", ErrLifecycle)
 	}
 	raw := output.b.String()
 	if !utf8.ValidString(raw) || !strings.HasSuffix(raw, "\n") {
-		return false
+		return lifecycleDiagnosticError("G100203", ErrLifecycle)
 	}
 	values := map[string]string{}
 	for _, line := range strings.Split(strings.TrimSuffix(raw, "\n"), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok || !lifecycleOneOf(key, names...) {
-			return false
+			return lifecycleDiagnosticError("G100204", ErrLifecycle)
 		}
 		if _, duplicate := values[key]; duplicate {
-			return false
+			return lifecycleDiagnosticError("G100205", ErrLifecycle)
 		}
 		for _, c := range line {
 			if c < 32 || c == 127 {
-				return false
+				return lifecycleDiagnosticError("G100206", ErrLifecycle)
 			}
 		}
 		values[key] = value
 	}
 	if len(values) != len(names) || values["ActiveState"] != "inactive" || values["SubState"] != "dead" || values["Job"] != "" || values["DropInPaths"] != "" {
-		return false
+		return lifecycleDiagnosticError("G100207", ErrLifecycle)
 	}
 	if fresh {
-		return values["LoadState"] == "not-found" && values["FragmentPath"] == "" && ctx.Err() == nil
+		if !(values["LoadState"] == "not-found" && values["FragmentPath"] == "" && ctx.Err() == nil) {
+			return lifecycleDiagnosticError("G100208", ErrLifecycle)
+		}
+		return nil
 	}
-	return (values["LoadState"] == "not-found" && values["FragmentPath"] == "" || values["LoadState"] == "loaded" && values["FragmentPath"] == "/etc/systemd/system/"+unit) && ctx.Err() == nil
+	if !((values["LoadState"] == "not-found" && values["FragmentPath"] == "" || values["LoadState"] == "loaded" && values["FragmentPath"] == "/etc/systemd/system/"+unit) && ctx.Err() == nil) {
+		return lifecycleDiagnosticError("G100209", ErrLifecycle)
+	}
+	return nil
 }
 
 // Package A/B use the SAME current pair and boot. Closed records are never a
 // substitute for actual loaded configuration or fixed manager absence.
 func lifecyclePackageCurrent(ctx context.Context, p *LifecyclePair, stopped bool) bool {
+	return lifecyclePackageCurrentError(ctx, p, stopped) == nil
+}
+
+func lifecyclePackageCurrentError(ctx context.Context, p *LifecyclePair, stopped bool) error {
 	boot, e := LifecycleBoot()
 	now, clockErr := LifecycleNow()
 	if e != nil || clockErr != nil || ctx.Err() != nil || p.Main.Policy != p.Sidecar.Policy || p.Main.Policy.HardBlock != "none" ||
 		p.Main.RuntimeBoot != boot || p.Sidecar.RuntimeBoot != boot || p.Main.Rate.Boot != boot || p.Main.BootTransitionID != p.Sidecar.BootTransitionID ||
 		p.Main.Block != "none" || p.Sidecar.Failure != "none" || p.Main.Phase == "boot_prepared" ||
 		(p.Main.BootSource == nil) != (p.Sidecar.BootSource == nil) {
-		return false
+		return lifecycleDiagnosticError("G100301", ErrLifecycle)
 	}
 	if p.Main.BootSource != nil && *p.Main.BootSource != *p.Sidecar.BootSource {
-		return false
+		return lifecycleDiagnosticError("G100302", ErrLifecycle)
 	}
 	for _, n := range p.Main.Rate.Spends {
 		if n > now {
-			return false
+			return lifecycleDiagnosticError("G100303", ErrLifecycle)
 		}
 	}
 	if p.Main.Rate.LastEndNS != nil && *p.Main.Rate.LastEndNS > now || p.Sidecar.TerminalNS != nil && *p.Sidecar.TerminalNS > now {
-		return false
+		return lifecycleDiagnosticError("G100304", ErrLifecycle)
 	}
 	if !stopped {
 		// A may inhibit a live current owner, but cannot take ownership from a
@@ -3623,55 +3790,58 @@ func lifecyclePackageCurrent(ctx context.Context, p *LifecyclePair, stopped bool
 		if p.Main.Wrapper != nil {
 			pin, e := PinLifecycleProcess(*p.Main.Wrapper)
 			if e != nil {
-				return false
+				return lifecycleDiagnosticError("G100305", ErrLifecycle, e)
 			}
 			e = ValidateLifecyclePin(ctx, pin, "happyranch-connector.service", true)
 			pin.Close()
 			if e != nil {
-				return false
+				return lifecycleDiagnosticError("G100306", ErrLifecycle, e)
 			}
 		} else {
 			props, e := LifecycleUnit(ctx, "happyranch-connector.service")
 			if e != nil || props["MainPID"] != "0" || props["ControlPID"] != "0" {
-				return false
+				return lifecycleDiagnosticError("G100307", ErrLifecycle)
 			}
 		}
 		if p.Sidecar.Binding != nil && !lifecycleOneOf(p.Sidecar.Outcome, "closed", "unstarted") {
 			pin, e := PinLifecycleProcess(*p.Sidecar.Binding)
 			if e != nil {
-				return false
+				return lifecycleDiagnosticError("G100308", ErrLifecycle, e)
 			}
 			e = ValidateLifecyclePin(ctx, pin, "happyranch-tsnet-sidecar.service", true)
 			pin.Close()
 			if e != nil {
-				return false
+				return lifecycleDiagnosticError("G100309", ErrLifecycle, e)
 			}
 		}
 		if p.Main.Sidecar != nil && (p.Sidecar.Binding == nil || *p.Main.Sidecar != *p.Sidecar.Binding) {
-			return false
+			return lifecycleDiagnosticError("G100310", ErrLifecycle)
 		}
 		if p.Sidecar.Outcome == "admitted" && (p.Main.Generation == nil || p.Sidecar.Generation == nil || *p.Main.Generation != *p.Sidecar.Generation) {
-			return false
+			return lifecycleDiagnosticError("G100311", ErrLifecycle)
 		}
 		for _, identity := range []*LifecycleProcess{p.Main.Launcher, p.Main.Worker} {
 			if identity != nil {
 				pin, e := PinLifecycleProcess(*identity)
 				if e != nil {
-					return false
+					return lifecycleDiagnosticError("G100312", ErrLifecycle, e)
 				}
 				e = ValidateLifecyclePin(ctx, pin, "happyranch-connector.service", false)
 				pin.Close()
 				if e != nil {
-					return false
+					return lifecycleDiagnosticError("G100313", ErrLifecycle, e)
 				}
 			}
 		}
-		return ctx.Err() == nil
+		if !(ctx.Err() == nil) {
+			return lifecycleDiagnosticError("G100314", ErrLifecycle)
+		}
+		return nil
 	}
-	if !lifecycleStoppedCurrent(ctx, p) {
-		return false
+	if err := lifecycleStoppedCurrentError(ctx, p); err != nil {
+		return err
 	}
-	return lifecyclePackageManagerAbsent(ctx, "happyranch-managed.target", false)
+	return lifecyclePackageManagerAbsentError(ctx, "happyranch-managed.target", false)
 
 }
 
@@ -3697,16 +3867,23 @@ type lifecyclePackageNativeDiagnostic struct {
 	Close      string   `json:"close"`
 }
 
+type lifecyclePackageRefusalDiagnostic struct {
+	Category string `json:"category"`
+	Site     string `json:"site"`
+}
+
 type lifecyclePackageChildDiagnostic struct {
-	Reason          *string                           `json:"reason"`
-	DiagnosticState string                            `json:"diagnostic_state"`
-	HelperExit      *int                              `json:"helper_exit"`
-	DeadlineElapsed bool                              `json:"deadline_elapsed"`
-	KillRequested   bool                              `json:"kill_requested"`
-	Reaped          bool                              `json:"reaped"`
-	ReapExit        *int                              `json:"reap_exit"`
-	Native          lifecyclePackageNativeDiagnostic  `json:"native"`
-	Process         lifecyclePackageProcessDiagnostic `json:"process"`
+	Refusal         *lifecyclePackageRefusalDiagnostic `json:"refusal,omitempty"`
+	Boundary        *lifecyclePackageRefusalDiagnostic `json:"boundary,omitempty"`
+	Reason          *string                            `json:"reason"`
+	DiagnosticState string                             `json:"diagnostic_state"`
+	HelperExit      *int                               `json:"helper_exit"`
+	DeadlineElapsed bool                               `json:"deadline_elapsed"`
+	KillRequested   bool                               `json:"kill_requested"`
+	Reaped          bool                               `json:"reaped"`
+	ReapExit        *int                               `json:"reap_exit"`
+	Native          lifecyclePackageNativeDiagnostic   `json:"native"`
+	Process         lifecyclePackageProcessDiagnostic  `json:"process"`
 }
 
 const lifecyclePackageEmbeddedError = "Could not load PyInstaller's embedded PKG archive from the executable (<redacted>)"
@@ -3847,11 +4024,15 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 		if deadline, bounded := ctx.Deadline(); bounded {
 			diagnostic.DeadlineElapsed = !time.Now().Before(deadline)
 		}
+		if diagnostic.Refusal == nil && failure != nil {
+			diagnostic.Refusal = lifecycleDiagnosticRefusal(failure)
+			diagnostic.Boundary = lifecycleDiagnosticBoundary(failure)
+		}
 		diagnostic.finishNative()
 	}()
 	path, err := images.path(ctx, site)
 	if err != nil {
-		return diagnostic, ErrLifecycle
+		return diagnostic, lifecycleDiagnosticError("G000377", err)
 	}
 	// Only the exec pathname changes. Sealed inputs and borrowed SAME-OFD
 	// mappings remain slots3/4/5/6; no named writable handle reaches a child.
@@ -3869,7 +4050,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 	}
 	reader, writer, err := os.Pipe()
 	if err != nil {
-		return diagnostic, ErrLifecycle
+		return diagnostic, lifecycleDiagnosticError("G000378", ErrLifecycle, err)
 	}
 	var closeOnce sync.Once
 	var readerCloseErr error
@@ -3886,7 +4067,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 		if writer.Close() != nil {
 			diagnostic.Process.WriterClose = "error"
 		}
-		return diagnostic, ErrLifecycle
+		return diagnostic, lifecycleDiagnosticError("G000379", ErrLifecycle)
 	}
 	closedOnCancel := make(chan struct{})
 	stopRead := context.AfterFunc(ctx, func() { closeReader(); close(closedOnCancel) })
@@ -3910,11 +4091,13 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 		default:
 			killState.Store(4)
 		}
-		return err
+		return lifecycleDiagnosticError("G000380", err)
 	}
 	type observation struct {
 		native       lifecyclePackageNativeDiagnostic
 		reason       string
+		refusal      *lifecyclePackageRefusalDiagnostic
+		boundary     *lifecyclePackageRefusalDiagnostic
 		privateCount int
 	}
 	observed := make(chan observation, 1)
@@ -3972,12 +4155,28 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 				} else if length <= len(frame) {
 					raw := string(frame[:used])
 					reason := strings.TrimSuffix(strings.TrimPrefix(raw, "managed_private_refusal:"), "\n")
-					if raw == "managed_private_refusal:"+reason+"\n" && lifecyclePackagePrivateReason(reason) {
+					var refusal, boundary *lifecyclePackageRefusalDiagnostic
+					fields := strings.Split(reason, ":")
+					valid := len(fields) == 1
+					if (len(fields) == 3 || len(fields) == 5) && lifecyclePackagePrivateSites[fields[2]] == fields[1] && fields[1] != "" {
+						reason = fields[0]
+						refusal = &lifecyclePackageRefusalDiagnostic{Category: fields[1], Site: fields[2]}
+						valid = true
+						if len(fields) == 5 {
+							valid = lifecyclePackagePrivateSites[fields[4]] == fields[3] && fields[3] != ""
+							if valid {
+								boundary = &lifecyclePackageRefusalDiagnostic{Category: fields[3], Site: fields[4]}
+							}
+						}
+					}
+					if strings.HasPrefix(raw, "managed_private_refusal:") && strings.HasSuffix(raw, "\n") && valid && lifecyclePackagePrivateReason(reason) {
 						result.privateCount++
 						if result.privateCount == 1 {
 							result.reason = reason
+							result.refusal, result.boundary = refusal, boundary
 						} else {
 							result.reason = ""
+							result.refusal, result.boundary = nil, nil
 							n.loss("CX")
 						}
 					} else if sentence := lifecyclePackageNativeSentence(frame[:used]); sentence != "" {
@@ -4066,12 +4265,22 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 	if result.reason != "" {
 		if diagnostic.Reaped && diagnostic.HelperExit != nil && *diagnostic.HelperExit == 78 {
 			diagnostic.Reason = &result.reason
+			diagnostic.Refusal, diagnostic.Boundary = result.refusal, result.boundary
 		} else {
 			diagnostic.Native.loss("CX")
 		}
 	}
-	if err != nil || closeErr != nil || ctx.Err() != nil {
-		return diagnostic, ErrLifecycle
+	if startErr != nil {
+		return diagnostic, lifecycleDiagnosticError("G200001", ErrLifecycle)
+	}
+	if err != nil {
+		return diagnostic, lifecycleDiagnosticError("G200002", ErrLifecycle, err)
+	}
+	if closeErr != nil {
+		return diagnostic, lifecycleDiagnosticError("G200003", ErrLifecycle)
+	}
+	if ctx.Err() != nil {
+		return diagnostic, lifecycleDiagnosticError("G200004", ErrLifecycle)
 	}
 	return diagnostic, nil
 }
@@ -4119,7 +4328,13 @@ func lifecyclePackageChildRefusal(reason string, diagnostic lifecyclePackageChil
 
 // lifecyclePackageRefusal emits only the closed call-site vocabulary. Nested
 // child records use the separate closed serializer; no error/operand is exposed.
-func lifecyclePackageRefusal(reason string) int {
+func lifecyclePackageRefusal(reason, boundary string, causes ...error) int {
+	site := boundary
+	if len(causes) == 1 {
+		if refusal := lifecycleDiagnosticRefusal(causes[0]); refusal != nil {
+			site = refusal.Site
+		}
+	}
 	switch reason {
 	case "entry_context", "effective_uid", "operation", "incoming_image",
 		"admission_deadline", "executable_open", "bootstrap_operation",
@@ -4128,7 +4343,7 @@ func lifecyclePackageRefusal(reason string) int {
 		"stopped_admission_deadline", "stopped_current", "stopped_admission_child",
 		"retire_policy", "package_body", "final_refresh", "final_current":
 		// One raw write avoids os.File's EPIPE termination path; no retry.
-		_, _ = unix.Write(2, []byte("managed_package_refusal:"+reason+"\n"))
+		_, _ = unix.Write(2, []byte("managed_package_refusal:"+reason+":"+site+":"+boundary+"\n"))
 	}
 	return 78
 }
@@ -4137,14 +4352,14 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	entry := time.Now()
 	ctx, cancel, request, err := lifecycleEntryContext(input, 180*time.Second)
 	if err != nil {
-		return lifecyclePackageRefusal("entry_context")
+		return lifecyclePackageRefusal("entry_context", "N000001", err)
 	}
 	defer cancel()
 	if os.Geteuid() != 0 {
-		return lifecyclePackageRefusal("effective_uid")
+		return lifecyclePackageRefusal("effective_uid", "N000002")
 	}
 	if !lifecycleOneOf(request.Operation, "package-install", "package-uninstall") {
-		return lifecyclePackageRefusal("operation")
+		return lifecyclePackageRefusal("operation", "N000003")
 	}
 	// A includes input authentication, bootstrap/acquisition and source/loaded
 	// admission, never ten new seconds after a blocked OpenLifecycle.
@@ -4152,30 +4367,32 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	defer cancelA()
 	incoming := os.NewFile(3, "fixed-incoming-package")
 	connector := os.NewFile(4, "fixed-incoming-connector")
-	if request.Operation == "package-install" && lifecycleIncoming(incoming, connector) != nil {
-		return lifecyclePackageRefusal("incoming_image")
+	if request.Operation == "package-install" {
+		if err := lifecycleIncoming(incoming, connector); err != nil {
+			return lifecyclePackageRefusal("incoming_image", "N000004", err)
+		}
 	}
 	if a.Err() != nil {
-		return lifecyclePackageRefusal("admission_deadline")
+		return lifecyclePackageRefusal("admission_deadline", "N000005")
 	}
 	executable, err := os.Open("/proc/self/exe")
 	if err != nil {
-		return lifecyclePackageRefusal("executable_open")
+		return lifecyclePackageRefusal("executable_open", "N000006", err)
 	}
 	defer executable.Close()
 	var p *LifecyclePair
 	if _, e := os.Lstat(ManagedMainDirectory + "/" + managedRecord); os.IsNotExist(e) {
 		if request.Operation != "package-install" {
-			return lifecyclePackageRefusal("bootstrap_operation")
+			return lifecyclePackageRefusal("bootstrap_operation", "N000007")
 		}
 		p, err = BootstrapLifecycle(a)
 		if err != nil {
-			return lifecyclePackageRefusal("bootstrap_pair")
+			return lifecyclePackageRefusal("bootstrap_pair", "N000008", err)
 		}
 	} else {
 		p, err = OpenLifecycle(a)
 		if err != nil {
-			return lifecyclePackageRefusal("open_pair")
+			return lifecyclePackageRefusal("open_pair", "N000009", err)
 		}
 	}
 	defer func() {
@@ -4183,14 +4400,16 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 			p.Close()
 		}
 	}()
-	if !lifecyclePackageCurrent(a, p, false) {
-		return lifecyclePackageRefusal("admission_current")
+	if e := lifecyclePackageCurrentError(a, p, false); e != nil {
+		return lifecyclePackageRefusal("admission_current", "N000010", e)
 	}
 	// Fully prepare the operation's three distinct images inside ORIGINAL A,
 	// after current proof and before any child, inhibition or manager effect.
 	images, err := lifecyclePreparePackageImages(a, p, connector, request)
 	if err != nil {
 		diagnostic := lifecyclePackageChildInitialDiagnostic()
+		diagnostic.Refusal = lifecycleDiagnosticRefusal(err)
+		diagnostic.Boundary = lifecycleDiagnosticBoundary(err)
 		if deadline, bounded := a.Deadline(); bounded {
 			diagnostic.DeadlineElapsed = !time.Now().Before(deadline)
 		}
@@ -4208,10 +4427,10 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 		p = nil
 		cancelA()
 		if err != nil {
-			return lifecyclePackageRefusal("inhibit_policy")
+			return lifecyclePackageRefusal("inhibit_policy", "N000011", err)
 		}
 		if ctx.Err() != nil {
-			return lifecyclePackageRefusal("inhibit_deadline")
+			return lifecyclePackageRefusal("inhibit_deadline", "N000012")
 		}
 		// A is released before handler progress; this intentional gap is
 		// followed by a fresh B acquisition and complete independent proof.
@@ -4219,40 +4438,42 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 		err = lifecycleManager(manager, "stop")
 		cancelManager()
 		if err != nil {
-			return lifecyclePackageRefusal("manager_stop")
+			return lifecyclePackageRefusal("manager_stop", "N000013", err)
 		}
 		p, err = OpenLifecycle(ctx)
 		if err != nil {
-			return lifecyclePackageRefusal("reacquire_pair")
+			return lifecyclePackageRefusal("reacquire_pair", "N000014", err)
 		}
 	} else {
 		if a.Err() != nil {
-			return lifecyclePackageRefusal("stopped_admission_deadline")
+			return lifecyclePackageRefusal("stopped_admission_deadline", "N000015")
 		}
 		cancelA()
 	}
 	p.deadline, _ = ctx.Deadline()
-	if !lifecyclePackageCurrent(ctx, p, true) {
-		return lifecyclePackageRefusal("stopped_current")
+	if e := lifecyclePackageCurrentError(ctx, p, true); e != nil {
+		return lifecyclePackageRefusal("stopped_current", "N000016", e)
 	}
 	if diagnostic, err := lifecyclePackageChild(ctx, p, incoming, connector, executable, request, images, lifecycleImageStoppedAdmission, true, io.Discard); err != nil {
 		return lifecyclePackageChildRefusal("stopped_admission_child", diagnostic)
 	} else {
 		lifecyclePackageChildFrame("stopped_admission_child", diagnostic, false)
 	}
-	if request.Operation == "package-uninstall" && p.policyChange("retired", false, request.OperationID) != nil {
-		return lifecyclePackageRefusal("retire_policy")
+	if request.Operation == "package-uninstall" {
+		if err := p.policyChange("retired", false, request.OperationID); err != nil {
+			return lifecyclePackageRefusal("retire_policy", "N000017", err)
+		}
 	}
 	if diagnostic, err := lifecyclePackageChild(ctx, p, incoming, connector, executable, request, images, lifecycleImageBody, false, output); err != nil {
 		return lifecyclePackageChildRefusal("package_body", diagnostic)
 	} else {
 		lifecyclePackageChildFrame("package_body", diagnostic, false)
 	}
-	if p.Refresh() != nil {
-		return lifecyclePackageRefusal("final_refresh")
+	if err := p.Refresh(); err != nil {
+		return lifecyclePackageRefusal("final_refresh", "N000018", err)
 	}
-	if !lifecyclePackageCurrent(ctx, p, true) {
-		return lifecyclePackageRefusal("final_current")
+	if e := lifecyclePackageCurrentError(ctx, p, true); e != nil {
+		return lifecyclePackageRefusal("final_current", "N000019", e)
 	}
 	return 0
 }
@@ -4616,7 +4837,7 @@ func lifecycleBootIdentity() error {
 // package-input boundary; it is not a nonsecret certificate for arbitrary input.
 func lifecycleIncoming(packageFile, connector *os.File) error {
 	if _, err := packageFile.Seek(0, io.SeekStart); err != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000428", ErrLifecycle)
 	}
 	expected := map[string]int64{
 		"bin/happyranch-tsnet-sidecar": 0755, "bin/happyranch-connector": 0755,
@@ -4635,40 +4856,40 @@ func lifecycleIncoming(packageFile, connector *os.File) error {
 			break
 		}
 		if err != nil {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000429", ErrLifecycle, err)
 		}
 		name := strings.TrimPrefix(header.Name, "happyranch-linux-amd64/")
 		mode, ok := expected[name]
 		if !ok || name == header.Name || header.Typeflag != tar.TypeReg || header.Mode != mode || header.Uid != 0 || header.Gid != 0 || header.Uname != "root" || header.Gname != "root" || header.Size <= 0 || header.Size > 256<<20 {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000430", ErrLifecycle)
 		}
 		if _, seen := hashes[name]; seen {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000431", ErrLifecycle)
 		}
 		total += header.Size
 		if total > 512<<20 {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000432", ErrLifecycle)
 		}
 		hash := sha256.New()
 		if name == "manifest.json" {
 			if header.Size > 16384 {
-				return ErrLifecycle
+				return lifecycleDiagnosticError("G000433", ErrLifecycle)
 			}
 			manifest, err = io.ReadAll(reader)
 			if err != nil || int64(len(manifest)) != header.Size {
-				return ErrLifecycle
+				return lifecycleDiagnosticError("G000434", ErrLifecycle)
 			}
 			hash.Write(manifest)
 		} else {
 			count, err := io.Copy(hash, reader)
 			if err != nil || count != header.Size {
-				return ErrLifecycle
+				return lifecycleDiagnosticError("G000435", ErrLifecycle)
 			}
 		}
 		hashes[name] = hex.EncodeToString(hash.Sum(nil))
 	}
 	if len(hashes) != len(expected) {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000436", ErrLifecycle)
 	}
 	var m struct {
 		SchemaVersion int            `json:"schema_version"`
@@ -4686,36 +4907,36 @@ func lifecycleIncoming(packageFile, connector *os.File) error {
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&m) != nil || m.SchemaVersion != 1 || m.Version == "" || m.Architecture != "linux-amd64" || m.Count <= 0 || len(m.Files) != 9 ||
 		len(m.Contract) != 3 || m.Contract["lifecycle"] != 2 || m.Contract["child_health"] != 2 || m.Contract["recovery_diagnostics"] != 2 {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000437", ErrLifecycle)
 	}
 	seen := map[string]bool{}
 	for _, entry := range m.Files {
 		if seen[entry.Path] || entry.Path == "manifest.json" || hashes[entry.Path] != entry.SHA256 || entry.Mode != fmt.Sprintf("0o%o", expected[entry.Path]) {
-			return ErrLifecycle
+			return lifecycleDiagnosticError("G000438", ErrLifecycle)
 		}
 		seen[entry.Path] = true
 	}
 	if _, err := connector.Seek(0, io.SeekStart); err != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000439", ErrLifecycle)
 	}
 	hash := sha256.New()
 	if _, err := io.Copy(hash, io.LimitReader(connector, 256<<20)); err != nil || hex.EncodeToString(hash.Sum(nil)) != hashes["bin/happyranch-connector"] {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000440", ErrLifecycle)
 	}
 	self, err := os.Open("/proc/self/exe")
 	if err != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000441", ErrLifecycle, err)
 	}
 	defer self.Close()
 	hash = sha256.New()
 	if _, err = io.Copy(hash, io.LimitReader(self, 256<<20)); err != nil || hex.EncodeToString(hash.Sum(nil)) != hashes["bin/happyranch-tsnet-sidecar"] {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000442", ErrLifecycle)
 	}
 	if _, err = packageFile.Seek(0, io.SeekStart); err != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000443", ErrLifecycle)
 	}
 	if _, err = connector.Seek(0, io.SeekStart); err != nil {
-		return ErrLifecycle
+		return lifecycleDiagnosticError("G000444", ErrLifecycle)
 	}
 	return nil
 }

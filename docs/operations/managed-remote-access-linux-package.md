@@ -1528,3 +1528,16 @@ Accepted13, A/B, original deadlines, custody and self-heal/reset579 behavior are
 unchanged. Publication/execution/cleanup HELD; UNKNOWN12372 and all original
 failure/consumed evidence persist. Root still owes renewed complete independent
 immutable-final review, same-subject SOURCE/STATIC QA and substantive delivery.
+
+
+## Local private-refusal source check (THR327seq82)
+
+Run `python app/linux/package/check_refusal_sites.py` for the expressly authorized
+literal uniqueness check. The check reads the actual Python/native allocations;
+it proves identity uniqueness only. Private diagnostic origin and later boundary
+are closed category/site pairs, retained by the installer checkpoint and primitive
+fallback. Historical missing origins remain unknown. The canonical private
+contract is [the refusal identity correction](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#private-refusal-identity-correction--thr327seq82--root14190).
+Python units remain retired, suspended proofs are not run and general integration
+including callback/lifespan/SessionTracker remains SKIPPED under THR243seq42.
+No managed installation, E2E, publication or hosted allocation follows this check.

@@ -1,5 +1,45 @@
 # Managed Remote Access — Normative Contract
 
+## Private refusal identity correction — THR327seq82 / ROOT14190
+
+This source correction continues the same delivery goal and preserves every
+historical failure and unknown hosted site. Explicit Python refusals and reached
+operational boundaries carry adjacent fixed category/site literals. Native error
+returns preserve their original error text/unwrapping; reached boolean refusal
+readers have error-returning diagnostic owners and equivalent Boolean adapters.
+The source literals own identity. The closed receive vocabularies validate private
+transport only; they contain no source coordinates, traceback lookup or authority.
+No generator is required or shipped. Sites stay stable when surrounding code moves.
+The package-only fixed guard probe captures the same bounded private stderr
+grammar within its original deadline, retains its actual helper/reap facts and
+returns a validated native origin through Python without changing guard authority.
+
+Private child records may add `refusal` and `boundary`, each exactly
+`{category,site}` from the closed vocabulary. `refusal` retains the earlier marked
+origin; `boundary` distinguishes a later failing return/cleanup boundary when
+known. Historical envelopes remain explicit readers and supply no invented sites.
+Unknown or unentered Python remains unknown or unentered. Existing native
+sentences, process facts, reasons, loss codes, frame/stream/receipt caps and actual
+launch/read/wait/reap/close/deadline facts retain their meanings. No exception
+text, operand, path, environment, credential or arbitrary child bytes are emitted.
+The installer checkpoint and primitive fallback accept the same closed literals;
+a failed serializer/save remains an independent collection loss, never success.
+
+The installed-contract query still uses its original fixed systemctl command,
+property set, output cap, original deadline and owned reap. Overflow, expired
+budget, query status1 and other nonzero query statuses now have distinct source
+refusals. The retained preflight's degraded/ready/status1 observation is neither
+proof of the admission failure nor proof of harmlessness. No admission input,
+metadata/no-follow/SAME-OFD/locking/custody/deadline/recovery predicate is relaxed.
+
+The narrow supported check is `python app/linux/package/check_refusal_sites.py`.
+It inspects actual producer literals and detects duplicated identities across
+Python and native source; it does not import product code or retired units, use
+a generated expected table, establish refusal coverage or exercise managed
+behavior. Full independent final-source coverage/propagation review and separate
+scoped QA remain required before any first publication or hosted run. The source
+inventory and all observed transport limitations accompany the local candidate.
+
 ## Authorized installer-only runner — THR327seq68 / ROOT14114
 
 Founder68 authorizes one ordinary nonforce publication from
