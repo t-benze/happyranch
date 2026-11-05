@@ -5380,7 +5380,15 @@ def failure_result_controls() -> dict:
                         elif change == 'anchor-tab': browser['text'] = browser['text'].replace('$ ','$\t',1)
                         elif change == 'anchor-duplicate': browser['text'] += '\n$ '+source_script
                         elif change == 'anchor-overlap': browser['text'] = '$ $ $ \n'
-                        elif change == 'text-dropped-LF': browser['text'] = browser['text'].replace(source_script,source_script[:-1],1)
+                        elif change == 'text-dropped-LF':
+                            # The original suffix starts LF. Deleting only the
+                            # SOURCE's final LF leaves an exact span using that
+                            # suffix byte, which the accepted contract permits.
+                            # Keep the whole prefix/suffix; mark the missing LF
+                            # boundary so this input actually has no full SOURCE.
+                            browser['text'] = browser['text'].replace(
+                                source_script, source_script[:-1] + '[SOURCE final LF absent]', 1)
+                            assert source_script not in browser['text'] and chr(92) in browser['text']
                         elif change == 'text-CRLF': browser['text'] = browser['text'].replace(source_script,source_script.replace('\n','\r\n'),1)
                         elif change in ('source-dropped-LF','source-CRLF','source-tab','source-nonascii'): pass
                         elif change == 'outside-prefix-backslash': browser['text'] = chr(92)+'n'+browser['text']

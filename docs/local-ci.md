@@ -3523,8 +3523,13 @@ LF/CRLF/eligibility/outside-R1, tiny one-/two-backslash and original/decoded/
 boundary/chunk-secret cases. All5660 prior full results,2112 inherited Case plus
 232 direct additions, original source images/types/key-list order and all87
 independent readers remain preservation obligations. Current terminal-source
-pre-fix/restoration/restored-controls/static evidence is PENDING until actual
-owned receipts are authenticated. An earlier overlapping lexical/owner guard
+pre-fix SOURCE refusal and byte-exact restoration were observed. The first full
+restored controls failed: the new dropped-LF input still contained the full
+SOURCE because its original suffix began LF. That fixture now preserves the
+whole prefix/suffix and inserts a literal boundary marker at the missing LF;
+the unchanged assertion requires whole refusal. No production rule was relaxed.
+Corrected-head full controls and static receipts remain PENDING. An earlier
+overlapping lexical/owner guard
 proves whole refusal only; individual predicate, temporal and native proof is
 PROOF NOT RUN. No fit or test-authoring PASS follows from source inspection.
 
