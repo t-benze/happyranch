@@ -83,7 +83,11 @@ func lifecyclePackageGuardValid(raw []byte) bool {
 // The existing bounded stderr owners account for lost/capped delivery.
 func lifecycleDiagnosticLoss(site string, cause error) {
 	if cause != nil && lifecycleDiagnosticActive.Load() {
-		_, _ = unix.Write(2, []byte("managed_diagnostic_loss:"+site+"\n"))
+		observed := site
+		if origin := lifecycleDiagnosticRefusal(cause); origin != nil && origin.Site != site {
+			observed = origin.Site + ":" + site
+		}
+		_, _ = unix.Write(2, []byte("managed_diagnostic_loss:"+observed+"\n"))
 	}
 }
 

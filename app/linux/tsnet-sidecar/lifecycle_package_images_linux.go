@@ -591,10 +591,12 @@ func lifecycleImageUnwind(ctx context.Context, tree *lifecycleImageTree, set *li
 		}
 		member := &set.members[i]
 		if _, err := tree.validate(ctx, &set.ancestry); err != nil {
+			lifecycleDiagnosticLoss("G500055", err)
 			return
 		}
 		dir, err := lifecycleImageOpenDirectory(tree.base, member.name)
 		if err != nil {
+			lifecycleDiagnosticLoss("G500056", err)
 			return
 		}
 		// Reopen handles are read-only; a close error stops all further cleanup.
@@ -602,22 +604,31 @@ func lifecycleImageUnwind(ctx context.Context, tree *lifecycleImageTree, set *li
 			st, e := lifecycleImageStat(dir)
 			if e != nil || !lifecycleImageSame(st, member.directory) ||
 				!(lifecycleImageDirectory(st, 0700) || lifecycleImageDirectory(st, 0500)) || !lifecycleImageEntry(tree.base, member.name, st) {
+				lifecycleDiagnosticLoss("G500057", e)
 				return false
 			}
 			names, e := lifecycleImageNames(ctx, dir, 2)
 			if e != nil {
+				lifecycleDiagnosticLoss("G500058", e)
 				return false
 			}
 			if len(names) == 1 {
 				var image unix.Stat_t
-				if names[0] != "image" || unix.Fstatat(dir.fd(), "image", &image, unix.AT_SYMLINK_NOFOLLOW) != nil ||
+				if names[0] != "image" {
+					return false
+				}
+				err := unix.Fstatat(dir.fd(), "image", &image, unix.AT_SYMLINK_NOFOLLOW)
+				if err != nil ||
 					!lifecycleImageSame(image, member.image) || !(lifecycleImageRegular(image, 0600, st.Dev) || lifecycleImageRegular(image, 0500, st.Dev)) || image.Size < 0 || image.Size > set.size || !lifecycleImageLive(ctx) {
+					lifecycleDiagnosticLoss("G500063", err)
 					return false
 				}
 				if _, e := tree.validate(ctx, &set.ancestry); e != nil || !lifecycleImageEntry(tree.base, member.name, st) {
+					lifecycleDiagnosticLoss("G500059", e)
 					return false
 				}
-				if unix.Unlinkat(dir.fd(), "image", 0) != nil {
+				if err := unix.Unlinkat(dir.fd(), "image", 0); err != nil {
+					lifecycleDiagnosticLoss("G500060", err)
 					return false
 				}
 			}
@@ -627,9 +638,15 @@ func lifecycleImageUnwind(ctx context.Context, tree *lifecycleImageTree, set *li
 			return
 		}
 		var st unix.Stat_t
-		if unix.Fstatat(tree.base.fd(), member.name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil ||
+		err = unix.Fstatat(tree.base.fd(), member.name, &st, unix.AT_SYMLINK_NOFOLLOW)
+		if err != nil ||
 			!lifecycleImageSame(st, member.directory) || !(lifecycleImageDirectory(st, 0700) || lifecycleImageDirectory(st, 0500)) ||
-			!lifecycleImageLive(ctx) || unix.Unlinkat(tree.base.fd(), member.name, unix.AT_REMOVEDIR) != nil {
+			!lifecycleImageLive(ctx) {
+			lifecycleDiagnosticLoss("G500061", err)
+			return
+		}
+		if err := unix.Unlinkat(tree.base.fd(), member.name, unix.AT_REMOVEDIR); err != nil {
+			lifecycleDiagnosticLoss("G500062", err)
 			return
 		}
 	}
