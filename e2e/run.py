@@ -944,11 +944,28 @@ def _evidence_buffer(tokens: list, size: int, ledger: _EvidenceLedger,
 
 
 def _evidence_original(text: str, context: tuple | list, ledger: _EvidenceLedger,
-                       check: Callable[[], None], sanitize: Callable[[str], str]) -> None:
+                       check: Callable[[], None], sanitize: Callable[[str], str],
+                       *, original: _EvidenceJSON | None = None) -> None:
     """Unchanged-safe original JSON spelling, never a decoded-text grant."""
     try:
-        size = _evidence_utf8_size(text, check)
-        ledger.charge(size, 1, check)
+        if original is None:
+            size = _evidence_utf8_size(text, check)
+            ledger.charge(size, 1, check)
+        else:
+            # The completing grammar counted THIS original spelling while
+            # visiting its characters. No second full sizing walk or caller-
+            # supplied size is needed. Keep the guarded handoff and original
+            # reference paid; every sanitizer pass and full comparison below
+            # still runs on the complete image, including JSONL punctuation.
+            ledger.charge(32, 4, check)
+            if (type(original) is not _EvidenceJSON or original.text is not text
+                    or original.ledger is not ledger or original.check is not check
+                    or original.index != len(text)):
+                raise _EvidenceUnsafe('original evidence sizing owner withheld')
+            ledger.charge(8, 1, check)
+            size = original.original_size
+            if type(size) is not int or not len(text) <= size <= 8388608:
+                raise _EvidenceCapacity('evidence capacity refused')
         for secret in context:
             ledger.charge(8, 1, check)
             if secret in text:
@@ -3720,14 +3737,27 @@ class _EvidenceObservations:
                                        4 * len(row) + 4 * len(peer) + 1, self.check)
                     columns = iter(_EvidenceSubmission.detail_fields)
                     for column in row:
-                        if not same(column, next(columns)) or column not in peer:
+                        # Both iterators/lookups above already own these
+                        # references. Omit only same()'s forwarding slots;
+                        # keep complete original key/type/value byte costs.
+                        schema_column = next(columns)
+                        self.ledger.charge((_evidence_utf8_size(column, self.check) if type(column) is str else 8)
+                            + (_evidence_utf8_size(schema_column, self.check) if type(schema_column) is str else 8), 0, self.check)
+                        if type(column) is not type(schema_column) or column != schema_column or column not in peer:
                             raise ValueError('Case direct public order withheld')
+                        left_value = row[column]
                         if column in ('review_required', 'persistent'):
-                            if (type(row[column]) is not bool or row[column] is not False
-                                    or type(peer[column]) is not int or peer[column] != 0
-                                    or not same(row[column], proof[column])):
+                            if (type(left_value) is not bool or left_value is not False
+                                    or type(peer[column]) is not int or peer[column] != 0):
                                 raise ValueError('Case direct public declared flags withheld')
-                        elif not same(row[column], peer[column]):
+                            right_value = proof[column]
+                        else:
+                            right_value = peer[column]
+                        self.ledger.charge((_evidence_utf8_size(left_value, self.check) if type(left_value) is str else 8)
+                            + (_evidence_utf8_size(right_value, self.check) if type(right_value) is str else 8), 0, self.check)
+                        if type(left_value) is not type(right_value) or left_value != right_value:
+                            if column in ('review_required', 'persistent'):
+                                raise ValueError('Case direct public declared flags withheld')
                             raise ValueError('Case direct public full running equality withheld')
                     if (any(type(row[k]) is not str or not row[k] for k in
                             ('id','task_id','agent_name','title','rationale','script_text','interpreter','status','created_at'))
@@ -4328,6 +4358,8 @@ class _EvidenceJSON:
         self.text, self.ledger, self.check, self.index = text, ledger, check, 0
         self.end = len(text)
         self.relay_captured = False
+        ledger.charge(8, 1, check)
+        self.original_size = len(text)
 
     def error(self) -> None:
         # Do not retain the whole refused image in a JSONDecodeError diagnostic.
@@ -4398,6 +4430,13 @@ class _EvidenceJSON:
                 if code < 32 or 0xD800 <= code <= 0xDFFF:
                     self.error()
             width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+            if not escaped and width > 1:
+                # Outside strings accepted JSON syntax is ASCII. Original
+                # codepoint length plus these raw width deltas therefore
+                # counts the full image in this existing preflight. Escaped
+                # Unicode contributes only its original ASCII spelling here.
+                self.ledger.charge(8, 1, self.check)
+                self.original_size += width - 1
             if size <= 1021 < size + width:
                 # Before the first chunk reset, its original fragment state
                 # identifies whether the whole prefix was unescaped. Admit
@@ -5102,7 +5141,7 @@ class _EvidenceJSON:
                 if self.index == len(self.text):
                     break
             if self.relay_captured:
-                _evidence_original(self.text, context, self.ledger, self.check, sanitize)
+                _evidence_original(self.text, context, self.ledger, self.check, sanitize, original=self)
             else:
                 # All decoded scalars have closed. Also check the SAME complete
                 # original, including punctuation and every JSONL record/LF join.

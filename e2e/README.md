@@ -4204,3 +4204,31 @@ convergence, final full accumulated review and separate same-final-head
 final-compound QA remain ROOT work. Original nonrenewing work/facts/copy/carry/
 final-buffer limits and first-error/TB/claim/C8/preservation rules remain. Units
 RETIRED; integration SKIPPED24342/211270-271; Product DAILY19UTC ONLY.
+
+
+At whole-image scan close, the strict JSON parser hands its own original UTF8
+size to the existing unchanged-safe sanitizer. Its original codepoint length
+plus raw nonASCII width deltas are counted during the existing string grammar
+preflight; escaped Unicode counts its ASCII spelling, and all accepted syntax
+outside strings is ASCII. The counter costs8B/1fact before initialization and
+each raw nonASCII increment costs8B/1fact before assignment. The handoff checks
+the actual parser, original string, ledger, eligibility callback and complete
+cursor, paying32B/4facts plus8B/1fact for the original reference. Only the
+separate whole-image sizing traversal and its sizeB/1fact debit disappear on
+this path. Other original-safety callers retain their existing sizing path.
+This is one current parser frame's scalar accounting, never a cross-image cache
+or a supplied byte count. Whole-original secret searches, actual full-image
+sanitizer passes at their original rates, complete safe sizing/equality/residual
+checks, all distinct decoded/SOURCE proofs, late joins and final output-buffer
+charges remain. JSONL includes every original record, punctuation and final LF.
+
+The existing public-row loop compares its schema key and full primitive value
+in its already paid iterator/lookup frame. Each removed helper call loses only
+its16B/2fact forwarding slots; both full original byte costs, strict builtin
+types, key order, SQL-peer equality and declared false/INTEGER0 mappings remain.
+No earlier operation savings are counted again. These source changes establish
+no capacity fit or result PASS: the complete existing aggregate controls and
+full typed/ordered historical result reconciliation must actually complete at
+the original C8388608/F200000/depth64/end before acceptance. Shared parser,
+raw/required-original, sibling/fatal-I-O, prior-file, output/result and C8
+contracts renew alongside the complete Case/public/terminal case inventory.
