@@ -1907,7 +1907,7 @@ for port in 18443 18765 18080 19090 15043 13478; do port_absent "$port" || fail 
 [[ "$(cat /proc/sys/kernel/random/boot_id)" == "$fixture_boot" ]] || fail "fixture boot baseline refused"
 fixture_paths_owned=1
 # First candidate executable entry; loader refusal stops dependent setup/install.
-sudo env "PATH=$PATH" uv run python "$installer_driver" help "$diagnostics/packaged-help.json" "$PACKAGE_TAR" "$work" || exit "$?"
+uv run python "$installer_driver" help "$diagnostics/packaged-help.json" "$PACKAGE_TAR" "$work" || exit "$?"
 
 hs_url="https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/headscale_${HEADSCALE_VERSION}_linux_amd64"
 ts_url="https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz"
