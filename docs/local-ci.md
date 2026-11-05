@@ -1114,6 +1114,27 @@ releases parent S before waiting. Child adoption/OS-state validation/CLOEXEC bef
 observer/exec descendants preserve conditional custody. Ordinary setup decline
 uses original single launch; actual Popen failure/interruption never retries.
 Unknown registration/release/custody stays UNKNOWN; no fork-only/same-UID fence.
+
+The command saves the first actual outgoing exception object and its traceback
+before sender release, phase finalization (including the existing final poll),
+and log context exit. Setup, log-exit and receive errors are captured before
+outer diagnostic release. After that original release, it rethrows the saved
+selection with its original traceback; later finalizer errors remain secondary
+in the native exception context, never the source of the selection. Main then
+captures that outgoing error before action-category latching or formatting.
+With no earlier exception, the actual finalizer failure propagates. Phase fields
+remain the original partial assignments; a failed finalization never fabricates
+the terminal marker or admits receive. Diagnostic release still attempts sender
+then receiver under their existing one-close claims, saving a sender error/TB
+before the receiver attempt and restoring it afterward; a receiver-only failure
+propagates. Successful execution retains log close, receive, outer release,
+action-deadline restoration and the original actual-nonzero-exit failure order.
+This source correction supersedes earlier first-error preservation claims only
+where those claims relied on the unprotected command/endpoint finalizers;
+historical pins, receipts and failures retain their original subjects. Native
+timing/interrupt proof is NOT RUN, and aggregate file controls do not execute
+this command chronology. No repeated-interruption immunity is claimed.
+
 Original adapter decision precedes one charged nonblocking send requiring full
 module/token/frame/W/TB/head/historical-check/nonce AND own complete snapshot
 claim/owner and complete H0 claim/nonce/category/Boolean. H0true/false retain

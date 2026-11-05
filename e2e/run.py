@@ -109,10 +109,19 @@ class _ScenarioDiagnostic:
         return True
 
     def release(self) -> None:
+        sender_failure = None
         try:
             self.release_endpoint("sender")
+        except BaseException as exc:
+            sender_failure = (exc, exc.__traceback__)  # Before receiver finalization.
+            raise
         finally:
-            self.release_endpoint("receiver")
+            try:
+                self.release_endpoint("receiver")
+            finally:
+                if sender_failure is not None:
+                    error, tb = sender_failure
+                    raise error.with_traceback(tb)
 
     def receive(self) -> None:
         # Called ONLY after the original loop's direct exit and original phase
@@ -5502,6 +5511,7 @@ def main() -> int:
             log = root / "raw" / (name + ".txt")
             logs.append(log)
             diagnostic = None
+            command_failure = None
             launch_argv, launch_options = argv, {}  # Disabled fallback chosen BEFORE optional setup.
             try:
                 if name == "scenarios":
@@ -5510,93 +5520,115 @@ def main() -> int:
                         launch_argv = [*argv, "--_diagnostic-fd", str(diagnostic.descriptor)]
                         launch_options = {"pass_fds": (diagnostic.descriptor,)}
                 with log.open("w") as stream:
-                    arm_deadline(end)
                     try:
-                        process = owner.popen(launch_argv, cwd=cwd, env=env, stdout=stream,
-                                                   stderr=subprocess.STDOUT, **launch_options)
-                    finally:
-                        if diagnostic is not None:
-                            diagnostic.release_endpoint("sender")  # Before wait, also on Popen failure.
-                    active_phase = dict(name=name, argv=launch_argv, pid=process.pid, exit=None,
-                                        entered=begin, deadline=end, cap_seconds=cap, allowance_seconds=end - begin)
-                    receipt["phases"].append(active_phase)
-                    try:
-                        if name == "scenarios" and args.exercise == "baseline":
-                            # Numeric exclusion is recorded even if generation binding
-                            # fails. Unknown numeric identity can never enable probes.
-                            owner.evidence_phase_pid = process.pid if type(process.pid) is int and 0 < process.pid < 2**64 else None
-                            owner.evidence_original_phase = active_phase
-                            phase_reads = []
-                            for bracket in (0, 1):
+                        arm_deadline(end)
+                        try:
+                            process = owner.popen(launch_argv, cwd=cwd, env=env, stdout=stream,
+                                                       stderr=subprocess.STDOUT, **launch_options)
+                        except BaseException as exc:
+                            command_failure = (exc, exc.__traceback__)  # Before sender release.
+                            raise
+                        finally:
+                            if diagnostic is not None:
+                                diagnostic.release_endpoint("sender")  # Before wait, also on Popen failure.
+                        active_phase = dict(name=name, argv=launch_argv, pid=process.pid, exit=None,
+                                            entered=begin, deadline=end, cap_seconds=cap, allowance_seconds=end - begin)
+                        receipt["phases"].append(active_phase)
+                        try:
+                            if name == "scenarios" and args.exercise == "baseline":
+                                # Numeric exclusion is recorded even if generation binding
+                                # fails. Unknown numeric identity can never enable probes.
+                                owner.evidence_phase_pid = process.pid if type(process.pid) is int and 0 < process.pid < 2**64 else None
+                                owner.evidence_original_phase = active_phase
+                                phase_reads = []
+                                for bracket in (0, 1):
+                                    ownership_budget["clocks"] += 1
+                                    at = time.monotonic()
+                                    observation = None
+                                    if at < end and owner.evidence_phase_pid is not None:
+                                        ownership_budget["stats"] += 1
+                                        try:
+                                            with open(f"/proc/{process.pid}/stat", "rb", buffering=0) as stream:
+                                                raw = stream.read(4097)
+                                        except TimeoutError:
+                                            raise
+                                        except OSError:
+                                            pass
+                                        else:
+                                            if (0 < len(raw) <= 4096 and raw.endswith(b"\n")
+                                                    and raw.startswith(str(process.pid).encode("ascii") + b" (") and b") " in raw):
+                                                tail = raw.rsplit(b") ", 1)[1].split()
+                                                if (len(tail) >= 20 and tail[0] in (b"R", b"S", b"D", b"Z", b"T", b"t", b"W", b"X", b"x", b"K", b"P", b"I")
+                                                        and 1 <= len(tail[1]) <= 20 and all(48 <= c <= 57 for c in tail[1]) and int(tail[1]) < 2**64
+                                                        and 1 <= len(tail[19]) <= 20 and 49 <= tail[19][0] <= 57
+                                                        and all(48 <= c <= 57 for c in tail[19]) and int(tail[19]) < 2**64):
+                                                    observation = (tail[19].decode("ascii"), int(tail[1]))
+                                    phase_reads.append(observation)
                                 ownership_budget["clocks"] += 1
-                                at = time.monotonic()
-                                observation = None
-                                if at < end and owner.evidence_phase_pid is not None:
-                                    ownership_budget["stats"] += 1
-                                    try:
-                                        with open(f"/proc/{process.pid}/stat", "rb", buffering=0) as stream:
-                                            raw = stream.read(4097)
-                                    except TimeoutError:
-                                        raise
-                                    except OSError:
-                                        pass
-                                    else:
-                                        if (0 < len(raw) <= 4096 and raw.endswith(b"\n")
-                                                and raw.startswith(str(process.pid).encode("ascii") + b" (") and b") " in raw):
-                                            tail = raw.rsplit(b") ", 1)[1].split()
-                                            if (len(tail) >= 20 and tail[0] in (b"R", b"S", b"D", b"Z", b"T", b"t", b"W", b"X", b"x", b"K", b"P", b"I")
-                                                    and 1 <= len(tail[1]) <= 20 and all(48 <= c <= 57 for c in tail[1]) and int(tail[1]) < 2**64
-                                                    and 1 <= len(tail[19]) <= 20 and 49 <= tail[19][0] <= 57
-                                                    and all(48 <= c <= 57 for c in tail[19]) and int(tail[19]) < 2**64):
-                                                observation = (tail[19].decode("ascii"), int(tail[1]))
-                                phase_reads.append(observation)
-                            ownership_budget["clocks"] += 1
-                            binding_at = time.monotonic()
-                            if (owner.evidence_binding is not None and phase_reads[0] is not None
-                                    and phase_reads[0] == phase_reads[1]
-                                    and phase_reads[0] == (owner.pids.get(process.pid), owner.evidence_binding["launcher"]["pid"])
-                                    and type(begin) in (int, float) and type(end) in (int, float)
-                                    and 0 <= begin <= binding_at < end <= 9007199254740991
-                                    and cap == 480 and end == min(begin + 480, action_end)):
-                                owner.evidence_phase = dict(
-                                    name="scenarios", allocation_state="bound", reason="none",
-                                    controller=dict(pid=process.pid, start=phase_reads[0][0]), entered=begin, deadline=end,
-                                    outcome="partial", exit=None, finished=None, seconds=None, interrupted=None)
-                                owner.evidence_active_open = True  # Immutable allocation complete LAST.
-                        while process.poll() is None:
-                            if time.monotonic() >= end:
-                                raise TimeoutError(f"{name} action deadline")
-                            ready = root / "cancellation-ready.json"
-                            if args.exercise == "cancellation" and ready.exists() and not (output / "active.json").exists():
-                                witness = json.loads(ready.read_text())
-                                owner.sample()
-                                with owner.lock:
-                                    if (owner.pids.get(witness["provider"]["pid"]) == witness["provider"]["pid_start"]
-                                            and owner.units and owner.groups):
-                                        active = dict(witness, launcher=dict(pid=os.getpid(), start=identity(os.getpid())),
-                                                      owned=dict(identities=dict(owner.pids), units=sorted(owner.units),
-                                                                 groups=sorted(owner.groups)), source_sha=receipt["source_sha"])
-                                        temporary = output / "active.tmp"
-                                        temporary.write_text(json.dumps(active, indent=2))
-                                        temporary.replace(output / "active.json")
-                            time.sleep(0.02)
-                        code = process.returncode
-                        active_phase["exit"] = code
-                    finally:
-                        if name == "scenarios" and args.exercise == "baseline":
-                            owner.evidence_active_open = False
-                        active_phase["finished"] = time.monotonic()
-                        active_phase["seconds"] = active_phase["finished"] - begin
-                        active_phase["interrupted"] = process.poll() is None
-                        if name == "scenarios" and args.exercise == "baseline":
-                            # This marker is reached only after ALL original phase
-                            # assignments. No extra poll, decode or status transfer.
-                            owner.evidence_terminal = True
+                                binding_at = time.monotonic()
+                                if (owner.evidence_binding is not None and phase_reads[0] is not None
+                                        and phase_reads[0] == phase_reads[1]
+                                        and phase_reads[0] == (owner.pids.get(process.pid), owner.evidence_binding["launcher"]["pid"])
+                                        and type(begin) in (int, float) and type(end) in (int, float)
+                                        and 0 <= begin <= binding_at < end <= 9007199254740991
+                                        and cap == 480 and end == min(begin + 480, action_end)):
+                                    owner.evidence_phase = dict(
+                                        name="scenarios", allocation_state="bound", reason="none",
+                                        controller=dict(pid=process.pid, start=phase_reads[0][0]), entered=begin, deadline=end,
+                                        outcome="partial", exit=None, finished=None, seconds=None, interrupted=None)
+                                    owner.evidence_active_open = True  # Immutable allocation complete LAST.
+                            while process.poll() is None:
+                                if time.monotonic() >= end:
+                                    raise TimeoutError(f"{name} action deadline")
+                                ready = root / "cancellation-ready.json"
+                                if args.exercise == "cancellation" and ready.exists() and not (output / "active.json").exists():
+                                    witness = json.loads(ready.read_text())
+                                    owner.sample()
+                                    with owner.lock:
+                                        if (owner.pids.get(witness["provider"]["pid"]) == witness["provider"]["pid_start"]
+                                                and owner.units and owner.groups):
+                                            active = dict(witness, launcher=dict(pid=os.getpid(), start=identity(os.getpid())),
+                                                          owned=dict(identities=dict(owner.pids), units=sorted(owner.units),
+                                                                     groups=sorted(owner.groups)), source_sha=receipt["source_sha"])
+                                            temporary = output / "active.tmp"
+                                            temporary.write_text(json.dumps(active, indent=2))
+                                            temporary.replace(output / "active.json")
+                                time.sleep(0.02)
+                            code = process.returncode
+                            active_phase["exit"] = code
+                        except BaseException as exc:
+                            command_failure = (exc, exc.__traceback__)  # Before phase finalization/poll.
+                            raise
+                        finally:
+                            if name == "scenarios" and args.exercise == "baseline":
+                                owner.evidence_active_open = False
+                            active_phase["finished"] = time.monotonic()
+                            active_phase["seconds"] = active_phase["finished"] - begin
+                            active_phase["interrupted"] = process.poll() is None
+                            if name == "scenarios" and args.exercise == "baseline":
+                                # This marker is reached only after ALL original phase
+                                # assignments. No extra poll, decode or status transfer.
+                                owner.evidence_terminal = True
+                    except BaseException as exc:
+                        if command_failure is None:
+                            command_failure = (exc, exc.__traceback__)  # Before log __exit__.
+                        raise
                 if diagnostic is not None:
                     diagnostic.receive()  # SAME command end/alarm, after actual exit/finalization.
+            except BaseException as exc:
+                if command_failure is None:
+                    command_failure = (exc, exc.__traceback__)  # Before outer diagnostic release.
+                raise
             finally:
-                if diagnostic is not None:
-                    diagnostic.release()
+                try:
+                    if diagnostic is not None:
+                        diagnostic.release()
+                finally:
+                    if command_failure is not None:
+                        # Select from the saved tuple, never from a later context
+                        # chain. Native context retains secondary finalizer errors.
+                        error, tb = command_failure
+                        raise error.with_traceback(tb)
             arm_deadline(action_end)
             if code:
                 raise RuntimeError(f"{name} exited {code}")

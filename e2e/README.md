@@ -1144,6 +1144,26 @@ failure disables diagnostics before that single launch choice; Popen failure
 or interruption never retries. Registration/closure/custody gaps remain
 UNKNOWN. CLOEXEC supplies no fork-only or same-UID interference guarantee.
 
+The command saves the first actual outgoing exception object and its traceback
+before sender release, phase finalization (including the existing final poll),
+and log context exit. Setup, log-exit and receive errors are captured before
+outer diagnostic release. After that original release, it rethrows the saved
+selection with its original traceback; later finalizer errors remain secondary
+in the native exception context, never the source of the selection. Main then
+captures that outgoing error before action-category latching or formatting.
+With no earlier exception, the actual finalizer failure propagates. Phase fields
+remain the original partial assignments; a failed finalization never fabricates
+the terminal marker or admits receive. Diagnostic release still attempts sender
+then receiver under their existing one-close claims, saving a sender error/TB
+before the receiver attempt and restoring it afterward; a receiver-only failure
+propagates. Successful execution retains log close, receive, outer release,
+action-deadline restoration and the original actual-nonzero-exit failure order.
+This source correction supersedes earlier first-error preservation claims only
+where those claims relied on the unprotected command/endpoint finalizers;
+historical pins, receipts and failures retain their original subjects. Native
+timing/interrupt proof is NOT RUN, and aggregate file controls do not execute
+this command chronology. No repeated-interruption immunity is claimed.
+
 The original adapter decision is saved byte-identically before optional send.
 The sole sender opportunity charges before validation. Full genuine module/
 token/frame/W/object/savedTB/head/outer/H0 claim/nonce/category/Boolean plus the
