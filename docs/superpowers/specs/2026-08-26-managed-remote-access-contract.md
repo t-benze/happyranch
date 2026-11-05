@@ -1,5 +1,81 @@
 # Managed Remote Access — Normative Contract
 
+## Authorized installer-only runner — THR327seq68 / ROOT14114
+
+Founder68 authorizes one ordinary nonforce publication from
+`fadb8a15da757e72b925454ced867d32e929712e` (B) to the independently reviewed final C
+on existing PR800/ref `task/TASK-6475`, then one automatic installer-only execution
+on the existing disposable Ubuntu24.04/systemd runner. ROOT14114 retains both
+allowances until independent LOCAL full review and separate same-C scoped QA are
+read and accepted. Maker preparation spends neither. Historical publications3/3
+and executions3/3 stay spent. This supersedes earlier local-only/zero-new-allowance
+statements for this successor only; all historical checkpoint bytes/receipts stay.
+
+C must descend from product H `7edfdf4ac8a52a07096614cac27179c27a8cace1`,
+tree `02cfd589a10bee61aa0f188596ebf8b74554ca65`, with only reviewed runner/document
+changes. The two bounded anonymous admission checks preserve the original
+repository/PR/workflow/ref/event/attempt1/live-head/singleton-history protections
+and shared20s/14-request/4MiB-body/224KiB-header account. Checkout composition is
+bound before build and checked again before fixture entry. No future self-SHA,
+manual dispatch, rerun or general reusable admission is supplied. Required ordinary
+PR/push checks remain unconditional Source Boundary Lint and Web Lint(Node24).
+
+The sole entry is `app/linux/package/real_systemd_n3.sh --installer-only`; missing
+or other selection refuses before fixture effects. Preserve stock exact-H builds,
+original synthetic setup and shipping bootstrap: the first managed install calls
+Go BootstrapLifecycle only on proven fresh disk/PID1 absence, establishes actual
+current stopped records, and independently validates installed history AND loaded
+unit mapping at every original Python admission/body boundary. This is distinct
+from the accepted existing-installed/run P0 case, which this fresh bootstrap does
+not claim to reach. Never seed it with a second install or a mocked allocator.
+
+First execute the authentic verified TAR member's harmless `--help` in fresh
+HOME/XDG/temp/cwd/minimal environment,10s/32KiB per stream. Any launch refusal,
+nonzero exit, cap, timeout or unsettled owned wait stops dependent work. Invoke
+shipping `install_linux_package(Path(PACKAGE_TAR), Path('/'), system_service=True)`
+exactly ONCE. Preserve original A10s/outer180s; the190s observer and existing1s
+owned group reap (within the allowed5s) extend no product deadline. Require all
+three actual native child successes, helper/wait0, body commit/cleanup and final
+Refresh/current, then installed-current/stopped and genuine READY. Only then may
+ONE shipping `uninstall_linux_package(Path('/'))` run as fixture teardown with
+its own original limits. No retry or uninstall after failed install/current/READY.
+Original status/diagnostics and independent always uploads survive later errors.
+
+The runner helper bounds observations only; it changes no product lifecycle,
+allocator, source slots or credential handling. Closed original native/nested
+stderr/receipt/capsule evidence remains authoritative. Finite read-only metadata/
+hash snapshots retain names/inodes/lengths/hashes, policy and boot-retention joins
+when available. H has no in-operation preparation-boundary timing reader; record
+that evidence UNAVAILABLE, never infer A feasibility from total time or help0.
+After operation failure retain partial/unknown observations and the first cause.
+No reset/reinstall, denial, same-boot, readiness-loss, recovery/quota/fault or
+Product E2E phase follows. The full-N3 ledger stays incomplete/terminal=null;
+never finalize/validate a full PASS or manufacture skipped observations.
+
+Retain the exact TAR actually supplied outside disposable build scratch, with
+actual C/tree, H/product composition, tool/runtime and new built/consumed
+TAR/connector/helper/wheel identities. Old LOCAL build hashes are history only.
+Independent always uploads preserve both diagnostics and exact installer-input
+package+manifest before owned workflow scratch removal, even if installation or
+another upload fails. Existing same-fixture safe failure/status/owned teardown
+runs on every entered fixture path; original failures and teardown errors remain
+separate. NEVER delete `/run/happyranch-connector-images` names/inodes in the same
+boot, including unused/failed-Start images. Only actual whole disposable-runner
+boot destruction provides eventual image cleanup.
+
+LRA1 writerless-FIFO blocking-open remains HIGH/OPEN/KNOWN/DEFERRED. Inspect only
+fresh metadata/nonblocking preconditions; no FIFO repair/seed/probe or baseline
+acceptance follows absence. Original run41614552623/1 archive-load failure, local
+pre-entry EACCES and consultant-attributed memfd255 keep their actual attribution.
+Accumulated baseline, existing-installed Q1, measured preparation, remote/N6,
+same-boot recovery and reboot acceptance remain open until actual evidence.
+Python units RETIRED; suspended proofs NOT RUN; general integration INCLUDING
+callback/lifespan/SessionTracker SKIPPED THR243seq42. Daily19UTC/nonblocking E2E
+and all product/execution/permission/auth/dependency/hook contracts are unchanged.
+No leaf publication/run reservation, PR mutation, merge, deploy/restart/reboot,
+host sudo or live install is authorized. Local lint/static and safe harness/guard
+exercises are source/fixture evidence only, never managed installer acceptance.
+
 ## Private package executable custody — THR327seq62 / ROOT14036
 
 This local repair contract governs the three nested package children. Earlier

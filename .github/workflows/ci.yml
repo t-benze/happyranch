@@ -50,11 +50,10 @@ jobs:
         run: npm run typecheck
 
   managed-n3-real-systemd:
-    name: Managed N3 PARTIAL installer + same-boot diagnostic (Ubuntu 24.04)
-    # Founder THR327seq43/35/29 / sole ROOT13894. Preparation only:
-    # historical TWO/THREE publications/attempts SPENT; final ONE each remains
-    # manager-owned and UNSPENT until the one normal push after local gates.
-    # No rerun/manual route, future self-SHA, new token scope or cancellation.
+    name: Managed installer-only observation (Ubuntu 24.04)
+    # Founder THR327seq68 / sole ROOT14114: ONE ordinary B->C publication
+    # and ONE automatic installer-only attempt, manager-owned after LOCAL review/QA.
+    # Historical 3/3 remain spent. No rerun/manual route or future self-SHA.
     if: >-
       ${{ github.event_name == 'push' &&
           github.repository == 't-benze/happyranch' &&
@@ -62,7 +61,7 @@ jobs:
           github.event.repository.full_name == github.repository &&
           github.event.created == false && github.event.deleted == false &&
           github.event.forced == false &&
-          github.event.before == 'ea7db390a830e0f22a489789d9c57056930fd38f' &&
+          github.event.before == 'fadb8a15da757e72b925454ced867d32e929712e' &&
           github.event.after != github.event.before &&
           github.event.after == github.sha && github.run_attempt == '1' }}
     concurrency:
@@ -90,7 +89,7 @@ jobs:
           import time
 
           P = "/repos/t-benze/happyranch"
-          H = "ea7db390a830e0f22a489789d9c57056930fd38f"
+          B = "fadb8a15da757e72b925454ced867d32e929712e"
           ADMISSION_HOME = Path(os.environ["N3_ADMISSION_HOME"])
           STATE = ADMISSION_HOME / "status.json"
           check = int(sys.argv[1])
@@ -296,7 +295,7 @@ jobs:
                       raise ValueError
                   event = closed_json(raw)
                   C = canonical_sha(event["after"])
-                  if (event["ref"] != "refs/heads/task/TASK-6475" or event["before"] != H
+                  if (event["ref"] != "refs/heads/task/TASK-6475" or event["before"] != B
                           or any(event[k] is not False for k in ("created", "deleted", "forced"))
                           or type(event["repository"]["id"]) is not int or event["repository"]["id"] != 1207510174
                           or event["repository"]["full_name"] != "t-benze/happyranch" or event["repository"]["private"] is not False):
@@ -309,9 +308,9 @@ jobs:
               if (os.environ["GITHUB_EVENT_NAME"] != "push" or os.environ["GITHUB_RUN_ATTEMPT"] != "1"
                       or os.environ["GITHUB_REPOSITORY"] != "t-benze/happyranch" or os.environ["GITHUB_REF"] != "refs/heads/task/TASK-6475"
                       or os.environ["GITHUB_WORKFLOW_REF"] != "t-benze/happyranch/.github/workflows/ci.yml@refs/heads/task/TASK-6475"
-                      or C == H or os.environ["GITHUB_SHA"] != C):
+                      or C == B or os.environ["GITHUB_SHA"] != C):
                   raise ValueError
-              identity = {"before": H, "head": C, "run_id": R, "attempt": 1}
+              identity = {"before": B, "head": C, "run_id": R, "attempt": 1}
               if check == 2 and account["event"] != identity:
                   raise ValueError
               account["event"] = identity
@@ -321,6 +320,7 @@ jobs:
                   subprocess.check_call(["git", "diff", "--quiet", "HEAD", "--"], timeout=remaining())
                   if head != C or canonical_sha(tree) != account["tree"]:
                       raise ValueError
+                  subprocess.check_call([sys.executable, str(ADMISSION_HOME / "composition.py")], timeout=remaining())
               opening_pr = pr_tuple(get(P + "/pulls/800"))
               workflow = get(P + "/actions/workflows/293424328")
               if type(workflow.get("id")) is not int or workflow["id"] != 293424328 or workflow.get("path") != ".github/workflows/ci.yml" or workflow.get("state") != "active" or workflow.get("name") != "CI":
@@ -348,26 +348,66 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ github.event.after }}
-          fetch-depth: 0 # Retain H ancestry across any reviewed LOCAL corrective commits.
+          fetch-depth: 0 # Exact H ancestry and runner/document-only composition are required.
       - name: Bind immutable checkout and tree before build preparation
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          git merge-base --is-ancestor ea7db390a830e0f22a489789d9c57056930fd38f HEAD
-          python3 - <<'PYTREE'
+          cat > "$N3_ADMISSION_HOME/composition.py" <<'PYTREE'
           import json
           import os
           from pathlib import Path
           import re
           import subprocess
-          path = Path(os.environ["N3_ADMISSION_HOME"]) / "status.json"
-          state = json.loads(path.read_text())
-          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
-          if re.fullmatch(r"[0-9a-f]{40}", tree) is None or state["check1"] != "allowed" or state["tree"] is not None:
-              raise SystemExit("Managed N3 checkout refused")
-          state["tree"] = tree
-          path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+          import sys
+
+          H = "7edfdf4ac8a52a07096614cac27179c27a8cace1"
+          B = "fadb8a15da757e72b925454ced867d32e929712e"
+          H_TREE = "02cfd589a10bee61aa0f188596ebf8b74554ca65"
+          ALLOWED = {
+              ".github/workflows/ci.yml", "app/linux/package/real_systemd_n3.sh",
+              "app/linux/package/n3_installer_only.py", "app/linux/package/n3_failure_capture.py",
+              "AGENTS.md", "docs/agent-guides/runtime-and-configuration.md",
+              "docs/operations/managed-remote-access-linux-package.md",
+              "docs/operations/managed-remote-access-staged-credential-cases.md",
+              "docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md",
+          }
+          def git(*args):
+              return subprocess.check_output(["git", *args], timeout=2).decode("ascii").strip()
+          try:
+              path = Path(os.environ["N3_ADMISSION_HOME"]) / "status.json"
+              state = json.loads(path.read_text())
+              head, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
+              if (head != os.environ["GITHUB_SHA"] or head != state["event"]["head"]
+                      or state["event"]["before"] != B or state["check1"] != "allowed"
+                      or git("show", "-s", "--format=%T %P", H) != H_TREE + " " + B
+                      or re.fullmatch(r"[0-9a-f]{40}", tree) is None):
+                  raise ValueError
+              subprocess.check_call(["git", "merge-base", "--is-ancestor", H, head], timeout=2)
+              subprocess.check_call(["git", "diff", "--quiet", "HEAD", "--"], timeout=2)
+              # NUL paths refuse renames/deletions/unexpected product changes.
+              raw = subprocess.check_output(["git", "diff", "--name-status", "--no-renames", "-z", H, head], timeout=2)
+              fields = raw.decode("ascii").split("\0")
+              if not raw or fields.pop() != "" or len(fields) % 2:
+                  raise ValueError
+              changed = set()
+              for kind, name in zip(fields[::2], fields[1::2]):
+                  if kind not in ("A", "M") or name not in ALLOWED or name in changed:
+                      raise ValueError
+                  changed.add(name)
+              if not {".github/workflows/ci.yml", "app/linux/package/real_systemd_n3.sh"} <= changed:
+                  raise ValueError
+              if sys.argv[1:] == ["bind"]:
+                  if state["tree"] is not None:
+                      raise ValueError
+                  state["tree"] = tree
+                  path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+              elif sys.argv[1:] or state["tree"] != tree:
+                  raise ValueError
+          except BaseException:
+              raise SystemExit("Managed installer-only H composition refused") from None
           PYTREE
+          python3 "$N3_ADMISSION_HOME/composition.py" bind
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
@@ -391,13 +431,30 @@ jobs:
 
           stage = Path(os.environ["N3_PACKAGE_STAGE"])
           manifest = {"version": 1, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
-                      "before": "ea7db390a830e0f22a489789d9c57056930fd38f", "head": os.environ["GITHUB_SHA"],
+                      "before": "fadb8a15da757e72b925454ced867d32e929712e", "head": os.environ["GITHUB_SHA"],
                       "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
                       "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
                       "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1, "harness_uuid": None,
-                      "build": "unattempted", "package": None, "consumed": None}
+                      "product_head": "7edfdf4ac8a52a07096614cac27179c27a8cace1", "product_tree": "02cfd589a10bee61aa0f188596ebf8b74554ca65",
+                      "mode": "installer-only", "build": "unattempted", "package": None, "consumed": None,
+                      "runtime": {}, "build_identities": None}
+          # Publish the unattempted manifest before independent version reads.
           with (stage / "package-manifest.json").open("x", encoding="ascii") as stream:
               stream.write(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n")
+          for label, command, cwd in (
+              ("python", ["uv", "run", "--frozen", "python", "-c", "import sys; print(sys.executable); print(sys.version)"], None),
+              ("go", ["go", "version"], "app/linux/tsnet-sidecar"),
+              ("uv", ["uv", "--version"], None),
+              ("systemd", ["systemctl", "--version"], None),
+          ):
+              try:
+                  manifest["runtime"][label] = subprocess.check_output(command, cwd=cwd, timeout=30, text=True, stderr=subprocess.DEVNULL).strip()
+              except (OSError, subprocess.SubprocessError):
+                  manifest["runtime"][label] = None
+          with (stage / "runtime.pending").open("x", encoding="ascii") as stream:
+              stream.write(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n")
+          os.replace(stage / "runtime.pending", stage / "package-manifest.json")
+
           PYMANIFEST
       - name: Build actual package
         id: package_build
@@ -479,6 +536,17 @@ jobs:
               stream.write("N3_PACKAGE_UPLOAD=" + str(stage / "happyranch-linux-amd64.tar") + "\n")
               stream.write("N3_PACKAGE_MANIFEST=" + str(stage / "package-manifest.json") + "\n")
           manifest = json.loads((stage / "package-manifest.json").read_text())
+          built = Path(os.environ["PACKAGE_TMP"])
+          identities = {}
+          for name, member in (("connector", built / "happyranch-connector"), ("sidecar", built / "happyranch-tsnet-sidecar")):
+              raw = member.read_bytes()
+              identities[name] = [len(raw), hashlib.sha256(raw).hexdigest()]
+          wheels = list(built.glob("happyranch-*.whl"))
+          if len(wheels) != 1:
+              raise ValueError
+          raw = wheels[0].read_bytes()
+          identities["wheel"] = [len(raw), hashlib.sha256(raw).hexdigest()]
+          manifest["build_identities"] = identities
           manifest.update(build="success", package={"tar": [total, digest.hexdigest()], "connector": None, "sidecar": None, "wheel": None, "manifest": None, "verified": None})
           with (stage / "manifest.pending").open("x", encoding="ascii") as stream:
               stream.write(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n")
@@ -486,14 +554,13 @@ jobs:
           PYRETAIN
       - name: Revalidate sole push immediately before fixture entry
         run: python3 "$N3_ADMISSION_HOME/admit.py" 2
-      - name: Exercise PARTIAL installer + same-boot diagnostic against pinned Headscale and peer
+      - name: Observe sole installer-only operation in the disposable systemd fixture
         env:
           PROOF_SUBJECT_SHA: ${{ github.event.after }}
           N3_DIAGNOSTICS_DIR: ${{ runner.temp }}/managed-n3-evidence
-        run: app/linux/package/real_systemd_n3.sh
-      - name: Validate successful Managed N3 execution artifact
-        if: success()
-        run: python app/linux/package/n3_evidence.py validate "${{ runner.temp }}/managed-n3-evidence/execution-evidence.json" --expected-subject "${{ github.event.after }}"
+        run: app/linux/package/real_systemd_n3.sh --installer-only
+      # Full-N3 ledger deliberately remains incomplete/terminal=null. No full
+      # finalize/validate, fabricated skipped observations or Product E2E trigger.
       - name: Retain actual consumed identities and admission disposition
         if: always()
         env:
@@ -539,10 +606,11 @@ jobs:
           diag = Path(os.environ["RUNNER_TEMP"]) / "managed-n3-evidence"
           manifest = _package_json(read_regular(stage / "package-manifest.json", 16384), 16384)
           expected = {"version": 1, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
-                      "before": "ea7db390a830e0f22a489789d9c57056930fd38f", "head": os.environ["GITHUB_SHA"],
+                      "before": "fadb8a15da757e72b925454ced867d32e929712e", "head": os.environ["GITHUB_SHA"],
                       "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
-                      "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1}
-          if (type(manifest) is not dict or set(manifest) != set(expected) | {"tree", "harness_uuid", "build", "package", "consumed"}
+                      "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1,
+                      "product_head": "7edfdf4ac8a52a07096614cac27179c27a8cace1", "product_tree": "02cfd589a10bee61aa0f188596ebf8b74554ca65", "mode": "installer-only"}
+          if (type(manifest) is not dict or set(manifest) != set(expected) | {"tree", "harness_uuid", "build", "package", "consumed", "runtime", "build_identities"}
                   or any(type(manifest[k]) is not type(v) or manifest[k] != v for k, v in expected.items())
                   or type(manifest["tree"]) is not str or re.fullmatch(r"[0-9a-f]{40}", manifest["tree"]) is None
                   or type(manifest["build"]) is not str or manifest["build"] not in ("unattempted", "success", "failed", "unknown")
@@ -586,13 +654,17 @@ jobs:
                   try:
                       receipt = _package_json(raw, 4096)
                       if (type(receipt) is not dict or set(receipt) != {"version", "operation", "status", "cancelled", "initiating", "diagnostic", "identities", "collection", "save"}
-                              or type(receipt["version"]) is not int or receipt["version"] != 1 or receipt["operation"] != "install"):
+                              or type(receipt["version"]) is not int or receipt["version"] != 1 or receipt["operation"] not in ("install", "uninstall")):
                           raise ValueError
                       consumed = _managed_package_identities_projection(receipt["identities"])
+                      if receipt["operation"] == "uninstall":
+                          continue
                       if consumed["tar"] is not None:
                           if consumed["tar"] != manifest["package"]["tar"] or manifest["consumed"] is not None and manifest["consumed"] != consumed:
                               raise ValueError
                           manifest["consumed"] = consumed
+                          if manifest["build_identities"] is not None and any(consumed[key] != manifest["build_identities"][key] for key in ("connector", "sidecar", "wheel")):
+                              raise ValueError
                           # These members came from the actual sealed input.
                           manifest["package"] = consumed
                   except BaseException:

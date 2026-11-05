@@ -1,5 +1,25 @@
 # Managed remote access: Linux package operations (N3)
 
+**Current runner preparation — Founder THR327seq68 / sole ROOT TASK-14114.**
+
+The [installer-only runner contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#authorized-installer-only-runner--thr327seq68--root14114)
+controls this successor. Existing PR800/ref permits only ordinary B=fadb8a15 to
+reviewed C composed from exact product H=7edfdf4a plus runner/document changes;
+one publication and one automatic attempt remain manager-owned after LOCAL
+independent full review and same-C scoped QA. Historical3/3 grants remain spent.
+The sole `real_systemd_n3.sh --installer-only` entry requires authentic packaged
+help, ONE shipping install/body+final-current and genuine READY, then at most ONE
+conditional shipping uninstall as fixture teardown. No broader phase/full-N3 PASS,
+retry, Product E2E or same-boot image deletion follows. Original A10s/outer180s
+are unchanged;190s observation plus1s owned reap extends no operation deadline.
+Stock fresh bootstrap/current and installed+loaded proof are preserved, distinct
+from existing-installed P0. Missing preparation timing stays UNAVAILABLE.
+Independent always uploads retain actual consumed TAR/identities and diagnostics.
+LRA1 HIGH remains OPEN/KNOWN/DEFERRED/unprobed; baseline INCOMPLETE, historical
+failures preserved. The private custody algorithm below remains exact H.
+Earlier local-only/zero-new-allowance checkpoint directions below are historical
+for this successor; unrelated holds and all original bytes/receipts remain.
+
 **Current private package images — THR327seq62 / ROOT14036 (LOCAL repair).**
 
 The [normative custody contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#private-package-executable-custody--thr327seq62--root14036)

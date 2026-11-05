@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Incomplete N3: selected614 removes BOTH-absence-only obstruction in SOURCE.
+# Active entry: Founder THR327seq68 / ROOT14114, installer-only.
+# Historical incomplete N3: selected614 removes BOTH-absence-only obstruction in SOURCE.
 # THR327seq5/7 / ROOT13151: Stage1 LOCAL preparation, shared publications0/3
 # and automatic attempts0/3, first effect unallocated. Child spends ZERO.
 # R1/R2 and same-boot completion HELD; prior failed grants stay exhausted.
@@ -7,6 +8,11 @@
 # First prerequisite refusal remains nonzero; downstream positives are conditional.
 # No complete/PASS artifact or equivalent keeper is supplied by these reductions.
 set -euo pipefail
+# Sole selected entry. Omitted/unknown inputs refuse before any fixture effects.
+[[ "$#" == 1 && "$1" == --installer-only ]] || {
+  echo "n3-real-systemd: explicit --installer-only required" >&2
+  exit 64
+}
 
 HEADSCALE_VERSION=0.25.1
 HEADSCALE_SHA256=d2cda0a5d748587f77c920a76cd1bf1ab429e5299ba5bc6b3dda90712721b45b
@@ -757,6 +763,7 @@ sudo systemd-run --quiet --wait --collect --unit=happyranch-n3-qualification /bi
 work="$(mktemp -d)"
 evidence_driver="$PWD/app/linux/package/n3_evidence.py"
 failure_capture_driver="$PWD/app/linux/package/n3_failure_capture.py"
+installer_driver="$PWD/app/linux/package/n3_installer_only.py"
 evidence_artifact="$diagnostics/execution-evidence.json"
 run_id="$(cat /proc/sys/kernel/random/uuid)"
 capture_window_since_us="$(date +%s%N 2>/dev/null | cut -c1-16)" || capture_window_since_us=0
@@ -1410,13 +1417,17 @@ start_managed_target() {
 
 # Direct package caller. Only independently validated closed private projections
 # reach these two existing sinks; original operation/cancellation stays latched.
-package_install() {
-  local status=0 receipt capsule presence=unknown
+package_operation() {
+  local operation="$1" status=0 receipt capsule presence=unknown
+  [[ "$operation" == install || "$operation" == uninstall ]] || return 64
   package_call_count=$((package_call_count + 1))
-  (( package_call_count <= 16 )) || return 1
+  # Exactly one install, and at most one conditional teardown uninstall.
+  [[ "$package_call_count:$operation" == 1:install || "$package_call_count:$operation" == 2:uninstall ]] || return 1
   receipt="$diagnostics/installer-$package_call_count.json"
   capsule="$diagnostics/installer-$package_call_count-status.txt"
-  sudo env "PATH=$PATH" uv run python - "$PACKAGE_TAR" "$receipt" "$capsule" <<'PY_PACKAGE' || status=$?
+  # The original shipping deadline remains 180s/A10s. 190s here bounds
+  # observation only; the existing owned group reap adds at most one second.
+  sudo env "PATH=$PATH" uv run python "$installer_driver" operation "$diagnostics/installer-$package_call_count-observation.json" "$PACKAGE_TAR" "$receipt" "$capsule" "$operation" <<'PY_PACKAGE' || status=$?
 import json
 import os
 from pathlib import Path
@@ -1424,7 +1435,7 @@ import signal
 import stat
 import sys
 from runtime.remote_access.linux_package import (
-    install_linux_package, PackageError, _MANAGED_PACKAGE_DIAGNOSTIC,
+    install_linux_package, uninstall_linux_package, PackageError, _MANAGED_PACKAGE_DIAGNOSTIC,
     _empty_managed_package_diagnostic, _managed_package_diagnostic_projection,
     _managed_package_identities_projection, _package_process_projection,
     _PACKAGE_ERROR_CATEGORIES, _PACKAGE_NATIVE_SENTENCES, _PACKAGE_LOSSES,
@@ -1437,7 +1448,8 @@ original_status = None
 initiating = {"kind": "unknown", "category": None, "status": None}
 cancelled = False
 cancel_status = None
-phase = "install"
+operation = sys.argv[4]
+phase = "operation"
 losses = []
 encoding = "unknown"
 save = "unknown"
@@ -1462,7 +1474,7 @@ def cancel(signum, _frame):
         signal.signal(item, signal.SIG_IGN)
     # Collection observes later cancellation without rewriting frozen JSON or
     # interrupting owned once-only closes. No new deadline or operation retry.
-    if phase == "install":
+    if phase == "operation":
         raise SystemExit(cancel_status)
 
 
@@ -1470,7 +1482,12 @@ for item in (signal.SIGINT, signal.SIGTERM):
     signal.signal(item, cancel)
 token = _MANAGED_PACKAGE_DIAGNOSTIC.set(facts)
 try:
-    install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)
+    if operation == "install":
+        install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)
+    elif operation == "uninstall":
+        uninstall_linux_package(Path('/'))
+    else:
+        raise ValueError
     original_status = 0
     initiating = {"kind": "return", "category": None, "status": 0}
 except PackageError as exc:
@@ -1533,7 +1550,7 @@ order = ("SD", "JS", "TL", "CX", "OE", "WE", "FE", "CE")
 def collection():
     return {"state": "error" if losses else "complete", "losses": [c for c in order[:4] if c in losses], "encoding": encoding}
 
-record = {"version": 1, "operation": "install", "status": original_status,
+record = {"version": 1, "operation": operation, "status": original_status,
           "cancelled": cancelled, "initiating": initiating,
           "diagnostic": checkpoint, "identities": identities,
           "collection": {}, "save": "prepared"}
@@ -1541,7 +1558,7 @@ record = {"version": 1, "operation": "install", "status": original_status,
 # Fallback is only over the preceding closed checkpoint, fixed keys/literals,
 # bounded scalars and SHA256. It never stringifies an object or exception.
 fixed = set(_PACKAGE_ERROR_CATEGORIES + _PACKAGE_NATIVE_SENTENCES + _PACKAGE_LOSSES + _PACKAGE_REASONS + _PACKAGE_PRIVATE_REASONS)
-fixed.update("version operation install status cancelled initiating kind category return package_error cancel other unknown diagnostic identities collection save prepared reason diagnostic_state helper_exit deadline_elapsed kill_requested reaped reap_exit outcome process transport stages launch wait wait_error kill writer_close not_attempted failed started pending requested sent not_found not_requested ok error not_opened success refused deadline response_invalid bytes_seen stdout_seen frames_seen eof read close losses not_started unavailable observed absent malformed unallowlisted truncated contradictory native source nested_frozen_stderr state messages redacted empty private_only limit tar connector sidecar wheel manifest verified complete encoding primary fallback".split())
+fixed.update("version operation install uninstall status cancelled initiating kind category return package_error cancel other unknown diagnostic identities collection save prepared reason diagnostic_state helper_exit deadline_elapsed kill_requested reaped reap_exit outcome process transport stages launch wait wait_error kill writer_close not_attempted failed started pending requested sent not_found not_requested ok error not_opened success refused deadline response_invalid bytes_seen stdout_seen frames_seen eof read close losses not_started unavailable observed absent malformed unallowlisted truncated contradictory native source nested_frozen_stderr state messages redacted empty private_only limit tar connector sidecar wheel manifest verified complete encoding primary fallback".split())
 
 def primitive(value):
     if value is None:
@@ -1664,6 +1681,9 @@ PY_PACKAGE
   fi
   return "$status"
 }
+
+package_install() { package_operation install; }
+package_uninstall() { package_operation uninstall; }
 
 cleanup_processes_absent() {
   local status=0
@@ -1802,6 +1822,7 @@ cleanup() {
     virtual_removed final || { cleanup_failed=1; cleanup_refusal final virtual_removal_unconfirmed; }
     (( cleanup_failed != 0 )) || evidence cleanup virtual_admission_removed_while_peer_alive || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
   fi
+  sudo env "PATH=$PATH" uv run python "$installer_driver" images "$diagnostics/images-before-fixture-removal.json" || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
   if (( product_owned )) && cleanup_transaction_absent; then
     sudo systemctl disable happyranch-managed.target || true
     sudo systemctl reset-failed happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target || true
@@ -1859,10 +1880,12 @@ cleanup() {
   rm -rf "$work"
   [[ ! -e "$work" ]] || { cleanup_failed=1; cleanup_refusal final work_path_residue; }
   (( cleanup_failed != 0 )) || evidence cleanup task_work_removed || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
-  if (( original_status == 0 && cleanup_failed == 0 )); then
-    python "$evidence_driver" finalize "$evidence_artifact" || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
-    python "$evidence_driver" validate "$evidence_artifact" --expected-subject "$PROOF_SUBJECT_SHA" --expected-run "$run_id" || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
-  fi
+  # Deliberately never finalize/validate the full N3 ledger for this subset.
+  # Snapshot boot-retained names even on failure; inability remains a cleanup
+  # evidence loss and cannot replace the saved initiating operation status.
+  # Final policy before fixture removal is a separate preceding observation;
+  # boot-retained image snapshots never require a surviving product payload.
+  sudo env "PATH=$PATH" uv run python "$installer_driver" images "$diagnostics/images-after-teardown.json" "${retention_reference:-$diagnostics/images-before-install.json}" || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
   printf 'original_status=%s\nfixtures_reaped=%s\ncleanup_failed=%s\nnever_started=%s\n' "$original_status" "$fixtures_reaped" "$cleanup_failed" "$never_started" >"$diagnostics/cleanup-status.txt" || cleanup_failed=1
   (( cleanup_failed == 0 )) || echo "n3-real-systemd: teardown residue" >&2
   trap - EXIT INT TERM
@@ -1883,6 +1906,8 @@ cleanup_jobs_absent && cleanup_processes_absent && cleanup_cgroups_absent && cle
 for port in 18443 18765 18080 19090 15043 13478; do port_absent "$port" || fail "fixture listener baseline refused"; done
 [[ "$(cat /proc/sys/kernel/random/boot_id)" == "$fixture_boot" ]] || fail "fixture boot baseline refused"
 fixture_paths_owned=1
+# First candidate executable entry; loader refusal stops dependent setup/install.
+sudo env "PATH=$PATH" uv run python "$installer_driver" help "$diagnostics/packaged-help.json" "$PACKAGE_TAR" "$work" || exit "$?"
 
 hs_url="https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/headscale_${HEADSCALE_VERSION}_linux_amd64"
 ts_url="https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz"
@@ -1980,7 +2005,18 @@ printf '%s\n' "$sidecar_key" >"$work/enrollment.key"
 # The system manager requires a root-custodied plaintext LoadCredential source;
 # the unprivileged service receives only systemd's private staged copy.
 sudo install -m 0600 -o root -g root "$work/enrollment.key" /etc/happyranch/enrollment.key
-package_install
+# Preserve ORIGINAL stock fresh bootstrap: Go BootstrapLifecycle establishes
+# current stopped records only after exact disk + PID1 absence. Each Python
+# admission/body independently checks installed history AND actual loaded units.
+# No second installation, direct allocator, old package or private-token bypass.
+for path in /var/lib/happyranch-connector/lifecycle.json /var/lib/happyranch-connector/lifecycle.lock /var/lib/happyranch-tsnet-sidecar/lifecycle.json; do
+  test_false -e "$path" && test_false -L "$path" || fail "fresh lifecycle metadata precondition refused"
+done
+printf 'fresh_metadata_absent=true\nlra1=HIGH_OPEN_KNOWN_DEFERRED_UNPROBED\nexisting_installed_P0=not_reached\n' >"$diagnostics/lra1-preconditions.txt"
+sudo env "PATH=$PATH" uv run python "$installer_driver" images "$diagnostics/images-before-install.json"
+retention_reference="$diagnostics/images-before-install.json"
+package_install || exit "$?"
+sudo env "PATH=$PATH" uv run python "$installer_driver" verify "$diagnostics/install-positive.json" "$diagnostics/installer-1.json" install || exit "$?"
 payload_custody="$(stat -c %U:%G:%a /opt/happyranch)" || fail "system-service payload root custody query failed"
 [[ "$payload_custody" == "root:root:755" ]] || fail "system-service payload root custody mismatch"
 binary_directory_custody="$(stat -c %U:%G:%a /opt/happyranch/bin)" || fail "system-service binary directory custody query failed"
@@ -2001,6 +2037,31 @@ daemon_source_custody="$(sudo stat -c %U:%G:%a /etc/happyranch/daemon.token)" ||
 [[ "$daemon_source_custody" == "root:root:600" ]] || fail "daemon credential source custody mismatch"
 enrollment_source_custody="$(sudo stat -c %U:%G:%a /etc/happyranch/enrollment.key)" || fail "enrollment credential source custody query failed"
 [[ "$enrollment_source_custody" == "root:root:600" ]] || fail "enrollment credential source custody mismatch"
+
+# END of the selected installer-only path. Any failure exits through the one
+# original failure/status/owned-teardown trap; no success-only dependent work.
+sudo env "PATH=$PATH" uv run python "$installer_driver" current "$diagnostics/install-current.json" stopped || exit "$?"
+sudo env "PATH=$PATH" uv run python "$installer_driver" images "$diagnostics/images-after-install.json" "$diagnostics/images-before-install.json" installed "$diagnostics/installer-1.json" || exit "$?"
+retention_reference="$diagnostics/images-after-install.json"
+start_managed_target || exit "$?"
+wait_for "installer-only connector READY" active happyranch-connector.service
+wait_for "installer-only sidecar READY" active happyranch-tsnet-sidecar.service
+connector_ready="$(systemctl_number happyranch-connector.service ActiveEnterTimestampMonotonic)"
+sidecar_ready="$(systemctl_number happyranch-tsnet-sidecar.service ActiveEnterTimestampMonotonic)"
+[[ "$sidecar_ready" -le "$connector_ready" ]] || fail "installer-only READY ordering refused"
+sudo env "PATH=$PATH" uv run python "$installer_driver" current "$diagnostics/install-ready.json" ready || exit "$?"
+capture_failure_snapshot installer-only-positive || true
+# Capture original live SAME-instance Stop binding BEFORE conditional shipping
+# uninstall stops/removes anything. This is teardown, never another observation.
+bind_stop_instance final || fail "installer-only teardown binding refused"
+package_uninstall || exit "$?"
+sudo env "PATH=$PATH" uv run python "$installer_driver" verify "$diagnostics/uninstall-positive.json" "$diagnostics/installer-2.json" uninstall || exit "$?"
+sudo env "PATH=$PATH" uv run python "$installer_driver" images "$diagnostics/images-after-uninstall.json" "$diagnostics/images-after-install.json" || exit "$?"
+retention_reference="$diagnostics/images-after-uninstall.json"
+printf 'mode=installer-only\ninstall_calls=1\nuninstall_calls=1\nbroad_n3=incomplete\npreparation_boundary_timing=unavailable\n' >"$diagnostics/installer-only-status.txt"
+exit 0
+
+# Historical broader N3 body retained as source, unreachable from this entry.
 
 capture_denial_matrix() {
   local arm_id="$1"
