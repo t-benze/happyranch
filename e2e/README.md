@@ -3921,14 +3921,9 @@ suffix state costs8B/1fact before assignment; narrower punctuation selection
 costs16B/1fact, while a full outer dispatch keeps32B/1fact. All original literal
 spelling/decoded grammar, per-occurrence safety and bounds remain. This removes
 executed dispatch work; it neither changes a retained-work rate nor proves fit.
-The strict JSON number constructor finishes its complete grammar/length preflight
-before construction. A single original ASCII digit produces its builtin int
-directly from that character, without a spelling slice or `int` conversion;
-only that absent slice loses its length+8B/1fact debit. The original scalar-node
-admission remains. Construction selection costs16B/0facts at every length;
-all other numbers retain the original bounded spelling slice, its full
-length+8B/1fact debit and numeric checks. Negative, fraction/exponent, nonfinite,
-64-bit, delimiter and per-occurrence caller checks remain. Complete restored5208/ALL4572 typed
+The strict JSON number constructor uses one original bounded spelling slice
+instead of a per-digit generator and join; its full original length+8B/1fact
+admission and numeric checks stay unchanged. Complete restored5208/ALL4572 typed
 ordered reconciliation, the SAME intended command-comparison omission, exact
 restoration/final green and clean committed-head static checks remain required.
 
