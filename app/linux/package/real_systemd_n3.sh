@@ -1545,6 +1545,17 @@ def cancel(signum, _frame):
         raise SystemExit(cancel_status)
 
 
+def freeze_refusal(error):
+    # Only the closed source literals can leave the exception boundary. No text.
+    from runtime.remote_access.package_diagnostics import exception_refusal
+    value = exception_refusal(error)
+    if facts.get("refusal") is None and value is not None:
+        facts["refusal"] = {"category": value[0], "site": value[1]}
+        boundary = getattr(error, "_managed_package_boundary", getattr(error, "_managed_package_refusal", None))
+        if boundary is not None and boundary != value:
+            facts["boundary"] = {"category": boundary[0], "site": boundary[1]}
+
+
 for item in (signal.SIGINT, signal.SIGTERM):
     signal.signal(item, cancel)
 token = _MANAGED_PACKAGE_DIAGNOSTIC.set(facts)
@@ -1562,14 +1573,22 @@ except PackageError as exc:
         original_status = 1
         category = next((c for c in _PACKAGE_ERROR_CATEGORIES if len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] == c), None)
         initiating = {"kind": "package_error", "category": category, "status": 1}
+    try:
+        freeze_refusal(exc)
+    except Exception:
+        losses.extend(("SD", "TL"))
 except SystemExit as exc:
     if original_status is None:
         original_status = exc.code if type(exc.code) is int and 0 <= exc.code <= 255 else 1
         initiating = {"kind": "other", "category": None, "status": original_status}
-except BaseException:
+except BaseException as exc:
     if original_status is None:
         original_status = 1
         initiating = {"kind": "other", "category": None, "status": 1}
+    try:
+        freeze_refusal(exc)
+    except Exception:
+        losses.extend(("SD", "TL"))
 finally:
     phase = "collection"
     _MANAGED_PACKAGE_DIAGNOSTIC.reset(token)
@@ -1625,6 +1644,10 @@ record = {"version": 1, "operation": operation, "status": original_status,
 # Fallback is only over the preceding closed checkpoint, fixed keys/literals,
 # bounded scalars and SHA256. It never stringifies an object or exception.
 fixed = set(_PACKAGE_ERROR_CATEGORIES + _PACKAGE_NATIVE_SENTENCES + _PACKAGE_LOSSES + _PACKAGE_REASONS + _PACKAGE_PRIVATE_REASONS)
+from runtime.remote_access.package_diagnostic_codes import SITE_CATEGORIES
+fixed.update(SITE_CATEGORIES)
+fixed.update(SITE_CATEGORIES.values())
+fixed.update(("refusal", "site", "boundary", "guard", "loss_sites"))
 fixed.update("version operation install uninstall status cancelled initiating kind category return package_error cancel other unknown diagnostic identities collection save prepared reason diagnostic_state helper_exit deadline_elapsed kill_requested reaped reap_exit outcome process transport stages launch wait wait_error kill writer_close not_attempted failed started pending requested sent not_found not_requested ok error not_opened success refused deadline response_invalid bytes_seen stdout_seen frames_seen eof read close losses not_started unavailable observed absent malformed unallowlisted truncated contradictory native source nested_frozen_stderr state messages redacted empty private_only limit tar connector sidecar wheel manifest verified complete encoding primary fallback".split())
 
 def primitive(value):
@@ -1889,7 +1912,15 @@ cleanup() {
     virtual_removed final || { cleanup_failed=1; cleanup_refusal final virtual_removal_unconfirmed; }
     (( cleanup_failed != 0 )) || evidence cleanup virtual_admission_removed_while_peer_alive || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
   fi
-  sudo env "PATH=$PATH" uv run python "$installer_driver" images "$diagnostics/images-before-fixture-removal.json" || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
+  # Failed admission can already own three ready images. Anchor retention to
+  # this actual pre-removal snapshot, including names absent before install.
+  local image_before=unavailable image_after=unavailable
+  if sudo env "PATH=$PATH" uv run python "$installer_driver" images "$diagnostics/images-before-fixture-removal.json"; then
+    image_before=observed
+    retention_reference="$diagnostics/images-before-fixture-removal.json"
+  else
+    cleanup_failed=1; cleanup_refusal final evidence_failed
+  fi
   if (( product_owned )) && cleanup_transaction_absent; then
     sudo systemctl disable happyranch-managed.target || true
     sudo systemctl reset-failed happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target || true
@@ -1952,7 +1983,12 @@ cleanup() {
   # evidence loss and cannot replace the saved initiating operation status.
   # Final policy before fixture removal is a separate preceding observation;
   # boot-retained image snapshots never require a surviving product payload.
-  sudo env "PATH=$PATH" uv run python "$installer_driver" images "$diagnostics/images-after-teardown.json" "${retention_reference:-$diagnostics/images-before-install.json}" || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
+  if sudo env "PATH=$PATH" uv run python "$installer_driver" images "$diagnostics/images-after-teardown.json" "${retention_reference:-$diagnostics/images-before-install.json}"; then
+    image_after=observed
+  else
+    cleanup_failed=1; cleanup_refusal final evidence_failed
+  fi
+  printf 'before=%s\nafter=%s\n' "$image_before" "$image_after" >"$diagnostics/image-retention-status.txt" || cleanup_failed=1
   printf 'original_status=%s\nfixtures_reaped=%s\ncleanup_failed=%s\nnever_started=%s\n' "$original_status" "$fixtures_reaped" "$cleanup_failed" "$never_started" >"$diagnostics/cleanup-status.txt" || cleanup_failed=1
   (( cleanup_failed == 0 )) || echo "n3-real-systemd: teardown residue" >&2
   trap - EXIT INT TERM

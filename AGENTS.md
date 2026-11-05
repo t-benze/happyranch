@@ -1,5 +1,13 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+**Current PR800 local candidate — Founder THR327seq82 / ROOT14190:** the [iteration1 contract](docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md#installer-only-iteration1-composition--thr327seq82--root14190) controls D/product-P composition, local review/QA before publication, fixed private refusal identity and runner evidence. Historical checkpoints below retain their original scope and spent allowances. Native rejecting adapters preserve the first evaluated origin separately from the sanitized boundary; bootstrap census Close is observed once. Pre-ready unwind observes actual errors and retains native marked loss origin before its later boundary under the existing two-site/four-loss caps. Only retained-backup restore consumers permit initial target absence without loss; later I/O disappearance remains a loss. These source corrections require fresh independent review and separate scoped QA.
+
+The reached package-admission state-ownership helpers now mark destination and identity-stat errors, staging/overlap/type/link refusals with P600001..P600013. The original PackageError type/text/causes and earliest marked origin survive separately from later wrappers. Ordinary missing-tail/identity-stat/final-metadata absence stays a normal return/nonmatch without loss. The adjacent generic unit-owner marker checks are outside that call path. Uniqueness alone proves no coverage or managed success; independent actual-path review and separate scoped QA remain due.
+
+Private package origin/guard selection trusts the SAME marked exception, validated private transfer or an explicit producer cause. Nested scopes rethrow the SAME object. An implicit handled context alone cannot authenticate a fresh recovery producer or its guard: backup lstat/read errors retain P100063/P100064 before P400030 and the rejecting caller. Original public cause/context/suppression and initiating status stay unchanged; no channel/cap is expanded.
+
+Shipping outer daemon-source and optional present-enrollment checks run before native launch. Their credential classifications carry adjacent P700 source identities and separate daemon/enrollment caller boundaries; the bounded installer receipt retains the five original credential refusal categories with launch still not_attempted. Classification strings, public errors/causes, predicates and I/O order/counts stay unchanged. Only require_credential_capability owns a fresh private classification record, reset in finally; direct CLI classification retains its existing returns. Optional absent enrollment and the expected read-only write-open failure remain ordinary outcomes. No credential probe, handling/custody change or managed acceptance follows.
+
 **Current runner preparation — Founder THR327seq68 / sole ROOT TASK-14114.**
 
 The [installer-only runner contract](docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md#authorized-installer-only-runner--thr327seq68--root14114)
@@ -6395,3 +6403,10 @@ accepted layout, start/pair/serving, and original import file/intent/send/receip
 readback remain distinct. Failed commands remain failed; no next effect, automatic
 restart/restore/replay or new key follows uncertainty. Source delivery leaves
 Coding Disabled and real host/workflow/Founder/backup/recovery acceptance open.
+
+Credential diagnostic observations trust only the SAME require invocation's
+actual error object when retaining an earlier read through a later close. Ambient
+implicit exception context from another handled call cannot supply its origin.
+The private record retains at most one observed error object and fixed pair,
+resets on every require exit, and changes no public exception cause or operation.
+This is source isolation, not an executed credential probe.

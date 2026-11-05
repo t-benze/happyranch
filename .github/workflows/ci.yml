@@ -51,9 +51,9 @@ jobs:
 
   managed-n3-real-systemd:
     name: Managed installer-only observation (Ubuntu 24.04)
-    # Founder THR327seq68 / sole ROOT14114: ONE ordinary B->C publication
+    # Founder THR327seq82 / ROOT14190 iteration1: ONE ordinary D->E publication
     # and ONE automatic installer-only attempt, manager-owned after LOCAL review/QA.
-    # Historical 3/3 remain spent. No rerun/manual route or future self-SHA.
+    # Same six-resource allowance; historical4/4 spent. No rerun/manual/self-SHA.
     if: >-
       ${{ github.event_name == 'push' &&
           github.repository == 't-benze/happyranch' &&
@@ -61,7 +61,7 @@ jobs:
           github.event.repository.full_name == github.repository &&
           github.event.created == false && github.event.deleted == false &&
           github.event.forced == false &&
-          github.event.before == 'fadb8a15da757e72b925454ced867d32e929712e' &&
+          github.event.before == '6b74995dca8acd263c8cb38f1f8ba981ff553a7c' &&
           github.event.after != github.event.before &&
           github.event.after == github.sha && github.run_attempt == '1' }}
     concurrency:
@@ -89,7 +89,7 @@ jobs:
           import time
 
           P = "/repos/t-benze/happyranch"
-          B = "fadb8a15da757e72b925454ced867d32e929712e"
+          B = "6b74995dca8acd263c8cb38f1f8ba981ff553a7c"
           ADMISSION_HOME = Path(os.environ["N3_ADMISSION_HOME"])
           STATE = ADMISSION_HOME / "status.json"
           check = int(sys.argv[1])
@@ -361,16 +361,18 @@ jobs:
           import subprocess
           import sys
 
-          H = "7edfdf4ac8a52a07096614cac27179c27a8cace1"
-          B = "fadb8a15da757e72b925454ced867d32e929712e"
-          H_TREE = "02cfd589a10bee61aa0f188596ebf8b74554ca65"
+          H = "5bd350ae6810e662af721c82fbd8431fedf13df3"
+          B = "6b74995dca8acd263c8cb38f1f8ba981ff553a7c"
+          H_TREE = "d1686fe2606459229abd2bd87a89e6e2ba0ba018"
           ALLOWED = {
-              ".github/workflows/ci.yml", "app/linux/package/real_systemd_n3.sh",
-              "app/linux/package/n3_installer_only.py", "app/linux/package/n3_failure_capture.py",
-              "AGENTS.md", "docs/agent-guides/runtime-and-configuration.md",
-              "docs/operations/managed-remote-access-linux-package.md",
-              "docs/operations/managed-remote-access-staged-credential-cases.md",
-              "docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md",
+              '.github/workflows/ci.yml',
+              'app/linux/package/real_systemd_n3.sh',
+              'app/linux/package/n3_installer_only.py',
+              'app/linux/package/n3_provenance.py',
+              'AGENTS.md',
+              'docs/operations/managed-remote-access-linux-package.md',
+              'docs/operations/managed-remote-access-staged-credential-cases.md',
+              'docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md',
           }
           def git(*args):
               return subprocess.check_output(["git", *args], timeout=2).decode("ascii").strip()
@@ -380,9 +382,10 @@ jobs:
               head, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
               if (head != os.environ["GITHUB_SHA"] or head != state["event"]["head"]
                       or state["event"]["before"] != B or state["check1"] != "allowed"
-                      or git("show", "-s", "--format=%T %P", H) != H_TREE + " " + B
+                      or git("show", "-s", "--format=%T", H) != H_TREE
                       or re.fullmatch(r"[0-9a-f]{40}", tree) is None):
                   raise ValueError
+              subprocess.check_call(["git", "merge-base", "--is-ancestor", B, H], timeout=2)
               subprocess.check_call(["git", "merge-base", "--is-ancestor", H, head], timeout=2)
               subprocess.check_call(["git", "diff", "--quiet", "HEAD", "--"], timeout=2)
               # NUL paths refuse renames/deletions/unexpected product changes.
@@ -395,7 +398,7 @@ jobs:
                   if kind not in ("A", "M") or name not in ALLOWED or name in changed:
                       raise ValueError
                   changed.add(name)
-              if not {".github/workflows/ci.yml", "app/linux/package/real_systemd_n3.sh"} <= changed:
+              if changed != ALLOWED:
                   raise ValueError
               if sys.argv[1:] == ["bind"]:
                   if state["tree"] is not None:
@@ -405,7 +408,7 @@ jobs:
               elif sys.argv[1:] or state["tree"] != tree:
                   raise ValueError
           except BaseException:
-              raise SystemExit("Managed installer-only H composition refused") from None
+              raise SystemExit("Managed installer-only P composition refused") from None
           PYTREE
           python3 "$N3_ADMISSION_HOME/composition.py" bind
       - name: Install uv
@@ -429,13 +432,17 @@ jobs:
           from pathlib import Path
           import subprocess
 
+          import sys
+          sys.path.insert(0, "app/linux/package")
+          from n3_provenance import encode_runtime
+
           stage = Path(os.environ["N3_PACKAGE_STAGE"])
-          manifest = {"version": 1, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
-                      "before": "fadb8a15da757e72b925454ced867d32e929712e", "head": os.environ["GITHUB_SHA"],
+          manifest = {"version": 2, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
+                      "before": "6b74995dca8acd263c8cb38f1f8ba981ff553a7c", "head": os.environ["GITHUB_SHA"],
                       "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
                       "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
                       "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1, "harness_uuid": None,
-                      "product_head": "7edfdf4ac8a52a07096614cac27179c27a8cace1", "product_tree": "02cfd589a10bee61aa0f188596ebf8b74554ca65",
+                      "product_head": "5bd350ae6810e662af721c82fbd8431fedf13df3", "product_tree": "d1686fe2606459229abd2bd87a89e6e2ba0ba018",
                       "mode": "installer-only", "build": "unattempted", "package": None, "consumed": None,
                       "runtime": {}, "build_identities": None}
           # Publish the unattempted manifest before independent version reads.
@@ -448,7 +455,7 @@ jobs:
               ("systemd", ["systemctl", "--version"], None),
           ):
               try:
-                  manifest["runtime"][label] = subprocess.check_output(command, cwd=cwd, timeout=30, text=True, stderr=subprocess.DEVNULL).strip()
+                  manifest["runtime"][label] = encode_runtime(subprocess.check_output(command, cwd=cwd, timeout=30, text=True, stderr=subprocess.DEVNULL).strip())
               except (OSError, subprocess.SubprocessError):
                   manifest["runtime"][label] = None
           with (stage / "runtime.pending").open("x", encoding="ascii") as stream:
@@ -605,11 +612,15 @@ jobs:
           stage = Path(os.environ["N3_PACKAGE_STAGE"])
           diag = Path(os.environ["RUNNER_TEMP"]) / "managed-n3-evidence"
           manifest = _package_json(read_regular(stage / "package-manifest.json", 16384), 16384)
-          expected = {"version": 1, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
-                      "before": "fadb8a15da757e72b925454ced867d32e929712e", "head": os.environ["GITHUB_SHA"],
+          import sys
+          sys.path.insert(0, "app/linux/package")
+          from n3_provenance import validate_runtime
+          validate_runtime(manifest["runtime"])
+          expected = {"version": 2, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
+                      "before": "6b74995dca8acd263c8cb38f1f8ba981ff553a7c", "head": os.environ["GITHUB_SHA"],
                       "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
                       "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1,
-                      "product_head": "7edfdf4ac8a52a07096614cac27179c27a8cace1", "product_tree": "02cfd589a10bee61aa0f188596ebf8b74554ca65", "mode": "installer-only"}
+                      "product_head": "5bd350ae6810e662af721c82fbd8431fedf13df3", "product_tree": "d1686fe2606459229abd2bd87a89e6e2ba0ba018", "mode": "installer-only"}
           if (type(manifest) is not dict or set(manifest) != set(expected) | {"tree", "harness_uuid", "build", "package", "consumed", "runtime", "build_identities"}
                   or any(type(manifest[k]) is not type(v) or manifest[k] != v for k, v in expected.items())
                   or type(manifest["tree"]) is not str or re.fullmatch(r"[0-9a-f]{40}", manifest["tree"]) is None

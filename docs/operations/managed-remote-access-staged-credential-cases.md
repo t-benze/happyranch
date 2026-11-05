@@ -1,5 +1,30 @@
 # PR800 staged credential and mode cases — THR228seq428
 
+Current ROOT14190 diagnostic cases (source and permitted serializer checks only):
+
+| Requirement and input | Observable expected record | Level |
+| --- | --- | --- |
+| Existing directory or nonmatching restoration candidate | Original Boolean decision; no invented product refusal | Source/caller inspection |
+| Native inherited refresh/manager/current/pin/write/image producer fails | First evaluated marked origin survives the sanitized boundary; calls/order/error identity/custody unchanged | Source/caller inspection, behavior NOT RUN |
+| Pre-ready unwind helper/stat/unlink fails after initiating failure | Original refusal survives; actual producer and distinct G500055..063 loss observations use bounded existing frame; retention unchanged | Source/caller inspection, behavior NOT RUN |
+| Bootstrap census directory Close fails after Readdirnames | Once-only G500054 loss; initiating status and original deadline retained | Source inspection, behavior NOT RUN |
+| Retained OLD backup with absent active payload/unit/drop-in | Restore consumer's initial FileNotFoundError is ordinary False; no TL/unavailable or loss slot | Source/caller inspection, behavior NOT RUN |
+| Same predicate's other lstat error, missing default input or later traversal/read disappearance | Existing nonmatch/refusal decision plus actual operational loss; absence exception does not cover later I/O | Source/caller inspection, behavior NOT RUN |
+| Invalid transaction inventory or backup coherence | Validated private origin transferred to the actual rejecting caller, separate caller boundary; original public cause/context/suppression unchanged | Source/caller inspection |
+| Marked installation failure handled during recovery, then backup lstat/read fails | Fresh P100063/P100064 identity plus P400030 loss and rejecting caller; ambient handled failure cannot supply this producer's origin or guard; original public chains and initiating status unchanged | Source/caller inspection, behavior NOT RUN |
+| Same marked exception crosses nested scopes, or an explicit producer cause/private transfer reaches a wrapper | Related original producer retained separately from caller boundary; implicit context alone is not a producer relationship | Source/caller inspection, behavior NOT RUN |
+| Suppressed query/descriptor error or actual transport loss | Fixed distinct loss site, original initiating status retained, bounded partial loss list | Source/propagation inspection |
+| Marked guard origin followed by read/close/timeout/wait loss | Origin plus separate guard boundary and actual guard/child process facts; unavailable acquisition stays unavailable | Constructed serializer shape and source only |
+| Missing, malformed or unentered guard channel | Missing/unknown guard observation and observed loss boundary; no invented producer origin | Constructed serializer shape and source only |
+| Copied literal allocation at a second real failure site | Narrow uniqueness check fails; exact restoration passes | Authorized source uniqueness only |
+
+Guard field order and unchanged caps follow the [private diagnostic contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#private-refusal-identity-correction--thr327seq82--root14190).
+Neither constructed inputs nor source inspection execute a guard, prove process
+reaping, or accept managed installation/READY/teardown. The uniqueness check now
+also reads actual suppressed-error and loss allocations; receiving tables remain
+outside the allocation oracle. Its four answers and attributable proof stay in
+the task's existing draft PR/evidence record. No retired suite or broad proof is run.
+
 **Current runner preparation — Founder THR327seq68 / sole ROOT TASK-14114.**
 
 The [installer-only runner contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#authorized-installer-only-runner--thr327seq68--root14114)
@@ -2162,3 +2187,46 @@ the task evidence and draft PR description. Its passing result proves uniqueness
 only. Refusal coverage, propagation, frame/receipt limits, real failed-install
 retention, managed/current/READY and all dependent acceptance remain separately
 assessed. This adds no automated merge gate or managed/E2E execution authority.
+
+
+ROOT14190 runner cases retain the first-failure chain: help failure prevents
+install; failed install/current/READY prevents conditional uninstall and every
+dependent phase. New pre-removal and post-teardown snapshots must retain actual
+failed-install images without same-boot unlink. Canonical UUID-to-compact boot
+comparison retains all unsafe/unknown-image refusals. Retained real Python and
+systemd version strings containing newlines must round-trip through version2
+base64 length/hash validation under unchanged product JSON caps. Wrong D/P/tree,
+repository/workflow/event/ref/attempt or selected history must refuse before
+fixture entry. Local source/serializer checks are not managed behavior or QA.
+
+Ownership-helper source cases include inaccessible destination lstat, failed
+strict resolution/directory check, impossible missing-root ancestry, missing-tail
+non-directory, identity-stat failure, noncanonical staging spelling, protected
+state overlap and invalid final type/link count. P600001..P600013 distinguish
+those original errors/refusals; outer PackageError wrappers retain their exact
+causes and emit origin separately from wrapper through the existing channel.
+Ordinary missing tails, missing identity-stat operands and missing final metadata
+remain successful returns/nonmatches without loss. Path.is_dir suppression,
+short-circuiting and call counts stay unchanged. The generic unit-owner marker
+path is separate. These are source-review cases, not executed behavioral proof;
+uniqueness and receiver parity cannot discover unmarked reached producers.
+
+Outer credential source cases precede the inner install scopes/native launch:
+daemon source and optional present enrollment, symlink component, parent-walk
+absence/I/O, final metadata/type, distinct UID/mode refusals, read-open/read/empty/
+read-close and read-only write-close/writable classifications. P700 source pairs
+and separate daemon/enrollment caller boundaries reach the existing bounded
+receipt; its five credential categories remain literal and launch not_attempted.
+No finer path or I/O identity is claimed than the actual evaluated source.
+Expected absent enrollment and write-open failure of the read-only probe stay
+ordinary outcomes. Finally-close precedence, chained read origin, exact returned
+strings/errors/causes and read/open/close counts remain; the require-owned record
+resets on every exit and direct CLI classification retains no stale origin.
+These are source-review cases only, with no credential/managed experiment.
+
+Credential diagnostic observations trust only the SAME require invocation's
+actual error object when retaining an earlier read through a later close. Ambient
+implicit exception context from another handled call cannot supply its origin.
+The private record retains at most one observed error object and fixed pair,
+resets on every require exit, and changes no public exception cause or operation.
+This is source isolation, not an executed credential probe.

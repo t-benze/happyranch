@@ -1,5 +1,19 @@
 # Managed remote access: Linux package operations (N3)
 
+Current private diagnostic readers accept bounded `loss_sites` and an optional
+child `guard` acquisition array. Read the [refusal identity contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#private-refusal-identity-correction--thr327seq82--root14190)
+for its exact field order and limits. The marked origin, later boundary and
+guard/child process observations are distinct. An origin can survive later loss;
+it does not establish intact acquisition, successful cleanup or READY. Missing
+guard records and capped/lost channels remain unavailable/partial/UNKNOWN.
+The private reader accepts SAME-exception identity, validated private transfer
+and explicit producer causes. Ambient handled context cannot attribute a fresh
+recovery error or supply its guard. Nested scopes retain their SAME marked
+exception; original public cause/context/suppression and initiating status stay
+unchanged, while actual later producer and caller/loss sites remain separate.
+Only the first four distinct loss sites are retained, alongside completeness
+codes. Primary and primitive installer encoders preserve these same closed fields.
+
 **Current runner preparation — Founder THR327seq68 / sole ROOT TASK-14114.**
 
 The [installer-only runner contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#authorized-installer-only-runner--thr327seq68--root14114)
@@ -1541,3 +1555,51 @@ contract is [the refusal identity correction](../superpowers/specs/2026-08-26-ma
 Python units remain retired, suspended proofs are not run and general integration
 including callback/lifespan/SessionTracker remains SKIPPED under THR243seq42.
 No managed installation, E2E, publication or hosted allocation follows this check.
+
+
+ROOT14190's first proposed execution remains installer-only and manager-owned.
+The [iteration1 composition](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#installer-only-iteration1-composition--thr327seq82--root14190)
+pins product P and exact D, retains canonical compact boot image snapshots before
+removal/after teardown even on failed install, and uses version2 bounded base64
+runtime provenance. No local managed experiment or old-manifest rewrite follows.
+
+Native package/guard/image rejecting adapters retain the first evaluated marked
+origin and separate sanitized boundary without rereading. Bootstrap census Close
+is observed once at G500054; original status, ownership and deadlines remain.
+Only retained-backup payload/unit/drop-in restore calls permit an initial absent
+target without diagnostic loss. Other lstat errors, default rejecting calls and
+later traversal/read disappearance retain loss/refusal attribution. This is a
+source correction pending independent final-head review/QA, not managed proof.
+
+Pre-ready unwind's actual helper/stat/unlink errors use G500055..G500063; native
+marked losses keep their producer origin before the wrapper in one existing
+two-site frame. The original initiating failure, residue-retention decisions,
+no-ready-image-removal rule and four-loss/channel limits remain unchanged.
+
+Package admission also reaches the nonmanaged state-ownership helpers before
+the installed reader's ordinary diagnostic scopes. P600001..P600013 distinguish
+their destination/identity-stat operational errors and existing ownership
+refusals, retaining the first marked cause and separate sanitized wrapper.
+Missing tails, missing identity-stat operands and absent final metadata retain
+their ordinary returns/nonmatches without loss. Ownership decisions, Path.is_dir
+suppression, call order and public PackageError text/causes remain unchanged.
+Generic unit-owner marker checks are not reached by admission. Source review
+must assess actual caller coverage; a uniqueness pass cannot establish it.
+
+The actual shipping install also validates daemon-source and present enrollment
+credentials before native launch. P700 origins distinguish observed classification
+and I/O sites; separate caller boundaries identify daemon versus enrollment.
+The installer receipt retains credential_absent, credential_unsafe_symlink,
+credential_wrong_type, credential_wrong_custody and credential_staging_incompatible
+with original status1 and launch=not_attempted. Expected optional absence and
+read-only probe write-open refusal remain normal outcomes. A private per-require
+record resets in finally; direct CLI classification strings and all original
+custody predicates/read/open/close order stay unchanged. No credential probe or
+managed/current/READY acceptance is supplied by this source correction.
+
+Credential diagnostic observations trust only the SAME require invocation's
+actual error object when retaining an earlier read through a later close. Ambient
+implicit exception context from another handled call cannot supply its origin.
+The private record retains at most one observed error object and fixed pair,
+resets on every require exit, and changes no public exception cause or operation.
+This is source isolation, not an executed credential probe.

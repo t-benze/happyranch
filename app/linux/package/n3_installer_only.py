@@ -265,7 +265,16 @@ def images() -> dict:
             entries.append(entry.name)
             if len(entries) > 33:
                 raise ValueError
-    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    descriptor = os.open("/proc/sys/kernel/random/boot_id", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        raw_boot = os.read(descriptor, 38)
+    finally:
+        os.close(descriptor)
+    if re.fullmatch(rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\n", raw_boot) is None:
+        raise ValueError
+    boot = raw_boot[:-1].decode("ascii").replace("-", "")
+    if boot == "0" * 32:
+        raise ValueError
     result = []
     total_bytes = 0
     for name in sorted(entries):

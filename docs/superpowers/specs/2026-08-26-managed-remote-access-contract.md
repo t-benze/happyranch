@@ -1,5 +1,58 @@
 # Managed Remote Access — Normative Contract
 
+## Installer-only iteration1 composition — THR327seq82 / ROOT14190
+
+The latest contract resumes the SAME six-publication/six-hosted-run allowance,
+currently0spent/0reserved/6available each; historical4/4 remain spent. This leaf
+has no publication/run/reservation authority. The sole proposed first iteration
+is ONE ordinary update of existing PR800/ref `task/TASK-6475` from
+D `6b74995dca8acd263c8cb38f1f8ba981ff553a7c` to independently reviewed E. Exact product
+P `5bd350ae6810e662af721c82fbd8431fedf13df3`, tree `d1686fe2606459229abd2bd87a89e6e2ba0ba018`,
+descends from D through preserved product P1/P2 and normal diagnostic repair commits.
+P1 `86095f498d68345c4025812c5e287dd9af5694c2` and incomplete E1
+`76ec0f213b607e1a3b264497749e20f32059dd0c` remain recovery references.
+E pins final P literally and changes only the eight reviewed
+runner/provenance/document paths listed in the workflow composition guard.
+No future self-SHA, wildcard iteration, manual/rerun route or extra publication
+is admitted. Both anonymous checks preserve the exact repository/workflow/event/
+ref/attempt1/source/tree bindings, selected-history singleton, shared request/
+byte/deadline account and noncancelling concurrency. PR events run lint only.
+
+Independent full code review, separate SAME-E scoped QA, honest required
+lint/static evidence and manager assessment precede any publication or run.
+The literal uniqueness check proves identity uniqueness only; actual-path
+coverage and propagation require final-source review. Only the SAME identifiable
+PRODUCT CHECK failing on TWO HOSTED RUNS triggers early stop. Local debugging
+failures remain history without resetting identities or allowances. Anonymous
+historical admission failures stay UNKNOWN, and the old failed generator is
+neither repaired nor shipped as a prerequisite.
+
+The first real failure still aborts dependent phases: authentic packaged help,
+ONE shipping install, body/final-current, current/stopped and actual READY;
+only then at most ONE shipping uninstall after the original SAME-instance Stop,
+two agreeing SAME-peer destination observations, actual negative dial and live
+peer prerequisites. No reset/reinstall/same-boot/recovery/authorization/E2E phase
+is enabled. Original A10s/outer180s and observation/reap limits remain exact.
+
+Image observation validates a bounded canonical UUID boot string and uses its
+compact lowercase representation, matching LifecycleBoot; all original image
+metadata/no-follow/hash/boot-retention predicates remain. On failed install,
+retention compares the actual pre-fixture-removal snapshot to the actual
+post-teardown snapshot, including images created before failure. Separate
+`image-retention-status.txt` records observation availability; original nonzero,
+cleanup failure and image retention remain distinct. Ready images are never
+unlinked in the same boot. Missing either observation cannot establish retention.
+
+New runner provenance manifests are version2. Each non-null runtime field is
+exactly `{encoding:"utf8-base64",bytes,sha256,value}`, encoding the actual bounded
+UTF8 observation from the existing version command, including embedded newlines.
+The version2 reader validates canonical encoding, length and hash; the product
+`_package_json` control-character, node and byte caps are unchanged. Original
+version1 manifests and their null consumed/harness_uuid remain historical bytes.
+Actual package/build/consumed identities and independent always uploads still
+precede owned workflow scratch removal. No hosted acceptance follows source,
+serialization, compile or lint results; actual teardown remains unproved locally.
+
 ## Private refusal identity correction — THR327seq82 / ROOT14190
 
 This source correction continues the same delivery goal and preserves every
@@ -10,9 +63,43 @@ readers have error-returning diagnostic owners and equivalent Boolean adapters.
 The source literals own identity. The closed receive vocabularies validate private
 transport only; they contain no source coordinates, traceback lookup or authority.
 No generator is required or shipped. Sites stay stable when surrounding code moves.
+The reached nonmanaged state-ownership checks carry P600001..P600013: destination
+lstat, strict resolution and directory-check errors, missing-root/non-directory
+refusals, identity-stat errors, staging spelling, fixed-tree overlap and final
+type/link refusals. The original sanitized PackageError wrappers keep their
+causes; a marked inner producer remains the origin and the later wrapper is a
+separate boundary in the existing private frame. An ordinary missing destination
+tail, absent identity-stat operand or absent final metadata keeps its original
+return/nonmatch without a loss marker. Existing Path.is_dir suppression and
+short-circuit/call order remain unchanged. The adjacent generic unit-owner
+marker checks are not on the package-admission call path. Literal uniqueness
+cannot establish that all reached producers were covered; source/caller review
+is required, and no managed acceptance follows these source changes.
 The package-only fixed guard probe captures the same bounded private stderr
 grammar within its original deadline, retains its actual helper/reap facts and
 returns a validated native origin through Python without changing guard authority.
+
+The shipping nonprivate install reaches outer daemon-source and optional
+present-enrollment credential checks before native descriptors or launch. Their
+caller boundaries P700001/P700003 distinguish the source being checked, with
+P700002 observing only an escaping presence-check error. Shared classification
+origins P700010..P700024 distinguish the actually evaluated symlink, parent-walk
+absence/I/O, final lstat/type, UID, mode, read-open, read, empty, read-close,
+write-close and writable-input outcomes. No ancestor/path identity or finer
+unobserved I/O distinction is inferred. The original strings and public
+PackageError type/text/causes stay unchanged. A fresh require-owned ContextVar
+record carries the classification origin to P700025 and resets in finally on
+every return/error; direct CLI classifiers retain their strings without a saved
+cross-call origin. Inner install callers retain P300008/P300009 separately.
+Original finally precedence remains: a close error can override a pending empty
+return; a read error chained through close retains the earlier marked read.
+Expected absent optional enrollment and expected write-open refusal in the
+read-only capability probe remain normal outcomes, without a loss marker.
+The bounded receipt category allowlist includes the five original credential
+refusal strings. Outer failure remains status1/package_error with its actual
+origin/caller and launch=not_attempted; no child/native outcome is invented.
+No credential bytes, paths, raw errors, access, custody or security predicate is
+changed or disclosed. Source review and literal uniqueness prove no execution.
 
 Suppressed operational errors retain their existing disposition and add fixed
 loss identities. Expected absence, a nonmatching restore candidate, polling and
@@ -22,11 +109,50 @@ only the validated fixed origin into private exception attributes and retain
 their distinct caller boundary. Their original public cause, context and
 suppression behavior remains unchanged; no synthetic or caught producer error
 becomes a new public chain. No reread or short-circuit order changes.
+Private origin and guard readers trust the SAME marked exception, validated
+private transfer, or an explicit producer cause, with their existing finite
+traversal limits. Nested scopes rethrow the SAME object and keep its origin;
+explicit original causes remain readable. Implicit handled context alone does
+not establish a producer relationship. During installation recovery a fresh
+backup lstat/read error therefore retains its own P100063/P100064 origin before
+P400030 and the conversion caller, rather than adopting the initiating failure's
+ambient identity or guard. The initiating exception remains in its original
+public chain; no public cause/context/suppression or initiating status is changed.
 Private outer and native records may carry `loss_sites`: at most the first FOUR
-distinct observed sites. The list is bounded partial attribution, never a claim
+distinct observed sites. A caught marked validator or operational error retains
+its validated origin before the later boundary. A loss marker carries at most
+those TWO distinct fixed identities in ONE frame, under the same account.
+The list is bounded partial attribution, never a claim
 that no later loss occurred. Existing loss codes and acquisition states continue
 to describe completeness independently. Shared native close observations emit
 only while the package or package-guard handler owns the private channel.
+
+Native package bootstrap, inherited refresh, current/absence and pin adapters,
+policy writes and image prepare/count/read/selection retain the FIRST actually
+evaluated marked error separately from the sanitized wrapper boundary. Helpers
+are called once in their original order; public error text, Unwrap/errors.Is
+cause, rejection and custody decisions stay unchanged. Image deferred closes
+retain the initiating error before the later close boundary; their once-only
+close results and sticky unsettled state remain. Bootstrap's directory census
+observes its actual once-only Close result at G500054 without changing status.
+Pre-ready unwind observes actual helper/stat/unlink errors at G500055..G500063,
+while ordinary metadata retention and all cleanup decisions stay unchanged.
+Native marked loss frames retain the producer origin before their distinct loss
+site in the already supported two-site frame; the initiating refusal is preserved.
+The first-four loss-site cap can omit later observations, never certify absence.
+
+Only retained-backup restore consumers explicitly permit an absent initial target:
+payload _classify_payload and unit/drop-in _classify_units/_classify_dropin.
+_tree_matches/_file_matches receive absent_ok=True there; only their initial
+lstat FileNotFoundError returns ordinary False without loss/TL or a loss slot.
+Default consumers retain initial absence loss; other lstat errors and subsequent
+inventory/content-read disappearance remain operational losses. Root absence is
+an observation at that call, never a race fence. Present partial-tree consumers
+keep their existing ownership/race checks. Existing rejecting codes and all
+Boolean/restore choices are unchanged. The E2 independent F1/F2/F3 findings stay
+historical; these source corrections require fresh exact-final independent review
+and separate scoped QA. No managed behavior or transport-delivery PASS follows.
+
 
 A failed Python package guard carries its marked origin, Python boundary and
 actual guard acquisition through exception propagation. A separate bounded
@@ -2003,3 +2129,10 @@ Accepted13, A/B, original deadlines, custody and self-heal/reset579 behavior are
 unchanged. Publication/execution/cleanup HELD; UNKNOWN12372 and all original
 failure/consumed evidence persist. Root still owes renewed complete independent
 immutable-final review, same-subject SOURCE/STATIC QA and substantive delivery.
+
+Credential diagnostic observations trust only the SAME require invocation's
+actual error object when retaining an earlier read through a later close. Ambient
+implicit exception context from another handled call cannot supply its origin.
+The private record retains at most one observed error object and fixed pair,
+resets on every require exit, and changes no public exception cause or operation.
+This is source isolation, not an executed credential probe.
