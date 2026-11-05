@@ -754,40 +754,218 @@ describe('DashboardPage', () => {
     ];
     seedShell();
 
-    let resolveBody: unknown = null;
-    server.use(
-      handler(s),
-      http.post(
-        `/api/v1/orgs/${SLUG}/tasks/TASK-301/resolve-escalation`,
-        async ({ request }) => {
-          resolveBody = await request.json();
-          return HttpResponse.json({ ok: true, task_id: 'TASK-301', new_status: 'pending' });
+    const client = makeQueryClient();
+    type Failure = { phase: string; error: unknown; next?: Failure };
+    const failures: { first?: Failure; last?: Failure } = {};
+    const remember = (phase: string, error: unknown) => {
+      // Presence, not truthiness of error, preserves even throw undefined.
+      // Each caught call is separate; never deduplicate by error identity.
+      const failure: Failure = { phase, error };
+      if (failures.last) failures.last.next = failure;
+      else failures.first = failure;
+      failures.last = failure;
+    };
+    type Operation = {
+      phase: string;
+      original: Promise<unknown>;
+      completion: Promise<PromiseSettledResult<unknown>>;
+      result?: PromiseSettledResult<unknown>;
+      next?: Operation;
+    };
+    let first: Operation | undefined;
+    let last: Operation | undefined;
+    const diagnostics: Operation[] = [];
+    const observe = <T,>(original: Promise<T>, phase: string): Promise<T> => {
+      for (let owned = first; owned; owned = owned.next) {
+        // The exact same returned Promise is propagation, not a new throw.
+        if (owned.original === original) return original;
+      }
+      let owned: Operation;
+      const completion = original.then(
+        (value) => {
+          const result = { status: 'fulfilled', value } as const;
+          owned.result = result;
+          return result;
         },
-      ),
-    );
+        (reason: unknown) => {
+          const result = { status: 'rejected', reason } as const;
+          owned.result = result;
+          // This is a rejection observation at this original boundary, not
+          // proof of another independent throw of the same reason object.
+          remember(`${phase} original rejection observation`, reason);
+          return result;
+        },
+      );
+      owned = { phase, original, completion };
+      if (last) last.next = owned;
+      else first = owned;
+      last = owned;
+      // Raw return and rejection-safe completion are already owned. A
+      // catchable diagnostic failure cannot replace either or escape to app.
+      try { diagnostics.push(owned); } catch (error) {
+        remember(`${phase} diagnostic recording throw`, error);
+      }
+      return original;
+    };
+    type Restore = { run: () => void; next?: Restore };
+    let restores: Restore | undefined;
+    const ownRestore = (run: () => void) => { restores = { run, next: restores }; };
+    let joined: Operation | undefined;
+    const joinStarted = async () => {
+      for (;;) {
+        let next = joined ? joined.next : first;
+        while (next) {
+          const owned = next;
+          joined = owned;
+          try { await act(async () => { await owned.completion; }); } catch (error) {
+            remember('React delivery during original join', error);
+          }
+          // Independently join the SAME return if React delivery threw.
+          try { await owned.completion; } catch (error) {
+            remember('join original completion', error);
+          }
+          next = owned.next;
+        }
+        try { await act(async () => {}); } catch (error) {
+          remember('React delivery', error);
+        }
+        if (!(joined ? joined.next : first)) return;
+      }
+    };
+    let view: ReturnType<typeof renderWithProviders> | undefined;
+    let resolveBody: unknown = null;
+    try {
+      const queryCache = client.getQueryCache();
+      ownRestore(queryCache.subscribe((event) => {
+        if (event.type !== 'added') return;
+        try {
+          const query = event.query;
+          const fetch = query.fetch;
+          const spy = vi.spyOn(query, 'fetch');
+          ownRestore(() => spy.mockRestore());
+          spy.mockImplementation(function (this: typeof query, ...args) {
+            const original = fetch.apply(this, args);
+            observe(original, 'query.fetch');
+            return original;
+          });
+        } catch (error) { remember('query observation installation throw', error); }
+      }));
+      const mutationCache = client.getMutationCache();
+      ownRestore(mutationCache.subscribe((event) => {
+        if (event.type !== 'added') return;
+        try {
+          const mutation = event.mutation;
+          const execute = mutation.execute;
+          const spy = vi.spyOn(mutation, 'execute');
+          ownRestore(() => spy.mockRestore());
+          spy.mockImplementation(function (this: typeof mutation, ...args) {
+            const original = execute.apply(this, args);
+            observe(original, 'mutation.execute');
+            return original;
+          });
+        } catch (error) { remember('mutation observation installation throw', error); }
+      }));
+      const resolveOriginal = async ({ request }: Parameters<HttpResponseResolver>[0]) => {
+        resolveBody = await request.json();
+        return HttpResponse.json({ ok: true, task_id: 'TASK-301', new_status: 'pending' });
+      };
+      const postHandler = http.post(
+        `/api/v1/orgs/${SLUG}/tasks/TASK-301/resolve-escalation`,
+        function (this: unknown, ...args) {
+          const original = resolveOriginal.apply(this, args);
+          observe(original, 'POST resolver');
+          return original;
+        },
+      );
+      server.use(handler(s), postHandler);
+      // Observe these actual mounted handlers, including seedShell's local
+      // instances; resetHandlers/unmount alone never joins their run returns.
+      for (const localHandler of server.listHandlers()) {
+        const run = localHandler.run;
+        const spy = vi.spyOn(localHandler, 'run');
+        ownRestore(() => spy.mockRestore());
+        spy.mockImplementation(function (this: typeof localHandler, ...args) {
+          const original = run.apply(this, args);
+          observe(original, localHandler === postHandler ? 'POST handler.run' : 'MSW handler.run');
+          return original;
+        });
+      }
 
-    const user = userEvent.setup();
-    renderWithProviders(<AppRoutes />, { route: ROUTE });
+      const user = userEvent.setup();
+      view = renderWithProviders(<AppRoutes />, { route: ROUTE, queryClient: client });
 
-    // Wait for the escalation row to render, then click it to expand.
-    await screen.findByText(/Photo licensing unclear/i);
-    const row = screen.getByText(/Photo licensing unclear/i).closest(
-      '.border-border-subtle',
-    ) as HTMLElement;
-    await user.click(row);
+      // Wait for the escalation row to render, then click it to expand.
+      await screen.findByText(/Photo licensing unclear/i);
+      const row = screen.getByText(/Photo licensing unclear/i).closest(
+        '.border-border-subtle',
+      ) as HTMLElement;
+      await user.click(row);
 
-    // The expanded view shows a "Continue & resolve" button.
-    // Click it without typing any rationale.
-    await user.click(
-      screen.getByRole('button', { name: /Continue & resolve/i }),
-    );
+      // The expanded view shows a "Continue & resolve" button.
+      // Click it without typing any rationale.
+      await user.click(
+        screen.getByRole('button', { name: /Continue & resolve/i }),
+      );
 
-    // The mutation fires asynchronously; wait for the captured body to be set.
-    await waitFor(() => {
-      expect(resolveBody).not.toBeNull();
-    });
+      // Body capture is still the original oracle, not a completion join.
+      await waitFor(() => {
+        expect(resolveBody).not.toBeNull();
+      });
 
-    expect(resolveBody).toEqual({ decision: 'continue', rationale: '', brief: '' });
+      expect(resolveBody).toEqual({ decision: 'continue', rationale: '', brief: '' });
+    } catch (error) {
+      remember('original UI/assertion failure observation', error);
+    } finally {
+      try { await joinStarted(); } catch (error) { remember('join started originals', error); }
+      // Only actually started work owes completion. The void event hides
+      // submit's outer Promise; Mutation.execute and handler/query returns
+      // are the available originals, never a fabricated submit handle.
+      let mutation: Operation | undefined;
+      let response: Operation | undefined;
+      let matchedRun: Operation | undefined;
+      let mutationCount = 0;
+      for (let owned = first; owned; owned = owned.next) {
+        if (owned.phase === 'mutation.execute') { mutation = owned; mutationCount++; }
+        if (owned.phase === 'POST resolver') response = owned;
+        if (owned.phase === 'POST handler.run' && owned.result?.status === 'fulfilled' && owned.result.value) {
+          matchedRun = owned;
+        }
+      }
+      if (!failures.first || mutation) {
+        try {
+          expect(mutationCount).toBe(1);
+          expect(response?.result).toMatchObject({ status: 'fulfilled', value: { status: 200 } });
+          expect(matchedRun?.result).toMatchObject({ status: 'fulfilled', value: { response: { status: 200 } } });
+          expect(mutation?.result).toEqual({
+            status: 'fulfilled', value: { ok: true, task_id: 'TASK-301', new_status: 'pending' },
+          });
+        } catch (error) { remember('original response/mutation completion assertion', error); }
+      }
+      // Attempt mounted React delivery independently of every earlier oracle.
+      if (view && mutation?.result?.status === 'fulfilled') {
+        try {
+          await waitFor(() => {
+            expect(screen.getByRole('button', { name: /Continue & resolve/i })).toBeEnabled();
+          });
+        } catch (error) { remember('mounted Continue after React delivery', error); }
+      }
+      try { await joinStarted(); } catch (error) { remember('join after mounted delivery', error); }
+      try { if (view) view.unmount(); else cleanup(); } catch (error) { remember('unmount', error); }
+      // Keep capture installed through unmount; no replacement fetch/mutation.
+      try { await joinStarted(); } catch (error) { remember('join unmount originals', error); }
+      for (let restore = restores; restore; restore = restore.next) {
+        try { restore.run(); } catch (error) { remember('restore local observation', error); }
+      }
+      try { client.clear(); } catch (error) { remember('clear supplied client', error); }
+    }
+    const primary = failures.first;
+    if (primary) {
+      if (primary.next) {
+        try { console.error('Later Dashboard Continue errors (first retained)', primary.next, diagnostics); }
+        catch (error) { remember('report later errors', error); }
+      }
+      throw primary.error;
+    }
   });
 
   test('EscalationInboxRow renders primary reason before v2 secondary explanation', async () => {
