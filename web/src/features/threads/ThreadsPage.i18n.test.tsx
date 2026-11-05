@@ -538,12 +538,11 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
       restoreBatch = () => batchSpy.mockRestore();
       const originalSetTimeout = globalThis.setTimeout;
       const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(function (this: typeof globalThis, ...args: Parameters<typeof globalThis.setTimeout>) {
-        const receiver = this;
         const batch = currentBatch;
         // Locked defaultScheduler calls this global synchronously ONLY after
         // the original batch callback exits. Keep its callback/handle untouched.
         if (!batch?.frame.owned || batch.callbackActive) return originalSetTimeout.apply(this, args);
-        return callPhase('notification batch scheduling', batch.frame.invocation, () => originalSetTimeout.apply(receiver, args));
+        return callPhase('notification batch scheduling', batch.frame.invocation, originalSetTimeout.bind(this, ...args));
       });
       restoreTimer = () => timerSpy.mockRestore();
       const cache = client.getQueryCache();
