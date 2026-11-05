@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
@@ -24,6 +26,36 @@ from runtime.orchestrator.agent_def import parse_agent_text
 from runtime.orchestrator.canonical_roster import canonical_roster
 from runtime.orchestrator.team_move_canonical import AGENTS, capture_images, check_parents, read_regular, replace_owned, validate_candidate, verify_staging, _identity
 from runtime.orchestrator.team_move_context import canonical, materialize_context, plan_context, verify_context
+
+
+_logger = logging.getLogger(__name__)
+
+
+def _log_preview_diagnostic(initial: tuple | None, census: tuple | None,
+                            final: tuple | None, timings: dict) -> None:
+    """Fixed private fields only; caller suppresses diagnostic failures."""
+    finished = time.monotonic_ns()
+    fields = {}
+    components = ("writer_epoch", "total_changes", "data_version")
+    for name, sample in (("initial", initial), ("census", census), ("final", final)):
+        fields[name + "_observed"] = sample is not None
+        values = (None, None, None) if sample is None else (sample[0], *sample[1])
+        for component, value in zip(components, values):
+            fields[name + "_" + component] = value if type(value) is int else None
+    for name in ("census", "final"):
+        for component in components:
+            before, after = fields["initial_" + component], fields[name + "_" + component]
+            fields[name + "_" + component + "_matches_initial"] = (
+                None if before is None or after is None else before == after)
+    for stage in ("discovery", "context_0_old", "context_0_new", "context_1_old",
+                  "context_1_new", "current_inputs", "target", "census"):
+        start, end, complete = timings.get(stage, (None, None, False))
+        fields[stage + "_timing_observed"] = stage in timings
+        fields[stage + "_timing_complete"] = complete
+        stop = end if complete else finished
+        fields[stage + "_timing_elapsed_ns"] = None if start is None or stop is None else stop - start
+    _logger.info("team_move_preview_diagnostic %s",
+        json.dumps(fields, sort_keys=True, separators=(",", ":"), allow_nan=False))
 
 
 def _naming_digest(metadata):
@@ -148,34 +180,72 @@ class TeamMoveOperation:
 
     def preview(self, *, drain_threads: bool) -> MovePreview:
         """Pure selection/readback only; never invokes a mutating adapter."""
-        if type(drain_threads) is not bool:
-            raise TeamMoveError("team_move_drain_consent")
-        with self.org.db._lock:
-            initial = (self.move.producers.writer_epoch, self._database_observation())
-        with canonical_roster(self.org.root):
-            images = capture_images(self.org.root)
-            before, after, workspaces = [], [], []
-            for agent, image in zip(AGENTS, images[:2]):
-                old = parse_agent_text(base64.b64decode(image.before_base64).decode().replace("\r\n", "\n"), expected_name=agent)
-                new = parse_agent_text(base64.b64decode(image.after_base64).decode().replace("\r\n", "\n"), expected_name=agent)
-                old_plan, new_plan = plan_context(self.org, old), plan_context(self.org, new)
-                # Any new selected package is a new team-derived capability.
-                # The approved move grants none; removal is allowed and explicit.
-                old_specs = {canonical(s) for s in old_plan.specs}
-                if any(canonical(s) not in old_specs for s in new_plan.specs):
-                    raise TeamMoveError("team_move_unexpected_skill_grant")
-                before.append(old_plan); after.append(new_plan)
-                workspaces.append(WorkspaceIdentity(agent_id=agent, path=str(new_plan.workspace), identity=_identity(new_plan.workspace.lstat())))
-            expected = self._current_inputs(images, before, after)
-            request = MoveRequest(version=1, org_slug=self.org.slug, source_team="consultant", target_team="default",
-                target_principal="founder", affected_agents=AGENTS, demote="consultant_head", retire_source=True,
-                drain_threads=drain_threads, expected=expected, files=images, workspaces=tuple(workspaces))
-            target = self._target_snapshot(request)
-        blockers, epoch, changes = self.census(request)
-        with self.org.db._lock:
-            if initial != (epoch, changes) or initial != (self.move.producers.writer_epoch, self._database_observation()):
-                raise TeamMoveError("team_move_preview_inputs_changed")
-        return MovePreview(request, target, tuple(before), tuple(after), blockers, epoch, changes)
+        initial = final = epoch = changes = None
+        timings = None
+        try:
+            timings = {}
+        except BaseException:
+            pass  # Diagnostic allocation cannot replace the product outcome.
+
+        def mark(stage: str, *, complete: bool = False) -> None:
+            try:
+                start = timings[stage][0] if complete else None
+                timings[stage] = (start, None, complete)
+                now = time.monotonic_ns()
+                timings[stage] = (start if complete else now, now if complete else None, complete)
+            except BaseException:
+                pass  # Only diagnostic collection is best effort.
+
+        try:
+            if type(drain_threads) is not bool:
+                raise TeamMoveError("team_move_drain_consent")
+            with self.org.db._lock:
+                initial = (self.move.producers.writer_epoch, self._database_observation())
+            mark("discovery")
+            with canonical_roster(self.org.root):
+                images = capture_images(self.org.root)
+                before, after, workspaces = [], [], []
+                for index, (agent, image) in enumerate(zip(AGENTS, images[:2])):
+                    old = parse_agent_text(base64.b64decode(image.before_base64).decode().replace("\r\n", "\n"), expected_name=agent)
+                    new = parse_agent_text(base64.b64decode(image.after_base64).decode().replace("\r\n", "\n"), expected_name=agent)
+                    old_stage, new_stage = (("context_0_old", "context_0_new"), ("context_1_old", "context_1_new"))[index]
+                    mark(old_stage)
+                    old_plan = plan_context(self.org, old)
+                    mark(old_stage, complete=True)
+                    mark(new_stage)
+                    new_plan = plan_context(self.org, new)
+                    mark(new_stage, complete=True)
+                    # Any new selected package is a new team-derived capability.
+                    # The approved move grants none; removal is allowed and explicit.
+                    old_specs = {canonical(s) for s in old_plan.specs}
+                    if any(canonical(s) not in old_specs for s in new_plan.specs):
+                        raise TeamMoveError("team_move_unexpected_skill_grant")
+                    before.append(old_plan); after.append(new_plan)
+                    workspaces.append(WorkspaceIdentity(agent_id=agent, path=str(new_plan.workspace), identity=_identity(new_plan.workspace.lstat())))
+                mark("current_inputs")
+                expected = self._current_inputs(images, before, after)
+                mark("current_inputs", complete=True)
+                mark("target")
+                request = MoveRequest(version=1, org_slug=self.org.slug, source_team="consultant", target_team="default",
+                    target_principal="founder", affected_agents=AGENTS, demote="consultant_head", retire_source=True,
+                    drain_threads=drain_threads, expected=expected, files=images, workspaces=tuple(workspaces))
+                target = self._target_snapshot(request)
+                mark("target", complete=True)
+            mark("discovery", complete=True)
+            mark("census")
+            blockers, epoch, changes = self.census(request)
+            mark("census", complete=True)
+            with self.org.db._lock:
+                if initial != (epoch, changes) or initial != (final := (self.move.producers.writer_epoch, self._database_observation())):
+                    raise TeamMoveError("team_move_preview_inputs_changed")
+            return MovePreview(request, target, tuple(before), tuple(after), blockers, epoch, changes)
+        finally:
+            # Preview-owned native leases have unwound on this same worker.
+            # An advance caller may still own its outer async authority lock.
+            try:
+                _log_preview_diagnostic(initial, None if changes is None else (epoch, changes), final, timings)
+            except BaseException:
+                pass  # Never replace the original return/error, even on logging failure.
 
     def observe_recovery(self, row):
         """Diagnostic reads only; no preview, takeover proof or state transition."""

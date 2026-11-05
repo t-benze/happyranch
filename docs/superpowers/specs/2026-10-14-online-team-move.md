@@ -658,6 +658,32 @@ the leases release. The final DB-only leaf revalidates the original capture from
 BEFORE discovery as well as the completed census, closing intervening-writer gaps.
 These are source predicates; no crash, cleanup, race or recovery proof was run.
 
+Private preview diagnostics preserve those predicates and every consumer. At
+most one ordinary module log (`team_move_preview_diagnostic`) is attempted per
+invocation, on its original native worker after preview-owned native
+DB/move/canonical/profile leases release. The caller's outer async authority
+ownership remains unchanged, including during advance. Neither collection nor
+emission failure may replace the original return/exception; no shared-census
+logging, deferred task, queue, service, public/durable field or audit write is added.
+
+Fixed numeric/Boolean/nullable fields reuse only the original initial, census
+and conditional final `writer_epoch`, SQLite connection-wide `total_changes`
+and other-connection `data_version`, with sample-observed flags and nullable
+per-component comparisons against initial. Initial remains before discovery;
+census drift still short-circuits without a final observation, whose fields and
+comparisons remain null/observed=false. Missing/incomplete observations are not
+equality. Monotonic timing covers canonical/discovery aggregate, each of four
+existing old/new context calls at fixed indices 0/1, current inputs, target
+preparation and complete census aggregate. Each stage has observed/complete
+Booleans and nullable elapsed nanoseconds; incomplete elapsed ends at post-lease
+emission and unavailable clocks remain null. No new DB/planner/census/hash read,
+counter replacement, baseline shift, drift acceptance, dependency/census shrink,
+global planning lock or event-loop work follows. No private input/image, key,
+label/path, owner or exception text is logged. Aggregate census time cannot
+attribute host/task/workflow cost or a writer; source diagnostics do not identify
+the original changed component, reader effects, dominant stage, loaded daemon
+SHA or historical effects, prove a successful move or allocate execution.
+
 Acceptance is SOURCE/POLICY/STATIC ONLY on the SAME thirteen four-answer
 observations. Every absent behavior/migration/recovery/native callback/permission/
 process-loss/launcher/live-move result remains UNEXECUTED; general integration
