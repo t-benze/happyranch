@@ -1,5 +1,24 @@
 # PR800 staged credential and mode cases — THR228seq428
 
+## Current local runner-admission cases — ROOT14190 / THR327seq82
+
+The [current contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#local-runner-admission-successor--thr327seq82--root14190) controls over historical checkpoints. Original42124081991/1 check1 failure remains UNKNOWN; no cause is reconstructed from later metadata. Scenarios map to permitted evidence as follows.
+
+| Requirement/scenario | Expected observation | Permitted local evidence |
+| --- | --- | --- |
+| Exact singleton current in_progress/null-conclusion original push and unchanged PR/run bookends | Both checks allowed only after all strict predicates and original budgets | SOURCE only; no future-run proof |
+| Transport/header/status/length/body/UTF8/JSON/schema failure | Unique fixed A category/site plus fixed request operation, current check refused | Inventory/syntax/uniqueness; behavior NOT RUN |
+| Duplicate/unknown/queued/terminal/stale/wrong repo/ref/head/tree/workflow/attempt | Existing strict refusal before dependent effect, no fallback/retry | SOURCE only |
+| Initiating refusal then close/save/fallback failure | First origin separate from bounded later losses; current check refused; retention unavailable stays incomplete | Source propagation review only |
+| Composition child refusal then caller transport failure | Child fixed origin in its separate snapshot/log, A000082 remains caller boundary | SOURCE only |
+| Check2 state malformed/partial/extra/duplicate/wrong counters or first-check diagnostics | Reject before fixture; consume exact successful check1 state/tree | SOURCE only |
+| Final candidate exact E9-before vs spent/wrong before | Isolated bind0/check0/wrong-before1 with exact scratch restoration | Existing isolated composition facility only |
+| Precheckout refusal/unbuilt package | Always admission evidence attempted independently; no manifest/digest/package success or managed teardown claim | Original evidence plus source inspection |
+| Actual workflow literal duplicated | Existing narrow checker rejects duplicate; byte-exact restored final passes | One attributable authorized duplicate/restoration proof |
+| Product/runtime/native/package bytes unchanged E9 | P9 reused with actual E8 parent; no new product commit/image equivalence | Git/source hashes only |
+
+The extended existing uniqueness checker is the keeper for actual workflow allocations; it parses the shipped Python heredocs and fixed shell literals without executing/importing admission or retired tests. Shared literal validator sites keep fixed operation labels for caller identity. Four answers: observable contract is distinct fixed refusal-site identity; credible regression is a copied adjacent workflow site; the existing PGNQS-only scan misses this A workflow vocabulary while receive maps only validate package frames; no test-only production seam. Count/map parity never establishes refusal coverage/propagation or managed behavior. Current EACH3spent/0reserved/3available/historical4spent unchanged; full independent final review -> separate scoped QA -> manager BEFORE any effect. Python units RETIRED, suspended proofs NOT RUN, integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342, no ad hoc Product E2E. All acceptance UNMET, LRA1 HIGH deferred and potentially live ready images retained.
+
 Current ROOT14190 P000262 cases follow the [loaded-dependency contract and fixed clause table](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#local-loaded-dependency-successor--thr327seq82--root14190). All are SOURCE/STATIC ONLY; actual loaded/managed/root behavior NOT RUN locally. P000262 count1 and unknown failing unit/property/value remain; no source finding is a retained runtime observation.
 
 | Requirement | Scenario and expected observation | Permitted evidence / missing proof |

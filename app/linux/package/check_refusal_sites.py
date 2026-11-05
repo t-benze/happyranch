@@ -11,8 +11,8 @@ def main() -> None:
     root = Path(__file__).resolve().parents[3]
     allocations: dict[str, str] = {}
 
-    def allocate(site: str, source: str) -> None:
-        if re.fullmatch(r'[PGNQS][0-9]{6}', site) is None:
+    def allocate(site: str, source: str, pattern: str = r'[PGNQS][0-9]{6}') -> None:
+        if re.fullmatch(pattern, site) is None:
             raise AssertionError('malformed refusal allocation at ' + source)
         if site in allocations:
             raise AssertionError('duplicate refusal site ' + site + ': ' + allocations[site] + ', ' + source)
@@ -39,6 +39,27 @@ def main() -> None:
             allocate(match[1], name + ':' + str(source.count('\n', 0, match.start()) + 1))
         for match in re.finditer(r'lifecyclePackageRefusal\("[a-z_]+", "([^\"]+)"', source):
             allocate(match[1], name + ':entry')
+    workflow = (root / '.github/workflows/ci.yml').read_text()
+    for delimiter in ('PYGUARD', 'PYTREE'):
+        # Inspect the actual shipped heredocs, without importing/executing them.
+        marker = "<<'" + delimiter + "'"
+        start = workflow.index('\n', workflow.index(marker)) + 1
+        end = workflow.index('          ' + delimiter + '\n', start)
+        source = '\n'.join(line[10:] for line in workflow[start:end].splitlines())
+        tree = ast.parse(source, filename='ci.yml:' + delimiter)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in ('refuse', 'boundary', 'Refusal')):
+                if (node.func.id in ('Refusal', 'refuse') and len(node.args) == 2
+                        and all(isinstance(arg, ast.Name) and arg.id == name
+                                for arg, name in zip(node.args, ('site', 'category')))):
+                    continue  # propagation of a caller's literal allocation
+                if (len(node.args) != 2 or not all(isinstance(arg, ast.Constant)
+                                                and type(arg.value) is str for arg in node.args)):
+                    raise AssertionError('nonliteral workflow refusal allocation')
+                allocate(node.args[0].value, delimiter + ':' + str(node.lineno), r'A[01][0-9]{5}')
+    for match in re.finditer(r'echo \'\{"site":"([^"]+)","category":"[a-z_]+"\}\'', workflow):
+        allocate(match[1], 'ci.yml:shell:' + str(workflow.count('\n', 0, match.start()) + 1), r'A2[0-9]{5}')
     if not allocations:
         raise AssertionError('no actual source allocations inspected')
     print('PASS: ' + str(len(allocations)) + ' unique actual literal refusal allocations; coverage/behavior unproved')

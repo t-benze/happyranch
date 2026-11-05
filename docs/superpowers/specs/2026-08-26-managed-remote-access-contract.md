@@ -1,5 +1,109 @@
 # Managed Remote Access — Normative Contract
 
+## Local runner-admission successor — THR327seq82 / ROOT14190
+
+This section controls over historical checkpoints below. Published E9 is
+`1652f1e69e6809f9f541e289dec3f51f7b82392e`, tree
+`cb5b5f921608bb401c63bf674e7fbb539b9f6383`. Its original push run42124081991/1
+FAILED check1 before checkout/build/package/fixture; check2 was unreached,
+tree null and requests3. The original status/log has no category, site, response
+or exception. Requests3 narrows only third GET initiation through transport,
+header/body/JSON/run_tuple processing. The predicate remains **UNKNOWN**;
+later API states cannot reconstruct it. This adds no identifiable product
+failure. P000208, P000262 and historical archive failures each retain count1;
+anonymous history remains UNKNOWN. SAME allowance EACH3spent/0reserved/3available,
+historical4/4 spent, no refund/reset. Stop only when the SAME identifiable
+PRODUCT CHECK fails on TWO HOSTED RUNS, including nonconsecutive known history.
+Local engineering failures do not trigger that stop.
+
+The runner now hand-assigns adjacent literal `A` identities to its actual
+refusals/operational boundaries. The existing package PGNQS allocations,
+categories and both receiver maps are unchanged. Admission diagnostics retain a
+fixed `origin` category/site/operation and at most four later `losses`, separate
+from current check1/check2 refusal state. `operation` is a closed source label
+(startup, state_load, event_load, checkout, opening_pr, workflow, own_run,
+history_first, history_second, closing_run or closing_pr). A shared validator
+site identifies its actual code; the request label distinguishes its callers.
+No arbitrary exception, response, path, stdin, credential or observed unit value
+is included. Unexpected failures have an explicit unknown-predicate boundary;
+its presence must not be interpreted as a known predicate or coverage proof.
+
+| Actual boundary | Fixed site range | Observation retained |
+| --- | --- | --- |
+| closed_json | A000001..A000006 | duplicate, constant, decode, depth, node, number refusal |
+| save | A000007..A000013 | encode/size/open/write/short-write/close/replace failure |
+| remaining | A000014..A000016 | per-check, active-account, absolute deadline |
+| HeaderStream/HeaderSocket/Response | A000017..A000023 | transport, cap, status-line, aggregate, partial, stream/init |
+| get | A000024..A000041 | request budget/init/connect/send, parser/duplicate/status/encoding/type, length/body/pagination, close |
+| canonical_sha/positive/pr_tuple/run_tuple/singleton | A000042..A000060 | schema, identity, exact current status/conclusion and singleton guards |
+| entry/state/event/checkout/workflow/bookends | A000061..A000086 | typed exact state and source, environment, tree/dirty/composition transport and changed identity |
+| final fallback | A000087..A000089 | separate snapshot I/O, size and short-write failure |
+| bounded state/event file reader | A000090..A000092 | open/read/close, preserving initiating read error |
+| composition child | A100001..A100021 | Git/delta/schema/source/tree/parent/ancestry/dirty/binding/write/retention boundaries |
+| shell setup/process/collection | A200001..A200011 | fixed setup/launch/copy/missing snapshot failures, never substituted for an inner origin |
+
+A source-proven retention correction keeps the initiating get/file/save error
+when later close or final save also fails. Final persistence failure always
+refuses the current check. The original exclusive pending path is never retried
+or overwritten; one exclusive `failure.json` fallback may preserve the fixed
+snapshot. Each admission snapshot is capped4096 bytes; two snapshots plus the
+small fixed child composition diagnostic fit below the existing16384-byte
+state-read cap. Failure to retain any snapshot remains failure/uncertainty,
+with fixed identities in the original log, never success. Composition retains
+its original child origin in `composition-failure.json` before the parent's
+separate A000082 transport boundary. A child diagnostic is not a successful
+transport or current admission. These are source contracts, unexecuted locally.
+
+The existing always collector independently copies status, optional fallback
+and optional composition failure into the existing evidence directory before
+package collection. Missing status is explicitly incomplete; a failed copy does
+not suppress the other copy attempts or independent always uploads. Artifact
+root layout/name/retention stays unchanged; admission-status.json remains the
+primary record and failure.json/composition-failure.json are separate records.
+An absent unbuilt package stays absent; no fabricated manifest/consumed digest,
+package success, fixture teardown or whole-VM/unknown-descendant closure follows.
+
+Both checks retain in_progress-only actual run status/null conclusion, singleton
+history/bookends, exact PR800/non-draft/open/unmerged, same repository/ref/main/
+workflow293424328 and original attempt1. No queued/unknown/terminal fallback,
+removed guard, retry, credential, redirected/paginated/partial/malformed response,
+cap or deadline expansion is introduced. Check2 consumes exactly the extended
+successful first-check account (seven requests, no origin/losses, final fixed
+operation), validates counters/identity/tree, then rechecks immutable checkout
+and composition before its original metadata checks and fixture entry. Original
+10s per check/20s aggregate active/1200s wall,14 requests, response/header/JSON
+caps and fail-closed defaults are unchanged. Dependent phases still abort on
+first failure. No hosted root/service/managed/credential execution is authorized.
+
+Publication-before is now E9. Reuse actual P9
+`d54b6cf97f9e63a0e23985041d0f10e8eccad0d0`, tree
+`0aea87b6e6954de6b2e175cb3097b82ec8d78543`; P9 remains the direct child of
+historical E8, not E9. No product bytes change and no ceremonial product commit
+is created. The guard independently pins E8/P9/E9 trees and sole-parent links,
+E9 ancestry, exact three-path E8..P9, five-path P9..E9, six-path E9..candidate
+and six-path P9..candidate deltas. The six actual composition paths are ci.yml,
+AGENTS.md, the existing narrow uniqueness checker and these package/case/spec
+documents. Non-M/add/delete/rename/unrelated/product changes refuse. Both
+manifest writer and reader use actual before E9 and unchanged P9/tree.
+
+Full independent accumulated D..final, E9..final and product/composition review,
+explicit APPROVE then separate scoped QA and manager assessment remain before
+ANY effect. Local Git/bundle/patch/overlay support review without publication.
+No push/PR metadata/run/reservation/main integration follows. Separate seq87
+PR-description disclosure-review hold persists. All goal cells remain UNMET;
+LRA1 remains HIGH OPEN KNOWN DEFERRED/unprobed and potentially live ready images
+remain retained. No product/security/recovery/image/boot contract changes.
+
+Permitted evidence is syntax/source inspection, the extended existing narrow
+uniqueness check with one attributable actual-workflow duplicate/restored pass,
+and existing isolated composition bind/check/wrong-before with exact scratch
+restoration. Neither proves actual API admission, diagnostic behavior/propagation,
+managed success or future-run feasibility. Required checks remain lint/static
+only Source Boundary Lint and Web Lint(Node24), normal hooks, daily19UTC E2E
+unchanged. Python units RETIRED; suspended proofs NOT RUN; general integration
+INCLUDING callback/lifespan/SessionTracker SKIPPED24342; no ad hoc Product E2E.
+
+
 ## Local loaded-dependency successor — THR327seq82 / ROOT14190
 
 This section controls the local successor to spent E8

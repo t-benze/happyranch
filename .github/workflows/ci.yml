@@ -51,9 +51,9 @@ jobs:
 
   managed-n3-real-systemd:
     name: Managed installer-only observation (Ubuntu 24.04)
-    # Founder THR327seq82 / ROOT14190 local successor: exact E8->candidate only.
+    # Founder THR327seq82 / ROOT14190 local successor: exact E9->candidate only.
     # Any publication/automatic attempt remains manager-owned after renewed gates.
-    # Same allowance2spent/0reserved/4available; historical4/4 spent. No new grant.
+    # Same allowance3spent/0reserved/3available; historical4/4 spent. No new grant.
     if: >-
       ${{ github.event_name == 'push' &&
           github.repository == 't-benze/happyranch' &&
@@ -61,7 +61,7 @@ jobs:
           github.event.repository.full_name == github.repository &&
           github.event.created == false && github.event.deleted == false &&
           github.event.forced == false &&
-          github.event.before == '7b5eadae67d647fe14a077813bbc44610952411b' &&
+          github.event.before == '1652f1e69e6809f9f541e289dec3f51f7b82392e' &&
           github.event.after != github.event.before &&
           github.event.after == github.sha && github.run_attempt == '1' }}
     concurrency:
@@ -74,10 +74,10 @@ jobs:
         run: |
           set -euo pipefail
           N3_ADMISSION_HOME="${RUNNER_TEMP}/managed-n3-admission-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -- "$N3_ADMISSION_HOME"
+          mkdir -- "$N3_ADMISSION_HOME" 2>/dev/null || { echo '{"site":"A200001","category":"admission_home"}'; exit 1; }
           export N3_ADMISSION_HOME
-          echo "N3_ADMISSION_HOME=$N3_ADMISSION_HOME" >> "$GITHUB_ENV"
-          cat > "$N3_ADMISSION_HOME/admit.py" <<'PYGUARD'
+          echo "N3_ADMISSION_HOME=$N3_ADMISSION_HOME" 2>/dev/null >> "$GITHUB_ENV" || { echo '{"site":"A200002","category":"admission_environment"}'; exit 1; }
+          cat 2>/dev/null > "$N3_ADMISSION_HOME/admit.py" <<'PYGUARD' || { echo '{"site":"A200003","category":"admission_source"}'; exit 1; }
           import http.client
           import json
           import math
@@ -87,14 +87,41 @@ jobs:
           import subprocess
           import sys
           import time
+          from contextlib import contextmanager
 
           P = "/repos/t-benze/happyranch"
-          B = "7b5eadae67d647fe14a077813bbc44610952411b"
+          B = "1652f1e69e6809f9f541e289dec3f51f7b82392e"
           ADMISSION_HOME = Path(os.environ["N3_ADMISSION_HOME"])
           STATE = ADMISSION_HOME / "status.json"
-          check = int(sys.argv[1])
           start = time.monotonic()
-          account = {"deadline": time.monotonic() + 1200, "active": 0, "requests": 0, "bodies": 0, "headers": 0, "event": None, "tree": None, "check1": "refused", "check2": "unreached"}
+          account = {"deadline": start + 1200, "active": 0, "requests": 0, "bodies": 0, "headers": 0, "event": None, "tree": None, "check1": "refused", "check2": "unreached", "operation": "startup", "origin": None, "losses": []}
+
+
+          class Refusal(Exception):
+              def __init__(self, site, category):
+                  self.identity = {"site": site, "category": category, "operation": account["operation"]}
+
+
+          def refuse(site, category):
+              raise Refusal(site, category)
+
+
+          @contextmanager
+          def boundary(site, category):
+              # Precisely scoped fallible operations; an already identified origin survives.
+              try:
+                  yield
+              except Refusal:
+                  raise
+              except BaseException:
+                  refuse(site, category)
+
+
+          def record(error):
+              if account["origin"] is None:
+                  account["origin"] = error.identity
+              elif error.identity != account["origin"] and len(account["losses"]) < 4:
+                  account["losses"].append(error.identity)
 
 
           def closed_json(raw):
@@ -102,19 +129,24 @@ jobs:
                   out = {}
                   for key, value in items:
                       if key in out:
-                          raise ValueError
+                          refuse("A000001", "json_duplicate")
                       out[key] = value
                   return out
               def invalid(_value):
-                  raise ValueError
-              obj = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=pairs, parse_constant=invalid)
+                  refuse("A000002", "json_constant")
+              with boundary("A000003", "json_decode"):
+                  obj = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=pairs, parse_constant=invalid)
               pending = [(obj, 0)]
               count = 0
               while pending:
                   item, depth = pending.pop()
                   count += 1
-                  if depth > 32 or count > 20000 or type(item) is float and not math.isfinite(item):
-                      raise ValueError
+                  if depth > 32:
+                      refuse("A000004", "json_depth")
+                  if count > 20000:
+                      refuse("A000005", "json_nodes")
+                  if type(item) is float and not math.isfinite(item):
+                      refuse("A000006", "json_number")
                   if type(item) is dict:
                       pending.extend((k, depth + 1) for k in item)
                       pending.extend((v, depth + 1) for v in item.values())
@@ -123,18 +155,67 @@ jobs:
               return obj
 
 
+          def read_file(path, cap):
+              with boundary("A000090", "file_open"):
+                  stream = open(path, "rb")
+              error = None
+              try:
+                  with boundary("A000091", "file_read"):
+                      return stream.read(cap)
+              except Refusal as failure:
+                  error = failure
+                  record(failure)
+                  raise
+              finally:
+                  try:
+                      with boundary("A000092", "file_close"):
+                          stream.close()
+                  except Refusal as failure:
+                      record(failure)
+                      if error is None:
+                          raise
+
+
           def save():
+              with boundary("A000007", "retention_encode"):
+                  raw = json.dumps(account, sort_keys=True, separators=(",", ":")) + "\n"
+              # Two fixed snapshots together fit below the existing 16384-byte state cap.
+              if len(raw) > 4096:
+                  refuse("A000008", "retention_size")
               pending = ADMISSION_HOME / "status.pending"
-              with pending.open("x", encoding="ascii") as stream:
-                  stream.write(json.dumps(account, sort_keys=True, separators=(",", ":")) + "\n")
-              os.replace(pending, STATE)
+              with boundary("A000009", "retention_open"):
+                  stream = pending.open("x", encoding="ascii")
+              error = None
+              try:
+                  with boundary("A000010", "retention_write"):
+                      if stream.write(raw) != len(raw):
+                          refuse("A000011", "retention_short_write")
+                      stream.flush()
+              except Refusal as failure:
+                  error = failure
+                  record(failure)
+                  raise
+              finally:
+                  try:
+                      with boundary("A000012", "retention_close"):
+                          stream.close()
+                  except Refusal as failure:
+                      record(failure)
+                      if error is None:
+                          raise
+              with boundary("A000013", "retention_replace"):
+                  os.replace(pending, STATE)
 
 
           def remaining():
-              left = min(10 - (time.monotonic() - start), 20 - account["active"] - (time.monotonic() - start), account["deadline"] - time.monotonic())
-              if left <= 0:
-                  raise ValueError
-              return min(2, left)
+              now = time.monotonic()
+              if now - start >= 10:
+                  refuse("A000014", "deadline_check")
+              if account["active"] + now - start >= 20:
+                  refuse("A000015", "deadline_active")
+              if now >= account["deadline"]:
+                  refuse("A000016", "deadline_absolute")
+              return min(2, 10 - (now - start), 20 - account["active"] - (now - start), account["deadline"] - now)
 
 
           # Header acquisition is bounded before the stdlib parser consumes it. It
@@ -144,19 +225,21 @@ jobs:
                   self.stream, self.sock = stream, sock
                   self.used = 0
               def readline(self, limit=-1):
-                  self.sock.settimeout(remaining())
-                  cap = 16384 - self.used
-                  if cap <= 0:
-                      raise ValueError
-                  raw = self.stream.readline(min(cap, limit) if limit > 0 else cap)
+                  with boundary("A000017", "header_transport"):
+                      self.sock.settimeout(remaining())
+                      cap = 16384 - self.used
+                      if cap <= 0:
+                          refuse("A000018", "header_size")
+                      raw = self.stream.readline(min(cap, limit) if limit > 0 else cap)
                   if self.used == 0 and not (raw.startswith(b"HTTP/1.1 200 ") or raw.startswith(b"HTTP/1.0 200 ")):
-                      raise ValueError
-                  # Also debit chunk framing/trailers conservatively; neither
-                  # can provide an unbounded hidden line-read channel.
+                      refuse("A000019", "http_status_line")
+                  # Also debit chunk framing/trailers conservatively.
                   self.used += len(raw)
                   account["headers"] += len(raw)
-                  if account["headers"] > 229376 or not raw.endswith(b"\n"):
-                      raise ValueError
+                  if account["headers"] > 229376:
+                      refuse("A000020", "header_aggregate")
+                  if not raw.endswith(b"\n"):
+                      refuse("A000021", "header_partial")
                   return raw
               def __getattr__(self, name):
                   return getattr(self.stream, name)
@@ -166,184 +249,277 @@ jobs:
               def __init__(self, sock):
                   self.sock = sock
               def makefile(self, mode):
-                  return HeaderStream(self.sock.makefile(mode), self.sock)
+                  with boundary("A000022", "header_stream_open"):
+                      return HeaderStream(self.sock.makefile(mode), self.sock)
 
 
           class Response(http.client.HTTPResponse):
               def __init__(self, sock, *args, **kwargs):
-                  super().__init__(HeaderSocket(sock), *args, **kwargs)
+                  with boundary("A000023", "header_response_init"):
+                      super().__init__(HeaderSocket(sock), *args, **kwargs)
 
 
-          def get(path):
+          def get(path, operation):
+              account["operation"] = operation
               account["requests"] += 1
               if account["requests"] > 14:
-                  raise ValueError
-              connection = http.client.HTTPSConnection("api.github.com", 443, timeout=remaining())
-              connection.response_class = Response
+                  refuse("A000024", "request_count")
+              with boundary("A000025", "request_init"):
+                  connection = http.client.HTTPSConnection("api.github.com", 443, timeout=remaining())
+                  connection.response_class = Response
+              error = None
               try:
-                  connection.connect()
-                  sock = connection.sock
-                  connection.request("GET", path, headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10", "User-Agent": "happyranch-pr800-admission", "Accept-Encoding": "identity", "Connection": "close"})
-                  response = connection.getresponse()
-                  headers = response.getheaders()
+                  with boundary("A000026", "request_connect"):
+                      connection.connect()
+                      sock = connection.sock
+                  with boundary("A000027", "request_send"):
+                      connection.request("GET", path, headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10", "User-Agent": "happyranch-pr800-admission", "Accept-Encoding": "identity", "Connection": "close"})
+                  with boundary("A000028", "header_parse"):
+                      response = connection.getresponse()
+                      headers = response.getheaders()
                   for name in ("Content-Type", "Content-Length", "Content-Encoding", "Transfer-Encoding", "Link"):
                       if len([v for k, v in headers if k.lower() == name.lower()]) > 1:
-                          raise ValueError
-                  if (response.status != 200 or response.getheader("Content-Encoding", "identity") != "identity"
-                          or response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() not in ("application/json", "application/vnd.github+json")):
-                      raise ValueError
+                          refuse("A000029", "header_duplicate")
+                  if response.status != 200:
+                      refuse("A000030", "http_status")
+                  if response.getheader("Content-Encoding", "identity") != "identity":
+                      refuse("A000031", "header_encoding")
+                  if response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() not in ("application/json", "application/vnd.github+json"):
+                      refuse("A000032", "header_content_type")
                   length = response.getheader("Content-Length")
-                  if length is not None and (re.fullmatch(r"0|[1-9][0-9]*", length) is None or int(length) > 524288):
-                      raise ValueError
+                  if length is not None:
+                      if re.fullmatch(r"0|[1-9][0-9]*", length) is None:
+                          refuse("A000033", "length_format")
+                      with boundary("A000034", "length_number"):
+                          declared = int(length)
+                      if declared > 524288:
+                          refuse("A000035", "length_size")
                   body = bytearray()
                   while True:
-                      sock.settimeout(remaining())
-                      available = min(65536, 524288 - len(body), 4194304 - account["bodies"])
-                      if available <= 0:
-                          raise ValueError
-                      chunk = response.read1(available)
+                      with boundary("A000036", "body_transport"):
+                          sock.settimeout(remaining())
+                          available = min(65536, 524288 - len(body), 4194304 - account["bodies"])
+                          if available <= 0:
+                              refuse("A000037", "body_capacity")
+                          chunk = response.read1(available)
                       account["bodies"] += len(chunk)
                       body.extend(chunk)
                       if len(body) > 524288 or account["bodies"] > 4194304:
-                          raise ValueError
+                          refuse("A000038", "body_size")
                       if not chunk or response.isclosed():
                           break
-                  if length is not None and len(body) != int(length):
-                      raise ValueError
-                  if "rel=\"next\"" in response.getheader("Link", "") or "rel=next" in response.getheader("Link", ""):
-                      raise ValueError
+                  if length is not None and len(body) != declared:
+                      refuse("A000039", "length_mismatch")
+                  if 'rel="next"' in response.getheader("Link", "") or "rel=next" in response.getheader("Link", ""):
+                      refuse("A000040", "header_pagination")
                   return closed_json(bytes(body))
+              except Refusal as failure:
+                  error = failure
+                  record(failure)
+                  raise
               finally:
-                  connection.close()
+                  try:
+                      with boundary("A000041", "request_close"):
+                          connection.close()
+                  except Refusal as failure:
+                      record(failure)
+                      if error is None:
+                          raise
 
 
           def canonical_sha(value):
               if type(value) is not str or re.fullmatch(r"[0-9a-f]{40}", value) is None:
-                  raise ValueError
+                  refuse("A000042", "identity_sha")
               return value
 
 
           def positive(value):
               if type(value) is not int or not 0 < value <= 2**63 - 1:
-                  raise ValueError
+                  refuse("A000043", "identity_positive")
               return value
 
 
           def pr_tuple(pr):
-              if (type(pr.get("number")) is not int or pr["number"] != 800 or pr.get("state") != "open"
-                      or pr.get("merged") is not False or pr.get("draft") is not False
-                      or pr["head"]["ref"] != "task/TASK-6475" or pr["head"]["sha"] != C or pr["base"]["ref"] != "main"):
-                  raise ValueError
-              for role in ("head", "base"):
-                  repo = pr[role]["repo"]
-                  if type(repo.get("id")) is not int or repo["id"] != 1207510174 or repo.get("full_name") != "t-benze/happyranch" or repo.get("private") is not False:
-                      raise ValueError
-              return (800, C, "task/TASK-6475", "main", 1207510174)
+              with boundary("A000044", "pr_schema"):
+                  if type(pr.get("number")) is not int or pr["number"] != 800:
+                      refuse("A000045", "pr_number")
+                  if pr.get("state") != "open" or pr.get("merged") is not False or pr.get("draft") is not False:
+                      refuse("A000046", "pr_status")
+                  if pr["head"]["ref"] != "task/TASK-6475" or pr["head"]["sha"] != C or pr["base"]["ref"] != "main":
+                      refuse("A000047", "pr_refs")
+                  for role in ("head", "base"):
+                      repo = pr[role]["repo"]
+                      if type(repo.get("id")) is not int or repo["id"] != 1207510174 or repo.get("full_name") != "t-benze/happyranch" or repo.get("private") is not False:
+                          refuse("A000048", "pr_repository")
+                  return (800, C, "task/TASK-6475", "main", 1207510174)
 
 
           def run_tuple(run):
-              if (positive(run["id"]) != R or type(run.get("run_attempt")) is not int or run["run_attempt"] != 1
-                      or type(run.get("workflow_id")) is not int or run["workflow_id"] != 293424328
-                      or run["path"] != ".github/workflows/ci.yml" or run["head_sha"] != C
-                      or run["head_branch"] != "task/TASK-6475" or run["event"] != "push"
-                      or run["status"] != "in_progress" or run["conclusion"] is not None):
-                  raise ValueError
-              for name in ("repository", "head_repository"):
-                  repo = run[name]
-                  if type(repo.get("id")) is not int or repo["id"] != 1207510174 or repo.get("full_name") != "t-benze/happyranch" or repo.get("private") is not False:
-                      raise ValueError
-              created = run["created_at"]
-              if type(created) is not str or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", created) is None:
-                  raise ValueError
-              return (R, 1, C, 293424328, positive(run["check_suite_id"]), created)
+              with boundary("A000049", "run_schema"):
+                  if positive(run["id"]) != R:
+                      refuse("A000050", "run_id")
+                  if type(run.get("run_attempt")) is not int or run["run_attempt"] != 1:
+                      refuse("A000051", "run_attempt")
+                  if type(run.get("workflow_id")) is not int or run["workflow_id"] != 293424328 or run["path"] != ".github/workflows/ci.yml":
+                      refuse("A000052", "run_workflow")
+                  if run["head_sha"] != C or run["head_branch"] != "task/TASK-6475" or run["event"] != "push":
+                      refuse("A000053", "run_source")
+                  if run["status"] != "in_progress":
+                      refuse("A000054", "run_status")
+                  if run["conclusion"] is not None:
+                      refuse("A000055", "run_conclusion")
+                  for name in ("repository", "head_repository"):
+                      repo = run[name]
+                      if type(repo.get("id")) is not int or repo["id"] != 1207510174 or repo.get("full_name") != "t-benze/happyranch" or repo.get("private") is not False:
+                          refuse("A000056", "run_repository")
+                  created = run["created_at"]
+                  if type(created) is not str or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", created) is None:
+                      refuse("A000057", "run_created")
+                  return (R, 1, C, 293424328, positive(run["check_suite_id"]), created)
 
 
           def singleton(doc):
-              if type(doc.get("total_count")) is not int or doc["total_count"] != 1 or type(doc.get("workflow_runs")) is not list or len(doc["workflow_runs"]) != 1:
-                  raise ValueError
-              return run_tuple(doc["workflow_runs"][0])
+              with boundary("A000058", "singleton_schema"):
+                  if type(doc.get("total_count")) is not int or doc["total_count"] != 1:
+                      refuse("A000059", "singleton_count")
+                  if type(doc.get("workflow_runs")) is not list or len(doc["workflow_runs"]) != 1:
+                      refuse("A000060", "singleton_runs")
+                  return run_tuple(doc["workflow_runs"][0])
 
 
+          error = None
+          check = 1
           try:
+              with boundary("A000061", "check_argument"):
+                  check = int(sys.argv[1])
               if check == 2:
-                  with STATE.open("rb") as stream:
-                      raw = stream.read(16385)
-                      if len(raw) > 16384:
-                          raise ValueError
-                      loaded = closed_json(raw)
-                  if type(loaded) is not dict or set(loaded) != set(account) or loaded["check1"] != "allowed" or loaded["check2"] != "unreached":
-                      raise ValueError
-                  account = loaded
-                  if (type(account["active"]) not in (int, float) or not 0 <= account["active"] < 20
-                          or type(account["deadline"]) not in (int, float) or not math.isfinite(account["deadline"])
-                          or account["requests"] != 7 or type(account["requests"]) is not int
-                          or type(account["bodies"]) is not int or not 0 <= account["bodies"] <= 4194304
-                          or type(account["headers"]) is not int or not 0 <= account["headers"] <= 229376):
-                      raise ValueError
                   account["check2"] = "refused"
+                  account["operation"] = "state_load"
+                  with boundary("A000062", "state_read"):
+                      with STATE.open("rb") as stream:
+                          raw = stream.read(16385)
+                  if len(raw) > 16384:
+                      refuse("A000063", "state_size")
+                  loaded = closed_json(raw)
+                  if type(loaded) is not dict or set(loaded) != set(account) or loaded["check1"] != "allowed" or loaded["check2"] != "unreached":
+                      refuse("A000064", "state_schema")
+                  if (type(loaded["active"]) not in (int, float) or not 0 <= loaded["active"] < 20
+                          or type(loaded["deadline"]) not in (int, float) or not math.isfinite(loaded["deadline"])
+                          or type(loaded["requests"]) is not int or loaded["requests"] != 7
+                          or type(loaded["bodies"]) is not int or not 0 <= loaded["bodies"] <= 4194304
+                          or type(loaded["headers"]) is not int or not 0 <= loaded["headers"] <= 229376):
+                      refuse("A000065", "state_accounting")
+                  if loaded["origin"] is not None or loaded["losses"] != [] or loaded["operation"] != "closing_pr":
+                      refuse("A000066", "state_diagnostic")
+                  original = loaded["event"]
+                  if type(original) is not dict or set(original) != {"before", "head", "run_id", "attempt"}:
+                      refuse("A000067", "state_event")
+                  canonical_sha(original["head"])
+                  canonical_sha(loaded["tree"])
+                  if original["before"] != B or type(original["attempt"]) is not int or original["attempt"] != 1:
+                      refuse("A000068", "state_source")
+                  positive(original["run_id"])
+                  # Adopt only complete validated state, never malformed raw diagnostic data.
+                  account = loaded
+                  account["check2"] = "refused"
+                  account["operation"] = "state_load"
               elif check != 1:
-                  raise ValueError
+                  refuse("A000069", "check_number")
               save()  # Fail-closed default before any dependent effect.
-              run_id = os.environ["GITHUB_RUN_ID"]
+              with boundary("A000070", "environment_read"):
+                  run_id = os.environ["GITHUB_RUN_ID"]
               if re.fullmatch(r"[1-9][0-9]{0,18}", run_id) is None:
-                  raise ValueError
+                  refuse("A000071", "environment_run_id")
               R = positive(int(run_id))
               if check == 1:
-                  with open(os.environ["GITHUB_EVENT_PATH"], "rb") as stream:
-                      raw = stream.read(262145)
+                  account["operation"] = "event_load"
+                  with boundary("A000072", "event_read"):
+                      with open(os.environ["GITHUB_EVENT_PATH"], "rb") as stream:
+                          raw = stream.read(262145)
                   if len(raw) > 262144:
-                      raise ValueError
+                      refuse("A000073", "event_size")
                   event = closed_json(raw)
-                  C = canonical_sha(event["after"])
-                  if (event["ref"] != "refs/heads/task/TASK-6475" or event["before"] != B
-                          or any(event[k] is not False for k in ("created", "deleted", "forced"))
-                          or type(event["repository"]["id"]) is not int or event["repository"]["id"] != 1207510174
-                          or event["repository"]["full_name"] != "t-benze/happyranch" or event["repository"]["private"] is not False):
-                      raise ValueError
+                  with boundary("A000074", "event_schema"):
+                      C = canonical_sha(event["after"])
+                      if (event["ref"] != "refs/heads/task/TASK-6475" or event["before"] != B
+                              or any(event[k] is not False for k in ("created", "deleted", "forced"))
+                              or type(event["repository"]["id"]) is not int or event["repository"]["id"] != 1207510174
+                              or event["repository"]["full_name"] != "t-benze/happyranch" or event["repository"]["private"] is not False):
+                          refuse("A000075", "event_identity")
               else:
-                  original = account["event"]
-                  if type(original) is not dict or set(original) != {"before", "head", "run_id", "attempt"}:
-                      raise ValueError
-                  C = canonical_sha(original["head"])
-              if (os.environ["GITHUB_EVENT_NAME"] != "push" or os.environ["GITHUB_RUN_ATTEMPT"] != "1"
-                      or os.environ["GITHUB_REPOSITORY"] != "t-benze/happyranch" or os.environ["GITHUB_REF"] != "refs/heads/task/TASK-6475"
-                      or os.environ["GITHUB_WORKFLOW_REF"] != "t-benze/happyranch/.github/workflows/ci.yml@refs/heads/task/TASK-6475"
-                      or C == B or os.environ["GITHUB_SHA"] != C):
-                  raise ValueError
+                  C = original["head"]
+              with boundary("A000076", "environment_schema"):
+                  if (os.environ["GITHUB_EVENT_NAME"] != "push" or os.environ["GITHUB_RUN_ATTEMPT"] != "1"
+                          or os.environ["GITHUB_REPOSITORY"] != "t-benze/happyranch" or os.environ["GITHUB_REF"] != "refs/heads/task/TASK-6475"
+                          or os.environ["GITHUB_WORKFLOW_REF"] != "t-benze/happyranch/.github/workflows/ci.yml@refs/heads/task/TASK-6475"
+                          or C == B or os.environ["GITHUB_SHA"] != C):
+                      refuse("A000077", "environment_identity")
               identity = {"before": B, "head": C, "run_id": R, "attempt": 1}
               if check == 2 and account["event"] != identity:
-                  raise ValueError
+                  refuse("A000078", "state_identity")
               account["event"] = identity
               if check == 2:
-                  head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=remaining()).strip()
-                  tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True, timeout=remaining()).strip()
-                  subprocess.check_call(["git", "diff", "--quiet", "HEAD", "--"], timeout=remaining())
+                  account["operation"] = "checkout"
+                  with boundary("A000079", "checkout_read"):
+                      head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=remaining(), stderr=subprocess.DEVNULL).strip()
+                      tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True, timeout=remaining(), stderr=subprocess.DEVNULL).strip()
+                  with boundary("A000080", "checkout_dirty"):
+                      subprocess.check_call(["git", "diff", "--quiet", "HEAD", "--"], timeout=remaining(), stderr=subprocess.DEVNULL)
                   if head != C or canonical_sha(tree) != account["tree"]:
-                      raise ValueError
-                  subprocess.check_call([sys.executable, str(ADMISSION_HOME / "composition.py")], timeout=remaining())
-              opening_pr = pr_tuple(get(P + "/pulls/800"))
-              workflow = get(P + "/actions/workflows/293424328")
-              if type(workflow.get("id")) is not int or workflow["id"] != 293424328 or workflow.get("path") != ".github/workflows/ci.yml" or workflow.get("state") != "active" or workflow.get("name") != "CI":
-                  raise ValueError
-              own = run_tuple(get(P + "/actions/runs/" + str(R)))
-              # Select push diagnostics; ordinary same-head PR lint is independent.
-              # Keep singleton/run_tuple refusal for duplicate pushes and reruns.
+                      refuse("A000081", "checkout_identity")
+                  with boundary("A000082", "composition_transport"):
+                      subprocess.check_call([sys.executable, str(ADMISSION_HOME / "composition.py")], timeout=remaining())
+              opening_pr = pr_tuple(get(P + "/pulls/800", "opening_pr"))
+              workflow = get(P + "/actions/workflows/293424328", "workflow")
+              with boundary("A000083", "workflow_schema"):
+                  if type(workflow.get("id")) is not int or workflow["id"] != 293424328 or workflow.get("path") != ".github/workflows/ci.yml" or workflow.get("state") != "active" or workflow.get("name") != "CI":
+                      refuse("A000084", "workflow_identity")
+              own = run_tuple(get(P + "/actions/runs/" + str(R), "own_run"))
+              # No queued/unknown/terminal acceptance, duplicate push or rerun fallback.
               history = P + "/actions/workflows/293424328/runs?branch=task%2FTASK-6475&head_sha=" + C + "&event=push&per_page=100&page=1"
-              first = singleton(get(history))
-              second = singleton(get(history))
-              closing = run_tuple(get(P + "/actions/runs/" + str(R)))
-              closing_pr = pr_tuple(get(P + "/pulls/800"))
+              first = singleton(get(history, "history_first"))
+              second = singleton(get(history, "history_second"))
+              closing = run_tuple(get(P + "/actions/runs/" + str(R), "closing_run"))
+              closing_pr = pr_tuple(get(P + "/pulls/800", "closing_pr"))
               if first != second or first != own or first != closing or opening_pr != closing_pr:
-                  raise ValueError
+                  refuse("A000085", "identity_changed")
               remaining()
               account["check" + str(check)] = "allowed"
+          except Refusal as failure:
+              error = failure
+              record(failure)
           except BaseException:
-              raise SystemExit("Managed N3 admission refused; sole automatic attempt remains spent/incomplete") from None
+              # Unattributed interpreter failure is explicit; never guess a predicate.
+              error = Refusal("A000086", "unexpected")
+              record(error)
           finally:
+              if error is not None:
+                  account["check2" if check == 2 else "check1"] = "refused"
               account["active"] += time.monotonic() - start
-              save()
+              try:
+                  save()
+              except Refusal as failure:
+                  record(failure)
+                  error = error or failure
+                  account["check2" if check == 2 else "check1"] = "refused"
+                  # A separate once-only bounded fallback, never retry/overwrite pending.
+                  try:
+                      with boundary("A000087", "retention_fallback"):
+                          raw = json.dumps(account, sort_keys=True, separators=(",", ":")) + "\n"
+                          if len(raw) > 4096:
+                              refuse("A000088", "retention_fallback_size")
+                          with (ADMISSION_HOME / "failure.json").open("x", encoding="ascii") as stream:
+                              if stream.write(raw) != len(raw):
+                                  refuse("A000089", "retention_fallback_short_write")
+                  except Refusal as failure:
+                      record(failure)
+              if error is not None:
+                  # Only fixed identities/counters; no exception, response, path or stdin.
+                  print(json.dumps({"origin": account["origin"], "losses": account["losses"]}, sort_keys=True, separators=(",", ":")))
+          if error is not None:
+              raise SystemExit(1) from None
           PYGUARD
-          python3 "$N3_ADMISSION_HOME/admit.py" 1
+          python3 "$N3_ADMISSION_HOME/admit.py" 1 2>/dev/null || { echo '{"site":"A200004","category":"admission_process"}'; exit 1; }
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -352,75 +528,141 @@ jobs:
       - name: Bind immutable checkout and tree before build preparation
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          cat > "$N3_ADMISSION_HOME/composition.py" <<'PYTREE'
+          test "$(git rev-parse HEAD 2>/dev/null)" = "$GITHUB_SHA" || { echo '{"site":"A200005","category":"checkout_head"}'; exit 1; }
+          cat 2>/dev/null > "$N3_ADMISSION_HOME/composition.py" <<'PYTREE' || { echo '{"site":"A200006","category":"composition_source"}'; exit 1; }
           import json
           import os
           from pathlib import Path
           import re
           import subprocess
           import sys
+          from contextlib import contextmanager
 
           H = "d54b6cf97f9e63a0e23985041d0f10e8eccad0d0"
-          B = "7b5eadae67d647fe14a077813bbc44610952411b"
+          B = "1652f1e69e6809f9f541e289dec3f51f7b82392e"
+          H_PARENT = "7b5eadae67d647fe14a077813bbc44610952411b"
           H_TREE = "0aea87b6e6954de6b2e175cb3097b82ec8d78543"
-          B_TREE = "16540985a0c479fde94cb7b325542339b5f4e1e1"
+          B_TREE = "cb5b5f921608bb401c63bf674e7fbb539b9f6383"
+          H_PARENT_TREE = "16540985a0c479fde94cb7b325542339b5f4e1e1"
           PRODUCT_ALLOWED = {
               'runtime/remote_access/linux_package.py',
               'runtime/remote_access/package_diagnostic_codes.py',
               'app/linux/tsnet-sidecar/lifecycle_package_diagnostic_codes_linux.go',
           }
-          ALLOWED = {
+          PREVIOUS_ALLOWED = {
               '.github/workflows/ci.yml',
               'AGENTS.md',
               'docs/operations/managed-remote-access-linux-package.md',
               'docs/operations/managed-remote-access-staged-credential-cases.md',
               'docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md',
           }
+          ALLOWED = PREVIOUS_ALLOWED | {'app/linux/package/check_refusal_sites.py'}
+          operation = "composition"
+
+
+          class Refusal(Exception):
+              def __init__(self, site, category):
+                  self.identity = {"site": site, "category": category, "operation": operation}
+
+
+          def refuse(site, category):
+              raise Refusal(site, category)
+
+
+          @contextmanager
+          def boundary(site, category):
+              try:
+                  yield
+              except Refusal:
+                  raise
+              except BaseException:
+                  refuse(site, category)
+
+
           def git(*args):
-              return subprocess.check_output(["git", *args], timeout=2).decode("ascii").strip()
+              with boundary("A100001", "composition_git"):
+                  return subprocess.check_output(["git", *args], timeout=2, stderr=subprocess.DEVNULL).decode("ascii").strip()
+
+
           def exact_delta(before, after, allowed):
-              raw = subprocess.check_output(["git", "diff", "--name-status", "--no-renames", "-z", before, after], timeout=2)
-              fields = raw.decode("ascii").split("\0")
+              with boundary("A100002", "composition_delta_read"):
+                  raw = subprocess.check_output(["git", "diff", "--name-status", "--no-renames", "-z", before, after], timeout=2, stderr=subprocess.DEVNULL)
+                  fields = raw.decode("ascii").split("\0")
               if not raw or fields.pop() != "" or len(fields) % 2:
-                  raise ValueError
+                  refuse("A100003", "composition_delta_schema")
               changed = set()
               for kind, name in zip(fields[::2], fields[1::2]):
                   if kind != "M" or name not in allowed or name in changed:
-                      raise ValueError
+                      refuse("A100004", "composition_delta_path")
                   changed.add(name)
               if changed != allowed:
-                  raise ValueError
+                  refuse("A100005", "composition_delta_set")
+
+
           try:
-              path = Path(os.environ["N3_ADMISSION_HOME"]) / "status.json"
-              state = json.loads(path.read_text())
-              head, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
-              if (head != os.environ["GITHUB_SHA"] or head != state["event"]["head"]
-                      or state["event"]["before"] != B or state["check1"] != "allowed"
-                      or git("show", "-s", "--format=%T", H) != H_TREE
-                      or git("show", "-s", "--format=%T", B) != B_TREE
-                      or re.fullmatch(r"[0-9a-f]{40}", tree) is None):
-                  raise ValueError
-              if git("show", "-s", "--format=%P", H) != B:
-                  raise ValueError
-              subprocess.check_call(["git", "merge-base", "--is-ancestor", H, head], timeout=2)
-              subprocess.check_call(["git", "diff", "--quiet", "HEAD", "--"], timeout=2)
-              # Actual product is the direct E8 child, fixed independently of
-              # this composition. Neither delta admits unrelated paths, additions,
-              # renames, deletions or a later product rewrite.
-              exact_delta(B, H, PRODUCT_ALLOWED)
+              with boundary("A100006", "composition_state_read"):
+                  home = Path(os.environ["N3_ADMISSION_HOME"])
+                  path = home / "status.json"
+                  with path.open("rb") as stream:
+                      raw = stream.read(16385)
+              if len(raw) > 16384:
+                  refuse("A100007", "composition_state_size")
+              with boundary("A100008", "composition_state_schema"):
+                  state = json.loads(raw)
+                  head, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
+                  if head != os.environ["GITHUB_SHA"] or head != state["event"]["head"] or state["event"]["before"] != B or state["check1"] != "allowed":
+                      refuse("A100009", "composition_event")
+                  if re.fullmatch(r"[0-9a-f]{40}", tree) is None:
+                      refuse("A100010", "composition_tree_format")
+              if git("show", "-s", "--format=%T", H) != H_TREE or git("show", "-s", "--format=%T", B) != B_TREE or git("show", "-s", "--format=%T", H_PARENT) != H_PARENT_TREE:
+                  refuse("A100011", "composition_pinned_tree")
+              if git("show", "-s", "--format=%P", H) != H_PARENT or git("show", "-s", "--format=%P", B) != H:
+                  refuse("A100012", "composition_parent")
+              with boundary("A100013", "composition_ancestry"):
+                  subprocess.check_call(["git", "merge-base", "--is-ancestor", B, head], timeout=2, stderr=subprocess.DEVNULL)
+              with boundary("A100014", "composition_dirty"):
+                  subprocess.check_call(["git", "diff", "--quiet", "HEAD", "--"], timeout=2, stderr=subprocess.DEVNULL)
+              # Product P9 remains the direct E8 child. Publication-before is spent E9.
+              # Every actual product/current/accumulated slice is independently exact.
+              operation = "historical_product"
+              exact_delta(H_PARENT, H, PRODUCT_ALLOWED)
+              operation = "published_composition"
+              exact_delta(H, B, PREVIOUS_ALLOWED)
+              operation = "current_composition"
+              exact_delta(B, head, ALLOWED)
+              operation = "full_composition"
               exact_delta(H, head, ALLOWED)
+              operation = "composition_bind"
               if sys.argv[1:] == ["bind"]:
                   if state["tree"] is not None:
-                      raise ValueError
+                      refuse("A100015", "composition_already_bound")
                   state["tree"] = tree
-                  path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+                  with boundary("A100016", "composition_state_write"):
+                      raw = json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n"
+                      if path.write_text(raw) != len(raw):
+                          refuse("A100021", "composition_state_short_write")
               elif sys.argv[1:] or state["tree"] != tree:
-                  raise ValueError
-          except BaseException:
-              raise SystemExit("Managed installer-only P composition refused") from None
+                  refuse("A100017", "composition_tree_binding")
+          except BaseException as error:
+              # A child origin is separate from admit.py's later composition-transport
+              # refusal. Never overwrite it with wrapper, close or snapshot errors.
+              if isinstance(error, Refusal):
+                  origin = error.identity
+              else:
+                  origin = Refusal("A100018", "composition_unexpected").identity
+              diagnostic = {"origin": origin, "losses": []}
+              try:
+                  with boundary("A100019", "composition_retention"):
+                      raw = json.dumps(diagnostic, sort_keys=True, separators=(",", ":")) + "\n"
+                      with (Path(os.environ["N3_ADMISSION_HOME"]) / "composition-failure.json").open("x", encoding="ascii") as stream:
+                          if stream.write(raw) != len(raw):
+                              refuse("A100020", "composition_retention_short_write")
+              except Refusal as failure:
+                  diagnostic["losses"].append(failure.identity)
+              print(json.dumps(diagnostic, sort_keys=True, separators=(",", ":")))
+              raise SystemExit(1) from None
           PYTREE
-          python3 "$N3_ADMISSION_HOME/composition.py" bind
+          python3 "$N3_ADMISSION_HOME/composition.py" bind 2>/dev/null || { echo '{"site":"A200007","category":"composition_process"}'; exit 1; }
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
@@ -448,7 +690,7 @@ jobs:
 
           stage = Path(os.environ["N3_PACKAGE_STAGE"])
           manifest = {"version": 2, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
-                      "before": "7b5eadae67d647fe14a077813bbc44610952411b", "head": os.environ["GITHUB_SHA"],
+                      "before": "1652f1e69e6809f9f541e289dec3f51f7b82392e", "head": os.environ["GITHUB_SHA"],
                       "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
                       "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
                       "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1, "harness_uuid": None,
@@ -570,7 +812,9 @@ jobs:
           os.replace(stage / "manifest.pending", stage / "package-manifest.json")
           PYRETAIN
       - name: Revalidate sole push immediately before fixture entry
-        run: python3 "$N3_ADMISSION_HOME/admit.py" 2
+        run: |
+          set -euo pipefail
+          python3 "$N3_ADMISSION_HOME/admit.py" 2 2>/dev/null || { echo '{"site":"A200008","category":"readmission_process"}'; exit 1; }
       - name: Observe sole installer-only operation in the disposable systemd fixture
         env:
           PROOF_SUBJECT_SHA: ${{ github.event.after }}
@@ -585,9 +829,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p -- "${RUNNER_TEMP}/managed-n3-evidence"
+          admission_retention_status=0
           if [[ -n "${N3_ADMISSION_HOME:-}" && -f "$N3_ADMISSION_HOME/status.json" ]]; then
-            cp -- "$N3_ADMISSION_HOME/status.json" "${RUNNER_TEMP}/managed-n3-evidence/admission-status.json"
+            cp -- "$N3_ADMISSION_HOME/status.json" "${RUNNER_TEMP}/managed-n3-evidence/admission-status.json" 2>/dev/null || { echo '{"site":"A200009","category":"admission_copy"}'; admission_retention_status=1; }
+          else
+            echo '{"site":"A200010","category":"admission_missing"}'
+            admission_retention_status=1
           fi
+          # Independent bounded snapshots keep a first origin even if final save
+          # failed. Copy failure never suppresses another snapshot or upload.
+          for snapshot in failure composition-failure; do
+            if [[ -n "${N3_ADMISSION_HOME:-}" && -f "$N3_ADMISSION_HOME/$snapshot.json" ]]; then
+              cp -- "$N3_ADMISSION_HOME/$snapshot.json" "${RUNNER_TEMP}/managed-n3-evidence/$snapshot.json" 2>/dev/null || { echo '{"site":"A200011","category":"admission_fallback_copy"}'; admission_retention_status=1; }
+            fi
+          done
           if [[ -n "${N3_PACKAGE_STAGE:-}" && -f "$N3_PACKAGE_STAGE/package-manifest.json" ]]; then
             uv run python - <<'PYCONSUMED'
           import hashlib
@@ -627,7 +882,7 @@ jobs:
           from n3_provenance import validate_runtime
           validate_runtime(manifest["runtime"])
           expected = {"version": 2, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
-                      "before": "7b5eadae67d647fe14a077813bbc44610952411b", "head": os.environ["GITHUB_SHA"],
+                      "before": "1652f1e69e6809f9f541e289dec3f51f7b82392e", "head": os.environ["GITHUB_SHA"],
                       "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
                       "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1,
                       "product_head": "d54b6cf97f9e63a0e23985041d0f10e8eccad0d0", "product_tree": "0aea87b6e6954de6b2e175cb3097b82ec8d78543", "mode": "installer-only"}
@@ -716,6 +971,7 @@ jobs:
               raise SystemExit("Managed N3 consumed provenance incomplete; earlier validated facts retained")
           PYCONSUMED
           fi
+          exit "$admission_retention_status"
       # Each always() step is independent: install, validation, manifest or
       # either upload failure never suppresses the other upload or removal.
       - name: Upload Managed N3 execution evidence and diagnostics
