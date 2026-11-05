@@ -1115,6 +1115,17 @@ observer/exec descendants preserve conditional custody. Ordinary setup decline
 uses original single launch; actual Popen failure/interruption never retries.
 Unknown registration/release/custody stays UNKNOWN; no fork-only/same-UID fence.
 
+Before command-local retention, diagnostic construction saves any actually
+escaping setup error object and traceback before its original not-ready release,
+then rethrows that selection after release. A setup TimeoutError remains escaping;
+ordinary handled OSError still declines optional diagnostics and is not selected
+as a setup failure. Early/not-ready decline with successful release keeps the
+original single-launch fallback; a release-only failure propagates on its own.
+Ready success performs no constructor release. Sender then receiver and their
+original one-close claims are unchanged. Later release errors remain secondary;
+selection never walks a later exception context chain. Normal rethrow frames
+precede the saved original traceback suffix.
+
 The command saves the first actual outgoing exception object and its traceback
 before sender release, phase finalization (including the existing final poll),
 and log context exit. Setup, log-exit and receive errors are captured before
@@ -1130,10 +1141,10 @@ before the receiver attempt and restoring it afterward; a receiver-only failure
 propagates. Successful execution retains log close, receive, outer release,
 action-deadline restoration and the original actual-nonzero-exit failure order.
 This source correction supersedes earlier first-error preservation claims only
-where those claims relied on the unprotected command/endpoint finalizers;
+where those claims relied on unprotected constructor/command/endpoint finalizers;
 historical pins, receipts and failures retain their original subjects. Native
 timing/interrupt proof is NOT RUN, and aggregate file controls do not execute
-this command chronology. No repeated-interruption immunity is claimed.
+this constructor-to-command chronology. No repeated-interruption immunity is claimed.
 
 Original adapter decision precedes one charged nonblocking send requiring full
 module/token/frame/W/TB/head/historical-check/nonce AND own complete snapshot

@@ -70,26 +70,36 @@ class _ScenarioDiagnostic:
         self.ready = False
         self.sample_claimed = self.probe_claimed = self.output_claimed = False
         self.descriptor = None
+        setup_failure = None
         try:
-            if time.monotonic() >= end:
-                return
-            if not all(hasattr(socket, name) for name in ("SOCK_NONBLOCK", "SOCK_CLOEXEC", "MSG_DONTWAIT", "MSG_PEEK")):
-                return
-            self.receiver, self.sender = socket.socketpair(
-                socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
-            self.receiver.shutdown(socket.SHUT_WR)
-            self.sender.shutdown(socket.SHUT_RD)
-            self.descriptor = self.sender.fileno()
-            self.ready = (self.descriptor > 2 and not self.receiver.getblocking() and not self.sender.getblocking()
-                          and not self.receiver.get_inheritable() and not self.sender.get_inheritable()
-                          and time.monotonic() < end)
-        except TimeoutError:
+            try:
+                if time.monotonic() >= end:
+                    return
+                if not all(hasattr(socket, name) for name in ("SOCK_NONBLOCK", "SOCK_CLOEXEC", "MSG_DONTWAIT", "MSG_PEEK")):
+                    return
+                self.receiver, self.sender = socket.socketpair(
+                    socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
+                self.receiver.shutdown(socket.SHUT_WR)
+                self.sender.shutdown(socket.SHUT_RD)
+                self.descriptor = self.sender.fileno()
+                self.ready = (self.descriptor > 2 and not self.receiver.getblocking() and not self.sender.getblocking()
+                              and not self.receiver.get_inheritable() and not self.sender.get_inheritable()
+                              and time.monotonic() < end)
+            except TimeoutError:
+                raise
+            except OSError:
+                self.ready = False  # Ordinary setup decline precedes ONE launch choice.
+        except BaseException as exc:
+            setup_failure = (exc, exc.__traceback__)  # Before not-ready release.
             raise
-        except OSError:
-            self.ready = False  # Ordinary setup decline precedes ONE launch choice.
         finally:
-            if not self.ready:
-                self.release()
+            try:
+                if not self.ready:
+                    self.release()
+            finally:
+                if setup_failure is not None:
+                    error, tb = setup_failure
+                    raise error.with_traceback(tb)
 
     def release_endpoint(self, name: str) -> bool:
         if getattr(self, name + "_close_started"):
