@@ -658,6 +658,20 @@ the leases release. The final DB-only leaf revalidates the original capture from
 BEFORE discovery as well as the completed census, closing intervening-writer gaps.
 These are source predicates; no crash, cleanup, race or recovery proof was run.
 
+The producer and operation censuses each own one coherent read view over their
+existing complete SQL batch, before enumerating/fetching any task or causal
+history. Dependent producer/job/callback/wait/remote/profile/publication/native
+history joins share the producer view; task/preparation/Pause/workflow/tail/outbox
+joins share the operation view. Tracker/pending files and actual host/thread
+capture remain outside those views in their existing order. Supported admission
+callers have no outer SQL transaction. Operation census closes only its owned
+view, then takes the existing epoch/database observation under the still-held
+original RLock. Joining a caller's pinned view never ends that transaction or
+proves latest-state admission. Full validation, cumulative reader budgets,
+unknown-owner refusals and original T0/census/conditional-final raw comparisons
+remain unchanged. No write exemption, original-cause attribution, successful
+preview or performance result follows from this source correction.
+
 Private preview diagnostics preserve those predicates and every consumer. At
 most one ordinary module log (`team_move_preview_diagnostic`) is attempted per
 invocation, on its original native worker after preview-owned native

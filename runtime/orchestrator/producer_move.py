@@ -544,7 +544,8 @@ class ProducerMoveAdmission:
             pending = None
         def add(kind, identity, remedy):
             blockers.append(dict(kind=kind, owner_id=identity, remedy=remedy))
-        with self.db._lock:
+        # Own the snapshot before fetching tasks or any dependent SQL history.
+        with self.db.coherent_read_view():
             states = self.history_uncommitted()
             if self.writer_epoch != writer_epoch:
                 add('native_writer_snapshot_changed', request.source_team, 'Recollect pending enrollment and writer snapshot before decision')
