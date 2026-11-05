@@ -174,17 +174,37 @@ class _V2StartupReads:
         self.check()
         return self
 
-    def __exit__(self, *_exc: Any) -> None:
-        with self.db._lock:
-            self.invalidate("exit")
-            self._keys.clear()
-            self._remaining.clear()
-            self._built.clear()
-            self._closed = True
+    def __exit__(self, _type: Any, primary: BaseException | None, _tb: Any) -> None:
+        self._closed = True
+        try:
+            with self.db._lock:
+                self.invalidate("exit")
+                self._keys.clear()
+                self._remaining.clear()
+                self._built.clear()
+                try:
+                    logging.getLogger(__name__).info("startup_authority_counts %s", self.counts)
+                except BaseException:
+                    pass
+        except BaseException as cleanup:
+            error = self.unsafe if self.unsafe is not None else primary
+            if error is None:
+                raise
             try:
-                logging.getLogger(__name__).info("startup_authority_counts %s", self.counts)
+                if isinstance(error, _V2StartupConnectionUnsafe):
+                    error.causes = (*error.causes, cleanup)
+                else:
+                    error.add_note("startup reader exit also failed: " + type(cleanup).__name__)
             except BaseException:
                 pass
+        # Exit cleanup must never downgrade the sticky custody disposition.
+        if self.unsafe is not None and self.unsafe is not primary:
+            if primary is not None and primary is not self.unsafe:
+                try:
+                    self.unsafe.causes = (*self.unsafe.causes, primary)
+                except BaseException:
+                    pass
+            raise self.unsafe
 
     def invalidate(self, reason: str = "effect") -> None:
         """Discard accepted AND speculative evidence before effects or escape.
@@ -211,15 +231,21 @@ class _V2StartupReads:
 
     def release(self, root: str) -> None:
         """Last exact use includes failed-root skips and every loop exit."""
-        remaining = self._remaining.get(root, 1) - 1
-        if remaining:
-            self._remaining[root] = remaining
-        else:
-            self._remaining.pop(root, None)
-            self._keys.pop(root, None)
-            self._built.discard(root)
-            self._entries -= len(self._memo.pop(root, {})) + len(self._pending.pop(root, {}))
-            self._catalogue_size()
+        try:
+            remaining = self._remaining.get(root, 1) - 1
+            if remaining:
+                self._remaining[root] = remaining
+            else:
+                self._remaining.pop(root, None)
+                self._keys.pop(root, None)
+                self._built.discard(root)
+                self._entries -= len(self._memo.pop(root, {})) + len(self._pending.pop(root, {}))
+                self._catalogue_size()
+        except BaseException:
+            # Bookkeeping may be partial. Seal before any fallible diagnostics;
+            # no connection probe, transaction control or cleanup retry belongs here.
+            self._closed = True
+            raise
 
     def _abort(self, reason: str, *causes: BaseException) -> None:
         self.invalidate("unsafe")

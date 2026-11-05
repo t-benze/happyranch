@@ -3804,6 +3804,15 @@ are attempted; cleanup remains incomplete. Normal clean ordering/batching and
 BaseException propagation remain. No generic coherent_read_view/run_step change
 or live operation follows.
 
+Last-use catalogue cleanup retains the actual escaping primary exception, even
+when release also fails. Sticky unsafe custody takes precedence through reader
+exit, so a secondary release/exit error cannot re-enable the finally worktree
+batch. Secondary errors are retained best effort without diagnostic allocation
+replacing the primary or its original causes. A release-only failure closes the
+reader and escapes; partially updated bookkeeping is never reused. Successful
+release, including failed-root skips, keeps the same last-use lifetime. This
+compound fault remains runtime NOT RUN; source inspection is not fault proof.
+
 Under the existing RLock, outside autocommit connection identity,
 main.data_version, total_changes and main.schema_version bookends enclose each
 owned coherent_read_view and a real main-table snapshot pin. Only matching clean
