@@ -780,7 +780,6 @@ describe('DashboardPage', () => {
         // The exact same returned Promise is propagation, not a new throw.
         if (owned.original === original) return original;
       }
-      let owned: Operation;
       const completion = original.then(
         (value) => {
           const result = { status: 'fulfilled', value } as const;
@@ -796,7 +795,7 @@ describe('DashboardPage', () => {
           return result;
         },
       );
-      owned = { phase, original, completion };
+      const owned: Operation = { phase, original, completion };
       if (last) last.next = owned;
       else first = owned;
       last = owned;
