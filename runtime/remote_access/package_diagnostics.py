@@ -32,6 +32,8 @@ def diagnostic_loss(site: str, category: str, error: BaseException) -> None:
 
 
 def exception_guard(error: BaseException) -> object:
+    # Only this exception or an explicit producer cause owns these guard facts.
+    # A handled error's implicit context can belong to an earlier operation.
     seen = set()
     for _ in range(16):
         if id(error) in seen:
@@ -39,14 +41,22 @@ def exception_guard(error: BaseException) -> object:
         seen.add(id(error))
         if hasattr(error, '_managed_package_guard'):
             return error._managed_package_guard
-        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+        error = error.__cause__
         if error is None:
             break
     return None
 
 
 def exception_refusal(error: BaseException) -> tuple[str, str] | None:
-    """Retain the deepest explicitly chained marked origin, with finite traversal."""
+    """Read validated SAME-exception/private-transfer or explicit-cause origins.
+
+    Nested scopes rethrow the same exception, so its own mark survives. Returned
+    validator errors and native guards use diagnostic_propagate to transfer a
+    validated origin onto the actual caller exception. An explicit cause also
+    identifies a producer relationship. Implicit context alone does not: fresh
+    recovery I/O errors inherit the already handled initiating failure there.
+    Never change those public chains to select a private diagnostic identity.
+    """
     result = None
     seen = set()
     for _ in range(16):
@@ -61,7 +71,7 @@ def exception_refusal(error: BaseException) -> tuple[str, str] | None:
                 result = (category, site)
                 if getattr(error, '_managed_package_propagated_refusal', False) is True:
                     return result
-        cause = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+        cause = error.__cause__
         if cause is None:
             return result
         error = cause
