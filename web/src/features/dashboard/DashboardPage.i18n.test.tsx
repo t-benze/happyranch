@@ -254,15 +254,14 @@ describe('DashboardPage i18n (W3a)', () => {
       const cacheConfig = client.getQueryCache().config;
       const onError = cacheConfig.onError;
       if (onError) {
-        const errorSpy = vi.spyOn(cacheConfig, 'onError');
-        ownRestore(() => errorSpy.mockRestore());
-        errorSpy.mockImplementation(function (this: typeof cacheConfig, ...args) {
+        ownRestore(() => { cacheConfig.onError = onError; });
+        cacheConfig.onError = function (this: typeof cacheConfig, ...args) {
           try { return onError.apply(this, args); } catch (error) {
             // Merely receiving the query's error argument is not a throw.
             remember('cache onError callback throw', error);
             throw error;
           }
-        });
+        };
       }
       // Locked setup and production use the exported default scheduler. Keep
       // its actual scheduled callback/order; acknowledge ONLY calls it receives.
