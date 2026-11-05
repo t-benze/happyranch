@@ -110,6 +110,7 @@ _MANAGED_LOCK: ContextVar[int | None] = ContextVar("managed_lock", default=None)
 # Private direct-package receipt custody; never serialized by public APIs.
 _MANAGED_PACKAGE_DIAGNOSTIC: ContextVar[dict[str, object] | None] = ContextVar("managed_package_diagnostic", default=None)
 _MANAGED_DECLARATION: ContextVar[dict[str, int] | None] = ContextVar("managed_declaration", default=None)
+_CREDENTIAL_REFUSAL: ContextVar[dict | None] = ContextVar("credential_refusal", default=None)
 
 
 def _managed_entry_deadline(seconds: int, *, entry_ns: int | None = None) -> int:
@@ -192,6 +193,8 @@ _PACKAGE_PRIVATE_REASONS = (
 )
 _PACKAGE_DIAGNOSTIC_STATES = ("observed", "absent", "unavailable", "malformed", "unallowlisted", "truncated", "contradictory")
 _PACKAGE_ERROR_CATEGORIES = (
+    "credential_absent", "credential_unsafe_symlink", "credential_wrong_type",
+    "credential_wrong_custody", "credential_staging_incompatible",
     "archive_duplicate_member", "archive_member_invalid", "archive_mode_invalid", "archive_owner_invalid",
     "install_mode_invalid", "inventory_invalid", "managed_configuration_invalid", "managed_identity_invalid",
     "managed_identity_missing", "managed_lifecycle_context_required", "managed_lifecycle_deadline",
@@ -1123,10 +1126,14 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
     if os.geteuid() != 0 or operation not in {"package-install", "package-uninstall"}:
         raise diagnostic_error("P000064", "managed_package_context_required", PackageError("managed_package_context_required"))
     if operation == "package-install":
-        require_credential_capability(Path("/etc/happyranch/daemon.token"), expected_uid=os.geteuid())
+        with diagnostic_scope("P700001", "managed_operational_error", boundary=True):
+            require_credential_capability(Path("/etc/happyranch/daemon.token"), expected_uid=os.geteuid())
         enrollment = Path("/etc/happyranch/enrollment.key")
-        if _backup_present(enrollment):
-            require_credential_capability(enrollment, expected_uid=os.geteuid())
+        with diagnostic_scope("P700002", "managed_operational_error"):
+            present = _backup_present(enrollment)
+        if present:
+            with diagnostic_scope("P700003", "managed_operational_error", boundary=True):
+                require_credential_capability(enrollment, expected_uid=os.geteuid())
     descriptors: list[int] = []
 
     def sealed(name: str, raw: bytes, executable: bool = False) -> int:
@@ -1431,6 +1438,17 @@ def managed_lifecycle(operation: str, *, expected_installation: str | None = Non
         raise diagnostic_error("P000075", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused")) from exc
 
 
+def _credential_classification(site: str, category: str, error: BaseException | None = None) -> str:
+    """Keep the returned classification separate from its private source identity."""
+    from runtime.remote_access.package_diagnostics import exception_refusal
+    record = _CREDENTIAL_REFUSAL.get()
+    if record is not None:
+        # A finally-close failure can override a pending return, exactly as before.
+        # Chained read/close errors retain their earliest marked actual exception.
+        record["origin"] = (exception_refusal(error) if error is not None else None) or (category, site)
+    return category
+
+
 def credential_capability(
     source: Path,
     *,
@@ -1439,35 +1457,41 @@ def credential_capability(
     require_read_only: bool = False,
 ) -> str:
     """Classify credential usability without exposing paths, bytes, or OS errors."""
-    path = Path(source)
+    with diagnostic_scope("P700004", "managed_operational_error"):
+        path = Path(source)
     try:
         current = path
         while current != current.parent:
             metadata = current.lstat()
             if stat.S_ISLNK(metadata.st_mode):
-                return "credential_unsafe_symlink"
+                return _credential_classification("P700010", "credential_unsafe_symlink")
             current = current.parent
     except FileNotFoundError:
-        return "credential_absent"
+        return _credential_classification("P700011", "credential_absent")
     except OSError:
-        return "credential_staging_incompatible"
+        return _credential_classification("P700012", "credential_staging_incompatible")
     try:
-        metadata = path.lstat()
+        with diagnostic_scope("P700013", "credential_staging_incompatible"):
+            metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode):
-            return "credential_wrong_type"
+            return _credential_classification("P700014", "credential_wrong_type")
         if expected_uid is not None and metadata.st_uid != expected_uid:
-            return "credential_wrong_custody"
+            return _credential_classification("P700015", "credential_wrong_custody")
         if allowed_modes is not None and stat.S_IMODE(metadata.st_mode) not in allowed_modes:
-            return "credential_wrong_custody"
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
+            return _credential_classification("P700016", "credential_wrong_custody")
+        with diagnostic_scope("P700017", "credential_staging_incompatible"):
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
         try:
-            if not os.read(descriptor, 1):
-                return "credential_staging_incompatible"
+            with diagnostic_scope("P700018", "credential_staging_incompatible"):
+                empty = not os.read(descriptor, 1)
+            if empty:
+                return _credential_classification("P700019", "credential_staging_incompatible")
         finally:
-            os.close(descriptor)
+            with diagnostic_scope("P700020", "credential_staging_incompatible"):
+                os.close(descriptor)
         if require_read_only:
             try:
                 descriptor = os.open(
@@ -1477,10 +1501,11 @@ def credential_capability(
             except OSError:
                 pass
             else:
-                os.close(descriptor)
-                return "credential_staging_incompatible"
-    except OSError:
-        return "credential_staging_incompatible"
+                with diagnostic_scope("P700022", "credential_staging_incompatible"):
+                    os.close(descriptor)
+                return _credential_classification("P700023", "credential_staging_incompatible")
+    except OSError as error:
+        return _credential_classification("P700024", "credential_staging_incompatible", error)
     return "credential_valid"
 
 
@@ -1490,11 +1515,21 @@ def require_credential_capability(
     expected_uid: int,
     allowed_modes: tuple[int, ...] = (0o600,),
 ) -> None:
-    category = credential_capability(
-        source, expected_uid=expected_uid, allowed_modes=allowed_modes
-    )
+    record: dict = {}
+    token = _CREDENTIAL_REFUSAL.set(record)
+    try:
+        category = credential_capability(
+            source, expected_uid=expected_uid, allowed_modes=allowed_modes
+        )
+    finally:
+        _CREDENTIAL_REFUSAL.reset(token)
     if category != "credential_valid":
-        raise PackageError(category)
+        from runtime.remote_access.package_diagnostics import diagnostic_propagate
+        error = diagnostic_error("P700025", "managed_operational_error", PackageError(category))
+        origin = record.get("origin")
+        if origin is not None:
+            diagnostic_propagate({"category": origin[0], "site": origin[1]}, error)
+        raise error
 
 
 class CompositeServiceManager:
@@ -2962,13 +2997,13 @@ def install_linux_package(
             return _managed_package_outer(package, "package-install", deadline)
         _require_managed_package_context()
     if system_service:
-        with diagnostic_scope("P300008", "managed_operational_error"):
+        with diagnostic_scope("P300008", "managed_operational_error", boundary=True):
             require_credential_capability(
                 root / "etc/happyranch/daemon.token", expected_uid=os.geteuid()
             )
         enrollment_source = root / "etc/happyranch/enrollment.key"
         if enrollment_source.exists() or enrollment_source.is_symlink():
-            with diagnostic_scope("P300009", "managed_operational_error"):
+            with diagnostic_scope("P300009", "managed_operational_error", boundary=True):
                 require_credential_capability(
                     enrollment_source, expected_uid=os.geteuid()
                 )

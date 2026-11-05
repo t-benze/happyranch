@@ -79,11 +79,13 @@ def diagnostic_error(site: str, category: str, error: BaseException) -> BaseExce
 
 
 @contextmanager
-def diagnostic_scope(site: str, category: str):
+def diagnostic_scope(site: str, category: str, *, boundary: bool = False):
     """Attribute a reached operational exception at its literal source boundary."""
     try:
         yield
     except Exception as error:
+        if boundary and exception_refusal(error) is not None:
+            error._managed_package_boundary = (category, site)
         diagnostic_error(site, category, error)
         raise
 
