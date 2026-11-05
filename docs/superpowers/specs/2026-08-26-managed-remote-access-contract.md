@@ -1,5 +1,62 @@
 # Managed Remote Access — Normative Contract
 
+## Local parent-preparation successor — THR327seq82 / ROOT14190
+
+This current local successor follows actual run42105876796/attempt1 at
+E7 `2c3bf547e21b79714d2d1f9035cc31f012b8b010`, tree
+`776ee2f4c4136940792ee19e3d917e45db301cc9`. That run failed at the unchanged
+`managed_lifecycle_incompatible/P000208` installation-parent UID/mode check.
+The specific parent and UID/mode were not observed and remain UNKNOWN. This is
+ONE identifiable hosted failure; earlier anonymous admission_contract stays
+UNKNOWN. The same-check two-hosted-failure rule/count is unchanged.
+
+The reported ubuntu24/20261101.360 image's configure-system.sh includes recursive
+0777 preparation of /opt. This supports a fixture precondition correction,
+not a claim of actual failed-parent metadata. The existing disposable fixture,
+after its ownership baseline and before packaged help or service setup, holds
+literal no-follow directory descriptors for root, opt, etc, systemd and units.
+All must be distinct root-owned directories. Root and the etc/systemd ancestry
+must already lack group/world write bits; missing, aliased, wrong-type,
+non-root, unsafe ancestry or changed identity refuses before any metadata write.
+Only /opt may initially have those write bits. Remove only its 0022 bits with
+fchmod on its held descriptor, preserving other mode bits/owner/group, then
+revalidate every held identity and literal directory entry. Already safe input
+performs no chmod. No chown, recursion, alias following, parent creation,
+product guard relaxation or restoration of unsafe fixture modes occurs.
+
+The existing bounded downloadable diagnostics add install-parents.json with
+fixed parent labels, directory/other, root/non_root and safe/unsafe write
+classes, attempted/observed opt change, final prepared/refused and fixed reason.
+No arbitrary paths, UIDs, errors or stderr enter that record. Errors and close
+uncertainty retain refusal and attempted effects; no rollback or positive READY
+follows. These bookends are observations under the existing trusted disposable
+runner, not a hostile-root rename fence. Preparation is outside the unchanged
+shipping A10s/outer180s deadlines, within the same workflow timeout; precise
+image-preparation boundary timing remains UNAVAILABLE.
+
+The next candidate reuses exact product P7
+`5bd350ae6810e662af721c82fbd8431fedf13df3`, tree
+`d1686fe2606459229abd2bd87a89e6e2ba0ba018`. Both admission checks and manifest
+writer/readback use actual before=E7, distinct after=actual candidate, attempt1,
+existing repository/PR800/ref/main/workflow and singleton/account/deadline rules.
+The composition guard authenticates BOTH literal P7/tree and E7/tree, P7 ancestry
+of E7, E7 ancestry of head and EXACT seven current changed runner/document paths.
+Unchanged provenance-module bytes need no ceremonial edit. All product and other
+source remains byte-identical to E7. No self-SHA or stale before=D selects a run.
+
+SAME allowance is EACH1spent/0reserved/5available; historical4/4 remain spent.
+This source prepares no reservation/publication/run and grants none. Full
+independent actual-final accumulated D..candidate and E7..candidate code review,
+then separate scoped QA and manager assessment precede any external effect.
+The separate PR metadata hold remains unresolved. Every goal acceptance remains
+UNMET; LRA1 HIGH OPEN KNOWN DEFERRED/unprobed and historical failures remain.
+First failure still stops dependent work, with one shipping install and only
+conditional uninstall, unchanged boot-retained image custody and original
+package/runtime provenance. Root/managed behavior NOT RUN locally; lint/static
+and composition checks supply no managed or teardown acceptance.
+
+The iteration1 section below preserves the original spent proposal and pins.
+
 ## Installer-only iteration1 composition — THR327seq82 / ROOT14190
 
 The latest contract resumes the SAME six-publication/six-hosted-run allowance,

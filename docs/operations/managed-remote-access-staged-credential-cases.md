@@ -1,5 +1,22 @@
 # PR800 staged credential and mode cases — THR228seq428
 
+Current ROOT14190 P000208 fixture cases follow the [parent-preparation contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#local-parent-preparation-successor--thr327seq82--root14190). The old hosted receipt identifies the unchanged UID/mode guard once; actual parent/metadata remains UNKNOWN. These new cases are SOURCE/STATIC ONLY; root/managed behavior NOT RUN locally.
+
+| Scenario | Required observation in the existing disposable fixture |
+|---|---|
+| All four installation parents already safe | Held literal distinct root-owned directories; zero chmod; prepared after full identity revalidation |
+| Root-owned /opt group/world writable | Only held /opt descriptor loses 0022 bits; owner/group/other bits preserved; fixed before classes and attempted/observed effect retained |
+| Missing, symlink/alias, wrong-type or non-root directory | Fixed selected label/refusal; no metadata repair or next executable entry |
+| Writable root or etc/systemd/units ancestry | Refuse before any chmod; no broadened product authority |
+| Open/revalidation/fchmod/close fails or identity changes | Refused with actual attempted opt effect retained; no undo, READY or cleanup PASS |
+| Preparation or packaged help fails | No shipping install; existing first-failure teardown/status remains |
+| First install/current/READY fails | Original failure; no second install or conditional uninstall/dependent phase |
+| Failed install has ready private images | Actual before/after identities retained; no same-boot unlink; missing observations stay unknown |
+| Wrong before/source/tree/ref/attempt/history | Original early admission/composition refuses; E7 before/tree and unchanged P7/tree joined |
+| Package/runtime provenance | Actual TAR/build/consumed and v2 runtime joins unchanged; no future build or cleanup acceptance inferred |
+
+EACH1spent/0reserved/5available and historical4/4spent remain. All goal acceptance is UNMET; P000208 retains one identifiable failure, old anonymous failures stay UNKNOWN and LRA1 HIGH OPEN KNOWN DEFERRED/unprobed. Full independent actual-final accumulated/correction review then separate scoped QA and manager assessment remain required before external spend.
+
 Current ROOT14190 diagnostic cases (source and permitted serializer checks only):
 
 | Requirement and input | Observable expected record | Level |

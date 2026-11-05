@@ -321,13 +321,95 @@ def images() -> dict:
     return {"state": "observed", "images": result, "preparation_timing": "unavailable"}
 
 
+def prepare_install_parents() -> dict:
+    """Prepare only the disposable runner's /opt mode; never repair ownership.
+
+    The reported Ubuntu image makes /opt writable. Hold every literal directory
+    before changing only its write bits, then revalidate the same namespace.
+    These observations are not a hostile-root racing-rename fence.
+    """
+    record = {"version": 1, "state": "refused", "reason": "root_required",
+              "selected": "root", "parents": {}, "opt_change": "not_attempted"}
+    if os.geteuid() != 0:
+        return record
+    held = []
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    # Parent indexes refer only to already-held descriptors. No caller paths.
+    entries = (("root", None, "/"), ("opt", 0, "opt"), ("etc", 0, "etc"),
+               ("systemd", 2, "systemd"), ("units", 3, "system"))
+    fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink")
+
+    def same(left, right):
+        return all(getattr(left, key) == getattr(right, key) for key in fields)
+
+    def revalidate():
+        for label, parent, name, fd, metadata in held:
+            record["selected"] = label
+            parent_fd = None if parent is None else held[parent][3]
+            if (not same(metadata, os.fstat(fd)) or not same(metadata, os.stat(
+                    name, dir_fd=parent_fd, follow_symlinks=False))):
+                raise ValueError
+
+    try:
+        for label, parent, name in entries:
+            record.update(selected=label, reason="metadata_unavailable")
+            parent_fd = None if parent is None else held[parent][3]
+            observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            record["parents"][label] = {
+                "type": "directory" if stat.S_ISDIR(observed.st_mode) else "other",
+                "owner": "root" if observed.st_uid == 0 else "non_root",
+                "write": "unsafe" if observed.st_mode & 0o022 else "safe"}
+            record["reason"] = "parent_refused"
+            if (not stat.S_ISDIR(observed.st_mode) or observed.st_uid != 0
+                    or label != "opt" and observed.st_mode & 0o022
+                    or any((observed.st_dev, observed.st_ino) == (m.st_dev, m.st_ino)
+                           for _, _, _, _, m in held)):
+                raise ValueError
+            fd = os.open(name, flags, dir_fd=parent_fd)
+            held.append((label, parent, name, fd, observed))
+            if not same(observed, os.fstat(fd)):
+                raise ValueError
+        record["reason"] = "identity_changed"
+        revalidate()  # Validate ALL parents before any metadata write.
+        opt = held[1]
+        record["selected"] = "opt"
+        if opt[4].st_mode & 0o022:
+            record.update(reason="mode_change_failed", opt_change="attempted")
+            os.fchmod(opt[3], stat.S_IMODE(opt[4].st_mode) & ~0o022)
+            after = os.fstat(opt[3])
+            if (any(getattr(opt[4], key) != getattr(after, key)
+                    for key in fields if key != "st_mode")
+                    or stat.S_IMODE(after.st_mode) != stat.S_IMODE(opt[4].st_mode) & ~0o022):
+                raise ValueError
+            held[1] = (*opt[:4], after)
+            record["opt_change"] = "observed"
+        record["reason"] = "identity_changed"
+        revalidate()
+        record.update(state="prepared", reason="safe", selected="all")
+    except (OSError, ValueError):
+        pass  # Fixed labels/classes only; no paths, raw errors or stderr.
+    finally:
+        for label, _, _, fd, _ in reversed(held):
+            try:
+                os.close(fd)
+            except OSError:
+                record.update(state="refused", reason="close_failed", selected=label)
+    return record
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("help", "operation", "current", "images", "verify"))
+    parser.add_argument("mode", choices=("help", "operation", "current", "images", "verify", "prepare-parents"))
     parser.add_argument("output", type=Path)
     parser.add_argument("operands", nargs="*")
     args = parser.parse_args()
     try:
+        if args.mode == "prepare-parents":
+            if args.operands:
+                raise ValueError
+            record = prepare_install_parents()
+            save(args.output, record)
+            return 0 if record["state"] == "prepared" else 1
         if args.mode == "images":
             snapshot = images()
             try:

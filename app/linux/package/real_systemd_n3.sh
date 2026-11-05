@@ -2009,6 +2009,11 @@ cleanup_jobs_absent && cleanup_processes_absent && cleanup_cgroups_absent && cle
 for port in 18443 18765 18080 19090 15043 13478; do port_absent "$port" || fail "fixture listener baseline refused"; done
 [[ "$(cat /proc/sys/kernel/random/boot_id)" == "$fixture_boot" ]] || fail "fixture boot baseline refused"
 fixture_paths_owned=1
+# The reported Ubuntu image chmods /opt recursively to 0777. Establish the
+# product's unchanged parent preconditions, using held no-follow descriptors.
+# Only the literal root-owned /opt write bits may change, never descendants.
+# Refusal retains fixed metadata classes and prevents every executable entry.
+sudo env "PATH=$PATH" uv run python "$installer_driver" prepare-parents "$diagnostics/install-parents.json" || exit "$?"
 # First candidate executable entry; loader refusal stops dependent setup/install.
 uv run python "$installer_driver" help "$diagnostics/packaged-help.json" "$PACKAGE_TAR" "$work" || exit "$?"
 
