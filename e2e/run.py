@@ -3509,16 +3509,53 @@ class _EvidenceObservations:
                 jid, original_command = owner
                 proof, submitted, provider = original_command[2], original_command[4], original_command[1]
                 job = jobs[job_number]
-                # Each selected Store row owns the accepted SELECT order,
-                # independently of its peers. No coordinated wrong schema
-                # can become an original merely by agreeing with a copy.
+                # Select the same original peer before the column traversal.
+                # The independent Store27 and peer order/value comparisons
+                # now share this row's ONE original-key traversal.
+                original = None
+                if holder not in ('running', 'oracle'):
+                    self.ledger.charge(24, 3, self.check)
+                    if job_number == 0:
+                        running_original, oracle_original, pending_original = c['running_first'], c['oracle_first'], c['pending_first']
+                    else:
+                        running_original, oracle_original, pending_original = c['running_second'], c['oracle_second'], c['pending_second']
+                    comparing_running = holder in ('pending', 'parked') or holder == 'first_terminal' and job_number == 1
+                    original = running_original if comparing_running else oracle_original
+                    if comparing_running and running_original is None:
+                        raise ValueError('Case required running row unavailable')
+                    if holder == 'first_terminal':
+                        original = pending_original if comparing_running else oracle_original
+                        if original is None:
+                            raise ValueError('Case first-terminal original row unavailable')
+                        if comparing_running and original[0][3] != job.get('last_pending'):
+                            raise ValueError('Case first-terminal last pending row unavailable')
+                # Every selected row independently compares its actual original
+                # keys with the accepted SELECT schema, even without a peer.
                 if len(row) != len(self.job_columns):
                     raise ValueError('Case original Store.jobs schema withheld')
                 self.ledger.charge(16 * len(row) + 8, 2 * len(row) + 1, self.check)
                 columns = iter(self.job_columns)
+                if original is not None:
+                    self.ledger.charge(8, 1, self.check)
+                    peer = original[4]
+                    if len(row) != len(peer):
+                        self.ledger.charge(32 * (len(row) + len(peer)), 4 * (len(row) + len(peer)), self.check)
+                        raise ValueError('Case complete original row equality withheld')
+                    # The separate full_row left traversal has disappeared
+                    # (16B/2facts per entry). Keep BOTH value lookups, the
+                    # complete right traversal/iterator, and every original
+                    # key/type/value/byte comparison. No comparison is inferred
+                    # from agreement with the independently checked schema.
+                    self.ledger.charge(16 + 8 * len(row) + 24 * len(peer),
+                                       2 + len(row) + 3 * len(peer), self.check)
+                    peer_keys = iter(peer)
                 for column in row:
                     if not same(column, next(columns)):
                         raise ValueError('Case original Store.jobs order withheld')
+                    if original is not None:
+                        other_column = next(peer_keys)
+                        if not same(column, other_column) or not same(row[column], peer[other_column]):
+                            raise ValueError('Case complete original row equality withheld')
                 if (any(k not in row for k in self.job_columns)
                         or any(type(row.get(k)) is not str or not row[k] for k in
                                ('id','task_id','agent_name','title','rationale','script_text','interpreter','status','created_at'))
@@ -3558,30 +3595,6 @@ class _EvidenceObservations:
                             terminals_first += 1
                         else:
                             terminals_second += 1
-                # Fuse the former second row traversal into this occurrence's
-                # own validation. Keep its peer-reference debit and EVERY full
-                # comparison, including complete unknown scalar columns.
-                if holder in ('running', 'oracle'):
-                    continue
-                self.ledger.charge(24, 3, self.check)
-                if job_number == 0:
-                    running_original, oracle_original, pending_original = c['running_first'], c['oracle_first'], c['pending_first']
-                else:
-                    running_original, oracle_original, pending_original = c['running_second'], c['oracle_second'], c['pending_second']
-                comparing_running = holder in ('pending', 'parked') or holder == 'first_terminal' and job_number == 1
-                original = running_original if comparing_running else oracle_original
-                if comparing_running and running_original is None:
-                    raise ValueError('Case required running row unavailable')
-                if holder == 'first_terminal':
-                    original = pending_original if comparing_running else oracle_original
-                    if original is None:
-                        raise ValueError('Case first-terminal original row unavailable')
-                    if comparing_running and original[0][3] != job.get('last_pending'):
-                        raise ValueError('Case first-terminal last pending row unavailable')
-                    if not full_row(row, original[4]):
-                        raise ValueError('Case first-terminal complete original row equality withheld')
-                elif original is not None and not full_row(row, original[4]):
-                    raise ValueError('Case complete original row equality withheld')
             if active_snapshot is not None:
                 if task_count != 1:
                     raise ValueError('Case snapshot original task unavailable')

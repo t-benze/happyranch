@@ -3368,7 +3368,7 @@ occurrence's syntax/safety work remain unchanged.
 
 Every selected Case Store.jobs row independently requires the accepted ordered
 27-field SELECT schema. All peers having the same extra/missing/permuted keys
-still refuse. Peer full_row equality compares original key sequence and every
+still refuse. Peer equality compares original key sequence and every
 builtin type/value/cardinality, including every full parked task/result field.
 The former positive31-field and coordinated Store-order images are erroneous
 premises, now retained in full as named refusals. Positive Case/map/jobs-last
@@ -3400,3 +3400,18 @@ mutation campaign, new fixture framework or behavioral CI gate is added.
 Public-running/body/text admission and K1-K6/private-copy gaps remain OPEN with
 ROOT, as do independent accumulated review and separate same-final-head QA.
 All original budgets, failure receipts, holds and proof limits remain in force.
+
+
+TASK14107 capacity correction after actual JOB5929 failure: the repeated-prefix
+index4 positive exhausted the unchanged200000-fact allowance before completing
+controls; no total/count/reconciliation or fit was established. Store27 schema
+and peer equality now share the SAME original-key traversal. Every row still
+independently compares all27 keys to its SELECT schema; every required peer
+still compares original key order/cardinality and all full builtin types/values.
+The separately iterated left row is eliminated, saving only its16B/2facts per
+compared entry; right traversal/iterator, value lookups and full comparisons
+remain charged, including new peer-reference work. The complete ordered
+full_row comparator remains for parked task/results and all their unknown
+columns. No expected input/assertion/name, limit, rate, copy or safety charge
+is removed. Restored complete controls/proof/static remain PENDING; JOB5929
+is adverse execution evidence, never an unavailable-capability exemption.
