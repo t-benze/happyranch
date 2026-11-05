@@ -3941,8 +3941,16 @@ later sibling-write attempt must refuse, preserving the complete prior sibling
 bytes, readiness false and the SAME first fatal tuple/error/traceback. A later
 readiness AssertionError may be a different object. Unexpected fatal causes
 still rethrow the original error/traceback with the exact case/boundary note.
-Ordinary refusals keep every original successful later sibling and preservation
-assertion; fixtures, names and expected values stay exact.
+The Case shared-facts writer/prefix controls write and check the actual eligible
+sibling before exhausting the nonrenewing budget. They retain the initial
+capacity exception and traceback, require ordinary capacity classification with
+readiness true and fatal None, then require the actual later sibling write to
+refuse for capacity while preserving the complete prior sibling/member/source
+bytes and absence of pending replacements. The two capacity exceptions need not
+be the same object; unexpected initial classes or causes surface. Cheap ordinary
+refusals keep every original successful later sibling and preservation assertion;
+fixtures, names and expected values stay exact, including the 70000-zero image
+and the independent SQL refusal. No capacity, rate, debit or refund changes.
 A failure remains FAIL. Full restored5208/ALL4572 reconciliation, the SAME one
 command-comparison omission, exact restoration/final green and committed-head
 static checks remain required; this correction establishes no fit or acceptance.

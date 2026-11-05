@@ -202,7 +202,8 @@ def failure_result_controls() -> dict:
     from contextlib import contextmanager
     from controller import Controller
     from run import (collect_evidence, publish_evidence, failure_receipt, publish_failure,
-                     _result_json, _collection_line, _ordinary_evidence_error, _failure_error)
+                     _result_json, _collection_line, _ordinary_evidence_error, _failure_error,
+                     _EvidenceCapacity)
 
     @contextmanager
     def fixture(*, additional_secret: str | None = None) -> Iterator[tuple]:
@@ -4357,8 +4358,10 @@ def failure_result_controls() -> dict:
                 scenario = (root/'scenario.json').read_bytes(); old_buffer = staged[name]
                 if boundary in ('writer','prefix'):
                     fatal_owner_loss = case_name == 'wrong-owner' and boundary == 'prefix'
+                    exhausted_budget = case_name == 'shared-facts'
                     original_fatal = None
-                    if fatal_owner_loss:
+                    initial_capacity_error = initial_capacity_tb = None
+                    if fatal_owner_loss or exhausted_budget:
                         assert writer.redaction_ready and writer._evidence_fatal is None
                         writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
                         assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
@@ -4376,6 +4379,15 @@ def failure_result_controls() -> dict:
                                 raise error.with_traceback(tb)
                             original_fatal = writer._evidence_fatal
                             assert error is exc and tb is not None and not writer.redaction_ready
+                        elif exhausted_budget:
+                            if (type(exc) is not _EvidenceCapacity
+                                    or str(exc) != 'evidence capacity refused'
+                                    or not _ordinary_evidence_error(exc)):
+                                exc.add_note('Case refusal: '+case_name+'/'+boundary)
+                                raise
+                            initial_capacity_error, initial_capacity_tb = exc, exc.__traceback__
+                            assert initial_capacity_tb is not None and writer.redaction_ready
+                            assert writer._evidence_fatal is None
                         elif fatal_owner_loss:
                             raise
                     else: raise AssertionError('Case unsafe member admitted: '+case_name+'/'+boundary)
@@ -4391,6 +4403,19 @@ def failure_result_controls() -> dict:
                         else: raise AssertionError('fatal Case owner/path allowed continuation: '+case_name+'/'+boundary)
                         assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
                         assert not (root/'raw/eligible-case.txt.tmp').exists()
+                    elif exhausted_budget:
+                        assert initial_capacity_error is not None and initial_capacity_tb is not None
+                        try: writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                        except _EvidenceCapacity as later:
+                            assert type(later) is _EvidenceCapacity and str(later) == 'evidence capacity refused'
+                            assert _ordinary_evidence_error(later) and later.__traceback__ is not None
+                            assert writer.redaction_ready and writer._evidence_fatal is None
+                            assert initial_capacity_error.__traceback__ is initial_capacity_tb
+                        else: raise AssertionError('exhausted Case budget allowed continuation: '+case_name+'/'+boundary)
+                        assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
+                        assert not (root/'raw/eligible-case.txt.tmp').exists()
+                        assert destination.read_bytes() == prior and staged[name] is old_buffer and not state['fatal']
+                        if boundary == 'prefix': assert source.read_bytes() == original_image
                     else:
                         writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
                         assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
