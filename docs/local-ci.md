@@ -3441,7 +3441,8 @@ only the declared accepted Store-fixture premise correction. Each refusal keeps
 the entire hostile source, prior member/output/result/FAIL/safe tree and directory
 members, with no selected staging/pending/publication. Complete original bytes,
 values, types, key/list order, count/hash/content remain the positive oracle.
-Actual current results remain PENDING until the owned complete controls finish;
+Historical pre-verification checkpoint: results were PENDING before the
+owned complete controls finished;
 these source changes supply no fit, test-authoring, QA or native PASS.
 
 Earlier paragraphs requiring the SAME command-comparator omission describe the
@@ -3471,9 +3472,12 @@ separate enclosing Case-jobs-last image. Forty-four positive and188 refusal
 results use the same writer/raw/raw-prefix/required-prefix boundaries, entire
 typed/ordered trees, original framing and prior bytes/result/FAIL/no-pending
 assertions. All5428 previous results and5324/5208/4572 full expectations remain.
-Complete pre-fix SOURCE refusal, exact restoration, restored controls and static
-checks are PENDING until actual owned job receipts are inspected; source alone
-proves no fit or behavioral acceptance. Individual predicate/temporal/native proof
+Historical pre-verification checkpoint: those direct-public checks were PENDING
+before the bounded source receipt. The completed receipt subsequently recorded
+the intended pre-fix SOURCE refusal, byte-exact restoration, one restored5660
+controls run with full inherited reconciliation and local static exit0. That
+receipt applies to direct-public source only; it supplies no native acceptance.
+Individual predicate/temporal/native proof
 remains PROOF NOT RUN. Existing SQL-only controls remain incomplete assessment
 subjects; they do not satisfy reached-complete public/text presence obligations.
 
@@ -3491,3 +3495,48 @@ full_row comparator remains for parked task/results and all their unknown
 columns. No expected input/assertion/name, limit, rate, copy or safety charge
 is removed. Restored complete controls/proof/static remain PENDING; JOB5929
 is adverse execution evidence, never an unavailable-capability exemption.
+
+
+PRESENT terminal `Case.jobs[k].browser` now stays with the existing finite Case
+owner. The exact holder order is `body,text,screenshot,at`. Each full ordered
+public27 body owns its own SOURCE lexical/original-secret/decoded/residual/
+second-layer proof and UTF8 digest, and compares every field to THIS job's
+terminal/oracle Store27 with only submitted false/INTEGER0 flag mappings.
+Completed0, completed7 and failed/-9/timeout remain distinct terminal tuples.
+The exact screenshot name and finite non-Boolean timestamp are required.
+
+Whole text retains every original byte. Only nonempty printable-ASCII-plus-LF
+SOURCE ending in LF is span eligible. The owner scans every `$ ` anchor,
+including overlapping candidates, for the FULL same-body SOURCE. Exactly one
+candidate grants its mapped span that occurrence's completed proof, with full
+comparison/traversal debits. Zero candidates retains ordinary R1; multiple
+candidates refuse. Prefix/suffix remain R1 without renderer equality. Original
+secret matching stays continuous across all regions and <=4096 UTF8-byte chunks;
+slices, carry, search, sanitizer passes and retained bytes are charged before
+allocation. No normalization, first-match choice or generic browser/stdout grant.
+Facts and comparisons stay private until existing Case/Observations close,
+including late metadata/rows and the separately retained Case-jobs-last image.
+
+The existing four-boundary fixture adds the three independent full terminal
+body/text literals, complete text-first negative, unique/no/duplicate anchor,
+LF/CRLF/eligibility/outside-R1, tiny one-/two-backslash and original/decoded/
+boundary/chunk-secret cases. All5660 prior full results,2112 inherited Case plus
+232 direct additions, original source images/types/key-list order and all87
+independent readers remain preservation obligations. Current terminal-source
+pre-fix/restoration/restored-controls/static evidence is PENDING until actual
+owned receipts are authenticated. An earlier overlapping lexical/owner guard
+proves whole refusal only; individual predicate, temporal and native proof is
+PROOF NOT RUN. No fit or test-authoring PASS follows from source inspection.
+
+Reached-complete missing-public, action/response/browser-event copies,
+marked/scenario/detached/result/cross-member/prefix-final and BOTH pair terminal
+text/full K5-K6 integration remain unfinished ROOT work, along with final whole
+accumulated review, separate same-final-head final-compound QA and actual-main
+convergence. Original limits/end/nonrenewing work/facts/copy/final-buffer and
+failure object/TB/claim/C8/preservation rules remain unchanged. Units RETIRED;
+integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342/211270-271;
+Python3.12 NOT RUN. Required automated gates are exactly Source Boundary Lint
+and Web Lint (Node24), lint/static only. Product remains DAILY19UTC ONLY with
+no new observation, manual run, trigger or schedule. All failures, UNKNOWNs,
+holds and spent allowances remain; source delivery is separate from native
+acceptance and guarded manager merge.

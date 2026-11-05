@@ -4186,9 +4186,593 @@ def failure_result_controls() -> dict:
                                   'reason': None,
                                   'created_at': '2026-01-01T00:00:00+00:00'}}]}}
 
+    # Accepted D1-D5 full independent public/body/text images. The entire
+    # text-first negative stays literal and is never reordered into a positive.
+    case_terminal_literals = {'0': {'body': {'id': 'JOB-701',
+                    'task_id': 'TASK-701',
+                    'agent_name': 'case_manager',
+                    'title': 'E04.approve-exit0/e08eba4596159ebe63677c14',
+                    'rationale': 'Disposable owned deterministic job',
+                    'script_text': 'import json, os, signal, socket, sys, time\n'
+                                   'from pathlib import Path\n'
+                                   'if False:\n'
+                                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                   "Path('/tmp/e04-show/coord/e08eba4596159ebe63677c14.started').write_text(json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                                   'pid=os.getpid())))\n'
+                                   "sys.stdout.write('E04_OK_OUT\\n'); sys.stdout.flush()\n"
+                                   "sys.stderr.write('E04_OK_ERR\\n'); sys.stderr.flush()\n"
+                                   'end = 40.0\n'
+                                   'def remaining():\n'
+                                   '    value = end - time.monotonic()\n'
+                                   '    if value <= 0:\n'
+                                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                                   '    return min(20, value)\n'
+                                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.sendall((json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                                   'pid=os.getpid())) + "\\n").encode())\n'
+                                   '    remaining()\n'
+                                   '    if False:\n'
+                                   '        while True:\n'
+                                   '            signal.pause()\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   '    released = peer.recv(1)\n'
+                                   '    remaining()\n'
+                                   '    if released != b"R":\n'
+                                   '        raise RuntimeError("missing external release")\n'
+                                   'raise SystemExit(0)\n',
+                    'interpreter': 'python3',
+                    'cwd_hint': None,
+                    'status': 'completed',
+                    'exit_code': 0,
+                    'stdout_head': 'E04_OK_OUT\n',
+                    'stderr_head': 'E04_OK_ERR\n',
+                    'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-701.out',
+                    'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-701.err',
+                    'duration_ms': 100,
+                    'started_at': '2026-01-01T00:00:01+00:00',
+                    'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                    'reviewed_at': '2026-01-01T00:00:01+00:00',
+                    'reviewed_by': 'case_manager',
+                    'reject_reason': None,
+                    'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                    'max_runtime_seconds': 30,
+                    'max_output_bytes': 52428800,
+                    'review_required': False,
+                    'persistent': False,
+                    'reason': None,
+                    'created_at': '2026-01-01T00:00:00+00:00'},
+           'text': '← Back to TASK-701\n'
+                   'JOB-701\n'
+                   'completed\n'
+                   'E04.approve-exit0/e08eba4596159ebe63677c14\n'
+                   '\n'
+                   'Disposable owned deterministic job\n'
+                   '\n'
+                   'STORED COMMAND · VERBATIM\n'
+                   '›_\n'
+                   'COMMAND\n'
+                   '$ import json, os, signal, socket, sys, time\n'
+                   'from pathlib import Path\n'
+                   'if False:\n'
+                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                   "Path('/tmp/e04-show/coord/e08eba4596159ebe63677c14.started').write_text(json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                   'pid=os.getpid())))\n'
+                   "sys.stdout.write('E04_OK_OUT\\n'); sys.stdout.flush()\n"
+                   "sys.stderr.write('E04_OK_ERR\\n'); sys.stderr.flush()\n"
+                   'end = 40.0\n'
+                   'def remaining():\n'
+                   '    value = end - time.monotonic()\n'
+                   '    if value <= 0:\n'
+                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                   '    return min(20, value)\n'
+                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.sendall((json.dumps(dict(token='e08eba4596159ebe63677c14', pid=os.getpid())) + "
+                   '"\\n").encode())\n'
+                   '    remaining()\n'
+                   '    if False:\n'
+                   '        while True:\n'
+                   '            signal.pause()\n'
+                   '    peer.settimeout(remaining())\n'
+                   '    released = peer.recv(1)\n'
+                   '    remaining()\n'
+                   '    if released != b"R":\n'
+                   '        raise RuntimeError("missing external release")\n'
+                   'raise SystemExit(0)\n'
+                   '\n'
+                   'python3\n'
+                   '\n'
+                   'Stored submission bytes are preserved. Admission and terminal disposition do not establish script '
+                   'success; inspect the actual exit code and output.\n'
+                   '\n'
+                   'OUTPUT\n'
+                   'STDOUT\n'
+                   'E04_OK_OUT\n'
+                   '\n'
+                   'STDERR\n'
+                   'E04_OK_ERR\n'
+                   '\n'
+                   'Requested by\n'
+                   'case_manager\n'
+                   'Reviewed by\n'
+                   'case_manager\n'
+                   'Task\n'
+                   'TASK-701\n'
+                   'Created\n'
+                   '1/1/2026, 12:00:00\u202fAM\n'
+                   'EXECUTION\n'
+                   'Interpreter\n'
+                   'python3\n'
+                   'CWD resolved\n'
+                   '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+                   'Started\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Finished\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Reviewed at\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Exit code\n'
+                   '0\n'
+                   'Duration\n'
+                   '0.1s\n'
+                   'Max runtime\n'
+                   '30s\n'
+                   'Persistent\n'
+                   'no\n'
+                   'Historical review flag\n'
+                   'no',
+           'screenshot': 'e04-JOB-701.png',
+           'at': 15.0},
+     '2': {'body': {'id': 'JOB-703',
+                    'task_id': 'TASK-703',
+                    'agent_name': 'case_manager',
+                    'title': 'E04.completed-exit7/df5f1abd9fb56d8c669f17e2',
+                    'rationale': 'Disposable owned deterministic job',
+                    'script_text': 'import json, os, signal, socket, sys, time\n'
+                                   'from pathlib import Path\n'
+                                   'if False:\n'
+                                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                   "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                                   'pid=os.getpid())))\n'
+                                   "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+                                   "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+                                   'end = 40.0\n'
+                                   'def remaining():\n'
+                                   '    value = end - time.monotonic()\n'
+                                   '    if value <= 0:\n'
+                                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                                   '    return min(20, value)\n'
+                                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                                   'pid=os.getpid())) + "\\n").encode())\n'
+                                   '    remaining()\n'
+                                   '    if False:\n'
+                                   '        while True:\n'
+                                   '            signal.pause()\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   '    released = peer.recv(1)\n'
+                                   '    remaining()\n'
+                                   '    if released != b"R":\n'
+                                   '        raise RuntimeError("missing external release")\n'
+                                   'raise SystemExit(7)\n',
+                    'interpreter': 'python3',
+                    'cwd_hint': None,
+                    'status': 'completed',
+                    'exit_code': 7,
+                    'stdout_head': 'E04_EXIT7_OUT\n',
+                    'stderr_head': 'E04_EXIT7_ERR\n',
+                    'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.out',
+                    'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.err',
+                    'duration_ms': 100,
+                    'started_at': '2026-01-01T00:00:01+00:00',
+                    'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                    'reviewed_at': '2026-01-01T00:00:01+00:00',
+                    'reviewed_by': 'case_manager',
+                    'reject_reason': None,
+                    'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                    'max_runtime_seconds': 30,
+                    'max_output_bytes': 52428800,
+                    'review_required': False,
+                    'persistent': False,
+                    'reason': None,
+                    'created_at': '2026-01-01T00:00:00+00:00'},
+           'text': '← Back to TASK-703\n'
+                   'JOB-703\n'
+                   'completed\n'
+                   'E04.completed-exit7/df5f1abd9fb56d8c669f17e2\n'
+                   '\n'
+                   'Disposable owned deterministic job\n'
+                   '\n'
+                   'STORED COMMAND · VERBATIM\n'
+                   '›_\n'
+                   'COMMAND\n'
+                   '$ import json, os, signal, socket, sys, time\n'
+                   'from pathlib import Path\n'
+                   'if False:\n'
+                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                   "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                   'pid=os.getpid())))\n'
+                   "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+                   "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+                   'end = 40.0\n'
+                   'def remaining():\n'
+                   '    value = end - time.monotonic()\n'
+                   '    if value <= 0:\n'
+                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                   '    return min(20, value)\n'
+                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', pid=os.getpid())) + "
+                   '"\\n").encode())\n'
+                   '    remaining()\n'
+                   '    if False:\n'
+                   '        while True:\n'
+                   '            signal.pause()\n'
+                   '    peer.settimeout(remaining())\n'
+                   '    released = peer.recv(1)\n'
+                   '    remaining()\n'
+                   '    if released != b"R":\n'
+                   '        raise RuntimeError("missing external release")\n'
+                   'raise SystemExit(7)\n'
+                   '\n'
+                   'python3\n'
+                   '\n'
+                   'Stored submission bytes are preserved. Admission and terminal disposition do not establish script '
+                   'success; inspect the actual exit code and output.\n'
+                   '\n'
+                   'OUTPUT\n'
+                   'STDOUT\n'
+                   'E04_EXIT7_OUT\n'
+                   '\n'
+                   'STDERR\n'
+                   'E04_EXIT7_ERR\n'
+                   '\n'
+                   'Requested by\n'
+                   'case_manager\n'
+                   'Reviewed by\n'
+                   'case_manager\n'
+                   'Task\n'
+                   'TASK-703\n'
+                   'Created\n'
+                   '1/1/2026, 12:00:00\u202fAM\n'
+                   'EXECUTION\n'
+                   'Interpreter\n'
+                   'python3\n'
+                   'CWD resolved\n'
+                   '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+                   'Started\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Finished\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Reviewed at\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Exit code\n'
+                   '7\n'
+                   'Duration\n'
+                   '0.1s\n'
+                   'Max runtime\n'
+                   '30s\n'
+                   'Persistent\n'
+                   'no\n'
+                   'Historical review flag\n'
+                   'no',
+           'screenshot': 'e04-JOB-703.png',
+           'at': 15.0},
+     '3': {'body': {'id': 'JOB-702',
+                    'task_id': 'TASK-702',
+                    'agent_name': 'case_manager',
+                    'title': 'E04.failed-timeout/effc58d0f834d9ba4fc7c83e',
+                    'rationale': 'Disposable owned deterministic job',
+                    'script_text': 'import json, os, signal, socket, sys, time\n'
+                                   'from pathlib import Path\n'
+                                   'if True:\n'
+                                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                   "Path('/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started').write_text(json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                                   'pid=os.getpid())))\n'
+                                   "sys.stdout.write('E04_TIMEOUT_OUT\\n'); sys.stdout.flush()\n"
+                                   "sys.stderr.write('E04_TIMEOUT_ERR\\n'); sys.stderr.flush()\n"
+                                   'end = 40.0\n'
+                                   'def remaining():\n'
+                                   '    value = end - time.monotonic()\n'
+                                   '    if value <= 0:\n'
+                                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                                   '    return min(20, value)\n'
+                                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.sendall((json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                                   'pid=os.getpid())) + "\\n").encode())\n'
+                                   '    remaining()\n'
+                                   '    if True:\n'
+                                   '        while True:\n'
+                                   '            signal.pause()\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   '    released = peer.recv(1)\n'
+                                   '    remaining()\n'
+                                   '    if released != b"R":\n'
+                                   '        raise RuntimeError("missing external release")\n'
+                                   'raise SystemExit(-9)\n',
+                    'interpreter': 'python3',
+                    'cwd_hint': None,
+                    'status': 'failed',
+                    'exit_code': -9,
+                    'stdout_head': 'E04_TIMEOUT_OUT\n',
+                    'stderr_head': 'E04_TIMEOUT_ERR\n',
+                    'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-702.out',
+                    'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-702.err',
+                    'duration_ms': 5001,
+                    'started_at': '2026-01-01T00:00:01+00:00',
+                    'finished_at': '2026-01-01T00:00:06.001000+00:00',
+                    'reviewed_at': '2026-01-01T00:00:01+00:00',
+                    'reviewed_by': 'case_manager',
+                    'reject_reason': None,
+                    'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                    'max_runtime_seconds': 5,
+                    'max_output_bytes': 52428800,
+                    'review_required': False,
+                    'persistent': False,
+                    'reason': 'timeout',
+                    'created_at': '2026-01-01T00:00:00+00:00'},
+           'text': '← Back to TASK-702\n'
+                   'JOB-702\n'
+                   'failed\n'
+                   'E04.failed-timeout/effc58d0f834d9ba4fc7c83e\n'
+                   '\n'
+                   'Disposable owned deterministic job\n'
+                   '\n'
+                   'STORED COMMAND · VERBATIM\n'
+                   '›_\n'
+                   'COMMAND\n'
+                   '$ import json, os, signal, socket, sys, time\n'
+                   'from pathlib import Path\n'
+                   'if True:\n'
+                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                   "Path('/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started').write_text(json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                   'pid=os.getpid())))\n'
+                   "sys.stdout.write('E04_TIMEOUT_OUT\\n'); sys.stdout.flush()\n"
+                   "sys.stderr.write('E04_TIMEOUT_ERR\\n'); sys.stderr.flush()\n"
+                   'end = 40.0\n'
+                   'def remaining():\n'
+                   '    value = end - time.monotonic()\n'
+                   '    if value <= 0:\n'
+                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                   '    return min(20, value)\n'
+                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.sendall((json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', pid=os.getpid())) + "
+                   '"\\n").encode())\n'
+                   '    remaining()\n'
+                   '    if True:\n'
+                   '        while True:\n'
+                   '            signal.pause()\n'
+                   '    peer.settimeout(remaining())\n'
+                   '    released = peer.recv(1)\n'
+                   '    remaining()\n'
+                   '    if released != b"R":\n'
+                   '        raise RuntimeError("missing external release")\n'
+                   'raise SystemExit(-9)\n'
+                   '\n'
+                   'python3\n'
+                   '\n'
+                   'Stored submission bytes are preserved. Admission and terminal disposition do not establish script '
+                   'success; inspect the actual exit code and output.\n'
+                   '\n'
+                   'FAILURE REASON\n'
+                   'timeout\n'
+                   '\n'
+                   'OUTPUT\n'
+                   'STDOUT\n'
+                   'E04_TIMEOUT_OUT\n'
+                   '\n'
+                   'STDERR\n'
+                   'E04_TIMEOUT_ERR\n'
+                   '\n'
+                   'Requested by\n'
+                   'case_manager\n'
+                   'Reviewed by\n'
+                   'case_manager\n'
+                   'Task\n'
+                   'TASK-702\n'
+                   'Created\n'
+                   '1/1/2026, 12:00:00\u202fAM\n'
+                   'EXECUTION\n'
+                   'Interpreter\n'
+                   'python3\n'
+                   'CWD resolved\n'
+                   '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+                   'Started\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Finished\n'
+                   '1/1/2026, 12:00:06\u202fAM\n'
+                   'Reviewed at\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Exit code\n'
+                   '-9\n'
+                   'Duration\n'
+                   '5.0s\n'
+                   'Max runtime\n'
+                   '5s\n'
+                   'Persistent\n'
+                   'no\n'
+                   'Historical review flag\n'
+                   'no',
+           'screenshot': 'e04-JOB-702.png',
+           'at': 18.0}}
+    case_text_first_negative = {'text': '← Back to TASK-703\n'
+             'JOB-703\n'
+             'completed\n'
+             'E04.completed-exit7/df5f1abd9fb56d8c669f17e2\n'
+             '\n'
+             'Disposable owned deterministic job\n'
+             '\n'
+             'STORED COMMAND · VERBATIM\n'
+             '›_\n'
+             'COMMAND\n'
+             '$ import json, os, signal, socket, sys, time\n'
+             'from pathlib import Path\n'
+             'if False:\n'
+             '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+             "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+             'pid=os.getpid())))\n'
+             "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+             "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+             'end = 40.0\n'
+             'def remaining():\n'
+             '    value = end - time.monotonic()\n'
+             '    if value <= 0:\n'
+             '        raise TimeoutError("E04 script absolute deadline")\n'
+             '    return min(20, value)\n'
+             'with socket.socket(socket.AF_UNIX) as peer:\n'
+             '    peer.settimeout(remaining())\n'
+             "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+             '    peer.settimeout(remaining())\n'
+             "    peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', pid=os.getpid())) + "
+             '"\\n").encode())\n'
+             '    remaining()\n'
+             '    if False:\n'
+             '        while True:\n'
+             '            signal.pause()\n'
+             '    peer.settimeout(remaining())\n'
+             '    released = peer.recv(1)\n'
+             '    remaining()\n'
+             '    if released != b"R":\n'
+             '        raise RuntimeError("missing external release")\n'
+             'raise SystemExit(7)\n'
+             '\n'
+             'python3\n'
+             '\n'
+             'Stored submission bytes are preserved. Admission and terminal disposition do not establish script '
+             'success; inspect the actual exit code and output.\n'
+             '\n'
+             'OUTPUT\n'
+             'STDOUT\n'
+             'E04_EXIT7_OUT\n'
+             '\n'
+             'STDERR\n'
+             'E04_EXIT7_ERR\n'
+             '\n'
+             'Requested by\n'
+             'case_manager\n'
+             'Reviewed by\n'
+             'case_manager\n'
+             'Task\n'
+             'TASK-703\n'
+             'Created\n'
+             '1/1/2026, 12:00:00\u202fAM\n'
+             'EXECUTION\n'
+             'Interpreter\n'
+             'python3\n'
+             'CWD resolved\n'
+             '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+             'Started\n'
+             '1/1/2026, 12:00:01\u202fAM\n'
+             'Finished\n'
+             '1/1/2026, 12:00:01\u202fAM\n'
+             'Reviewed at\n'
+             '1/1/2026, 12:00:01\u202fAM\n'
+             'Exit code\n'
+             '7\n'
+             'Duration\n'
+             '0.1s\n'
+             'Max runtime\n'
+             '30s\n'
+             'Persistent\n'
+             'no\n'
+             'Historical review flag\n'
+             'no',
+     'body': {'id': 'JOB-703',
+              'task_id': 'TASK-703',
+              'agent_name': 'case_manager',
+              'title': 'E04.completed-exit7/df5f1abd9fb56d8c669f17e2',
+              'rationale': 'Disposable owned deterministic job',
+              'script_text': 'import json, os, signal, socket, sys, time\n'
+                             'from pathlib import Path\n'
+                             'if False:\n'
+                             '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                             "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                             'pid=os.getpid())))\n'
+                             "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+                             "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+                             'end = 40.0\n'
+                             'def remaining():\n'
+                             '    value = end - time.monotonic()\n'
+                             '    if value <= 0:\n'
+                             '        raise TimeoutError("E04 script absolute deadline")\n'
+                             '    return min(20, value)\n'
+                             'with socket.socket(socket.AF_UNIX) as peer:\n'
+                             '    peer.settimeout(remaining())\n'
+                             "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                             '    peer.settimeout(remaining())\n'
+                             "    peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', pid=os.getpid())) + "
+                             '"\\n").encode())\n'
+                             '    remaining()\n'
+                             '    if False:\n'
+                             '        while True:\n'
+                             '            signal.pause()\n'
+                             '    peer.settimeout(remaining())\n'
+                             '    released = peer.recv(1)\n'
+                             '    remaining()\n'
+                             '    if released != b"R":\n'
+                             '        raise RuntimeError("missing external release")\n'
+                             'raise SystemExit(7)\n',
+              'interpreter': 'python3',
+              'cwd_hint': None,
+              'status': 'completed',
+              'exit_code': 7,
+              'stdout_head': 'E04_EXIT7_OUT\n',
+              'stderr_head': 'E04_EXIT7_ERR\n',
+              'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.out',
+              'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.err',
+              'duration_ms': 100,
+              'started_at': '2026-01-01T00:00:01+00:00',
+              'finished_at': '2026-01-01T00:00:01.100000+00:00',
+              'reviewed_at': '2026-01-01T00:00:01+00:00',
+              'reviewed_by': 'case_manager',
+              'reject_reason': None,
+              'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+              'max_runtime_seconds': 30,
+              'max_output_bytes': 52428800,
+              'review_required': False,
+              'persistent': False,
+              'reason': None,
+              'created_at': '2026-01-01T00:00:00+00:00'},
+     'screenshot': 'e04-JOB-703.png',
+     'at': 15.0}
+    case_small_span_literals = {'dropped_final_lf_text': 'A\n$ print("public\\nline")B',
+     'duplicate_text': 'A\n$ print("public\\nline")\n$ print("public\\nline")\nB',
+     'no_space_anchor_text': 'A\n$print("public\\nline")\nB',
+     'one_backslash_source': 'print("public\\nline")\n',
+     'outside_backslash_text': 'A\\n\n$ print("public\\nline")\nB',
+     'positive_text': 'A\n$ print("public\\nline")\nB',
+     'residual_negative_text': 'A\n$ print("public\\\\nline")\nB',
+     'two_backslash_source': 'print("public\\\\nline")\n'}
+
     def case_input(root: Path, index: int = 0, *, late: bool = False, mode: str = 'encoded',
-                   store_image: str = 'accepted', direct_public: bool = False) -> dict:
+                   store_image: str = 'accepted', direct_public: bool = False,
+                   terminal_public: bool = False, browser_source: str | None = None) -> dict:
         subject = copy.deepcopy(case_literals[str(0 if index == 1 else index)])
+        if browser_source is not None:
+            # Test input substitution for the independently authored tiny/span
+            # oracles. Every real source occurrence is rebuilt from this INPUT,
+            # never from admission output; all original literals remain intact.
+            for literal in subject['jobs']:
+                literal['script'] = browser_source
+                literal['script_sha256'] = hashlib.sha256(browser_source.encode()).hexdigest()
+                for holder in ('running', 'terminal', 'running_browser'):
+                    literal[holder]['script_text'] = browser_source
         variant = 'E04.review-required-refused' if index == 1 else subject['variant']
         image = submission_input(root, subject['jobs'][0]['script'])
         commands, jobs = [], []
@@ -4249,6 +4833,16 @@ def failure_result_controls() -> dict:
                 rejection_drain=dict(row=copy.deepcopy(terminal),audits=[copy.deepcopy(audit)],outputs=copy.deepcopy(outputs)),
                 out=terminal['stdout_head'],err=terminal['stderr_head'])
             job['terminal'] = copy.deepcopy(terminal)
+            if terminal_public:
+                browser = copy.deepcopy(case_terminal_literals[str(index)])
+                public = browser['body']
+                public['cwd_resolved'] = str(root/'runtime/orgs/alpha/workspaces/case_manager')
+                public['stdout_path'] = str(root/'runtime/orgs/alpha/jobs'/(literal['id']+'.out'))
+                public['stderr_path'] = str(root/'runtime/orgs/alpha/jobs'/(literal['id']+'.err'))
+                if browser_source is not None:
+                    public['script_text'] = browser_source
+                    browser['text'] = 'A\n$ ' + browser_source + 'B'
+                job['browser'] = browser
             job['submit'] = copy.deepcopy(command)
             jobs.append(job)
         # These are independently specified fixture commands at the actual
@@ -4350,7 +4944,12 @@ def failure_result_controls() -> dict:
     case_direct_positive = {f'direct-public-index{i}-{order}': (i,order)
                             for i in (0,2,3,4,5) for order in ('early','jobs-last')}
     case_direct_positive['direct-public-lookalike-scalar'] = (0,'lookalike-scalar')
-    for spec in case_full + list(case_partials) + ['repeated'] + list(case_stages) + list(case_copy_positive) + list(case_direct_positive):
+    case_terminal_positive = {f'terminal-browser-index{i}-{order}': (i,order)
+                              for i in (0,2,3) for order in ('early','jobs-last')}
+    case_terminal_positive.update({f'terminal-browser-{name}': (0,name) for name in
+        ('ordinary-prefix-suffix','header-looking-prefix','zero-anchor-ordinary','small-one-backslash',
+         'true-absence','unselected-task-clean')})
+    for spec in case_full + list(case_partials) + ['repeated'] + list(case_stages) + list(case_copy_positive) + list(case_direct_positive) + list(case_terminal_positive):
         for boundary in ('writer','raw','raw-prefix','prefix'):
             with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
                 writer.revision = row['source_sha'] = old_source
@@ -4358,6 +4957,22 @@ def failure_result_controls() -> dict:
                     index,late,mode = spec
                     image = case_input(root,index,late=late,mode=mode)
                     label = f'C5-Case-full-index{index}-'+('late' if late else 'early')+'-'+mode+'-'+boundary
+                elif spec in case_terminal_positive:
+                    index,order = case_terminal_positive[spec]
+                    image = case_input(root,index,terminal_public=order != 'true-absence',
+                        browser_source=case_small_span_literals['one_backslash_source'] if order == 'small-one-backslash' else None)
+                    case = image['durable'][-1]['jobs_cases'][0]
+                    job = case['jobs'][0]
+                    if order == 'jobs-last': case['jobs'] = case.pop('jobs')
+                    elif order == 'ordinary-prefix-suffix':
+                        job['browser']['text'] = 'unchanged public 中 prefix\n' + job['browser']['text'] + '\nunchanged suffix'
+                    elif order == 'header-looking-prefix':
+                        job['browser']['text'] = 'COMMAND\nScript: $ ordinary\n' + job['browser']['text']
+                    elif order == 'zero-anchor-ordinary': job['browser']['text'] = 'ordinary public text without a SOURCE presentation'
+                    elif order == 'small-one-backslash':
+                        job['browser']['text'] = case_small_span_literals['positive_text']
+                    elif order == 'unselected-task-clean': case['task_browser'] = dict(text='ordinary public task page',screenshot='task.png',at=1.0)
+                    label = 'C5-Case-'+spec+'-'+boundary
                 elif spec in case_direct_positive:
                     index,order = case_direct_positive[spec]
                     image = case_input(root,index,direct_public=True)
@@ -4505,7 +5120,7 @@ def failure_result_controls() -> dict:
                 compact = json.dumps(wanted,ensure_ascii=False,separators=(',',':')).encode()
                 name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
                 destination = root/'raw'/name
-                if type(spec) is str and (spec in case_oracle_partials or spec in case_direct_positive):
+                if type(spec) is str and (spec in case_oracle_partials or spec in case_direct_positive or spec in case_terminal_positive):
                     raw_names = {p.name for p in (root/'raw').iterdir()}
                     prior_staged,prior_published = copy.deepcopy(staged),copy.deepcopy(published)
                 try:
@@ -4535,7 +5150,7 @@ def failure_result_controls() -> dict:
                 assert (root/'scenario.json').read_bytes() == scenario
                 for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
                 assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists()
-                if type(spec) is str and (spec in case_oracle_partials or spec in case_direct_positive):
+                if type(spec) is str and (spec in case_oracle_partials or spec in case_direct_positive or spec in case_terminal_positive):
                     actual = destination.read_bytes()
                     assert len(actual) == len(expected_image) and hashlib.sha256(actual).digest() == hashlib.sha256(expected_image).digest()
                     # Required-prefix keeps BOTH its original observations
@@ -4664,12 +5279,40 @@ def failure_result_controls() -> dict:
      'direct-public-id-index5-job1': (5, 1, 'id'),
      'direct-public-script-byte-index5-job1': (5, 1, 'script-byte'),
      'direct-public-missing-running-index5-job1': (5, 1, 'missing-running')}
+    case_terminal_refusals = {f'terminal-browser-{change}-index0': (0,change) for change in
+        ('holder-text-first', 'holder-missing', 'holder-extra', 'holder-array', 'holder-null', 'body-array',
+         'body-missing', 'body-extra', 'body-order', 'body-bool-flags', 'body-null-flag', 'body-id',
+         'body-task', 'body-agent', 'body-interpreter', 'body-script-byte', 'body-script-secret',
+         'body-script-decoded-secret', 'body-script-residual', 'body-script-second-layer',
+         'body-script-type', 'body-status', 'body-exit-bool', 'body-reason', 'body-head', 'body-path',
+         'body-duration-bool', 'body-time', 'body-cap-bool', 'body-output-cap', 'body-created',
+         'missing-oracle', 'screenshot', 'screenshot-type', 'at-bool', 'at-string', 'text-type',
+         'anchor-none', 'anchor-no-space', 'anchor-tab', 'anchor-duplicate', 'anchor-overlap',
+         'text-dropped-LF', 'text-CRLF', 'source-dropped-LF', 'source-CRLF', 'source-tab',
+         'source-nonascii', 'outside-prefix-backslash', 'outside-suffix-backslash', 'header-only',
+         'original-secret', 'prefix-span-secret', 'span-suffix-secret', 'chunk-secret',
+         'small-two-backslash', 'small-no-space', 'small-dropped-LF', 'small-outside-backslash',
+         'unselected-task-source')}
+    case_terminal_refusals.update({f'terminal-browser-{change}-index{i}': (i,change) for i in (2,3)
+                                  for change in ('holder-text-first','body-id','body-exit-bool','body-script-byte','anchor-duplicate')})
+    case_shape_refusals.update({name:spec[0] for name,spec in case_terminal_refusals.items()})
     case_shape_refusals.update({name:spec[0] for name,spec in case_direct_refusals.items()})
     case_refusals += list(case_shape_refusals)
     for case_name in case_refusals:
         for boundary in ('writer','raw','raw-prefix','prefix'):
-            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            terminal_change = case_terminal_refusals[case_name][1] if case_name in case_terminal_refusals else None
+            extra_secret = ('prefix-marker$ import' if terminal_change == 'prefix-span-secret' else
+                            '\nSUFFIX_MARKER' if terminal_change == 'span-suffix-secret' else
+                            'boundary-marker' if terminal_change == 'chunk-secret' else None)
+            with fixture(additional_secret=extra_secret) as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
                 writer.revision = row['source_sha'] = old_source
+                browser_source = (case_small_span_literals['two_backslash_source'] if terminal_change == 'small-two-backslash' else
+                    case_small_span_literals['one_backslash_source'] if terminal_change in ('small-no-space','small-dropped-LF','small-outside-backslash') else
+                    '$ $ \n' if terminal_change == 'anchor-overlap' else
+                    case_literals['0']['jobs'][0]['script'].rstrip('\n') if terminal_change == 'source-dropped-LF' else
+                    case_literals['0']['jobs'][0]['script'].replace('\n','\r\n') if terminal_change == 'source-CRLF' else
+                    case_literals['0']['jobs'][0]['script'] + '# \t\n' if terminal_change == 'source-tab' else
+                    case_literals['0']['jobs'][0]['script'] + '# 中\n' if terminal_change == 'source-nonascii' else None)
                 image = case_input(root,case_stage_refusals[case_name][0] if case_name in case_stage_refusals else
                                    case_copy_refusals[case_name][0] if case_name in case_copy_refusals else
                                    case_missing_jobs[case_name][1] if case_name in case_missing_jobs else
@@ -4678,13 +5321,82 @@ def failure_result_controls() -> dict:
                                    'original31-permuted' if case_name == 'store-original31-permuted'
                                        or case_name.startswith('stage-terminal-unknown-') else
                                    'permuted27' if case_name == 'store27-coordinated-order' else 'accepted',
-                                   direct_public=case_name in case_direct_refusals)
+                                   direct_public=case_name in case_direct_refusals,
+                                   terminal_public=case_name in case_terminal_refusals,browser_source=browser_source)
                 case = image['durable'][-1 if case_name == 'store-original31' else 0]['jobs_cases'][0]
                 job = case['jobs'][0] if case['jobs'] else None
                 snapshot = case['final_snapshot']; sql_job = job['oracle']['row'] if job is not None else None
                 column_case = next(((t,c,top,case_name[len(t+'.'+c+'-'):]) for t,c,top in sql_columns if case_name.startswith(t+'.'+c+'-')),None)
                 if case_name in case_shape_refusals:
-                    if case_name in case_direct_refusals:
+                    if case_name in case_terminal_refusals:
+                        _,change = case_terminal_refusals[case_name]
+                        browser = job['browser']; body = browser['body']; source_script = body['script_text']
+                        if change == 'holder-text-first':
+                            if case_terminal_refusals[case_name][0] == 2:
+                                # ENTIRE accepted negative, including all original
+                                # body paths, SOURCE and text, without normalization.
+                                job['browser'] = copy.deepcopy(case_text_first_negative)
+                            else: job['browser'] = {k:browser[k] for k in ('text','body','screenshot','at')}
+                        elif change == 'holder-missing': del browser['at']
+                        elif change == 'holder-extra': browser['wire'] = None
+                        elif change == 'holder-array': job['browser'] = []
+                        elif change == 'holder-null': job['browser'] = None
+                        elif change == 'body-array': browser['body'] = []
+                        elif change == 'body-missing': del body['reviewed_at']
+                        elif change == 'body-extra': body['unknown'] = None
+                        elif change == 'body-order':
+                            items = list(body.items()); items[0],items[1] = items[1],items[0]
+                            body.clear(); body.update(items)
+                        elif change == 'body-bool-flags': body.update(review_required=0,persistent=0)
+                        elif change == 'body-null-flag': body['persistent'] = None
+                        elif change == 'body-id': body['id'] = 'JOB-foreign'
+                        elif change == 'body-task': body['task_id'] = 'TASK-foreign'
+                        elif change == 'body-agent': body['agent_name'] = 'foreign_agent'
+                        elif change == 'body-interpreter': body['interpreter'] = 'bash'
+                        elif change == 'body-script-byte': body['script_text'] += '# changed original SOURCE\n'
+                        elif change == 'body-script-secret': body['script_text'] += '# '+secret+'\n'
+                        elif change == 'body-script-decoded-secret': body['script_text'] += "x='"+chr(92)+"x50RIVATE_SENTINEL"+chr(92)+"x22"+chr(92)+"n'\n"
+                        elif change == 'body-script-residual': body['script_text'] += "x='"+chr(92)+"x5cn'\n"
+                        elif change == 'body-script-second-layer': body['script_text'] += "x='"+chr(92)+chr(92)+"n'\n"
+                        elif change == 'body-script-type': body['script_text'] = 7
+                        elif change == 'body-status': body['status'] = 'running'
+                        elif change == 'body-exit-bool': body['exit_code'] = False
+                        elif change == 'body-reason': body['reason'] = 'foreign reason'
+                        elif change == 'body-head': body['stdout_head'] = 'changed full output\n'
+                        elif change == 'body-path': body['stdout_path'] += '.foreign'
+                        elif change == 'body-duration-bool': body['duration_ms'] = False
+                        elif change == 'body-time': body['finished_at'] = None
+                        elif change == 'body-cap-bool': body['max_runtime_seconds'] = True
+                        elif change == 'body-output-cap': body['max_output_bytes'] = 0
+                        elif change == 'body-created': body['created_at'] = None
+                        elif change == 'missing-oracle': del job['oracle']
+                        elif change == 'screenshot': browser['screenshot'] = 'e04-JOB-foreign.png'
+                        elif change == 'screenshot-type': browser['screenshot'] = 7
+                        elif change == 'at-bool': browser['at'] = True
+                        elif change == 'at-string': browser['at'] = '15.0'
+                        elif change == 'text-type': browser['text'] = []
+                        elif change == 'anchor-none': browser['text'] = browser['text'].replace('$ ','',1)
+                        elif change == 'anchor-no-space': browser['text'] = browser['text'].replace('$ ','$',1)
+                        elif change == 'anchor-tab': browser['text'] = browser['text'].replace('$ ','$\t',1)
+                        elif change == 'anchor-duplicate': browser['text'] += '\n$ '+source_script
+                        elif change == 'anchor-overlap': browser['text'] = '$ $ $ \n'
+                        elif change == 'text-dropped-LF': browser['text'] = browser['text'].replace(source_script,source_script[:-1],1)
+                        elif change == 'text-CRLF': browser['text'] = browser['text'].replace(source_script,source_script.replace('\n','\r\n'),1)
+                        elif change in ('source-dropped-LF','source-CRLF','source-tab','source-nonascii'): pass
+                        elif change == 'outside-prefix-backslash': browser['text'] = chr(92)+'n'+browser['text']
+                        elif change == 'outside-suffix-backslash': browser['text'] += chr(92)+'n'
+                        elif change == 'header-only': browser['text'] = 'COMMAND\n$ header\n'+source_script
+                        elif change == 'original-secret': browser['text'] += secret
+                        elif change == 'prefix-span-secret': browser['text'] = 'prefix-marker$ '+source_script
+                        elif change == 'span-suffix-secret': browser['text'] = '$ '+source_script+'SUFFIX_MARKER'
+                        elif change == 'chunk-secret': browser['text'] = 'x'*1020+'boundary-marker\n$ '+source_script
+                        elif change == 'small-two-backslash': browser['text'] = case_small_span_literals['residual_negative_text']
+                        elif change == 'small-no-space': browser['text'] = case_small_span_literals['no_space_anchor_text']
+                        elif change == 'small-dropped-LF': browser['text'] = case_small_span_literals['dropped_final_lf_text']
+                        elif change == 'small-outside-backslash': browser['text'] = case_small_span_literals['outside_backslash_text']
+                        elif change == 'unselected-task-source': case['waiting_browser'] = dict(text=browser['text'],body={},at=1.0)
+                        else: raise AssertionError('unhandled terminal browser refusal '+change)
+                    elif case_name in case_direct_refusals:
                         _,number,change = case_direct_refusals[case_name]
                         selected_job = case['jobs'][number]
                         public = selected_job['running_browser']

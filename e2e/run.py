@@ -2813,6 +2813,8 @@ class _EvidenceObservations:
         if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int:
             if local[2] in ('running', 'terminal', 'running_browser'):
                 return local[:3], 'jobs', local[1], local[2]
+            if len(local) >= 4 and local[2] == 'browser' and local[3] == 'body':
+                return local[:4], 'jobs', local[1], 'browser'
             if len(local) >= 5 and local[2] == 'pending' and type(local[3]) is int:
                 if local[4] == 'row':
                     return local[:5], 'jobs', local[1], 'pending'
@@ -2840,6 +2842,8 @@ class _EvidenceObservations:
             tail = local[len(command):]
             return tail in (('stdout',), ('payload', 'script'), ('payload_file', 'text'))
         if len(local) == 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'script':
+            return True
+        if len(local) == 4 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'browser' and local[3] == 'text':
             return True
         slot = _EvidenceObservations.case_row(local)
         return (slot is not None and len(local) == len(slot[0]) + 1
@@ -3003,6 +3007,31 @@ class _EvidenceObservations:
             if (len(local) == 6 and local[2] in ('oracle','rejection_drain') and local[3] == 'outputs'
                     and type(local[4]) is int and local[5] == 'text' and (kind != 'scalar' or type(value) is not str)):
                 raise ValueError('Case literal stream type withheld')
+        if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'browser':
+            self.ledger.charge(24, 3, self.check)
+            job = c['jobs'][local[1]]
+            if len(local) == 3:
+                if kind == 'object':
+                    self.ledger.charge(64, 8, self.check)
+                    job['browser'] = {}
+                elif kind == 'key':
+                    browser = job['browser']
+                    self.ledger.charge(32, 4, self.check)
+                    if len(browser) >= 4 or value != ('body', 'text', 'screenshot', 'at')[len(browser)]:
+                        raise ValueError('Case terminal browser holder order withheld')
+                    browser[value] = None
+                elif kind == 'end-object':
+                    if len(job['browser']) != 4:
+                        raise ValueError('Case terminal browser holder schema withheld')
+                else:
+                    raise ValueError('Case terminal browser holder type withheld')
+            elif len(local) == 4 and local[3] != 'body':
+                key = local[3]
+                if (kind != 'scalar' or key not in ('text', 'screenshot', 'at')
+                        or key in ('text', 'screenshot') and type(value) is not str
+                        or key == 'at' and (type(value) not in (int, float) or type(value) is float and not math.isfinite(value))):
+                    raise ValueError('Case terminal browser scalar withheld')
+                retain(job['browser'], key, value)
         base = (local[:1] if local[:1] in (('parked',), ('first_terminal',), ('final_snapshot',)) else
                 local[:2] if local[:2] == ('live_s2', 'snapshot') else None)
         if base is not None:
@@ -3050,7 +3079,7 @@ class _EvidenceObservations:
             elif len(local) > len(row_path):
                 if (len(local) != len(row_path) + 1 or kind != 'scalar'
                         or type(value) not in (str, int, float, type(None))
-                            and not (holder == 'running_browser' and local[-1] in ('review_required', 'persistent')
+                            and not (holder in ('running_browser', 'browser') and local[-1] in ('review_required', 'persistent')
                                      and type(value) is bool)):
                     raise ValueError('Case SQL scalar withheld')
                 if not c['rows'] or c['rows'][-1][0] != row_path:
@@ -3072,12 +3101,85 @@ class _EvidenceObservations:
                 or len(local) == 2 and local[0] == 'live_s2' and local[1] != 'snapshot'
                 or len(local) == 3 and local[0] == 'jobs' and type(local[1]) is int
                     and local[2] not in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap',
-                                        'out', 'err', 'running', 'terminal', 'running_browser', 'pending', 'oracle', 'rejection_drain')
+                                        'out', 'err', 'running', 'terminal', 'running_browser', 'browser', 'pending', 'oracle', 'rejection_drain')
                 or len(local) == 5 and local[0] == 'jobs' and type(local[1]) is int
                     and local[2] == 'pending' and type(local[3]) is int and local[4] not in ('row', 'audit')
                 or len(local) == 4 and local[0] == 'jobs' and type(local[1]) is int
                     and local[2] in ('oracle', 'rejection_drain') and local[3] not in ('row', 'audits', 'outputs')):
             return False
+
+    def _case_browser_text(self, text: str, source: str) -> None:
+        """The one selected terminal holder; no renderer or general text grant."""
+        try:
+            if type(text) is not str:
+                raise ValueError('Case terminal browser text type withheld')
+            ledger, check = self.ledger, self.check
+            size = _evidence_utf8_size(text, check)
+            source_size = _evidence_utf8_size(source, check)
+            ledger.charge(128 + size + source_size, 16, check)
+            # Continuous ORIGINAL-secret matching, including boundaries between
+            # prefix/anchor/span/suffix and each <=4096 UTF8-byte chunk. Reserve
+            # slices, concatenation, search and the retained carry before allocation.
+            for secret in self.context:
+                carry = ''
+                ledger.charge(16, 2, check)
+                for begin in range(0, len(text), 1024):
+                    stop = min(begin + 1024, len(text))
+                    ledger.charge(8 * (len(carry) + stop - begin) + 32, 4, check)
+                    chunk = carry + text[begin:stop]
+                    if secret in chunk:
+                        raise ValueError('original evidence content withheld')
+                    count = min(len(secret) - 1, len(chunk))
+                    ledger.charge(4 * count + 8, 1, check)
+                    carry = chunk[len(chunk) - count:] if count else ''
+            # The existing literal sanitizer must leave the entire text unchanged.
+            # All actual replacement passes, the output reference and full comparison
+            # remain paid, including aliases. No text normalization is performed.
+            ledger.charge(16 + size * len(self.context) + 64, len(self.context) + 1, check)
+            safe = self.sanitize(text)
+            try:
+                if type(safe) is not str or _evidence_utf8_size(safe, check, size) != size or safe != text:
+                    raise _EvidenceUnsafe('unsafe evidence sanitation postcondition')
+            except ValueError as exc:
+                raise _EvidenceUnsafe('unsafe evidence sanitation postcondition') from exc
+            finally:
+                safe = None
+            ledger.charge(8 * len(source) + 32, len(source) + 4, check)
+            eligible = bool(source) and source.endswith('\n') and all(
+                char == '\n' or 32 <= ord(char) <= 126 for char in source)
+            candidate, count, cursor = None, 0, 0
+            if eligible:
+                while cursor < len(text):
+                    ledger.charge(4 * (len(text) - cursor) + 32, 4, check)
+                    anchor = text.find('$ ', cursor)
+                    if anchor < 0:
+                        break
+                    ledger.charge(source_size + 32, 4, check)
+                    if text.startswith(source, anchor + 2):
+                        ledger.charge(24, 3, check)
+                        candidate, count = anchor + 2, count + 1
+                        if count > 1:
+                            raise ValueError('Case terminal browser ambiguous SOURCE span withheld')
+                    cursor = anchor + 1  # Include overlapping candidates.
+            ledger.charge(size + 32, 4, check)
+            if count == 0:
+                if '\\' in text:
+                    raise ValueError('Case terminal browser ordinary text withheld')
+                return
+            stop = candidate + len(source)
+            if text.find('\\', 0, candidate) >= 0 or text.find('\\', stop) >= 0:
+                raise ValueError('Case terminal browser outside SOURCE span withheld')
+            # Compare/traverse the mapped occurrence in full, after its own body's
+            # completed proof and complete terminal/oracle/submit equality. No decode.
+            ledger.charge(16 * len(source) + source_size + 32, 2 * len(source) + 4, check)
+            for offset in range(len(source)):
+                if offset % 1024 == 0:
+                    check()
+                if text[candidate + offset] != source[offset]:
+                    raise ValueError('Case terminal browser mapped SOURCE withheld')
+            check()
+        finally:
+            text = source = safe = chunk = carry = None
 
     def case_row_event(self, local: tuple, kind: str, value: object, *, field: str | None = None) -> None:
         """Descendants of the already opened original row; no ancestor replay."""
@@ -3091,7 +3193,7 @@ class _EvidenceObservations:
         if field is None:
             field = local[0]
         if (type(value) not in (str, int, float, type(None))
-                and not (holder == 'running_browser' and field in ('review_required', 'persistent')
+                and not (holder in ('running_browser', 'browser') and field in ('review_required', 'persistent')
                          and type(value) is bool)):
             raise ValueError('Case SQL scalar withheld')
         # Pair task/results compare the complete original parked
@@ -3116,6 +3218,12 @@ class _EvidenceObservations:
                 raise ValueError('Case row SOURCE type withheld')
             _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
                              self.depth + 4 + len(row_path) + 2)
+            if holder == 'browser':
+                # Only this occurrence's completed lexical/secret proof can
+                # authorize its display span. Hash the same original UTF8 once;
+                # the full source/oracle/submit comparisons still run at close.
+                self.ledger.charge(32, 4, self.check)
+                links['source_digest'] = _evidence_digest(value, self.ledger, self.check)[1]
         for column, top in self.sql_columns.get(table, ()):
             if field != column or value is None:
                 continue
@@ -3556,15 +3664,18 @@ class _EvidenceObservations:
                 jid, original_command = owner
                 proof, submitted, provider = original_command[2], original_command[4], original_command[1]
                 job = jobs[job_number]
-                if holder == 'running_browser':
-                    # This exact direct Case path owns a public JobRecord.
-                    # Its independent ordered schema differs from Store.jobs;
-                    # neither a body wrapper nor an SQL projection selects it.
+                if holder in ('running_browser', 'browser'):
+                    # Only the direct running path and terminal holder body
+                    # select public JobRecords. Their own ordered public schema
+                    # differs from each independently validated Store.jobs peer.
                     self.ledger.charge(64, 8, self.check)
-                    running_original = c['running_first'] if job_number == 0 else c['running_second']
-                    if running_original is None:
+                    self.ledger.charge(16, 2, self.check)
+                    public_running = holder == 'running_browser'
+                    public_original = ((c['running_first'] if job_number == 0 else c['running_second']) if public_running
+                                       else (c['oracle_first'] if job_number == 0 else c['oracle_second']))
+                    if public_original is None:
                         raise ValueError('Case direct public running SQL unavailable')
-                    peer = running_original[4]
+                    peer = public_original[4]
                     if len(row) != len(_EvidenceSubmission.detail_fields) or len(peer) != len(self.job_columns):
                         raise ValueError('Case direct public schema withheld')
                     # Pay both original operand traversals, lookups and the
@@ -3590,14 +3701,26 @@ class _EvidenceObservations:
                                  'finished_at','reviewed_at','reviewed_by','reject_reason','cwd_resolved'))
                             or any(type(row[k]) not in (int,type(None)) for k in ('exit_code','duration_ms','max_runtime_seconds'))
                             or type(row['max_output_bytes']) is not int or row['max_output_bytes'] <= 0
-                            or row['status'] != 'running' or any(row[k] is not None for k in
-                                ('exit_code','reason','stdout_head','stderr_head','duration_ms','finished_at'))
+                            or public_running and (row['status'] != 'running' or any(row[k] is not None for k in
+                                ('exit_code','reason','stdout_head','stderr_head','duration_ms','finished_at')))
+                            or not public_running and (row['status'] != ('failed' if job['code'] == -9 else 'completed')
+                                or not same(row['exit_code'], job['code'])
+                                or row['reason'] != ('timeout' if job['code'] == -9 else None))
                             or not same(row['script_text'], job['script'])
                             or not same(row['agent_name'], provider['agent'])
                             or any(not same(row['script_text' if k == 'script' else k], proof[k])
                                    for k in _EvidenceSubmission.payload_fields if k != 'session_id')
                             or any(not same(row[k], submitted[k]) for k in ('created_at','started_at','cwd_resolved'))):
                         raise ValueError('Case direct public full submitted running row withheld')
+                    if not public_running:
+                        self.ledger.charge(128 + 4 * _evidence_utf8_size(jid, self.check), 16, self.check)
+                        browser = job.get('browser')
+                        if (browser is None or len(browser) != 4
+                                or not same(browser.get('screenshot'), 'e04-' + jid + '.png')
+                                or type(browser.get('at')) not in (int, float) or type(browser['at']) is float and not math.isfinite(browser['at'])
+                                or not same(links.get('source_digest'), job['script_sha256'])):
+                            raise ValueError('Case terminal browser original holder withheld')
+                        self._case_browser_text(browser['text'], row['script_text'])
                     # The same SQL occurrence independently validates owner,
                     # state, paths and all Store27 keys in this close traversal,
                     # even when it follows this public occurrence in the input.
@@ -4784,7 +4907,7 @@ class _EvidenceJSON:
                             relay_context=relay_context, relay_sanitize=relay_sanitize,
                             submission_identity=submission_identity)
                         if (type(child) not in (str, int, float, type(None))
-                                and not (row[3] == 'running_browser' and key in ('review_required', 'persistent')
+                                and not (row[3] in ('running_browser', 'browser') and key in ('review_required', 'persistent')
                                          and type(child) is bool)):
                             raise ValueError('Case SQL scalar withheld')
                         self.ledger.charge(16 + _evidence_utf8_size(key, self.check)
