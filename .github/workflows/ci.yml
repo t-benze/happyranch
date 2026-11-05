@@ -103,7 +103,9 @@ jobs:
 
 
           def refuse(site, category):
-              raise Refusal(site, category)
+              failure = Refusal(site, category)
+              record(failure)  # Latch at the producer, before any fallible unwinding.
+              raise failure
 
 
           @contextmanager
@@ -111,7 +113,8 @@ jobs:
               # Precisely scoped fallible operations; an already identified origin survives.
               try:
                   yield
-              except Refusal:
+              except Refusal as failure:
+                  record(failure)
                   raise
               except BaseException:
                   refuse(site, category)
@@ -120,7 +123,8 @@ jobs:
           def record(error):
               if account["origin"] is None:
                   account["origin"] = error.identity
-              elif error.identity != account["origin"] and len(account["losses"]) < 4:
+              elif (error.identity != account["origin"] and error.identity not in account["losses"]
+                    and len(account["losses"]) < 4):
                   account["losses"].append(error.identity)
 
 
@@ -161,7 +165,7 @@ jobs:
               error = None
               try:
                   with boundary("A000091", "file_read"):
-                      return stream.read(cap)
+                      return stream.read(cap + 1)
               except Refusal as failure:
                   error = failure
                   record(failure)
@@ -190,6 +194,7 @@ jobs:
                   with boundary("A000010", "retention_write"):
                       if stream.write(raw) != len(raw):
                           refuse("A000011", "retention_short_write")
+                  with boundary("A000101", "retention_flush"):
                       stream.flush()
               except Refusal as failure:
                   error = failure
@@ -241,6 +246,16 @@ jobs:
                   if not raw.endswith(b"\n"):
                       refuse("A000021", "header_partial")
                   return raw
+              def read(self, size=-1):
+                  with boundary("A000094", "body_stream_read"):
+                      return self.stream.read(size)
+              def read1(self, size=-1):
+                  with boundary("A000095", "body_stream_read1"):
+                      return self.stream.read1(size)
+              def close(self):
+                  # Called by the existing HTTPResponse owner, including begin failure.
+                  with boundary("A000093", "response_stream_close"):
+                      self.stream.close()
               def __getattr__(self, name):
                   return getattr(self.stream, name)
 
@@ -251,12 +266,41 @@ jobs:
               def makefile(self, mode):
                   with boundary("A000022", "header_stream_open"):
                       return HeaderStream(self.sock.makefile(mode), self.sock)
+              def close(self):
+                  # Observe the stdlib socket close before its response-close finally.
+                  with boundary("A000096", "socket_close"):
+                      self.sock.close()
+              def __getattr__(self, name):
+                  return getattr(self.sock, name)
 
 
           class Response(http.client.HTTPResponse):
               def __init__(self, sock, *args, **kwargs):
                   with boundary("A000023", "header_response_init"):
-                      super().__init__(HeaderSocket(sock), *args, **kwargs)
+                      super().__init__(sock, *args, **kwargs)
+              def begin(self):
+                  with boundary("A000097", "response_begin"):
+                      return super().begin()
+              def read1(self, size=-1):
+                  with boundary("A000098", "body_parse"):
+                      return super().read1(size)
+              def close(self):
+                  with boundary("A000099", "response_close"):
+                      return super().close()
+              def _read_next_chunk_size(self):
+                  # Same stdlib parser and once-only failure close. Its ValueError
+                  # otherwise crosses _close_conn before the caller can identify it.
+                  line = self.fp.readline(http.client._MAXLINE + 1)
+                  if len(line) > http.client._MAXLINE:
+                      refuse("A000100", "chunk_line_size")
+                  line = line.split(b";", 1)[0]
+                  try:
+                      return int(line, 16)
+                  except ValueError:
+                      failure = Refusal("A000102", "chunk_size_parse")
+                      record(failure)
+                      self._close_conn()
+                      raise failure
 
 
           def get(path, operation):
@@ -271,6 +315,7 @@ jobs:
               try:
                   with boundary("A000026", "request_connect"):
                       connection.connect()
+                      connection.sock = HeaderSocket(connection.sock)
                       sock = connection.sock
                   with boundary("A000027", "request_send"):
                       connection.request("GET", path, headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10", "User-Agent": "happyranch-pr800-admission", "Accept-Encoding": "identity", "Connection": "close"})
@@ -396,8 +441,7 @@ jobs:
                   account["check2"] = "refused"
                   account["operation"] = "state_load"
                   with boundary("A000062", "state_read"):
-                      with STATE.open("rb") as stream:
-                          raw = stream.read(16385)
+                      raw = read_file(STATE, 16384)
                   if len(raw) > 16384:
                       refuse("A000063", "state_size")
                   loaded = closed_json(raw)
@@ -434,8 +478,7 @@ jobs:
               if check == 1:
                   account["operation"] = "event_load"
                   with boundary("A000072", "event_read"):
-                      with open(os.environ["GITHUB_EVENT_PATH"], "rb") as stream:
-                          raw = stream.read(262145)
+                      raw = read_file(os.environ["GITHUB_EVENT_PATH"], 262144)
                   if len(raw) > 262144:
                       refuse("A000073", "event_size")
                   event = closed_json(raw)
@@ -504,13 +547,27 @@ jobs:
                   account["check2" if check == 2 else "check1"] = "refused"
                   # A separate once-only bounded fallback, never retry/overwrite pending.
                   try:
-                      with boundary("A000087", "retention_fallback"):
+                      with boundary("A000103", "retention_fallback_encode"):
                           raw = json.dumps(account, sort_keys=True, separators=(",", ":")) + "\n"
-                          if len(raw) > 4096:
-                              refuse("A000088", "retention_fallback_size")
-                          with (ADMISSION_HOME / "failure.json").open("x", encoding="ascii") as stream:
+                      if len(raw) > 4096:
+                          refuse("A000088", "retention_fallback_size")
+                      with boundary("A000087", "retention_fallback_open"):
+                          stream = (ADMISSION_HOME / "failure.json").open("x", encoding="ascii")
+                      fallback_error = None
+                      try:
+                          with boundary("A000104", "retention_fallback_write"):
                               if stream.write(raw) != len(raw):
                                   refuse("A000089", "retention_fallback_short_write")
+                      except Refusal as failure:
+                          fallback_error = failure
+                          raise
+                      finally:
+                          try:
+                              with boundary("A000105", "retention_fallback_close"):
+                                  stream.close()
+                          except Refusal:
+                              if fallback_error is None:
+                                  raise
                   except Refusal as failure:
                       record(failure)
               if error is not None:
@@ -558,6 +615,7 @@ jobs:
           }
           ALLOWED = PREVIOUS_ALLOWED | {'app/linux/package/check_refusal_sites.py'}
           operation = "composition"
+          diagnostic = {"origin": None, "losses": []}
 
 
           class Refusal(Exception):
@@ -566,17 +624,47 @@ jobs:
 
 
           def refuse(site, category):
-              raise Refusal(site, category)
+              failure = Refusal(site, category)
+              record(failure)
+              raise failure
 
 
           @contextmanager
           def boundary(site, category):
               try:
                   yield
-              except Refusal:
+              except Refusal as failure:
+                  record(failure)
                   raise
               except BaseException:
                   refuse(site, category)
+
+
+          def record(error):
+              if diagnostic["origin"] is None:
+                  diagnostic["origin"] = error.identity
+              elif (error.identity != diagnostic["origin"] and error.identity not in diagnostic["losses"]
+                    and len(diagnostic["losses"]) < 4):
+                  diagnostic["losses"].append(error.identity)
+
+
+          def read_file(path, cap):
+              with boundary("A100022", "composition_file_open"):
+                  stream = path.open("rb")
+              error = None
+              try:
+                  with boundary("A100023", "composition_file_read"):
+                      return stream.read(cap + 1)
+              except Refusal as failure:
+                  error = failure
+                  raise
+              finally:
+                  try:
+                      with boundary("A100024", "composition_file_close"):
+                          stream.close()
+                  except Refusal:
+                      if error is None:
+                          raise
 
 
           def git(*args):
@@ -603,8 +691,7 @@ jobs:
               with boundary("A100006", "composition_state_read"):
                   home = Path(os.environ["N3_ADMISSION_HOME"])
                   path = home / "status.json"
-                  with path.open("rb") as stream:
-                      raw = stream.read(16385)
+                  raw = read_file(path, 16384)
               if len(raw) > 16384:
                   refuse("A100007", "composition_state_size")
               with boundary("A100008", "composition_state_schema"):
@@ -639,26 +726,54 @@ jobs:
                   state["tree"] = tree
                   with boundary("A100016", "composition_state_write"):
                       raw = json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n"
-                      if path.write_text(raw) != len(raw):
-                          refuse("A100021", "composition_state_short_write")
+                  with boundary("A100025", "composition_state_open"):
+                      stream = path.open("w", encoding="ascii")
+                  error = None
+                  try:
+                      with boundary("A100026", "composition_state_output"):
+                          if stream.write(raw) != len(raw):
+                              refuse("A100021", "composition_state_short_write")
+                  except Refusal as failure:
+                      error = failure
+                      raise
+                  finally:
+                      try:
+                          with boundary("A100027", "composition_state_close"):
+                              stream.close()
+                      except Refusal:
+                          if error is None:
+                              raise
               elif sys.argv[1:] or state["tree"] != tree:
                   refuse("A100017", "composition_tree_binding")
           except BaseException as error:
               # A child origin is separate from admit.py's later composition-transport
               # refusal. Never overwrite it with wrapper, close or snapshot errors.
               if isinstance(error, Refusal):
-                  origin = error.identity
+                  record(error)
               else:
-                  origin = Refusal("A100018", "composition_unexpected").identity
-              diagnostic = {"origin": origin, "losses": []}
+                  record(Refusal("A100018", "composition_unexpected"))
               try:
                   with boundary("A100019", "composition_retention"):
                       raw = json.dumps(diagnostic, sort_keys=True, separators=(",", ":")) + "\n"
-                      with (Path(os.environ["N3_ADMISSION_HOME"]) / "composition-failure.json").open("x", encoding="ascii") as stream:
+                  with boundary("A100028", "composition_retention_open"):
+                      stream = (Path(os.environ["N3_ADMISSION_HOME"]) / "composition-failure.json").open("x", encoding="ascii")
+                  retention_error = None
+                  try:
+                      with boundary("A100029", "composition_retention_write"):
                           if stream.write(raw) != len(raw):
                               refuse("A100020", "composition_retention_short_write")
+                  except Refusal as failure:
+                      retention_error = failure
+                      raise
+                  finally:
+                      try:
+                          with boundary("A100030", "composition_retention_close"):
+                              stream.close()
+                      except Refusal:
+                          if retention_error is None:
+                              raise
               except Refusal as failure:
-                  diagnostic["losses"].append(failure.identity)
+                  record(failure)
               print(json.dumps(diagnostic, sort_keys=True, separators=(",", ":")))
               raise SystemExit(1) from None
           PYTREE

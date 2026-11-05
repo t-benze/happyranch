@@ -31,25 +31,53 @@ its presence must not be interpreted as a known predicate or coverage proof.
 | Actual boundary | Fixed site range | Observation retained |
 | --- | --- | --- |
 | closed_json | A000001..A000006 | duplicate, constant, decode, depth, node, number refusal |
-| save | A000007..A000013 | encode/size/open/write/short-write/close/replace failure |
+| save | A000007..A000013, A000101 | encode/size/open/write/short-write/flush/close/replace failure |
 | remaining | A000014..A000016 | per-check, active-account, absolute deadline |
 | HeaderStream/HeaderSocket/Response | A000017..A000023 | transport, cap, status-line, aggregate, partial, stream/init |
 | get | A000024..A000041 | request budget/init/connect/send, parser/duplicate/status/encoding/type, length/body/pagination, close |
 | canonical_sha/positive/pr_tuple/run_tuple/singleton | A000042..A000060 | schema, identity, exact current status/conclusion and singleton guards |
 | entry/state/event/checkout/workflow/bookends | A000061..A000086 | typed exact state and source, environment, tree/dirty/composition transport and changed identity |
-| final fallback | A000087..A000089 | separate snapshot I/O, size and short-write failure |
-| bounded state/event file reader | A000090..A000092 | open/read/close, preserving initiating read error |
-| composition child | A100001..A100021 | Git/delta/schema/source/tree/parent/ancestry/dirty/binding/write/retention boundaries |
+| final fallback | A000087..A000089, A000103..A000105 | exclusive open/size/short-write, encode/write/once-close |
+| reached bounded state/event file reader | A000090..A000092 | check2 STATE and check1 event call read_file with caps16384/262144; cap+1 read and once-close |
+| stdlib HTTP cleanup crossings | A000093..A000100, A000102 | actual response-stream close, body read/read1, socket close, begin/body parse/response close, chunk line/size parse |
+| composition child | A100001..A100030 | Git/delta/schema/source/tree/parent/ancestry/dirty/binding plus reached state open/read/close and explicit output/retention ownership |
 | shell setup/process/collection | A200001..A200011 | fixed setup/launch/copy/missing snapshot failures, never substituted for an inner origin |
 
-A source-proven retention correction keeps the initiating get/file/save error
-when later close or final save also fails. Final persistence failure always
+A refusal latches its fixed identity synchronously at its actual producer;
+boundary conversion also latches before rethrowing. Propagation records the
+same identity idempotently; only four distinct later identities fit the loss
+list. Neither reader-definition counts nor uniqueness prove reached coverage.
+Check2 STATE and check1 event actually call the admission reader, preserving
+their original16385/262145-byte reads and validation before state adoption.
+Composition's separate reader actually consumes status with16385 bytes. Each
+reader explicitly closes its opened stream once, preserves an initiating read
+failure before close, and refuses if a successful read is followed by failed
+close. A missing mandatory file refuses; optional absent collector snapshots
+keep their existing absence semantics.
+
+HTTPResponse.begin records parser failure before getresponse's existing error
+close. HeaderStream observes its actual read/read1/close calls; HeaderSocket
+observes the socket close before HTTPConnection's response-close finally. The
+chunk-size parser retains the stdlib integer/extension/line algorithm and its
+ValueError-only once-close, latching that parse error before _close_conn can
+replace it. The existing stream and connection owners keep their close order;
+no extra close, request, retry or ambient exception-context recovery is added.
+These observations identify actual local producers, not every native TLS/OS
+internal cause. Unexpected failures remain explicit unknown-predicate boundaries.
+
+The initiating get/file/save error therefore remains separate when later close
+or final save also fails. Fallback and composition state/diagnostic writers use
+explicit write/short-write/once-close ownership instead of an implicit context
+manager close that can replace the writer's first identity. Existing save flush
+has its own fixed site. Final persistence failure always
 refuses the current check. The original exclusive pending path is never retried
 or overwritten; one exclusive `failure.json` fallback may preserve the fixed
 snapshot. Each admission snapshot is capped4096 bytes; two snapshots plus the
 small fixed child composition diagnostic fit below the existing16384-byte
-state-read cap. Failure to retain any snapshot remains failure/uncertainty,
-with fixed identities in the original log, never success. Composition retains
+state-read cap. Failure to retain any snapshot remains failure/uncertainty;
+the bounded fixed log is attempted, never inferred successful. A snapshot encoded
+before a later close failure cannot contain that later loss: its completeness is
+limited by the separate failure/log and final process result. Composition retains
 its original child origin in `composition-failure.json` before the parent's
 separate A000082 transport boundary. A child diagnostic is not a successful
 transport or current admission. These are source contracts, unexecuted locally.
