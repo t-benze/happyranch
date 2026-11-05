@@ -185,6 +185,32 @@ as request fields or returned by show. Preview calls only D's pure native
 selection/rendering path, without adapters/materialization, stores/packages,
 reset, publication or reservation.
 
+The private `team_move_preview_diagnostic` log attempts at most one fixed-field
+record per native preview invocation. It reuses the original initial, completed
+census and conditional final samples: producer `writer_epoch`, shared-connection
+SQLite `total_changes`, and other-connection `data_version`. Each sample has an
+`observed` Boolean and nullable numeric components; component comparisons with
+the initial sample are nullable Booleans. If census differs, the existing short
+circuit leaves final unobserved with null values/comparisons. Missing or incomplete
+samples never mean equality. These org-wide observations identify no writer and
+do not certify that relevant move inputs stayed unchanged.
+
+Monotonic `elapsed_ns`, `observed` and `complete` fields cover canonical/discovery
+in aggregate, the four existing old/new context plans (fixed indices 0 and 1),
+current-input capture, target preparation and the complete census aggregate.
+Incomplete stages retain partial elapsed time through post-lease emission;
+unobserved/unavailable timing is null, never a completed zero-duration stage.
+Census aggregate time provides no internal host/task/workflow timing. Collection
+and emission are best effort and cannot replace the original result/error.
+Emission runs on the same native worker after preview-owned native leases
+release; an advance caller can still own its outer async authority lock. No
+extra DB sample, plan, census, hash or product execution is added. The log contains
+only fixed labels and numeric/Boolean/null facts, with no private inputs, keys,
+labels, paths, owner IDs or exception prose, and adds no public or durable field.
+This is diagnostic source only: the original changed component/writer, reader
+side effects, slowest stage, loaded daemon SHA and historical effects remain
+unknown. No successful preview, move, replay or new execution is authorized.
+
 The launch-input manifest selects native `cli=True` allow-rule syntax, matching
 both native executor launch consumers. Settings retain the native `cli=False`
 projection. These selectors preserve the existing two permission surfaces.
