@@ -637,14 +637,16 @@ remains. A category alone grants no continuation, and slow errors cannot renew
 the original allowance. These are cooperative checks, without hard OS-I/O/RSS
 bounds.
 
-At the existing returned .txt/.json/.jsonl buffer, any U+005C (backslash)
+For ordinary/unregistered returned text buffers, any U+005C (backslash)
 withholds the WHOLE candidate before sanitation, encoding or staging. This
 conservatively refuses benign escapes/backslash paths too. Under intact
 eligibility it is the fixed ordinary REDACT/VALUE refusal. Literal admitted text
 still traverses the original full-context redactor and must contain neither a
 backslash nor a nonempty original secret afterward; sanitation exceptions or
-failed postconditions are fatal. No alternate decoding/parser or arbitrary
-encoding/image-sanitation guarantee is added. PNG custody is unchanged. A
+failed postconditions are fatal. The six registered strict JSON/JSONL names
+described below instead admit original JSON escaping only after complete
+syntax, semantic, occurrence-safety and late-join closure. This grants no
+arbitrary text or image-sanitation guarantee. PNG custody is unchanged. A
 refused newer candidate never reaches output/pending bytes or replaces an older
 safe commit. Old staged presence never clears sticky incompleteness or supplies
 new full-content equality. Required missing/stale content stays FAIL/UNKNOWN.
@@ -923,6 +925,14 @@ validator/control/admission maps remain. C/H/J retain their existing disposable
 hosted Ubuntu environments, synthetic roots and process/port isolation; no
 execution or new venue is allocated.
 
+The following E07 save/recorder precedence paragraph and the corresponding
+finite save/recorder rows below are **historical, superseded**. Current source
+selects the first actual body exception and saved traceback before recording
+or final save. Later recorder/save/invalidation/release errors remain secondary;
+without an earlier error, the actual first finalizer error propagates. Original
+pins, receipts and unexecuted case history below retain their original subjects.
+This correction changes no E07 source or execution allocation.
+
 `e07.exercise` retains its original workload/body catch/final `save(c)` under
 the original case, including offsets16/28/36/42/50, C50/G, all saves and marks.
 The terminal wrapper catches the actual combined outgoing with `BaseException`
@@ -1125,7 +1135,9 @@ absences, actual G+L ties give BB05/TT05, never a hardcoded result.
 
 One atomic nonblocking/CLOEXEC anonymous UNIX datagram pair is attempted ONLY
 for scenarios. Directional shutdowns, private pass_fds/--_diagnostic-fd and
-parent sender release immediately around the ONE Popen precede owner.add/wait.
+the ONE Popen occur within owner.popen, which registers ownership and calls
+owner.add before returning. The command then releases its parent sender in
+finally, before waiting. Failed/incomplete creation may leave custody unknown.
 The child adopts that exact fd, validates actual OS nonblocking/family/type and
 restores CLOEXEC BEFORE Controller/observer/exec descendants. Ordinary setup
 failure disables diagnostics before that single launch choice; Popen failure
@@ -2380,8 +2392,9 @@ The registered raw JSON/JSONL decoded-scalar callback uses the same local
 unchanged-result rule only after that occurrence rejects every original secret
 and decoded backslash. It builds no virtual replacement or comparison spans;
 actual sanitation, every full pass debit, strict output measurement, complete
-equality and residual-secret checks remain, including the separate raw unchanged
-comparison. Other transforming raw-text sanitation retains the general planner.
+equality and residual-secret checks remain. The raw callback's later duplicate
+unchanged-value comparison is removed; the first full comparison remains.
+Other transforming raw-text sanitation retains the general planner.
 Original-plus-safe projection bytes remain charged even for borrowed objects,
 aliases and no-match strings. Every replacement pass pays its whole safe scalar;
 one charged longest-first view preserves the original context list for identity
@@ -2618,9 +2631,10 @@ oracle/rejection_drain.row/audits. The same observations-form prefix uses these
 exact paths. Original method, six index/variant mappings, source, task, starts,
 manifest and actual canonical submit/id facts close privately before publication.
 Each complete script is scanned once per occurrence and compared with its
-original hash AND full submitted content; each full SQL JobRow retains exact
-INTEGER flags, nulls, unknown scalars and original key/list order. Same-state
-copies compare every scalar against an original running/oracle row when present.
+original hash AND full submitted content; each selected Store.jobs row requires
+the exact accepted27-field SELECT order, INTEGER flags and nulls. Same-state
+copies compare every key in sequence and every builtin scalar type/value.
+Full parked task/result and other SQL schemas retain all their unknown columns.
 The eight SQL JSON-column policies apply only to full owning rows in these
 holders. Missing or foreign late owners refuse the whole member. Partial Cases
 retain only their actual fields; index1 gains no submitted/rejected job.
@@ -2632,7 +2646,7 @@ string script_request_id equal to their enclosing submitted job. Approved SQL
 nulls and task-wide snapshot audit payloads keep their separate semantics. Both
 checks use charged private first-scan facts and existing late closure.
 Each terminal SQL row separately joins its original full oracle row, including
-unknown columns and exact builtin types; a later oracle cannot repair a changed
+every ordered Store27 field and exact builtin types; a later oracle cannot repair a changed
 terminal copy. Both pair plans select the complete first_terminal Store holder.
 Its two jobs retain strict original Store ID order, while actual submitted IDs
 identify the first terminal oracle and the second job's LAST recorded pending
@@ -2702,11 +2716,11 @@ comparison remain charged. This source change alone establishes no capacity fit.
 
 Canonical jobs[n].running and jobs[n].oracle.row finish after their own complete
 owner/SOURCE/type/state validation; they do not search for or compare themselves.
-The existing row-validation traversal now selects the original running, oracle
-and last-pending references for the two finite job roles and validates each
-job row's complete owner/SOURCE/types/state. One later charged traversal compares
-EVERY distinct pending/parked/terminal/drain/live/final/first-terminal row in full,
-including unknown columns and builtin types. Separate per-job selection and
+Original row-opening events retain the running, oracle and last-pending
+references for the two finite job roles. The sole row-validation traversal
+validates complete owner/SOURCE/types/state and performs EVERY distinct
+pending/parked/terminal/drain/live/final/first-terminal comparison in full,
+including complete builtin types/values and original key sequence. Separate per-job selection and
 validation rescans are absent. Original per-row validation, canonical-reference
 retention and full-comparison debits remain; new local reference/counter work is
 charged before use. The original absent-ID partial-job and non-job precharges remain.
@@ -3565,8 +3579,10 @@ preceding placeholder write or separate ordered-key append for that scalar.
 Container keys still enter before descent, and unknown scalar keys still enter
 before another key can be parsed, with their original key-retention charge.
 Thus a decoded duplicate, including an unknown key, refuses before its value.
-Raw scan-only syntax borrows the SAME occurrence's maps; required-tree parsing
-still builds its complete independent output. Copies use these maps from their
+Raw scan-only syntax borrows the SAME occurrence's maps. Required-tree parsing
+keeps the complete output and may reuse that occurrence's owned complete Case
+row or finite command-copy map, as described below; it does not always build a
+second dictionary. Copies use these maps from their
 opening; canonical nested objects use them only after their finite action is
 known. Earlier canonical holders and other action families keep legacy storage.
 Provider identity still compares the complete original key order. Selecting
@@ -3676,10 +3692,10 @@ The complete submit/completion request digest sizes each string directly through
 the existing full-scalar sizing path. Its original reference still costs
 8B/1fact; only the absent span endpoints lose 16B/2facts. The 32B selection and
 character dispatch, full encoded work, scratch admission, escaping, UTF8 and
-entire hash traversal remain. Fixed object/array punctuation uses immutable byte
-constants directly, retaining 32B selection/call plus 3B/1fact output per byte;
-the omitted general spelling calls need neither their 24B/3fact span setup nor
-8B/1fact scratch. Other spellings retain their original construction charges.
+entire hash traversal remain. Fixed object/array punctuation enters the shared
+4096-byte buffer with its original35B/1fact admission per byte. Complete-buffer
+and final-owner flushes hash prepaid views; punctuation does not hash directly.
+Other spellings retain their original construction charges.
 Every field, insertion order, array member, number and complete request digest
 is still consumed. No full request buffer, cap/rate change or refund is added.
 All shared canonical/Case-copy controls renew; this operation elimination alone
@@ -3714,7 +3730,8 @@ still required, separately from review, QA and native acceptance.
 Scan-only Case rows use their own retained field dictionary for decoded-key
 membership. Projected rows retain a charged key-only placeholder for each
 otherwise unretained scalar column; complete rows still retain every original
-value. Required trees keep their separate complete output. Only the redundant
+value. Required trees keep their complete output and may reuse the SAME
+occurrence's complete Case row or finite command-copy map. Only the redundant
 syntax-set insertion disappears for already retained fields; the field rates,
 unknown-key slots, duplicate-before-value rule, own safety and late full-row
 comparisons remain. New post-child membership/dispatch pays 16B per field.
@@ -3954,3 +3971,47 @@ and the independent SQL refusal. No capacity, rate, debit or refund changes.
 A failure remains FAIL. Full restored5208/ALL4572 reconciliation, the SAME one
 command-comparison omission, exact restoration/final green and committed-head
 static checks remain required; this correction establishes no fit or acceptance.
+
+
+### Observations/Case shape, row order and reached stages — TASK14107
+
+Top-level starts is an array of actual start objects at integer ordinals;
+Case.starts also refuses every non-object member, including a trailing empty
+array. executable_manifest.stubs must be its declared object; scalar true is
+not an object-presence fact. Original start facts, manifest contents and each
+occurrence's syntax/safety work remain unchanged.
+
+Every selected Case Store.jobs row independently requires the accepted ordered
+27-field SELECT schema. All peers having the same extra/missing/permuted keys
+still refuse. Peer full_row equality compares original key sequence and every
+builtin type/value/cardinality, including every full parked task/result field.
+The former positive31-field and coordinated Store-order images are erroneous
+premises, now retained in full as named refusals. Positive Case/map/jobs-last
+orders retain each nested Store27's own order. Other SQL schemas keep all fields.
+
+A reached block or later assignment requires the complete actual variant submit
+plan, for both index4 A/B and index5 B/A. Store ID order and submission roles are
+separate. Terminal/oracle/live/final, pending/parked and block stages require the
+earlier direct running Store row for every applicable job. A missing reference
+cannot bypass that comparison. Genuine pre-block and submit-before-ID partials
+keep only actually reached fields; no rows or submits are fabricated.
+
+The SAME four-boundary C5 fixture adds100 refusal rows and16 earlier pair partial
+positives (expected total5324). Existing5208 names/results and ALL4572 original
+full values/builtin types/key-list order remain reconciliation obligations, with
+only the declared accepted Store-fixture premise correction. Each refusal keeps
+the entire hostile source, prior member/output/result/FAIL/safe tree and directory
+members, with no selected staging/pending/publication. Complete original bytes,
+values, types, key/list order, count/hash/content remain the positive oracle.
+Actual current results remain PENDING until the owned complete controls finish;
+these source changes supply no fit, test-authoring, QA or native PASS.
+
+Earlier paragraphs requiring the SAME command-comparator omission describe the
+historical5918 proof at its actual subject. This shape/order/stage repair does
+not repeat that unchanged proof. Proportionate new pre-fix/restored evidence uses
+the existing complete aggregate --controls and records its actual predicate;
+earlier unrelated guard failures establish whole refusal only. No per-row
+mutation campaign, new fixture framework or behavioral CI gate is added.
+Public-running/body/text admission and K1-K6/private-copy gaps remain OPEN with
+ROOT, as do independent accumulated review and separate same-final-head QA.
+All original budgets, failure receipts, holds and proof limits remain in force.

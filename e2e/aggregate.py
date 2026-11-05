@@ -3794,7 +3794,8 @@ def failure_result_controls() -> dict:
                                   'persistent': 0,
                                   'created_at': '2026-01-01T00:00:00+00:00'}}]}}
 
-    def case_input(root: Path, index: int = 0, *, late: bool = False, mode: str = 'encoded') -> dict:
+    def case_input(root: Path, index: int = 0, *, late: bool = False, mode: str = 'encoded',
+                   store_image: str = 'accepted') -> dict:
         subject = copy.deepcopy(case_literals[str(0 if index == 1 else index)])
         variant = 'E04.review-required-refused' if index == 1 else subject['variant']
         image = submission_input(root, subject['jobs'][0]['script'])
@@ -3809,10 +3810,14 @@ def failure_result_controls() -> dict:
                 row_image['cwd_resolved'] = str(root/'runtime/orgs/alpha/workspaces/case_manager')
                 row_image['stdout_path'] = str(root/'runtime/orgs/alpha/jobs'/(literal['id']+'.out'))
                 row_image['stderr_path'] = str(root/'runtime/orgs/alpha/jobs'/(literal['id']+'.err'))
-                row_image['unknown_sql_null'] = None
-                row_image['unknown_sql_integer'] = 0
-                row_image['unknown_sql_real'] = 1.5
-                row_image['unknown_sql_text'] = 'full public 中 extension'
+                # Keep the entire historical31-field input as a refusal
+                # subject. Positive Store rows use accepted13807 D2/D3's
+                # complete independently ordered27-field literals.
+                if store_image in ('original31', 'original31-permuted'):
+                    row_image['unknown_sql_null'] = None
+                    row_image['unknown_sql_integer'] = 0
+                    row_image['unknown_sql_real'] = 1.5
+                    row_image['unknown_sql_text'] = 'full public 中 extension'
             command = copy.deepcopy(image['provider_commands'][0])
             command['provider'] = {k:first[k] for k in ('task','session','agent','org','pid')}
             command.update(child_pid=202+number,child_start=str(456+number),
@@ -3910,10 +3915,13 @@ def failure_result_controls() -> dict:
             # order retained; no normalization of nested objects is expected.
             case = {k:case[k] for k in reversed(case)}
             rows = [r for holder in (case.get('parked'),case.get('first_terminal'),case.get('live_s2',{}).get('snapshot'),case['final_snapshot'])
-                    if holder is not None for table in holder.values() for r in table]
+                    if holder is not None for table_name,table in holder.items()
+                    if table_name != 'jobs' or store_image in ('permuted27', 'original31-permuted') for r in table]
             for job in jobs:
-                rows += [job['running'],job['terminal'],job['pending'][0]['row'],job['pending'][0]['audit'][0],
-                    job['oracle']['row'],job['oracle']['audits'][0],job['rejection_drain']['row'],job['rejection_drain']['audits'][0]]
+                rows += [job['pending'][0]['audit'][0],job['oracle']['audits'][0],job['rejection_drain']['audits'][0]]
+                if store_image in ('permuted27', 'original31-permuted'):
+                    rows += [job['running'],job['terminal'],job['pending'][0]['row'],
+                        job['oracle']['row'],job['rejection_drain']['row']]
                 job_items = list(job.items()); job.clear(); job.update(reversed(job_items))
             for row_image in rows:
                 items = list(row_image.items()); row_image.clear(); row_image.update(reversed(items))
@@ -3930,6 +3938,9 @@ def failure_result_controls() -> dict:
                           for i in range(6) for order in ('early','late','jobs-last','repeated','command-order','attempts-after-copies')}
     case_copy_positive.update({f'copy-partial-{stage}': (0,stage) for stage in
         ('pre-submit','submit-before-id','submit-only','block-before-parked','final-before-snapshot')})
+    case_pair_partials = {f'copy-partial-pair-index{i}-{stage}': (i,stage)
+                          for i in (4,5) for stage in ('pre-block','submit-before-id')}
+    case_copy_positive.update(case_pair_partials)
     for spec in case_full + list(case_partials) + ['repeated'] + list(case_stages) + list(case_copy_positive):
         for boundary in ('writer','raw','raw-prefix','prefix'):
             with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
@@ -3962,7 +3973,18 @@ def failure_result_controls() -> dict:
                                 finished=command['finished']+.25,command_index=number))
                             offset += len(command['wire'])
                         image['provider_attempts'] = attempts
-                    if spec.startswith('copy-partial-'):
+                    if spec in case_pair_partials:
+                        for key in ('parked','first_terminal','live_s2','final_snapshot','block','final_callback'):
+                            case.pop(key)
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        case['jobs'] = case['jobs'][:1]
+                        image['provider_commands'] = image['provider_commands'][:1]
+                        job = case['jobs'][0]
+                        for key in ('terminal','oracle','rejection_drain'): job.pop(key)
+                        if order == 'submit-before-id':
+                            job.pop('id'); job.pop('running'); job['pending'] = []
+                        label = f'C5-Case-copy-partial-pair-index{index}-{order}-{boundary}'
+                    elif spec.startswith('copy-partial-'):
                         case.pop('final_snapshot')
                         if order != 'final-before-snapshot':
                             case.pop('final_callback'); case.pop('live_s2')
@@ -4130,17 +4152,77 @@ def failure_result_controls() -> dict:
             ('final','done-summary'),('final','sid-swap'),('block','canonical-waiting-order'),
             ('block','canonical-waiting-foreign'),('final','canonical-done-summary'))})
     case_refusals += list(case_copy_refusals)
+    case_shape_refusals = {name:0 for name in (
+        'top-starts-object','top-starts-trailing-array','top-starts-trailing-scalar','stubs-true',
+        'case-starts-trailing-array','case-starts-trailing-scalar','peer-row-key-order',
+        'store27-coordinated-order','store27-coordinated-extra','store27-coordinated-missing',
+        'store-original31','store-original31-permuted')}
+    case_shape_refusals.update({f'parked-{table}-peer-key-order-index{i}':i
+                                for table in ('tasks','results') for i in (4,5)})
+    case_shape_refusals.update({f'pair-one-submit-block-index{i}':i for i in (4,5)})
+    case_shape_refusals.update({f'reached-running-missing-index{i}-job{j}':i
+                                for i in (0,2,3,4,5) for j in range(2 if i >= 4 else 1)})
+    case_refusals += list(case_shape_refusals)
     for case_name in case_refusals:
         for boundary in ('writer','raw','raw-prefix','prefix'):
             with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
                 writer.revision = row['source_sha'] = old_source
                 image = case_input(root,case_stage_refusals[case_name][0] if case_name in case_stage_refusals else
                                    case_copy_refusals[case_name][0] if case_name in case_copy_refusals else
-                                   case_missing_jobs[case_name][1] if case_name in case_missing_jobs else 0,late=True)
-                case = image['durable'][0]['jobs_cases'][0]; job = case['jobs'][0] if case['jobs'] else None
+                                   case_missing_jobs[case_name][1] if case_name in case_missing_jobs else
+                                   case_shape_refusals.get(case_name,0),late=case_name != 'store-original31',
+                                   store_image='original31' if case_name == 'store-original31' else
+                                   'original31-permuted' if case_name == 'store-original31-permuted'
+                                       or case_name.startswith('stage-terminal-unknown-') else
+                                   'permuted27' if case_name == 'store27-coordinated-order' else 'accepted')
+                case = image['durable'][-1 if case_name == 'store-original31' else 0]['jobs_cases'][0]
+                job = case['jobs'][0] if case['jobs'] else None
                 snapshot = case['final_snapshot']; sql_job = job['oracle']['row'] if job is not None else None
                 column_case = next(((t,c,top,case_name[len(t+'.'+c+'-'):]) for t,c,top in sql_columns if case_name.startswith(t+'.'+c+'-')),None)
-                if case_name in case_copy_refusals:
+                if case_name in case_shape_refusals:
+                    if case_name == 'top-starts-object': image['starts'] = {'only':image['starts'][0], 'second':image['starts'][1]}
+                    elif case_name == 'top-starts-trailing-array': image['starts'].append([])
+                    elif case_name == 'top-starts-trailing-scalar': image['starts'].append(7)
+                    elif case_name == 'stubs-true': image['durable'][1]['executable_manifest']['stubs'] = True
+                    elif case_name == 'case-starts-trailing-array': case['starts'].append([])
+                    elif case_name == 'case-starts-trailing-scalar': case['starts'].append(7)
+                    elif case_name == 'peer-row-key-order':
+                        selected = job['terminal']; items = list(selected.items())
+                        items[0],items[1] = items[1],items[0]; selected.clear(); selected.update(items)
+                    elif case_name.startswith('parked-'):
+                        table = 'tasks' if case_name.startswith('parked-tasks-') else 'results'
+                        selected = case['first_terminal'][table][0]; items = list(selected.items())
+                        items[0],items[1] = items[1],items[0]; selected.clear(); selected.update(items)
+                    elif case_name in ('store27-coordinated-extra','store27-coordinated-missing'):
+                        selected_rows = [r for holder in (case['parked'],case['live_s2']['snapshot'],case['final_snapshot']) for r in holder['jobs']]
+                        for selected_job in case['jobs']:
+                            selected_rows += [selected_job['running'],selected_job['terminal'],selected_job['pending'][0]['row'],
+                                selected_job['oracle']['row'],selected_job['rejection_drain']['row']]
+                        for selected in selected_rows:
+                            if case_name == 'store27-coordinated-extra': selected['extra_original_scalar'] = None
+                            else: del selected['created_at']
+                    elif case_name.startswith('pair-one-submit-block-'):
+                        for key in ('parked','first_terminal','live_s2','final_snapshot','final_callback'): case.pop(key)
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        case['jobs'] = case['jobs'][:1]
+                        for key in ('terminal','oracle','rejection_drain'): job.pop(key)
+                        image['provider_commands'] = [image['provider_commands'][0],image['provider_commands'][-2]]
+                        command = image['provider_commands'][-1]
+                        command['payload']['waiting_on_job_ids'] = [job['id']]
+                        payload = command['payload']; text = json.dumps(payload,sort_keys=True)
+                        digest = hashlib.sha256(text.encode()).hexdigest()
+                        command['payload_file'].update(text=text,bytes=len(text.encode()),sha256=digest,path=str(root/'coord'/(digest+'.json')))
+                        command['argv'][-1] = command['payload_file']['path']
+                        body = dict(session_id=payload['session_id'],agent=payload['agent'],status=payload['status'],confidence=90,
+                            output_summary=payload['summary'],risks_flagged=[],dependencies=[],suggested_reviewer_focus=[],
+                            waiting_on_job_ids=[job['id']])
+                        command['wire'][0]['body_sha256'] = hashlib.sha256(json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+                        case['block'] = copy.deepcopy(command)
+                    elif case_name.startswith('reached-running-missing-'):
+                        case['jobs'][int(case_name[-1])].pop('running')
+                    elif case_name not in ('store-original31','store-original31-permuted','store27-coordinated-order'):
+                        raise AssertionError(case_name)
+                elif case_name in case_copy_refusals:
                     _,family,key = case_copy_refusals[case_name]
                     command = job['submit'] if family == 'submit' else case['block' if family == 'block' else 'final_callback']
                     action = 'jobs-'+family; position = next(n for n,c in enumerate(image['provider_commands']) if c['action'] == action)
@@ -4356,6 +4438,9 @@ def failure_result_controls() -> dict:
                 acquire(); drain(); commit()
                 previous = {p.name:p.read_bytes() for p in output.iterdir()}; tree = copy.deepcopy(state['safe_scenario'])
                 scenario = (root/'scenario.json').read_bytes(); old_buffer = staged[name]
+                if case_name in case_shape_refusals:
+                    prior_staged,prior_published = copy.deepcopy(staged),copy.deepcopy(published)
+                    raw_names = {p.name for p in (root/'raw').iterdir()}
                 if boundary in ('writer','prefix'):
                     fatal_owner_loss = case_name == 'wrong-owner' and boundary == 'prefix'
                     exhausted_budget = case_name == 'shared-facts'
@@ -4430,6 +4515,13 @@ def failure_result_controls() -> dict:
                 assert (root/'scenario.json').read_bytes() == scenario
                 for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
                 assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                if case_name in case_shape_refusals:
+                    assert {p.name for p in output.iterdir()} == set(previous) | ({'eligible-case.txt'} if boundary in ('raw','raw-prefix') else set())
+                    assert {p.name for p in (root/'raw').iterdir()} == raw_names | {'eligible-case.txt'} | ({'observations.json'} if boundary == 'prefix' else set())
+                    for prior_name,prior_bytes in prior_staged.items(): assert staged[prior_name] == prior_bytes
+                    for prior_name,prior_bytes in prior_published.items(): assert published[prior_name] == prior_bytes
+                    assert set(staged) == set(prior_staged) | ({'eligible-case.txt'} if boundary in ('raw','raw-prefix') else set())
+                    assert set(published) == set(prior_published) | ({'eligible-case.txt'} if boundary in ('raw','raw-prefix') else set())
                 result_name = ('C5-Case-stage-refusal-'+case_name.removeprefix('stage-') if case_name in case_stage_refusals
                                else 'C5-Case-refusal-'+case_name)
                 results[result_name+'-'+boundary] = 'whole original input/prior member/output/result/FAIL/tree exact; no selected pending/publication; overlapping owner/strict/R1/capacity guards; specific sensitivity PROOF NOT RUN'

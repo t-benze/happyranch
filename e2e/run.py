@@ -2927,6 +2927,8 @@ class _EvidenceObservations:
         if local[:1] == ('starts',):
             if len(local) == 1 and kind not in ('array', 'end-array'):
                 raise ValueError('Case starts shape withheld')
+            if len(local) == 2 and (type(local[1]) is not int or kind not in ('object', 'key', 'end-object')):
+                raise ValueError('Case start member shape withheld')
             if len(local) == 2 and kind == 'object':
                 self.ledger.charge(64, 8, self.check)
                 c['starts'].append({})
@@ -3225,15 +3227,15 @@ class _EvidenceObservations:
             # Key iteration removes items()'s temporary (key, value) pair
             # (16B/2facts per left entry). Pay the new left lookup (8B/1fact),
             # retaining every other traversal and full scalar comparison cost.
-            # One original value lookup also detects a missing key. Omit
-            # the separate right membership key/receiver pair16B/2facts;
-            # retain its value-lookup pair and add the default sentinel
-            # reference8B/1fact BEFORE get(). same() still compares every
-            # complete builtin type/value; the sentinel cannot equal null.
-            self.ledger.charge(24 * len(left) + 24 * len(right),
-                               3 * len(left) + 3 * len(right), self.check)
+            # Compare both original key sequences in this same traversal.
+            # Pay the right iterator before construction and each complete
+            # key comparison, as well as the retained value lookup work.
+            self.ledger.charge(24 * len(left) + 24 * len(right) + 8,
+                               3 * len(left) + 3 * len(right) + 1, self.check)
+            right_keys = iter(right)
             for key in left:
-                if not same(left[key], right.get(key, _EvidenceUnsafe)):
+                other_key = next(right_keys)
+                if not same(key, other_key) or not same(left[key], right[other_key]):
                     return False
             return True
         for c in self.cases:
@@ -3387,6 +3389,9 @@ class _EvidenceObservations:
                 self.ledger.charge(32, 4, self.check)
                 if assigned_ids[number] is not None and ('jobs', number, 'submit') not in slots:
                     raise ValueError('Case required submit copy unavailable')
+            if (('block',) in slots or c['block_reached'] or c['snapshots']
+                    or len(starts) == 2 or c['final_reached']) and (len(jobs) != len(plan) or len(owners) != len(plan)):
+                raise ValueError('Case reached complete submit plan unavailable')
             if (index != 1 and (c['block_reached'] or c['snapshots'] or len(starts) == 2 or c['final_reached']) and ('block',) not in slots
                     or c['final_reached'] and ('final_callback',) not in slots):
                 raise ValueError('Case required completion copy unavailable')
@@ -3504,6 +3509,16 @@ class _EvidenceObservations:
                 jid, original_command = owner
                 proof, submitted, provider = original_command[2], original_command[4], original_command[1]
                 job = jobs[job_number]
+                # Each selected Store row owns the accepted SELECT order,
+                # independently of its peers. No coordinated wrong schema
+                # can become an original merely by agreeing with a copy.
+                if len(row) != len(self.job_columns):
+                    raise ValueError('Case original Store.jobs schema withheld')
+                self.ledger.charge(16 * len(row) + 8, 2 * len(row) + 1, self.check)
+                columns = iter(self.job_columns)
+                for column in row:
+                    if not same(column, next(columns)):
+                        raise ValueError('Case original Store.jobs order withheld')
                 if (any(k not in row for k in self.job_columns)
                         or any(type(row.get(k)) is not str or not row[k] for k in
                                ('id','task_id','agent_name','title','rationale','script_text','interpreter','status','created_at'))
@@ -3555,6 +3570,8 @@ class _EvidenceObservations:
                     running_original, oracle_original, pending_original = c['running_second'], c['oracle_second'], c['pending_second']
                 comparing_running = holder in ('pending', 'parked') or holder == 'first_terminal' and job_number == 1
                 original = running_original if comparing_running else oracle_original
+                if comparing_running and running_original is None:
+                    raise ValueError('Case required running row unavailable')
                 if holder == 'first_terminal':
                     original = pending_original if comparing_running else oracle_original
                     if original is None:
@@ -3590,8 +3607,8 @@ class _EvidenceObservations:
                             raise ValueError('Case original parked task withheld')
                     elif row.get('status') != 'blocked' or row.get('session_id') != starts[0]['session']:
                         raise ValueError('Case original parked S1 result withheld')
-            # Canonical references were selected during the same validation
-            # traversal. A genuine pre-submit partial still has no owner/rows.
+            # Canonical references were retained at original row opening.
+            # A genuine pre-submit partial still has no owner/rows.
             self.ledger.charge(64, 8, self.check)
             for number, owner in ((0, first_owner), (1, second_owner)):
                 self.ledger.charge(16, 2, self.check)
@@ -3602,6 +3619,12 @@ class _EvidenceObservations:
                     terminal_count, oracle_original = terminals_first, c['oracle_first']
                 else:
                     terminal_count, oracle_original = terminals_second, c['oracle_second']
+                self.ledger.charge(16, 2, self.check)
+                running_original = c['running_first'] if number == 0 else c['running_second']
+                pending_original = c['pending_first'] if number == 0 else c['pending_second']
+                if (terminal_count or oracle_original is not None or pending_original is not None
+                        or c['snapshots'] or ('block',) in slots or len(starts) == 2 or c['final_reached']) and running_original is None:
+                    raise ValueError('Case required running row unavailable')
                 if (('live_s2', 'snapshot') in c['snapshots'] or ('final_snapshot',) in c['snapshots']
                         or oracle_original is not None) and terminal_count != 1:
                     raise ValueError('Case required terminal row unavailable')
@@ -3860,6 +3883,10 @@ class _EvidenceObservations:
                     self.current.release()
                     self.current = None
         elif path[0] == 'starts':
+            if len(path) == 1 and kind not in ('array', 'end-array'):
+                raise ValueError('original starts array withheld')
+            if len(path) == 2 and (type(path[1]) is not int or kind not in ('object', 'key', 'end-object')):
+                raise ValueError('original start member shape withheld')
             if len(path) == 2 and kind == 'object':
                 self.ledger.charge(64, 8, self.check)
                 self.start = {}
@@ -3879,8 +3906,11 @@ class _EvidenceObservations:
             elif len(path) == 3 and kind == 'key' and self.manifest is not None:
                 self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
                 self.manifest[value] = None
-            elif len(path) == 4 and path[3] == 'stubs' and kind == 'object' and self.manifest is not None:
-                self.manifest['stubs'] = True
+            elif len(path) == 4 and path[3] == 'stubs' and self.manifest is not None:
+                if kind == 'object':
+                    self.manifest['stubs'] = True
+                elif kind not in ('key', 'end-object'):
+                    raise ValueError('submission manifest stubs object withheld')
             elif len(path) == 4 and kind == 'scalar' and self.manifest is not None:
                 self.ledger.charge(16 + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
                 self.manifest[path[3]] = value
