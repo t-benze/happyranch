@@ -65,7 +65,10 @@ function seedShell(): void {
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
     ),
     http.get('/api/v1/health', () =>
-      HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/happyranch' }),
+      HttpResponse.json({ ...startupHealth(), active_runtime: '/Users/x/happyranch' }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/identities`, () =>
+      HttpResponse.json<IdentityList>({ identities: [] }),
     ),
     // The self-contained TopTokenThreadsPanel fetches its own thread rollup
     // on every established-org render; answer it (empty) so msw's
