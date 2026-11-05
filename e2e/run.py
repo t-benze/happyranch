@@ -2891,9 +2891,11 @@ class _EvidenceObservations:
             self.ledger.charge(256, 32, self.check)
             self.ledger.charge(64, 8, self.check)
             self.ledger.charge(8, 1, self.check)
+            self.ledger.charge(8, 1, self.check)
             self.case = dict(meta={}, starts=[], jobs=[], rows=[], snapshots={}, used=False,
                              entry=self.snapshot_entry, jobs_shape=False, copies=[], final_reached=False,
                              block_reached=False, submitted_stages=set(), first_oracle_reached=False,
+                             terminal_browsers_reached=False,
                              running_first=None, oracle_first=None, pending_first=None,
                              running_second=None, oracle_second=None, pending_second=None)
         c = self.case
@@ -2943,6 +2945,14 @@ class _EvidenceObservations:
             self.ledger.charge(16, 2, self.check)
             c['jobs'][local[1]]['oracle_reached'] = True
         if len(local) == 2 and local[0] == 'jobs' and kind == 'key':
+            # terminal_oracle returns BEFORE job_terminal is assigned. Its
+            # oracle/terminal/closure alone therefore requires no browser.
+            # Reads and the final rejection drain follow every planned browser;
+            # FIRST's separate Case barrier below still reaches FIRST only.
+            self.ledger.charge(32, 4, self.check)
+            if value in ('reads', 'rejection_drain'):
+                self.ledger.charge(8, 1, self.check)
+                c['terminal_browsers_reached'] = True
             # Actual run_script assigns action BEFORE job_open returns. Only
             # its later assignments reach this job's direct running public row.
             # Retain charged stage facts independently of original key order.
@@ -3538,6 +3548,13 @@ class _EvidenceObservations:
                 if (job.get('running_public_reached') or c['final_reached'] or len(starts) == 2
                         or number == 0 and c['first_oracle_reached']) and not job.get('running_public_present'):
                     raise ValueError('Case required direct running public row unavailable')
+                # Own PRESENT browser still receives its complete holder/body/
+                # text validation below. No later copy supplies a missing peer.
+                # Stage facts are retained independently of input key order.
+                self.ledger.charge(64, 8, self.check)
+                if (c['terminal_browsers_reached'] or c['final_reached'] or len(starts) == 2
+                        or number == 0 and c['first_oracle_reached']) and 'browser' not in job:
+                    raise ValueError('Case required terminal browser holder unavailable')
                 self.ledger.charge(16, 2, self.check)
                 self.ledger.charge(8, 1, self.check)
                 if number == 0:

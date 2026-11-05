@@ -3567,9 +3567,10 @@ change). Each entire original omitted-public image remains a named whole
 refusal, including specialized order/copy/safety subjects. Original negative
 subjects retain their own names and images; completed-public variants preserve
 their original corruption and comparisons. Genuine earlier partials gain no
-fabricated public records. Existing terminal-browser true-absence cases gain
-the required running public operand while retaining terminal browser absence;
-this does not accept a whole reached-terminal family.
+fabricated public records. At that historical checkpoint, terminal-browser
+true-absence inputs gained only the running public operand. The reached terminal
+prerequisite below corrects those full later-stage fixtures and preserves their
+entire old images as refusals; that earlier success did not accept this absence.
 
 The first verification obtained the intended pre-fix missing-public assertion
 and unconditional byte-exact restoration; clean committed-head lint/static
@@ -3634,3 +3635,54 @@ C8 keepers; independent predicate, allocation, temporal and native proof remain
 PROOF NOT RUN. Final-head lint/static, independent affected-owner review and
 separate scoped QA remain pending. No general capacity or whole-source/native
 acceptance follows.
+
+
+### Reached terminal Case browser prerequisite
+
+The preceding PRESENT-terminal and reached-running-public sections record their
+original checkpoints. Their5988/8584 controls and lint receipts retain only their
+original subjects; they did not prove absence of a required terminal holder safe.
+In particular the old full `terminal-browser-true-absence` positive was a fixture
+contract error: it already contained S2/final facts. Its entire original image
+now remains a named refusal; its completed positive supplies the independent
+same-job terminal holder. A separate oracle-before-browser partial retains true
+absence without stripping later facts from that original refusal.
+
+Actual `jobs.exercise` records terminal/oracle/closure before `job_terminal`
+returns. Those earlier facts alone require no terminal browser. FIRST pair
+`first_terminal`, its CLI and waiting-browser facts require ONLY job0's terminal
+browser; job1 can still be running/pending without one. The second start,
+`live_s2`, reads, final callback/snapshot, completed Case/task-browser and final
+rejection drain reach every planned completed job's browser. These are assignment
+facts, independent of key insertion order. Refusal index1, unmarked paths and
+genuine earlier partials gain no browser or completed label.
+
+The existing Case owner retains charged stage facts and closes missing-holder
+requirements privately before any selected tree, staging, pending or output.
+Presence still requires exact `body,text,screenshot,at` order, public27 types and
+order, full independent Store27/submission/Case joins, only the two declared
+false/SQL INTEGER0 mappings, screenshot and finite non-Boolean time, own SOURCE
+safety, full anchored text/span/outside-byte and original-secret checks. A later
+correct copy cannot repair an earlier contradiction.
+
+Existing aggregate tables complete later fixture inputs from accepted full0/7/
+timeout operands, with explicit pair identity/SOURCE/output substitutions and
+fixture path changes only. Page prefix/suffix remain full input literals, never
+measured rendering. Each entire original omitted holder image, all earlier
+negative images and their original corruptions/assertions remain. Separate
+completed-terminal variants retain those corruptions so an earlier absence
+denial does not replace all old comparisons. BOTH pair roles, earlier terminal/
+oracle partials and FIRST-only partials remain explicit at writer, raw, raw
+prefix and required-prefix boundaries. All87 independent readers are unchanged.
+
+This prerequisite's pre-fix missing-terminal proof, exact unconditional
+restoration, complete restored controls/full historical reconciliation and
+clean committed-head lint/static are PENDING verification at this checkpoint.
+Any actual failure stays failed; unsupported individual/read/decode/allocation/
+race/temporal/native proof is NOT RUN/PROOF NOT RUN. No general fit, whole-PR,
+native, ready or merge acceptance follows. Independent accumulated affected-owner
+review and SEPARATE same-produced-head scoped QA remain required. Daily Product
+E2E stays DAILY19UTC ONLY; units are RETIRED and integration INCLUDING callbacks,
+lifespan and SessionTracker is SKIPPED24342/211270-271. All caps/rates/original
+ends, nonrenewing accounting, prior-file/result/FAIL/C8, UNKNOWNs, holds, failed
+histories and spent allowances remain unchanged.
