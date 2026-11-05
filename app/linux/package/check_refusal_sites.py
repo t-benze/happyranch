@@ -23,7 +23,7 @@ def main() -> None:
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                    and node.func.id in ('diagnostic_error', 'diagnostic_scope', 'diagnostic_loss', 'loss', '_credential_classification')):
+                    and node.func.id in ('diagnostic_error', 'diagnostic_scope', 'diagnostic_loss', 'loss', '_credential_classification', '_credential_observation')):
                 if node.func.id == 'loss' and (not node.args or not isinstance(node.args[0], ast.Constant)):
                     continue  # already validated propagated origin, not an allocation
                 if not node.args or not isinstance(node.args[0], ast.Constant) or type(node.args[0].value) is not str:

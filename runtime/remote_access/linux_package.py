@@ -1438,14 +1438,32 @@ def managed_lifecycle(operation: str, *, expected_installation: str | None = Non
         raise diagnostic_error("P000075", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused")) from exc
 
 
+@contextmanager
+def _credential_observation(site: str, category: str):
+    """Attribute only errors observed by this invocation, never ambient context."""
+    try:
+        yield
+    except Exception as error:
+        origin = (category, site)
+        record = _CREDENTIAL_REFUSAL.get()
+        if record is not None:
+            cause = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+            if cause is not None and cause is record.get("error"):
+                origin = record["origin"]
+            record["error"], record["origin"] = error, origin
+        error._managed_package_refusal = origin
+        error._managed_package_propagated_refusal = True
+        raise
+
+
 def _credential_classification(site: str, category: str, error: BaseException | None = None) -> str:
     """Keep the returned classification separate from its private source identity."""
-    from runtime.remote_access.package_diagnostics import exception_refusal
     record = _CREDENTIAL_REFUSAL.get()
     if record is not None:
         # A finally-close failure can override a pending return, exactly as before.
         # Chained read/close errors retain their earliest marked actual exception.
-        record["origin"] = (exception_refusal(error) if error is not None else None) or (category, site)
+        if error is None or error is not record.get("error"):
+            record["origin"] = (category, site)
     return category
 
 
@@ -1457,7 +1475,7 @@ def credential_capability(
     require_read_only: bool = False,
 ) -> str:
     """Classify credential usability without exposing paths, bytes, or OS errors."""
-    with diagnostic_scope("P700004", "managed_operational_error"):
+    with _credential_observation("P700004", "managed_operational_error"):
         path = Path(source)
     try:
         current = path
@@ -1471,7 +1489,7 @@ def credential_capability(
     except OSError:
         return _credential_classification("P700012", "credential_staging_incompatible")
     try:
-        with diagnostic_scope("P700013", "credential_staging_incompatible"):
+        with _credential_observation("P700013", "credential_staging_incompatible"):
             metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode):
             return _credential_classification("P700014", "credential_wrong_type")
@@ -1479,18 +1497,18 @@ def credential_capability(
             return _credential_classification("P700015", "credential_wrong_custody")
         if allowed_modes is not None and stat.S_IMODE(metadata.st_mode) not in allowed_modes:
             return _credential_classification("P700016", "credential_wrong_custody")
-        with diagnostic_scope("P700017", "credential_staging_incompatible"):
+        with _credential_observation("P700017", "credential_staging_incompatible"):
             descriptor = os.open(
                 path,
                 os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
             )
         try:
-            with diagnostic_scope("P700018", "credential_staging_incompatible"):
+            with _credential_observation("P700018", "credential_staging_incompatible"):
                 empty = not os.read(descriptor, 1)
             if empty:
                 return _credential_classification("P700019", "credential_staging_incompatible")
         finally:
-            with diagnostic_scope("P700020", "credential_staging_incompatible"):
+            with _credential_observation("P700020", "credential_staging_incompatible"):
                 os.close(descriptor)
         if require_read_only:
             try:
@@ -1501,7 +1519,7 @@ def credential_capability(
             except OSError:
                 pass
             else:
-                with diagnostic_scope("P700022", "credential_staging_incompatible"):
+                with _credential_observation("P700022", "credential_staging_incompatible"):
                     os.close(descriptor)
                 return _credential_classification("P700023", "credential_staging_incompatible")
     except OSError as error:
