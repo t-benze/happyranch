@@ -165,6 +165,12 @@ at most2048 bytes and consumes the original aggregate work/row/byte/deadline
 budget without replenishment. Missing capacity or secondary construction,
 publication or logging failure leaves diagnostic evidence unavailable and the
 known `identity_loaded_source_mismatch` primary intact, with null identity/cutoff.
+Optional current-epoch enrichment returns that failed serving view unchanged
+before nested budget admission or evidence reads, including when secondary
+diagnostic/warning work exhausted the original deadline. The seal-observation
+caller retains its error and boot/time correlation, with null identity, cutoff
+and epoch references; this adds no allowance or successful result. Successful
+and unrelated-error views keep the existing enrichment and deadline checks.
 No source/constants/locals/exception contents, new response keys or sinks are
 added. A warning return does not prove delivery; this optional diagnostic does
 not change the separate acknowledged raw-pair requirement for movement retry.

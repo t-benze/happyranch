@@ -336,6 +336,12 @@ or secondary field/encoding/accounting/publication/log failures, including contr
 exceptions in this known-mismatch diagnostic path, cannot replace
 `identity_loaded_source_mismatch`. Unrelated primary/control handling, sticky
 precedence, null failed identity/cutoff and successful public shapes remain.
+Optional current-epoch enrichment returns the existing mismatch view before
+nested budget admission or evidence reads. Thus secondary diagnostic/warning
+deadline exhaustion does not replace this refusal at the seal-observation
+caller: original error and boot/time correlation and null identity/cutoff/epoch
+references remain, without new allowance or success. Successful and unrelated
+error paths retain their existing enrichment, categories and deadline checks.
 No source/constant values, locals or exception contents are emitted. Diagnostic
 absence remains unavailable evidence; a warning return proves no delivery and
 adds no retry permission or sink. Source/static inspection does not establish

@@ -3423,6 +3423,10 @@ def acquire_http_collection_report(client: Any, org: str, *, current_time: datet
 
 def current_epoch_references(org: Any, view: dict) -> dict:
     """Project references only after actual current evidence validation; zero writes."""
+    # Preserve the known refusal before optional enrichment checks the same
+    # possibly exhausted budget and replaces its original error/correlation.
+    if view["observation_error"] == "identity_loaded_source_mismatch":
+        return view
     with _census_budget(captures=2) as budget:
         try:
             tables = org.db.read_memory_collection_evidence(view=view)
