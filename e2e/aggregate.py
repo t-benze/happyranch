@@ -4126,9 +4126,17 @@ def failure_result_controls() -> dict:
                 if type(spec) is str and spec in case_oracle_partials:
                     actual = destination.read_bytes()
                     assert len(actual) == len(expected_image) and hashlib.sha256(actual).digest() == hashlib.sha256(expected_image).digest()
-                    assert {p.name for p in output.iterdir()} == set(previous) | {name}
-                    assert {p.name for p in (root/'raw').iterdir()} == raw_names | {name} | ({'observations.json'} if boundary == 'prefix' else set())
-                    assert set(staged) == set(prior_staged) | {name} and set(published) == set(prior_published) | {name}
+                    # Required-prefix keeps BOTH its original observations
+                    # source and the prepared prefix for the real collector.
+                    new_names = {name} | ({'observations.json'} if boundary == 'prefix' else set())
+                    assert {p.name for p in output.iterdir()} == set(previous) | new_names, label
+                    assert {p.name for p in (root/'raw').iterdir()} == raw_names | new_names, label
+                    assert set(staged) == set(prior_staged) | new_names and set(published) == set(prior_published) | new_names, label
+                    if boundary == 'prefix':
+                        assert (root/'raw/observations.json').read_bytes() == staged['observations.json'] == published['observations.json'] == (output/'observations.json').read_bytes() == original_image
+                        assert len(staged['observations.json']) == len(original_image)
+                        assert hashlib.sha256(staged['observations.json']).digest() == hashlib.sha256(original_image).digest()
+                        assert not (root/'raw/observations.json.tmp').exists() and not (output/'observations.json.tmp').exists()
                     for prior_name,prior_bytes in prior_staged.items(): assert staged[prior_name] == prior_bytes
                     for prior_name,prior_bytes in prior_published.items(): assert published[prior_name] == prior_bytes
                     assert not (output/'result.tmp').exists()
