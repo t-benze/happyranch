@@ -11,19 +11,22 @@ PRIVATE_DIAGNOSTIC = ContextVar('private_package_loss_writer', default=False)
 
 def diagnostic_loss(site: str, category: str, error: BaseException) -> None:
     """Observe a suppressed error without changing its caller's disposition."""
+    origin = exception_refusal(error)
     diagnostic_error(site, category, error)
+    observed = [origin[1], site] if origin is not None and origin[1] != site else [site]
     module = sys.modules.get('runtime.remote_access.linux_package')
     owner = getattr(module, '_MANAGED_PACKAGE_DIAGNOSTIC', None)
     record = owner.get() if owner is not None else None
     if record is not None:
         sites = record.setdefault('loss_sites', [])
-        if site not in sites and len(sites) < 4:
-            sites.append(site)
+        for value in observed:
+            if value not in sites and len(sites) < 4:
+                sites.append(value)
         record['reason'], record['diagnostic_state'] = None, 'unavailable'
     if PRIVATE_DIAGNOSTIC.get():
         try:
             # One bounded fixed frame. Lost/short writes cannot certify delivery.
-            os.write(2, b'managed_diagnostic_loss:' + site.encode('ascii') + b'\n')
+            os.write(2, b'managed_diagnostic_loss:' + ':'.join(observed).encode('ascii') + b'\n')
         except OSError:
             pass
 

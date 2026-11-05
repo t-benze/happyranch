@@ -585,10 +585,15 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     result = bytearray()
     guards: dict[str, list[object]] = {}
 
-    def loss(site: str, *codes: str) -> None:
+    def loss(site: str, *codes: str, error: BaseException | None = None) -> None:
         losses.update(codes)
-        if diagnostic is not None and site not in diagnostic["loss_sites"] and len(diagnostic["loss_sites"]) < 4:
-            diagnostic["loss_sites"].append(site)
+        from runtime.remote_access.package_diagnostics import exception_refusal
+        origin = exception_refusal(error) if error is not None else None
+        observed = [origin[1], site] if origin is not None and origin[1] != site else [site]
+        if diagnostic is not None:
+            for value in observed:
+                if value not in diagnostic["loss_sites"] and len(diagnostic["loss_sites"]) < 4:
+                    diagnostic["loss_sites"].append(value)
 
     def accept_frame(raw_frame: bytes) -> None:
         nonlocal bare, failure_seen, bare_refusal, bare_boundary
@@ -597,11 +602,14 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
             return
         if raw_frame.startswith(b"managed_diagnostic_loss:"):
             try:
-                sites = _package_loss_sites([raw_frame[24:-1].decode("ascii")])
-            except (ValueError, UnicodeError):
-                loss("P400004", "TL")
+                sites = _package_loss_sites(raw_frame[24:-1].decode("ascii").split(":"))
+                if not 1 <= len(sites) <= 2:
+                    raise ValueError
+            except (ValueError, UnicodeError) as error:
+                loss("P400004", "TL", error=error)
             else:
-                loss(sites[0], "TL")
+                for site in sites:
+                    loss(site, "TL")
             return
         if raw_frame.startswith(b"managed_package_guard:"):
             try:
@@ -612,8 +620,8 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                     loss("P400005", "CX", "TL")
                 else:
                     guards[stage] = guard
-            except (ValueError, UnicodeError, TypeError):
-                loss("P400006", "TL")
+            except (ValueError, UnicodeError, TypeError) as error:
+                loss("P400006", "TL", error=error)
             return
         if raw_frame.startswith(b"managed_package_refusal:"):
             fields = raw_frame[:-1].split(b":")
@@ -624,8 +632,8 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                         candidate_refusal = _package_refusal_projection({"category": "managed_lifecycle_refused", "site": fields[2].decode("ascii")})
                         if len(fields) == 4:
                             candidate_boundary = _package_refusal_projection({"category": "managed_lifecycle_refused", "site": fields[3].decode("ascii")})
-                except (ValueError, UnicodeError):
-                    loss("P400008", "TL")
+                except (ValueError, UnicodeError) as error:
+                    loss("P400008", "TL", error=error)
                     return
                 raw_frame = b"managed_package_refusal:" + fields[1] + b"\n"
             with diagnostic_scope("P100014", "managed_operational_error"):
@@ -682,8 +690,8 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 return
             stages.append([stage, "success" if success else "failure", child])
             failure_seen = not success
-        except (ValueError, UnicodeError, PackageError, RecursionError, TypeError, KeyError):
-            loss("P400014", "TL")
+        except (ValueError, UnicodeError, PackageError, RecursionError, TypeError, KeyError) as error:
+            loss("P400014", "TL", error=error)
 
     source_read = source_write = output_read = output_write = null = -1
     error_read = error_write = -1

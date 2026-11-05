@@ -4167,9 +4167,15 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 				} else if length <= len(frame) {
 					raw := string(frame[:used])
 					if strings.HasPrefix(raw, "managed_diagnostic_loss:") {
-						site := strings.TrimSuffix(strings.TrimPrefix(raw, "managed_diagnostic_loss:"), "\n")
-						if lifecyclePackagePrivateSites[site] != "" {
-							n.loss(site, "TL")
+						sites := strings.Split(strings.TrimSuffix(strings.TrimPrefix(raw, "managed_diagnostic_loss:"), "\n"), ":")
+						valid := len(sites) >= 1 && len(sites) <= 2
+						for _, site := range sites {
+							valid = valid && lifecyclePackagePrivateSites[site] != ""
+						}
+						if valid && (len(sites) != 2 || sites[0] != sites[1]) {
+							for _, site := range sites {
+								n.loss(site, "TL")
+							}
 						} else {
 							n.loss("G500023", "TL")
 						}
