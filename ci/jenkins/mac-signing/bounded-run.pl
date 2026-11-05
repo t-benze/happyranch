@@ -280,7 +280,9 @@ sub gate {
     # from THIS numeric build's API observation, never a caller scalar.
     $ENV{QUEUE_ID}="$p->{queue}";
     need($p->{issued} <= time() && $p->{expires} > time() && $p->{expires} <= $s->{expires} && $p->{expires} - $p->{issued} <= $BUDGET{$action}, 'current stage window');
-    need($s->{isolation_checked} >= $p->{issued}-120,'fresh stage isolation observation');
+    # Evaluate freshness at this admission/recheck, never at permission issuance.
+    my $now = time();
+    need($s->{isolation_checked} <= $now && $s->{isolation_checked} >= $now-120,'fresh stage isolation observation');
     if ($action eq 'preflight') {
         my $u=$p->{upload}; closed($u,qw(type name filename size sha256 build));
         need($u->{type} eq 'hudson.model.FileParameterValue' && $u->{name} eq 'ORIGINAL_ZIP' && $u->{filename} eq 'original.zip' && $u->{size} == $INPUT_SIZE && $u->{sha256} eq $INPUT_SHA && "$u->{build}" eq $ENV{BUILD_NUMBER},'actual current upload observation');
@@ -307,6 +309,106 @@ sub render {
     $xml =~ s/@@([A-Z0-9]+)@@/exists $pins{$1} ? $pins{$1} : die "unresolved placeholder\n"/ge;
     need($xml !~ /@@/, 'unresolved placeholder');
     print $xml or die "render output\n";
+}
+
+# Save only a closed, nonsecret projection of THIS info response. Raw output,
+# argv and parser errors remain private. This is not full-log acceptance or ID
+# adoption; the failure reader separately requires the saved canonical ID.
+sub observe_info {
+    my ($base,$id,$name) = @_;
+    need($id =~ /\A$UUID\z/ && $name =~ /\AHappyRanch-1\.0\.1-submission-$UUID\.zip\z/,'info identity syntax');
+    my $o={id=>$id,name=>$name,status=>'UNKNOWN',cause=>'info-unobserved'};
+    my $file="$base.out";
+    if (-e $file || -l $file) {
+        # A timeout/capped/unsettled response cannot supply complete info, even
+        # if the retained prefix happens to parse as an object.
+        my $complete=eval {
+            my $r=read_json("$base.receipt.json");
+            need($r->{label} eq 'info' && defined($r->{exit}) && $r->{exit}==0 && !defined($r->{signal}) && $r->{reason} eq 'exited' && JSON::PP::is_bool($r->{settled}) && $r->{settled},'complete info command'); 1;
+        };
+        if (!$complete) {
+            $o->{cause}='info-command-incomplete';
+            save("$ENV{HR_STAGE_DIR}/notary-info.json",$JSON->encode($o)."\n");
+            return;
+        }
+        my $i; my $parsed=eval { $i=read_json($file,262144); 1 };
+        $o->{cause}='info-malformed-or-unavailable';
+        if ($parsed && ref($i) eq 'HASH') {
+            $o->{cause}='info-id-name-mismatch';
+            if (!ref($i->{id}) && !ref($i->{name}) && lc($i->{id}//'') eq $id && ($i->{name}//'') eq $name) {
+                $o->{cause}='info-status-unknown';
+                if (!ref($i->{status}) && ($i->{status}//'') =~ /\A(?:Accepted|Invalid|Pending|In Progress)\z/) {
+                    $o->{status}=$i->{status}; $o->{cause}='validated-info';
+                }
+            }
+        }
+    }
+    save("$ENV{HR_STAGE_DIR}/notary-info.json",$JSON->encode($o)."\n");
+}
+sub failure_output {
+    my ($sd,$run,$action) = @_;
+    my $o={final=>undef,native_status=>'UNKNOWN',private_key_profile_preflight=>'UNVERIFIED',
+        notarization=>{info_status=>undef,cause=>'info-unobserved',association=>'unproven'}};
+    return $o unless $action eq 'status' && (-e "$sd/notary-info.json" || -l "$sd/notary-info.json");
+    my $i=read_control("$sd/notary-info.json"); closed($i,qw(id name status cause));
+    need($i->{id} =~ /\A$UUID\z/ && $i->{name} =~ /\AHappyRanch-1\.0\.1-submission-$UUID\.zip\z/,'observed info identity');
+    need($i->{cause} =~ /\A(?:info-unobserved|info-command-incomplete|info-malformed-or-unavailable|info-id-name-mismatch|info-status-unknown|validated-info)\z/,'info cause allowlist');
+    need($i->{status} =~ /\A(?:UNKNOWN|Accepted|Invalid|Pending|In Progress)\z/ && (($i->{cause} eq 'validated-info') == ($i->{status} ne 'UNKNOWN')),'info status allowlist');
+    $o->{notarization}{cause}=$i->{cause};
+    return $o if $i->{status} eq 'UNKNOWN';
+    $o->{notarization}{info_status}=$i->{status};
+    $o->{notarization}{cause}='recovery-association-unproven';
+    # An unassociated recovery candidate remains UNKNOWN. Only the existing
+    # submit/recovery writer may create id.txt; this reader never adopts one.
+    my $matched=eval {
+        my $id=bytes("$run/submission/id.txt",64); chomp $id;
+        my $name=bytes("$run/submission/artifact-name.txt",128); chomp $name;
+        need($id eq $i->{id} && $name eq $i->{name},'saved submission info association'); 1;
+    };
+    if ($matched) {
+        $o->{native_status}=$i->{status};
+        $o->{notarization}{cause}='validated-info';
+        $o->{notarization}{association}='saved-id-and-name; full-log acceptance separate';
+    }
+    return $o;
+}
+sub command_journal {
+    my ($sd) = @_;
+    my $raw=(-e "$sd/commands.tsv" || -l "$sd/commands.tsv") ? bytes("$sd/commands.tsv",262100) : '';
+    my $native=qr/(?:retain-unsigned|extract-baseline|copy-app|archive|archive-extract|submit|info|log|history|copy-final|staple|ticket|reextract|reextracted-ticket|syspolicy|gatekeeper|verify-outer|(?:original-metadata|original-entitlements|dependencies|sign|verify|metadata|entitlements)-(?:[1-9]|1[01]))/;
+    my $label=qr/(?:stage|keychain-state|identity-(?:uname|hostname|id|stat|dscl|ps|df)|(?:console-|lock-)?$native)/;
+    my $reason=qr/(?:exited|signal|wait_error|timeout|unsettled_child|inherited_stream|capture_read|output_cap|capture_write|teardown_unknown|capture_sync|capture_close)/;
+    for my $line (split /(?<=\n)/,$raw) {
+        need($line =~ /\A$label\t(?:UNKNOWN|[0-9]{1,3})\t[0-9]{1,3}\t$reason\t[01]\n\z/,'nonsecret command journal allowlist');
+    }
+    return "label\texit\tsignal\treason\tsettled\n".$raw;
+}
+sub publish_failure {
+    my ($root,$ws,$sd,$action,$source,$p,$cause) = @_;
+    # Quarantine the fixed publisher entries without following their contents.
+    # Even partially published success/final artifacts must not be reused.
+    private_dir($ws); private_dir("$root/ACTIVE");
+    my $hold="$root/ACTIVE/failed-publisher";
+    mkdir($hold,0700) or die "failure publisher hold\n";
+    for my $d (qw(public-evidence public-output)) {
+        rename("$ws/$d","$hold/$d") or die "retain failed publisher\n" if -e "$ws/$d" || -l "$ws/$d";
+    }
+    mkdir("$ws/public-evidence",0700) or die "failure evidence directory\n";
+    mkdir("$ws/public-output",0700) or die "failure output directory\n";
+    my $journal; my $journal_ok=eval { $journal=command_journal($sd); 1 };
+    my $output; my $output_ok=eval { $output=failure_output($sd,"$root/runs/$ENV{RUN_ID}",$action); 1 };
+    $output //= {final=>undef,native_status=>'UNKNOWN',notarization=>{cause=>'observation-unavailable-or-invalid'}};
+    my $r={version=>'happyranch-signing-stage@1',action=>$action,request=>$ENV{REQUEST_ID},run=>$ENV{RUN_ID},
+        build=>$ENV{BUILD_NUMBER},queue=>$ENV{QUEUE_ID},source=>$source,outcome=>'FAILED_OR_UNKNOWN',cause=>$cause,
+        task=>$p ? $p->{task}:undef,session=>$p ? $p->{session}:undef,output=>$output,
+        command_journal=>$journal_ok ? (length($journal)>length("label\texit\tsignal\treason\tsettled\n") ? 'available-snapshot':'unobserved'):'unavailable-or-invalid',
+        evidence_publication=>$journal_ok && $output_ok ? 'complete':'failed'};
+    save("$ws/public-evidence/commands.tsv",$journal) if $journal_ok;
+    save("$ws/public-evidence/output.json",$JSON->encode($output)."\n");
+    save("$ws/public-evidence/stage.json",$JSON->encode($r)."\n");
+    my $total=0;
+    $total+=regular("$ws/public-evidence/$_",1048576) for grep {-e "$ws/public-evidence/$_"} qw(stage.json commands.tsv output.json);
+    need($total<=2097152,'public evidence aggregate');
 }
 
 sub stage {
@@ -347,6 +449,7 @@ sub stage {
     my $sd = "$root/ACTIVE/$ENV{REQUEST_ID}";
     mkdir($sd,0700) or die "stage directory\n"; $ENV{HR_STAGE_DIR}=$sd;
     my ($s,$p,$result,$error,$marker);
+    my $failure_cause='admission-incomplete';
     eval {
         ($s,$p) = gate($action,$source);
         save("$sd/operation.json",$JSON->encode({source=>$source,action=>$action,task=>$p->{task},session=>$p->{session},request=>$ENV{REQUEST_ID},run=>$ENV{RUN_ID},job=>$ENV{JOB_NAME},build=>$ENV{BUILD_NUMBER},queue=>$ENV{QUEUE_ID}})."\n");
@@ -415,7 +518,9 @@ sub stage {
             push @args,'--log-reviewed',$ENV{REVIEWED_LOG_SHA256} if $action eq 'finalize';
         }
         # Native script sees only a checked stage context; direct invocation refuses.
+        $failure_cause='native-stage-incomplete';
         need(command('stage', $BUDGET{$action}-10,262144,"$sd/native",'/bin/bash','-p',"$HERE/mac-sign.sh",@args)==0, 'native stage incomplete');
+        $failure_cause='post-work-check-incomplete';
         gate($action,$source);
         if ($action eq 'sign') {
             seal_files(map {"$run/$_"} qw(original.zip package.sha256 baseline.sha256 baseline-data.txt signed-files.txt sign.ready));
@@ -432,6 +537,7 @@ sub stage {
         }
         $marker = $action eq 'preflight' ? "$root/inputs/preflight.complete" : $action eq 'sign' ? "$run/sign.complete" : $action eq 'finalize' ? "$run/final/complete" : "$sd/complete";
         if ($action eq 'preflight') { unlink("$ws/ORIGINAL_ZIP") or die "remove admitted workspace input\n"; }
+        $failure_cause='evidence-publication-incomplete';
         # Publisher must start empty; a stale artifact cannot satisfy this build.
         mkdir("$ws/public-evidence",0700) or die "public evidence exists\n";
         mkdir("$ws/public-output",0700) or die "public output exists\n";
@@ -453,7 +559,7 @@ sub stage {
         $result = {version=>'happyranch-signing-stage@1',source=>$source,files=>{map {$FILES[$_]=>$pins[$_]} 0..$#FILES},action=>$action,
             task=>$p->{task},session=>$p->{session},root=>$p->{root},request=>$ENV{REQUEST_ID},run=>$ENV{RUN_ID},job=>$ENV{JOB_NAME},build=>$ENV{BUILD_NUMBER},queue=>$ENV{QUEUE_ID},node=>$ENV{NODE_NAME},host=>$s->{host},uid=>$<,
             input=>{size=>$INPUT_SIZE,sha256=>$INPUT_SHA},outcome=>'selected-stage-complete',output=>$output};
-        my $tsv="label\texit\tsignal\treason\tsettled\n".bytes("$sd/commands.tsv",262100);
+        my $tsv=command_journal($sd);
         save("$ws/public-evidence/commands.tsv",$tsv);
         save("$ws/public-evidence/stage.json",$JSON->encode($result)."\n");
         save("$sd/stage.json",$JSON->encode($result)."\n");
@@ -465,14 +571,17 @@ sub stage {
         need(mono() < $deadline,'stage publication deadline');
         # Rename retained operation into durable history while kernel lock stays
         # held. No deletion, lock expiry or automatic incomplete-run reuse.
+        $failure_cause='history-publication-incomplete';
         private_dir("$root/receipts");
         if ($action ne 'preflight') {
             rename("$root/runs/$ENV{RUN_ID}.lock","$sd/run-lock") or die "retain completed run lock\n";
             flush_dir("$root/runs");
         }
         rename("$root/ACTIVE","$root/receipts/$ENV{REQUEST_ID}") or die "retain stage history\n";
-        flush_dir($root); flush_dir("$root/receipts");
         $marker = "$root/receipts/$ENV{REQUEST_ID}/$ENV{REQUEST_ID}/complete" if $marker eq "$sd/complete";
+        $sd = "$root/receipts/$ENV{REQUEST_ID}/$ENV{REQUEST_ID}";
+        flush_dir($root); flush_dir("$root/receipts");
+        $failure_cause='completion-marker-incomplete';
         save($marker,$JSON->encode({request=>$ENV{REQUEST_ID},source=>$source,action=>$action})."\n");
         1;
     } or $error = $@ || 'stage failure';
@@ -480,12 +589,8 @@ sub stage {
         # A failed post-rename publication still latches admission closed.
         mkdir("$root/ACTIVE",0700) unless -e "$root/ACTIVE";
         eval { save("$root/ACTIVE/failure.txt",substr($error,0,4096)); };
-        # No success projection survives a caught publication/marker error.
-        unlink("$ws/public-evidence/stage.json") if -f "$ws/public-evidence/stage.json";
-        eval {
-            mkdir("$ws/public-evidence",0700) unless -e "$ws/public-evidence";
-            save("$ws/public-evidence/stage.json",$JSON->encode({version=>'happyranch-signing-stage@1',action=>$action,request=>$ENV{REQUEST_ID},run=>$ENV{RUN_ID},build=>$ENV{BUILD_NUMBER},queue=>$ENV{QUEUE_ID},source=>$source,outcome=>'FAILED_OR_UNKNOWN',task=>$p ? $p->{task}:undef,session=>$p ? $p->{session}:undef})."\n");
-        };
+        my $published=eval { publish_failure($root,$ws,$sd,$action,$source,$p,$failure_cause); 1 };
+        print STDERR "Failure evidence publication FAILED_OR_UNKNOWN.\n" unless $published;
         print STDERR "Signing stage FAILED_OR_UNKNOWN; retain private operation and reconcile.\n";
         return 1;
     }
@@ -504,6 +609,7 @@ if ($mode eq '--gate' && @ARGV == 0) { gate($ENV{ACTION},$ENV{HR_SOURCE}); exit 
 if ($mode eq '--save' && @ARGV == 2) { save(@ARGV); exit 0; }
 if ($mode eq '--seal-attempt' && @ARGV == 1) { seal_attempt(@ARGV); exit 0; }
 if ($mode eq '--associated' && @ARGV == 5) { associated(@ARGV); exit 0; }
+if ($mode eq '--observe-info' && @ARGV == 3) { observe_info(@ARGV); exit 0; }
 if ($mode eq '--recover' && @ARGV == 6) {
     my ($history,$info,$log,$id,$name,$sha)=@ARGV;
     associated($info,$log,$id,$name,$sha);

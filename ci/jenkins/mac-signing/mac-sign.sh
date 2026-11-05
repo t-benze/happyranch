@@ -309,7 +309,10 @@ status)
     uuid_ok "$id" || fail 'Need an actual Apple UUID, never an invented placeholder.'
     LOG=$(mktemp -d "$RUN/status.XXXXXX")
     printf 'unconfirmed\n' > "$RUN/accepted-status.txt"
-    capture info /usr/bin/xcrun notarytool info "$id" --keychain-profile "$PROFILE" --keychain "$KEYCHAIN" --output-format json
+    rc=0
+    capture info /usr/bin/xcrun notarytool info "$id" --keychain-profile "$PROFILE" --keychain "$KEYCHAIN" --output-format json || rc=$?
+    /usr/bin/perl "$HERE/bounded-run.pl" --observe-info "$LOG/info" "$(lower "$id")" "$ARTIFACT"
+    [ "$rc" -eq 0 ] || fail 'Info command incomplete; retain observation and original command receipt.'
     cp "$LOG/info.out" "$LOG/info.json"
     [ "$(lower "$(plist_value "$LOG/info.json" id)")" = "$(lower "$id")" ]
     [ "$(plist_value "$LOG/info.json" name)" = "$ARTIFACT" ] || fail 'Apple submission name mismatch; do not adopt this ID.'

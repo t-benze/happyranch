@@ -92,7 +92,9 @@ controlled attended window remain external protected prerequisites.
 
 * `owner-session.json`: `version=happyranch-signing-owner@1`, merged `source`,
   actual `host,user,uid,home,node,agent_pid`, Unix-second `started,expires`
-  (at most30minutes), `isolation_checked` (no older than120s),
+  (at most30minutes), `isolation_checked` (no older than120s at the actual
+  current gate/admission or recheck, never future; an old permission cannot
+  make an old isolation observation fresh),
   `isolation=exclusive-one-owner-workload`, and `profile_checked`.
   Apple stages require `profile_checked=actual-authorized-history-exit0`, from
   the separately authorized bounded check of the **existing** profile. Public
@@ -212,11 +214,33 @@ The child writes only `sign.ready`/`final/ready`. The parent settles it, syncs
 required state, copies/verifies bounded outputs and publishes command/output/stage
 receipts before the final exclusive completion marker. Capture, persistence,
 deadline or teardown failure prevents completion. Caught publication failure
-invalidates the success projection and retains a FAILED_OR_UNKNOWN receipt/hold;
+privately retains all partial success/final publisher artifacts and replaces
+them with a FAILED_OR_UNKNOWN receipt/hold. Failure publication includes the
+available bounded command journal snapshot (allowlisted labels, actual exits,
+signals, reasons and settlement only), a controlled phase cause and output.json.
+No argv, raw stream or parser error enters that projection. Missing command
+evidence is explicitly unobserved; malformed/unavailable journal or observation
+evidence is explicitly failed, never a successful evidence-publication claim.
+Publisher/marker errors remain non-success, including failures after history
+rename; retained journal lookup follows that rename. A failed publisher can
+leave evidence unavailable and must not be reported as successfully published;
 uncatchable interruption remains incomplete and Jenkins must not be treated as
 successful. A marker alone is insufficient without the exact successful build
 and matching durable/public receipt. Pending, Invalid, missing/oversized/malformed
 logs, tool failure and ambiguous history return non-success. No blind resubmit.
+
+For status, the native consumer saves a closed projection of the current info
+response before log/Accepted checks. Only a complete successful, settled info
+command with matching ID/name and an allowlisted status can supply a known
+`Pending`, `In Progress`, `Invalid` or `Accepted` observation. That observation
+becomes `native_status` only when it matches the saved canonical ID/name. An
+unassociated recovery candidate remains UNKNOWN with its separately labelled
+info status; observing it never writes id.txt. Unobserved, incomplete-command,
+malformed, mismatched and unknown-status responses have explicit causes and
+UNKNOWN status. A known info status does not satisfy Accepted/full-log/root
+warning review or permit finalization. Later native failure, timeout, output cap,
+child-settlement uncertainty or publication failure preserves the original
+non-success and ACTIVE/run/attempt/hash holds.
 
 ## Source handoff and unexecuted acceptance
 
@@ -225,6 +249,10 @@ C1–C10. Synthetic command/JSON exercises establish only local bounds, refusal,
 persistence and association predicates. They do not establish macOS Swift/Security,
 key access, Apple status, native trust, controller admission or the existence of
 authentic owner/session producers. No repository test/seam is added.
+TASK14178 extends that same case record for C4 current-time freshness (including
+the old-permission/stale-isolation counterexample), and C5/C8/C9 failure journal,
+validated status/UNKNOWN, publisher and marker boundaries. Its task-only probes
+and old-source comparisons are portable evidence, not whole-stage/native proof.
 
 Required automatic checks are exactly **Source Boundary Lint** and **Web Lint
 (Node24)**, static only, with normal hooks/nonforce publication. Python units are
