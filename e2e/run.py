@@ -2925,6 +2925,17 @@ class _EvidenceObservations:
             # is earlier: run_script still has closure work before the oracle.
             self.ledger.charge(16, 2, self.check)
             c['jobs'][local[1]]['oracle_reached'] = True
+        if len(local) == 2 and local[0] == 'jobs' and kind == 'key':
+            # Actual run_script assigns action BEFORE job_open returns. Only
+            # its later assignments reach this job's direct running public row.
+            # Retain charged stage facts independently of original key order.
+            self.ledger.charge(32, 4, self.check)
+            if value == 'running_browser':
+                self.ledger.charge(64, 8, self.check)
+                c['jobs'][local[1]]['running_public_present'] = True
+            elif value in ('released', 'terminal', 'closure', 'oracle', 'browser', 'reads', 'rejection_drain'):
+                self.ledger.charge(64, 8, self.check)
+                c['jobs'][local[1]]['running_public_reached'] = True
         command = self.case_command_slot(local)
         if command is not None:
             c['used'] = True
@@ -3486,6 +3497,13 @@ class _EvidenceObservations:
                         or number == 0 and c['first_oracle_reached']) and (
                         c['oracle_first'] if number == 0 else c['oracle_second']) is None:
                     raise ValueError('Case required oracle row unavailable')
+                # S2/final reaches both jobs; first-terminal reaches only job0.
+                # Pending/parked/block/action-only partials remain before this
+                # assignment. Presence still undergoes every full row check below.
+                self.ledger.charge(64, 8, self.check)
+                if (job.get('running_public_reached') or c['final_reached'] or len(starts) == 2
+                        or number == 0 and c['first_oracle_reached']) and not job.get('running_public_present'):
+                    raise ValueError('Case required direct running public row unavailable')
                 self.ledger.charge(16, 2, self.check)
                 self.ledger.charge(8, 1, self.check)
                 if number == 0:

@@ -4949,17 +4949,66 @@ def failure_result_controls() -> dict:
     case_terminal_positive.update({f'terminal-browser-{name}': (0,name) for name in
         ('ordinary-prefix-suffix','header-looking-prefix','zero-anchor-ordinary','small-one-backslash',
          'true-absence','unselected-task-clean')})
-    for spec in case_full + list(case_partials) + ['repeated'] + list(case_stages) + list(case_copy_positive) + list(case_direct_positive) + list(case_terminal_positive):
+    case_running_partials = {f'running-public-partial-{stage}-index{i}': (i,stage)
+        for i in (0,2,3,4,5) for stage in ('running-before-block','pending-before-block',
+            'block-before-parked','parked-before-run','action-before-open','public-before-terminal')}
+    case_running_partials.update({f'running-public-partial-{stage}-index{i}': (i,stage)
+        for i in (4,5) for stage in ('action-second-before-open','second-public-before-terminal')})
+    # Every original later-stage positive remains an entire named refusal.
+    # Earlier partials and previously complete direct-public subjects keep
+    # their original images. No production selector distinguishes the inputs.
+    case_positive_specs = (case_full + list(case_partials) + ['repeated'] + list(case_stages)
+        + list(case_copy_positive) + list(case_direct_positive) + list(case_terminal_positive)
+        + list(case_running_partials))
+    case_original_omitted = [spec for spec in case_positive_specs if
+        (type(spec) is tuple and spec[0] != 1
+         or type(spec) is str and (spec == 'repeated' or spec in case_stages
+             or spec in case_terminal_positive
+             or spec in case_copy_positive and case_copy_positive[spec][0] != 1
+                 and (not spec.startswith('copy-partial-') or spec == 'copy-partial-final-before-snapshot')))]
+    for spec, original_omitted in [(spec,omitted) for spec in case_positive_specs
+            for omitted in ((False,True) if spec in case_original_omitted else (False,))]:
         for boundary in ('writer','raw','raw-prefix','prefix'):
             with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
                 writer.revision = row['source_sha'] = old_source
                 if type(spec) is tuple:
                     index,late,mode = spec
-                    image = case_input(root,index,late=late,mode=mode)
+                    image = case_input(root,index,late=late,mode=mode,direct_public=not original_omitted)
                     label = f'C5-Case-full-index{index}-'+('late' if late else 'early')+'-'+mode+'-'+boundary
+                elif spec in case_running_partials:
+                    index,stage = case_running_partials[spec]
+                    # Plain SOURCE lets the real action response remain ordinary
+                    # R1 data. Escaped action-copy admission is separate ROOT work.
+                    image = case_input(root,index,direct_public=True,
+                        browser_source='print("public")\n' if stage in ('action-before-open','action-second-before-open') else None)
+                    case = image['durable'][-1]['jobs_cases'][0]
+                    for key in ('live_s2','final_snapshot','final_callback'): case.pop(key,None)
+                    if stage not in ('action-second-before-open','second-public-before-terminal'): case.pop('first_terminal',None)
+                    case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                    image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                    for number,partial_job in enumerate(case['jobs']):
+                        if number == 0 and stage in ('action-second-before-open','second-public-before-terminal'):
+                            partial_job.pop('rejection_drain')
+                            continue
+                        for key in ('terminal','oracle','rejection_drain'): partial_job.pop(key)
+                        public = partial_job.pop('running_browser')
+                        if stage == 'public-before-terminal' and number == 0 or stage == 'second-public-before-terminal' and number == 1:
+                            partial_job['running_browser'] = public
+                        if stage == 'action-before-open' and number == 0 or stage == 'action-second-before-open' and number == 1:
+                            partial_job['action'] = dict(path='/api/v1/orgs/alpha/jobs/'+partial_job['id'],
+                                method='GET',request=None,status=200,response=public,no_run_controls=True,at=15.0)
+                    if stage in ('running-before-block','pending-before-block','block-before-parked'):
+                        case.pop('parked')
+                    if stage in ('running-before-block','pending-before-block'):
+                        case.pop('block')
+                        image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] == 'jobs-submit']
+                    if stage == 'running-before-block':
+                        case['jobs'] = case['jobs'][:1]; image['provider_commands'] = image['provider_commands'][:1]
+                        case['jobs'][0]['pending'] = []
+                    label = 'C5-Case-'+spec+'-'+boundary
                 elif spec in case_terminal_positive:
                     index,order = case_terminal_positive[spec]
-                    image = case_input(root,index,terminal_public=order != 'true-absence',
+                    image = case_input(root,index,direct_public=not original_omitted,terminal_public=order != 'true-absence',
                         browser_source=case_small_span_literals['one_backslash_source'] if order == 'small-one-backslash' else None)
                     case = image['durable'][-1]['jobs_cases'][0]
                     job = case['jobs'][0]
@@ -4982,7 +5031,7 @@ def failure_result_controls() -> dict:
                     label = 'C5-Case-'+spec+'-'+boundary
                 elif spec in case_copy_positive:
                     index,order = case_copy_positive[spec]
-                    image = case_input(root,index,late=order != 'early')
+                    image = case_input(root,index,late=order != 'early',direct_public=not original_omitted)
                     holder = image['durable'][0 if order != 'early' else -1]
                     case = holder['jobs_cases'][0]
                     if order == 'jobs-last': case['jobs'] = case.pop('jobs')
@@ -5004,6 +5053,8 @@ def failure_result_controls() -> dict:
                                 finished=command['finished']+.25,command_index=number))
                             offset += len(command['wire'])
                         image['provider_attempts'] = attempts
+                    if spec.startswith('copy-partial-') and order != 'final-before-snapshot':
+                        for partial_job in case['jobs']: partial_job.pop('running_browser',None)
                     if spec in case_pair_partials:
                         for key in ('parked','first_terminal','live_s2','final_snapshot','block','final_callback'):
                             case.pop(key)
@@ -5038,7 +5089,7 @@ def failure_result_controls() -> dict:
                     else: label = f'C5-Case-copy-positive-index{index}-{order}-{boundary}'
                 elif spec in case_stages:
                     index,order = case_stages[spec]
-                    image = case_input(root,index,late=order == 'late')
+                    image = case_input(root,index,late=order == 'late',direct_public=not original_omitted)
                     case = image['durable'][0 if order == 'late' else -1]['jobs_cases'][0]
                     if order == 'jobs-last': case['jobs'] = case.pop('jobs')
                     elif order == 'audit-append':
@@ -5096,9 +5147,11 @@ def failure_result_controls() -> dict:
                             case['jobs'][0].pop('oracle')
                         else:
                             for key in ('terminal','oracle','rejection_drain'): case['jobs'][1].pop(key)
+                            case['jobs'][1].pop('running_browser',None)
                     label = 'C5-Case-stage-positive-'+spec+'-'+boundary
                 else:
-                    image = case_input(root,1 if spec == 'refusal-no-job' else 0,late=True)
+                    image = case_input(root,1 if spec == 'refusal-no-job' else 0,late=True,
+                        direct_public=spec == 'repeated' and not original_omitted)
                     case = image['durable'][0]['jobs_cases'][0]
                     if spec == 'repeated': image['durable'][0]['jobs_cases'].append(case)
                     else:
@@ -5112,6 +5165,54 @@ def failure_result_controls() -> dict:
                             for field in ('pending','oracle','rejection_drain','out','err','terminal'): job.pop(field)
                             if spec == 'script-only': job.pop('running')
                     label = 'C5-Case-'+('repeated' if spec == 'repeated' else 'partial-'+spec)+'-'+boundary
+                if original_omitted:
+                    original_label = label
+                    label = label.replace('C5-Case-','C5-Case-refusal-original-omitted-public-',1)
+                    wanted = copy.deepcopy(image)
+                    original_image = b' '+json.dumps(wanted,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name; prior = b'{"prior":"safe"}'
+                    destination.write_bytes(prior)
+                    acquire(); drain(); commit()
+                    previous = {p.name:p.read_bytes() for p in output.iterdir()}
+                    tree = copy.deepcopy(state['safe_scenario']); scenario = (root/'scenario.json').read_bytes()
+                    old_buffer = staged[name]
+                    prior_staged,prior_published = copy.deepcopy(staged),copy.deepcopy(published)
+                    raw_names = {p.name for p in (root/'raw').iterdir()}
+                    if boundary in ('writer','prefix'):
+                        if boundary == 'prefix':
+                            source = root/'raw/observations.json'; source.write_bytes(original_image)
+                        try:
+                            if boundary == 'writer': writer._atomic_json(destination,image)
+                            else: writer._prepare_original_evidence(destination,source)
+                        except ValueError as exc:
+                            assert str(exc) == 'Case required direct running public row unavailable', (label,str(exc))
+                            assert writer.redaction_ready and writer._evidence_fatal is None
+                        else: raise AssertionError('Case missing running public admitted: '+original_label)
+                        assert destination.read_bytes() == prior and staged[name] is old_buffer and published[name] is old_buffer
+                        if boundary == 'prefix': assert source.read_bytes() == original_image
+                        writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                    else:
+                        destination.write_bytes(original_image)
+                        (root/'raw/eligible-case.txt').write_bytes(b'eligible ordinary Case sibling\n')
+                        complete,error = acquire(); drain()
+                        assert not complete and error is not None and str(error[0]) == 'Case required direct running public row unavailable', label
+                        assert not state['fatal'] and not errors
+                        assert destination.read_bytes() == original_image and staged[name] is old_buffer and published[name] is old_buffer
+                        assert name in state['refused_sources']
+                        assert (output/'eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
+                    exact(image,wanted); exact(state['safe_scenario'],tree)
+                    assert (root/'scenario.json').read_bytes() == scenario
+                    for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
+                    extra = {'eligible-case.txt'} if boundary in ('raw','raw-prefix') else set()
+                    assert {p.name for p in output.iterdir()} == set(previous) | extra
+                    assert {p.name for p in (root/'raw').iterdir()} == raw_names | {'eligible-case.txt'} | ({'observations.json'} if boundary == 'prefix' else set())
+                    assert set(staged) == set(prior_staged) | extra and set(published) == set(prior_published) | extra
+                    for prior_name,prior_bytes in prior_staged.items(): assert staged[prior_name] == prior_bytes
+                    for prior_name,prior_bytes in prior_published.items(): assert published[prior_name] == prior_bytes
+                    assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                    results[label] = 'entire original omitted-running-public input refused; prior files/tree/result/FAIL/types/order exact; no selected pending/publication; native NOT RUN'
+                    continue
                 acquire(); drain(); commit()
                 previous = {p.name:p.read_bytes() for p in output.iterdir()}
                 tree = copy.deepcopy(state['safe_scenario']); scenario = (root/'scenario.json').read_bytes()
@@ -5297,8 +5398,19 @@ def failure_result_controls() -> dict:
                                   for change in ('holder-text-first','body-id','body-exit-bool','body-script-byte','anchor-duplicate')})
     case_shape_refusals.update({name:spec[0] for name,spec in case_terminal_refusals.items()})
     case_shape_refusals.update({name:spec[0] for name,spec in case_direct_refusals.items()})
+    case_running_missing = {f'running-public-missing-{stage}-index{i}-job{j}': (i,j,stage)
+        for i in (0,2,3,4,5) for j in range(2 if i >= 4 else 1)
+        for stage in ('full','terminal-before-oracle','oracle','browser','reads','released','closure')
+        if not (i >= 4 and stage == 'browser' or i == 3 and stage == 'released')}
+    case_running_missing.update({f'running-public-missing-first-terminal-index{i}-job0': (i,0,'first-terminal') for i in (4,5)})
+    case_shape_refusals.update({name:spec[0] for name,spec in case_running_missing.items()})
     case_refusals += list(case_shape_refusals)
-    for case_name in case_refusals:
+    # Original negative subjects keep their full old images AND old result names.
+    # The additional completed variants isolate their existing corruption after
+    # the direct-public prerequisite; direct-public originals already have it.
+    for case_name, complete_public in [(name,complete) for name in case_refusals
+            for complete in ((True,) if name in case_running_missing else
+                (False,) if name in case_direct_refusals or name.endswith('index1') else (False,True))]:
         for boundary in ('writer','raw','raw-prefix','prefix'):
             terminal_change = case_terminal_refusals[case_name][1] if case_name in case_terminal_refusals else None
             extra_secret = ('prefix-marker$ import' if terminal_change == 'prefix-span-secret' else
@@ -5321,14 +5433,40 @@ def failure_result_controls() -> dict:
                                    'original31-permuted' if case_name == 'store-original31-permuted'
                                        or case_name.startswith('stage-terminal-unknown-') else
                                    'permuted27' if case_name == 'store27-coordinated-order' else 'accepted',
-                                   direct_public=case_name in case_direct_refusals,
-                                   terminal_public=case_name in case_terminal_refusals,browser_source=browser_source)
+                                   direct_public=complete_public or case_name in case_direct_refusals,
+                                   terminal_public=case_name in case_terminal_refusals or case_name in case_running_missing
+                                       and case_running_missing[case_name][2] == 'browser',browser_source=browser_source)
                 case = image['durable'][-1 if case_name == 'store-original31' else 0]['jobs_cases'][0]
                 job = case['jobs'][0] if case['jobs'] else None
                 snapshot = case['final_snapshot']; sql_job = job['oracle']['row'] if job is not None else None
                 column_case = next(((t,c,top,case_name[len(t+'.'+c+'-'):]) for t,c,top in sql_columns if case_name.startswith(t+'.'+c+'-')),None)
                 if case_name in case_shape_refusals:
-                    if case_name in case_terminal_refusals:
+                    if case_name in case_running_missing:
+                        _,number,stage = case_running_missing[case_name]
+                        selected_job = case['jobs'][number]
+                        del selected_job['running_browser']
+                        if stage == 'reads':
+                            # Actual reads is assigned empty after live S2; keep
+                            # that original reached Case and its complete peers.
+                            selected_job['reads'] = {}
+                        elif stage != 'full':
+                            for key in ('live_s2','final_snapshot','final_callback'): case.pop(key)
+                            case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                            image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                            if stage != 'first-terminal' and number == 0:
+                                case.pop('first_terminal',None)
+                            for position,partial_job in enumerate(case['jobs']):
+                                if position < number or stage == 'first-terminal' and position == 0: continue
+                                if position != number:
+                                    for key in ('running_browser','terminal','oracle','rejection_drain'): partial_job.pop(key,None)
+                                    continue
+                                if stage in ('released','closure'):
+                                    partial_job[stage] = 15.0 if stage == 'released' else dict(pid=901,start='123',observed_start=None,pgid=901,members=[],eof=True,at=15.0)
+                                if stage in ('terminal-before-oracle','released','closure','first-terminal'):
+                                    partial_job.pop('oracle')
+                                partial_job.pop('rejection_drain')
+                                if stage == 'released': partial_job.pop('terminal')
+                    elif case_name in case_terminal_refusals:
                         _,change = case_terminal_refusals[case_name]
                         browser = job['browser']; body = browser['body']; source_script = body['script_text']
                         if change == 'holder-text-first':
@@ -5801,6 +5939,8 @@ def failure_result_controls() -> dict:
                     assert set(published) == set(prior_published) | ({'eligible-case.txt'} if boundary in ('raw','raw-prefix') else set())
                 result_name = ('C5-Case-stage-refusal-'+case_name.removeprefix('stage-') if case_name in case_stage_refusals
                                else 'C5-Case-refusal-'+case_name)
+                if complete_public and case_name not in case_running_missing:
+                    result_name += '-with-running-public'
                 results[result_name+'-'+boundary] = 'whole original input/prior member/output/result/FAIL/tree exact; no selected pending/publication; overlapping owner/strict/R1/capacity guards; specific sensitivity PROOF NOT RUN'
 
     return results

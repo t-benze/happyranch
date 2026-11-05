@@ -3545,3 +3545,44 @@ and Web Lint (Node24), lint/static only. Product remains DAILY19UTC ONLY with
 no new observation, manual run, trigger or schedule. All failures, UNKNOWNs,
 holds and spent allowances remain; source delivery is separate from native
 acceptance and guarded manager merge.
+
+
+Reached running-public prerequisite (ROOT13984 continuation): the existing
+Case owner now requires each non-review job's direct full `running_browser`
+public27 when its released/terminal/closure/oracle/browser/reads/drain stage
+or later S2/final Case facts have been reached. The first-terminal barrier
+requires the first job's public row; the second may still be genuinely running
+with only pending SQL until its own run_script. `action` returns before the
+separate job_open call, so action-only, submit, pending, block and parked
+partials retain public absence. Input key order supplies no chronology. Every
+present public row still owns its complete SOURCE, ordered fields, built-in
+types, running state and full same-job SQL/submission equality. Another job,
+a wrapper, matching hash or a later copy cannot provide the missing edge.
+
+The existing aggregate Case tables explicitly migrate inherited later-stage
+positive inputs that omitted this prerequisite: complete them with the already
+independently authored same-job public27 (only the declared fixture paths
+change). Each entire original omitted-public image remains a named whole
+refusal, including specialized order/copy/safety subjects. Original negative
+subjects retain their own names and images; completed-public variants preserve
+their original corruption and comparisons. Genuine earlier partials gain no
+fabricated public records. Existing terminal-browser true-absence cases gain
+the required running public operand while retaining terminal browser absence;
+this does not accept a whole reached-terminal family.
+
+This checkpoint records source changes before verification; the finite
+pre-fix missing-public assertion, unconditional byte-exact restoration and
+ONE restored complete aggregate controls run are PENDING. The previous
+PRESENT-terminal checkpoint subsequently obtained its authentic5988 source
+controls/static receipt; that historical result remains at its own head. All
+5988/5660/5428/5324/5208/4572 full named values, built-in types and key/list order
+remain reconciliation obligations, with explicit new refusal rows and fixture
+correspondence. Inspection and lints supply no behavioral/native acceptance.
+Individual/temporal/race/read/decode/allocation/native proof is PROOF NOT RUN.
+
+Reached terminal-browser presence, escaped action/response/browser-event and
+other cross-copy families, both pair terminal-text/full K5-K6, actual-main
+convergence, final full accumulated review and separate same-final-head
+final-compound QA remain ROOT work. Original nonrenewing work/facts/copy/carry/
+final-buffer limits and first-error/TB/claim/C8/preservation rules remain. Units
+RETIRED; integration SKIPPED24342/211270-271; Product DAILY19UTC ONLY.
