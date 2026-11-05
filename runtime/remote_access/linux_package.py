@@ -1,7 +1,13 @@
 """Deterministic Linux composite package for the managed embedded transport."""
 from __future__ import annotations
 
-from runtime.remote_access.package_diagnostics import diagnostic_error, diagnostic_scope, diagnostic_loss
+from runtime.remote_access.package_diagnostics import (
+    diagnostic_error,
+    diagnostic_scope,
+    diagnostic_loss,
+    diagnostic_propagate,
+    exception_refusal,
+)
 
 import hashlib
 import io
@@ -2570,7 +2576,11 @@ def _validate_progress(record: Mapping[str, object]) -> None:
         # per-path identity classification already refuses unexplained gaps.
         return
     if (failure := _backups_complete_error(record)) is not None:
-        raise diagnostic_error("P000140", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
+        error = diagnostic_error("P000140", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+        origin = exception_refusal(failure)
+        if origin is not None:
+            diagnostic_propagate({"category": origin[0], "site": origin[1]}, error)
+        raise error
     if phase in {"prepared", "payload_retained", "payload_published"}:
         if published or record["dropin_published"]:
             raise diagnostic_error("P000141", "transaction_state_invalid", PackageError("transaction_state_invalid"))
@@ -2655,7 +2665,11 @@ def _load_record(root: Path, marker: Path) -> dict:
     if _STAGE_SUFFIX_PATTERN.fullmatch(stage_path.name[len(prefix):]) is None:
         raise diagnostic_error("P000165", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if (failure := _valid_inventory_error(record["new_payload"])) is not None:
-        raise diagnostic_error("P000166", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
+        error = diagnostic_error("P000166", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+        origin = exception_refusal(failure)
+        if origin is not None:
+            diagnostic_propagate({"category": origin[0], "site": origin[1]}, error)
+        raise error
     new_units = record["new_units"]
     if not isinstance(new_units, dict) or set(new_units) != set(UNITS):
         raise diagnostic_error("P000167", "transaction_state_invalid", PackageError("transaction_state_invalid"))
@@ -2668,7 +2682,11 @@ def _load_record(root: Path, marker: Path) -> dict:
         raise diagnostic_error("P000170", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if backups["payload"] is not None:
         if (failure := _valid_inventory_error(backups["payload"])) is not None:
-            raise diagnostic_error("P000171", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
+            error = diagnostic_error("P000171", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+            origin = exception_refusal(failure)
+            if origin is not None:
+                diagnostic_propagate({"category": origin[0], "site": origin[1]}, error)
+            raise error
     backup_units = backups["units"]
     if not isinstance(backup_units, dict) or set(backup_units) != set(UNITS):
         raise diagnostic_error("P000172", "transaction_state_invalid", PackageError("transaction_state_invalid"))
@@ -2779,7 +2797,11 @@ def _classify_units(root: Path, record: dict) -> dict[str, str]:
                 raise diagnostic_error("P000180", "transaction_state_invalid", PackageError("transaction_state_invalid"))
             if _backup_present(saved):
                 if (failure := _backup_intact_error(saved, expected)) is not None:
-                    raise diagnostic_error("P000181", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
+                    error = diagnostic_error("P000181", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+                    origin = exception_refusal(failure)
+                    if origin is not None:
+                        diagnostic_propagate({"category": origin[0], "site": origin[1]}, error)
+                    raise error
                 actions[unit] = "already" if _file_matches(target, expected, absent_ok=True) else "restore"
             elif _file_matches(target, expected):
                 actions[unit] = "already"
@@ -2810,7 +2832,11 @@ def _classify_dropin(root: Path, record: dict) -> str:
             raise diagnostic_error("P000186", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if _backup_present(dropin_backup):
             if (failure := _backup_intact_error(dropin_backup, expected)) is not None:
-                raise diagnostic_error("P000187", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
+                error = diagnostic_error("P000187", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+                origin = exception_refusal(failure)
+                if origin is not None:
+                    diagnostic_propagate({"category": origin[0], "site": origin[1]}, error)
+                raise error
             return "already" if _file_matches(dropin, expected, absent_ok=True) else "restore"
         if _file_matches(dropin, expected):
             return "already"

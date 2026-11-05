@@ -17,8 +17,11 @@ returns a validated native origin through Python without changing guard authorit
 Suppressed operational errors retain their existing disposition and add fixed
 loss identities. Expected absence, a nonmatching restore candidate, polling and
 an existing directory are not product refusals. Validation-only predicates have
-error-returning diagnostic owners with Boolean adapters; rejecting callers chain
-the exact validation origin without rereading or changing short-circuit order.
+error-returning diagnostic owners with Boolean adapters; rejecting callers copy
+only the validated fixed origin into private exception attributes and retain
+their distinct caller boundary. Their original public cause, context and
+suppression behavior remains unchanged; no synthetic or caught producer error
+becomes a new public chain. No reread or short-circuit order changes.
 Private outer and native records may carry `loss_sites`: at most the first FOUR
 distinct observed sites. The list is bounded partial attribution, never a claim
 that no later loss occurred. Existing loss codes and acquisition states continue
