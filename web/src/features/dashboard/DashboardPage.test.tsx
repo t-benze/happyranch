@@ -1,11 +1,13 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse, delay } from 'msw';
+import { http, HttpResponse, delay, type HttpResponseResolver } from 'msw';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
-import type { DashboardSummaryResponse } from '@/lib/api/types';
+import { startupHealth } from '@/test/startup';
+import { makeQueryClient } from '@/design-system/providers/AppProvider';
+import type { DashboardSummaryResponse, IdentityList } from '@/lib/api/types';
 
 // Partial-mock the tokens hooks: stub the today-total and week-total hooks so
 // the "Tokens today" tile and "This week's burn" card render deterministic
@@ -100,14 +102,140 @@ describe('DashboardPage', () => {
 
   test('renders loading state initially', async () => {
     seedShell();
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, async () => {
+    const client = makeQueryClient();
+    type Operation = {
+      boundary: string;
+      queryKey?: readonly unknown[];
+      original: Promise<unknown>;
+      outcome?: Promise<PromiseSettledResult<unknown>>;
+    };
+    const operations: Operation[] = [];
+    const restores: (() => void)[] = [];
+    const later: { phase: string; error: unknown; operation?: Operation }[] = [];
+    let primary: { error: unknown } | undefined;
+    let view: ReturnType<typeof renderWithProviders> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    const observe = (original: Promise<unknown>, boundary: string, queryKey?: readonly unknown[]) => {
+      // Retain the raw completion before recording any diagnostic outcome.
+      const operation: Operation = { original, boundary, queryKey };
+      operations.push(operation);
+      operation.outcome = original.then(
+        (value) => ({ status: 'fulfilled', value } as const),
+        (reason: unknown) => ({ status: 'rejected', reason } as const),
+      );
+    };
+    let joined = 0;
+    const joinStarted = async () => {
+      do {
+        while (joined < operations.length) {
+          const operation = operations[joined++];
+          const outcome = operation.outcome;
+          try {
+            await act(async () => { await outcome; });
+          } catch (error) {
+            later.push({ phase: 'React delivery during join', error, operation });
+          }
+          // Independently join even if act/delivery failed. No new work starts.
+          try {
+            const result = outcome ? await outcome : await operation.original.then(
+              (value) => ({ status: 'fulfilled', value } as const),
+              (reason: unknown) => ({ status: 'rejected', reason } as const),
+            );
+            if (result.status === 'rejected') {
+              later.push({ phase: operation.boundary, error: result.reason, operation });
+            }
+          } catch (error) {
+            later.push({ phase: 'join original completion', error, operation });
+          }
+        }
+        try {
+          // The locked notifyManager schedules delivery in a zero-delay turn;
+          // act then flushes React, including any newly mounted real queries.
+          await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
+        } catch (error) {
+          later.push({ phase: 'React delivery', error });
+        }
+      } while (joined < operations.length);
+    };
+    try {
+      // A local wire observation through the real shell poller, never a seed.
+      server.use(
+        http.get('/api/v1/health', () => HttpResponse.json({
+          ...startupHealth(), active_runtime: '/Users/x/happyranch',
+        })),
+        http.get(`/api/v1/orgs/${SLUG}/identities`, () =>
+          HttpResponse.json<IdentityList>({ identities: [] })),
+      );
+      // Cache.add notifies synchronously within build, before first fetch.
+      // This includes Sidebar's shared summary call, not just the page's call.
+      unsubscribe = client.getQueryCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const query = event.query;
+        const key = query.queryKey;
+        const shell = key.length === 1 && (key[0] === 'health' || key[0] === 'orgs');
+        const scoped = key.length === 2 && key[1] === SLUG &&
+          (key[0] === 'dashboard-summary' || key[0] === 'identities');
+        const tokens = key.length === 4 && key[0] === 'tokens' && key[1] === SLUG && key[2] === 'thread';
+        if (!shell && !scoped && !tokens) return;
+        const fetch = query.fetch;
+        const spy = vi.spyOn(query, 'fetch').mockImplementation(function (this: typeof query, ...args) {
+          const original = fetch.apply(this, args);
+          // Query.promise is the inner retryer, not this outer fetch return.
+          observe(original, 'query fetch', key);
+          return original;
+        });
+        restores.push(() => spy.mockRestore());
+      });
+      const resolveSummary = async (..._args: Parameters<HttpResponseResolver>) => {
         await delay(200);
         return HttpResponse.json(emptySummary());
-      }),
-    );
-    renderWithProviders(<AppRoutes />, { route: ROUTE });
-    expect(await screen.findByText(/Loading dashboard/i)).toBeInTheDocument();
+      };
+      const summaryHandler = http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, function (this: unknown, ...args) {
+        const original = resolveSummary.apply(this, args);
+        observe(original, 'summary resolver');
+        return original;
+      });
+      const run = summaryHandler.run;
+      const runSpy = vi.spyOn(summaryHandler, 'run').mockImplementation(function (this: typeof summaryHandler, ...args) {
+        const original = run.apply(this, args);
+        // Nonmatching runs return null; only an invoked resolver owns delay200.
+        observe(original, 'summary MSW run');
+        return original;
+      });
+      restores.push(() => runSpy.mockRestore());
+      server.use(summaryHandler);
+      view = renderWithProviders(<AppRoutes />, { route: ROUTE, queryClient: client });
+      expect(await screen.findByText(/Loading dashboard/i)).toBeInTheDocument();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      await joinStarted();
+      try {
+        if (view) view.unmount();
+        else cleanup(); // render can fail after mounting, before returning.
+      } catch (error) {
+        later.push({ phase: 'unmount', error });
+        try { cleanup(); } catch (cleanupError) {
+          later.push({ phase: 'cleanup after unmount failure', error: cleanupError });
+        }
+      }
+      // Keep observation through unmount and join only actual additional work.
+      await joinStarted();
+      try { unsubscribe?.(); } catch (error) { later.push({ phase: 'unsubscribe', error }); }
+      for (const restore of restores.reverse()) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+      try { client.clear(); } catch (error) { later.push({ phase: 'clear cache', error }); }
+    }
+    const failure = primary ?? later.shift();
+    if (failure) {
+      try {
+        if (later.length) console.error('Dashboard loading secondary errors', later, operations);
+      } catch (error) {
+        later.push({ phase: 'report secondary errors', error });
+      }
+      throw failure.error;
+    }
   });
 
   test('renders error state on 500', async () => {
