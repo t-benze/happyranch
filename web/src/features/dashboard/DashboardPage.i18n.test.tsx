@@ -15,9 +15,11 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { delay, http, HttpResponse } from 'msw';
 import { Route, Routes } from 'react-router-dom';
+import { makeQueryClient } from '@/design-system/providers/AppProvider';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
-import type { DashboardSummaryResponse } from '@/lib/api/types';
+import { seedReadyHealth } from '@/test/startup';
+import type { DashboardSummaryResponse, IdentityList } from '@/lib/api/types';
 import { DashboardPage } from './DashboardPage';
 
 const SLUG = 'hk-macau-tourism';
@@ -102,6 +104,8 @@ function populatedSummary(): DashboardSummaryResponse {
 }
 
 function renderDashboard(locale: 'en' | 'zh-CN') {
+  const queryClient = makeQueryClient();
+  seedReadyHealth(queryClient);
   return renderWithProviders(
     <>
       <Routes>
@@ -110,7 +114,7 @@ function renderDashboard(locale: 'en' | 'zh-CN') {
       <LocaleTestSwitch to="zh-CN" />
       <LocaleTestSwitch to="en" />
     </>,
-    { route: ROUTE, i18n: { adapter: savedLocaleAdapter(locale) } },
+    { queryClient, route: ROUTE, i18n: { adapter: savedLocaleAdapter(locale) } },
   );
 }
 
@@ -133,6 +137,7 @@ beforeEach(() => {
   sessionStorage.setItem('happyranch.token', 'tok');
   server.use(
     http.get(`/api/v1/orgs/${SLUG}/tokens`, () => HttpResponse.json({ rollup: [] })),
+    http.get(`/api/v1/orgs/${SLUG}/identities`, () => HttpResponse.json<IdentityList>({ identities: [] })),
   );
 });
 
