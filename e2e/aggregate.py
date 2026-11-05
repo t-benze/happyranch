@@ -3934,6 +3934,10 @@ def failure_result_controls() -> dict:
     case_stages = {f'terminal-index{i}-{order}': (i,order) for i in (0,2,3) for order in ('early','late')}
     case_stages.update({f'pair-index{i}-{order}': (i,order) for i in (4,5)
                        for order in ('early','late','jobs-last','store-id-order','audit-append')})
+    case_oracle_partials = {f'{stage}-index{i}-{order}': (i,order)
+        for i,stage in ((0,'terminal-before-oracle'),(4,'first-terminal-partial'),(5,'first-terminal-partial'))
+        for order in ('early','late')}
+    case_stages.update(case_oracle_partials)
     case_copy_positive = {f'copy-index{i}-{order}': (i,order)
                           for i in range(6) for order in ('early','late','jobs-last','repeated','command-order','attempts-after-copies')}
     case_copy_positive.update({f'copy-partial-{stage}': (0,stage) for stage in
@@ -4053,6 +4057,18 @@ def failure_result_controls() -> dict:
                             holder['jobs'].reverse()
                         for holder in (case['parked'],case['first_terminal']):
                             holder['tasks'][0]['blocked_on_job_ids'] = json.dumps(sorted(replacements))
+                    if spec in case_oracle_partials:
+                        # Separate genuine jobs.py stages: terminal precedes
+                        # terminal_oracle; first-terminal precedes SECOND job
+                        # execution. Complete refusal subjects below stay full.
+                        for key in ('live_s2','final_snapshot','final_callback'): case.pop(key)
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                        case['jobs'][0].pop('rejection_drain')
+                        if index == 0:
+                            case['jobs'][0].pop('oracle')
+                        else:
+                            for key in ('terminal','oracle','rejection_drain'): case['jobs'][1].pop(key)
                     label = 'C5-Case-stage-positive-'+spec+'-'+boundary
                 else:
                     image = case_input(root,1 if spec == 'refusal-no-job' else 0,late=True)
@@ -4077,6 +4093,9 @@ def failure_result_controls() -> dict:
                 compact = json.dumps(wanted,ensure_ascii=False,separators=(',',':')).encode()
                 name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
                 destination = root/'raw'/name
+                if type(spec) is str and spec in case_oracle_partials:
+                    raw_names = {p.name for p in (root/'raw').iterdir()}
+                    prior_staged,prior_published = copy.deepcopy(staged),copy.deepcopy(published)
                 try:
                     if boundary == 'writer': writer._atomic_json(destination,image); expected_image = compact
                     elif boundary == 'prefix':
@@ -4104,6 +4123,15 @@ def failure_result_controls() -> dict:
                 assert (root/'scenario.json').read_bytes() == scenario
                 for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
                 assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists()
+                if type(spec) is str and spec in case_oracle_partials:
+                    actual = destination.read_bytes()
+                    assert len(actual) == len(expected_image) and hashlib.sha256(actual).digest() == hashlib.sha256(expected_image).digest()
+                    assert {p.name for p in output.iterdir()} == set(previous) | {name}
+                    assert {p.name for p in (root/'raw').iterdir()} == raw_names | {name} | ({'observations.json'} if boundary == 'prefix' else set())
+                    assert set(staged) == set(prior_staged) | {name} and set(published) == set(prior_published) | {name}
+                    for prior_name,prior_bytes in prior_staged.items(): assert staged[prior_name] == prior_bytes
+                    for prior_name,prior_bytes in prior_published.items(): assert published[prior_name] == prior_bytes
+                    assert not (output/'result.tmp').exists()
                 results[label] = 'entire independent selected Case SOURCE/full SQL rows/types/order/nulls/original framing retained; prior files/tree/result/FAIL exact; incomplete baseline remains TWO REQUIRED-MISSING; native NOT RUN'
 
     case_holders = ('parked','live_s2','final_snapshot','running','pending','oracle','rejection_drain')
@@ -4162,6 +4190,13 @@ def failure_result_controls() -> dict:
     case_shape_refusals.update({f'pair-one-submit-block-index{i}':i for i in (4,5)})
     case_shape_refusals.update({f'reached-running-missing-index{i}-job{j}':i
                                 for i in (0,2,3,4,5) for j in range(2 if i >= 4 else 1)})
+    case_shape_refusals.update({f'case-start-field-array-start{s}':0 for s in (0,1)})
+    case_shape_refusals['case-start-field-nested-array-start0'] = 0
+    case_shape_refusals.update({f'oracle-missing-peer-contradiction-index{i}-job{j}':i
+                                for i,j in ((0,0),(4,1),(5,1))})
+    case_shape_refusals.update({f'oracle-{missing}-missing-index{i}-job{j}':i
+                                for missing in ('row','holder') for i in (0,2,3,4,5)
+                                for j in range(2 if i >= 4 else 1)})
     case_refusals += list(case_shape_refusals)
     for case_name in case_refusals:
         for boundary in ('writer','raw','raw-prefix','prefix'):
@@ -4220,6 +4255,15 @@ def failure_result_controls() -> dict:
                         case['block'] = copy.deepcopy(command)
                     elif case_name.startswith('reached-running-missing-'):
                         case['jobs'][int(case_name[-1])].pop('running')
+                    elif case_name.startswith('case-start-field-'):
+                        case['starts'][int(case_name[-1])]['extra_original_fact'] = ([[]]
+                            if case_name == 'case-start-field-nested-array-start0' else [])
+                    elif case_name.startswith('oracle-'):
+                        selected = case['jobs'][int(case_name[-1])]
+                        if case_name.startswith('oracle-holder-missing-'): selected.pop('oracle')
+                        else: selected['oracle'].pop('row')
+                        if case_name.startswith('oracle-missing-peer-contradiction-'):
+                            selected['terminal']['finished_at'] += '-changed'
                     elif case_name not in ('store-original31','store-original31-permuted','store27-coordinated-order'):
                         raise AssertionError(case_name)
                 elif case_name in case_copy_refusals:

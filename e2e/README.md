@@ -3558,9 +3558,12 @@ and scalar still receives its own safety check, full builtin-type/value equality
 and SOURCE admission where required. The separate comparison frame stack and
 duplicate syntax key set are absent. A scan-only Case row that already retains
 every original scalar key likewise supplies duplicate membership from that
-same row's private fact dictionary; other rows and required trees keep their
-existing syntax storage. No retained row/key/scalar/full-comparison rate or
-collector allowance changes. Complete restored controls and typed, ordered
+same row's private fact dictionary. Required-tree parsing also reuses that
+SAME occurrence's complete owned Case row or finite command-copy map as its
+parsed dictionary. Projected rows and canonical command holders whose scratch
+maps can be cleared retain separate complete trees and syntax storage; the
+specific storage and retention rules below apply. No retained row/key/scalar/
+full-comparison rate or collector allowance changes. Complete restored controls and typed, ordered
 result reconciliation remain necessary to establish fit.
 
 The nested comparison route is confined to Submission's existing single-object
@@ -3920,13 +3923,31 @@ visitor performs the same retention in its existing scalar frame after original
 depth/node admission, keeping its8B/1fact field reference and removing only the
 16B/2facts event forwarding. Own scalar grammar/node/key/syntax/tree storage,
 output string types and each script's independent SOURCE checks remain.
-Containers, other fields, SQL rows,
-array ordinals and all distinct late comparisons keep their existing routes.
+Every actual start field must be scalar and participate in the original
+seven-key start join; an extra empty or nested container refuses at its field
+event. Container fields cannot disappear through scalar-only retention.
+Other fields, SQL rows, array ordinals and all distinct late comparisons keep
+their existing routes.
 No cap, retained-work rate, input, oracle, retention frequency or final-buffer
 debit changes. The unchanged restored5208/ALL4572 typed ordered reconciliation,
 SAME intended comparator omission/exact restoration/final green and clean-head
 static checks must establish the actual candidate result; this operation
 removal supplies no fit or native acceptance claim.
+
+Case oracle presence follows the original jobs.py assignments. A terminal row
+alone precedes terminal_oracle and may genuinely lack its oracle. Assignment
+of job.oracle, browser, reads or rejection_drain requires that job's complete
+oracle.row; the later holder cannot omit the row. First-terminal/CLI/browser
+requires only the FIRST job's oracle, while the SECOND job remains running and
+compares to its original last pending row. A second start, live_s2, final callback
+or final-stage fields require every applicable job's oracle, including when its
+entire holder is missing. These private reached facts pay their own retention
+and update charges before closure; no missing peer can skip full terminal/live/
+final equality. Both pair role orders and independent Store ID order remain.
+The existing SOURCE shape/stage tables add missing-row/holder and contradictory
+terminal-time refusals plus separate genuine earlier partial positives at the
+four shipping boundaries. Full controls/reconciliation and intended-predicate
+proof remain required; source inspection alone supplies no execution claim.
 
 
 The existing SOURCE lexer now consumes punctuation after an identifier, number

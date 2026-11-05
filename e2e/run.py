@@ -2850,9 +2850,10 @@ class _EvidenceObservations:
         if not local and kind == 'object':
             self.ledger.charge(256, 32, self.check)
             self.ledger.charge(64, 8, self.check)
+            self.ledger.charge(8, 1, self.check)
             self.case = dict(meta={}, starts=[], jobs=[], rows=[], snapshots={}, used=False,
                              entry=self.snapshot_entry, jobs_shape=False, copies=[], final_reached=False,
-                             block_reached=False, submitted_stages=set(),
+                             block_reached=False, submitted_stages=set(), first_oracle_reached=False,
                              running_first=None, oracle_first=None, pending_first=None,
                              running_second=None, oracle_second=None, pending_second=None)
         c = self.case
@@ -2883,8 +2884,11 @@ class _EvidenceObservations:
                     _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
                                      self.depth + 4 + len(local) + 2)
             return
-        if not local and kind == 'key' and value in ('final_snapshot', 'finished', 'commands_end', 'task_browser'):
+        if not local and kind == 'key' and value in ('live_s2', 'final_callback', 'final_snapshot', 'finished', 'commands_end', 'task_browser'):
             c['final_reached'] = True
+        if not local and kind == 'key' and value in ('first_terminal', 'first_terminal_cli', 'first_terminal_browser'):
+            self.ledger.charge(8, 1, self.check)
+            c['first_oracle_reached'] = True
         if not local and kind == 'key' and value in ('parked','waiting_browser','first_terminal',
                 'first_terminal_cli','first_terminal_browser','live_s2'):
             c['block_reached'] = True
@@ -2892,6 +2896,12 @@ class _EvidenceObservations:
                 and value in ('id','running','running_browser','terminal','action','oracle','browser','reads','rejection_drain')):
             self.ledger.charge(16, 2, self.check)
             c['submitted_stages'].add(local[1])
+        if (len(local) == 2 and local[0] == 'jobs' and kind == 'key'
+                and value in ('oracle', 'browser', 'reads', 'rejection_drain')):
+            # These assignments follow terminal_oracle. A terminal row alone
+            # is earlier: run_script still has closure work before the oracle.
+            self.ledger.charge(16, 2, self.check)
+            c['jobs'][local[1]]['oracle_reached'] = True
         command = self.case_command_slot(local)
         if command is not None:
             c['used'] = True
@@ -2932,7 +2942,12 @@ class _EvidenceObservations:
             if len(local) == 2 and kind == 'object':
                 self.ledger.charge(64, 8, self.check)
                 c['starts'].append({})
-            elif len(local) == 3 and kind == 'scalar' and type(local[1]) is int and local[1] < len(c['starts']):
+            elif len(local) == 3:
+                # Every original field participates, including an empty
+                # container whose descendants would otherwise retain nothing.
+                # The typed/raw primitive shortcuts already retain scalars.
+                if kind != 'scalar' or type(local[1]) is not int or local[1] >= len(c['starts']):
+                    raise ValueError('Case start fact withheld')
                 retain(c['starts'][local[1]], local[2], value)
             elif kind not in ('key', 'end-object', 'end-array', 'array'):
                 raise ValueError('Case start fact withheld')
@@ -3331,6 +3346,14 @@ class _EvidenceObservations:
                     raise ValueError('Case full submitted SOURCE join withheld')
                 self.ledger.charge(16, 2, self.check)
                 owners.append((jid, original_command)); ids.add(jid)
+                # Require reached peers before any Store row can skip full
+                # equality. First-terminal reaches only the FIRST job's
+                # oracle; its SECOND job still compares to running/pending.
+                self.ledger.charge(16, 2, self.check)
+                if (job.get('oracle_reached') or c['final_reached'] or len(starts) == 2
+                        or number == 0 and c['first_oracle_reached']) and (
+                        c['oracle_first'] if number == 0 else c['oracle_second']) is None:
+                    raise ValueError('Case required oracle row unavailable')
                 self.ledger.charge(16, 2, self.check)
                 self.ledger.charge(8, 1, self.check)
                 if number == 0:
