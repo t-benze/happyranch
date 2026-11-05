@@ -324,6 +324,18 @@ the leases release. The final DB-only leaf revalidates the original capture from
 BEFORE discovery as well as the completed census, closing intervening-writer gaps.
 These are source predicates; no crash, cleanup, race or recovery proof was run.
 
+Producer census and operation census each own one coherent read view for their
+existing complete SQL batch, including task enumeration/full fetch, causal and
+coding reconstruction and every dependent SQL join. Tracker/pending-file and
+producer/publication/host/thread captures retain their order outside the views.
+Supported admission callers have no outer SQL transaction. Operation census
+exits its owned view before its existing epoch/database sample, retaining the
+original DB RLock through that sample; a joined pinned caller view is never
+ended or treated as latest-state admission. Complete validation/budgets,
+unknown-owner blockers, all raw drift comparisons and their original sampling
+order remain. SQL coherence provides no heartbeat exemption, original failure
+attribution, successful preview or measured speed improvement.
+
 Acceptance is SOURCE/POLICY/STATIC ONLY on the SAME thirteen four-answer
 observations. Every absent behavior/migration/recovery/native callback/permission/
 process-loss/launcher/live-move result remains UNEXECUTED; general integration

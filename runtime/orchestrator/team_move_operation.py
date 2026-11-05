@@ -314,57 +314,61 @@ class TeamMoveOperation:
                 blockers.append({"kind": fact["code"], "owner_id": str(fact.get("invocation_id", fact.get("thread_id", "unknown"))), "fact": fact,
                     "remedy": "Wait only for a captured running thread; resolve other ownership through its native owner"})
         with db._lock:
-            causal = set()
-            for row in db._conn.execute("SELECT id FROM tasks"):
-                task = None
-                try:
-                    task = db.get_task(row["id"])
-                    related = self.move._task_closure_uncommitted(task, request)
-                except (DeferredTeamMove, ValueError, TypeError) as exc:
-                    # Preserve the already collected producer/host/thread facts
-                    # and include unknown owners in every dependent join.
-                    code = exc.code if isinstance(exc, DeferredTeamMove) else "team_move_task_record_unavailable"
-                    blockers.append({"kind": "task_owner_unknown", "owner_id": row["id"],
-                        "remedy": f"Resolve native causal ownership ({code}) before fresh preview or recovery"})
-                    related = True
-                if related:
-                    causal.add(row["id"])
-                    if task is None or task.status.value not in {"completed", "failed", "cancelled", "superseded"}:
-                        add("task_causal_work", row["id"])
-            for reservation in self.move.blockers():
-                if reservation["agent_id"] in request.affected_agents or reservation["task_id"] in causal:
-                    add("task_preparation_or_cleanup", reservation["owner_id"])
-            tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
-            if "task_pause_controls" in tables:
-                from runtime.infrastructure.task_pause_controls import decode_journal
-                for row in db._conn.execute("SELECT root_task_id,held,admission_journal_json FROM task_pause_controls"):
-                    if row["held"] and row["root_task_id"] in causal:
-                        add("paused_causal_root", row["root_task_id"])
-                    for entry in decode_journal(row["admission_journal_json"])["entries"]:
-                        if entry["agent"] in request.affected_agents or entry["task_id"] in causal:
-                            add("pause_unsettled_entry", entry["id"])
-            if "workflow_instances" in tables:
-                from runtime.infrastructure.workflow_schema import validate_workflow_schema
-                validate_workflow_schema(db._conn, expected_org_slug=self.org.slug)
-                def referenced(value):
-                    if isinstance(value, dict):
-                        return any(value.get(k) in request.affected_agents for k in ("principal", "agent", "manager_agent") if isinstance(value.get(k), str)) or value.get("team") == request.source_team or any(referenced(v) for v in value.values())
-                    return isinstance(value, list) and any(referenced(v) for v in value)
-                for row in db._conn.execute("SELECT i.*,b.binding_bytes FROM workflow_instances i JOIN workflow_binding_snapshots b ON b.id=i.binding_snapshot_id"):
-                    affected = row["root_task_id"] in causal or referenced(json.loads(row["binding_bytes"]))
-                    if not affected:
-                        continue
-                    if row["status"] not in {"complete", "cancelled"}:
-                        add("workflow_instance", row["id"])
-                    for table in ("workflow_draft_dispatch_intents", "workflow_dispatch_operations", "workflow_request_task_bridges"):
-                        if table in tables:
-                            for tail in db._conn.execute(f"SELECT * FROM {table} WHERE instance_id=?", (row["id"],)):
-                                if tail["state"] not in {"completed", "cancelled", "failed"}:
-                                    add("workflow_tail", tail["id"] if "id" in tail.keys() else tail["request_id"])
-                    # Review outbox is joined through its actual operation FK.
-                    for tail in db._conn.execute("SELECT o.* FROM workflow_dispatch_outbox o JOIN workflow_dispatch_operations d ON d.id=o.operation_id WHERE d.instance_id=?", (row["id"],)):
-                        if tail["state"] not in {"completed", "cancelled"}:
-                            add("workflow_outbox", tail["id"])
+            # Fetch tasks and their complete dependent SQL in the same view.
+            with db.coherent_read_view():
+                causal = set()
+                for row in db._conn.execute("SELECT id FROM tasks"):
+                    task = None
+                    try:
+                        task = db.get_task(row["id"])
+                        related = self.move._task_closure_uncommitted(task, request)
+                    except (DeferredTeamMove, ValueError, TypeError) as exc:
+                        # Preserve the already collected producer/host/thread facts
+                        # and include unknown owners in every dependent join.
+                        code = exc.code if isinstance(exc, DeferredTeamMove) else "team_move_task_record_unavailable"
+                        blockers.append({"kind": "task_owner_unknown", "owner_id": row["id"],
+                            "remedy": f"Resolve native causal ownership ({code}) before fresh preview or recovery"})
+                        related = True
+                    if related:
+                        causal.add(row["id"])
+                        if task is None or task.status.value not in {"completed", "failed", "cancelled", "superseded"}:
+                            add("task_causal_work", row["id"])
+                for reservation in self.move.blockers():
+                    if reservation["agent_id"] in request.affected_agents or reservation["task_id"] in causal:
+                        add("task_preparation_or_cleanup", reservation["owner_id"])
+                tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+                if "task_pause_controls" in tables:
+                    from runtime.infrastructure.task_pause_controls import decode_journal
+                    for row in db._conn.execute("SELECT root_task_id,held,admission_journal_json FROM task_pause_controls"):
+                        if row["held"] and row["root_task_id"] in causal:
+                            add("paused_causal_root", row["root_task_id"])
+                        for entry in decode_journal(row["admission_journal_json"])["entries"]:
+                            if entry["agent"] in request.affected_agents or entry["task_id"] in causal:
+                                add("pause_unsettled_entry", entry["id"])
+                if "workflow_instances" in tables:
+                    from runtime.infrastructure.workflow_schema import validate_workflow_schema
+                    validate_workflow_schema(db._conn, expected_org_slug=self.org.slug)
+                    def referenced(value):
+                        if isinstance(value, dict):
+                            return any(value.get(k) in request.affected_agents for k in ("principal", "agent", "manager_agent") if isinstance(value.get(k), str)) or value.get("team") == request.source_team or any(referenced(v) for v in value.values())
+                        return isinstance(value, list) and any(referenced(v) for v in value)
+                    for row in db._conn.execute("SELECT i.*,b.binding_bytes FROM workflow_instances i JOIN workflow_binding_snapshots b ON b.id=i.binding_snapshot_id"):
+                        affected = row["root_task_id"] in causal or referenced(json.loads(row["binding_bytes"]))
+                        if not affected:
+                            continue
+                        if row["status"] not in {"complete", "cancelled"}:
+                            add("workflow_instance", row["id"])
+                        for table in ("workflow_draft_dispatch_intents", "workflow_dispatch_operations", "workflow_request_task_bridges"):
+                            if table in tables:
+                                for tail in db._conn.execute(f"SELECT * FROM {table} WHERE instance_id=?", (row["id"],)):
+                                    if tail["state"] not in {"completed", "cancelled", "failed"}:
+                                        add("workflow_tail", tail["id"] if "id" in tail.keys() else tail["request_id"])
+                        # Review outbox is joined through its actual operation FK.
+                        for tail in db._conn.execute("SELECT o.* FROM workflow_dispatch_outbox o JOIN workflow_dispatch_operations d ON d.id=o.operation_id WHERE d.instance_id=?", (row["id"],)):
+                            if tail["state"] not in {"completed", "cancelled"}:
+                                add("workflow_outbox", tail["id"])
+            # End our read view before sampling latest-state drift, retaining
+            # the original lock so shared-connection work cannot enter this gap.
             epoch, changes = self.move.producers.writer_epoch, self._database_observation()
         return tuple(blockers), epoch, changes
 

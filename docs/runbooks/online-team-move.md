@@ -185,6 +185,19 @@ as request fields or returned by show. Preview calls only D's pure native
 selection/rendering path, without adapters/materialization, stores/packages,
 reset, publication or reservation.
 
+Producer census and operation census each own one `Database.coherent_read_view`
+for their existing complete SQL batch, beginning before task enumeration and
+full task fetches. Causal/coding histories and all dependent SQL joins share
+that batch's snapshot. SessionTracker/pending-file capture precedes the producer
+batch; producer/publication/host/thread capture precedes the operation batch.
+Supported admission callers enter without an outer SQL transaction. Operation
+census ends its owned read view before the existing epoch/database sample,
+while retaining the original DB RLock through that sample. The helper never
+ends another caller's transaction; a joined pinned view supplies no latest-state
+admission proof. All drift counters, unknown-owner blockers and complete-reader
+budgets remain conservative. This SQL coherence correction proves neither the
+original preview failure's cause nor a successful preview or speed improvement.
+
 The private `team_move_preview_diagnostic` log attempts at most one fixed-field
 record per native preview invocation. It reuses the original initial, completed
 census and conditional final samples: producer `writer_epoch`, shared-connection

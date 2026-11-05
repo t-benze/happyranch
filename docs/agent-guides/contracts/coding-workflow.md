@@ -1892,6 +1892,19 @@ spec's settings-pinned execution section for exact family, snapshot and evidence
 boundaries. Source/static acceptance is separate from genuine scratch/Founder
 page/operator/backup/rollback acceptance retained by ROOT12568.
 
+The two online-team-move census callers own their complete SQL batches through
+`Database.coherent_read_view`, before task enumeration/full fetch and causal
+reconstruction. Complete coding/schema/data/source/naming/ownership/Pause
+validation joins that same caller view with its original cumulative allowance;
+`caller_owned_coding_snapshot_required` remains enforced. Native/file/host/thread
+capture stays outside these SQL views. Supported admission callers have no outer
+SQL transaction; operation census exits its owned view before its existing raw
+epoch/database observation under the retained outer DB RLock. A joined caller
+transaction stays open and supplies no latest-state admission proof. Joined
+complete reads without an advances collector suppress optional watermark
+publication conservatively; no extra traversal, cache or early publication is
+added. SQL coherence does not exempt drift or prove preview/runtime behavior.
+
 The Founder page is `/orgs/:slug/settings/coding` (TASK12632): org-keyed view,
 four org-wide cross-team selectors, one explicit frozen key/body per Save, 409
 draft retention with explicit adoption, a provider-lifetime per-org send fence
