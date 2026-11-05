@@ -1267,16 +1267,23 @@ def _nonmanaged_owner_destination(path: Path) -> Path:
                 current.lstat()
             except FileNotFoundError:
                 if current.parent == current or current.name in {"", ".", ".."}:
-                    raise PackageError("managed_lifecycle_owner_unknown")
+                    raise diagnostic_error("P600002", "managed_lifecycle_owner_unknown", PackageError("managed_lifecycle_owner_unknown"))
                 missing.append(current.name)
                 current = current.parent
                 continue
-            resolved = current.resolve(strict=True)
-            if missing and not resolved.is_dir():
-                raise PackageError("managed_lifecycle_owner_unknown")
+            except (OSError, RuntimeError, ValueError) as exc:
+                # Missing tails above are ordinary; only actual errors own a site.
+                diagnostic_error("P600001", "managed_operational_error", exc)
+                raise
+            with diagnostic_scope("P600003", "managed_operational_error"):
+                resolved = current.resolve(strict=True)
+            with diagnostic_scope("P600004", "managed_operational_error"):
+                if missing and not resolved.is_dir():
+                    raise diagnostic_error("P600005", "managed_lifecycle_owner_unknown", PackageError("managed_lifecycle_owner_unknown"))
             return resolved.joinpath(*reversed(missing))
     except (OSError, RuntimeError, ValueError) as exc:
-        raise PackageError("managed_lifecycle_owner_unknown") from exc
+        # Keep this public wrapper and cause; the deepest marked origin wins.
+        raise diagnostic_error("P600006", "managed_lifecycle_owner_unknown", PackageError("managed_lifecycle_owner_unknown")) from exc
 
 
 def _nonmanaged_owner_same_path(left: Path, right: Path) -> bool:
@@ -1289,7 +1296,8 @@ def _nonmanaged_owner_same_path(left: Path, right: Path) -> bool:
         except FileNotFoundError:
             identities.append(None)
         except OSError as exc:
-            raise PackageError("managed_lifecycle_owner_unknown") from exc
+            diagnostic_error("P600007", "managed_operational_error", exc)
+            raise diagnostic_error("P600008", "managed_lifecycle_owner_unknown", PackageError("managed_lifecycle_owner_unknown")) from exc
         else:
             identities.append((metadata.st_dev, metadata.st_ino))
     return identities[0] is not None and identities[0] == identities[1]
@@ -1355,7 +1363,7 @@ def _require_nonmanaged_state_owner(root: Path, *, staging: bool = False,
     destination = _nonmanaged_owner_destination(root)
     if staging and (".." in Path(root).parts
                     or destination != Path(os.path.abspath(root))):
-        raise PackageError("managed_lifecycle_owner_unknown")
+        raise diagnostic_error("P600009", "managed_lifecycle_owner_unknown", PackageError("managed_lifecycle_owner_unknown"))
     for fixed_root in (Path("/var/lib/happyranch-connector"),
                        Path("/var/lib/happyranch-tsnet-sidecar")):
         fixed = _nonmanaged_owner_destination(fixed_root)
@@ -1371,7 +1379,7 @@ def _require_nonmanaged_state_owner(root: Path, *, staging: bool = False,
             overlaps = overlaps or _nonmanaged_owner_same_path(left, right)
         if overlaps:
             # Missing lifecycle/unit markers never release fixed state custody.
-            raise PackageError("managed_lifecycle_owner_required")
+            raise diagnostic_error("P600010", "managed_lifecycle_owner_required", PackageError("managed_lifecycle_owner_required"))
     try:
         metadata = Path(root).lstat() if staging else destination.stat()
     except FileNotFoundError:
@@ -1379,12 +1387,13 @@ def _require_nonmanaged_state_owner(root: Path, *, staging: bool = False,
         # refused dangling links. Only an ordinary missing tail can be created.
         return
     except OSError as exc:
-        raise PackageError("managed_lifecycle_owner_unknown") from exc
+        diagnostic_error("P600011", "managed_operational_error", exc)
+        raise diagnostic_error("P600012", "managed_lifecycle_owner_unknown", PackageError("managed_lifecycle_owner_unknown")) from exc
     regular, is_directory = stat.S_ISREG(metadata.st_mode), stat.S_ISDIR(metadata.st_mode)
     if (not (regular or is_directory) or (regular and metadata.st_nlink != 1)
             or (directory is True and not is_directory)
             or (directory is False and not regular)):
-        raise PackageError("managed_lifecycle_owner_unknown")
+        raise diagnostic_error("P600013", "managed_lifecycle_owner_unknown", PackageError("managed_lifecycle_owner_unknown"))
 
 
 def managed_lifecycle(operation: str, *, expected_installation: str | None = None,
