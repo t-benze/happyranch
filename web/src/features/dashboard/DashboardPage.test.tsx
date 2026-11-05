@@ -159,13 +159,11 @@ describe('DashboardPage', () => {
     };
     try {
       // A local wire observation through the real shell poller, never a seed.
-      server.use(
-        http.get('/api/v1/health', () => HttpResponse.json({
-          ...startupHealth(), active_runtime: '/Users/x/happyranch',
-        })),
-        http.get(`/api/v1/orgs/${SLUG}/identities`, () =>
-          HttpResponse.json<IdentityList>({ identities: [] })),
-      );
+      const healthHandler = http.get('/api/v1/health', () => HttpResponse.json({
+        ...startupHealth(), active_runtime: '/Users/x/happyranch',
+      }));
+      const identityHandler = http.get(`/api/v1/orgs/${SLUG}/identities`, () =>
+        HttpResponse.json<IdentityList>({ identities: [] }));
       // Cache.add notifies synchronously within build, before first fetch.
       // This includes Sidebar's shared summary call, not just the page's call.
       unsubscribe = client.getQueryCache().subscribe((event) => {
@@ -195,15 +193,22 @@ describe('DashboardPage', () => {
         observe(original, 'summary resolver');
         return original;
       });
-      const run = summaryHandler.run;
-      const runSpy = vi.spyOn(summaryHandler, 'run').mockImplementation(function (this: typeof summaryHandler, ...args) {
-        const original = run.apply(this, args);
-        // Nonmatching runs return null; only an invoked resolver owns delay200.
-        observe(original, 'summary MSW run');
-        return original;
-      });
-      restores.push(() => runSpy.mockRestore());
-      server.use(summaryHandler);
+      for (const [boundary, handler] of [
+        ['summary MSW run', summaryHandler],
+        ['health MSW run', healthHandler],
+        ['identities MSW run', identityHandler],
+      ] as const) {
+        const run = handler.run;
+        const spy = vi.spyOn(handler, 'run').mockImplementation(function (this: typeof handler, ...args) {
+          const original = run.apply(this, args);
+          // Nonmatches return null. Keep the local identity run too: its
+          // consuming query may abort, which alone does not join MSW's run.
+          observe(original, boundary);
+          return original;
+        });
+        restores.push(() => spy.mockRestore());
+      }
+      server.use(summaryHandler, healthHandler, identityHandler);
       view = renderWithProviders(<AppRoutes />, { route: ROUTE, queryClient: client });
       expect(await screen.findByText(/Loading dashboard/i)).toBeInTheDocument();
     } catch (error) {
