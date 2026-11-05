@@ -4282,6 +4282,12 @@ class _EvidenceJSON:
         length = self.index - start
         if length > (128 if floating else 21):
             raise _EvidenceCapacity("JSON number spelling refused")
+        self.ledger.charge(16, 0, self.check)  # Construction selection, before either branch.
+        if length == 1 and not floating:
+            # The complete grammar above proves one original ASCII digit.
+            # Its builtin int needs no spelling slice or int conversion;
+            # value() still pays the original scalar-node admission.
+            return ord(self.text[start]) - 48
         self.ledger.charge(length + 8, 1, self.check)
         spelling = self.text[start:self.index]
         value = float(spelling) if floating else int(spelling)
