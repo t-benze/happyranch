@@ -3570,10 +3570,14 @@ fabricated public records. Existing terminal-browser true-absence cases gain
 the required running public operand while retaining terminal browser absence;
 this does not accept a whole reached-terminal family.
 
-This checkpoint records source changes before verification; the finite
-pre-fix missing-public assertion, unconditional byte-exact restoration and
-ONE restored complete aggregate controls run are PENDING. The previous
-PRESENT-terminal checkpoint subsequently obtained its authentic5988 source
+The first verification obtained the intended pre-fix missing-public assertion
+and unconditional byte-exact restoration; clean committed-head lint/static
+checks passed. The restored controls failed at the repeated-prefix pair's
+original fact cap. That failure is retained. Closure now compares already-paid
+iterator/lookup operands directly, removing only extra forwarding argument
+slots while retaining every full comparison and all original limits. Corrected
+complete controls and final-head lint/static verification remain PENDING. The
+previous PRESENT-terminal checkpoint obtained its authentic5988 source
 controls/static receipt; that historical result remains at its own head. All
 5988/5660/5428/5324/5208/4572 full named values, built-in types and key/list order
 remain reconciliation obligations, with explicit new refusal rows and fixture

@@ -3310,7 +3310,7 @@ class _EvidenceObservations:
             # holders and then every scalar map, rebuilding reference pairs for
             # fields already visited in the shape traversal. Direct lookups
             # below pay for their two references; all original full primitive
-            # comparisons use the existing direct same() debit.
+            # comparisons retain both operands' complete byte costs.
             shapes, other_shapes = left[8], right[8]
             if len(shapes) != len(other_shapes):
                 self.ledger.charge(32 * (len(shapes) + len(other_shapes)),
@@ -3359,7 +3359,12 @@ class _EvidenceObservations:
                 other_keys = iter(other[1])
                 for key in keys:
                     other_key = next(other_keys)
-                    if not same(key, other_key):
+                    # The paid original iterators already own both keys.
+                    # Compare here without forwarding them into same()'s two
+                    # extra argument slots. Full original bytes/types remain.
+                    self.ledger.charge((_evidence_utf8_size(key, self.check) if type(key) is str else 8)
+                        + (_evidence_utf8_size(other_key, self.check) if type(other_key) is str else 8), 0, self.check)
+                    if type(key) is not type(other_key) or key != other_key:
                         return False
                     if (number == 0 and key in ('provider', 'payload', 'payload_file', 'argv', 'wire')
                             or number == 2 and key in ('decision', 'waiting_on_job_ids')
@@ -3367,14 +3372,17 @@ class _EvidenceObservations:
                             or number == 4 and key == 'authentication'):
                         continue
                     self.ledger.charge(16, 2, self.check)
-                    if not same(a[key], b[other_key]):
+                    left_value, right_value = a[key], b[other_key]
+                    self.ledger.charge((_evidence_utf8_size(left_value, self.check) if type(left_value) is str else 8)
+                        + (_evidence_utf8_size(right_value, self.check) if type(right_value) is str else 8), 0, self.check)
+                    if type(left_value) is not type(right_value) or left_value != right_value:
                         return False
             return True
         def same(left: object, right: object) -> bool:
-            # Size both original operands directly. No temporary two-reference
-            # tuple or generator traversal remains. Keep the original operands'
-            # 16B/2facts and ALL full scalar bytes/type/value comparison work;
-            # only the absent tuple's two 8B/1fact reference slots disappear.
+            # Size both original operands directly. Keep this callee's two
+            # operand argument slots (16B/2facts) and ALL full scalar bytes,
+            # type and value comparison work. No temporary operand tuple or
+            # generator traversal is constructed.
             self.ledger.charge(16 + (_evidence_utf8_size(left, self.check) if type(left) is str else 8)
                 + (_evidence_utf8_size(right, self.check) if type(right) is str else 8), 2, self.check)
             return type(left) is type(right) and left == right
@@ -3393,7 +3401,16 @@ class _EvidenceObservations:
             right_keys = iter(right)
             for key in left:
                 other_key = next(right_keys)
-                if not same(key, other_key) or not same(left[key], right[other_key]):
+                # Iterator and lookup references were paid above; only the
+                # two forwarding slots per removed same() call disappear.
+                self.ledger.charge((_evidence_utf8_size(key, self.check) if type(key) is str else 8)
+                    + (_evidence_utf8_size(other_key, self.check) if type(other_key) is str else 8), 0, self.check)
+                if type(key) is not type(other_key) or key != other_key:
+                    return False
+                left_value, right_value = left[key], right[other_key]
+                self.ledger.charge((_evidence_utf8_size(left_value, self.check) if type(left_value) is str else 8)
+                    + (_evidence_utf8_size(right_value, self.check) if type(right_value) is str else 8), 0, self.check)
+                if type(left_value) is not type(right_value) or left_value != right_value:
                     return False
             return True
         for c in self.cases:
@@ -3784,11 +3801,24 @@ class _EvidenceObservations:
                                        2 + len(row) + 3 * len(peer), self.check)
                     peer_keys = iter(peer)
                 for column in row:
-                    if not same(column, next(columns)):
+                    schema_column = next(columns)
+                    # All three original iterators/lookups keep their debits.
+                    # Inline comparison removes forwarding frames only, with
+                    # independent complete schema/peer key and value checks.
+                    self.ledger.charge((_evidence_utf8_size(column, self.check) if type(column) is str else 8)
+                        + (_evidence_utf8_size(schema_column, self.check) if type(schema_column) is str else 8), 0, self.check)
+                    if type(column) is not type(schema_column) or column != schema_column:
                         raise ValueError('Case original Store.jobs order withheld')
                     if original is not None:
                         other_column = next(peer_keys)
-                        if not same(column, other_column) or not same(row[column], peer[other_column]):
+                        self.ledger.charge((_evidence_utf8_size(column, self.check) if type(column) is str else 8)
+                            + (_evidence_utf8_size(other_column, self.check) if type(other_column) is str else 8), 0, self.check)
+                        if type(column) is not type(other_column) or column != other_column:
+                            raise ValueError('Case complete original row equality withheld')
+                        left_value, right_value = row[column], peer[other_column]
+                        self.ledger.charge((_evidence_utf8_size(left_value, self.check) if type(left_value) is str else 8)
+                            + (_evidence_utf8_size(right_value, self.check) if type(right_value) is str else 8), 0, self.check)
+                        if type(left_value) is not type(right_value) or left_value != right_value:
                             raise ValueError('Case complete original row equality withheld')
                 if (any(k not in row for k in self.job_columns)
                         or any(type(row.get(k)) is not str or not row[k] for k in
