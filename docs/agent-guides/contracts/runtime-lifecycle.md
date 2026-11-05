@@ -404,7 +404,7 @@ nor retries diagnostics. Runtime/SQL/timing/cancellation/crash proof UNEXECUTED;
 integration INCLUDING lifespan/SessionTracker/callback SKIPPED24342, units RETIRED.
 
 **Startup refusal safety (THR308seq133/127, ROOT12801).** Private Database-owned
-startup reads share complete ordered root history in discovery and exact getters
+startup reads reuse scalar candidate catalogues in discovery and exact getters
 only within one exact Database/connection/invocation and stable coherent epochs.
 Fresh projections retain optional authenticated immutable scalar anchors for
 exclusion. An anchored exact/read/refusal failure quarantines its root before
@@ -426,24 +426,69 @@ no hit/target/absence/anchor escapes before clean matching closure. Movement or
 unavailable tokens discard the whole memo; only clean ownership/cleanup permits
 one fresh uncached coherent fallback. Caller transactions bypass sharing.
 Canonical/result/binding/owner checks and shipping parsing remain fresh.
-Only closed read-only validators inspect private decoded graphs alongside raw
-scalar row tuples. Public readers return independent objects. THR308seq151 /
-ROOT12914 keeps caps of 8 roots across both maps, 4096 rows/root and 8 MiB:
-one complete new-payload charge plus actual session/map/epoch/group metadata
-forms a conservative object-graph upper bound. Shared objects may be charged
-again, reducing effective capacity. Shallow trial admission preserves original
-map allocation/order/entry/charge identities on benign rejection; accounting
-Exception instead clears retention and evaluates complete history uncached.
-Discovery plans at most 16 chronological positions / 8 repeated-root descriptors;
-it protects only admitted fitting histories through last use, evicting LRU
-unprotected entries. Projections and first-use evidence stay chronological;
-exact reads use ordinary LRU and fresh individual closures. Groups clear on
-exit/invalidation/fallback before publication. No RSS/time bound follows.
-Invalidate before refusal/tails, failures and scope exit. S1–S3/Q1–Q5 behavior,
-query counts and sensitivity remain NOT RUN/PROOF NOT RUN without the accepted
-producer/barrier/downstream observer. ROOT12914 accepts current source-delivery
-uncertainty; ROOT12801's historical gaps remain. Static checks and source review
-are distinct. See the schema-refusal recovery spec.
+THR308seq280 / ROOT14157 replaces the historical ROOT12914 graph retention
+and 8-root/4096-row/8MiB/16-position machinery. First chronological use fully
+fetches and ordinarily decodes ALL truthy root audit payloads, including heavy
+histories and unrelated LAST siblings. Reduce through raw selected keys to
+zero/one/many cardinalities and unique INTEGER IDs; release the full root graph
+and reduction frame before the next root. Each chronological projection reads
+at most two selected rows fresh by id AND root and reapplies predicates/closed
+checks. Point failures escape benign absence adapters. Unsupported descriptors
+use the original full path at their own ordinal. Fresh auth/results/parser and
+independent writer checks remain; no arbitrary I/O-fault trace equivalence is
+claimed. Only scalar plans/catalogues and existing scalar outputs survive across
+roots. Invalidation releases all catalogue evidence; last exact use (including
+skips) and exit release remaining ownership. Raw plans authorize no result.
+Memory includes actual maps/wrappers, initial attempt TEXT, scalar outputs,
+one root's raw/decoded/reducer peak, current selected buffers, full results and
+SQLite/native allocations; no hard RSS/time or old retained-byte bound follows.
+Six cases/counts/lifetimes/timings/speed are NOT RUN, sensitivity PROOF NOT RUN;
+ROOT14157 explicitly accepts the source-delivery gap. Historical ROOT12914 and
+ROOT12801 receipts retain their own attribution. Independent review and scoped
+QA remain mandatory; units RETIRED, integration SKIPPED24342.
+
+### Synchronous startup observations
+
+THR308seq280 records monotonic fixed-phase success/incomplete timings at actual
+owners, with no new readiness/cleanup action. Normal startup begins after
+maintenance exclusion, before daemon-home initialization; it excludes process
+bootstrap before that origin. `org_load` covers preflight through return or
+failed unpublished close. `org_database`, `org_workflow_schema` (install/recover
+plus first locked validation), and `org_workflow_revalidation` are nested load
+children; move/Pause/ownership/roster/coding work stays load residual.
+`authority_discovery` includes coherent views/bookends/materialization/fallback;
+`authority_exact` includes chronological current reads/results/parser/refusal,
+tails and skips. `thread_recovery` covers Branch6 delivery validation, all
+cutover/reply/exchange recovery, orphan reaping COMMIT and move runnable tokens.
+`sweep` ends after its actual finally disposition, including unsafe suppression.
+`build_state` is inclusive of loads/recovery/publication. `lifespan_pre_yield`
+ends just before yield; scheduled work is not thereby complete. Pre-yield failure
+adds no teardown that the original path did not own.
+
+Only `_DiagnosticServer.startup` returning from real same-app ASGI/listener
+startup with started true and no server/lifespan exit request records
+`normal_startup outcome=serving`. Port/PID files and the earlier listening log
+are pre-server markers. `server_startup` stops at that check before best-effort
+signals; `diagnostic_signals` is separate. Failures retain reached spans and
+`normal_startup outcome=incomplete`, without a completed partition. A serving
+partition sums disjoint `org_load`, `authority_discovery`, `authority_exact`,
+`thread_recovery` and `remaining_startup` (total less those four). Inclusive
+build/sweep/schema/lifespan/server times are NEVER added to that partition.
+Caught org-load failures still contribute their elapsed work, not an assertion
+that every org attached successfully. Missing timing suppresses a completed
+partition. These are cooperative monotonic observations, not hard deadlines.
+
+One aggregate authority counter record separates discovery/exact full-history
+fetch attempts/completions/rows and truthy decodes from selected-row work,
+materializations/reuse/rebuilds/fallbacks and fixed invalidation reasons,
+current/peak scalar entries and exact classifications/result-list calls/rows.
+Anchor-result reads are counted separately; no generic result-JSON count is
+claimed. Fixed labels/outcomes/counts only: no identities, payloads, SQL or
+exception dumps, no per-attempt log stream or extra evidence scans. Clock/log
+failure cannot replace startup/cleanup outcomes. Later normal operator startup
+may observe success metrics; it cannot prove all six failure/equivalence cases
+or establish historical/under10s improvement. Source delivery authorizes no
+restart/deployment, inert skipping/checkpoint, finalization or history deletion.
 
 **Task-scoped audit lookup (THR-278).** Generic `Database` initialization installs
 the nonunique, nonpartial `idx_audit_log_task_id` on `audit_log(task_id)` for fresh

@@ -3765,7 +3765,7 @@ remints evidence, falls back to ordinary/v1 enqueue, or creates a successor.
 
 The THR308seq133/127 startup composition is private and Database-owned, with
 thin store forwarding and an explicit invocation lifetime. Discovery and exact
-getters share complete ordered root histories only across accepted coherent
+getters reuse factual audit-candidate catalogues only across accepted coherent
 epochs on the exact Database/connection. Strict decoding of every truthy payload
 precedes general ValueError-to-None or swallowed-obligation conversions.
 General callers retain those contracts, including escaping TypeError/storage
@@ -3804,11 +3804,20 @@ are attempted; cleanup remains incomplete. Normal clean ordering/batching and
 BaseException propagation remain. No generic coherent_read_view/run_step change
 or live operation follows.
 
+Last-use catalogue cleanup retains the actual escaping primary exception, even
+when release also fails. Sticky unsafe custody takes precedence through reader
+exit, so a secondary release/exit error cannot re-enable the finally worktree
+batch. Secondary errors are retained best effort without diagnostic allocation
+replacing the primary or its original causes. A release-only failure closes the
+reader and escapes; partially updated bookkeeping is never reused. Successful
+release, including failed-root skips, keeps the same last-use lifetime. This
+compound fault remains runtime NOT RUN; source inspection is not fault proof.
+
 Under the existing RLock, outside autocommit connection identity,
 main.data_version, total_changes and main.schema_version bookends enclose each
 owned coherent_read_view and a real main-table snapshot pin. Only matching clean
 closure releases hits/targets/absence/anchors or admits speculative entries.
-Within discovery, repeated roots can reuse pending complete history; every exact
+Within discovery, repeated roots can reuse a pending scalar catalogue; every exact
 getter opens its own current closure. Moved/missing/failed tokens, local DML
 (including rollback), concurrent commits (including results-only), attachment/
 isolation/schema drift or changed ownership invalidate the entire memo. Only
@@ -3820,52 +3829,54 @@ Canonical/admission/result/session/binding/owner checks and the actual shipping
 completion/parser decisions stay fresh. No target, absence or authentication
 verdict is cached. Before real refusal and subsequent tails/effects, on failure
 and at invocation exit, all accepted/pending references are dropped. The writer
-independently authenticates inside its own transaction. Complete raw scalar row
-tuples and private decoded graphs are retained only for the closed read-only
-obligation and admitted-stage validators (through the scalar anchor builder).
-No parser/callback/formatter/writer/public consumer receives their containers;
-public audit graphs remain independently allocated.
+independently authenticates inside its own transaction.
 
-THR308seq151 / ROOT12914 keeps private caps of 8 entries across both maps,
-4096 retained rows/root and 8 MiB. Each immutable private payload (actual root
-key, complete raw tuples, decoded history) receives one complete supported-builtin
-identity-deduplicated charge C. Actual metadata M plus every retained entry's C
-upper-bounds the object graph; sharing may overcharge and reduce effective
-capacity. M covers the actual session and materialized field dictionary, field
-keys/owned values, both actual map allocations/keys, wrappers/charge integers,
-epoch/attachments/flags and all group metadata. Borrowed Database/connection
-owners are excluded only at explicit fields. Prospective measurement substitutes
-field values, never a copied field-dictionary allocation, and stops only at fully
-charged payload tuples. Hits, evictions and map transfers never rewalk old payloads.
+The THR308seq280 / ROOT14157 representation replaces the historical
+ROOT12914 complete-graph LRU, 8-root/4096-row/8MiB caps and 16-position affinity.
+At each root's first chronological use in an unchanged reusable epoch, fetch ALL
+ordered audit rows and ordinarily decode EVERY truthy payload before filtering,
+including unrelated LAST siblings and heavyweight roots. A raw supported-key
+index reduces that one scan to obligation/admitted-stage candidate cardinalities
+zero/one/many (saturated at two) and the unique genuine INTEGER audit IDs. There
+is no attempts-times-history reducer, future canonical validation or cached
+exception. Unsupported raw descriptors follow the original full path at their
+own ordinal. Both discovery A1,B1,A2 first-failure examples remain: malformed B
+history precedes malformed A2 canonical, and malformed A1 canonical precedes B
+history. No discovery partial output escapes.
 
-Shallow trial admission appends/evicts whole entries only in the trial. Publish
-only a surviving fitting candidate; benign oversize/all-protected rejection leaves
-the original map object/allocation/order/wrapper/payload/charge identities intact.
-Empty/error/partial or over-row-cap histories are not retained. Accounting/copy/
-planning Exception clears retention; complete current evidence still evaluates
-uncached. Strict JSON/projection/authentication/cleanup failures retain their
-original boundaries; BaseException invalidates and escapes immediately.
+Each original projection reads up to two unique selected records afresh by id
+AND root, decodes and reapplies its predicate, then uses the existing closed
+value checks. Explicit private cardinality adapters serve ONLY the two read-only
+validators. Missing/malformed/mismatching point evidence escapes their benign
+absence catches. General readers/writers keep full-history behavior; the refusal
+writer independently authenticates. This removes repeated COMPLETE-history
+fetch/decode, not every selected-record decode or arbitrary SQL/I/O-fault trace.
+Exact effects still run A1 then B1 then A2 with fresh identity/results/parser;
+B failure cannot authorize A2 effects or undo earlier genuine A1 commits.
 
-Discovery affinity uses windows of at most 16 already-fetched chronological
-positions and 8 repeated-root (exact-string key, first, last) descriptors.
-Bounded pairwise raw-key scans do no future evidence work. A plan must fit with
-existing entries; nonfit discards it without evicting entries for planning,
-using ordinary LRU for the rest of that discovery call.
-Every projection and first-use full history read remains chronological. Protect
-only complete fitting histories reached/admitted, through last use in the window;
-evict LRU unprotected entries, rejecting an all-protected trial unchanged.
-Never pin oversized/empty/rejected roots. Release all group state at last use/
-window end, exit, invalidation, escape and before fallback/exact/cross-read
-publication. Eligible histories may remain ordinary LRU for both-pass reuse;
-exact rechecks/effects keep original chronology and individual fresh closure.
+Raw/decoded history and reduction scratch belong to one root-local frame and
+are released before another root or the full results/parser phase. Across roots
+retain only scalar selected-key/last-use descriptors, count/id catalogues and
+existing target/anchor outputs, with actual maps/wrappers/counters. Catalogues
+clear on whole-epoch invalidation, before effects/failure and exit; scalar plans
+supply fresh rebuilds only, never authority. Last exact use, including failed-root
+skips, releases that root's catalogue and descriptors. Input attempt TEXT,
+scalar indexes/outputs, one root's raw+decoded+scratch peak, selected buffers,
+full results/parser and SQLite/native allocations remain data dependent. No
+old byte cap, deep sizing each attempt, hard RSS/time bound or speedup is claimed.
 
-Eviction and exit release whole entries/charges. These are retention bounds,
-excluding transient fetch/parse/traversal and SQLite native memory; no hard
-RSS/time/whole-startup bound or speedup is promised. S1–S3/Q1–Q5 behavior,
-separate discovery/exact SELECT/fetch/decode counts and sensitivity remain
-NOT RUN/PROOF NOT RUN without the accepted producer/barrier/downstream observer.
-ROOT12914 accepts current source-delivery uncertainty; historical ROOT12801
-limitations stay attached to their original delivery.
+Fixed aggregate startup counters distinguish discovery/exact full-history SELECT
+attempts/completions/rows and truthy decode attempts/successes from selected-row
+work, materializations/reuse/rebuilds, clean fallback and invalidation reasons,
+current/peak catalogue entries, classifications and actual result-list calls/rows.
+Raw anchor-result fetches have separate counters; generic result-JSON decodes
+are not measured. Timing/counter logging supplies no recovery authority. The
+six accepted cases, actual counts/lifetimes/timing/speed and sensitivity remain
+NOT RUN / PROOF NOT RUN under ROOT14157's explicit source-delivery acceptance;
+ROOT12914/ROOT12801 evidence stays historical at its own head. Units RETIRED,
+integration SKIPPED24342; independent final-head review/scoped QA remain required.
+Timing owners and disjoint versus inclusive definitions are in
+[the lifecycle contract](contracts/runtime-lifecycle.md#synchronous-startup-observations).
 
 For a persisted result, the zombie reaper first invokes the real guarded
 `_consume_completion_report`. A v2 session then clears `zombie_flagged_at` only

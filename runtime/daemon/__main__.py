@@ -22,8 +22,12 @@ import os
 import signal
 import socket
 import sys
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from types import FrameType
+from typing import Iterator
 
 import uvicorn
 
@@ -45,6 +49,50 @@ from runtime.orchestrator.orchestrator import (
 from runtime.runtime import RuntimeDir
 
 logger = logging.getLogger("happyranch.daemon")
+
+
+# Invocation-local observation only. None outside the normal main startup.
+_STARTUP_PARTITION: ContextVar[dict | None] = ContextVar("startup_partition", default=None)
+_STARTUP_PHASES = ("org_load", "authority_discovery", "authority_exact", "thread_recovery")
+
+
+def _startup_clock() -> float | None:
+    try:
+        return time.monotonic()
+    except BaseException:
+        return None
+
+
+def _startup_log(phase: str, outcome: str, started: float | None) -> float | None:
+    """Fixed-label observations must never replace startup/cleanup outcomes."""
+    try:
+        ended = _startup_clock()
+        elapsed = None if started is None or ended is None else max(0.0, ended - started)
+        logger.info("startup_timing phase=%s outcome=%s seconds=%s", phase, outcome, elapsed)
+        return elapsed
+    except BaseException:
+        return None
+
+
+@contextmanager
+def _startup_span(phase: str) -> Iterator[None]:
+    started = _startup_clock()
+    outcome = "incomplete"
+    try:
+        yield
+        outcome = "complete"
+    finally:
+        elapsed = _startup_log(phase, outcome, started)
+        try:
+            from runtime.daemon.__main__ import _STARTUP_PARTITION
+            totals = _STARTUP_PARTITION.get()
+            if totals is not None and totals["active"] and phase in _STARTUP_PHASES:
+                if elapsed is None:
+                    totals["available"] = False
+                else:
+                    totals[phase] += elapsed
+        except BaseException:
+            pass
 
 
 def _sweep_enqueue(
@@ -84,6 +132,7 @@ async def discover_completed_workflow_handoffs(state: DaemonState) -> None:
             logging.getLogger(__name__).exception('completed workflow handoff remains pending for %s', org.slug)
 
 
+@_startup_span("sweep")
 def _sweep_on_startup(
     db: Database, queue: TaskQueue, slug: str,
     orchestrator: Orchestrator | None = None,
@@ -448,80 +497,81 @@ def _sweep_on_startup(
             # The boot-time migration flips any legacy blocked(escalated) row
             # before startup; this branch is reached only via new escalated rows.
 
-        # Branch 6 — thread reply delivery recovery (GitHub #688 Slice B).
-        # Replace ONLY the conversational REPLY portion of the generic reaper with
-        # the durable store-owned recovery primitives. BOOTSTRAP and TASK_FOLLOWUP
-        # keep the generic daemon_restart reaping below.
-        _now = datetime.now(timezone.utc).isoformat()
+        with _startup_span("thread_recovery"):
+            # Branch 6 — thread reply delivery recovery (GitHub #688 Slice B).
+            # Replace ONLY the conversational REPLY portion of the generic reaper with
+            # the durable store-owned recovery primitives. BOOTSTRAP and TASK_FOLLOWUP
+            # keep the generic daemon_restart reaping below.
+            _now = datetime.now(timezone.utc).isoformat()
 
-        # C1a: orphan/raw reaper paths below may never visit a participant
-        # pair. Validate the COMPLETE companion family before any thread
-        # recovery/rekeying. This is a reader, never an automatic release.
-        from runtime.infrastructure.thread_delivery_release import delivery_view
-        with db._lock:
-            delivery_view(db)
+            # C1a: orphan/raw reaper paths below may never visit a participant
+            # pair. Validate the COMPLETE companion family before any thread
+            # recovery/rekeying. This is a reader, never an automatic release.
+            from runtime.infrastructure.thread_delivery_release import delivery_view
+            with db._lock:
+                delivery_view(db)
 
-        # 6a. Activate per-pair reply delivery state for every OPEN thread
-        # (idempotent cutover: seeds/coalesces legacy pending REPLYs).
-        move = getattr(db, "_team_move_coordinator", None)
-        recovered_tokens: list[str] = []
-        for thread_id in db.list_open_thread_ids():
-            db.cutover_thread_reply_delivery_state(thread_id)
+            # 6a. Activate per-pair reply delivery state for every OPEN thread
+            # (idempotent cutover: seeds/coalesces legacy pending REPLYs).
+            move = getattr(db, "_team_move_coordinator", None)
+            recovered_tokens: list[str] = []
+            for thread_id in db.list_open_thread_ids():
+                db.cutover_thread_reply_delivery_state(thread_id)
 
-        # 6b. Durable reply-delivery recovery: retain valid queued wakes, replace
-        # interrupted running attempts with exactly one daemon_restart replacement.
-        for entry in db.recover_reply_delivery_state():
-            recovered_tokens.append(entry.invocation_token)
+            # 6b. Durable reply-delivery recovery: retain valid queued wakes, replace
+            # interrupted running attempts with exactly one daemon_restart replacement.
+            for entry in db.recover_reply_delivery_state():
+                recovered_tokens.append(entry.invocation_token)
 
-        # 6e. TASK-5966 exchange reconcile: corruption sweep (fail-closed) then
-        # idempotent closure evaluation for every open exchange. daemon_restart is
-        # an INTERRUPTION, never terminal, while a recovery replacement covering
-        # the exchange is queued/running (6b) — the quiescence predicate keeps the
-        # cohort non-quiescent until that replacement settles. Catch-up tokens
-        # minted by a stale-close are enqueued after commit like every other
-        # startup token.
-        for entry in db.reconcile_reply_exchanges():
-            recovered_tokens.append(entry.invocation_token)
+            # 6e. TASK-5966 exchange reconcile: corruption sweep (fail-closed) then
+            # idempotent closure evaluation for every open exchange. daemon_restart is
+            # an INTERRUPTION, never terminal, while a recovery replacement covering
+            # the exchange is queued/running (6b) — the quiescence predicate keeps the
+            # cohort non-quiescent until that replacement settles. Catch-up tokens
+            # minted by a stale-close are enqueued after commit like every other
+            # startup token.
+            for entry in db.reconcile_reply_exchanges():
+                recovered_tokens.append(entry.invocation_token)
 
-        # 6c. Reap the remaining conversational REPLY rows not governed by any
-        # delivery-state ownership slot (orphan legacy receipts — e.g. archived
-        # threads cutover does not reach). Never touch the governed queued wakes
-        # retained above.
-        # Cleanup backstops run asynchronously but use this same connection.
-        # Own the whole raw UPDATE-to-commit transaction; never carry the lock
-        # into process termination/waits above.
-        with db._lock:
-            protected_ids = move.threads.recovery_protected_ids() if move is not None else ()
-            exclusions = " AND id NOT IN (" + ",".join("?" for _ in protected_ids) + ")" if protected_ids else ""
-            db._conn.execute(
-                "UPDATE thread_invocations SET status = 'failed', "
-                "decline_reason = ?, consumed_at = ? "
-                "WHERE status = 'pending' AND purpose = 'reply' "
-                "AND invocation_token NOT IN "
-                "(SELECT queued_invocation_token FROM thread_reply_delivery_state "
-                " WHERE queued_invocation_token IS NOT NULL) "
-                "AND invocation_token NOT IN "
-                "(SELECT running_invocation_token FROM thread_reply_delivery_state "
-                " WHERE running_invocation_token IS NOT NULL)" + exclusions,
-                ("daemon_restart", _now, *protected_ids),
+            # 6c. Reap the remaining conversational REPLY rows not governed by any
+            # delivery-state ownership slot (orphan legacy receipts — e.g. archived
+            # threads cutover does not reach). Never touch the governed queued wakes
+            # retained above.
+            # Cleanup backstops run asynchronously but use this same connection.
+            # Own the whole raw UPDATE-to-commit transaction; never carry the lock
+            # into process termination/waits above.
+            with db._lock:
+                protected_ids = move.threads.recovery_protected_ids() if move is not None else ()
+                exclusions = " AND id NOT IN (" + ",".join("?" for _ in protected_ids) + ")" if protected_ids else ""
+                db._conn.execute(
+                    "UPDATE thread_invocations SET status = 'failed', "
+                    "decline_reason = ?, consumed_at = ? "
+                    "WHERE status = 'pending' AND purpose = 'reply' "
+                    "AND invocation_token NOT IN "
+                    "(SELECT queued_invocation_token FROM thread_reply_delivery_state "
+                    " WHERE queued_invocation_token IS NOT NULL) "
+                    "AND invocation_token NOT IN "
+                    "(SELECT running_invocation_token FROM thread_reply_delivery_state "
+                    " WHERE running_invocation_token IS NOT NULL)" + exclusions,
+                    ("daemon_restart", _now, *protected_ids),
+                )
+
+                # 6d. Original reaper applies only outside held/C2-owned obligations.
+                cursor = db._conn.execute(
+                    "UPDATE thread_invocations SET status = 'failed', "
+                    "decline_reason = ?, consumed_at = ? "
+                    "WHERE status = 'pending' AND purpose IN ('bootstrap', 'task_followup')" + exclusions,
+                    ("daemon_restart", _now, *protected_ids),
+                )
+                db._conn.commit()
+            logger.debug(
+                "startup sweep: reaped %d orphaned pending BOOTSTRAP/TASK_FOLLOWUP "
+                "invocations; recovered %d reply-delivery tokens",
+                cursor.rowcount, len(recovered_tokens),
             )
-
-            # 6d. Original reaper applies only outside held/C2-owned obligations.
-            cursor = db._conn.execute(
-                "UPDATE thread_invocations SET status = 'failed', "
-                "decline_reason = ?, consumed_at = ? "
-                "WHERE status = 'pending' AND purpose IN ('bootstrap', 'task_followup')" + exclusions,
-                ("daemon_restart", _now, *protected_ids),
-            )
-            db._conn.commit()
-        logger.debug(
-            "startup sweep: reaped %d orphaned pending BOOTSTRAP/TASK_FOLLOWUP "
-            "invocations; recovered %d reply-delivery tokens",
-            cursor.rowcount, len(recovered_tokens),
-        )
-        if move is not None:
-            recovered_tokens.extend(move.threads.runnable_tokens())
-        return list(dict.fromkeys(recovered_tokens))
+            if move is not None:
+                recovered_tokens.extend(move.threads.runnable_tokens())
+            return list(dict.fromkeys(recovered_tokens))
     except _V2StartupConnectionUnsafe as exc:
         startup_unsafe = exc
         root_tail_failed = True
@@ -581,6 +631,7 @@ def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:
         )
 
 
+@_startup_span("build_state")
 def _build_state(settings: Settings) -> DaemonState:
     reg = runtimes.load()
     move_diagnostics = {}
@@ -835,33 +886,56 @@ def _build_parser() -> argparse.ArgumentParser:
 class _DiagnosticServer(uvicorn.Server):
     """Signal only after actual ASGI startup AND listener creation returned."""
 
-    def __init__(self, config: uvicorn.Config, app) -> None:
+    def __init__(self, config: uvicorn.Config, app, *, startup_origin: float | None = None) -> None:
         super().__init__(config)
+        self._startup_origin = startup_origin
         self._diagnostic_app = app
         self._diagnostic_signalled = False
 
     async def startup(self, sockets=None) -> None:
-        await super().startup(sockets=sockets)
+        from runtime.daemon.__main__ import _startup_span, _startup_log, _startup_clock, _STARTUP_PARTITION
+        started = _startup_clock()
+        try:
+            await super().startup(sockets=sockets)
+        except BaseException:
+            _startup_log("server_startup", "incomplete", started)
+            raise
         if (self._diagnostic_signalled or not self.started or self.should_exit
                 or self.lifespan.should_exit or self.config.app is not self._diagnostic_app):
+            _startup_log("server_startup", "incomplete", started)
             return
-        self._diagnostic_signalled = True
+        _startup_log("server_startup", "complete", started)
+        # This is the actual same-app ASGI + listener endpoint, before signals.
+        elapsed = _startup_log("normal_startup", "serving", self._startup_origin)
         try:
-            app = self._diagnostic_app
-            coordinator = app.state.daemon._cleanup_diagnostics
-            if coordinator is not None:
-                coordinator.signal_ready(app)
-        except Exception:
-            # Scheduling/logging/diagnostic results never gate successful serve.
+            totals = _STARTUP_PARTITION.get()
+            if totals is not None:
+                totals["serving"] = True
+                totals["active"] = False
+                if elapsed is not None and totals["available"]:
+                    partition = {phase: totals[phase] for phase in _STARTUP_PHASES}
+                    partition["remaining_startup"] = max(0.0, elapsed - sum(partition.values()))
+                    logger.info("startup_partition outcome=serving seconds=%s", partition)
+        except BaseException:
             pass
-        # Independent of B's signalling outcome. Only actual successful ASGI
-        # AND listener startup admits this dormant private service.
-        try:
-            service = self._diagnostic_app.state.daemon._thread_release_service
-            if service is not None:
-                service.signal_ready(self._diagnostic_app)
-        except Exception:
-            pass  # C stays unavailable, never substitutes readiness success
+        with _startup_span("diagnostic_signals"):
+            self._diagnostic_signalled = True
+            try:
+                app = self._diagnostic_app
+                coordinator = app.state.daemon._cleanup_diagnostics
+                if coordinator is not None:
+                    coordinator.signal_ready(app)
+            except Exception:
+                # Scheduling/logging/diagnostic results never gate successful serve.
+                pass
+            # Independent of B's signalling outcome. Only actual successful ASGI
+            # AND listener startup admits this dormant private service.
+            try:
+                service = self._diagnostic_app.state.daemon._thread_release_service
+                if service is not None:
+                    service.signal_ready(self._diagnostic_app)
+            except Exception:
+                pass  # C stays unavailable, never substitutes readiness success
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -883,33 +957,54 @@ def main(argv: list[str] | None = None) -> int:
     if args.maintenance:
         return run_maintenance()
 
-    paths.ensure_daemon_home()
+    from runtime.daemon.__main__ import _STARTUP_PARTITION, _startup_clock, _startup_log
+    startup_origin = _startup_clock()
+    observation = None
+    timing_token = None
+    try:
+        observation = dict.fromkeys(_STARTUP_PHASES, 0.0)
+        observation.update(active=True, serving=False, available=True)
+        timing_token = _STARTUP_PARTITION.set(observation)
+    except BaseException:
+        pass  # Missing diagnostics never gate the actual normal startup.
+    try:
+        paths.ensure_daemon_home()
 
-    paths.ensure_token()
+        paths.ensure_token()
 
-    settings = Settings()
-    # Normalise PATH so the bundled happyranch CLI and standard tool
-    # directories are available even when the daemon is launched by
-    # Finder/launchd with a stripped PATH (/usr/bin:/bin).  Executor
-    # binary resolution is handled separately via the machine-local
-    # executors.json registry (THR-107 seq155).  Must happen before any
-    # executor is constructed (issue #254).
-    from runtime.orchestrator.executors import _normalize_path
-    _normalize_path()
-    state = _build_state(settings)
-    app = create_app(state)
+        settings = Settings()
+        # Normalise PATH so the bundled happyranch CLI and standard tool
+        # directories are available even when the daemon is launched by
+        # Finder/launchd with a stripped PATH (/usr/bin:/bin).  Executor
+        # binary resolution is handled separately via the machine-local
+        # executors.json registry (THR-107 seq155).  Must happen before any
+        # executor is constructed (issue #254).
+        from runtime.orchestrator.executors import _normalize_path
+        _normalize_path()
+        state = _build_state(settings)
+        app = create_app(state)
 
-    sock, port = _bind_port(settings.daemon_bind_host, settings.daemon_port)
-    paths.port_file().write_text(str(port))
-    paths.pid_file().write_text(str(os.getpid()))
-    _install_signal_handlers(state)
+        sock, port = _bind_port(settings.daemon_bind_host, settings.daemon_port)
+        paths.port_file().write_text(str(port))
+        paths.pid_file().write_text(str(os.getpid()))
+        _install_signal_handlers(state)
 
-    logger.info("HappyRanch daemon listening on %s:%d", settings.daemon_bind_host, port)
-    config = uvicorn.Config(app, log_level="info", lifespan="on")
-    server = _DiagnosticServer(config, app)
-    # Hand the bound socket to uvicorn so we don't race the port number.
-    server.run(sockets=[sock])
-    return 0 if state._shutdown_complete else 1
+        logger.info("HappyRanch daemon listening on %s:%d", settings.daemon_bind_host, port)
+        config = uvicorn.Config(app, log_level="info", lifespan="on")
+        server = _DiagnosticServer(config, app, startup_origin=startup_origin)
+        # Hand the bound socket to uvicorn so we don't race the port number.
+        server.run(sockets=[sock])
+        return 0 if state._shutdown_complete else 1
+    finally:
+        try:
+            if observation is not None:
+                if not observation["serving"]:
+                    _startup_log("normal_startup", "incomplete", startup_origin)
+                observation["active"] = False
+            if timing_token is not None:
+                _STARTUP_PARTITION.reset(timing_token)
+        except BaseException:
+            pass
 
 
 if __name__ == "__main__":

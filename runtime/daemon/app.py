@@ -116,290 +116,292 @@ def _wire_then_start_workers(state: DaemonState, loop) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    import asyncio
-    import logging
-    from datetime import datetime, timezone
+    from runtime.daemon.__main__ import _startup_span
+    with _startup_span("lifespan_pre_yield"):
+        import asyncio
+        import logging
+        from datetime import datetime, timezone
 
-    from runtime.daemon.thread_queue import thread_worker_loop
+        from runtime.daemon.thread_queue import thread_worker_loop
 
-    state: DaemonState = app.state.daemon
-    from runtime.daemon.cleanup_diagnostics import _CleanupDiagnostics
-    # Dormant: construction captures references only; it performs no DB reads.
-    # Only the actual Server's successful startup adapter may signal this app.
-    if state._cleanup_diagnostics is None:
-        try:
-            state._cleanup_diagnostics = _CleanupDiagnostics(state, app)
-        except Exception:
-            # Diagnostics must not replace the mandatory startup outcome.
-            pass
+        state: DaemonState = app.state.daemon
+        from runtime.daemon.cleanup_diagnostics import _CleanupDiagnostics
+        # Dormant: construction captures references only; it performs no DB reads.
+        # Only the actual Server's successful startup adapter may signal this app.
+        if state._cleanup_diagnostics is None:
+            try:
+                state._cleanup_diagnostics = _CleanupDiagnostics(state, app)
+            except Exception:
+                # Diagnostics must not replace the mandatory startup outcome.
+                pass
 
-    from runtime.daemon.thread_delivery_release_service import _ThreadDeliveryReleaseService
-    if state._thread_release_service is None:
-        # Binding only. No database read, operation, task or release at startup.
-        state._thread_release_service = _ThreadDeliveryReleaseService(state, app)
+        from runtime.daemon.thread_delivery_release_service import _ThreadDeliveryReleaseService
+        if state._thread_release_service is None:
+            # Binding only. No database read, operation, task or release at startup.
+            state._thread_release_service = _ThreadDeliveryReleaseService(state, app)
 
-    # THR-109: wire the ThreadQueue + main loop BEFORE task workers start.
-    # Uses _wire_then_start_workers to enforce ordering: wiring must precede
-    # ensure_workers_started so a rapid terminal thread-dispatched task can
-    # enqueue its TASK_FOLLOWUP via asyncio.run_coroutine_threadsafe.
-    _main_loop = asyncio.get_running_loop()
-    from runtime.daemon.__main__ import discover_completed_workflow_handoffs
-    await discover_completed_workflow_handoffs(state)
-    _wire_then_start_workers(state, _main_loop)
+        # THR-109: wire the ThreadQueue + main loop BEFORE task workers start.
+        # Uses _wire_then_start_workers to enforce ordering: wiring must precede
+        # ensure_workers_started so a rapid terminal thread-dispatched task can
+        # enqueue its TASK_FOLLOWUP via asyncio.run_coroutine_threadsafe.
+        _main_loop = asyncio.get_running_loop()
+        from runtime.daemon.__main__ import discover_completed_workflow_handoffs
+        await discover_completed_workflow_handoffs(state)
+        _wire_then_start_workers(state, _main_loop)
 
-    # Recover any jobs left in 'running' state from a previous daemon process.
-    _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    _logger = logging.getLogger("happyranch.daemon")
-    from runtime.daemon.jobs_runner import migrate_artifacts_layout, migrate_filesystem_layout
-    for org in state.orgs_snapshot().values():
-        # Rename <org_root>/scripts/ → jobs/ (and SR-* → JOB-*) BEFORE the
-        # recovery scan reads any stdout_path/stderr_path. The DB-side
-        # rename already happened in Database init; this realigns disk.
-        migrate_filesystem_layout(org.root)
-        # 2026-06-02 rename: rehome on-disk assets/ → artifacts/ and
-        # per-workspace artifacts/ → output/ before any mkdir.
-        migrate_artifacts_layout(org.root)
-        OrgPaths(org.root).artifacts_dir.mkdir(exist_ok=True)
-        # THR-095: one-shot reconcile agent.yaml executor/repos/model → .md
-        org.naming_readiness = "unavailable"
-        try:
-            from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
-            migration_results = migrate_agent_yaml_to_frontmatter(
-                OrgPaths(root=org.root),
-                workflow_authority=org.workflow_authority,
-            )
-            if migration_results:
-                changed = {k: v for k, v in migration_results.items() if v != "unchanged"}
-                if changed:
+        # Recover any jobs left in 'running' state from a previous daemon process.
+        _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        _logger = logging.getLogger("happyranch.daemon")
+        from runtime.daemon.jobs_runner import migrate_artifacts_layout, migrate_filesystem_layout
+        for org in state.orgs_snapshot().values():
+            # Rename <org_root>/scripts/ → jobs/ (and SR-* → JOB-*) BEFORE the
+            # recovery scan reads any stdout_path/stderr_path. The DB-side
+            # rename already happened in Database init; this realigns disk.
+            migrate_filesystem_layout(org.root)
+            # 2026-06-02 rename: rehome on-disk assets/ → artifacts/ and
+            # per-workspace artifacts/ → output/ before any mkdir.
+            migrate_artifacts_layout(org.root)
+            OrgPaths(org.root).artifacts_dir.mkdir(exist_ok=True)
+            # THR-095: one-shot reconcile agent.yaml executor/repos/model → .md
+            org.naming_readiness = "unavailable"
+            try:
+                from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+                migration_results = migrate_agent_yaml_to_frontmatter(
+                    OrgPaths(root=org.root),
+                    workflow_authority=org.workflow_authority,
+                )
+                if migration_results:
+                    changed = {k: v for k, v in migration_results.items() if v != "unchanged"}
+                    if changed:
+                        _logger.info(
+                            "THR-095 agent.yaml->frontmatter migration for org %s: %s",
+                            org.slug, changed,
+                        )
+            except Exception as exc:
+                _logger.warning("THR-095 migration error for org %s: %s", org.slug, exc)
+            finally:
+                from runtime.identities.registry import refresh_names
+                # The compatibility batch/profile reconciliation has released its
+                # leases; startup has not exposed any route writers yet.
+                with org.workflow_authority.writer_interval(publisher="identity_names_compatibility") as interval:
+                    refresh_names(org, writer=interval.native_disposition)
+            # THR-106: one-shot skill-id rename hr:review -> hr:reflection in the
+            # persisted org/config.yaml skills eligibility section (allow + deny,
+            # org/team/agent scope). Sentinel-gated (.hr_review_renamed).
+            try:
+                from runtime.orchestrator.org_config import migrate_hr_review_skill_id
+                rename_outcome = migrate_hr_review_skill_id(OrgPaths(root=org.root))
+                if rename_outcome != "skipped (already migrated)":
                     _logger.info(
-                        "THR-095 agent.yaml->frontmatter migration for org %s: %s",
-                        org.slug, changed,
+                        "THR-106 hr:review->hr:reflection migration for org %s: %s",
+                        org.slug, rename_outcome,
                     )
-        except Exception as exc:
-            _logger.warning("THR-095 migration error for org %s: %s", org.slug, exc)
-        finally:
-            from runtime.identities.registry import refresh_names
-            # The compatibility batch/profile reconciliation has released its
-            # leases; startup has not exposed any route writers yet.
-            with org.workflow_authority.writer_interval(publisher="identity_names_compatibility") as interval:
-                refresh_names(org, writer=interval.native_disposition)
-        # THR-106: one-shot skill-id rename hr:review -> hr:reflection in the
-        # persisted org/config.yaml skills eligibility section (allow + deny,
-        # org/team/agent scope). Sentinel-gated (.hr_review_renamed).
-        try:
-            from runtime.orchestrator.org_config import migrate_hr_review_skill_id
-            rename_outcome = migrate_hr_review_skill_id(OrgPaths(root=org.root))
-            if rename_outcome != "skipped (already migrated)":
-                _logger.info(
-                    "THR-106 hr:review->hr:reflection migration for org %s: %s",
-                    org.slug, rename_outcome,
-                )
-        except Exception as exc:
-            _logger.warning(
-                "THR-106 skill-id rename migration error for org %s: %s",
-                org.slug, exc,
-            )
-        unknown_jobs = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
-        if unknown_jobs:
-            _logger.warning(
-                "job_liveness_unknown: retained %d running jobs in org %s: %s; "
-                "restart is not attributable orphan/cleanup proof",
-                len(unknown_jobs), org.slug, unknown_jobs,
-            )
-
-    # THR-195: observation (read-only) of stale never-started pending jobs.
-    # Registry-wide: scans EVERY org root discovered via
-    # ``RuntimeDir.iter_org_roots`` — including a current DB-bearing org root
-    # whose OrgState.load failed (``broken_orgs``), which ``state.orgs`` omits.
-    # Read-only connections only: never creates/migrates/writes a store (the
-    # founder contract protects the durable source ``.db``/``-wal`` bytes;
-    # the WAL-index ``-shm`` may be created/modified/removed by read-side WAL
-    # access — permitted). Startup-safe seam (founder ruling TASK-5544): a
-    # per-org observation failure is logged with org/root/error context and
-    # isolated, so it cannot abort daemon startup or suppress other org roots.
-    # Surfaces a recurrence of the historical submission-to-dispatch
-    # orphan; deliberately NOT a reaper — no automatic mutation.
-    if state.runtime is not None:
-        from runtime.daemon.stale_pending_jobs import scan_all_org_stale_pending
-        for slug, stale_pending in scan_all_org_stale_pending(state.runtime).items():
-            if stale_pending:
+            except Exception as exc:
                 _logger.warning(
-                    "stale never-started pending jobs in org %s: %s",
-                    slug,
-                    [
-                        f"{r['id']} (task {r['task_id']}, created {r['created_at']})"
-                        for r in stale_pending
-                    ],
+                    "THR-106 skill-id rename migration error for org %s: %s",
+                    org.slug, exc,
+                )
+            unknown_jobs = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
+            if unknown_jobs:
+                _logger.warning(
+                    "job_liveness_unknown: retained %d running jobs in org %s: %s; "
+                    "restart is not attributable orphan/cleanup proof",
+                    len(unknown_jobs), org.slug, unknown_jobs,
                 )
 
-    # _attach_thread_queue_wiring was called above (before workers).
-    # The second call at the original location is now a no-op for
-    # the wiring; the subsequent jobs_resume_main_loop + blocked-on-job
-    # recovery still follow the same order relative to wiring.
-    from runtime.daemon.jobs_runner import attach_jobs_resume_main_loop as _wire_jobs
-    _wire_jobs(
-        _main_loop,
-        lambda slug: state.orgs[slug].orchestrator if slug in state.orgs else None,
-    )
+        # THR-195: observation (read-only) of stale never-started pending jobs.
+        # Registry-wide: scans EVERY org root discovered via
+        # ``RuntimeDir.iter_org_roots`` — including a current DB-bearing org root
+        # whose OrgState.load failed (``broken_orgs``), which ``state.orgs`` omits.
+        # Read-only connections only: never creates/migrates/writes a store (the
+        # founder contract protects the durable source ``.db``/``-wal`` bytes;
+        # the WAL-index ``-shm`` may be created/modified/removed by read-side WAL
+        # access — permitted). Startup-safe seam (founder ruling TASK-5544): a
+        # per-org observation failure is logged with org/root/error context and
+        # isolated, so it cannot abort daemon startup or suppress other org roots.
+        # Surfaces a recurrence of the historical submission-to-dispatch
+        # orphan; deliberately NOT a reaper — no automatic mutation.
+        if state.runtime is not None:
+            from runtime.daemon.stale_pending_jobs import scan_all_org_stale_pending
+            for slug, stale_pending in scan_all_org_stale_pending(state.runtime).items():
+                if stale_pending:
+                    _logger.warning(
+                        "stale never-started pending jobs in org %s: %s",
+                        slug,
+                        [
+                            f"{r['id']} (task {r['task_id']}, created {r['created_at']})"
+                            for r in stale_pending
+                        ],
+                    )
 
-    # Spec §5.7: re-evaluate predicate for blocked-on-job tasks. Catches the
-    # case where a job's terminal happened during a crash window — the job is
-    # now terminal but caller A (jobs_runner hook) never fired because the
-    # daemon was down. Runs AFTER _attach_thread_queue_wiring so resumed
-    # tasks that complete fast (sub-second) still have a wired thread queue
-    # when their _maybe_post_thread_followup fires — otherwise the followup
-    # audits enqueue_unavailable and the thread loses its task-completed
-    # message.
-    from runtime.orchestrator.run_step import _maybe_resume_blocked_task
-    for org in state.orgs_snapshot().values():
-        for _task_id in org.db.list_tasks_blocked_on_jobs():
-            _maybe_resume_blocked_task(
-                org.orchestrator, _task_id,
-                trigger="startup_recovery", triggering_job_id=None,
-            )
-
-    # A durable D receipt can precede notification delivery when a daemon dies.
-    # Reuse real deduplicating producers after wiring; no reset/republication or
-    # synthesized callback. Diagnostic/held orgs never enter this runnable set.
-    from runtime.infrastructure.team_move_store import validate_team_move_schema
-    from runtime.orchestrator.team_move_operation import TeamMoveOperation
-    for org in state.orgs_snapshot().values():
-        with org.db._lock:
-            installed = validate_team_move_schema(org.db._conn, org_slug=org.slug)
-            completed_move = installed and org.db._conn.execute(
-                "SELECT 1 FROM team_move_operations WHERE phase='complete' LIMIT 1"
-            ).fetchone() is not None
-        if completed_move and state.profile_coordinator is not None:
-            await TeamMoveOperation(org, state.profile_coordinator).redeliver()
-
-    from runtime.orchestrator.task_pause import discover_pause_work
-    for org in state.orgs_snapshot().values():
-        await discover_pause_work(org, state.queue)
-
-    # GitHub #688 Slice B: enqueue startup-recovered reply-delivery tokens
-    # BEFORE the thread workers start draining each org's queue, so retained
-    # queued wakes and daemon_restart replacements are picked up exactly once
-    # (duplicate notifications remain harmless through the claim CAS).
-    from runtime.daemon.thread_queue import ThreadJob
-    for org in state.orgs_snapshot().values():
-        for token in getattr(org, "_startup_recovered_thread_tokens", []):
-            await org.thread_queue.put(
-                ThreadJob(org_slug=org.slug, invocation_token=token),
-            )
-
-    thread_worker_tasks = [
-        asyncio.create_task(thread_worker_loop(state, state.settings))
-        for _ in range(4)
-    ]
-    from runtime.daemon.thread_breaker_scheduler import thread_breaker_scheduler_loop
-    thread_breaker_scheduler_task = asyncio.create_task(
-        thread_breaker_scheduler_loop(state)
-    )
-
-    from runtime.daemon.dream_scheduler import (
-        dream_scheduler_loop,
-        recover_running_dreams,
-    )
-    from runtime.daemon.dream_queue import dream_worker_loop
-
-    for org in state.orgs_snapshot().values():
-        recover_running_dreams(org)
-
-    dream_worker_tasks = [
-        asyncio.create_task(dream_worker_loop(state, state.settings))
-        for _ in range(1)
-    ]
-    dream_scheduler_task = asyncio.create_task(dream_scheduler_loop(state))
-
-    from runtime.daemon.work_hours_scheduler import work_hours_scheduler_loop
-    from runtime.daemon.wake_queue import wake_worker_loop
-
-    # Startup recovery: a wake left `running` when the daemon died can never
-    # receive its spawn callback, so mark it failed (mirrors recover_running_dreams).
-    for org in state.orgs_snapshot().values():
-        org.db.work_hours.recover_running()
-
-    wake_worker_tasks = [
-        asyncio.create_task(wake_worker_loop(state, state.settings))
-        for _ in range(1)
-    ]
-    work_hours_scheduler_task = asyncio.create_task(work_hours_scheduler_loop(state))
-
-    # ── Schedule fire wiring (THR-105 Phase 3) ──
-    from runtime.daemon.schedule_scheduler import schedule_scheduler_loop
-    from runtime.daemon.schedule_queue import schedule_worker_loop
-
-    # Startup recovery: a schedule left `firing` when the daemon died can never
-    # receive its spawn callback, so mark it failed (mirrors recover_running).
-    for org in state.orgs_snapshot().values():
-        recovered = org.db.schedules.recover_firing()
-        for schedule_id, agent_name in recovered:
-            org.db.insert_audit_log(
-                task_id=schedule_id,
-                agent=agent_name,
-                action="schedule_failed",
-                payload={"reason": "daemon_restart"},
-            )
-
-    schedule_worker_tasks = [
-        asyncio.create_task(schedule_worker_loop(state, state.settings))
-        for _ in range(1)
-    ]
-    schedule_scheduler_task = asyncio.create_task(schedule_scheduler_loop(state))
-
-    from runtime.daemon.zombie_reaper import zombie_reaper_loop
-    zombie_reaper_task = asyncio.create_task(zombie_reaper_loop(state))
-    from runtime.daemon.disk_sweeper import disk_sweeper_loop
-    disk_sweeper_task = asyncio.create_task(disk_sweeper_loop(state))
-    from runtime.daemon.exchange_reaper import exchange_reaper_loop
-    exchange_reaper_task = asyncio.create_task(exchange_reaper_loop(state))
-    from runtime.daemon.direct_connect_projection_sweep import direct_connect_projection_sweep_loop
-    direct_connect_projection_sweep_task = asyncio.create_task(
-        direct_connect_projection_sweep_loop(state)
-    )
-
-    # ── Daemon-managed workspace cleanup scheduler (THR-195 seq 129) ──
-    # System-default capability independent of user Schedules: the daemon
-    # periodically measures workspace aggregates and triggers a report-only
-    # cleanup task for the responsible agent with fresh advisory context.
-    # Measurement is bounded + fail-open, so this loop can never block
-    # daemon operation or task/session spawning.
-    from runtime.daemon.workspace_cleanup_scheduler import (
-        workspace_cleanup_scheduler_loop,
-    )
-    workspace_cleanup_scheduler_task = asyncio.create_task(
-        workspace_cleanup_scheduler_loop(state)
-    )
-
-    # ── Dashboard projection cold-start + periodic refresh ────────────
-    # THR-129: per-org durable last-known-good cache, refreshed every 10s.
-    # Load persisted snapshot synchronously (never block the event loop),
-    # then start an async bootstrap-and-schedule task. The lifespan must
-    # NOT await a DB compose before yielding — the initial warm runs in
-    # the background. Cache-only GET /dashboard/summary returns 503 until
-    # the first warm completes.
-    from runtime.infrastructure.kb_store import KBStore
-    _dashboard_tasks: list[asyncio.Task] = []
-    for org in state.orgs_snapshot().values():
-        mgr = org.dashboard_projection
-        # Load persisted snapshot from disk synchronously (no-op if missing).
-        # This is a fast filesystem read — no DB access, no event-loop block.
-        persisted = mgr.load_from_disk()
-        if persisted is not None:
-            mgr._projection = persisted
-            _logger.info(
-                "dashboard projection loaded from disk for org %s (generated_at=%s)",
-                org.slug, persisted.generated_at.isoformat(),
-            )
-        # Start the bootstrap-then-schedule task. The initial warm runs
-        # asynchronously — the lifespan yields immediately. The route
-        # returns 503 until warm completes (cache-only, never synchronous).
-        kb_store = KBStore(org.root / "kb")
-        task = mgr.start_scheduler(
-            db=org.db, kb_store=kb_store, teams=org.teams,
-            loop=_main_loop, initial_warm=True,
+        # _attach_thread_queue_wiring was called above (before workers).
+        # The second call at the original location is now a no-op for
+        # the wiring; the subsequent jobs_resume_main_loop + blocked-on-job
+        # recovery still follow the same order relative to wiring.
+        from runtime.daemon.jobs_runner import attach_jobs_resume_main_loop as _wire_jobs
+        _wire_jobs(
+            _main_loop,
+            lambda slug: state.orgs[slug].orchestrator if slug in state.orgs else None,
         )
-        _dashboard_tasks.append(task)
+
+        # Spec §5.7: re-evaluate predicate for blocked-on-job tasks. Catches the
+        # case where a job's terminal happened during a crash window — the job is
+        # now terminal but caller A (jobs_runner hook) never fired because the
+        # daemon was down. Runs AFTER _attach_thread_queue_wiring so resumed
+        # tasks that complete fast (sub-second) still have a wired thread queue
+        # when their _maybe_post_thread_followup fires — otherwise the followup
+        # audits enqueue_unavailable and the thread loses its task-completed
+        # message.
+        from runtime.orchestrator.run_step import _maybe_resume_blocked_task
+        for org in state.orgs_snapshot().values():
+            for _task_id in org.db.list_tasks_blocked_on_jobs():
+                _maybe_resume_blocked_task(
+                    org.orchestrator, _task_id,
+                    trigger="startup_recovery", triggering_job_id=None,
+                )
+
+        # A durable D receipt can precede notification delivery when a daemon dies.
+        # Reuse real deduplicating producers after wiring; no reset/republication or
+        # synthesized callback. Diagnostic/held orgs never enter this runnable set.
+        from runtime.infrastructure.team_move_store import validate_team_move_schema
+        from runtime.orchestrator.team_move_operation import TeamMoveOperation
+        for org in state.orgs_snapshot().values():
+            with org.db._lock:
+                installed = validate_team_move_schema(org.db._conn, org_slug=org.slug)
+                completed_move = installed and org.db._conn.execute(
+                    "SELECT 1 FROM team_move_operations WHERE phase='complete' LIMIT 1"
+                ).fetchone() is not None
+            if completed_move and state.profile_coordinator is not None:
+                await TeamMoveOperation(org, state.profile_coordinator).redeliver()
+
+        from runtime.orchestrator.task_pause import discover_pause_work
+        for org in state.orgs_snapshot().values():
+            await discover_pause_work(org, state.queue)
+
+        # GitHub #688 Slice B: enqueue startup-recovered reply-delivery tokens
+        # BEFORE the thread workers start draining each org's queue, so retained
+        # queued wakes and daemon_restart replacements are picked up exactly once
+        # (duplicate notifications remain harmless through the claim CAS).
+        from runtime.daemon.thread_queue import ThreadJob
+        for org in state.orgs_snapshot().values():
+            for token in getattr(org, "_startup_recovered_thread_tokens", []):
+                await org.thread_queue.put(
+                    ThreadJob(org_slug=org.slug, invocation_token=token),
+                )
+
+        thread_worker_tasks = [
+            asyncio.create_task(thread_worker_loop(state, state.settings))
+            for _ in range(4)
+        ]
+        from runtime.daemon.thread_breaker_scheduler import thread_breaker_scheduler_loop
+        thread_breaker_scheduler_task = asyncio.create_task(
+            thread_breaker_scheduler_loop(state)
+        )
+
+        from runtime.daemon.dream_scheduler import (
+            dream_scheduler_loop,
+            recover_running_dreams,
+        )
+        from runtime.daemon.dream_queue import dream_worker_loop
+
+        for org in state.orgs_snapshot().values():
+            recover_running_dreams(org)
+
+        dream_worker_tasks = [
+            asyncio.create_task(dream_worker_loop(state, state.settings))
+            for _ in range(1)
+        ]
+        dream_scheduler_task = asyncio.create_task(dream_scheduler_loop(state))
+
+        from runtime.daemon.work_hours_scheduler import work_hours_scheduler_loop
+        from runtime.daemon.wake_queue import wake_worker_loop
+
+        # Startup recovery: a wake left `running` when the daemon died can never
+        # receive its spawn callback, so mark it failed (mirrors recover_running_dreams).
+        for org in state.orgs_snapshot().values():
+            org.db.work_hours.recover_running()
+
+        wake_worker_tasks = [
+            asyncio.create_task(wake_worker_loop(state, state.settings))
+            for _ in range(1)
+        ]
+        work_hours_scheduler_task = asyncio.create_task(work_hours_scheduler_loop(state))
+
+        # ── Schedule fire wiring (THR-105 Phase 3) ──
+        from runtime.daemon.schedule_scheduler import schedule_scheduler_loop
+        from runtime.daemon.schedule_queue import schedule_worker_loop
+
+        # Startup recovery: a schedule left `firing` when the daemon died can never
+        # receive its spawn callback, so mark it failed (mirrors recover_running).
+        for org in state.orgs_snapshot().values():
+            recovered = org.db.schedules.recover_firing()
+            for schedule_id, agent_name in recovered:
+                org.db.insert_audit_log(
+                    task_id=schedule_id,
+                    agent=agent_name,
+                    action="schedule_failed",
+                    payload={"reason": "daemon_restart"},
+                )
+
+        schedule_worker_tasks = [
+            asyncio.create_task(schedule_worker_loop(state, state.settings))
+            for _ in range(1)
+        ]
+        schedule_scheduler_task = asyncio.create_task(schedule_scheduler_loop(state))
+
+        from runtime.daemon.zombie_reaper import zombie_reaper_loop
+        zombie_reaper_task = asyncio.create_task(zombie_reaper_loop(state))
+        from runtime.daemon.disk_sweeper import disk_sweeper_loop
+        disk_sweeper_task = asyncio.create_task(disk_sweeper_loop(state))
+        from runtime.daemon.exchange_reaper import exchange_reaper_loop
+        exchange_reaper_task = asyncio.create_task(exchange_reaper_loop(state))
+        from runtime.daemon.direct_connect_projection_sweep import direct_connect_projection_sweep_loop
+        direct_connect_projection_sweep_task = asyncio.create_task(
+            direct_connect_projection_sweep_loop(state)
+        )
+
+        # ── Daemon-managed workspace cleanup scheduler (THR-195 seq 129) ──
+        # System-default capability independent of user Schedules: the daemon
+        # periodically measures workspace aggregates and triggers a report-only
+        # cleanup task for the responsible agent with fresh advisory context.
+        # Measurement is bounded + fail-open, so this loop can never block
+        # daemon operation or task/session spawning.
+        from runtime.daemon.workspace_cleanup_scheduler import (
+            workspace_cleanup_scheduler_loop,
+        )
+        workspace_cleanup_scheduler_task = asyncio.create_task(
+            workspace_cleanup_scheduler_loop(state)
+        )
+
+        # ── Dashboard projection cold-start + periodic refresh ────────────
+        # THR-129: per-org durable last-known-good cache, refreshed every 10s.
+        # Load persisted snapshot synchronously (never block the event loop),
+        # then start an async bootstrap-and-schedule task. The lifespan must
+        # NOT await a DB compose before yielding — the initial warm runs in
+        # the background. Cache-only GET /dashboard/summary returns 503 until
+        # the first warm completes.
+        from runtime.infrastructure.kb_store import KBStore
+        _dashboard_tasks: list[asyncio.Task] = []
+        for org in state.orgs_snapshot().values():
+            mgr = org.dashboard_projection
+            # Load persisted snapshot from disk synchronously (no-op if missing).
+            # This is a fast filesystem read — no DB access, no event-loop block.
+            persisted = mgr.load_from_disk()
+            if persisted is not None:
+                mgr._projection = persisted
+                _logger.info(
+                    "dashboard projection loaded from disk for org %s (generated_at=%s)",
+                    org.slug, persisted.generated_at.isoformat(),
+                )
+            # Start the bootstrap-then-schedule task. The initial warm runs
+            # asynchronously — the lifespan yields immediately. The route
+            # returns 503 until warm completes (cache-only, never synchronous).
+            kb_store = KBStore(org.root / "kb")
+            task = mgr.start_scheduler(
+                db=org.db, kb_store=kb_store, teams=org.teams,
+                loop=_main_loop, initial_warm=True,
+            )
+            _dashboard_tasks.append(task)
 
     try:
         yield
