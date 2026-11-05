@@ -14,6 +14,7 @@
  *    string) render exactly.
  */
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { notifyManager } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -398,13 +399,18 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
     const listRuns = new Set<Promise<void>>();
     type Failure = { phase: string; error: unknown };
     type Input = { kind: unknown; pending: boolean; response?: Response; failure?: Failure };
-    type Invocation = { input?: Input; shared?: Invocation; entered: boolean; settled: boolean; failures: Failure[] };
-    type Phase = { name: string; invocation?: Invocation; outcome?: 'returned' | 'threw'; failure?: Failure };
+    type Invocation = { input?: Input; shared?: Invocation; entered: boolean; settled: boolean; escaped?: Failure; delivery?: Batch; finalization?: Phase };
+    type Phase = { name: string; invocation?: Invocation; owned: boolean; outcome?: 'returned' | 'threw'; failure?: Failure };
+    type Batch = { frame: Phase; callback: Phase; parent?: Batch; callbackActive: boolean; ambiguous: boolean };
     type SinkFailure = { error: unknown; original: Failure; previous?: SinkFailure };
     const inputs: Input[] = [];
     const invocations: Invocation[] = [];
     const phases: Phase[] = [];
     let currentPhase: Phase | undefined;
+    let currentBatch: Batch | undefined;
+    let provenanceComplete = true;
+    let restoreBatch: (() => void) | undefined;
+    let restoreTimer: (() => void) | undefined;
     const observedObservers = new WeakSet<object>();
     const queryCalls = new WeakMap<object, { calling?: Invocation; running?: Invocation }>();
     const rejections: Array<{ phase: string; error: unknown; disposition: string }> = [];
@@ -415,34 +421,58 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
     let sinkFailures: SinkFailure | undefined;
     const retain = (failure: Failure) => {
       try { later.push(failure); } catch (error) {
+        provenanceComplete = false;
         // A failed diagnostic sink must neither lose the occurrence nor replace
         // the original UI/operation failure. Keep an independent fallback chain.
         sinkFailures = { error, original: failure, previous: sinkFailures };
       }
     };
-    const callPhase = <T,>(name: string, invocation: Invocation | undefined, call: () => T): T => {
-      const frame: Phase = { name, invocation };
+    const recordPhase = (frame: Phase) => {
+      try { phases.push(frame); } catch (error) {
+        provenanceComplete = false;
+        retain({ phase: `${frame.name} provenance`, error });
+      }
+    };
+    const callPhase = <T,>(name: string, invocation: Invocation | undefined, call: () => T,
+      frame: Phase = { name, invocation, owned: true }): T => {
+      if (frame.owned) {
+        // Only an actually reached call on this supplied client's instance can
+        // bind its enclosing batches. Unrelated batches/timers pass untouched.
+        for (let batch = currentBatch; batch?.callbackActive; batch = batch.parent) {
+          const newlyOwned = !batch.frame.owned;
+          batch.frame.owned = batch.callback.owned = true;
+          if (invocation && !batch.ambiguous) {
+            if (batch.frame.invocation && batch.frame.invocation !== invocation) {
+              batch.ambiguous = true;
+              batch.frame.invocation = batch.callback.invocation = undefined;
+            } else {
+              batch.frame.invocation = batch.callback.invocation = invocation;
+            }
+          }
+          if (newlyOwned) { recordPhase(batch.frame); recordPhase(batch.callback); }
+        }
+        if (name === 'query scheduleGc' && invocation) invocation.finalization = frame;
+        recordPhase(frame);
+      }
       const parent = currentPhase;
-      try { phases.push(frame); } catch (error) { retain({ phase: `${name} provenance`, error }); }
       currentPhase = frame;
       try {
         const value = call();
         frame.outcome = 'returned';
         return value;
       } catch (error) {
-        // onQueryUpdate -> cache.notify has no catch in the locked source.
-        // That outward propagation is one occurrence. A subsequent callback/GC
-        // call has a fresh frame, even if it throws the very same object.
+        // The child transported through this same synchronous call is one
+        // occurrence. A later scheduler/GC call always has a fresh frame.
         const failure = frame.failure && frame.failure.error === error ? frame.failure : { phase: name, error };
-        if (failure !== frame.failure) {
-          retain(failure);
-          try { invocation?.failures.push(failure); } catch (diagnostic) {
-            retain({ phase: `${name} provenance`, error: diagnostic });
-          }
-        }
+        const fresh = failure !== frame.failure;
         frame.outcome = 'threw';
         frame.failure = failure;
-        if (parent) parent.failure = failure;
+        if (frame.owned) {
+          // Save original delivery before any fallible diagnostic sink.
+          if (frame.invocation) frame.invocation.escaped = failure;
+          if (parent) parent.failure = failure;
+          if (fresh) retain(failure);
+        }
         throw error;
       } finally {
         currentPhase = parent;
@@ -456,9 +486,11 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
           (reason: unknown) => {
             let disposition = 'unexpected';
             try { disposition = classify(reason); } catch (error) {
+              provenanceComplete = false;
               retain({ phase: `${phase} provenance`, error });
             }
             try { rejections.push({ phase, error: reason, disposition }); } catch (error) {
+              provenanceComplete = false;
               sinkFailures = { error, original: { phase, error: reason }, previous: sinkFailures };
             }
             if (disposition === 'unexpected') retain({ phase, error: reason });
@@ -483,11 +515,45 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
       return pending.length === 1 ? pending[0] : undefined;
     };
     try {
+      const originalBatch = notifyManager.batch;
+      const batchSpy = vi.spyOn(notifyManager, 'batch').mockImplementation(function <T,>(this: typeof notifyManager, ...args: [callback: () => T]): T {
+        const enclosing = currentPhase;
+        const batch: Batch = {
+          frame: { name: 'notification batch', invocation: enclosing?.invocation, owned: enclosing?.owned === true },
+          callback: { name: 'notification batch callback', invocation: enclosing?.invocation, owned: enclosing?.owned === true },
+          parent: currentBatch, callbackActive: false, ambiguous: false,
+        };
+        const [callback] = args;
+        const forwarded: typeof args = [...args];
+        forwarded[0] = function (this: unknown, ...callbackArgs: []) {
+          batch.callbackActive = true;
+          try { return callPhase(batch.callback.name, undefined, () => callback.apply(this, callbackArgs), batch.callback); }
+          finally { batch.callbackActive = false; }
+        };
+        currentBatch = batch;
+        try {
+          return callPhase(batch.frame.name, batch.frame.invocation, () => originalBatch.apply(this, forwarded) as T, batch.frame);
+        } finally { currentBatch = batch.parent; }
+      });
+      restoreBatch = () => batchSpy.mockRestore();
+      const originalSetTimeout = globalThis.setTimeout;
+      const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(function (this: typeof globalThis, ...args: Parameters<typeof globalThis.setTimeout>) {
+        const batch = currentBatch;
+        // Locked defaultScheduler calls this global synchronously ONLY after
+        // the original batch callback exits. Keep its callback/handle untouched.
+        if (!batch?.frame.owned || batch.callbackActive) return originalSetTimeout.apply(this, args);
+        return callPhase('notification batch scheduling', batch.frame.invocation, () => originalSetTimeout.apply(this, args));
+      });
+      restoreTimer = () => timerSpy.mockRestore();
       const cache = client.getQueryCache();
       const notify = cache.notify;
       const notifySpy = vi.spyOn(cache, 'notify').mockImplementation(function (this: typeof cache, event) {
         const state = queryCalls.get(event.query);
-        return callPhase(`cache ${event.type}`, state?.calling ?? state?.running, () => notify.call(this, event));
+        const invocation = state?.calling ?? state?.running;
+        if (invocation && event.type === 'updated' && event.action.type === 'error' && currentBatch?.callbackActive) {
+          invocation.delivery = currentBatch;
+        }
+        return callPhase(`cache ${event.type}`, invocation, () => notify.call(this, event));
       });
       restores.push(() => notifySpy.mockRestore());
       // Observe only callbacks that really exist; do not invent a successful
@@ -529,7 +595,10 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
                   && (kind === 'thread' || kind === 'thread-messages') ? kind : undefined,
                 pending: true,
               };
-              inputs.push(input);
+              try { inputs.push(input); } catch (error) {
+                provenanceComplete = false;
+                retain({ phase: 'query input provenance', error });
+              }
               if (invocation) {
                 invocation.entered = true;
                 invocation.input = input;
@@ -587,18 +656,26 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
             const shared = query.state.fetchStatus !== 'idle' && retryer && retryer.status !== 'rejected'
               && !(query.state.data !== undefined && args[1]?.cancelRefetch) && !state.running?.settled
               ? state.running : undefined;
-            const invocation: Invocation = { shared, entered: false, settled: false, failures: [] };
-            invocations.push(invocation);
+            const invocation: Invocation = { shared, entered: false, settled: false };
+            try { invocations.push(invocation); } catch (error) {
+              provenanceComplete = false;
+              retain({ phase: 'query invocation provenance', error });
+            }
             state.calling = invocation;
             try {
               const original = fetch.apply(this, args);
               observe(original, `original query ${JSON.stringify(query.queryKey)}`, (error) => {
                 invocation.settled = true;
                 const source = invocation.input ? invocation : !invocation.entered ? invocation.shared : undefined;
-                // Input and phase wrappers already retained the actual throw.
-                // This outer rejection is propagation, never another occurrence.
-                if (invocation.failures.some((failure) => failure.error === error)) return 'phase propagation';
-                if (source?.input?.failure && source.input.failure.error === error) return 'input propagation';
+                if (!provenanceComplete) return 'unexpected';
+                if (invocation.escaped && invocation.escaped.error === error) return 'observed phase propagation';
+                const delivery = invocation.delivery;
+                // An input match alone cannot certify the intervening batch.
+                // Shared fast-path returns have no dispatch/finally of their own.
+                const complete = source !== invocation && source !== undefined
+                  || delivery?.frame.outcome === 'returned' && delivery.callback.outcome === 'returned'
+                    && !delivery.ambiguous && invocation.finalization?.outcome === 'returned';
+                if (complete && source?.input?.failure && source.input.failure.error === error) return 'completed input propagation';
                 return 'unexpected';
               }, () => { invocation.settled = true; });
               return original;
@@ -670,6 +747,8 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
         try { await act(async () => {}); } catch (error) { retain({ phase: 'React delivery', error }); }
         try { captureListRuns(); } catch (error) { retain({ phase: 'capture list', error }); }
       } while (joined < operations.length);
+      try { restoreTimer?.(); } catch (error) { retain({ phase: 'restore notification timer observation', error }); }
+      try { restoreBatch?.(); } catch (error) { retain({ phase: 'restore notification batch observation', error }); }
       for (const restore of restores.reverse()) {
         try { restore(); } catch (error) { retain({ phase: 'restore observation', error }); }
       }
