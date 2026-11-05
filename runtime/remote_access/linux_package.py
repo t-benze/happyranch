@@ -2104,12 +2104,22 @@ def _inventory_tree(path: Path, *, metadata_only: bool = False) -> dict:
     return {"root_mode": root_mode, "entries": entries}
 
 
-def _tree_matches(path: Path, inventory: object) -> bool:
+def _tree_matches(path: Path, inventory: object, *, absent_ok: bool = False) -> bool:
     if not isinstance(inventory, dict):
         return False
     try:
         with diagnostic_scope("P100072", "managed_operational_error"):
             metadata = path.lstat()
+    except FileNotFoundError as error:
+        # Only the restore consumer positively permits a missing root. An
+        # interior/racing disappearance during inventory below remains a loss.
+        if not absent_ok:
+            diagnostic_loss("P400036", "managed_operational_error", error)
+        return False
+    except OSError as error:
+        diagnostic_loss("P400037", "managed_operational_error", error)
+        return False
+    try:
         if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             return False
         if stat.S_IMODE(metadata.st_mode) != inventory.get("root_mode"):
@@ -2154,13 +2164,21 @@ def _tree_is_owned_partial(path: Path, inventory: object) -> bool:
     return all(entry == entries[relative] for relative, entry in present.items())
 
 
-def _file_matches(path: Path, identity: object) -> bool:
+def _file_matches(path: Path, identity: object, *, absent_ok: bool = False) -> bool:
     _require_package_operand(path, directory=False)
     if not isinstance(identity, dict):
         return False
     try:
         with diagnostic_scope("P100074", "managed_operational_error"):
             metadata = path.lstat()
+    except FileNotFoundError as error:
+        if not absent_ok:
+            diagnostic_loss("P400038", "managed_operational_error", error)
+        return False
+    except OSError as error:
+        diagnostic_loss("P400039", "managed_operational_error", error)
+        return False
+    try:
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             return False
         with diagnostic_scope("P100075", "managed_operational_error"):
@@ -2666,7 +2684,7 @@ def _classify_payload(root: Path, record: dict) -> str:
         if _backup_present(payload_backup):
             if not _tree_matches(payload_backup, old_payload):
                 raise diagnostic_error("P000175", "transaction_state_invalid", PackageError("transaction_state_invalid"))
-            return "already" if _tree_matches(opt, old_payload) else "restore"
+            return "already" if _tree_matches(opt, old_payload, absent_ok=True) else "restore"
         if _tree_matches(opt, old_payload):
             return "already"
         raise diagnostic_error("P000176", "transaction_state_invalid", PackageError("transaction_state_invalid"))
@@ -2700,7 +2718,7 @@ def _classify_units(root: Path, record: dict) -> dict[str, str]:
             if _backup_present(saved):
                 if (failure := _backup_intact_error(saved, expected)) is not None:
                     raise diagnostic_error("P000181", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
-                actions[unit] = "already" if _file_matches(target, expected) else "restore"
+                actions[unit] = "already" if _file_matches(target, expected, absent_ok=True) else "restore"
             elif _file_matches(target, expected):
                 actions[unit] = "already"
             else:
@@ -2731,7 +2749,7 @@ def _classify_dropin(root: Path, record: dict) -> str:
         if _backup_present(dropin_backup):
             if (failure := _backup_intact_error(dropin_backup, expected)) is not None:
                 raise diagnostic_error("P000187", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
-            return "already" if _file_matches(dropin, expected) else "restore"
+            return "already" if _file_matches(dropin, expected, absent_ok=True) else "restore"
         if _file_matches(dropin, expected):
             return "already"
         raise diagnostic_error("P000188", "transaction_state_invalid", PackageError("transaction_state_invalid"))

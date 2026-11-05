@@ -869,9 +869,9 @@ func PinLifecycleProcess(identity LifecycleProcess) (*LifecyclePin, error) {
 		p.Close()
 		return nil, lifecycleDiagnosticError("G000072", ErrLifecycle)
 	}
-	if p.Validate() != nil {
+	if err := p.Validate(); err != nil {
 		p.Close()
-		return nil, lifecycleDiagnosticError("G000073", errLifecycleIdentity)
+		return nil, lifecycleDiagnosticError("G000073", errLifecycleIdentity, err)
 	}
 	return p, nil
 }
@@ -1220,7 +1220,7 @@ func lifecycleManagerCurrent(ctx context.Context, initial bool) (map[string]map[
 	}
 	after, e := lifecycleJobs(ctx)
 	if e != nil || len(before) != len(after) {
-		return nil, lifecycleDiagnosticError("G000130", ErrLifecycle)
+		return nil, lifecycleDiagnosticError("G000130", ErrLifecycle, e)
 	}
 	for unit, job := range before {
 		if after[unit] != job {
@@ -1247,7 +1247,7 @@ func lifecycleFixedAbsentError(ctx context.Context) error {
 	var diagnosticOrigin error
 	units, e := lifecycleManagerCurrent(ctx, false)
 	if e != nil {
-		return lifecycleDiagnosticError("G300042", ErrLifecycle, diagnosticOrigin)
+		return lifecycleDiagnosticError("G300042", ErrLifecycle, e, diagnosticOrigin)
 
 	}
 	target := units["happyranch-managed.target"]
@@ -1258,7 +1258,7 @@ func lifecycleFixedAbsentError(ctx context.Context) error {
 	}
 	final, e := lifecycleManagerCurrent(ctx, false)
 	if !(e == nil && final["happyranch-managed.target"]["ActiveState"] == "inactive" && final["happyranch-managed.target"]["SubState"] == "dead" && ctx.Err() == nil) {
-		return lifecycleDiagnosticError("G300044", ErrLifecycle, diagnosticOrigin)
+		return lifecycleDiagnosticError("G300044", ErrLifecycle, e, diagnosticOrigin)
 	}
 	return nil
 }
@@ -1294,6 +1294,7 @@ func lifecycleCgroupMembers(unit string) ([]int, error) {
 	return result, nil
 }
 func ValidateLifecyclePin(ctx context.Context, pin *LifecyclePin, unit string, main bool) error {
+	var diagnosticOrigin error
 	props, err := LifecycleUnit(ctx, unit)
 	if err != nil || props["InvocationID"] != pin.Identity.Invocation || props["ControlGroup"] != lifecycleCgroup(unit) {
 		if err != nil {
@@ -1308,8 +1309,8 @@ func ValidateLifecyclePin(ctx context.Context, pin *LifecyclePin, unit string, m
 		return lifecycleDiagnosticError("G000141", ErrLifecycle)
 	}
 	group, err := pin.read("cgroup", 4096)
-	if err != nil || string(group) != "0::"+lifecycleCgroup(unit)+"\n" || pin.Validate() != nil {
-		return lifecycleDiagnosticError("G000142", errLifecycleIdentity)
+	if err != nil || string(group) != "0::"+lifecycleCgroup(unit)+"\n" || !lifecycleDiagnosticCheck(&diagnosticOrigin, pin.Validate()) {
+		return lifecycleDiagnosticError("G000142", errLifecycleIdentity, err, diagnosticOrigin)
 	}
 	exe, err := unix.Openat(int(pin.proc.Fd()), "exe", unix.O_PATH|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -1331,7 +1332,7 @@ func ValidateLifecyclePin(ctx context.Context, pin *LifecyclePin, unit string, m
 	}
 	again, err := LifecycleUnit(ctx, unit)
 	if err != nil || again["InvocationID"] != props["InvocationID"] || again["MainPID"] != props["MainPID"] || again["ControlGroup"] != props["ControlGroup"] {
-		return lifecycleDiagnosticError("G000146", ErrLifecycle)
+		return lifecycleDiagnosticError("G000146", ErrLifecycle, err)
 	}
 	return nil
 }
@@ -1346,17 +1347,17 @@ func LifecycleAbsentError(ctx context.Context, unit string, pin *LifecyclePin) e
 	props, err := LifecycleUnit(ctx, unit)
 	if err != nil || props["MainPID"] != "0" || props["ControlPID"] != "0" || props["Job"] != "" ||
 		!(props["ActiveState"] == "inactive" && props["SubState"] == "dead" || props["ActiveState"] == "failed" && props["SubState"] == "failed") {
-		return lifecycleDiagnosticError("G300046", ErrLifecycle)
+		return lifecycleDiagnosticError("G300046", ErrLifecycle, err)
 
 	}
 	members, err := lifecycleCgroupMembers(unit)
 	if err != nil || len(members) != 0 {
-		return lifecycleDiagnosticError("G300047", ErrLifecycle)
+		return lifecycleDiagnosticError("G300047", ErrLifecycle, err)
 
 	}
 	again, e := LifecycleUnit(ctx, unit)
 	if e != nil || ctx.Err() != nil {
-		return lifecycleDiagnosticError("G300048", ErrLifecycle)
+		return lifecycleDiagnosticError("G300048", ErrLifecycle, e)
 
 	}
 	for _, key := range lifecycleProperties {
@@ -2031,6 +2032,7 @@ func lifecycleReconcileSource(p *LifecyclePair, boot string, now int64) bool {
 }
 
 func (p *LifecyclePair) policyChange(desired string, enabled bool, id string) error {
+	var diagnosticOrigin error
 	if p.Main.Policy != p.Sidecar.Policy || p.Main.Policy.Revision == math.MaxInt64 {
 		return lifecycleDiagnosticError("G000208", ErrLifecycle)
 	}
@@ -2050,14 +2052,14 @@ func (p *LifecyclePair) policyChange(desired string, enabled bool, id string) er
 		p.Sidecar.Halt = true
 		p.Main.Health = nil
 		// Inhibition's sidecar half is first; a torn pair never enables.
-		if p.WriteSidecar() != nil || p.WriteMain() != nil {
-			return lifecycleDiagnosticError("G000210", ErrLifecycle)
+		if !lifecycleDiagnosticCheck(&diagnosticOrigin, p.WriteSidecar()) || !lifecycleDiagnosticCheck(&diagnosticOrigin, p.WriteMain()) {
+			return lifecycleDiagnosticError("G000210", ErrLifecycle, diagnosticOrigin)
 		}
 	} else {
 		p.Sidecar.Halt = false
 		// For enabling, the sidecar unhalt is LAST.
-		if p.WriteMain() != nil || p.WriteSidecar() != nil {
-			return lifecycleDiagnosticError("G000211", ErrLifecycle)
+		if !lifecycleDiagnosticCheck(&diagnosticOrigin, p.WriteMain()) || !lifecycleDiagnosticCheck(&diagnosticOrigin, p.WriteSidecar()) {
+			return lifecycleDiagnosticError("G000211", ErrLifecycle, diagnosticOrigin)
 		}
 	}
 	return nil
@@ -3391,7 +3393,7 @@ func lifecycleStoppedCurrentError(ctx context.Context, p *LifecyclePair) error {
 	now, clockErr := LifecycleNow()
 	if !(err == nil && clockErr == nil && lifecycleDiagnosticCheck(&diagnosticOrigin, p.currentRecordsError(boot, now)) && p.Main.RuntimeBoot == boot && p.Sidecar.RuntimeBoot == boot && p.Main.BootTransitionID == p.Sidecar.BootTransitionID &&
 		p.stopped() && p.Main.Policy.HardBlock == "none" && p.Main.Block == "none" && lifecycleDiagnosticCheck(&diagnosticOrigin, lifecycleFixedAbsentError(ctx)) && ctx.Err() == nil) {
-		return lifecycleDiagnosticError("G100101", ErrLifecycle, diagnosticOrigin)
+		return lifecycleDiagnosticError("G100101", ErrLifecycle, err, clockErr, diagnosticOrigin)
 	}
 	return nil
 }
@@ -3431,9 +3433,9 @@ func lifecycleInheritedPair(ctx context.Context) (*LifecyclePair, error) {
 		p.Close()
 		return nil, lifecycleDiagnosticError("G400002", err)
 	}
-	if p.Refresh() != nil {
+	if err := p.Refresh(); err != nil {
 		p.Close()
-		return nil, lifecycleDiagnosticError("G400001", ErrLifecycle)
+		return nil, lifecycleDiagnosticError("G400001", ErrLifecycle, err)
 	}
 	return p, nil
 }
@@ -3564,7 +3566,7 @@ func BootstrapLifecycle(ctx context.Context) (*LifecyclePair, error) {
 	// A fresh explicit bootstrap has no installed/loaded image. Actual PID1
 	// absence, jobs and cgroups are independent of those empty disk paths.
 	for _, unit := range []string{"happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target"} {
-		if !lifecyclePackageManagerAbsent(ctx, unit, true) {
+		if !lifecycleDiagnosticCheck(&diagnosticOrigin, lifecyclePackageManagerAbsentError(ctx, unit, true)) {
 			return nil, lifecycleDiagnosticError("G000350", ErrLifecycle, diagnosticOrigin)
 		}
 		if unit != "happyranch-managed.target" && !lifecycleDiagnosticCheck(&diagnosticOrigin, LifecycleAbsentError(ctx, unit, nil)) {
@@ -3597,7 +3599,7 @@ func BootstrapLifecycle(ctx context.Context) (*LifecyclePair, error) {
 			return nil, lifecycleDiagnosticError("G000356", ErrLifecycle, e, diagnosticOrigin)
 		}
 		names, e := dir.Readdirnames(128)
-		dir.Close()
+		lifecycleDiagnosticLoss("G500054", dir.Close())
 		if e != nil && e != io.EOF || len(names) == 128 {
 			return nil, lifecycleDiagnosticError("G000357", ErrLifecycle, diagnosticOrigin)
 		}
@@ -3695,7 +3697,7 @@ func BootstrapLifecycle(ctx context.Context) (*LifecyclePair, error) {
 	p.deadline, _ = ctx.Deadline()
 	p.Main = LifecycleMain{Version: 2, Policy: policy, RuntimeBoot: boot, BootTransitionID: transition, Phase: "idle", Clean: true, Block: "none", Rate: LifecycleRate{Boot: boot, Spends: []int64{}}}
 	p.Sidecar = LifecycleSidecar{Version: 2, Policy: policy, RuntimeBoot: boot, BootTransitionID: transition, Halt: true, Outcome: "unstarted", Failure: "none", CloseProof: "none"}
-	if p.WriteSidecar() != nil || p.WriteMain() != nil || ctx.Err() != nil {
+	if !lifecycleDiagnosticCheck(&diagnosticOrigin, p.WriteSidecar()) || !lifecycleDiagnosticCheck(&diagnosticOrigin, p.WriteMain()) || ctx.Err() != nil {
 		return nil, lifecycleDiagnosticError("G000376", ErrLifecycle, diagnosticOrigin)
 	}
 	success = true
@@ -3775,7 +3777,7 @@ func lifecyclePackageCurrentError(ctx context.Context, p *LifecyclePair, stopped
 		p.Main.RuntimeBoot != boot || p.Sidecar.RuntimeBoot != boot || p.Main.Rate.Boot != boot || p.Main.BootTransitionID != p.Sidecar.BootTransitionID ||
 		p.Main.Block != "none" || p.Sidecar.Failure != "none" || p.Main.Phase == "boot_prepared" ||
 		(p.Main.BootSource == nil) != (p.Sidecar.BootSource == nil) {
-		return lifecycleDiagnosticError("G100301", ErrLifecycle)
+		return lifecycleDiagnosticError("G100301", ErrLifecycle, e, clockErr)
 	}
 	if p.Main.BootSource != nil && *p.Main.BootSource != *p.Sidecar.BootSource {
 		return lifecycleDiagnosticError("G100302", ErrLifecycle)
@@ -3804,7 +3806,7 @@ func lifecyclePackageCurrentError(ctx context.Context, p *LifecyclePair, stopped
 		} else {
 			props, e := LifecycleUnit(ctx, "happyranch-connector.service")
 			if e != nil || props["MainPID"] != "0" || props["ControlPID"] != "0" {
-				return lifecycleDiagnosticError("G100307", ErrLifecycle)
+				return lifecycleDiagnosticError("G100307", ErrLifecycle, e)
 			}
 		}
 		if p.Sidecar.Binding != nil && !lifecycleOneOf(p.Sidecar.Outcome, "closed", "unstarted") {

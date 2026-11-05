@@ -118,12 +118,21 @@ type lifecycleImageTree struct {
 }
 
 func (t *lifecycleImageTree) close() bool {
+	t.closeError()
+	return t.settled
+}
+func (t *lifecycleImageTree) closeError() (failure error) {
 	for _, f := range []*lifecycleImageFD{t.base, t.run, t.root} {
-		if f != nil && f.close() != nil {
-			t.settled = false
+		if f != nil {
+			if err := f.close(); err != nil {
+				t.settled = false
+				if failure == nil {
+					failure = err
+				}
+			}
 		}
 	}
-	return t.settled
+	return failure
 }
 func (t *lifecycleImageTree) validate(ctx context.Context, expected *[3]unix.Stat_t) ([3]unix.Stat_t, error) {
 	var got [3]unix.Stat_t
@@ -178,14 +187,14 @@ func lifecycleImageOpenTree(ctx context.Context, create bool) (tree *lifecycleIm
 	for _, f := range []*lifecycleImageFD{tree.root, tree.run} {
 		st, e := lifecycleImageStat(f)
 		if e != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Uid != 0 || st.Gid != 0 || st.Mode&07022 != 0 {
-			return tree, lifecycleDiagnosticError("G000457", ErrLifecycle)
+			return tree, lifecycleDiagnosticError("G000457", ErrLifecycle, e)
 		}
 	}
 	var fs unix.Statfs_t
 	runStat, e := lifecycleImageStat(tree.run)
 	if e != nil || !lifecycleImageEntry(tree.root, "run", runStat) || unix.Fstatfs(tree.run.fd(), &fs) != nil ||
 		fs.Type != unix.TMPFS_MAGIC || fs.Flags&(unix.ST_RDONLY|unix.ST_NOEXEC) != 0 || !lifecycleImageLive(ctx) {
-		return tree, lifecycleDiagnosticError("G000458", ErrLifecycle)
+		return tree, lifecycleDiagnosticError("G000458", ErrLifecycle, e)
 	}
 	tree.base, err = lifecycleImageOpenDirectory(tree.run, lifecycleImageRoot)
 	if err != nil && create {
@@ -233,7 +242,7 @@ func lifecycleImageAllocationLock(ctx context.Context, tree *lifecycleImageTree)
 		if f.close() != nil {
 			tree.settled = false
 		}
-		return nil, lifecycleDiagnosticError("G000465", ErrLifecycle)
+		return nil, lifecycleDiagnosticError("G000465", ErrLifecycle, e, be)
 	}
 	return f, nil
 }
@@ -246,13 +255,13 @@ func lifecycleImageNames(ctx context.Context, parent *lifecycleImageFD, limit in
 		return nil, lifecycleDiagnosticError("G000466", ErrLifecycle, err)
 	}
 	defer func() {
-		if f.close() != nil {
-			failure = lifecycleDiagnosticError("G000467", ErrLifecycle, failure)
+		if closeErr := f.close(); closeErr != nil {
+			failure = lifecycleDiagnosticError("G000467", ErrLifecycle, failure, closeErr)
 		}
 	}()
 	entries, err := f.file.ReadDir(limit)
 	if err != nil && err != io.EOF || len(entries) >= limit || !lifecycleImageLive(ctx) {
-		return nil, lifecycleDiagnosticError("G000468", ErrLifecycle)
+		return nil, lifecycleDiagnosticError("G000468", ErrLifecycle, err)
 	}
 	for _, entry := range entries {
 		names = append(names, entry.Name())
@@ -296,20 +305,20 @@ func lifecycleImageCount(ctx context.Context, tree *lifecycleImageTree, boot str
 				return lifecycleDiagnosticError("G000474", ErrLifecycle, e)
 			}
 			defer func() {
-				if dir.close() != nil {
+				if closeErr := dir.close(); closeErr != nil {
 					tree.settled = false
-					failure = lifecycleDiagnosticError("G000475", ErrLifecycle, failure)
+					failure = lifecycleDiagnosticError("G000475", ErrLifecycle, failure, closeErr)
 				}
 			}()
 			st, e := lifecycleImageStat(dir)
 			if e != nil || !(lifecycleImageDirectory(st, 0700) || lifecycleImageDirectory(st, 0500)) || st.Dev != base.Dev || !lifecycleImageFilesystem(dir) ||
 				!lifecycleImageEntry(tree.base, name, st) {
-				return lifecycleDiagnosticError("G000476", ErrLifecycle)
+				return lifecycleDiagnosticError("G000476", ErrLifecycle, e)
 			}
 			children, e := lifecycleImageNames(ctx, dir, 2)
 			if e != nil {
 				tree.settled = false
-				return lifecycleDiagnosticError("G000477", ErrLifecycle)
+				return lifecycleDiagnosticError("G000477", ErrLifecycle, e)
 			}
 			if len(children) == 1 {
 				var image unix.Stat_t
@@ -326,7 +335,7 @@ func lifecycleImageCount(ctx context.Context, tree *lifecycleImageTree, boot str
 			return nil
 		}()
 		if err != nil || size > lifecycleImageTotal-bytes {
-			return 0, 0, lifecycleDiagnosticError("G000480", ErrLifecycle)
+			return 0, 0, lifecycleDiagnosticError("G000480", ErrLifecycle, err)
 		}
 		bytes += size
 	}
@@ -384,15 +393,15 @@ func lifecycleImageRead(ctx context.Context, tree *lifecycleImageTree, member *l
 		return lifecycleDiagnosticError("G000487", ErrLifecycle, err)
 	}
 	defer func() {
-		if dir.close() != nil {
+		if closeErr := dir.close(); closeErr != nil {
 			tree.settled = false
-			failure = lifecycleDiagnosticError("G000488", ErrLifecycle, failure)
+			failure = lifecycleDiagnosticError("G000488", ErrLifecycle, failure, closeErr)
 		}
 	}()
 	ds, err := lifecycleImageStat(dir)
 	if err != nil || !lifecycleImageSame(ds, member.directory) || !lifecycleImageDirectory(ds, 0500) || !lifecycleImageFilesystem(dir) ||
 		!lifecycleImageEntry(tree.base, member.name, ds) {
-		return lifecycleDiagnosticError("G000489", ErrLifecycle)
+		return lifecycleDiagnosticError("G000489", ErrLifecycle, err)
 	}
 	var before unix.Stat_t
 	if unix.Fstatat(dir.fd(), "image", &before, unix.AT_SYMLINK_NOFOLLOW) != nil ||
@@ -406,20 +415,20 @@ func lifecycleImageRead(ctx context.Context, tree *lifecycleImageTree, member *l
 	}
 	image := lifecycleImageOwn(fd)
 	defer func() {
-		if image.close() != nil {
+		if closeErr := image.close(); closeErr != nil {
 			tree.settled = false
-			failure = lifecycleDiagnosticError("G000492", ErrLifecycle, failure)
+			failure = lifecycleDiagnosticError("G000492", ErrLifecycle, failure, closeErr)
 		}
 	}()
 	st, err := lifecycleImageStat(image)
 	if err != nil || !lifecycleImageRegular(st, 0500, set.ancestry[2].Dev) || st.Size != set.size ||
 		!lifecycleImageSame(st, member.image) || !lifecycleImageEntry(dir, "image", st) {
-		return lifecycleDiagnosticError("G000493", ErrLifecycle)
+		return lifecycleDiagnosticError("G000493", ErrLifecycle, err)
 	}
 	digest, err := lifecycleImageHash(ctx, image.file, set.size, nil)
 	if err != nil || digest != set.digest || !lifecycleImageEntry(dir, "image", st) ||
 		!lifecycleImageEntry(tree.base, member.name, ds) {
-		return lifecycleDiagnosticError("G000494", ErrLifecycle)
+		return lifecycleDiagnosticError("G000494", ErrLifecycle, err)
 	}
 	_, err = tree.validate(ctx, &set.ancestry)
 	return lifecycleDiagnosticError("G000495", err)
@@ -446,8 +455,8 @@ func lifecyclePreparePackageImages(ctx context.Context, p *LifecyclePair, source
 		return nil, lifecycleDiagnosticError("G000499", ErrLifecycle, err)
 	}
 	defer func() {
-		if !tree.close() || !lifecycleImageLive(ctx) {
-			failure = lifecycleDiagnosticError("G000500", ErrLifecycle, failure)
+		if closeErr := tree.closeError(); !tree.settled || !lifecycleImageLive(ctx) {
+			failure = lifecycleDiagnosticError("G000500", ErrLifecycle, failure, closeErr)
 		}
 	}()
 	allocation, err := lifecycleImageAllocationLock(ctx, tree)
@@ -455,8 +464,8 @@ func lifecyclePreparePackageImages(ctx context.Context, p *LifecyclePair, source
 		return nil, lifecycleDiagnosticError("G000501", ErrLifecycle, err)
 	}
 	defer func() {
-		if allocation.close() != nil {
-			failure = lifecycleDiagnosticError("G000502", ErrLifecycle, failure)
+		if closeErr := allocation.close(); closeErr != nil {
+			failure = lifecycleDiagnosticError("G000502", ErrLifecycle, failure, closeErr)
 		}
 	}()
 	set.ancestry, err = tree.validate(ctx, nil)
@@ -467,7 +476,7 @@ func lifecyclePreparePackageImages(ctx context.Context, p *LifecyclePair, source
 	// Subtraction/division checks avoid overflow. Capacity for the ENTIRE triple
 	// is admitted before the first mkdir; actual files reserve it across A/B.
 	if err != nil || slots > 32-len(set.members) || set.size > (lifecycleImageTotal-bytes)/int64(len(set.members)) {
-		return nil, lifecycleDiagnosticError("G000504", ErrLifecycle)
+		return nil, lifecycleDiagnosticError("G000504", ErrLifecycle, err)
 	}
 	for i, site := range lifecycleImageSites {
 		set.members[i].name = boot + "." + request.OperationID + "." + site
@@ -486,9 +495,9 @@ func lifecyclePreparePackageImages(ctx context.Context, p *LifecyclePair, source
 	created := [3]bool{}
 	defer func() {
 		for i := len(handles) - 1; i >= 0; i-- {
-			if handles[i].close() != nil {
+			if closeErr := handles[i].close(); closeErr != nil {
 				tree.settled = false
-				failure = lifecycleDiagnosticError("G000507", ErrLifecycle, failure)
+				failure = lifecycleDiagnosticError("G000507", ErrLifecycle, failure, closeErr)
 			}
 		}
 		if failure != nil && !set.ready && tree.settled && lifecycleImageLive(ctx) {
@@ -509,7 +518,7 @@ func lifecyclePreparePackageImages(ctx context.Context, p *LifecyclePair, source
 		member.directory, e = lifecycleImageStat(dir)
 		if e != nil || !lifecycleImageDirectory(member.directory, 0700) || member.directory.Dev != set.ancestry[2].Dev || !lifecycleImageFilesystem(dir) ||
 			!lifecycleImageEntry(tree.base, member.name, member.directory) {
-			return set, lifecycleDiagnosticError("G000510", ErrLifecycle)
+			return set, lifecycleDiagnosticError("G000510", ErrLifecycle, e)
 		}
 		fd, e := unix.Openat(dir.fd(), "image", unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
 		if e != nil {
@@ -519,7 +528,7 @@ func lifecyclePreparePackageImages(ctx context.Context, p *LifecyclePair, source
 		handles = append(handles, writer)
 		member.image, e = lifecycleImageStat(writer)
 		if e != nil || !lifecycleImageRegular(member.image, 0600, set.ancestry[2].Dev) || member.image.Size != 0 || lifecycleImageSame(member.image, sourceStat) {
-			return set, lifecycleDiagnosticError("G000512", ErrLifecycle)
+			return set, lifecycleDiagnosticError("G000512", ErrLifecycle, e)
 		}
 		for j := 0; j < i; j++ {
 			if lifecycleImageSame(member.image, set.members[j].image) {
@@ -529,34 +538,34 @@ func lifecyclePreparePackageImages(ctx context.Context, p *LifecyclePair, source
 		digest, e := lifecycleImageHash(ctx, source, set.size, writer.file)
 		if e != nil || digest != set.digest || !lifecycleImageLive(ctx) || writer.file.Sync() != nil ||
 			!lifecycleImageLive(ctx) || unix.Fchmod(writer.fd(), 0500) != nil || !lifecycleImageLive(ctx) || writer.file.Sync() != nil {
-			return set, lifecycleDiagnosticError("G000514", ErrLifecycle)
+			return set, lifecycleDiagnosticError("G000514", ErrLifecycle, e)
 		}
 		// No write, duplicate, mmap, alias, or transfer exists after this one close.
-		if writer.close() != nil {
+		if closeErr := writer.close(); closeErr != nil {
 			tree.settled = false
-			return set, lifecycleDiagnosticError("G000515", ErrLifecycle)
+			return set, lifecycleDiagnosticError("G000515", ErrLifecycle, closeErr)
 		}
 		if !lifecycleImageLive(ctx) || unix.Fchmod(dir.fd(), 0500) != nil || !lifecycleImageLive(ctx) || dir.file.Sync() != nil {
 			return set, lifecycleDiagnosticError("G000516", ErrLifecycle)
 		}
 		member.directory, e = lifecycleImageStat(dir)
 		if e != nil || !lifecycleImageDirectory(member.directory, 0500) {
-			return set, lifecycleDiagnosticError("G000517", ErrLifecycle)
+			return set, lifecycleDiagnosticError("G000517", ErrLifecycle, e)
 		}
-		if dir.close() != nil {
+		if closeErr := dir.close(); closeErr != nil {
 			tree.settled = false
-			return set, lifecycleDiagnosticError("G000518", ErrLifecycle)
+			return set, lifecycleDiagnosticError("G000518", ErrLifecycle, closeErr)
 		}
-		if lifecycleImageRead(ctx, tree, member, set) != nil {
-			return set, lifecycleDiagnosticError("G000519", ErrLifecycle)
+		if err := lifecycleImageRead(ctx, tree, member, set); err != nil {
+			return set, lifecycleDiagnosticError("G000519", ErrLifecycle, err)
 		}
 	}
 	if !lifecycleImageLive(ctx) || tree.base.file.Sync() != nil || !lifecycleImageLive(ctx) || tree.run.file.Sync() != nil {
 		return set, lifecycleDiagnosticError("G000520", ErrLifecycle)
 	}
 	for i := range set.members {
-		if lifecycleImageRead(ctx, tree, &set.members[i], set) != nil {
-			return set, lifecycleDiagnosticError("G000521", ErrLifecycle)
+		if err := lifecycleImageRead(ctx, tree, &set.members[i], set); err != nil {
+			return set, lifecycleDiagnosticError("G000521", ErrLifecycle, err)
 		}
 	}
 	currentSource, err := lifecycleImageSource(source)
@@ -564,10 +573,10 @@ func lifecyclePreparePackageImages(ctx context.Context, p *LifecyclePair, source
 	if err != nil || !lifecycleImageSame(sourceStat, currentSource) || sourceStat.Size != currentSource.Size ||
 		lockErr != nil || !lifecycleImageRegular(lockStat, 0600, set.ancestry[2].Dev) || lockStat.Size != 0 ||
 		!lifecycleImageEntry(tree.base, lifecycleImageLock, lockStat) {
-		return set, lifecycleDiagnosticError("G000522", ErrLifecycle)
+		return set, lifecycleDiagnosticError("G000522", ErrLifecycle, err, lockErr)
 	}
 	if _, err = tree.validate(ctx, &set.ancestry); err != nil {
-		return set, lifecycleDiagnosticError("G000523", ErrLifecycle)
+		return set, lifecycleDiagnosticError("G000523", ErrLifecycle, err)
 	}
 	// All three files are complete, closed and validated BEFORE lock release.
 	// This transition is deliberately earlier than even the first Start attempt.
@@ -633,19 +642,19 @@ func (set *lifecyclePackageImages) path(ctx context.Context, site lifecycleImage
 	set.members[site].selected = true
 	boot, err := LifecycleBoot()
 	if err != nil || boot != set.boot {
-		return "", lifecycleDiagnosticError("G000525", ErrLifecycle)
+		return "", lifecycleDiagnosticError("G000525", ErrLifecycle, err)
 	}
 	tree, err := lifecycleImageOpenTree(ctx, false)
 	if err != nil {
 		return "", lifecycleDiagnosticError("G000526", ErrLifecycle, err)
 	}
 	defer func() {
-		if !tree.close() || !lifecycleImageLive(ctx) {
-			path, failure = "", lifecycleDiagnosticError("G000527", ErrLifecycle)
+		if closeErr := tree.closeError(); !tree.settled || !lifecycleImageLive(ctx) {
+			path, failure = "", lifecycleDiagnosticError("G000527", ErrLifecycle, failure, closeErr)
 		}
 	}()
-	if lifecycleImageRead(ctx, tree, &set.members[site], set) != nil {
-		return "", lifecycleDiagnosticError("G000528", ErrLifecycle)
+	if err := lifecycleImageRead(ctx, tree, &set.members[site], set); err != nil {
+		return "", lifecycleDiagnosticError("G000528", ErrLifecycle, err)
 	}
 	return "/run/" + lifecycleImageRoot + "/" + set.members[site].name + "/image", nil
 }
