@@ -56,6 +56,13 @@ from runtime.workflows.repository_artifacts import WorkflowRepositoryArtifactSer
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
+def _startup_load_timing() -> Iterator[None]:
+    from runtime.daemon.__main__ import _startup_span
+    with _startup_span("org_load"):
+        yield
+
+
 def _build_authority_evaluator():
     """S6a: production semantics come from the authenticated manager result.
 
@@ -389,7 +396,9 @@ class OrgState:
         return ts.isoformat()
 
     @classmethod
+    @_startup_load_timing()
     def load(cls, *, slug: str, root: Path, settings: Settings, attachment_owner: dict | None = None) -> "OrgState":
+        from runtime.daemon.__main__ import _startup_span
         paths = OrgPaths(root=root)
         from runtime.orchestrator.team_move_startup import before_org_attachment
         before_org_attachment(root, slug)
@@ -397,13 +406,15 @@ class OrgState:
         naming_preflight = preflight(paths.db_path, org_slug=slug)
         if attachment_owner is not None:
             attachment_owner["db_construction_started"] = True
-        db = Database(paths.db_path)
+        with _startup_span("org_database"):
+            db = Database(paths.db_path)
         if attachment_owner is not None:
             attachment_owner["load_db"] = db
         try:
-            install_or_recover(db, expected_org_slug=slug)
-            with db._lock:
-                layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
+            with _startup_span("org_workflow_schema"):
+                install_or_recover(db, expected_org_slug=slug)
+                with db._lock:
+                    layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
             # Native org release preparation, after strict early move discovery
             # and complete workflow validation, before any roster/publication or
             # producer attachment. Generic Database and diagnostic recovery never
@@ -424,8 +435,9 @@ class OrgState:
             from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
             install_pause_schema(db, org_slug=slug)
             db._task_pause_store = TaskPauseStore(db, slug)
-            with db._lock:
-                validate_workflow_schema(db._conn, expected_org_slug=slug)
+            with _startup_span("org_workflow_revalidation"):
+                with db._lock:
+                    validate_workflow_schema(db._conn, expected_org_slug=slug)
             from runtime.infrastructure.workflow_task_ownership import install_task_ownership
             install_task_ownership(db, org_slug=slug)
             teams = TeamsRegistry.load(root)

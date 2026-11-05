@@ -2596,7 +2596,7 @@ Contract (founder-approved in THR-028, refined in THR-078):
 
    THR308seq133/127 uses one private Database/connection-bound startup reader
    invocation with optional authenticated exclusion-only anchors. Both discovery
-   and exact getters share complete strictly decoded root histories only after
+   and exact getters reuse scalar candidate catalogues only after
    stable outside autocommit connection/data_version/total_changes/schema_version
    bookends enclose a pinned main-table coherent read under the RLock. Exact
    getters each open a current closure; no speculative target/hit/absence escapes
@@ -2604,27 +2604,30 @@ Contract (founder-approved in THR-028, refined in THR-078):
    commits (including results-only), schema/attachment/isolation/ownership drift
    or unavailable tokens clear all entries; only clean cleanup permits one
    fresh uncached fallback. Current identity/authority checks and shipping parsing
-   remain fresh. Private raw scalar tuples/decoded graphs reach only closed
-   read-only validators; public audit readers allocate independent graphs.
-   THR308seq151 / ROOT12914 retains caps of 8 entries across both maps,
-   4096 rows/root and 8 MiB. One complete new-payload charge plus actual
-   session/field/map/wrapper/charge/epoch/group metadata is a conservative
-   object-graph upper bound; shared objects can overcharge and reduce capacity.
-   Old payloads are not rewalked for sizing. Shallow trial rejection preserves
-   original map allocation/order/entry/charge identities. Discovery affinity
-   plans at most 16 chronological positions / 8 repeated-root descriptors,
-   protects only admitted fitting histories through last use and evicts LRU
-   unprotected entries. Nonfitting plans do not evict useful entries; all-protected
-   admission rejects unchanged. Projections/first-use reads stay chronological;
-   exact reads retain ordinary LRU and individual fresh closure. Group state
-   clears before fallback/exact/publication and on exit/invalidation/escape.
-   Oversize evaluates complete history uncached; accounting Exception clears
-   retention, while strict evidence/cleanup/interruption keep original escapes.
-   Transient allocations/SQLite/RSS/time are not bounded. Memo references clear
-   before refusal/tails, on failure and invocation exit. S1–S3/Q1–Q5 behavior/
-   discovery/exact SELECT/fetch/decode counts/sensitivity remain NOT RUN/PROOF
-   NOT RUN. ROOT12914 accepts current source-delivery gaps; ROOT12801's historical
-   limitations remain attributed to that delivery.
+   remain fresh. THR308seq280 / ROOT14157 replaces historical ROOT12914
+   complete-graph retention, 8-root/4096-row/8MiB caps and 16-position affinity.
+   First chronological use fully fetches ALL root audit rows and ordinarily
+   decodes EVERY truthy payload, including heavy histories and LAST siblings.
+   A raw-key index reduces to scalar zero/one/many cardinalities and unique
+   INTEGER IDs. Only those facts survive across roots; each original projection
+   freshly fetches/decodes up to two selected rows by id AND root and reapplies
+   predicates/closed checks. Missing/malformed/changed point evidence escapes
+   benign absence adapters. Unsupported raw keys keep their own-ordinal original
+   full path; no future canonical validation or reordered effects. Public
+   readers/writers and shipping results parsing remain unchanged.
+   Full raw/decoded/reducer frames end before another root/results parsing.
+   Whole-epoch invalidation drops catalogues; last exact use (including skips)
+   releases root descriptors/catalogues; exit releases all. Scalar input/output,
+   actual maps/wrappers, one full root, selected buffers, results/parser and
+   SQLite memory are data dependent, with no hard RSS/time or old byte cap.
+   Separate full/selected fetch/decode and result-list counters plus monotonic
+   owner spans are defined in [runtime lifecycle](contracts/runtime-lifecycle.md#synchronous-startup-observations).
+   Disjoint load/discovery/exact/thread/residual is separate from inclusive
+   build/sweep/schema/lifespan/server totals. Only successful same-app actual
+   ASGI/listener startup records serving; the early listening log does not.
+   Six runtime/count/memory/timing/speed cases remain NOT RUN, sensitivity PROOF
+   NOT RUN under ROOT14157's accepted source gap; prior-root evidence remains
+   historical. No restart, new proof framework or inert skipping follows.
    Attributable later exact/refusal failures quarantine the root before bounded
    logging, skipping all later same-root work; pending also excludes siblings.
    Ambiguous attribution fails task recovery globally. No early diagnostic append is added and local

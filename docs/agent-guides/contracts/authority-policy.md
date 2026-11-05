@@ -79,6 +79,31 @@ Common completion and accepted-recovery entries check the original connection un
 
 The closed code uses unchanged task notes/audit key shapes and SQL meanings. New readers preserve old histories; old typed binaries reject `policy_no_continue` records, so rollback requires compatible code and draining old consumers. Source publication grants no activation/deploy/restart/history or UNKNOWN cleanup. C1–C9 backend behavior NOT RUN; native/sentinel/causal/rollback PROOF NOT RUN. Python units RETIRED; integration SKIPPED THR211seq270/271 + THR243seq42; required local/hosted checks lint/static only. See the current correction in `docs/agent-guides/orchestrator-contracts.md`.
 
+**Current THR308seq280 synchronous startup catalogue (ROOT14157).**
+Recovery remains synchronous before serving. One complete ordered history
+fetch/ordinary truthy-payload decode per unchanged needed root/epoch, including
+heavy roots and unrelated LAST siblings, reduces to private factual candidate
+cardinalities and unique audit INTEGER IDs. This supersedes historical
+ROOT12914 graph retention/8-root/4096-row/8MiB/16-position representation only.
+Each original chronological projection reads up to two selected rows afresh by
+id AND root; missing/malformed/mismatching point evidence fails closed outside
+legacy absence catches. Canonical/admission/session/binding/result/owner/parser
+checks and independently authenticating refusal transactions remain fresh.
+Both discovery first-failure examples and exact committed-effect order remain;
+whole-epoch invalidation, one clean uncached fallback, caller custody, anchored
+quarantine-before-log, global ambiguous exclusion and entire unsafe finally
+suppression retain their contracts. No inert admission is skipped/finalized or
+changed, and no authority verdict/history payload is retained in the catalogue.
+Scalar ownership ends at last exact use (including skips), invalidation/exit
+releases evidence; full root/reducer data ends before another root or results.
+Counts and monotonic success/incomplete timing use fixed aggregates at actual
+owners; only real same-app ASGI/listener startup records serving. See
+[orchestrator detail](../orchestrator-contracts.md) and
+[lifecycle timing definitions](runtime-lifecycle.md#synchronous-startup-observations).
+Six runtime/count/lifetime/timing/speed cases remain NOT RUN and sensitivity
+PROOF NOT RUN under manager acceptance, not behavioral PASS or a new proof gate.
+Source/static delivery grants no restart, deployment, checkpoint or policy change.
+
 **Current THR-279 v2 final-return diagnostic.** When the automatic v2 hook's final continuation call returns a bounded non-success status, the hook records that exact closed status and reason through the existing best-effort `authority_hook` `capture_failure` action before requesting the unchanged `final_commit_failed` refusal. A raised finalizer exception retains its distinct existing diagnostic. This changes no continuation decision, refusal code, audit action, task note, or identity semantics.
 
 - **Team escalation policy editor and activation (THR-181 S5/S6b/S7).** Every live manager with exactly one matching `teams.yaml` registration receives a compact manager-only entry/status card. Its dedicated org/agent-scoped policy page receives the server-owned neutral dual-text starter plus any registered legacy bootstrap template from the authenticated team projection; TypeScript carries no second text or clause authority. The dedicated page shows bounded secret-free immutable dual-text history. Legacy history and manager self-evaluation outcome APIs/data remain available, but their two read-only UI sections and eager requests are removed; worker, stale, mismatched, and duplicate-registration DOM/query/payload surfaces remain absent. Activation is an explicit founder-authorized action subject to ordinary authenticated route validation, exact live AgentDef/unique-registration resolution, team-scoped request and immutable release linkage, create-then-CAS, idempotency, audit, and monotonic epoch fences. Rollback reactivates an older immutable release as a new epoch. Code landing, redeploy, and a separately authorized production-policy activation are distinct events; this code creates or activates no production policy.

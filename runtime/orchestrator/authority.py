@@ -3631,10 +3631,12 @@ def refuse_authority_policy_v2_pre_final_on_startup(
         _V2StartupEvidenceUnavailable,
     )
 
+    from runtime.daemon.__main__ import _startup_span
     store = AuthorityPolicyStore(db)
     with store._startup_v2_reads() as reads:
         try:
-            targets = reads.discover()
+            with _startup_span("authority_discovery"):
+                targets = reads.discover()
         except _V2StartupConnectionUnsafe:
             raise
         except Exception as primary:
@@ -3649,225 +3651,247 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                 raise
             except BaseException:
                 raise primary
-        fenced_roots: set[str] = set()
-        failed_roots: set[str] = set()
-        for discovered, anchor in targets:
-            if discovered.root_task_id in failed_roots:
-                continue
-            tail_started = False
-            try:
-                target, current_anchor = reads.exact(discovered)
-                if (
-                    target is None
-                    or target.model_dump(exclude={"stage", "finalization_state", "obligation_code"})
-                    != discovered.model_dump(exclude={"stage", "finalization_state", "obligation_code"})
-                    or (anchor is not None and current_anchor != anchor)
-                ):
-                    raise _V2StartupEvidenceUnavailable("exact_target_changed")
-                # A newly authenticated exact tuple may also exclude its own root
-                # on a later failure; no sibling or writer authority is inferred.
-                if anchor is None:
-                    anchor = current_anchor
-                if target.finalization_state != "unfinalized":
-                    reads.invalidate()
-                    # Never replay the discovery-time pre-final projection. Leave
-                    # the authentic final owner to its own reconciliation, without
-                    # another refusal or postcommit tail in this pass.
-                    if anchor is None:
-                        return None
-                    fenced_roots.add(discovered.root_task_id)
-                    failed_roots.add(discovered.root_task_id)
+        with _startup_span("authority_exact"):
+            fenced_roots: set[str] = set()
+            failed_roots: set[str] = set()
+            for discovered, anchor in targets:
+                reads.phase = "exact"
+                reads.count("processed")
+                if discovered.root_task_id in failed_roots:
+                    reads.count("skipped")
+                    reads.release(discovered.root_task_id)
                     continue
-                if target.stage == "admitted" and orchestrator is not None:
-                    try:
-                        from runtime.orchestrator.orchestrator import (
-                            completion_report_from_result_row,
-                        )
-                        result = next(
-                            (
-                                row for row in db.get_task_results(target.root_task_id)
-                                if row.get("id") == target.result_id
-                                and row.get("agent") == target.manager_agent
-                                and row.get("session_id") == target.manager_session_id
-                            ),
-                            None,
-                        )
-                        if result is None:
-                            raise ValueError("causal result is missing")
-                        report = completion_report_from_result_row(
-                            target.root_task_id,
-                            result,
-                            fallback_agent=target.manager_agent,
-                        )
-                        non_escalate = (
-                            report.status == "blocked"
-                            or orchestrator._parse_next_step(report).action != "escalate"
-                        )
-                    except _V2StartupConnectionUnsafe:
-                        raise
-                    except Exception as primary:
-                        try:
-                            reads.invalidate()
-                            reads.check()
-                            non_escalate = False
-                        except _V2StartupConnectionUnsafe as unsafe:
-                            if all(cause is not primary for cause in unsafe.causes):
-                                unsafe.causes = (primary, *unsafe.causes)
-                            raise
-                        except BaseException:
-                            raise primary
-                    if non_escalate:
-                        # D2-B': the admission is inert residue.  Do not touch J,
-                        # Q, audits, or the task, and do not fence later branches.
-                        reads.check()
+                tail_started = False
+                try:
+                    target, current_anchor = reads.exact(discovered)
+                    if (
+                        target is None
+                        or target.model_dump(exclude={"stage", "finalization_state", "obligation_code"})
+                        != discovered.model_dump(exclude={"stage", "finalization_state", "obligation_code"})
+                        or (anchor is not None and current_anchor != anchor)
+                    ):
+                        raise _V2StartupEvidenceUnavailable("exact_target_changed")
+                    # A newly authenticated exact tuple may also exclude its own root
+                    # on a later failure; no sibling or writer authority is inferred.
+                    if anchor is None:
+                        anchor = current_anchor
+                    if target.finalization_state != "unfinalized":
+                        reads.count("finalized")
+                        reads.invalidate("finalized")
+                        # Never replay the discovery-time pre-final projection. Leave
+                        # the authentic final owner to its own reconciliation, without
+                        # another refusal or postcommit tail in this pass.
+                        if anchor is None:
+                            return None
+                        reads.count("fenced", int(discovered.root_task_id not in fenced_roots))
+                        fenced_roots.add(discovered.root_task_id)
+                        failed_roots.add(discovered.root_task_id)
                         continue
-                # orchestrator=None cannot reproduce shipping parsing semantics and
-                # therefore fails closed to the existing refusal path (M4).
-                fenced_roots.add(discovered.root_task_id)
-                refusal_code = (
-                    target.obligation_code
-                    or _V2_INTERRUPTED_STAGE_REFUSAL.get(
-                        target.stage, "interrupted_pre_final",
-                    )
-                )
-                outcome = reads.refuse(
-                    root_task_id=target.root_task_id,
-                    manager_agent=target.manager_agent,
-                    manager_session_id=target.manager_session_id,
-                    result_id=target.result_id,
-                    refusal_code=refusal_code,
-                    max_revise_rounds=(
-                        int(authority_policy_v2_claim_eligibility(orchestrator).get("max_revise_rounds", 0))
-                        if orchestrator is not None else None
-                    ),
-                )
-                if outcome.status == "housekeeping_pending":
-                    # A bounded writer disposition is not an exception/audit kind,
-                    # but it still excludes every later same-root operation.
-                    failed_roots.add(discovered.root_task_id)
-                if outcome.status == "refused" and orchestrator is not None:
-                    reads.invalidate()
-                    tail_started = True
-                    if outcome.task_disposition == "failed":
-                        from runtime.orchestrator.run_step import (
-                            _enqueue_parent_if_waiting,
-                            _fail_terminal_tail,
-                            _handoff_consumed_recovery_terminal_effects,
-                            _task_matches_authority_v2_refusal_failure,
-                            _maybe_post_thread_followup,
-                        )
-                        expected_note = f"authority_v2_refusal:{outcome.refusal_code}"
-                        if outcome.receipt_settled:
-                            _handoff_consumed_recovery_terminal_effects(
-                                orchestrator,
+                    if target.stage == "admitted" and orchestrator is not None:
+                        try:
+                            from runtime.orchestrator.orchestrator import (
+                                completion_report_from_result_row,
+                            )
+                            reads.count("result_list_calls")
+                            result_rows = db.get_task_results(target.root_task_id)
+                            reads.count("result_list_successes")
+                            reads.count("result_list_rows", len(result_rows))
+                            result = next(
+                                (
+                                    row for row in result_rows
+                                    if row.get("id") == target.result_id
+                                    and row.get("agent") == target.manager_agent
+                                    and row.get("session_id") == target.manager_session_id
+                                ),
+                                None,
+                            )
+                            if result is None:
+                                raise ValueError("causal result is missing")
+                            report = completion_report_from_result_row(
                                 target.root_task_id,
-                                target.manager_agent,
-                                target.manager_session_id,
-                                target.result_id,
-                                "failed",
-                                after_recovery_cleanup=lambda: (
+                                result,
+                                fallback_agent=target.manager_agent,
+                            )
+                            del result_rows
+                            non_escalate = (
+                                report.status == "blocked"
+                                or orchestrator._parse_next_step(report).action != "escalate"
+                            )
+                        except _V2StartupConnectionUnsafe:
+                            raise
+                        except Exception as primary:
+                            try:
+                                reads.invalidate("parser_failure")
+                                reads.check()
+                                non_escalate = False
+                            except _V2StartupConnectionUnsafe as unsafe:
+                                if all(cause is not primary for cause in unsafe.causes):
+                                    unsafe.causes = (primary, *unsafe.causes)
+                                raise
+                            except BaseException:
+                                raise primary
+                        if non_escalate:
+                            reads.count("inert")
+                            # D2-B': the admission is inert residue.  Do not touch J,
+                            # Q, audits, or the task, and do not fence later branches.
+                            reads.check()
+                            continue
+                    # orchestrator=None cannot reproduce shipping parsing semantics and
+                    # therefore fails closed to the existing refusal path (M4).
+                    reads.count("fenced", int(discovered.root_task_id not in fenced_roots))
+                    fenced_roots.add(discovered.root_task_id)
+                    refusal_code = (
+                        target.obligation_code
+                        or _V2_INTERRUPTED_STAGE_REFUSAL.get(
+                            target.stage, "interrupted_pre_final",
+                        )
+                    )
+                    outcome = reads.refuse(
+                        root_task_id=target.root_task_id,
+                        manager_agent=target.manager_agent,
+                        manager_session_id=target.manager_session_id,
+                        result_id=target.result_id,
+                        refusal_code=refusal_code,
+                        max_revise_rounds=(
+                            int(authority_policy_v2_claim_eligibility(orchestrator).get("max_revise_rounds", 0))
+                            if orchestrator is not None else None
+                        ),
+                    )
+                    reads.count("classified_" + outcome.status)
+                    if outcome.status == "housekeeping_pending":
+                        # A bounded writer disposition is not an exception/audit kind,
+                        # but it still excludes every later same-root operation.
+                        failed_roots.add(discovered.root_task_id)
+                    if outcome.status == "refused" and orchestrator is not None:
+                        reads.invalidate("tail")
+                        tail_started = True
+                        if outcome.task_disposition == "failed":
+                            from runtime.orchestrator.run_step import (
+                                _enqueue_parent_if_waiting,
+                                _fail_terminal_tail,
+                                _handoff_consumed_recovery_terminal_effects,
+                                _task_matches_authority_v2_refusal_failure,
+                                _maybe_post_thread_followup,
+                            )
+                            expected_note = f"authority_v2_refusal:{outcome.refusal_code}"
+                            if outcome.receipt_settled:
+                                _handoff_consumed_recovery_terminal_effects(
+                                    orchestrator,
+                                    target.root_task_id,
+                                    target.manager_agent,
+                                    target.manager_session_id,
+                                    target.result_id,
+                                    "failed",
+                                    after_recovery_cleanup=lambda: (
+                                        _enqueue_parent_if_waiting(
+                                            orchestrator,
+                                            target.root_task_id,
+                                            root_auto_revisit_spawned=False,
+                                        )
+                                        if _task_matches_authority_v2_refusal_failure(
+                                            orchestrator, target.root_task_id, expected_note,
+                                        )
+                                        else None
+                                    ),
+                                )
+                            else:
+                                _fail_terminal_tail(
+                                    orchestrator,
+                                    target.root_task_id,
+                                    expected_note=expected_note,
+                                )
+                                if _task_matches_authority_v2_refusal_failure(
+                                    orchestrator, target.root_task_id, expected_note,
+                                ):
                                     _enqueue_parent_if_waiting(
                                         orchestrator,
                                         target.root_task_id,
                                         root_auto_revisit_spawned=False,
                                     )
-                                    if _task_matches_authority_v2_refusal_failure(
-                                        orchestrator, target.root_task_id, expected_note,
+                                if _task_matches_authority_v2_refusal_failure(
+                                    orchestrator, target.root_task_id, expected_note,
+                                ):
+                                    _maybe_post_thread_followup(
+                                        orchestrator,
+                                        target.root_task_id,
+                                        status=TaskStatus.FAILED,
+                                        auto_revisit_spawned=False,
                                     )
-                                    else None
-                                ),
-                            )
-                        else:
-                            _fail_terminal_tail(
-                                orchestrator,
-                                target.root_task_id,
-                                expected_note=expected_note,
-                            )
-                            if _task_matches_authority_v2_refusal_failure(
-                                orchestrator, target.root_task_id, expected_note,
-                            ):
-                                _enqueue_parent_if_waiting(
-                                    orchestrator,
-                                    target.root_task_id,
-                                    root_auto_revisit_spawned=False,
-                                )
-                            if _task_matches_authority_v2_refusal_failure(
-                                orchestrator, target.root_task_id, expected_note,
-                            ):
-                                _maybe_post_thread_followup(
-                                    orchestrator,
-                                    target.root_task_id,
-                                    status=TaskStatus.FAILED,
-                                    auto_revisit_spawned=False,
-                                )
-                        reads.check()
-                        continue
-                    result = db.get_latest_task_result(
-                        target.root_task_id,
-                        target.manager_agent,
-                        target.manager_session_id,
-                    )
-                    last_summary = (
-                        result.get("output_summary", "")
-                        if result is not None and result.get("id") == target.result_id
-                        else ""
-                    )
-                    surface_reason = "authority_v2_refusal"
-                    if outcome.refusal_code == "policy_no_continue":
-                        from runtime.orchestrator.orchestrator import completion_report_from_result_row
-                        if result is None or result.get("id") != target.result_id:
-                            raise ValueError("policy terminal causal result unavailable")
-                        causal_report = completion_report_from_result_row(
-                            target.root_task_id, result, fallback_agent=target.manager_agent,
+                            reads.check()
+                            continue
+                        result = db.get_latest_task_result(
+                            target.root_task_id,
+                            target.manager_agent,
+                            target.manager_session_id,
                         )
-                        surface_reason = orchestrator._parse_next_step(causal_report).reason or "Escalated"
-                    orchestrator.notify_escalated(
-                        task_id=target.root_task_id,
-                        agent=target.manager_agent,
-                        reason=surface_reason,
-                        last_summary=last_summary or "",
-                    )
-                    # Import lazily to preserve the authority/run_step module
-                    # boundary.  The refusal transaction committed before this
-                    # external projection is attempted.
-                    from runtime.orchestrator.run_step import (
-                        _maybe_post_thread_escalation,
-                    )
-                    _maybe_post_thread_escalation(
-                        orchestrator,
-                        target.root_task_id,
-                        reason=surface_reason,
-                    )
-                reads.check()
-            except _V2StartupConnectionUnsafe:
-                if anchor is not None:
-                    fenced_roots.add(discovered.root_task_id)
-                    failed_roots.add(discovered.root_task_id)
-                raise
-            except BaseException as exc:
-                try:
-                    reads.invalidate()
+                        last_summary = (
+                            result.get("output_summary", "")
+                            if result is not None and result.get("id") == target.result_id
+                            else ""
+                        )
+                        surface_reason = "authority_v2_refusal"
+                        if outcome.refusal_code == "policy_no_continue":
+                            from runtime.orchestrator.orchestrator import completion_report_from_result_row
+                            if result is None or result.get("id") != target.result_id:
+                                raise ValueError("policy terminal causal result unavailable")
+                            causal_report = completion_report_from_result_row(
+                                target.root_task_id, result, fallback_agent=target.manager_agent,
+                            )
+                            surface_reason = orchestrator._parse_next_step(causal_report).reason or "Escalated"
+                        orchestrator.notify_escalated(
+                            task_id=target.root_task_id,
+                            agent=target.manager_agent,
+                            reason=surface_reason,
+                            last_summary=last_summary or "",
+                        )
+                        # Import lazily to preserve the authority/run_step module
+                        # boundary.  The refusal transaction committed before this
+                        # external projection is attempted.
+                        from runtime.orchestrator.run_step import (
+                            _maybe_post_thread_escalation,
+                        )
+                        _maybe_post_thread_escalation(
+                            orchestrator,
+                            target.root_task_id,
+                            reason=surface_reason,
+                        )
+                    reads.check()
+                except _V2StartupConnectionUnsafe:
+                    reads.count("unsafe")
                     if anchor is not None:
+                        reads.count("fenced", int(discovered.root_task_id not in fenced_roots))
                         fenced_roots.add(discovered.root_task_id)
                         failed_roots.add(discovered.root_task_id)
-                    if tail_started:
-                        # A tail can contain self-committing writers. Its escaping
-                        # failure supplies no affirmative cleanup/COMMIT disposition.
-                        reads._abort("postcommit_tail", exc)
-                    reads.check()
-                    if not isinstance(exc, Exception):
-                        raise
-                    _v2_startup_failure_log("exact_or_refusal_unavailable")
-                    reads.check()
-                    if anchor is None:
-                        return None
-                except _V2StartupConnectionUnsafe as unsafe:
-                    if all(cause is not exc for cause in unsafe.causes):
-                        unsafe.causes = (exc, *unsafe.causes)
                     raise
-                except BaseException:
-                    raise exc
-        return fenced_roots
+                except BaseException as exc:
+                    reads.count("evidence_failures")
+                    try:
+                        reads.invalidate("evidence_failure")
+                        if anchor is not None:
+                            reads.count("fenced", int(discovered.root_task_id not in fenced_roots))
+                            fenced_roots.add(discovered.root_task_id)
+                            failed_roots.add(discovered.root_task_id)
+                        if tail_started:
+                            # A tail can contain self-committing writers. Its escaping
+                            # failure supplies no affirmative cleanup/COMMIT disposition.
+                            reads._abort("postcommit_tail", exc)
+                        reads.check()
+                        if not isinstance(exc, Exception):
+                            raise
+                        _v2_startup_failure_log("exact_or_refusal_unavailable")
+                        reads.check()
+                        if anchor is None:
+                            return None
+                    except _V2StartupConnectionUnsafe as unsafe:
+                        if all(cause is not exc for cause in unsafe.causes):
+                            unsafe.causes = (exc, *unsafe.causes)
+                        raise
+                    except BaseException:
+                        raise exc
+                finally:
+                    result_rows = result = report = causal_report = None
+                    reads.release(discovered.root_task_id)
+            return fenced_roots
 
 
 def _v2_request_refusal(

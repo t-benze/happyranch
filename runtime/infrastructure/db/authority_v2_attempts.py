@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
-import sys
 import uuid
-from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, TypeVar
@@ -125,57 +124,33 @@ class _V2StartupRefusalPhases:
         self.committed = True
 
 
-_V2_STARTUP_ROOT_CAP = 8
-_V2_STARTUP_ROW_CAP = 4096
-_V2_STARTUP_BYTE_CAP = 8 * 1024 * 1024
 _StartupResult = TypeVar("_StartupResult")
-# Payload containers are private and read-only after their one complete charge.
-_V2StartupPayload = tuple[str, tuple, list[dict]]
-_V2StartupEntry = tuple[_V2StartupPayload, int]
+# Factual cardinality (saturated at two) and the unique native audit INTEGER id.
+_V2StartupBucket = tuple[int, int | None]
+_V2StartupCatalogue = dict[tuple[str, str], tuple[_V2StartupBucket, _V2StartupBucket]]
 
 
-def _v2_startup_retained_size(value: Any, *, opaque: set[int] | None = None) -> int:
-    """Size a new graph, or metadata stopping ONLY at fully charged payloads."""
-    seen: set[int] = set()
-    pending = [value]
-    size = 0
-    while pending:
-        item = pending.pop()
-        if id(item) in seen or (opaque is not None and id(item) in opaque):
-            continue
-        seen.add(id(item))
-        kind = type(item)
-        if kind not in (dict, OrderedDict, tuple, list, str, bytes, int, float, bool, type(None)):
-            raise ValueError("unsupported startup retained object")
-        size += sys.getsizeof(item)
-        if kind in (dict, OrderedDict):
-            for key, child in item.items():
-                pending.extend((key, child))
-        elif kind in (tuple, list):
-            pending.extend(item)
-    return size
+@dataclass(frozen=True)
+class _V2StartupCandidates:
+    count: int
+    row: dict | None = None
 
 
 class _V2StartupReads:
-    """Exact Database/connection/invocation owner of private full-root history.
-
-    Only obligation and admitted-stage validators consume the decoded graph,
-    read-only inside locked views. Targets/anchors contain scalars; public
-    readers, shipping parsers and writers never receive these containers.
-    """
+    """Invocation-owned scalar catalogues; never retain complete audit graphs."""
 
     def __init__(self, db: Any) -> None:
         self.db = db
-        # Values are (payload, charge); payload includes the actual root key,
-        # complete raw scalar row tuples and private decoded history.
-        # Accepted entries move to pending during a speculative closure; they
-        # become reusable across reads only after matching outside bookends.
-        self._memo: OrderedDict[str, _V2StartupEntry] = OrderedDict()
-        self._pending: OrderedDict[str, _V2StartupEntry] = OrderedDict()
+        self._memo: dict[str, _V2StartupCatalogue] = {}
+        self._pending: dict[str, _V2StartupCatalogue] = {}
         self._epoch: tuple | None = None
-        self._groups: tuple[tuple[str, int, int], ...] = ()
-        self._position = -1
-        self._window_end: int | None = 0
+        # Raw selected-key/last-use descriptors, not authority or row snapshots.
+        self._keys: dict[str, set[tuple[str, str]]] = {}
+        self._remaining: dict[str, int] = {}
+        self._built: set[str] = set()
+        self._entries = 0
+        self.counts: dict[str, int] = {}
+        self.phase = "discovery"
         self._closed = False
         self.unsafe: _V2StartupConnectionUnsafe | None = None
         with db._lock:
@@ -188,156 +163,66 @@ class _V2StartupReads:
                 self._abort("connection_entry", exc)
             self.check()
 
+    def count(self, name: str, amount: int = 1) -> None:
+        try:
+            key = self.phase + "_" + name
+            self.counts[key] = self.counts.get(key, 0) + amount
+        except BaseException:
+            pass  # Observation cannot replace any evidence/cleanup disposition.
+
     def __enter__(self) -> _V2StartupReads:
         self.check()
         return self
 
     def __exit__(self, *_exc: Any) -> None:
         with self.db._lock:
-            self.invalidate()
+            self.invalidate("exit")
+            self._keys.clear()
+            self._remaining.clear()
+            self._built.clear()
             self._closed = True
+            try:
+                logging.getLogger(__name__).info("startup_authority_counts %s", self.counts)
+            except BaseException:
+                pass
 
-    def invalidate(self) -> None:
-        """Drop accepted AND speculative references before effects or escape."""
+    def invalidate(self, reason: str = "effect") -> None:
+        """Discard accepted AND speculative evidence before effects or escape.
+
+        Raw selected keys remain only as the chronological invocation's plan;
+        every rebuilt catalogue derives its facts from a new complete history.
+        """
         with self.db._lock:
+            self.count("invalidate_" + reason)
             self._memo.clear()
             self._pending.clear()
             self._epoch = None
-            self._groups = ()
-            self._position = -1
-            self._window_end = 0
+            self._entries = 0
+            self._catalogue_size()
 
-    def _retention_fits(
-        self, pending: OrderedDict[str, _V2StartupEntry] | None = None,
-        *, groups: tuple | None = None, position: int | None = None,
-        window_end: int | None = None,
-    ) -> bool:
-        """Conservative M + sum(C), without revisiting any old payload graph."""
-        # Materialize the ACTUAL field dictionary before measuring its storage.
-        fields = self.__dict__
-        if self.unsafe is not None:
-            return False  # Never size, replace or sanitize sticky safety causes.
-        pending = self._pending if pending is None else pending
-        if len(pending) + len(self._memo) > _V2_STARTUP_ROOT_CAP:
-            return False
-        opaque = set()
-        charge = 0
-        for entries in (pending, self._memo):
-            for payload, entry_charge in entries.values():
-                opaque.add(id(payload))
-                charge += entry_charge
-        children = []
-        for key, value in fields.items():
-            children.append(key)
-            # Borrowed owners are excluded only at these explicit field edges;
-            # their field names/reference slots remain in the measured dict.
-            if key not in ("db", "conn"):
-                if key == "_pending":
-                    value = pending
-                elif key == "_groups" and groups is not None:
-                    value = groups
-                elif key == "_position" and position is not None:
-                    value = position
-                elif key == "_window_end" and window_end is not None:
-                    value = window_end
-                children.append(value)
-        metadata = (
-            sys.getsizeof(self) + sys.getsizeof(fields)
-            + _v2_startup_retained_size(tuple(children), opaque=opaque)
-        )
-        return metadata + charge <= _V2_STARTUP_BYTE_CAP
-
-    def _reconcile_retention(self) -> None:
-        # Catch accounting only. JSON, projection, authentication and view
-        # cleanup failures must keep their original ordering/escape boundary.
+    def _catalogue_size(self) -> None:
         try:
-            if not self._retention_fits():
-                self.invalidate()
-        except Exception:
-            self.invalidate()
-
-    def _protected(self, root: str) -> bool:
-        return any(
-            key == root and first <= self._position <= last
-            for key, first, last in self._groups
-        )
-
-    def _admit(self, root: str, entry: _V2StartupEntry) -> None:
-        # One-call trial locals never survive to the next projection. No edit
-        # to the original map, including its allocation/order, until acceptance.
-        trial = OrderedDict(self._pending)
-        trial[root] = entry
-        while True:
-            if self._retention_fits(trial):
-                self._pending = trial
-                return
-            victim = next(
-                (key for key in trial if key != root and not self._protected(key)),
-                None,
+            self.counts["catalogue_current_entries"] = self._entries
+            self.counts["catalogue_peak_entries"] = max(
+                self.counts.get("catalogue_peak_entries", 0), self._entries,
             )
-            if victim is None:
-                return
-            del trial[victim]
+        except BaseException:
+            pass
 
-    def _discovery_position(self, rows: list, position: int) -> None:
-        """Bounded raw-key planning only; never prefetch fallible evidence."""
-        if self._epoch is None or self._window_end is None:
-            return
-        try:
-            if position >= self._window_end:
-                end = min(len(rows), position + 2 * _V2_STARTUP_ROOT_CAP)
-                groups = []
-                for first in range(position, end):
-                    root = rows[first]["root_task_id"]
-                    if type(root) is not str:
-                        continue
-                    # Bounded pairwise scans: no slices, per-root position
-                    # lists, future projections or unbounded grouping index.
-                    if any(
-                        type(rows[prior]["root_task_id"]) is str
-                        and rows[prior]["root_task_id"] == root
-                        for prior in range(position, first)
-                    ):
-                        continue
-                    last = first
-                    for later in range(first + 1, end):
-                        key = rows[later]["root_task_id"]
-                        if type(key) is str and key == root:
-                            last = later
-                    if last != first:
-                        groups.append((root, first, last))
-                plan = tuple(groups)  # <=8 repeated roots in <=16 rows.
-                # Trial field VALUES, actual session-dict allocation. A
-                # nonfitting plan changes no entry or map allocation/order.
-                if not self._retention_fits(
-                    groups=plan, position=position, window_end=end,
-                ):
-                    # Ordinary LRU for the rest of this discovery. None is
-                    # already charged at unsafe; replacing the uniquely owned
-                    # group tuple with () cannot grow storage. Keep the charged
-                    # position object. No entry is evicted merely for planning.
-                    self._groups = ()
-                    self._window_end = None
-                    return
-                self._groups = plan
-                self._window_end = end
-            else:
-                self._groups = tuple(
-                    group for group in self._groups if group[2] >= position
-                )
-            self._position = position
-            self._reconcile_retention()
-        except Exception:
-            self.invalidate()
-
-    def _clear_groups(self) -> None:
-        self._groups = ()
-        self._position = -1
-        self._window_end = 0
-        self._reconcile_retention()
+    def release(self, root: str) -> None:
+        """Last exact use includes failed-root skips and every loop exit."""
+        remaining = self._remaining.get(root, 1) - 1
+        if remaining:
+            self._remaining[root] = remaining
+        else:
+            self._remaining.pop(root, None)
+            self._keys.pop(root, None)
+            self._built.discard(root)
+            self._entries -= len(self._memo.pop(root, {})) + len(self._pending.pop(root, {}))
+            self._catalogue_size()
 
     def _abort(self, reason: str, *causes: BaseException) -> None:
-        self.invalidate()
+        self.invalidate("unsafe")
         if self.unsafe is None:
             self.unsafe = _V2StartupConnectionUnsafe(reason, *causes)
         else:
@@ -436,16 +321,18 @@ class _V2StartupReads:
             try:
                 opening = self._bookend()
                 if opening is None:
-                    self.invalidate()
+                    self.invalidate("metadata_unavailable")
                     with self._view():
                         return operation()
                 if opening != self._epoch:
-                    self.invalidate()
+                    if self._epoch is not None:
+                        names = ("connection", "external_commit", "local_changes", "schema",
+                                 "databases", "isolation", "autocommit")
+                        for name, old, new in zip(names, self._epoch, opening):
+                            if old != new:
+                                self.count("changed_" + name)
+                        self.invalidate("epoch_changed")
                     self._epoch = opening
-                # Keep the already-accounted equal epoch object on hits.
-                self._reconcile_retention()
-                # Swapping the SAME two map references preserves field/dict
-                # allocation, metadata reachability and every wrapper/charge.
                 self._pending, self._memo = self._memo, self._pending
                 with self._view():
                     result = operation()
@@ -453,63 +340,136 @@ class _V2StartupReads:
                 if closing == opening:
                     self._memo, self._pending = self._pending, self._memo
                     return result
-                # Never release a speculative target, anchor, absence or hit.
+                # No speculative output or catalogue escapes a moved closure.
                 del result
-                self.invalidate()
+                self.invalidate("closure_moved")
                 self.check()
-                # Exactly ONE uncached coherent fallback, after affirmative
-                # clean owned exit. Unsafe view cleanup always escapes above.
+                self.count("clean_fallbacks")
+                # Exactly ONE original clean uncached fallback, never a retry loop.
                 with self._view():
                     return operation()
             except BaseException:
-                self.invalidate()
+                self.invalidate("failure")
                 raise
 
     def _history(self, root: str) -> list[dict]:
-        # Only called by _project inside _read's locked coherent closure.
-        if root in self._pending:
-            history = self._pending[root][0][2]
-            try:
-                self._pending.move_to_end(root)
-                self._reconcile_retention()
-            except Exception:
-                self.invalidate()
-            return history
+        self.count("full_fetch_attempts")
         rows = self.conn.execute(
             "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (root,),
         ).fetchall()
-        # Match get_audit_logs exactly, including truthy-payload decoding,
-        # JSON scalar types, Unicode, empty payloads and malformed siblings.
+        self.count("full_fetch_successes")
+        self.count("full_rows", len(rows))
         history = []
         for row in rows:
             item = dict(row)
             if item.get("payload"):
+                self.count("full_decode_attempts")
                 item["payload"] = json.loads(item["payload"])
+                self.count("full_decode_successes")
             history.append(item)
-        if self._epoch is not None and rows and len(rows) <= _V2_STARTUP_ROW_CAP:
-            try:
-                raw = tuple(tuple(row) for row in rows)
-                payload = (root, raw, history)
-                charge = _v2_startup_retained_size(payload)
-                self._admit(root, (payload, charge))
-            except Exception:
-                # Unsupported/failed accounting never changes full evaluation.
-                self.invalidate()
         return history
+
+    def _materialize(self, root: str) -> _V2StartupCatalogue:
+        # Decode ALL truthy siblings before any filtering, including LAST and
+        # heavyweight roots. This frame owns all full raw/decoded/scratch data;
+        # only scalar count/id facts return to the caller.
+        history = self._history(root)
+        catalogue = {key: ((0, None), (0, None)) for key in self._keys[root]}
+        for item in history:
+            payload = item.get("payload")
+            manager = item.get("agent")
+            if type(manager) is not str or not isinstance(payload, dict):
+                continue
+            attempt = payload.get("attempt_id")
+            if type(attempt) is not str:
+                continue
+            key = (manager, attempt)
+            if key not in catalogue:
+                continue
+            action = item.get("action")
+            if action == AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION:
+                slot = 0
+            elif (action == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+                  and payload.get("stage") == AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED):
+                slot = 1
+            else:
+                continue
+            buckets = catalogue[key]
+            count = min(2, buckets[slot][0] + 1)
+            bucket = (count, item["id"] if count == 1 else None)
+            catalogue[key] = (bucket, buckets[1]) if slot == 0 else (buckets[0], bucket)
+        if root in self._built:
+            self.count("rebuilds")
+        self._built.add(root)
+        self.count("materializations")
+        return catalogue
+
+    def _selected(
+        self, root: str, key: tuple[str, str], bucket: _V2StartupBucket, *, admitted: bool,
+    ) -> _V2StartupCandidates:
+        count, audit_id = bucket
+        if count != 1:
+            return _V2StartupCandidates(count)
+        # Acquisition/predicate failures MUST escape the legacy validators'
+        # benign absence catches. Never manufacture a singleton evidence row.
+        if type(audit_id) is not int:
+            raise _V2StartupEvidenceUnavailable("selected_id_invalid")
+        self.count("selected_fetch_attempts")
+        row = self.conn.execute(
+            "SELECT * FROM audit_log WHERE id=? AND task_id=?", (audit_id, root),
+        ).fetchone()
+        self.count("selected_fetch_successes")
+        self.count("selected_rows", int(row is not None))
+        if row is None:
+            raise _V2StartupEvidenceUnavailable("selected_row_missing")
+        item = dict(row)
+        if item.get("payload"):
+            self.count("selected_decode_attempts")
+            item["payload"] = json.loads(item["payload"])
+            self.count("selected_decode_successes")
+        payload = item.get("payload")
+        action = (AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION if admitted
+                  else AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION)
+        if (item.get("action") != action or item.get("agent") != key[0]
+                or not isinstance(payload, dict) or payload.get("attempt_id") != key[1]
+                or (admitted and payload.get("stage") != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED)):
+            raise _V2StartupEvidenceUnavailable("selected_row_changed")
+        return _V2StartupCandidates(1, item)
 
     def _project(
         self, row: Any,
     ) -> tuple[AuthorityPolicyV2HousekeepingTarget, _V2StartupAnchor | None]:
-        # Full strict history precedes every legacy absence conversion. These
-        # are the ONLY decoded aliases: both validators read without mutation,
-        # and return scalars/frozen projections, never rows/payload containers.
-        history = self._history(row["root_task_id"])
+        root, manager, attempt = (row[name] for name in
+                                 ("root_task_id", "manager_agent", "attempt_id"))
+        key = (manager, attempt)
+        if (self._epoch is None or any(type(value) is not str for value in (root, manager, attempt))
+                or key not in self._keys.get(root, ())):
+            # Unsupported raw descriptors are evaluated at their OWN ordinal.
+            history = self._history(root)
+            target = self.db._v2_housekeeping_target_from_row(
+                row, obligation_code=self.db._authenticate_v2_obligation_uncommitted(
+                    dict(row), _history=history,
+                ),
+            )
+            return target, self.db._v2_startup_anchor_uncommitted(row, history, _reads=self)
+        catalogue = self._pending.get(root)
+        if catalogue is None:
+            catalogue = self._materialize(root)
+            self._pending[root] = catalogue
+            self._entries += len(catalogue)
+            self._catalogue_size()
+        else:
+            self.count("catalogue_reuses")
+        obligation, admitted = catalogue[key]
+        selected = self._selected(root, key, obligation, admitted=False)
         target = self.db._v2_housekeeping_target_from_row(
             row, obligation_code=self.db._authenticate_v2_obligation_uncommitted(
-                dict(row), _history=history,
+                dict(row), _candidates=selected,
             ),
         )
-        anchor = self.db._v2_startup_anchor_uncommitted(row, history)
+        # Preserve canonical/obligation-before-admission failure ordering.
+        selected = self._selected(root, key, admitted, admitted=True)
+        anchor = self.db._v2_startup_anchor_uncommitted(row, _admitted=selected, _reads=self)
         return target, anchor
 
     def discover(
@@ -521,22 +481,18 @@ class _V2StartupReads:
                    WHERE finalization_state='unfinalized'
                    ORDER BY created_at, attempt_id""",
             ).fetchall()
-            result = []
-            try:
-                self._discovery_position(rows, 0)
-                for row in rows:
-                    result.append(self._project(row))
-                    # Release a group's protection immediately after last use,
-                    # while its fitting history may remain ordinary LRU. The
-                    # only across-projection index is the charged field itself.
-                    self._discovery_position(rows, self._position + 1)
-            except BaseException:
-                # Release immediately without doing new accounting while an
-                # evidence failure/interruption is already escaping.
-                self.invalidate()
-                raise
-            self._clear_groups()
-            return result
+            self._keys.clear()
+            self._remaining.clear()
+            for row in rows:
+                root, manager, attempt = (row[name] for name in
+                                         ("root_task_id", "manager_agent", "attempt_id"))
+                if type(root) is str:
+                    self._remaining[root] = self._remaining.get(root, 0) + 1
+                    if type(manager) is str and type(attempt) is str:
+                        self._keys.setdefault(root, set()).add((manager, attempt))
+            # No future canonical, payload, binding or result validation here.
+            return [self._project(row) for row in rows]
+        self.phase = "discovery"
         return self._read(project)
 
     def exact(
@@ -551,6 +507,7 @@ class _V2StartupReads:
                  target.manager_session_id, target.result_id),
             ).fetchone()
             return (None, None) if row is None else self._project(row)
+        self.phase = "exact"
         return self._read(project)
 
     def refuse(self, **identity: Any) -> AuthorityPolicyV2HousekeepingOutcome:
@@ -591,7 +548,8 @@ class AuthorityV2AttemptsMixin:
         return _V2StartupReads(self)
 
     def _v2_startup_anchor_uncommitted(
-        self, row: Any, history: list[dict],
+        self, row: Any, history: list[dict] | None = None, *,
+        _admitted: _V2StartupCandidates | None = None, _reads: _V2StartupReads | None = None,
     ) -> _V2StartupAnchor | None:
         """Authenticate one complete immutable tuple, for exclusion ONLY.
 
@@ -601,12 +559,17 @@ class AuthorityV2AttemptsMixin:
         attempt = self._authority_policy_v2_attempt_from_row(row)
         if not self._authenticate_v2_result_stage_audit_uncommitted(
             dict(row), AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
-            require_finalization=True, _history=history,
+            require_finalization=True, _history=history, _candidates=_admitted,
         ):
             return None
+        if _reads is not None:
+            _reads.count("anchor_result_fetch_attempts")
         result = self._conn.execute(
             "SELECT * FROM task_results WHERE id=?", (attempt.result_id,),
         ).fetchone()
+        if _reads is not None:
+            _reads.count("anchor_result_fetch_successes")
+            _reads.count("anchor_result_rows", int(result is not None))
         if result is None or (
             result["task_id"], result["agent"], result["session_id"]
         ) != (attempt.root_task_id, attempt.manager_agent, attempt.manager_session_id):
@@ -726,6 +689,7 @@ class AuthorityV2AttemptsMixin:
         self, attempt_row: dict, stage: str, *, candidate_id: str | None = None,
         require_finalization: bool = False,
         _history: list[dict] | None = None,
+        _candidates: _V2StartupCandidates | None = None,
     ) -> bool:
         """Require exactly one authentic CLOSED result-stage event for ``stage``.
 
@@ -745,22 +709,27 @@ class AuthorityV2AttemptsMixin:
         root_task_id = attempt_row["root_task_id"]
         manager_agent = attempt_row["manager_agent"]
         attempt_id = attempt_row["attempt_id"]
-        try:
-            candidates = [
-                row for row in (
-                    self.get_audit_logs(root_task_id) if _history is None else _history
-                )
-                if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
-                and row.get("agent") == manager_agent
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_id
-                and row["payload"].get("stage") == stage
-            ]
-        except Exception:
-            return False
-        if len(candidates) != 1:
-            return False
-        payload = candidates[0]["payload"]
+        if _candidates is not None:
+            if _candidates.count != 1 or _candidates.row is None:
+                return False
+            payload = _candidates.row["payload"]
+        else:
+            try:
+                candidates = [
+                    row for row in (
+                        self.get_audit_logs(root_task_id) if _history is None else _history
+                    )
+                    if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+                    and row.get("agent") == manager_agent
+                    and isinstance(row.get("payload"), dict)
+                    and row["payload"].get("attempt_id") == attempt_id
+                    and row["payload"].get("stage") == stage
+                ]
+            except Exception:
+                return False
+            if len(candidates) != 1:
+                return False
+            payload = candidates[0]["payload"]
         expected = {
             "stage": stage,
             "attempt_id": attempt_id,
@@ -3914,24 +3883,30 @@ class AuthorityV2AttemptsMixin:
 
     def _authenticate_v2_obligation_uncommitted(
         self, attempt_row: dict, *, _history: list[dict] | None = None,
+        _candidates: _V2StartupCandidates | None = None,
     ) -> str | None:
         """Return the closed code of exactly one authentic failed-stage obligation."""
-        try:
-            rows = [
-                row for row in (
-                    self.get_audit_logs(attempt_row["root_task_id"])
-                    if _history is None else _history
-                )
-                if row.get("action") == AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION
-                and row.get("agent") == attempt_row["manager_agent"]
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
-            ]
-        except Exception:
-            return None
-        if len(rows) != 1:
-            return None
-        payload = rows[0]["payload"]
+        if _candidates is not None:
+            if _candidates.count != 1 or _candidates.row is None:
+                return None
+            payload = _candidates.row["payload"]
+        else:
+            try:
+                rows = [
+                    row for row in (
+                        self.get_audit_logs(attempt_row["root_task_id"])
+                        if _history is None else _history
+                    )
+                    if row.get("action") == AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION
+                    and row.get("agent") == attempt_row["manager_agent"]
+                    and isinstance(row.get("payload"), dict)
+                    and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+                ]
+            except Exception:
+                return None
+            if len(rows) != 1:
+                return None
+            payload = rows[0]["payload"]
         expected_keys = {
             "attempt_id", "result_id", "refusal_code", "origin_boot_id",
             "owner_attempt_id",
