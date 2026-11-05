@@ -3656,6 +3656,15 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                     if selected_dropin is not None and (stat.S_IMODE(selected_dropin.lstat().st_mode) not in {0o600, 0o644} or read(selected_dropin, stat.S_IMODE(selected_dropin.lstat().st_mode), 256) != _DROPIN_BYTES):
                         raise diagnostic_error("P000256", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
         dropin_dir = Path("/etc/systemd/system") / _DROPIN_SERVICE_DIR
+
+        def dependency_mismatch(detail: PackageError) -> PackageError:
+            # P000262 remains the original aggregate check/count. The existing
+            # second fixed-identity slot records only this unit/property clause;
+            # no observed dependency names or values enter the diagnostic.
+            error = diagnostic_error("P000262", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
+            error._managed_package_boundary = exception_refusal(detail)
+            return error
+
         for unit in UNITS:
             # An empty unexpected directory is also a changed unit input.
             if unit != UNITS[1] and (Path("/etc/systemd/system") / (unit + ".d")).exists():
@@ -3698,22 +3707,73 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             # Account for the bounded v255 default graph as well as explicit
             # edges; unknown unrelated dependencies cannot disappear through a
             # peer-only projection.
+            # v255 unit_add_exec_dependencies adds Wants/After tmp.mount for
+            # PrivateTmp, and After remount-fs for State/Logs directories.
+            # Their RequiresMountsFor paths also order after the root mount.
+            # These fixed defaults do not admit arbitrary mount-layout edges.
             wants = ({UNITS[0], UNITS[1]} if unit == UNITS[2]
-                     else {"network-online.target", UNITS[1]} if unit == UNITS[0]
-                     else {"network-online.target"})
+                     else {"network-online.target", "tmp.mount", UNITS[1]} if unit == UNITS[0]
+                     else {"network-online.target", "tmp.mount"})
             implicit_requires = {"sysinit.target", "system.slice", "tmp.mount", "var-tmp.mount"} if unit != UNITS[2] else set()
             implicit_after = implicit_requires | {"basic.target", "network-online.target", "systemd-journald.socket", "systemd-tmpfiles-setup.service"}
-            if (set(base["Wants"].split()) != wants
-                    or not set(base["Requires"].split()) <= implicit_requires
-                    or base["BindsTo"]
-                    or set(base["PartOf"].split()) != expected["PartOf"]
-                    or unit != UNITS[2] and "network-online.target" not in set(base["After"].split())
-                    or not set(base["After"].split()) <= expected["After"] | implicit_after
-                    or not set(base["Before"].split()) <= expected["Before"] | {"shutdown.target"}
-                    or set(base["Conflicts"].split()) != {"shutdown.target"}
-                    or base["DefaultDependencies"] != "yes"
-                    or any(base[k] != "no" for k in ("StopWhenUnneeded", "RefuseManualStart", "RefuseManualStop"))):
-                raise diagnostic_error("P000262", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
+            if unit != UNITS[2]:
+                implicit_after |= {"-.mount", "systemd-remount-fs.service"}
+            if set(base["Wants"].split()) != wants:
+                raise dependency_mismatch(
+                    diagnostic_error("P800001", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800002", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800003", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            if not set(base["Requires"].split()) <= implicit_requires:
+                raise dependency_mismatch(
+                    diagnostic_error("P800004", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800005", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800006", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            if base["BindsTo"]:
+                raise dependency_mismatch(
+                    diagnostic_error("P800007", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800008", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800009", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            if set(base["PartOf"].split()) != expected["PartOf"]:
+                raise dependency_mismatch(
+                    diagnostic_error("P800010", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800011", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800012", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            if ((unit != UNITS[2] and "network-online.target" not in set(base["After"].split()))
+                    or not set(base["After"].split()) <= expected["After"] | implicit_after):
+                raise dependency_mismatch(
+                    diagnostic_error("P800013", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800014", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800015", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            if not set(base["Before"].split()) <= expected["Before"] | {"shutdown.target"}:
+                raise dependency_mismatch(
+                    diagnostic_error("P800016", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800017", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800018", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            if set(base["Conflicts"].split()) != {"shutdown.target"}:
+                raise dependency_mismatch(
+                    diagnostic_error("P800019", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800020", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800021", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            if base["DefaultDependencies"] != "yes":
+                raise dependency_mismatch(
+                    diagnostic_error("P800022", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800023", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800024", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            if base["StopWhenUnneeded"] != "no":
+                raise dependency_mismatch(
+                    diagnostic_error("P800025", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800026", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800027", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            if base["RefuseManualStart"] != "no":
+                raise dependency_mismatch(
+                    diagnostic_error("P800028", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800029", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800030", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            if base["RefuseManualStop"] != "no":
+                raise dependency_mismatch(
+                    diagnostic_error("P800031", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800032", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
+                    diagnostic_error("P800033", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
             if unit == UNITS[2]:
                 continue
             scalar = {
