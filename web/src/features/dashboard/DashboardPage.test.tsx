@@ -16,7 +16,7 @@ vi.mock('@/hooks/tokens', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hooks/tokens')>();
   return { ...actual, useTokensToday: vi.fn(), useTokensWeek: vi.fn() };
 });
-import { useTokensToday, useTokensWeek, formatTokens } from '@/hooks/tokens';
+import { useTokensToday, useTokensWeek } from '@/hooks/tokens';
 const mockTokensToday = vi.mocked(useTokensToday);
 const mockTokensWeek = vi.mocked(useTokensWeek);
 
@@ -430,7 +430,7 @@ describe('DashboardPage', () => {
     const s = emptySummary();
     s.org_age_days = 14;
     s.narrative_counts.completed_today = 5;
-    // A real today-scoped token total flows from the (mocked) useTokensToday.
+    // Supplied presentation total from the mocked useTokensToday.
     mockTokensToday.mockReturnValue({
       data: 26_500_000,
       isLoading: false,
@@ -443,11 +443,11 @@ describe('DashboardPage', () => {
 
     const rail = await screen.findByTestId('dashboard-rail');
 
-    // The honest tokens tile: label + value rendered via the shared compact
-    // formatter (26_500_000 -> '26.5M'), NOT a hand-rolled string.
+    // The tokens tile presents the supplied 26_500_000 as independent literal
+    // '26.5M'; this does not exercise aggregation or the since window.
     expect(within(rail).getByText('Tokens today')).toBeInTheDocument();
     expect(
-      within(rail).getByText(formatTokens(26_500_000)),
+      within(rail).getByText('26.5M'),
     ).toBeInTheDocument();
 
     // The dishonest dollars counter-tile is gone from the TODAY grid.
@@ -503,7 +503,7 @@ describe('DashboardPage', () => {
     const s = emptySummary();
     s.org_age_days = 14;
     s.narrative_counts.completed_today = 5;
-    // A real today-scoped total resolved by the (mocked) summing hook.
+    // Supplied presentation total; the real summing hook is not exercised.
     mockTokensToday.mockReturnValue({
       data: 1_250_000,
       isLoading: false,
@@ -516,7 +516,7 @@ describe('DashboardPage', () => {
 
     const rail = await screen.findByTestId('dashboard-rail');
     const tile = within(rail).getByText('Tokens today').parentElement as HTMLElement;
-    expect(within(tile).getByText(formatTokens(1_250_000))).toBeInTheDocument();
+    expect(within(tile).getByText('1.3M')).toBeInTheDocument();
     // The success state replaces the neutral placeholder entirely.
     expect(within(tile).queryByText('—')).not.toBeInTheDocument();
   });
@@ -524,7 +524,7 @@ describe('DashboardPage', () => {
   test("This week's burn card renders a real 7d token figure with a chevron deep-link to Usage (THR-030 HOME-06)", async () => {
     const s = emptySummary();
     s.org_age_days = 14;
-    // A real this-week token total resolved by the (mocked) week-summing hook.
+    // Supplied presentation total; no real weekly aggregation is exercised.
     mockTokensWeek.mockReturnValue({
       data: 274_400_991,
       isLoading: false,
@@ -540,16 +540,16 @@ describe('DashboardPage', () => {
       .getByText("This week's burn")
       .closest('section') as HTMLElement;
 
-    // Honest token figure via the shared compact formatter, scoped to the card.
-    expect(within(card).getByText(formatTokens(274_400_991))).toBeInTheDocument();
-    // THR-099 display-metric contract: the compacted 7d-burn keeps the EXACT
+    // Supplied token total has an independent compact-text oracle in the card.
+    expect(within(card).getByText('274.4M')).toBeInTheDocument();
+    // THR-099 display-metric contract: the supplied burn value keeps the EXACT
     // value available via the StatValue title (never lost on hover).
     expect(within(card).getByTitle('274,400,991')).toBeInTheDocument();
     // Tokens are the unit (dollar burn is deferred — no '$' on this card).
     expect(within(card).getByText('Tokens')).toBeInTheDocument();
     expect(within(card).queryByText(/\$/)).not.toBeInTheDocument();
 
-    // The chevron affordance deep-links into the Spend page (same-window number).
+    // The chevron deep-links into the Spend page; no window equality is proved.
     const link = within(card).getByRole('link', { name: /view token spend/i });
     expect(link).toHaveAttribute('href', `/orgs/${SLUG}/spend`);
   });
