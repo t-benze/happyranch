@@ -158,7 +158,10 @@ def regular(path: Path, limit: int) -> bytes:
 def verify_operation(receipt: Path, operation: str) -> None:
     from runtime.remote_access.linux_package import _package_json, _managed_package_diagnostic_projection
     data = _package_json(regular(receipt, 4096), 4096)
-    if (data["operation"] != operation or data["status"] != 0 or data["cancelled"] is not False
+    if (type(data) is not dict or set(data) != {"version", "operation", "status", "cancelled", "initiating", "diagnostic", "identities", "collection", "save"}
+            or type(data["version"]) is not int or data["version"] != 1
+            or data["operation"] != operation or type(data["status"]) is not int or data["status"] != 0
+            or data["save"] != "prepared" or data["cancelled"] is not False
             or data["initiating"] != {"kind": "return", "category": None, "status": 0}
             or data["collection"] != {"state": "complete", "losses": [], "encoding": "primary"}):
         raise ValueError
@@ -167,6 +170,18 @@ def verify_operation(receipt: Path, operation: str) -> None:
             or d["reap_exit"] != 0 or d["reaped"] is not True or d["deadline_elapsed"] is not False
             or d["process"]["wait_error"] is not False
             or [s[:2] for s in d["stages"]] != [[s, "success"] for s in ("admission_child", "stopped_admission_child", "package_body")]):
+        raise ValueError
+    capsule_path = receipt.with_name(receipt.stem + "-status.txt")
+    lines = regular(capsule_path, 512).decode("ascii").splitlines()
+    capsule = {}
+    for line in lines:
+        key, value = line.split("=", 1)
+        if key in capsule:
+            raise ValueError
+        capsule[key] = value
+    if capsule != {"status": "0", "original_status": "0", "cancelled": "0", "receipt_present": "1",
+                   "receipt_save": "saved", "receipt_close": "ok", "collection_state": "complete",
+                   "collection_losses": "none", "receipt_encoding": "primary", "status_save": "prepared"}:
         raise ValueError
     # The closed original native/transport/stage projection, not wrapper0,
     # supplies the successful body/final Refresh+current implication at exact H.
