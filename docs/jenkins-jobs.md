@@ -1,5 +1,9 @@
 # Ordinary Jenkins job helper
 
+The separately held, manual HappyRanch signing workload is documented in
+[`ci/jenkins/mac-signing/README.md`](../ci/jenkins/mac-signing/README.md), including
+its disabled source template, immutable app pins and native/protected prerequisites.
+
 This standalone Python helper operates an already-authorized **existing** Freestyle or Pipeline job on Unix (Linux/macOS). It requires standard-library Python 3.12–3.14 and an owner-controlled receipt/output directory. The same ordinary Jenkins APIs work for either job type; no Jenkinsfile, custom parameters, three-hook template, runtime adapter, node setup or plugin installation is needed.
 
 This PR852 distribution is a **candidate pending independent review, QA and exact-head CI**. Do not claim it is accepted or that a live Jenkins run succeeded. The old B2 catalog description saying “reviewed” is premature; this document is the candidate's current acceptance statement.

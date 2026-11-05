@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Inert source. Render only AFTER guarded merge; never upload this template. -->
+<project>
+  <actions/>
+  <description>HappyRanch accepted app signing; manual attended stages only. Source @@SOURCE@@. Owner setup remains separately held.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>30</daysToKeep><numToKeep>20</numToKeep>
+        <artifactDaysToKeep>30</artifactDaysToKeep><artifactNumToKeep>20</artifactNumToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>ACTION</name><description>Exactly one separately authorized stage.</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array">
+            <string>preflight</string><string>sign</string><string>submit</string>
+            <string>status</string><string>finalize</string><string>test</string>
+          </a></choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition><name>REQUEST_ID</name><defaultValue/><trim>false</trim></hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition><name>RUN_ID</name><defaultValue/><trim>false</trim></hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition><name>RECOVER_ID</name><defaultValue/><trim>false</trim></hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition><name>REVIEWED_LOG_SHA256</name><defaultValue/><trim>false</trim></hudson.model.StringParameterDefinition>
+        <hudson.model.FileParameterDefinition>
+          <name>ORIGINAL_ZIP</name><description>Preflight only: exact retained original, original.zip.</description>
+        </hudson.model.FileParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <scm class="hudson.scm.NullSCM"/>
+  <assignedNode>happyranch-mac-signing-owner</assignedNode>
+  <canRoam>false</canRoam><disabled>true</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers/><concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command><![CDATA[#!/bin/bash -p
+set +x
+set -euo pipefail
+unset BASH_ENV ENV PERL5OPT PERL5LIB CDPATH GLOBIGNORE
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C
+umask 077
+SOURCE='@@SOURCE@@'
+RELEASE="$HOME/Library/Application Support/HappyRanchSigning/release/$SOURCE"
+# These literal hashes are configuration pins, never caller parameters.
+test "$(/usr/bin/shasum -a 256 "$RELEASE/run-stage.sh" | /usr/bin/awk '{print $1}')" = '@@FILE0@@'
+test "$(/usr/bin/shasum -a 256 "$RELEASE/bounded-run.pl" | /usr/bin/awk '{print $1}')" = '@@FILE3@@'
+exec /bin/bash -p "$RELEASE/run-stage.sh" "$SOURCE" '@@FILE0@@' '@@FILE1@@' '@@FILE2@@' '@@FILE3@@' '@@FILE4@@'
+]]></command>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers>
+    <hudson.tasks.ArtifactArchiver>
+      <artifacts>public-evidence/stage.json,public-evidence/commands.tsv,public-evidence/output.json,public-evidence/notary-log.json,public-output/HappyRanch-1.0.1-1.0.1-arm64-signed-notarized-stapled.zip</artifacts>
+      <allowEmptyArchive>false</allowEmptyArchive><onlyIfSuccessful>false</onlyIfSuccessful>
+      <fingerprint>false</fingerprint><defaultExcludes>true</defaultExcludes>
+      <caseSensitive>true</caseSensitive><followSymlinks>false</followSymlinks>
+    </hudson.tasks.ArtifactArchiver>
+  </publishers>
+  <buildWrappers>
+    <hudson.plugins.build__timeout.BuildTimeoutWrapper plugin="build-timeout@1.41">
+      <strategy class="hudson.plugins.build_timeout.impl.AbsoluteTimeOutStrategy"><timeoutMinutes>20</timeoutMinutes></strategy>
+      <operationList><hudson.plugins.build__timeout.operations.AbortOperation/></operationList>
+    </hudson.plugins.build__timeout.BuildTimeoutWrapper>
+  </buildWrappers>
+</project>
