@@ -1037,4 +1037,5 @@ SITE_CATEGORIES = {
 'P500015': 'transaction_state_invalid',
 'P500016': 'transaction_state_invalid',
 'G500027': 'managed_lifecycle_refused',
+'G500028': 'managed_lifecycle_refused',
 }

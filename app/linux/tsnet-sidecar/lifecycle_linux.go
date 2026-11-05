@@ -4100,6 +4100,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 			killState.Store(3)
 		default:
 			killState.Store(4)
+			lifecycleDiagnosticLoss("G500028", err)
 		}
 		return lifecycleDiagnosticError("G000380", err)
 	}
@@ -4399,9 +4400,9 @@ func lifecyclePackageRefusal(reason, boundary string, causes ...error) int {
 }
 
 func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
+	entry := time.Now()
 	previousDiagnostic := lifecycleDiagnosticActive.Swap(true)
 	defer lifecycleDiagnosticActive.Store(previousDiagnostic)
-	entry := time.Now()
 	ctx, cancel, request, err := lifecycleEntryContext(input, 180*time.Second)
 	if err != nil {
 		return lifecyclePackageRefusal("entry_context", "N000001", err)
