@@ -1,5 +1,99 @@
 # Managed Remote Access — Normative Contract
 
+## Local loaded-dependency successor — THR327seq82 / ROOT14190
+
+This section controls the local successor to spent E8
+`7b5eadae67d647fe14a077813bbc44610952411b`, tree
+`16540985a0c479fde94cb7b325542339b5f4e1e1`. Earlier checkpoint sections below
+retain their historical pins, scope and receipts. Actual42114170098/attempt1
+passed admission_child and stopped_admission_child, then failed body_install
+with managed_loaded_contract_mismatch/P000262. The failed unit/property/value
+remain UNKNOWN. P000262 has ONE identifiable hosted failure; P000208 and the
+historical archive check each have ONE; anonymous admission history stays UNKNOWN.
+Supplementary diagnostics never split, rename or reset the P000262 count. Only
+the SAME identifiable PRODUCT CHECK failing on TWO HOSTED RUNS stops; local
+engineering failures do not consume or reset that stop rule.
+
+The complete bounded systemd255 graph reader accounts for three fixed implicit
+edges of the unchanged shipping service directives: PrivateTmp=yes adds
+Wants=tmp.mount and After=tmp.mount; StateDirectory/LogsDirectory add
+After=systemd-remount-fs.service; the directory paths' mount dependencies may
+add After=-.mount. See upstream [v255.4 unit.c](https://github.com/systemd/systemd-stable/blob/v255.4/src/core/unit.c)
+unit_add_exec_dependencies and unit_add_mount_dependencies, and the
+[255 execution dependency rules](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html#Implicit%20Dependencies).
+These are source findings, not retained runtime properties or proof of the
+hosted cause. RuntimeDirectory and /var/tmp also select mount dependencies;
+other mount-layout names remain rejected. No wildcard, peer-only filtering,
+arbitrary unit/path acceptance, changed renderer, or degraded-system exemption
+is introduced. Requires remains bounded by its existing exact-name set. All
+explicit peer, fragment/drop-in, byte identity, scalar, command, credential and
+current-authority checks remain. Target Wants/After service ordering and shutdown
+edges retain their separate target semantics; services retain normal defaults.
+The existing one-second query, strict complete named-property parsing, original
+absolute deadline, close/reap bounds and fail-closed errors remain unchanged.
+
+Every aggregate dependency refusal still emits the original P000262/category
+and unchanged PackageError text/status/cause/context. Only the existing second
+fixed-identity boundary slot adds the first failed unit/property clause. The
+unit is one of connector, sidecar, target; values and arbitrary observed names
+are never serialized. Hand-assigned literal triples below use that unit order:
+
+| Property | Connector | Sidecar | Target |
+| --- | --- | --- | --- |
+| Wants | P800001 | P800002 | P800003 |
+| Requires | P800004 | P800005 | P800006 |
+| BindsTo | P800007 | P800008 | P800009 |
+| PartOf | P800010 | P800011 | P800012 |
+| After (required network order or unrecognized edge) | P800013 | P800014 | P800015 |
+| Before | P800016 | P800017 | P800018 |
+| Conflicts | P800019 | P800020 | P800021 |
+| DefaultDependencies | P800022 | P800023 | P800024 |
+| StopWhenUnneeded | P800025 | P800026 | P800027 |
+| RefuseManualStart | P800028 | P800029 | P800030 |
+| RefuseManualStop | P800031 | P800032 | P800033 |
+
+The earlier complete peer projection may refuse at P000261 before a clause is
+reached. A triple's allocation does not prove reachability, transport or missing
+path coverage. Both existing receiver maps contain the same closed vocabulary;
+no frame, cap, deadline, process facts, original origin or later-loss channel is
+expanded or replaced. Original failures are never retroactively given a detail.
+
+Actual new product P9 is `d54b6cf97f9e63a0e23985041d0f10e8eccad0d0`, tree
+`0aea87b6e6954de6b2e175cb3097b82ec8d78543`, the sole direct child of E8.
+P7 is historical and cannot describe these changed product bytes. E8..P9 has
+exactly the three modified product paths: linux_package.py, its Python private
+vocabulary and the existing native receiving vocabulary. The composition guard
+authenticates both literal E8/tree and P9/tree, P9's sole parent E8, P9 ancestry
+of actual after, exact three-path E8..P9 and exact five-path P9..after equality.
+Those five composition paths are ci.yml, AGENTS.md and the package/case/current
+spec documents; unchanged runner/provenance modules need no ceremonial edit.
+Additions, deletions, renames, unrelated paths and product rewrites refuse.
+Both early admission checks and manifest writer/readback retain the existing
+repo/PR800/task6475/main/workflow293424328/attempt1 singleton/allocation authority
+with actual before=E8 and distinct actual after. No self-SHA is a product pin.
+
+Current allowance EACH2spent/0reserved/4available; historical4/4 spent. This
+local candidate reserves/spends nothing and grants no external effect. Full
+independent actual-final accumulated D..candidate, E8..candidate and product/
+composition review, then separate scoped QA and manager assessment precede any
+publication or run. The separate PR-description disclosure hold persists.
+LRA1 HIGH OPEN KNOWN DEFERRED/unprobed remains. All delivery acceptance is UNMET;
+the observed failed never-started cleanup and retained three ready images prove
+only that exercised path. Potentially live boot images must remain. No second
+install, dependent phase, false READY, same-boot acceptance, successful-install
+cleanup, unknown-descendant closure or full VM disposal follows. Safe/unsafe
+parent preparation, package provenance, original A10s/outer180s, custody,
+recovery spends/backoff/reset and acknowledged stops are unchanged.
+
+Permitted local verification is source/static, syntax, uniqueness/map parity,
+isolated composition bind/check/wrong-before with exact restoration and stock
+compile without executing the binary where warranted. Required merge checks
+remain Source Boundary Lint and Web Lint(Node24) only. Narrow uniqueness proof
+establishes identity only. Python units RETIRED; suspended proofs NOT RUN;
+general integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342;
+no ad hoc Product E2E. Actual loaded behavior/transport/managed/root probes are
+NOT RUN locally and remain for a later manager-selected authorized fixture.
+
 ## Local parent-preparation successor — THR327seq82 / ROOT14190
 
 This current local successor follows actual run42105876796/attempt1 at

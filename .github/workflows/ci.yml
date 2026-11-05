@@ -51,9 +51,9 @@ jobs:
 
   managed-n3-real-systemd:
     name: Managed installer-only observation (Ubuntu 24.04)
-    # Founder THR327seq82 / ROOT14190 local successor: exact E7->candidate only.
+    # Founder THR327seq82 / ROOT14190 local successor: exact E8->candidate only.
     # Any publication/automatic attempt remains manager-owned after renewed gates.
-    # Same allowance1spent/0reserved/5available; historical4/4 spent. No new grant.
+    # Same allowance2spent/0reserved/4available; historical4/4 spent. No new grant.
     if: >-
       ${{ github.event_name == 'push' &&
           github.repository == 't-benze/happyranch' &&
@@ -61,7 +61,7 @@ jobs:
           github.event.repository.full_name == github.repository &&
           github.event.created == false && github.event.deleted == false &&
           github.event.forced == false &&
-          github.event.before == '2c3bf547e21b79714d2d1f9035cc31f012b8b010' &&
+          github.event.before == '7b5eadae67d647fe14a077813bbc44610952411b' &&
           github.event.after != github.event.before &&
           github.event.after == github.sha && github.run_attempt == '1' }}
     concurrency:
@@ -89,7 +89,7 @@ jobs:
           import time
 
           P = "/repos/t-benze/happyranch"
-          B = "2c3bf547e21b79714d2d1f9035cc31f012b8b010"
+          B = "7b5eadae67d647fe14a077813bbc44610952411b"
           ADMISSION_HOME = Path(os.environ["N3_ADMISSION_HOME"])
           STATE = ADMISSION_HOME / "status.json"
           check = int(sys.argv[1])
@@ -361,14 +361,17 @@ jobs:
           import subprocess
           import sys
 
-          H = "5bd350ae6810e662af721c82fbd8431fedf13df3"
-          B = "2c3bf547e21b79714d2d1f9035cc31f012b8b010"
-          H_TREE = "d1686fe2606459229abd2bd87a89e6e2ba0ba018"
-          B_TREE = "776ee2f4c4136940792ee19e3d917e45db301cc9"
+          H = "d54b6cf97f9e63a0e23985041d0f10e8eccad0d0"
+          B = "7b5eadae67d647fe14a077813bbc44610952411b"
+          H_TREE = "0aea87b6e6954de6b2e175cb3097b82ec8d78543"
+          B_TREE = "16540985a0c479fde94cb7b325542339b5f4e1e1"
+          PRODUCT_ALLOWED = {
+              'runtime/remote_access/linux_package.py',
+              'runtime/remote_access/package_diagnostic_codes.py',
+              'app/linux/tsnet-sidecar/lifecycle_package_diagnostic_codes_linux.go',
+          }
           ALLOWED = {
               '.github/workflows/ci.yml',
-              'app/linux/package/real_systemd_n3.sh',
-              'app/linux/package/n3_installer_only.py',
               'AGENTS.md',
               'docs/operations/managed-remote-access-linux-package.md',
               'docs/operations/managed-remote-access-staged-credential-cases.md',
@@ -376,6 +379,18 @@ jobs:
           }
           def git(*args):
               return subprocess.check_output(["git", *args], timeout=2).decode("ascii").strip()
+          def exact_delta(before, after, allowed):
+              raw = subprocess.check_output(["git", "diff", "--name-status", "--no-renames", "-z", before, after], timeout=2)
+              fields = raw.decode("ascii").split("\0")
+              if not raw or fields.pop() != "" or len(fields) % 2:
+                  raise ValueError
+              changed = set()
+              for kind, name in zip(fields[::2], fields[1::2]):
+                  if kind != "M" or name not in allowed or name in changed:
+                      raise ValueError
+                  changed.add(name)
+              if changed != allowed:
+                  raise ValueError
           try:
               path = Path(os.environ["N3_ADMISSION_HOME"]) / "status.json"
               state = json.loads(path.read_text())
@@ -386,23 +401,15 @@ jobs:
                       or git("show", "-s", "--format=%T", B) != B_TREE
                       or re.fullmatch(r"[0-9a-f]{40}", tree) is None):
                   raise ValueError
-              subprocess.check_call(["git", "merge-base", "--is-ancestor", H, B], timeout=2)
-              subprocess.check_call(["git", "merge-base", "--is-ancestor", B, head], timeout=2)
+              if git("show", "-s", "--format=%P", H) != B:
+                  raise ValueError
+              subprocess.check_call(["git", "merge-base", "--is-ancestor", H, head], timeout=2)
               subprocess.check_call(["git", "diff", "--quiet", "HEAD", "--"], timeout=2)
-              # P7 and the spent E7 composition are pinned independently. Only
-              # the exact current seven runner/doc paths may differ from E7.
-              # NUL paths refuse renames/deletions/unexpected product changes.
-              raw = subprocess.check_output(["git", "diff", "--name-status", "--no-renames", "-z", B, head], timeout=2)
-              fields = raw.decode("ascii").split("\0")
-              if not raw or fields.pop() != "" or len(fields) % 2:
-                  raise ValueError
-              changed = set()
-              for kind, name in zip(fields[::2], fields[1::2]):
-                  if kind not in ("A", "M") or name not in ALLOWED or name in changed:
-                      raise ValueError
-                  changed.add(name)
-              if changed != ALLOWED:
-                  raise ValueError
+              # Actual product is the direct E8 child, fixed independently of
+              # this composition. Neither delta admits unrelated paths, additions,
+              # renames, deletions or a later product rewrite.
+              exact_delta(B, H, PRODUCT_ALLOWED)
+              exact_delta(H, head, ALLOWED)
               if sys.argv[1:] == ["bind"]:
                   if state["tree"] is not None:
                       raise ValueError
@@ -441,11 +448,11 @@ jobs:
 
           stage = Path(os.environ["N3_PACKAGE_STAGE"])
           manifest = {"version": 2, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
-                      "before": "2c3bf547e21b79714d2d1f9035cc31f012b8b010", "head": os.environ["GITHUB_SHA"],
+                      "before": "7b5eadae67d647fe14a077813bbc44610952411b", "head": os.environ["GITHUB_SHA"],
                       "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
                       "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
                       "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1, "harness_uuid": None,
-                      "product_head": "5bd350ae6810e662af721c82fbd8431fedf13df3", "product_tree": "d1686fe2606459229abd2bd87a89e6e2ba0ba018",
+                      "product_head": "d54b6cf97f9e63a0e23985041d0f10e8eccad0d0", "product_tree": "0aea87b6e6954de6b2e175cb3097b82ec8d78543",
                       "mode": "installer-only", "build": "unattempted", "package": None, "consumed": None,
                       "runtime": {}, "build_identities": None}
           # Publish the unattempted manifest before independent version reads.
@@ -620,10 +627,10 @@ jobs:
           from n3_provenance import validate_runtime
           validate_runtime(manifest["runtime"])
           expected = {"version": 2, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
-                      "before": "2c3bf547e21b79714d2d1f9035cc31f012b8b010", "head": os.environ["GITHUB_SHA"],
+                      "before": "7b5eadae67d647fe14a077813bbc44610952411b", "head": os.environ["GITHUB_SHA"],
                       "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
                       "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1,
-                      "product_head": "5bd350ae6810e662af721c82fbd8431fedf13df3", "product_tree": "d1686fe2606459229abd2bd87a89e6e2ba0ba018", "mode": "installer-only"}
+                      "product_head": "d54b6cf97f9e63a0e23985041d0f10e8eccad0d0", "product_tree": "0aea87b6e6954de6b2e175cb3097b82ec8d78543", "mode": "installer-only"}
           if (type(manifest) is not dict or set(manifest) != set(expected) | {"tree", "harness_uuid", "build", "package", "consumed", "runtime", "build_identities"}
                   or any(type(manifest[k]) is not type(v) or manifest[k] != v for k, v in expected.items())
                   or type(manifest["tree"]) is not str or re.fullmatch(r"[0-9a-f]{40}", manifest["tree"]) is None

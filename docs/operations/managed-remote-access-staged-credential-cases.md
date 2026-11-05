@@ -1,5 +1,22 @@
 # PR800 staged credential and mode cases — THR228seq428
 
+Current ROOT14190 P000262 cases follow the [loaded-dependency contract and fixed clause table](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#local-loaded-dependency-successor--thr327seq82--root14190). All are SOURCE/STATIC ONLY; actual loaded/managed/root behavior NOT RUN locally. P000262 count1 and unknown failing unit/property/value remain; no source finding is a retained runtime observation.
+
+| Requirement | Scenario and expected observation | Permitted evidence / missing proof |
+| --- | --- | --- |
+| Generated bounded graph | PrivateTmp service has fixed tmp.mount Wants/After; State/Logs add remount-fs After, directory mounts may add root-mount After; target retains service Wants/After and shutdown edges | Unchanged actual shipping units plus primary v255/v255.4 source; loaded success NOT RUN |
+| Unknown dependency guard | Changed peer graph refuses P000261; extra unrelated dependency or bad default/stop flag refuses original P000262 with first fixed unit/property detail | Full source inspection, no wildcard/peer-only drop; actual query/transport NOT RUN |
+| Query safety | Error, timeout, partial/duplicate/extra/invalid properties refuse with original marked origin and owned close/reap within original bounds | Existing query/parser source unchanged; execution NOT RUN |
+| Diagnostic identity | Each reached clause retains P000262/category/count plus exactly one fixed P800 detail, never values or arbitrary names | Existing uniqueness test and equal maps; counts do not prove reachability/coverage/transport |
+| Parent setup | Already safe parents unchanged; only held root-owned unsafe /opt write bits normalized; alias/non-root/unsafe other parent refuses | Existing preparation unchanged; prior observed preparation remains attributed, no new root probe |
+| First failure and images | No second install/dependent phase or cleanup install; potentially live ready images stay for whole boot | Existing runner/custody source and original failed-path receipts; successful-install/whole-goal cleanup NOT RUN |
+| Actual identities | E8/tree before; new independently pinned product/tree and candidate after; exact product3/composition5; wrong-before refuses | Existing isolated composition bind/check/wrong-before with exact state restoration; no HTTP admission/hosted run |
+| Acceptance honesty | No false current/READY, harmless-degraded claim, full VM disposal or unknown-descendant closure | Goal UNMET; original explicit failure-snapshot losses, LRA1 HIGH deferred and history retained |
+
+Narrow uniqueness authoring: observable contract is unique stable literal producer identities consumed by both receiver maps. Copying one actual new unit/property ID to another is a credible regression; the existing source checker owns it because receiver vocabulary checks alone cannot detect two producers sharing a valid ID. No new test or test-only production seam is added. The existing checker/allocation-helper contract is unchanged; final new allocations/map parity must renew, with attributable duplicate1, byte-exact restoration and green0 where supported. This proves identity only. Python units RETIRED; suspended proofs NOT RUN; integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342; no ad hoc E2E. Full independent accumulated/correction/product/composition review then separate scoped QA and manager assessment precede effects; no local publication/run/reservation or metadata-hold release.
+
+The following P000208 preparation checkpoint is preserved history under the current section above.
+
 Current ROOT14190 P000208 fixture cases follow the [parent-preparation contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#local-parent-preparation-successor--thr327seq82--root14190). The old hosted receipt identifies the unchanged UID/mode guard once; actual parent/metadata remains UNKNOWN. These new cases are SOURCE/STATIC ONLY; root/managed behavior NOT RUN locally.
 
 | Scenario | Required observation in the existing disposable fixture |
