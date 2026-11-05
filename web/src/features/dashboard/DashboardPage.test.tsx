@@ -1,6 +1,6 @@
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse, delay, type HttpResponseResolver } from 'msw';
+import { http, HttpHandler, HttpResponse, delay, type HttpResponseResolver } from 'msw';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
@@ -880,6 +880,7 @@ describe('DashboardPage', () => {
       // Observe these actual mounted handlers, including seedShell's local
       // instances; resetHandlers/unmount alone never joins their run returns.
       for (const localHandler of server.listHandlers()) {
+        if (!(localHandler instanceof HttpHandler)) continue;
         const run = localHandler.run;
         const spy = vi.spyOn(localHandler, 'run');
         ownRestore(() => spy.mockRestore());
