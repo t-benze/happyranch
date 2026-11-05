@@ -29,6 +29,9 @@ from typing import Iterator
 
 class SessionTracker:
     def __init__(self) -> None:
+        self._startup_state = None
+        self._startup_org = None
+        self._startup_recovery = None
         self._active: dict[tuple[str, str], str] = {}
         # PID diagnostics, versioned by session_id: (task_id, agent) ->
         # {session_id: pid}. A registration can only ever touch its OWN
@@ -145,6 +148,8 @@ class SessionTracker:
         The supervisor owns the resulting first-wins cancellation and pending
         handle abandonment; this tracker only preserves generation ownership.
         """
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(self)
         with self._lock:
             old_session_id = self._active.get((task_id, agent))
             old_recovery_cancel = None
@@ -176,6 +181,8 @@ class SessionTracker:
             return old_recovery_cancel
 
     def set_active(self, task_id: str, agent: str, session_id: str, *, org_slug: str | None = None) -> None:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(self)
         binding_lease = self._get_binding_lease(task_id, agent)
         with binding_lease:
             superseded_recovery_cancel = self._set_active_locked(
@@ -193,6 +200,8 @@ class SessionTracker:
         This deliberately has no request/provider-purpose parameter: only the
         recovery launcher may select this registration seam.
         """
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(self)
         binding_lease = self._get_binding_lease(task_id, agent)
         with binding_lease:
             self._set_active_locked(task_id, agent, session_id, org_slug=org_slug, recovery=True)
@@ -208,6 +217,8 @@ class SessionTracker:
         ``publish`` must be synchronous: callback/cancellation paths use this
         same lease and no await may occur while it is held.
         """
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(self)
         binding_lease = self._get_binding_lease(task_id, agent)
         with binding_lease:
             if not publish():

@@ -5,11 +5,12 @@
  * through all messages via since_seq until `has_more` becomes false, and the
  * assembled transcript equals ALL messages from the server.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor, act, render } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/server';
+import { seedReadyHealth } from '@/test/startup';
 import React, { useEffect } from 'react';
 import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import type { ThreadListPage, ThreadRecord } from '@/lib/api/types';
@@ -106,6 +107,7 @@ it('commits thread page totals and serializes duplicate next-page demand', async
       has_more: cursor === 'first', next_cursor: cursor === 'first' ? 'next' : null, sampled_at: '2026-10-07T00:00:00Z' });
   }));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedReadyHealth(qc);
   const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
   await waitFor(() => expect({ requests, cache: qc.getQueriesData({ queryKey: ['threads'] }), totals: result.current.data?.pages[0]?.totals, error: result.current.error }).toMatchObject({ requests: ['first'], totals: { open: 2, archived: 0, all: 2, dream_origin: 0 }, error: null }));
   await act(async () => { await Promise.all([result.current.fetchNextPage(), result.current.fetchNextPage()]); });
@@ -129,6 +131,7 @@ it('shares one request latch across mounted consumers of the same list key', asy
     return HttpResponse.json(threadPage(cursor, cursor === 'first' ? 'next' : null));
   }));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedReadyHealth(qc);
   const { result } = renderHook(() => ({ a: realThreadsApi.useThreadsInfiniteList('open'), b: realThreadsApi.useThreadsInfiniteList('open') }), { wrapper: wrapper(qc) });
   await waitFor(() => expect(result.current.a.data?.pages[0].threads[0].thread_id).toBe('first'));
   await act(async () => { await Promise.all([result.current.a.fetchNextPage(), result.current.b.fetchNextPage()]); });
@@ -148,6 +151,7 @@ it('retains committed rows on continuation failure and repeated cursors until ex
     return HttpResponse.json(threadPage('second', outcome === 'repeat' ? 'next' : null));
   }));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedReadyHealth(qc);
   const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
   await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
   const committed = result.current.data;
@@ -176,37 +180,69 @@ it('stages a full replacement prefix and exposes no partial refresh in committed
   const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
   const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
   const requests: string[] = [];
-  server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
-    const cursor = new URL(request.url).searchParams.get('cursor');
-    requests.push(`${phase}:${cursor ?? 'first'}`);
-    if (phase === 'fail') return HttpResponse.json({ detail: 'refresh failed' }, { status: 503 });
-    if (phase === 'new') await (cursor === null ? firstGate : secondGate);
-    return HttpResponse.json(threadPage(`${phase}-${cursor ?? 'first'}`, cursor === null ? `${phase}-next` : null, phase === 'new' ? 3 : 2));
+  const handlers: Promise<unknown>[] = [];
+  const operations: Promise<unknown>[] = [];
+  server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+    const response = (async () => {
+      const cursor = new URL(request.url).searchParams.get('cursor');
+      requests.push(`${phase}:${cursor ?? 'first'}`);
+      if (phase === 'fail') return HttpResponse.json({ detail: 'refresh failed' }, { status: 503 });
+      if (phase === 'new') await (cursor === null ? firstGate : secondGate);
+      return HttpResponse.json(threadPage(`${phase}-${cursor ?? 'first'}`, cursor === null ? `${phase}-next` : null, phase === 'new' ? 3 : 2));
+    })();
+    handlers.push(response);
+    void response.catch(() => {});
+    return response;
   }));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
-  await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
-  await act(async () => { await result.current.fetchNextPage(); });
-  const committed = result.current.data;
-  phase = 'new';
-  let refresh!: Promise<unknown>;
-  act(() => { refresh = result.current.refresh(); });
-  await waitFor(() => expect(requests).toContain('new:first'));
-  expect(result.current.isRefreshing).toBe(true);
-  expect(result.current.data).toBe(committed);
-  releaseFirst();
-  await waitFor(() => expect(requests).toContain('new:new-next'));
-  expect(qc.getQueryData(['threads', SLUG, { status: 'open', page_size: 50 }])).toBe(committed);
-  expect(result.current.data?.pages.at(-1)?.totals.all).toBe(2);
-  releaseSecond();
-  await act(async () => { await refresh; });
-  expect(result.current.data?.pages.flatMap((p) => p.threads.map((r) => r.thread_id))).toEqual(['new-first', 'new-new-next']);
-  expect(result.current.data?.pages.at(-1)?.totals.all).toBe(3);
-  phase = 'fail';
-  const accepted = result.current.data;
-  await act(async () => { await result.current.refresh(); });
-  expect(result.current.data).toBe(accepted);
-  expect(result.current.isStale).toBe(true);
+  seedReadyHealth(qc);
+  const { result, unmount } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
+  try {
+    await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
+    await act(async () => {
+      const next = result.current.fetchNextPage();
+      operations.push(next);
+      await next;
+    });
+    const committed = result.current.data;
+    phase = 'new';
+    let refresh!: Promise<unknown>;
+    act(() => {
+      refresh = result.current.refresh();
+      operations.push(refresh);
+      void refresh.catch(() => {});
+    });
+    await waitFor(() => expect(requests).toContain('new:first'));
+    expect(result.current.isRefreshing).toBe(true);
+    expect(result.current.data).toBe(committed);
+    releaseFirst();
+    await waitFor(() => expect(requests).toContain('new:new-next'));
+    expect(qc.getQueryData(['threads', SLUG, { status: 'open', page_size: 50 }])).toBe(committed);
+    expect(result.current.data?.pages.at(-1)?.totals.all).toBe(2);
+    releaseSecond();
+    await act(async () => { await refresh; });
+    expect(result.current.data?.pages.flatMap((p) => p.threads.map((r) => r.thread_id))).toEqual(['new-first', 'new-new-next']);
+    expect(result.current.data?.pages.at(-1)?.totals.all).toBe(3);
+    phase = 'fail';
+    const accepted = result.current.data;
+    await act(async () => {
+      const refresh = result.current.refresh();
+      operations.push(refresh);
+      await refresh;
+    });
+    expect(result.current.data).toBe(accepted);
+    expect(result.current.isStale).toBe(true);
+  } finally {
+    releaseFirst(); releaseSecond();
+    try {
+      await Promise.allSettled(operations);
+      // Aborted query promises can settle before their original MSW handlers.
+      await Promise.allSettled(handlers);
+    } finally {
+      try { unmount(); }
+      finally { qc.clear(); }
+    }
+  }
 });
 
 it('rejects a late continuation after refresh starts a fresh generation', async () => {
@@ -215,28 +251,56 @@ it('rejects a late continuation after refresh starts a fresh generation', async 
   let releaseOld!: () => void;
   const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
   const requests: string[] = [];
-  server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
-    const cursor = new URL(request.url).searchParams.get('cursor');
-    requests.push(cursor ?? 'first');
-    if (cursor === 'old-next') {
-      await oldGate;
-      return HttpResponse.json(threadPage('obsolete', null, 99));
-    }
-    initialReads++;
-    return HttpResponse.json(initialReads === 1 ? threadPage('old', 'old-next') : threadPage('fresh', null, 1));
+  const handlers: Promise<unknown>[] = [];
+  const operations: Promise<unknown>[] = [];
+  server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+    const response = (async () => {
+      const cursor = new URL(request.url).searchParams.get('cursor');
+      requests.push(cursor ?? 'first');
+      if (cursor === 'old-next') {
+        await oldGate;
+        return HttpResponse.json(threadPage('obsolete', null, 99));
+      }
+      initialReads++;
+      return HttpResponse.json(initialReads === 1 ? threadPage('old', 'old-next') : threadPage('fresh', null, 1));
+    })();
+    handlers.push(response);
+    void response.catch(() => {});
+    return response;
   }));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
-  await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
-  let old!: Promise<unknown>;
-  act(() => { old = result.current.fetchNextPage(); });
-  await waitFor(() => expect(requests).toContain('old-next'));
-  await act(async () => { await result.current.refresh(); });
-  releaseOld();
-  await act(async () => { await old; });
-  expect(result.current.data?.pages.flatMap((p) => p.threads.map((r) => r.thread_id))).toEqual(['fresh']);
-  expect(result.current.data?.pages[0].totals.all).toBe(1);
-  expect(requests).toEqual(['first', 'old-next', 'first']);
+  seedReadyHealth(qc);
+  const { result, unmount } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
+  try {
+    await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
+    let old!: Promise<unknown>;
+    act(() => {
+      old = result.current.fetchNextPage();
+      operations.push(old);
+      void old.catch(() => {});
+    });
+    await waitFor(() => expect(requests).toContain('old-next'));
+    await act(async () => {
+      const refresh = result.current.refresh();
+      operations.push(refresh);
+      await refresh;
+    });
+    releaseOld();
+    await act(async () => { await old; });
+    expect(result.current.data?.pages.flatMap((p) => p.threads.map((r) => r.thread_id))).toEqual(['fresh']);
+    expect(result.current.data?.pages[0].totals.all).toBe(1);
+    expect(requests).toEqual(['first', 'old-next', 'first']);
+  } finally {
+    releaseOld();
+    try {
+      await Promise.allSettled(operations);
+      // Aborted query promises can settle before their original MSW handlers.
+      await Promise.allSettled(handlers);
+    } finally {
+      try { unmount(); }
+      finally { qc.clear(); }
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -256,6 +320,7 @@ describe('useThreadMessages paging (THR-098)', () => {
     ]);
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedReadyHealth(qc);
     const { result } = renderHook(() => realThreadsApi.useThreadMessages(THREAD_ID), {
       wrapper: wrapper(qc),
     });
@@ -302,6 +367,7 @@ describe('useThreadMessages paging (THR-098)', () => {
     ]);
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedReadyHealth(qc);
     const { result } = renderHook(() => realThreadsApi.useThreadMessages(THREAD_ID), {
       wrapper: wrapper(qc),
     });
@@ -327,14 +393,14 @@ describe('useThreadMessages paging (THR-098)', () => {
     ]);
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedReadyHealth(qc);
 
-    // Consumer that models the ThreadsPage messages assembly (flatten all
-    // existing pages + auto-page effect). Before the THR-098 fix the effect
-    // is missing → only page 1 renders (200 msgs, red). After → all 250 msgs
-    // render (green).
+    // Hook-consumer coverage: this fixture supplies its own paging demand.
+    // It cannot detect deletion of the shipping ThreadsPage effect; that
+    // boundary belongs to ThreadsPage.test.tsx's existing detail transcript test.
     function MessagesConsumer(): JSX.Element | null {
       const q = realThreadsApi.useThreadMessages(THREAD_ID);
-      // ThreadsPage auto-page effect (THR-098 fix #1)
+      // Test consumer demand exercises the real hook, not the shipping page.
       useEffect(() => {
         if (q.hasNextPage && !q.isFetchingNextPage) {
           q.fetchNextPage().catch(() => {});
@@ -498,6 +564,7 @@ it.each([
     }),
   );
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  seedReadyHealth(qc);
   const added = vi.spyOn(window, 'addEventListener');
   const removed = vi.spyOn(window, 'removeEventListener');
   const alpha = renderHook(useMembershipProbe, { wrapper: wrapper(qc, 'alpha') });

@@ -53,7 +53,7 @@ struct ContentView: View {
     }
 
     private var windowTitle: String {
-        let state = appDelegate.supervisor.state.description
+        let state = appDelegate.stateText
         return "HappyRanch — \(state)"
     }
 

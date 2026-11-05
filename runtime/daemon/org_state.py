@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from runtime.infrastructure.memory_collection import CollectionObserver
     from runtime.daemon.cleanup_diagnostics import _Attachment
 
+from runtime.infrastructure.startup_observation import BootObservation, observed
 from runtime.config import Settings
 from runtime.daemon.dream_queue import DreamQueue
 from runtime.daemon.event_bus import EventBus
@@ -136,6 +137,18 @@ class OrgState:
     # C is independent of diagnostic B and ordinary runner/task ownership.
     _thread_release_attachment: Any = field(init=False, default=None, repr=False)
     _thread_release_users: set[object] = field(init=False, default_factory=set, repr=False)
+    # Shared daemon boot owner; these references do not admit or launch work.
+    # Admission captures orchestrator/DB/tracker/thread/dream/wake/schedule queues.
+    _startup_admission_refs: Any = field(init=False, default=None, repr=False)
+    _startup_document_refs: Any = field(init=False, default=None, repr=False)
+    _startup_coding_refs: Any = field(init=False, default=None, repr=False)
+    _startup_state: Any = field(init=False, default=None, repr=False)
+    _startup_org: Any = field(init=False, default=None, repr=False)
+    _startup_recovery: Any = field(init=False, default=None, repr=False)
+    _startup_reads: Any = field(init=False, default=None, repr=False)
+    _startup_read_revoked: bool = field(init=False, default=False, repr=False)
+    _startup_read_file: Any = field(init=False, default=None, repr=False)
+    _startup_detached: tuple | None = field(init=False, default=None, repr=False)
 
     def _acquire_thread_release(self, operation) -> bool:
         a = self._thread_release_attachment
@@ -210,6 +223,30 @@ class OrgState:
             raise _OrgBusyError("native_tasks_in_flight")
         if self._runner_tasks:
             raise _OrgBusyError("active_runners_in_flight")
+        # A failed org-token release may already have removed that token while
+        # the SAME original queue still retains the work. Closing is not fresh
+        # admission: validate the original binding without requiring READY.
+        from runtime.daemon.startup_recovery import StartupRecovery, StartupUnavailable
+        try:
+            state, gate, org = self._startup_state, self._startup_recovery, self._startup_org
+            if state is None:
+                if gate is not None or org is not None or self._startup_admission_refs is not None:
+                    raise _OrgBusyError("native_tasks_in_flight")
+                return  # Explicitly unbound standalone attachment.
+            if not isinstance(gate, StartupRecovery) or org is not self or gate.state is not state:
+                raise _OrgBusyError("native_tasks_in_flight")
+            queue = gate._admission_queue  # Captured before production work.
+            gate.require_attachment(self)
+            gate.require_attachment(self.orchestrator)
+            if queue is not state.queue or queue is not self.orchestrator._queue:
+                raise _OrgBusyError("native_tasks_in_flight")
+            retained = queue._has_native_work_for(self)
+        except (AttributeError, StartupUnavailable) as exc:
+            raise _OrgBusyError("native_tasks_in_flight") from exc
+        # The registry mutex protects observation only; refusal is outside it.
+        # Submission/preflight/close stay synchronous on the original loop.
+        if retained:
+            raise _OrgBusyError("native_tasks_in_flight")
 
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",
@@ -261,6 +298,17 @@ class OrgState:
         self.workflow_revisions = WorkflowRevisionStore(self)
         self.workflow_reviews = WorkflowReviewDispatcher(self)
         self.workflow_review_receipts = WorkflowReviewReceiptStore(self)
+        self._startup_document_refs = (
+            self.workflow_drafts, self.workflow_reviews, self.workflow_submissions,
+            self.workflow_revisions, self.workflow_review_receipts,
+            self.workflow_authority, self.workflow_activations,
+        )
+        self._startup_coding_refs = (
+            self.workflow_coding_start, self.workflow_coding_dispatch, self.workflow_coding_roles,
+            self.workflow_coding_release_import, self.workflow_authority, self.workflow_activations,
+            self.workflow_coding_start.support, self.workflow_coding_roles.support,
+            self.workflow_coding_release_import._support,
+        )
         self.workflow_repository_artifacts = WorkflowRepositoryArtifactService()
         if self.orchestrator is not None:
             self.orchestrator._workflow_coding_start = self.workflow_coding_start
@@ -389,27 +437,80 @@ class OrgState:
         return ts.isoformat()
 
     @classmethod
-    def load(cls, *, slug: str, root: Path, settings: Settings, attachment_owner: dict | None = None) -> "OrgState":
-        paths = OrgPaths(root=root)
-        from runtime.orchestrator.team_move_startup import before_org_attachment
-        before_org_attachment(root, slug)
-        from runtime.identities.schema import preflight
-        naming_preflight = preflight(paths.db_path, org_slug=slug)
-        if attachment_owner is not None:
-            attachment_owner["db_construction_started"] = True
-        db = Database(paths.db_path)
-        if attachment_owner is not None:
-            attachment_owner["load_db"] = db
+    def load(cls, *, slug: str, root: Path, settings: Settings,
+             observation: BootObservation | None = None,
+             attachment_owner: dict | None = None,
+             defer_coding_registration: bool = False) -> "OrgState":
+        with observed(observation, "org_preflight"):
+            paths = OrgPaths(root=root)
+            from runtime.orchestrator.team_move_startup import before_org_attachment
+            before_org_attachment(root, slug)
+            from runtime.identities.schema import preflight
+            naming_preflight = preflight(paths.db_path, org_slug=slug)
+        # This invocation owns only a Database whose constructor returned.
+        # Keep custody here even if forwarding to the original owner fails.
+        load_outcome: dict[str, Any] = dict(
+            attachment_owner=attachment_owner, db=None, state=None,
+            close_attempted=False, close_returned=False, close_error=None,
+            close_outcome=None, first=None, occurrences=[])
+        db: Database | None = None
+
+        def capture(phase: str, error: BaseException, *, observation: bool = False,
+                    retain_history: bool = True) -> dict:
+            # Native snapshots precede close, opaque attributes and all sinks.
+            record = dict(phase=phase, error=error,
+                arguments=BaseException.args.__get__(error),
+                traceback=BaseException.__traceback__.__get__(error),
+                context=BaseException.__context__.__get__(error),
+                cause=BaseException.__cause__.__get__(error),
+                suppress_context=BaseException.__suppress_context__.__get__(error),
+                observation=observation, delivery=None, previous_occurrence=None, history=None)
+            if observation:
+                record["delivery"] = (type(error), record["traceback"])
+            load_outcome["occurrences"].append(record)
+            if load_outcome["first"] is None:
+                load_outcome["first"] = record
+            for previous in reversed(load_outcome["occurrences"][:-1]):
+                if previous["error"] is error:
+                    record["previous_occurrence"] = previous
+                    break
+            if retain_history:
+                try:
+                    # Prior attachments are history, never current close proof.
+                    record["history"] = BaseException.__dict__["__dict__"].__get__(error).copy()
+                except BaseException as later:
+                    capture("load prior retention", later, retain_history=False)
+            return record
+
+        def retain(key: str, value: Any) -> dict | None:
+            if attachment_owner is not None:
+                try:
+                    attachment_owner[key] = value
+                except BaseException as later:
+                    # One attempt per sink; never recurse into a failed owner.
+                    return capture("load owner " + key, later)
+            return None
+
         try:
-            install_or_recover(db, expected_org_slug=slug)
-            with db._lock:
-                layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
+            with observed(observation, "database"):
+                if attachment_owner is not None:
+                    attachment_owner["db_construction_started"] = True
+                db = Database(paths.db_path)
+                load_outcome["db"] = db
+                if attachment_owner is not None:
+                    attachment_owner["load_db"] = db
+            with observed(observation, "workflow_install"):
+                install_or_recover(db, expected_org_slug=slug)
+            with observed(observation, "workflow_validate"):
+                with db._lock:
+                    layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
             # Native org release preparation, after strict early move discovery
             # and complete workflow validation, before any roster/publication or
             # producer attachment. Generic Database and diagnostic recovery never
             # install this extension. An existing hold/unknown layout refuses.
             from runtime.infrastructure.team_move_store import install_team_move_schema
-            install_team_move_schema(db, org_slug=slug)
+            with observed(observation, "move_schema"):
+                install_team_move_schema(db, org_slug=slug)
             if layout == "F":
                 logger.warning("org %r: %s", slug, draft_migration_guidance(
                     org_slug=slug, runtime_root=str(root.parent.parent),
@@ -420,15 +521,19 @@ class OrgState:
                 ))
             if layout == "G":
                 logger.warning("org %r: %s", slug, author_handoff_migration_guidance())
-            WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
+            with observed(observation, "cutover"):
+                WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
             from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
-            install_pause_schema(db, org_slug=slug)
-            db._task_pause_store = TaskPauseStore(db, slug)
-            with db._lock:
-                validate_workflow_schema(db._conn, expected_org_slug=slug)
+            with observed(observation, "pause_schema"):
+                install_pause_schema(db, org_slug=slug)
+                db._task_pause_store = TaskPauseStore(db, slug)
+            with observed(observation, "workflow_validate"):
+                with db._lock:
+                    validate_workflow_schema(db._conn, expected_org_slug=slug)
             from runtime.infrastructure.workflow_task_ownership import install_task_ownership
             install_task_ownership(db, org_slug=slug)
-            teams = TeamsRegistry.load(root)
+            with observed(observation, "roster"):
+                teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
             # config.yaml into the org_settings DB table exactly once per org.
             # Idempotent (sentinel); runs on every daemon startup but is a no-op
@@ -444,6 +549,8 @@ class OrgState:
                 # never overwrites an explicit setting.
                 backfill_reviewer_agents_setting(paths, db)
             except Exception as exc:
+                if observation is not None:
+                    observation.count("org_seed_nonfatal")
                 logger.warning(
                     "org %r: org_settings seed skipped (non-fatal): %s", slug, exc
                 )
@@ -452,25 +559,31 @@ class OrgState:
             # OrgConsistencyError on drift; DaemonState.from_runtime catches
             # per-org so one broken org cannot crash daemon startup, while
             # add_org propagates so explicit founder actions fail loudly.
-            validate_team_membership(paths, teams)
-            orchestrator = Orchestrator(
-                db=db,
-                settings=settings,
-                paths=paths,
-                slug=slug,
-                teams=teams,
-                authority_evaluator=_build_authority_evaluator(),
-            )
+            with observed(observation, "roster"):
+                validate_team_membership(paths, teams)
+            with observed(observation, "orchestrator"):
+                orchestrator = Orchestrator(
+                    db=db,
+                    settings=settings,
+                    paths=paths,
+                    slug=slug,
+                    teams=teams,
+                    authority_evaluator=_build_authority_evaluator(),
+                )
             from runtime.orchestrator.task_pause import restore_pause_preparations
-            restore_pause_preparations(orchestrator)
-            state = cls(
-                slug=slug,
-                root=root,
-                db=db,
-                teams=teams,
-                settings=settings,
-                orchestrator=orchestrator,
-            )
+            with observed(observation, "org_services"):
+                restore_pause_preparations(orchestrator)
+                state = cls(
+                    slug=slug,
+                    root=root,
+                    db=db,
+                    teams=teams,
+                    settings=settings,
+                    orchestrator=orchestrator,
+                )
+                load_outcome["state"] = state
+            if attachment_owner is not None:
+                attachment_owner["org"] = state
             from runtime.identities.registry import read_name_metadata, refresh_names
             # Binding reads current validated org metadata at prompt construction;
             # no cached snapshot, reconciliation or new launch/readiness gate.
@@ -478,41 +591,120 @@ class OrgState:
             state.naming_diagnostic = naming_preflight
             # Cold load has no concurrent route coroutine. Capture/install is
             # outside short authority/profile leases, after baseline admission.
-            with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
-                refresh_names(state, install=True, writer=interval.native_disposition)
+            with observed(observation, "identity_publication"):
+                with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
+                    refresh_names(state, install=True, writer=interval.native_disposition)
             # U2A publishes/reconciles the org authority generation before the
             # state is returned. Failure remains fail-closed in the workflow
             # pointer but does not detach the org or alter legacy task/chain
             # behavior; later supported writers and the next cold start retain
             # the same recovery path.
             try:
-                state.workflow_authority.recover_or_publish()
+                with observed(observation, "authority_publication"):
+                    state.workflow_authority.recover_or_publish()
             except Exception:
+                if observation is not None:
+                    observation.count("authority_fenced")
                 logger.exception(
                     "org %r: workflow authority startup publication remains fenced",
                     slug,
                 )
-            # Inert definition only, after the actual recovery/authority tail.
-            # A serving-before-recovery owner must defer this call with that tail.
-            state.workflow_coding_builtin.ensure_registered()
+            # P0, before publication: pin this validated attachment's file.
+            # Early requests do no filesystem work on the request loop and
+            # cannot adopt a replacement path while queued on their executor.
+            read_file = paths.db_path.stat()
+            state._startup_read_file = (db, root, paths.db_path, read_file.st_dev, read_file.st_ino)
+            # Cold serving defers registration until its original P2 tail.
+            # Direct/ready attachment retains the landed post-authority attempt.
+            if not defer_coding_registration:
+                state.workflow_coding_builtin.ensure_registered()
             return state
         except BaseException as primary:
-            # Unpublished construction has no queue/runner admission yet.
+            # This catch observes actual lower delivery; it is not another
+            # inferred throw. Its traceback retains the actual child frames.
+            first = capture("load failure delivery", primary, observation=True)
+            retain("load_outcome", load_outcome)
+            if db is not None:
+                # Unpublished construction has no queue/runner admission yet.
+                # Diagnostics/owner failures cannot skip this original duty.
+                load_outcome["close_attempted"] = True
+                retain("load_close_attempted", True)
+                try:
+                    db.close()
+                except BaseException as cleanup:
+                    record = capture("load close delivery", cleanup, observation=True)
+                    load_outcome["close_error"] = cleanup
+                    try:
+                        # Only the immediate, actual SAME-call wrapper frame
+                        # supplies lower evidence. Reused-error attrs do not.
+                        lower = record["traceback"].tb_next
+                        if lower is not None and lower.tb_frame.f_code is Database.close.__code__:
+                            values = lower.tb_frame.f_locals
+                            outcome = values.get("failure")
+                            if (values.get("self") is db and type(outcome) is dict
+                                    and outcome.get("method") is Database.close.__wrapped__):
+                                load_outcome["close_outcome"] = outcome
+                    except BaseException as later:
+                        capture("load close evidence", later)
+                else:
+                    # Positive returned close differs from SQLite body return.
+                    load_outcome["close_returned"] = True
+                    delivery = retain("load_db_closed", True)
+                    if delivery is not None:
+                        load_outcome["close_error"] = delivery["error"]
+                cleanup = load_outcome["close_error"]
+                if cleanup is not None:
+                    retain("load_close_error", cleanup)
+                    try:
+                        BaseException.__setattr__(primary, "_org_load_close_error", cleanup)
+                    except BaseException as later:
+                        capture("load close attachment", later)
+                    try:
+                        BaseException.add_note(primary, "unpublished org close failed")
+                    except BaseException as later:
+                        capture("load close note", later)
             try:
-                db.close()
-                if attachment_owner is not None:
-                    attachment_owner["load_db_closed"] = True
-            except BaseException as cleanup:
-                if attachment_owner is not None:
-                    attachment_owner["load_close_error"] = cleanup
-                primary.add_note("unpublished org close failed: " + type(cleanup).__name__)
-            raise
+                BaseException.__setattr__(primary, "_org_load_outcome", load_outcome)
+            except BaseException as later:
+                capture("load outcome attachment", later)
+            try:
+                BaseException.args.__set__(primary, first["arguments"])
+                BaseException.__context__.__set__(primary, first["context"])
+                BaseException.__cause__.__set__(primary, first["cause"])
+                BaseException.__suppress_context__.__set__(primary, first["suppress_context"])
+            except BaseException as later:
+                capture("load native restoration", later)
+            # No virtual traceback setter/with_traceback, truth test or format.
+            # Failed attachments retain this SAME owner/DB/record on this frame.
+            raise BaseException.with_traceback(primary, first["traceback"])
 
     def close(self) -> None:
-        self._revoke_thread_releases()
+        self._runner_admission_closed = True
+        primary = None
+        traceback = None
+        revokes = [self._revoke_thread_releases, self._revoke_cleanup_diagnostics]
+        if self._startup_reads is not None:
+            revokes.append(lambda: self._startup_reads.revoke(self))
+        for revoke in revokes:
+            try:
+                revoke()
+            except BaseException as exc:
+                if primary is None:
+                    primary, traceback = exc, exc.__traceback__
+                else:
+                    primary._org_close_revoke_error = (exc, exc.__traceback__)
+        if primary is not None:
+            raise primary.with_traceback(traceback)
+        # Direct close cannot cancel/join readers or profiles. Refuse before
+        # touching the connection unless every actual original owner is idle.
+        if self._startup_state is not None:
+            self._startup_state._assert_startup_idle(self)
+            self._startup_state._assert_attachment_readers_idle((self,))
+        if self._startup_recovery is not None:
+            self._startup_recovery.assert_native_idle()
+        if self._startup_reads is not None:
+            self._startup_reads.assert_idle(self)
         self._assert_thread_releases_idle()
-        self._revoke_cleanup_diagnostics()
         self._assert_cleanup_diagnostics_idle()
         self._assert_runners_idle()
-        self._runner_admission_closed = True
         self.db.close()

@@ -46,6 +46,11 @@ struct HappyRanchApp: App {
 
                 Divider()
 
+                Button("Check Daemon Status") {
+                    appDelegate.checkDaemonStatus()
+                }
+                .disabled(!(appDelegate.supervisor.state.isRunning || appDelegate.supervisor.state == .starting))
+
                 Button("Show Diagnostics…") {
                     appDelegate.showDiagnostics = true
                 }

@@ -190,7 +190,7 @@ class _ThreadDeliveryReleaseService:
         self.supervisor = state.host_supervisor if type(state) is DaemonState else None
         self.org_map = state.orgs if type(state) is DaemonState else {}
         self.runtime_root = self.runtime.root if self.runtime is not None else None
-        self.ready = False
+        self._ready = False
         self.intake = True
         self.attachments: dict[str, _Attachment] = {}
         self.operations: dict[_Operation, _Operation] = {}  # actual work only
@@ -219,11 +219,23 @@ class _ThreadDeliveryReleaseService:
             org.db._thread_release_serving_binding = a
             self.attachments[slug] = a
 
+    @property
+    def ready(self) -> bool:
+        recovery = getattr(self.state, "_startup_recovery", None)
+        if not self._ready or recovery is None:
+            return False
+        startup = recovery.snapshot()
+        return startup["serving"] and startup["recovery_ready"] and not startup["stopping"]
+
     def signal_ready(self, app) -> None:
         # No operation/read/select/release, no task, timer or retry.
         if (app is self.app and app.state is self.app_state
                 and self.app_state.daemon is self.state and self.intake):
-            self.ready = True
+            recovery = getattr(self.state, "_startup_recovery", None)
+            if recovery is not None:
+                startup = recovery.snapshot()
+                if startup["serving"] and startup["recovery_ready"] and not startup["stopping"]:
+                    self._ready = True
 
     def capability(self, org_slug: str) -> dict:
         a = self.attachments.get(org_slug)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from runtime.daemon.org_state import OrgState
@@ -30,7 +30,14 @@ class Dispatcher:
         except KeyError:
             return None
 
-    def run_step(self, slug: str, task_id: str, metadata: dict | None = None, *, attachment: OrgState | None = None) -> None:
+    def run_step(self, slug: str, task_id: str, metadata: dict | None = None, *, attachment: OrgState | None = None) -> Any:
+        from runtime.daemon.startup_recovery import require_ready
+        require_ready(self._state)
+        if attachment is not None:
+            require_ready(attachment)
+            if self._state.orgs.get(slug) is not attachment:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
         try:
             org = attachment if attachment is not None else self._state.get_org(slug)
         except KeyError:
@@ -43,12 +50,20 @@ class Dispatcher:
             return
         from runtime.orchestrator.team_move import DeferredTeamMove
         from runtime.infrastructure.team_move_store import TeamMoveError
+        require_ready(org)
         try:
-            org.orchestrator.run_step(task_id, metadata=metadata)
+            return org.orchestrator.run_step(task_id, metadata=metadata)
         except (DeferredTeamMove, TeamMoveError):
             org.orchestrator._team_moves.defer_task(task_id, metadata)
 
     def task_admission_allowed(self, slug: str, task_id: str, metadata: dict | None = None, *, attachment: OrgState | None = None) -> bool:
+        from runtime.daemon.startup_recovery import require_ready
+        require_ready(self._state)
+        if attachment is not None:
+            require_ready(attachment)
+            if self._state.orgs.get(slug) is not attachment:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
         from runtime.orchestrator.team_move import DeferredTeamMove
         from runtime.infrastructure.team_move_store import TeamMoveError
         try:
@@ -56,6 +71,7 @@ class Dispatcher:
         except KeyError:
             return False
         from runtime.workflows.recovery import classify_task
+        require_ready(org)
         ownership = classify_task(org.db, task_id, org_slug=slug)
         if ownership.kind == 'coding_attempt':
             return org.workflow_coding_dispatch.queue_admission_allowed(task_id)
@@ -71,8 +87,16 @@ class Dispatcher:
         return True
 
     def worker_started(self, slug: str, task_id: str, *, attachment: OrgState | None = None) -> object:
+        from runtime.daemon.startup_recovery import require_ready
+        require_ready(self._state)
+        if attachment is not None:
+            require_ready(attachment)
+            if self._state.orgs.get(slug) is not attachment:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
         try:
             org = attachment if attachment is not None else self._state.get_org(slug)
+            require_ready(org)
             coding = org.workflow_coding_dispatch
         except KeyError:
             return None

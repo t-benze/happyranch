@@ -25,7 +25,8 @@ from runtime.daemon.auth import optional_bearer, require_token
 from runtime.daemon.event_bus import job_topic
 from runtime.daemon.routes._org_dep import OrgDep, OrgStreamDep, _stream_org_events, _stream_org_reader
 from runtime.daemon.jobs_runner import run_job as _spawn_job
-from runtime.daemon.jobs_runner import _interpreter_binary, fire_resume_check_for_job
+from runtime.daemon.jobs_runner import _interpreter_binary, fire_resume_check_for_job, require_job_admission
+from runtime.daemon.startup_recovery import StartupUnavailable
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.orchestrator.task_pause import assert_origin_unheld, fingerprint
 from runtime.infrastructure.task_pause_controls import PauseControlError, normal_session_entry
@@ -191,6 +192,7 @@ _DEFAULT_BOUNDED_RUNTIME_SECONDS = 300
     409: {"description": "Session mismatch or missing cwd; post-allocation failures identify job_id and status"},
 })
 async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
+    require_job_admission(org)
     # §5.1 validation order. Task-path auth only.
     # SubmitBody validator guarantees both task_id and session_id.
     assert body.task_id is not None and body.session_id is not None
@@ -287,13 +289,16 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
     # grants no exception unless captured as positively running at Pause.
     store = getattr(org.db, "_task_pause_store", None)
     async with org.db_lock:
+        require_job_admission(org)
         with org.sessions.binding_lease(scope_id, agent):
             if org.sessions.get_active(scope_id, agent) != body.session_id:
                 raise HTTPException(status_code=409, detail={"code": "session_mismatch"})
             if org.sessions.is_recovery_session(scope_id, agent, body.session_id):
                 raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
             writer = store.writer(scope_id) if store is not None else nullcontext((None, None))
+            require_job_admission(org)
             with writer as (root, control):
+                require_job_admission(org)
                 job_id = org.db.next_job_id()
                 record = JobRecord(
                     id=job_id,
@@ -411,8 +416,12 @@ async def reject_job_from_notification(
         task_id=record.task_id, job_id=job_id,
         reviewer="founder", reason=reason_stripped,
     )
-    # Bridge: any task blocked on this job can now be unblocked.
-    fire_resume_check_for_job(org, job_id)
+    # The rejection is already committed; refusal leaves blocked intent.
+    try:
+        fire_resume_check_for_job(org, job_id)
+    except StartupUnavailable as exc:
+        exc.add_note(f"job {job_id} rejection COMMIT succeeded; blocked waiter intent retained")
+        raise
     return org.db.get_job(job_id)
 
 
@@ -1018,6 +1027,9 @@ async def _run_job_core_impl(
       the agent's name, stamps ``reviewed_by=<agent>`` so audit traces stay
       coherent. ``trigger_actor`` is required when trigger="agent".
     """
+    require_job_admission(org)
+    if _move_owner is not None:
+        _move_owner.require_admission()
     job_db, job_slug = org.db, org.slug
     from runtime.daemon.jobs_runner import _require_job_attachment
 
@@ -1081,9 +1093,13 @@ async def _run_job_core_impl(
     audit = AuditLogger(job_db)
     if store is not None:
         async with org.db_lock:
+            require_job_admission(org)
             lease = org.sessions.binding_lease(record.task_id, record.agent_name) if trigger == "agent" else nullcontext()
             with lease:
-                with store.writer(record.task_id) as (root, control):
+                require_job_admission(org)
+                with store.writer(record.task_id, validate_admission=(
+                        None if _move_owner is None else _move_owner.require_admission)) as (root, control):
+                    require_job_admission(org)
                     require_attachment()
                     current = job_db.get_job(job_id)
                     if current is None or current.status != JobStatus.PENDING:
@@ -1113,6 +1129,8 @@ async def _run_job_core_impl(
                             and not org.sessions.is_recovery_session(record.task_id, record.agent_name, sid)
                         if not exact or (effective and not exception):
                             return {"id": job_id, "status": "pending", "deferred": True, "code": "root_paused" if effective else "job_owner_unavailable"}
+                    if _move_owner is not None:
+                        _move_owner.require_admission()
                     if preflight_error is not None:
                         # Only authenticated, never-launched automatic work may fail here.
                         # Retain unknown/possible launch evidence and every race winner.
@@ -1132,8 +1150,12 @@ async def _run_job_core_impl(
                                 "code": "not_pending", "job_id": job_id,
                                 "status": winner.status.value if winner else None,
                             })
+                        if _move_owner is not None:
+                            _move_owner.require_admission()
                         control["journal"]["entries"].remove(job_entry)
                         store.save_journal_uncommitted(control)
+                        if _move_owner is not None:
+                            _move_owner.require_admission()
                         job_db.insert_audit_log_uncommitted(current.task_id, current.agent_name,
                             "job_run_failed", {"script_request_id": job_id, "exit_code": None,
                                 "duration_ms": 0, "reason": "spawn_failed"})
@@ -1156,6 +1178,8 @@ async def _run_job_core_impl(
                                 cwd_resolved=str(cwd_resolved), max_runtime_seconds=timeout,
                                 stdout_path=str(stdout_path), stderr_path=str(stderr_path)):
                             raise HTTPException(status_code=409, detail={"code": "not_pending"})
+                        if _move_owner is not None:
+                            _move_owner.require_admission()
                         if job_entry is not None:
                             job_entry["phase"] = "possible_launch"
                             job_entry["captured_generation"] = control["generation"] if effective else None
@@ -1166,25 +1190,38 @@ async def _run_job_core_impl(
                             payload.update(agent=reviewer, persistent=record.persistent)
                         else:
                             payload.update(reviewer=reviewer)
+                        if _move_owner is not None:
+                            _move_owner.require_admission()
                         job_db.insert_audit_log_uncommitted(record.task_id, reviewer,
                             "job_auto_started" if trigger == "agent" else "job_run_started", payload)
         if preflight_error is not None:
             # Writer committed the failed row, audit and proven-no-launch settlement.
-            fire_resume_check_for_job(org, job_id)
+            notification_error = None
+            try:
+                fire_resume_check_for_job(org, job_id)
+            except StartupUnavailable as exc:
+                notification_error = exc
+                logging.getLogger(__name__).exception(
+                    'Committed job preflight failure; startup refused waiter notification for %s', job_id)
             refusal = HTTPException(status_code=preflight_error.status_code, detail={
                 **preflight_error.detail, "job_id": job_id, "status": "failed",
             })
-            if _move_disposition is not None:
+            if notification_error is not None:
+                refusal.add_note(f"terminal COMMIT succeeded; blocked waiter intent retained: {notification_error.code}")
+            elif _move_disposition is not None:
                 # Exact native COMMIT and postcommit bridge completed; this
                 # certifies this refusal only, never an HTTP error category.
                 _move_disposition.no_effect_error = refusal
-            raise refusal
+            raise refusal from notification_error
     else:
         if preflight_error is not None:
             # Without the authenticated journal there is no settlement authority.
             raise preflight_error
         now = _now_iso()
+        require_job_admission(org)
         require_attachment()
+        if _move_owner is not None:
+            _move_owner.require_admission()
         try:
             job_db.transition_job_to_running(
                 job_id,
@@ -1200,6 +1237,8 @@ async def _run_job_core_impl(
             raise HTTPException(status_code=409, detail={"code": "not_pending"})
 
         audit = AuditLogger(job_db)
+        if _move_owner is not None:
+            _move_owner.require_admission()
         if trigger == "agent":
             audit.log_job_auto_started(
                 task_id=record.task_id, job_id=job_id, agent=reviewer,
@@ -1259,11 +1298,19 @@ async def _run_job_core_impl(
                 # and first cause. Publication failure is not spawn/process failure.
 
         failed_tail = False
+        require_job_admission(org)
         require_attachment()
         _validate_registration(registration, running_task=True)
+        require_job_admission(org)
         try:
+            if registration.owner is not None:
+                registration.owner.require_admission()
             jobs_dir.mkdir(parents=True, exist_ok=True)
+            if registration.owner is not None:
+                registration.owner.require_admission()
             stdout_path.write_bytes(b'')
+            if registration.owner is not None:
+                registration.owner.require_admission()
             stderr_path.write_bytes(b'')
             result = await _spawn_job(job_id=job_id, registration=registration,
                 script_text=record.script_text, interpreter=record.interpreter.value,
@@ -1271,15 +1318,26 @@ async def _run_job_core_impl(
                 max_runtime_seconds=timeout, max_output_bytes=record.max_output_bytes,
                 publish=publish_output, task_id=record.task_id,
                 workspace_root=str(workspace_root), move_owner=registration.owner)
+        except StartupUnavailable:
+            # The original admitted registration stays owned/uncertain. A
+            # startup refusal is neither a move deferral nor execution failure.
+            raise
         except DeferredTeamMove:
+            if registration.process is not None:
+                # A successful Process is no pre-launch deferral proof. Keep
+                # original ownership when its validation/cleanup refuses.
+                raise
             defer_owned_job(registration)
             return None
         except Exception as exc:
+            if getattr(exc, "job_native_unsettled", False):
+                raise  # No execution classification before positive cleanup.
             failed_tail = True
             result = JobRunResult(status='failed', exit_code=None, duration_ms=None,
                 stdout_head=None, stderr_head=str(exc)[:4096], stdout_bytes=0, stderr_bytes=0,
                 truncated_stdout=False, truncated_stderr=False,
-                reason='spawn_failed' if isinstance(exc, (FileNotFoundError, OSError)) else 'internal_error')
+                reason=('spawn_failed' if registration.process is None
+                    and isinstance(exc, (FileNotFoundError, OSError)) else 'internal_error'))
 
         # Execution handling ends here: publication failures cannot rewrite its result.
         candidate = None
@@ -1322,6 +1380,9 @@ async def _run_job_core_impl(
             try:
                 require_attachment()
                 fire_resume_check_for_job(org, job_id)
+            except StartupUnavailable as exc:
+                exc.add_note(f"job {job_id} terminal COMMIT succeeded; blocked waiter intent retained")
+                raise
             except Exception:
                 logging.getLogger(__name__).exception('Committed job waiter notification unavailable')
         return current
@@ -1332,6 +1393,9 @@ async def _run_job_core_impl(
         # finalization/release failure stays unknown, never a second append.
         return await _run_and_persist(registration)
 
+    require_job_admission(org)
+    if _move_owner is not None:
+        _move_owner.require_admission()
     task = asyncio.create_task(owned_run(_move_owner))
     if _move_owner is not None:
         _move_owner.detached = True  # a registration refusal retains this original owner
@@ -1451,6 +1515,9 @@ async def job_events_stream(slug: str, job_id: str, org: OrgStreamDep, request: 
 async def _run_job_core(org, *, job_id: str, cwd_override: str | None,
     timeout_override: int | None, trigger: str = 'founder',
     trigger_actor: str | None = None, submit_session_id: str | None = None) -> dict:
+    from runtime.orchestrator.producer_move import producer_admission_validation
+    validate_admission = producer_admission_validation(org)
+    require_job_admission(org)
     admission = owner_for(org.db)
     owner = None
     from runtime.orchestrator.producer_move import NativeWriterDisposition
@@ -1459,7 +1526,9 @@ async def _run_job_core(org, *, job_id: str, cwd_override: str | None,
     primary = None
     try:
         if admission is not None:
-            owner = admission.reserve('job', job_id)
+            with admission.move.gate, org.db._lock:
+                require_job_admission(org)
+                owner = admission.reserve('job', job_id, validate_admission=validate_admission)
         result = await _run_job_core_impl(org, job_id=job_id, cwd_override=cwd_override,
             timeout_override=timeout_override, trigger=trigger, trigger_actor=trigger_actor,
             submit_session_id=submit_session_id, _move_owner=owner,
@@ -1471,7 +1540,9 @@ async def _run_job_core(org, *, job_id: str, cwd_override: str | None,
         return {'id': job_id, 'status': 'pending', 'deferred': True, 'code': exc.code}
     except BaseException as exc:
         primary = exc
-        failed = exc is not disposition.no_effect_error
+        deferred = isinstance(exc, StartupUnavailable)
+        failed = (not deferred and exc is not disposition.no_effect_error) or bool(
+            deferred and owner is not None and owner.attempt_open and not owner.safe_defer)
         raise
     finally:
         if owner is not None and not getattr(owner, 'detached', False):

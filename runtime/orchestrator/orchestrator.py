@@ -163,6 +163,9 @@ class Orchestrator:
         teams: TeamsRegistry,
         authority_evaluator=None,
     ) -> None:
+        self._startup_state = None
+        self._startup_org = None
+        self._startup_recovery = None
         self._db = db
         self._settings = settings
         self._paths = paths
@@ -191,6 +194,10 @@ class Orchestrator:
         # path (executor.run self-launch) remains byte-identical.
         self._host_supervisor = None
 
+    def _require_startup_ready(self) -> None:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(self)
+
     @property
     def teams(self) -> TeamsRegistry:
         return self._teams
@@ -204,33 +211,78 @@ class Orchestrator:
 
     def redeliver_team_move_tasks(self, *, native: Callable | None = None) -> Any:
         """Task-only release seam for D; no operation release or startup owner."""
-        if native is not None:
-            return self._redeliver_team_move_tasks_native(native)
+        from contextlib import nullcontext
+        from runtime.daemon.queue import TaskQueue
+        queue, moves, db = self._queue, self._team_moves, self._db
+        selection = queue._publication_selection(self._slug) if isinstance(queue, TaskQueue) else None
         from runtime.orchestrator.authority import enqueue_task_generation_aware
-        if self._queue is None:
+        from runtime.orchestrator.run_step import _task_followon_validation
+        selected = _task_followon_validation(self)
+        def validate():
+            if selection is not None:
+                selection()
+            selected()
+            if (self._queue is not queue or self._team_moves is not moves
+                    or self._db is not db or moves.store.db is not db):
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_move_attachment_changed")
+        if queue is None:
             from runtime.orchestrator.team_move import DeferredTeamMove
             raise DeferredTeamMove("team_move_task_queue_unavailable")
+        validate()
+        if native is not None:
+            return self._redeliver_team_move_tasks_native(native, queue=queue, moves=moves,
+                                                        selection=selection, validate=validate)
         def publish(task_id: str, metadata: dict | None) -> bool:
-            return self._queue.enqueue_if_absent(self._slug, task_id, metadata=metadata,
-                publisher=lambda: enqueue_task_generation_aware(self, self._queue, self._slug,
+            with (queue._publication_scope(self._slug, task_id, _selection=selection)
+                  if selection is not None else nullcontext()):
+                return publish_selected(task_id, metadata)
+        def publish_selected(task_id: str, metadata: dict | None) -> bool:
+            validate()
+            from runtime.daemon.startup_publication import current_publication
+            if current_publication(self) is not None:
+                from runtime.orchestrator.run_step import _publish_redelivery_task
+                outcome = _publish_redelivery_task(self, task_id, metadata=metadata)
+                return outcome.disposition == "settled"
+            return queue.enqueue_if_absent(self._slug, task_id, metadata=metadata,
+                publisher=lambda: enqueue_task_generation_aware(self, queue, self._slug,
                     task_id, metadata=metadata))
-        self._team_moves.redeliver_tasks(publish)
+        moves.redeliver_tasks(publish, validate_admission=validate)
 
-    async def _redeliver_team_move_tasks_native(self, native: Callable) -> None:
+    async def _redeliver_team_move_tasks_native(
+        self, native: Callable, *, queue: Any, moves: Any,
+        selection: Callable[[], None] | None, validate: Callable[[], None],
+    ) -> None:
         from runtime.orchestrator.authority import _enqueue_task_generation_aware_native
-        if self._queue is None:
-            from runtime.orchestrator.team_move import DeferredTeamMove
-            raise DeferredTeamMove("team_move_task_queue_unavailable")
+
+        async def selected_native(callback: Callable) -> Any:
+            validate()
+            def invoke() -> Any:
+                validate()
+                result = callback()
+                validate()
+                return result
+            result = await native(invoke)
+            validate()
+            return result
 
         async def publish(task_id: str, metadata: dict | None) -> bool:
-            return await self._queue._enqueue_if_absent_native(
-                self._slug, task_id,
+            validate()
+            puts = []
+            return await queue._enqueue_if_absent_native(
+                self._slug, task_id, _queue_validation=validate,
+                _put_outcomes=lambda: tuple(puts),
                 publisher=lambda: _enqueue_task_generation_aware_native(
-                    self, self._queue, self._slug, task_id, native=native, metadata=metadata,
+                    self, queue, self._slug, task_id, native=selected_native,
+                    metadata=metadata, _queue_validation=validate, _put_outcomes=puts,
                 ),
             )
 
-        await self._team_moves._redeliver_tasks_native(publish, native=native)
+        # The SAME owner selected by the synchronous entry precedes deferred
+        # discovery. No ContextVar/queue scope is held across these awaits.
+        validate()
+        await moves._redeliver_tasks_native(publish, native=selected_native, validate_admission=validate)
+        validate()
 
     def attach_queue(self, queue: "TaskQueue") -> None:
         """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.
@@ -238,6 +290,14 @@ class Orchestrator:
         Decoupled from __init__ because tests construct an Orchestrator
         without a daemon, and because TaskQueue is owned by DaemonState, not
         the Orchestrator."""
+        if self._startup_state is not None:
+            expected = self._startup_state.queue
+            if queue is not expected:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
+        elif queue is not None and queue._startup_state is not None:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            raise StartupUnavailable("startup_gate_unbound")
         self._queue = queue
 
     def attach_sessions(self, tracker: "SessionTracker") -> None:
@@ -246,6 +306,14 @@ class Orchestrator:
         agent's `happyranch report-completion` callback can land. Without this, the
         completion endpoint rejects every callback as `unknown_session` (409)
         and the task fails silently with note="agent session failed"."""
+        if self._startup_state is not None:
+            expected = self._startup_org.sessions
+            if tracker is not expected:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
+        elif tracker is not None and tracker._startup_state is not None:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            raise StartupUnavailable("startup_gate_unbound")
         self._sessions = tracker
         self._team_moves.producers.sessions = tracker
 
@@ -256,6 +324,14 @@ class Orchestrator:
         capability backend, and register an opaque cancellation/cleanup
         control with SessionTracker. Tests/idle states leave it None and
         ``_run_agent`` keeps the legacy uncontained launch path."""
+        if self._startup_state is not None:
+            expected = self._startup_state.host_supervisor
+            if supervisor is not expected:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
+        elif supervisor is not None and supervisor._startup_state is not None:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            raise StartupUnavailable("startup_gate_unbound")
         self._host_supervisor = supervisor
 
     def attach_notifier(self, notifier) -> None:
@@ -271,10 +347,69 @@ class Orchestrator:
         — tests that build an Orchestrator without a daemon never call this
         and simply get the None-guarded skip path in ``_maybe_post_thread_followup``.
         """
-        self._thread_queue = thread_queue
-        self._main_loop = main_loop
+        self.bind_thread_queue_references(thread_queue, main_loop)
         if rediscover:
             self._rediscover_returned()
+
+    def bind_thread_queue_references(self, thread_queue, main_loop) -> None:
+        """References only; native P4 separately owns returned discovery.
+
+        Boot P4 and dynamic attachment callers explicitly own returned
+        notification; this public binder performs no recovery or I/O.
+        """
+        from runtime.daemon.startup_recovery import _bind_task_admission, StartupRecovery, StartupUnavailable
+        try:
+            state, gate, org = self._startup_state, self._startup_recovery, self._startup_org
+        except AttributeError as exc:
+            raise StartupUnavailable("startup_gate_unbound") from exc
+        if state is None and (gate is not None or org is not None):
+            raise StartupUnavailable("startup_gate_unbound")
+        if state is not None:
+            if not isinstance(gate, StartupRecovery):
+                raise StartupUnavailable("startup_gate_unbound")
+            gate.require_attachment(state)
+            if (org is None or org.orchestrator is not self
+                    or state.orgs.get(org.slug) is not org
+                    or org._startup_state is not state or org._startup_recovery is not gate
+                    or org.thread_queue is not thread_queue
+                    or not isinstance(org._startup_admission_refs, tuple)
+                    or len(org._startup_admission_refs) != 7
+                    or org._startup_admission_refs[0] is not self
+                    or org._startup_admission_refs[1] is not org.db
+                    or org._startup_admission_refs[2] is not org.sessions
+                    or org._startup_admission_refs[3] is not thread_queue
+                    or org._startup_admission_refs[4] is not org.dream_queue
+                    or org._startup_admission_refs[5] is not org.wake_queue
+                    or org._startup_admission_refs[6] is not org.schedule_queue
+                    or any(getattr(q, "_startup_state", None) is not state
+                           or getattr(q, "_startup_org", None) is not org
+                           or getattr(q, "_startup_recovery", None) is not gate
+                           for q in (org.dream_queue, org.wake_queue, org.schedule_queue))
+                    or self._db is not org.db or self._slug != org.slug
+                    or self._queue is not state.queue or self._sessions is not org.sessions
+                    or self._host_supervisor is not state.host_supervisor
+                    or (self._thread_queue is not None and self._thread_queue is not thread_queue)
+                    or (self._main_loop is not None and self._main_loop is not main_loop)):
+                raise StartupUnavailable("startup_attachment_changed")
+            if main_loop is not gate._loop or main_loop is None:
+                raise StartupUnavailable("startup_attachment_changed")
+            if gate.snapshot()["recovery_ready"]:
+                # Fresh dynamic attachment is ready-only but its thread refs
+                # are being assigned here for the first time.
+                state._require_startup_ready()
+            else:
+                # Only the already registered P4 binding coroutine may attach
+                # cold references. A direct public binder is not recovery.
+                import asyncio
+                binding = gate._binding
+                if (binding is None or binding.task is None
+                        or asyncio.current_task() is not binding.task
+                        or binding.task.get_coro() is not binding.coroutine):
+                    raise StartupUnavailable("startup_thread_binding_unavailable")
+                gate._require_phase_attachments("returned", binding=binding)
+            _bind_task_admission(thread_queue, self._startup_state, org)
+        self._thread_queue = thread_queue
+        self._main_loop = main_loop
 
     def _rediscover_returned(self, *, queue=None) -> None:
         """Original notification owner; dynamic attachment calls it natively."""
@@ -412,6 +547,7 @@ class Orchestrator:
             loop.create_task(coro_factory())
 
     def _build_session_id(self) -> str:
+        self._require_startup_ready()
         return f"sess-{uuid.uuid4().hex}"
 
     def _resolve_agent_def(self, agent_name: str) -> AgentDef:
@@ -726,6 +862,8 @@ class Orchestrator:
 
     def create_task(self, brief: str, team: str | None = None) -> str:
         """Create an agent-managed root; human teams require explicit API owner."""
+        from runtime.daemon.startup_recovery import ordinary_admission_validation
+        validate = ordinary_admission_validation(self)
         team = team or self._teams.task_default_team
         owner = self._teams.executable_manager_for_team(team)
         if owner is None:
@@ -736,11 +874,11 @@ class Orchestrator:
             raise ValueError("unknown_owner")
         task_id = self._db.next_task_id()
         task = TaskRecord(id=task_id, brief=brief, team=team)
-        self._db.insert_task(task)
+        self._db.insert_task(task, validate_admission=validate)
         logger.info("Created task %s: %s", task_id, brief)
         return task_id
 
-    def run_step(self, task_id: str, metadata: dict | None = None) -> None:
+    def run_step(self, task_id: str, metadata: dict | None = None) -> Any:
         """Advance a task one agent-subprocess worth.
 
         Contract: task MUST be pending or in_progress(delegated)-with-all-children-
@@ -751,8 +889,9 @@ class Orchestrator:
         It is passed directly to ``run_step_impl`` as a function parameter —
         no shared mutable state.
         """
+        self._require_startup_ready()
         from runtime.orchestrator.run_step import run_step_impl
-        run_step_impl(self, task_id, metadata=metadata)
+        return run_step_impl(self, task_id, metadata=metadata)
 
     def _parse_next_step(self, report: CompletionReport | None) -> NextStep:
         """Parse the task owner's decision from its completion report.
@@ -844,6 +983,7 @@ class Orchestrator:
         recovery_deadline_monotonic: float | None = None,
         recovery: bool = False,
     ) -> tuple[ExecutorResult, CompletionReport | None]:
+        self._require_startup_ready()
         # Direct Orchestrator construction stays unobserved. Only the real
         # OrgState attachment supplies an independent per-org census owner.
         observer = getattr(self, "_memory_collection", None)
@@ -896,6 +1036,7 @@ class Orchestrator:
         ``on_session_started`` is invoked with ``(task_id, agent_name, session_id)``
         before the subprocess starts so the daemon can register the active session.
         """
+        self._require_startup_ready()
         from runtime.orchestrator.task_pause import current_invocation
         from runtime.orchestrator.team_move import DeferredTeamMove
         invocation = current_invocation()
@@ -975,6 +1116,7 @@ class Orchestrator:
         #   refresh_session_skills (wholesale when enabled)
         #   ensure_system_contracts_materialized (inject + verify)
         #   inject_managed_skills (managed-catalog + lifecycle)
+        self._require_startup_ready()
         expected_specs = materialize_workspace_skills(
             workspace, self._settings,
             slug=self._slug,
@@ -1057,6 +1199,7 @@ class Orchestrator:
         # re-validate integrity before the next Popen.
         def _recovery_launch_validator() -> None:
             """Fence recovery ownership/budget at its actual launch seam."""
+            self._require_startup_ready()
             if recovery:
                 if pause_invocation is not None and not pause_invocation.admitted:
                     pause_invocation.recovery_prelaunch()
@@ -1083,6 +1226,7 @@ class Orchestrator:
                     )
 
         def _pre_launch_integrity_validator() -> None:
+            self._require_startup_ready()
             with task_preparation_effects():
                 validate_workspace_skills_integrity(
                     workspace,
@@ -1169,6 +1313,7 @@ class Orchestrator:
         # fresh code regardless of executor (claude/codex/opencode/pi).
         # Must run BEFORE the executor subprocess starts. Failure is non-
         # blocking: offline / dirty / non-ff / timeout are swallowed.
+        self._require_startup_ready()
         repo_refresh_results = refresh_workspace_repos(workspace,
             preparation=pause_invocation, host_supervisor=self._host_supervisor,
             materialization=(self._settings, expected_specs))
@@ -1250,6 +1395,7 @@ class Orchestrator:
             active_policy_section=(f"\n{active_policy_section}" if active_policy_section else ""),
         )
 
+        self._require_startup_ready()
         if pause_invocation is None:
             # Publish the durable invocation fence before exposing this generation
             # to callback routes.  A route can therefore never observe a tracker
@@ -1460,6 +1606,7 @@ class Orchestrator:
             self._db.insert_audit_log(task_id, agent_name, action, payload)
 
         timeout_seconds = timeout_seconds_override if timeout_seconds_override is not None else self._resolve_session_timeout(agent_name, task_id=task_id)
+        self._require_startup_ready()
         try:
             scratch = prepare_task_scratch(
                 workspace=workspace,
@@ -1475,6 +1622,7 @@ class Orchestrator:
             return ExecutorResult(
                 success=False, duration_seconds=0, session_id=session_id, error=str(exc)
             ), None
+        self._require_startup_ready()
         scratch_token = activate_task_scratch(scratch)
         try:
             result = self._launch_agent_with_scratch(
@@ -1495,6 +1643,11 @@ class Orchestrator:
                 recovery_deadline_monotonic=recovery_deadline_monotonic,
                 recovery=recovery,
             )
+        except Exception as exc:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if isinstance(exc, StartupUnavailable) and self._sessions is not None:
+                self._sessions.clear_if_active_session(task_id, agent_name, session_id)
+            raise
         finally:
             reset_task_scratch(scratch_token)
         if pause_invocation is not None:
@@ -1536,6 +1689,7 @@ class Orchestrator:
         recovery: bool = False,
     ) -> ExecutorResult:
         """Launch after the task scratch context has been installed."""
+        self._require_startup_ready()
         if self._host_supervisor is not None:
             # THR-207 task-producer wiring: the session runs through the
             # daemon-wide HostSessionSupervisor (admission lease, atomic
@@ -1657,6 +1811,7 @@ class Orchestrator:
         with the throttle's internal 429 retry disabled so the supervisor
         still owns the finish/release/sleep/reacquire.
         """
+        self._require_startup_ready()
         from runtime.orchestrator.host_supervisor import (
             AdmissionRequest,
             CancellationToken,
@@ -1678,6 +1833,7 @@ class Orchestrator:
             return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,
                                   error="workflow_reconciliation_required")
 
+        self._require_startup_ready()
         token = CancellationToken()
         invocation = current_invocation()
         if invocation is not None:
@@ -1755,24 +1911,58 @@ class Orchestrator:
         # durable/tracker ownership check. Runs BEFORE
         # backend.prepare/launch so a failing check never creates a scope.
         def _pre_launch_validator() -> None:
+            self._require_startup_ready()
             pre_launch_integrity_validator()
 
         def _final_prelaunch_validator() -> None:
+            self._require_startup_ready()
             if recovery:
                 recovery_launch_validator()
             if drafts is not None:
                 drafts.reserve_launch(task_id, agent_name, session_id)
 
         def _on_terminal(outcome: Any) -> None:
-            invocation = current_invocation()
-            if invocation is not None:
-                invocation.host_terminal(outcome)
-            from runtime.orchestrator.run_step import (
-                _defer_root_worktree_batches, _RootWorktreeTransitions, _root_worktree_batch,
-            )
-            root_transitions = _RootWorktreeTransitions()
-            tail_failed = False
+            import sys
+
+            # An active host cause predates this hook, but is not itself a
+            # new hook failure. Preserve ordinary return when the hook succeeds.
+            primary = sys.exception()
+            traceback = (None if primary is None
+                         else BaseException.__traceback__.__get__(primary))
+            occurrences = ([] if primary is None else [('active_host', primary, traceback)])
+            hook_failed = tracker_attempted = root_attempted = False
+            marker_attempted = marker_returned = False
+            marker_result = None
+            invocation = root_transitions = delivery = disposition = None
+            root_unknown = True
+
+            def remember(kind: str, error: BaseException) -> None:
+                nonlocal primary, traceback, hook_failed
+                observed = BaseException.__traceback__.__get__(error)
+                if primary is None:
+                    primary, traceback = error, observed
+                hook_failed = True
+                occurrences.append((kind, error, observed))
+
+            def clear_tracker_once() -> None:
+                nonlocal tracker_attempted
+                if tracker_attempted:
+                    return
+                # A raised clear can follow an effect; never replay it.
+                tracker_attempted = True
+                try:
+                    _clear_tracker()
+                except BaseException as secondary:
+                    remember('tracker', secondary)
+
             try:
+                invocation = current_invocation()
+                if invocation is not None:
+                    invocation.host_terminal(outcome)
+                from runtime.orchestrator.run_step import (
+                    _defer_root_worktree_batches, _RootWorktreeTransitions, _root_worktree_batch,
+                )
+                root_transitions = _RootWorktreeTransitions()
                 with _defer_root_worktree_batches(self, root_transitions) as delivery:
                     try:
                         if drafts is not None:
@@ -1781,16 +1971,58 @@ class Orchestrator:
                                 submissions = getattr(self, "_workflow_submissions", None)
                                 if submissions is not None:
                                     submissions.completed(task_id)
+                    except BaseException as error:
+                        # Snapshot the workflow cause before tracker/context
+                        # unwind can deliver a different exception.
+                        remember('workflow_terminal', error)
+                        raise
                     finally:
-                        _clear_tracker()
-            except BaseException:
-                tail_failed = True
-                raise
+                        clear_tracker_once()
+            except BaseException as error:
+                remember('terminal_or_context_delivery', error)
             finally:
-                disposition = _root_worktree_batch(self, root_transitions,
-                    teardown_incomplete=tail_failed or delivery['teardown_incomplete'])
-                if disposition.kind == 'unknown' and invocation is not None:
-                    invocation.move_reservation.failed_cleanup()
+                # Also owed after current_invocation/host_terminal/import or
+                # context entry failure, without entering skipped workflow work.
+                clear_tracker_once()
+                try:
+                    if (delivery is not None and root_transitions is not None
+                            and delivery['orch'] is self
+                            and delivery['events'] is root_transitions
+                            and delivery['active'] is False
+                            and not delivery.get('_context_incomplete', False)
+                            and not delivery['consumption_pending']):
+                        # Context uncertainty suppresses the ENTIRE batch,
+                        # including DB admission/audit/report, not just actions.
+                        root_attempted = True
+                        disposition = _root_worktree_batch(self, root_transitions,
+                            teardown_incomplete=hook_failed or delivery['teardown_incomplete'])
+                        root_unknown = disposition.kind == 'unknown'
+                except BaseException as secondary:
+                    remember('root_worktree', secondary)
+                if root_unknown and invocation is not None:
+                    try:
+                        marker_attempted = True
+                        marker_result = invocation.move_reservation.failed_cleanup()
+                        marker_returned = True
+                    except BaseException as secondary:
+                        remember('failed_cleanup_marker', secondary)
+
+            if hook_failed:
+                # One local attachment attempt; preserve nested/prior records.
+                # Failed attachment leaves all actual evidence in this frame.
+                failure = dict(primary=(primary, traceback), occurrences=occurrences,
+                    invocation=invocation, delivery=delivery, transitions=root_transitions,
+                    tracker_attempted=tracker_attempted, root_attempted=root_attempted,
+                    marker_attempted=marker_attempted, marker_returned=marker_returned,
+                    marker_result=marker_result,
+                    disposition=disposition, root_unknown=root_unknown, previous=None)
+                try:
+                    values = BaseException.__getattribute__(primary, '__dict__')
+                    failure['previous'] = values.get('_orchestrator_terminal_failure')
+                    BaseException.__setattr__(primary, '_orchestrator_terminal_failure', failure)
+                except BaseException as secondary:
+                    remember('attachment_failure', secondary)
+                raise BaseException.with_traceback(primary, traceback)
 
         def _launch_body(running: RunningHandle) -> LaunchResult:
             if drafts is not None:
@@ -1803,6 +2035,8 @@ class Orchestrator:
             # internal 429 retry disabled so the supervisor owns the
             # finish/release/sleep/reacquire lifecycle.
             contained = running.process is not None
+            if not contained:
+                self._require_startup_ready()
             from runtime.orchestrator.task_pause import current_invocation
             invocation = current_invocation()
             actual_prompt = invocation.prompt_reader() if invocation is not None else full_prompt
@@ -1914,21 +2148,36 @@ class Orchestrator:
     _HISTORY_CAP = 50
     _HISTORY_HEADER = "# Task History"
 
-    def _update_task_history(self, task_id: str) -> None:
+    def _update_task_history(
+        self, task_id: str, *, validate_admission: Callable[[], None] | None = None,
+    ) -> bool | None:
         """Rebuild the assigned_agent's task_history.md from the DB.
 
         Newest-first, capped at ``_HISTORY_CAP`` entries. Silent no-op if
-        the task has no assigned_agent or its workspace is missing.
+        the task has no assigned_agent or its workspace is missing. A selected
+        caller renews its SAME admission after observations and before writing;
+        only selected callers receive True for a write or False for a no-op.
+        Default terminal bookkeeping remains ungated and returns None. These
+        synchronous rechecks do not make filesystem I/O atomic against stop.
         """
+        if validate_admission is not None:
+            validate_admission()
         task = self._db.get_task(task_id)
+        if validate_admission is not None:
+            validate_admission()
         if task is None or not task.assigned_agent:
-            return
+            return None if validate_admission is None else False
         ws = self._paths.workspaces_dir / task.assigned_agent
-        if not ws.exists():
-            return
+        workspace_exists = ws.exists()
+        if validate_admission is not None:
+            validate_admission()
+        if not workspace_exists:
+            return None if validate_admission is None else False
         path = ws / "task_history.md"
 
         recent = self._db.list_agent_tasks(task.assigned_agent, limit=self._HISTORY_CAP)
+        if validate_admission is not None:
+            validate_admission()
         header = f"{self._HISTORY_HEADER}: {task.assigned_agent}\n\n"
         lines: list[str] = []
         for t in recent:
@@ -1940,7 +2189,11 @@ class Orchestrator:
             lines.append(f"  - Outcome: {outcome}" if outcome else "  - Outcome: (none)")
             if t.final_output_dir:
                 lines.append(f"  - Output: `{t.final_output_dir}`")
-        path.write_text(header + "\n".join(lines) + ("\n" if lines else ""))
+        content = header + "\n".join(lines) + ("\n" if lines else "")
+        if validate_admission is not None:
+            validate_admission()
+        path.write_text(content)
+        return None if validate_admission is None else True
 
     def _log_step_result(
         self,

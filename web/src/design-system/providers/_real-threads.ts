@@ -8,6 +8,12 @@
  * `src/features/threads/hooks.ts`. The only change is that the `slug` is read
  * from `useRealOrgSlug()` (URL via react-router) instead of being passed as
  * an argument — that's how the public hook surface stays provider-agnostic.
+ *
+ * Startup admission (THR-308): while daemon startup is not positively ready,
+ * only the thread list/detail/messages reads run (the daemon's bounded early
+ * reader). Linked tasks, inbox/tail SSE and every mutation are held before any
+ * network work; mutations recheck admission when they actually start, so a
+ * stale callback after an await cannot reach the daemon.
  */
 import type { InfiniteData, QueryClient } from '@tanstack/react-query';
 import {
@@ -20,6 +26,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { subscribeSSE, threads as threadsApi } from '@/lib/api';
+import { assertStartupAdmitted, isStartupAdmittedIn, StartupHeldError } from '@/lib/startup';
+import { useRealStartup } from './_real-health';
 import type {
   ThreadInboxEvent,
   ThreadMessage,
@@ -80,8 +88,23 @@ interface ThreadPageOwner {
   dirty: boolean;
   failure: 'next' | 'refresh' | null;
   error: Error | null;
+  pendingRuns: Set<Promise<void>>;
+  runSequence: number;
+  completedRun: { sequence: number; promise: Promise<void> } | null;
 }
 const threadPageOwners = new WeakMap<QueryClient, Map<string, ThreadPageOwner>>();
+
+/** Snapshot already-created raw runs for this client/key; never starts work.
+ * Pending runs and the latest completed invocation are retained per owner.
+ * An empty snapshot means no available return, not successful settlement. */
+export function getCommittedThreadPageRuns(
+  client: QueryClient,
+  queryKey: readonly unknown[],
+): readonly Promise<void>[] {
+  const owner = threadPageOwners.get(client)?.get(JSON.stringify(queryKey));
+  if (!owner) return [];
+  return [...owner.pendingRuns, ...(owner.completedRun ? [owner.completedRun.promise] : [])];
+}
 
 /** Shared committed-page ownership for daemon and prototype transports.
  * Refresh pages stay private until the entire prior depth is replaced. */
@@ -104,7 +127,8 @@ export function useCommittedThreadPages(
     let existing = owners.get(identity);
     if (!existing) {
       existing = { users: 0, listeners: new Set(), runners: new Map(), generation: 0, controller: null,
-        operation: null, dirty: false, failure: null, error: null };
+        operation: null, dirty: false, failure: null, error: null,
+        pendingRuns: new Set(), runSequence: 0, completedRun: null };
       owners.set(identity, existing);
     }
     return existing;
@@ -117,69 +141,83 @@ export function useCommittedThreadPages(
   });
   const active = useCallback(() => currentIdentity.current === identity, [identity]);
   const paused = useCallback(() => !!qc.getQueryData<number>(pinnedQueryKey), [qc, pinnedQueryKey]);
-  const run = useCallback(async (kind: 'next' | 'refresh') => {
-    if (!scope || !active() || paused() || owner.failure) return;
-    if (owner.operation) {
-      if (kind !== 'refresh') return;
-      if (owner.operation === 'refresh') {
-        owner.dirty = true;
-        return;
-      }
-      // Fence a pending continuation before aborting it; a late success cannot
-      // resurrect rows or counts from the generation being replaced.
-      owner.generation++;
-      owner.controller?.abort();
-      owner.operation = null;
-      owner.controller = null;
-    }
-    const previous = qc.getQueryData<InfiniteData<ThreadListPage, string | null>>(key);
-    const tail = previous?.pages.at(-1);
-    if (kind === 'next' && !tail?.has_more) return;
-    const ctl = new AbortController();
-    const generation = ++owner.generation;
-    owner.controller = ctl;
-    owner.operation = kind;
-    owner.error = null;
-    owner.failure = null;
-    notifyOwners();
-    const owned = () => owner.users > 0 && generation === owner.generation && !ctl.signal.aborted;
-    try {
-      const staged: InfiniteData<ThreadListPage, string | null> = kind === 'next'
-        ? { pages: [...(previous?.pages ?? [])], pageParams: [...(previous?.pageParams ?? [])] }
-        : { pages: [], pageParams: [] };
-      let cursor = kind === 'next' ? tail!.next_cursor : null;
-      const depth = kind === 'refresh' ? Math.max(1, previous?.pages.length ?? 0) : staged.pages.length + 1;
-      const seen = new Set(staged.pageParams.filter((p): p is string => p !== null));
-      while (staged.pages.length < depth) {
-        const page = await load(cursor, ctl.signal);
-        if (!owned()) return;
-        if (!Array.isArray(page.threads) || !page.totals || typeof page.has_more !== 'boolean'
-            || (page.has_more ? typeof page.next_cursor !== 'string' || !page.next_cursor : page.next_cursor !== null)
-            || (page.next_cursor !== null && (seen.has(page.next_cursor) || page.next_cursor === cursor))) {
-          throw new Error('invalid_thread_page');
+  const run = useCallback((kind: 'next' | 'refresh') => {
+    const sequence = ++owner.runSequence;
+    const original = (async () => {
+      if (!scope || !active() || paused() || owner.failure) return;
+      if (owner.operation) {
+        if (kind !== 'refresh') return;
+        if (owner.operation === 'refresh') {
+          owner.dirty = true;
+          return;
         }
-        if (cursor !== null) seen.add(cursor);
-        staged.pageParams.push(cursor);
-        staged.pages.push(page);
-        if (!page.has_more) break;
-        cursor = page.next_cursor;
-      }
-      if (owned() && !paused() && !owner.dirty) qc.setQueryData(key, staged);
-    } catch (error) {
-      if (owned()) {
-        owner.failure = kind;
-        owner.error = error instanceof Error ? error : new Error(String(error));
-      }
-    } finally {
-      if (owned()) {
+        // Fence a pending continuation before aborting it; a late success cannot
+        // resurrect rows or counts from the generation being replaced.
+        owner.generation++;
+        owner.controller?.abort();
         owner.operation = null;
         owner.controller = null;
-        const dirty = owner.dirty;
-        owner.dirty = false;
-        notifyOwners();
-        if (dirty && !owner.failure && !paused()) void owner.runners.values().next().value?.('refresh');
       }
-    }
+      const previous = qc.getQueryData<InfiniteData<ThreadListPage, string | null>>(key);
+      const tail = previous?.pages.at(-1);
+      if (kind === 'next' && !tail?.has_more) return;
+      const ctl = new AbortController();
+      const generation = ++owner.generation;
+      owner.controller = ctl;
+      owner.operation = kind;
+      owner.error = null;
+      owner.failure = null;
+      notifyOwners();
+      const owned = () => owner.users > 0 && generation === owner.generation && !ctl.signal.aborted;
+      try {
+        const staged: InfiniteData<ThreadListPage, string | null> = kind === 'next'
+          ? { pages: [...(previous?.pages ?? [])], pageParams: [...(previous?.pageParams ?? [])] }
+          : { pages: [], pageParams: [] };
+        let cursor = kind === 'next' ? tail!.next_cursor : null;
+        const depth = kind === 'refresh' ? Math.max(1, previous?.pages.length ?? 0) : staged.pages.length + 1;
+        const seen = new Set(staged.pageParams.filter((p): p is string => p !== null));
+        while (staged.pages.length < depth) {
+          const page = await load(cursor, ctl.signal);
+          if (!owned()) return;
+          if (!Array.isArray(page.threads) || !page.totals || typeof page.has_more !== 'boolean'
+              || (page.has_more ? typeof page.next_cursor !== 'string' || !page.next_cursor : page.next_cursor !== null)
+              || (page.next_cursor !== null && (seen.has(page.next_cursor) || page.next_cursor === cursor))) {
+            throw new Error('invalid_thread_page');
+          }
+          if (cursor !== null) seen.add(cursor);
+          staged.pageParams.push(cursor);
+          staged.pages.push(page);
+          if (!page.has_more) break;
+          cursor = page.next_cursor;
+        }
+        if (owned() && !paused() && !owner.dirty) qc.setQueryData(key, staged);
+      } catch (error) {
+        if (owned()) {
+          owner.failure = kind;
+          owner.error = error instanceof Error ? error : new Error(String(error));
+        }
+      } finally {
+        if (owned()) {
+          owner.operation = null;
+          owner.controller = null;
+          const dirty = owner.dirty;
+          owner.dirty = false;
+          notifyOwners();
+          if (dirty && !owner.failure && !paused()) void owner.runners.values().next().value?.('refresh');
+        }
+      }
+    })();
+    owner.pendingRuns.add(original);
+    const settled = () => {
+      owner.pendingRuns.delete(original);
+      if (!owner.completedRun || sequence > owner.completedRun.sequence) {
+        owner.completedRun = { sequence, promise: original };
+      }
+    };
+    // Observe rejection on creation without changing the caller's raw Promise,
+    // its result/error, or any original scheduling/notification policy.
+    void original.then(settled, settled);
+    return original;
   }, [scope, owner, qc, key, load, notifyOwners, active, paused]);
   useEffect(() => {
     owner.users++;
@@ -300,10 +338,15 @@ function useThreadMessages(threadId: string | undefined) {
 
 function useThreadTasks(threadId: string | undefined) {
   const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  const { admitted } = useRealStartup();
   return useQuery({
     queryKey: ['thread-tasks', slug, threadId],
-    queryFn: () => threadsApi.listThreadTasks(slug, threadId as string),
-    enabled: !!slug && !!threadId,
+    queryFn: () => {
+      assertStartupAdmitted(qc);
+      return threadsApi.listThreadTasks(slug, threadId as string);
+    },
+    enabled: !!slug && !!threadId && admitted,
   });
 }
 
@@ -314,8 +357,11 @@ function useThreadTasks(threadId: string | undefined) {
 function useThreadsInboxSSE(): void {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
+  const { admitted } = useRealStartup();
   useEffect(() => {
-    if (!slug) return;
+    // Held while startup is unavailable; opens (and reconciles the list via
+    // onOpen) only after a positive ready observation.
+    if (!slug || !admitted) return;
     const ctl = new AbortController();
     subscribeSSE<ThreadInboxEvent>(threadsApi.threadInboxEventsPath(slug), {
       signal: ctl.signal,
@@ -329,7 +375,7 @@ function useThreadsInboxSSE(): void {
       /* swallow — fetch-event-source already retries transient errors */
     });
     return () => ctl.abort();
-  }, [slug, qc]);
+  }, [slug, qc, admitted]);
 }
 
 /**
@@ -355,9 +401,10 @@ function useThreadTailSSE(threadId: string | undefined): void {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   const sinceSeqRef = useRef(0);
+  const { admitted } = useRealStartup();
 
   useEffect(() => {
-    if (!slug || !threadId) return;
+    if (!slug || !threadId || !admitted) return;
     // Reset since_seq when threadId changes
     sinceSeqRef.current = 0;
 
@@ -426,7 +473,7 @@ function useThreadTailSSE(threadId: string | undefined): void {
       /* swallow */
     });
     return () => ctl.abort();
-  }, [slug, threadId, qc]);
+  }, [slug, threadId, qc, admitted]);
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +494,7 @@ function useComposeThread(): MutationLike<
     (variables as ComposeArgs & { destination?: { slug: string } }).destination;
   return useMutation({
     mutationFn: (variables: ComposeArgs) => {
+      assertStartupAdmitted(qc);
       const destination = destinationOf(variables);
       const { destination: _destination, ...body } = variables as ComposeArgs & {
         destination?: { slug: string };
@@ -474,6 +522,7 @@ function useSendFollowUp(threadId: string): MutationLike<
     (variables as SendFollowUpArgs & { destination?: Destination }).destination;
   return useMutation({
     mutationFn: (variables: SendFollowUpArgs) => {
+      assertStartupAdmitted(qc);
       const destination = destinationOf(variables);
       const { destination: _destination, ...body } = variables as SendFollowUpArgs & {
         destination?: Destination;
@@ -504,8 +553,10 @@ function useInviteAgent(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ destination, ...body }: InviteArgs) =>
-      threadsApi.inviteToThread(destination?.slug ?? slug, destination?.threadId ?? threadId, body),
+    mutationFn: ({ destination, ...body }: InviteArgs) => {
+      assertStartupAdmitted(qc);
+      return threadsApi.inviteToThread(destination?.slug ?? slug, destination?.threadId ?? threadId, body);
+    },
     onSuccess: (_result, args) => {
       qc.invalidateQueries({ queryKey: ['thread', args.destination?.slug ?? slug, args.destination?.threadId ?? threadId] });
       qc.invalidateQueries({ queryKey: ['threads', args.destination?.slug ?? slug] });
@@ -521,8 +572,10 @@ function useRemoveParticipant(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: RemoveParticipantArgs) =>
-      threadsApi.removeParticipantFromThread(slug, threadId, body),
+    mutationFn: (body: RemoveParticipantArgs) => {
+      assertStartupAdmitted(qc);
+      return threadsApi.removeParticipantFromThread(slug, threadId, body);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['threads', slug] });
@@ -537,8 +590,10 @@ function useArchiveThread(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: ArchiveArgs) =>
-      threadsApi.archiveThread(slug, threadId, body),
+    mutationFn: (body: ArchiveArgs) => {
+      assertStartupAdmitted(qc);
+      return threadsApi.archiveThread(slug, threadId, body);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['threads', slug] });
@@ -553,7 +608,10 @@ function useResumeThread(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => threadsApi.resumeThread(slug, threadId),
+    mutationFn: () => {
+      assertStartupAdmitted(qc);
+      return threadsApi.resumeThread(slug, threadId);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['threads', slug] });
@@ -568,7 +626,10 @@ function useAbortReplies(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => threadsApi.abortReplies(slug, threadId),
+    mutationFn: () => {
+      assertStartupAdmitted(qc);
+      return threadsApi.abortReplies(slug, threadId);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
@@ -584,8 +645,10 @@ function useRenameThread(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: RenameThreadArgs) =>
-      threadsApi.renameThread(slug, threadId, body),
+    mutationFn: (body: RenameThreadArgs) => {
+      assertStartupAdmitted(qc);
+      return threadsApi.renameThread(slug, threadId, body);
+    },
     onSuccess: (data) => {
       // Patch the detail cache in place so the header shows the saved title
       // immediately; the list refetches so rows + pinned ranking stay fresh.
@@ -647,8 +710,10 @@ function useSetThreadPinned(threadId: string): MutationLike<
   const qc = useQueryClient();
   type ListCache = { threads: ThreadRecord[] } | InfiniteData<ThreadListPage, string | null>;
   const mutation = useMutation({
-    mutationFn: (variables: { body: SetThreadPinArgs; slug: string; threadId: string }) =>
-      threadsApi.setThreadPinned(variables.slug, variables.threadId, variables.body),
+    mutationFn: (variables: { body: SetThreadPinArgs; slug: string; threadId: string }) => {
+      assertStartupAdmitted(qc);
+      return threadsApi.setThreadPinned(variables.slug, variables.threadId, variables.body);
+    },
     onMutate: async ({ body, slug, threadId }) => {
       const pinKey = ['thread-list-pin', slug];
       qc.setQueryData<number>(pinKey, (n) => (n ?? 0) + 1);
@@ -697,7 +762,14 @@ function useSetThreadPinned(threadId: string): MutationLike<
       qc.setQueryData<number>(ctx.pinKey, (n) => Math.max(0, (n ?? 1) - 1));
     },
   });
-  return { mutateAsync: (body) => mutation.mutateAsync({ body, slug, threadId }), isPending: mutation.isPending };
+  // Admission is checked BEFORE the optimistic onMutate writes; a held pin
+  // never touches the cache or the paged-list fence.
+  return {
+    mutateAsync: (body) => isStartupAdmittedIn(qc)
+      ? mutation.mutateAsync({ body, slug, threadId })
+      : Promise.reject(new StartupHeldError()),
+    isPending: mutation.isPending,
+  };
 }
 
 // ---------------------------------------------------------------------------

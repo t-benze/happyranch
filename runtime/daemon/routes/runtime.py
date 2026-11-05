@@ -21,6 +21,8 @@ class RuntimePath(BaseModel):
 
 def _assert_can_swap(state: DaemonState) -> None:
     """Preflight ALL old orgs without fencing or closing any of them."""
+    state._require_startup_ready()
+    state._assert_startup_idle()
     if state._runner_shutdown:
         raise HTTPException(status_code=409, detail={"code": "daemon_shutting_down"})
     state.team_move_service.assert_no_owner()
@@ -74,12 +76,17 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     state._begin_attachment_close(old_orgs)
     for org in old_orgs:
         org.close()
-    new_state = DaemonState.from_runtime(runtime, state.settings, move_diagnostics=diagnostics)
+    new_state = DaemonState.from_runtime(runtime, state.settings, move_diagnostics=diagnostics,
+                                         defer_coding_registration=False)
     # Move the worker queue and lock instances into the new state so an
     # in-flight worker pool keeps consuming. Old orgs have no nonterminal tasks
     # or active native runners (checked above).
     new_state.queue = state.queue
     new_state.orgs_lock = state.orgs_lock
+    # Replacement retains the ORIGINAL ready epoch. Bind every new OrgState
+    # before map publication; never recapture boot's original attachments.
+    for org in new_state.orgs.values():
+        state._attach_startup_owner(org)
     state.runtime = new_state.runtime
     with state._org_map_lock:
         state.orgs = new_state.orgs
@@ -88,6 +95,8 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
         org._cleanup_diagnostic_unavailable = "runtime_attachment_unsupported"
     state.broken_orgs = new_state.broken_orgs
     state.profile_coordinator = new_state.profile_coordinator
+    from runtime.daemon.direct_connect_projection_sweep import bind_startup_references
+    bind_startup_references(state)
     if state.profile_coordinator is not None:
         state.profile_coordinator._attachment_capture = state.capture_orgs
     # No live owner can cross the switch (checked above). Keep diagnostic
@@ -109,8 +118,11 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
 
 
 async def _drain_before_swap(daemon: DaemonState) -> tuple:
+    daemon._require_startup_ready()
     try:
         async with daemon.orgs_lock:
+            daemon._require_startup_ready()
+            daemon._assert_startup_idle()
             captured = daemon._capture_attachments()
             daemon._revoke_thread_releases()
         # C can be active at the initial capture. Join outside org/native locks,
@@ -148,7 +160,7 @@ async def get_runtime(request: Request) -> dict:
 
 @router.post("/runtime")
 async def register_runtime(body: RuntimePath, request: Request) -> dict:
-    from runtime.daemon.app import ensure_workers_started
+    from runtime.daemon.app import _wire_then_start_workers
 
     daemon: DaemonState = request.app.state.daemon
     path = Path(body.path).expanduser()
@@ -165,13 +177,14 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
             _swap(daemon, runtime, move_diagnostics=diagnostics)
         finally:
             daemon._finish_attachment_swap()
-    ensure_workers_started(daemon)
+    import asyncio
+    _wire_then_start_workers(daemon, asyncio.get_running_loop())
     return {"runtime": str(path.resolve())}
 
 
 @router.post("/runtime/use")
 async def use_runtime(body: RuntimePath, request: Request) -> dict:
-    from runtime.daemon.app import ensure_workers_started
+    from runtime.daemon.app import _wire_then_start_workers
 
     daemon: DaemonState = request.app.state.daemon
     path = Path(body.path).expanduser().resolve()
@@ -186,5 +199,6 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
             _swap(daemon, runtime, move_diagnostics=diagnostics)
         finally:
             daemon._finish_attachment_swap()
-    ensure_workers_started(daemon)
+    import asyncio
+    _wire_then_start_workers(daemon, asyncio.get_running_loop())
     return {"runtime": str(path)}

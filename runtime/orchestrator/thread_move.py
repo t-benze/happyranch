@@ -69,18 +69,55 @@ class _ThreadAbortControl:
         self.children: set[Any] = set()
         self.dispatch_future: Future[None] | None = None
         self.failure: BaseException | None = None
+        self.failure_snapshot = self.failure_occurrences = None
+        self.invocation_owner = None
+        self.dispatch_thread = None
+        self.dispatch_returned = threading.Event()
+        self.dispatch_published = False
+        self.dispatch_start_error = None
+        self.dispatch_delivery = None
+        self.dispatch_snapshot = None
+        self.dispatch_acknowledged = False
         self.mode: str | None = None
         self.launched = False
         self.worker_running = False
         self.audit_attempted = False
         self.audit_mode: str | None = None
 
-    def record_failure(self, exc: BaseException) -> None:
+    def record_failure(self, exc: BaseException, *, origin: Any = None) -> tuple:
+        # Capture before the control leaf or any diagnostic sink. Never call
+        # exception-defined getters, notes, repr or truthiness in stop custody.
+        owner = self.invocation_owner
+        if origin is None and owner is not None:
+            # Same invocation capture leaf, available even before a provider
+            # worker enters. No control/refresh mutex, DB or callback is nested.
+            with owner._invocation_worker_lock:
+                origin = ("thread abort", exc, BaseException.args.__get__(exc),
+                    BaseException.__traceback__.__get__(exc), None,
+                    owner._invocation_worker_occurrences, [True], None)
+                owner._invocation_worker_pending = origin
+                owner._invocation_worker_occurrences = origin
+                if owner._invocation_worker_primary is None:
+                    owner._invocation_worker_primary = origin
+        args = BaseException.args.__get__(exc) if origin is None else origin[2]
+        traceback = BaseException.__traceback__.__get__(exc) if origin is None else origin[3]
         with self.lock:
-            if self.failure is None:
+            snapshot = (exc, args, traceback, origin, self.failure_occurrences)
+            self.failure_occurrences = snapshot
+            earlier = self.failure_snapshot is None
+            # Capture and control leaves are never nested. If concurrent
+            # captures reach this leaf out of order, their immutable SAME-owner
+            # predecessor links, rather than transfer time, establish FIRST.
+            cursor = None if self.failure_snapshot is None else self.failure_snapshot[3]
+            while cursor is not None and origin is not None:
+                if cursor is origin:
+                    earlier = True
+                    break
+                cursor = cursor[5]
+            if earlier:
+                self.failure_snapshot = snapshot
                 self.failure = exc
-            elif self.failure is not exc:
-                self.failure.add_note(f"thread abort secondary: {exc!r}")
+        return snapshot
 
     def _capture_unsupported_unlocked(self) -> None:
         if self.token.cancelled and self.launched and self.worker_running and self.mode is not None:
@@ -132,58 +169,104 @@ class _ThreadAbortControl:
             future = self.dispatch_future = Future()
 
         def stop() -> None:
-            primary = None
-            with self.lock:
-                tokens = (self.token, *self.children)
-            for action in (*[token.cancel for token in tokens], self.unsupported_stop_audit):
+            try:
+                with self.lock:
+                    tokens = (self.token, *self.children)
+                # Resolve each opaque action INSIDE its own catch. One failed
+                # child cannot skip the remaining children or the owed audit.
+                for token in tokens:
+                    try:
+                        token.cancel()
+                    except BaseException as exc:
+                        self.record_failure(exc)
+                frontier = self.failure_occurrences
                 try:
-                    action()
+                    self.unsupported_stop_audit()
                 except BaseException as exc:
-                    if primary is None:
-                        primary = exc
+                    original = self.failure_occurrences
+                    if original is frontier or original is None or original[0] is not exc:
+                        self.record_failure(exc)
+            except BaseException as exc:
+                self.record_failure(exc)
+            finally:
+                try:
+                    primary = self.failure_snapshot
+                    self.dispatch_snapshot = primary
+                    if primary is not None:
+                        BaseException.args.__set__(primary[0], primary[1])
+                        BaseException.__traceback__.__set__(primary[0], primary[2])
+                        future.set_exception(primary[0])
                     else:
-                        primary.add_note(f"thread abort secondary: {exc!r}")
-            if primary is not None:
-                self.record_failure(primary)
-                future.set_exception(primary)
-            else:
-                future.set_result(None)
+                        future.set_result(None)
+                    self.dispatch_published = True
+                except BaseException as exc:
+                    # Settlement may have taken effect. Retain UNKNOWN; never
+                    # retry, replace or infer acknowledgement from done().
+                    self.record_failure(exc)
+                finally:
+                    self.dispatch_returned.set()
         try:
-            threading.Thread(target=stop, name=f"thread-abort-{self.key[0]}", daemon=True).start()
+            self.dispatch_thread = threading.Thread(target=stop, name=f"thread-abort-{self.key[0]}", daemon=True)
+            self.dispatch_thread.start()
         except BaseException as exc:
-            self.record_failure(exc)
-            future.set_exception(exc)
+            self.dispatch_start_error = self.record_failure(exc)
+            # start() can take effect then raise. Its sole producer retains
+            # publication custody; the caller cannot race it with a second set.
         return future
 
     async def join_dispatch(self) -> None:
         if not self.token.cancelled:
             return
         worker = asyncio.wrap_future(self.dispatch())
-        cancellation = None
         while not worker.done():
+            if (self.dispatch_start_error is not None or self.dispatch_returned.is_set()) and not self.dispatch_published:
+                break
             try:
                 await asyncio.shield(worker)
             except asyncio.CancelledError as exc:
-                cancellation = cancellation or exc
-            except BaseException:
+                # A cancelled wrapper can never make progress by shielding it
+                # again. Each actual waiter cancellation keeps its own snapshot.
+                original = self.dispatch_snapshot
+                if (not worker.done() or worker.cancelled() or original is None
+                        or original[0] is not exc):
+                    self.record_failure(exc)
+                if worker.cancelled():
+                    break
+            except BaseException as exc:
+                original = self.dispatch_snapshot
+                if not worker.done() or original is None or original[0] is not exc:
+                    self.record_failure(exc)
                 break
-        try:
-            worker.result()
-        except BaseException as exc:
-            if cancellation is None:
-                raise
-            cancellation.add_note(f"thread abort dispatch failed: {exc!r}")
-        if cancellation is not None:
-            raise cancellation
+        if worker.done():
+            try:
+                worker.result()
+            except BaseException as exc:
+                original = self.dispatch_snapshot
+                if original is None or original[0] is not exc:
+                    self.record_failure(exc)
+        self.dispatch_acknowledged = (worker.done() and not worker.cancelled()
+            and self.dispatch_published and self.dispatch_returned.is_set()
+            and self.dispatch_start_error is None)
+        if not self.dispatch_acknowledged:
+            owner = self.invocation_owner
+            if owner is not None:
+                owner._invocation_native_unsettled = True
+            if self.failure_snapshot is None:
+                self.record_failure(RuntimeError("thread_abort_acknowledgement_unavailable"))
         # A late original on_started may have recorded an audit failure after
         # the once-only dispatch returned. Never retry that write or hide it.
-        if self.failure is not None:
-            raise self.failure
+        primary = self.failure_snapshot
+        if primary is not None:
+            self.dispatch_delivery = primary
+            BaseException.args.__set__(primary[0], primary[1])
+            raise BaseException.with_traceback(primary[0], primary[2])
 
 
 class ThreadPreparation:
-    def __init__(self, admission: ThreadMoveAdmission, inv: Any, state: ThreadLifecycle) -> None:
+    def __init__(self, admission: ThreadMoveAdmission, inv: Any, state: ThreadLifecycle,
+                 *, validate_admission: Callable[[], None] | None = None) -> None:
         self.admission, self.inv, self.state = admission, inv, state
+        self.validate_admission = validate_admission
         self.identity = PermanentAgentIdentity(state.org_slug, state.agent_id)
         self.owner_live = True
         self.last_spec: Any = None
@@ -195,7 +278,19 @@ class ThreadPreparation:
         self.attempt_open = False
         self.safe_selflaunch_defer = False
         self.abort_control = admission.controls.get(inv.id) or _ThreadAbortControl(admission, inv, state)
+        # Order raw native/waiter observations before any diagnostics. These
+        # fields belong to this original invocation, including its finish call.
+        self._invocation_worker_lock = threading.Lock()
+        self._invocation_worker_primary = None
+        self._invocation_worker_occurrences = None
+        self._invocation_worker_pending = None
+        self._invocation_worker_delivery = None
+        self._invocation_native_unsettled = False
+        self._invocation_worker_capture = None
+        self.abort_control.invocation_owner = self
+        self._preparation_failure_occurrences = None
 
+        self._repository_refresh_owner = None
         self._repository_preparations = {}
         self._repository_effect_intervals = []
         self._repository_retained_effects = []
@@ -246,31 +341,59 @@ class ThreadPreparation:
             with _repo_effect_interval(self):
                 yield
         except BaseException as exc:
+            capture = self._invocation_worker_capture
+            origin = None if capture is None else capture("preparation effects", exc, candidate=True)
+            snapshot = (exc, BaseException.args.__get__(exc) if origin is None else origin[2],
+                BaseException.__traceback__.__get__(exc) if origin is None else origin[3])
+            self._preparation_failure_occurrences = (snapshot, self._preparation_failure_occurrences)
             try:
                 self.failed_cleanup()
             except BaseException as evidence:
-                exc.add_note(f"thread preparation evidence failed: {evidence}")
+                later_origin = None if capture is None else capture("preparation failed cleanup", evidence, candidate=True)
+                later = (evidence, BaseException.args.__get__(evidence) if later_origin is None else later_origin[2],
+                    BaseException.__traceback__.__get__(evidence) if later_origin is None else later_origin[3])
+                self._preparation_failure_occurrences = (later, self._preparation_failure_occurrences)
+            if origin is not None:
+                capture.__self__.native_delivery = origin
+            BaseException.args.__set__(exc, snapshot[1])
+            raise BaseException.with_traceback(exc, snapshot[2])
+
+    def admission_refused(self, error: BaseException) -> None:
+        error.native_admission_owner = self
+        self.safe_selflaunch_defer = bool(self.attempt_open and not self.state.attempts[-1].launched)
+
+    def require_admission(self) -> None:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        try:
+            if self.validate_admission is not None:
+                self.validate_admission()
+        except StartupUnavailable as exc:
+            self.admission_refused(exc)
             raise
 
     def before_fifo(self) -> None:
+        self.require_admission()
         with self.admission.move.gate, self.admission.db._lock:
+            self.require_admission()
             self.admission.revalidate_uncommitted(self)
 
     def start_phase(self, phase: str) -> None:
         with self.admission.move.gate, self.admission.db._lock:
+            self.require_admission()
             self.admission.revalidate_uncommitted(self)
             if self.state.retry_initialized is None:
                 raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
-            self.admission.write(self, phase=phase, ordinal=0, schedule=(), retry_initialized=False)
+            self.admission.write(self, validate_admission=self.require_admission, phase=phase, ordinal=0, schedule=(), retry_initialized=False)
         self.before_fifo()
 
     def retry_schedule(self, boundary: str, schedule: tuple[float, ...]) -> tuple[int, tuple[float, ...]]:
         with self.admission.move.gate, self.admission.db._lock:
+            self.require_admission()
             self.admission.revalidate_uncommitted(self)
             if self.state.retry_initialized is None:
                 raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
             if self.state.retry_initialized is False:
-                self.admission.write(self, retry_initialized=True, boundary=boundary, schedule=tuple(float(x) for x in schedule))
+                self.admission.write(self, validate_admission=self.require_admission, retry_initialized=True, boundary=boundary, schedule=tuple(float(x) for x in schedule))
             elif self.state.boundary != boundary:
                 raise DeferredTeamMove("team_move_thread_retry_owner_mismatch")
             return self.state.ordinal, self.state.schedule
@@ -279,16 +402,19 @@ class ThreadPreparation:
         # Persist original retry budget BEFORE sleeping/reacquiring; no gate in
         # the host terminal leaf. Each unknown attempt stays in the audit.
         with self.admission.db._lock:
+            self.require_admission()
             if self.state.retry_initialized is not True or not self.state.ordinal < ordinal <= len(self.state.schedule):
                 raise DeferredTeamMove("team_move_thread_retry_budget")
-            self.admission.write(self, ordinal=ordinal)
+            self.admission.write(self, validate_admission=self.require_admission, ordinal=ordinal)
 
     def commit(self, ctx: Any = None) -> bool:
         with self.admission.move.gate, self.admission.db._lock:
+            self.require_admission()
             self.admission.revalidate_uncommitted(self)
             with ctx._lock if ctx is not None else nullcontext():
                 if ctx is not None and ctx._terminal_reason is not None:
                     return False
+                self.require_admission()
                 if self.attempt_open:
                     raise DeferredTeamMove("team_move_thread_attempt_unsettled")
                 if self.state.retry_initialized is not True:
@@ -296,6 +422,7 @@ class ThreadPreparation:
                 self.admission.db._conn.execute("BEGIN IMMEDIATE")
                 previous = self.state
                 try:
+                    self.require_admission()  # BEGIN may have waited on another writer.
                     # The actual claim owner stamps lifecycle together with the
                     # durable possible-launch audit, under the terminal leaf.
                     if not self.claimed:
@@ -325,10 +452,15 @@ class ThreadPreparation:
                     self.attempt_open = True
                     self.safe_selflaunch_defer = False
                 except BaseException as exc:
-                    self.admission.db._conn.rollback()
                     self.state = previous
                     self.claimed = self.inv.started_at is not None
-                    if isinstance(exc, Exception) and not isinstance(exc, DeferredTeamMove):
+                    try:
+                        self.admission.db._conn.rollback()
+                    except BaseException as secondary:
+                        self.state = previous.model_copy(update={'failed_cleanup': True})
+                        exc.add_note("thread commit rollback also failed: " + repr(secondary)[:512])
+                    from runtime.daemon.startup_recovery import StartupUnavailable
+                    if isinstance(exc, Exception) and not isinstance(exc, (DeferredTeamMove, StartupUnavailable)):
                         raise DeferredTeamMove("team_move_thread_commit_unavailable") from exc
                     raise
         return True
@@ -366,13 +498,15 @@ class ThreadPreparation:
     def before_selflaunch(self) -> None:
         # Real executors call this AFTER throttle and immediately BEFORE
         # Popen. A passthrough host reservation is not a running process.
+        from runtime.daemon.startup_recovery import StartupUnavailable
         try:
             self.before_fifo()
-        except DeferredTeamMove:
+            if not self.attempt_open and not self.commit():
+                raise DeferredTeamMove("team_move_thread_selflaunch_cancelled")
+            self.require_admission()
+        except (DeferredTeamMove, StartupUnavailable):
             self.safe_selflaunch_defer = self.attempt_open
             raise
-        if not self.attempt_open and not self.commit():
-            raise DeferredTeamMove("team_move_thread_selflaunch_cancelled")
 
     def on_started(self) -> None:
         with self.admission.db._lock:
@@ -430,14 +564,22 @@ class ThreadPreparation:
             return True
 
     def finish(self, *, deferred: bool, failed: bool) -> None:
+        refresh = self._repository_refresh_owner
+        if refresh is not None:
+            if not refresh.request_finish(deferred=deferred, failed=failed):
+                return
+            deferred, failed = refresh.deferred, refresh.failed
         with self.admission.db._lock:
             control = self.abort_control
             failed = (failed or control.failure is not None
                 or control.dispatch_future is not None and not control.dispatch_future.done()
                 or any(not v.closed for v in self._repository_preparations.values()))
-            self.owner_live = False
+            if refresh is None:
+                self.owner_live = False
             self.admission.write(self, deferred=deferred, producer_settled=True,
                 failed_cleanup=self.state.failed_cleanup or failed)
+            if refresh is not None:
+                self.owner_live = False
             if (not self.state.unknown and not failed
                     and all(v.closed for v in self._repository_preparations.values())
                     and self.admission.live.get(self.inv.id) is self
@@ -445,6 +587,8 @@ class ThreadPreparation:
                 self.admission.live.pop(self.inv.id)
                 if not deferred:
                     self.admission.controls.pop(self.inv.id)
+        if refresh is not None:
+            refresh.retire()
 
 
 class ThreadMoveAdmission:
@@ -469,22 +613,35 @@ class ThreadMoveAdmission:
         if row is not None:
             raise DeferredTeamMove("team_move_thread_held", row["operation_id"])
 
-    def write(self, owner: ThreadPreparation, **changes: Any) -> None:
+    def write(self, owner: ThreadPreparation, *, validate_admission: Callable[[], None] | None = None,
+              **changes: Any) -> None:
         # Leaf writer may be called under DB, never obtains the move gate.
         previous = owner.state
         self.db._conn.execute("BEGIN IMMEDIATE")
         try:
+            if validate_admission is not None:
+                validate_admission()
             owner._save(**changes)
             self.db._conn.commit()
         except BaseException as exc:
-            self.db._conn.rollback()
             owner.state = previous
-            if isinstance(exc, Exception) and not isinstance(exc, DeferredTeamMove):
+            try:
+                self.db._conn.rollback()
+            except BaseException as secondary:
+                owner.state = previous.model_copy(update={'failed_cleanup': True})
+                exc.add_note("thread evidence rollback also failed: " + repr(secondary)[:512])
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if isinstance(exc, Exception) and not isinstance(exc, (DeferredTeamMove, StartupUnavailable)):
                 raise DeferredTeamMove("team_move_thread_evidence_unavailable") from exc
             raise
 
-    def reserve(self, token: str) -> ThreadPreparation | None:
+    def reserve(self, token: str, *, validate_admission: Callable[[], None] | None = None) -> ThreadPreparation | None:
+        if validate_admission is None:
+            from runtime.orchestrator.producer_move import producer_admission_validation
+            validate_admission = producer_admission_validation(db=self.db)
+        validate_admission()
         with self.move.gate, self.db._lock:
+            validate_admission()
             inv = self.db.get_pending_invocation(token)
             if inv is None:
                 return None
@@ -510,7 +667,7 @@ class ThreadMoveAdmission:
                 state = ThreadLifecycle(org_slug=self.move.store.org_slug,
                     invocation_id=inv.id, thread_id=inv.thread_id, agent_id=inv.agent_name,
                     session_id=f"sess-{uuid.uuid4().hex}", preparation_id=uuid.uuid4().hex, retry_initialized=False)
-            owner = ThreadPreparation(self, inv, state)
+            owner = ThreadPreparation(self, inv, state, validate_admission=validate_admission)
             if (owner.abort_control.key != (inv.id, inv.agent_name, inv.thread_id,
                     state.session_id, state.preparation_id) or owner.abort_control.failure is not None):
                 raise DeferredTeamMove("thread_abort_control_unsettled")
@@ -519,9 +676,23 @@ class ThreadMoveAdmission:
             self.controls[inv.id] = owner.abort_control
             self.live[inv.id] = owner
             try:
-                self.write(owner, deferred=False, producer_settled=False)
+                self.write(owner, validate_admission=validate_admission, deferred=False, producer_settled=False)
             except BaseException as exc:
                 owner.abort_control.failure = exc
+                raise
+            try:
+                owner.require_admission()  # COMMIT may have waited before registry publication.
+            except BaseException as primary:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                try:
+                    # No provider/preparation was exposed. Settle the original
+                    # durable reservation without requiring fresh admission.
+                    owner.finish(deferred=isinstance(primary, StartupUnavailable),
+                        failed=not isinstance(primary, StartupUnavailable))
+                except BaseException as secondary:
+                    owner.state = owner.state.model_copy(update={'failed_cleanup': True})
+                    self.live[inv.id] = owner
+                    primary.add_note("native reservation settlement also failed: " + repr(secondary)[:512])
                 raise
             return owner
 
@@ -840,37 +1011,89 @@ class ThreadMoveAdmission:
             return tuple(inv.id for inv in self.db.list_pending_thread_invocations()
                 if self.preserve_recovery_uncommitted(inv))
 
-    def _released_tokens(self) -> tuple[str, ...]:
-        with self.move.gate, self.db._lock:
-            if self.move.active_uncommitted() is not None:
+    def select_redelivery_tokens(self, *, _observe=None, validate_admission=None) -> tuple[str, ...]:
+        move, db, gate, store = self.move, self.db, self.move.gate, self.store
+        def validate():
+            if validate_admission is not None:
+                validate_admission()
+            if (self.move is not move or self.db is not db or self.store is not store
+                    or store.db is not db or move.gate is not gate
+                    or move.store.db is not db or move.threads is not self):
+                raise DeferredTeamMove("team_move_thread_owner_changed")
+        validate()
+        with gate, db._lock:
+            validate()
+            if move.active_uncommitted() is not None:
                 raise DeferredTeamMove("team_move_release_not_committed")
-            return self.runnable_tokens()
+            return self.runnable_tokens(_observe=_observe, validate_admission=validate)
 
-    async def redeliver_after_release(self, queue: Any, *, native=None) -> None:
-        tokens = self._released_tokens() if native is None else await native(self._released_tokens)
+    def _released_tokens(self, *, validate_admission=None) -> tuple[str, ...]:
+        return self.select_redelivery_tokens(validate_admission=validate_admission)
+
+    async def redeliver_after_release(self, queue: Any, *, native=None, validate_admission=None) -> None:
         from runtime.daemon.thread_queue import ThreadJob
+        from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
+        move, db, gate, store = self.move, self.db, self.move.gate, self.store
+        state, recovery, org = queue._startup_state, queue._startup_recovery, queue._startup_org
+        orgs = None if state is None else state.orgs
+        epoch = None if recovery is None else recovery.epoch
+        loop = None if recovery is None else recovery._loop
+        def identity():
+            if (self.move is not move or self.db is not db or self.store is not store
+                    or move.gate is not gate or move.store.db is not db or move.threads is not self
+                    or queue._startup_state is not state or queue._startup_recovery is not recovery
+                    or queue._startup_org is not org or state is not None and state.orgs is not orgs
+                    or org is not None and (org.db is not db or org.thread_queue is not queue)
+                    or recovery is not None and (recovery.epoch != epoch or recovery._loop is not loop)):
+                raise StartupUnavailable("startup_attachment_changed")
+        identity()
+        selected = ordinary_admission_validation(queue) if validate_admission is None else validate_admission
+        def validate():
+            identity()
+            selected()
+            identity()
+        validate()
+        if loop is not None:
+            import asyncio
+            if asyncio.get_running_loop() is not loop:
+                raise StartupUnavailable("startup_thread_loop_changed")
+        def discover():
+            return self._released_tokens(validate_admission=validate)
+        tokens = discover() if native is None else await native(discover)
         for token in tokens:
-            await queue.put_once(ThreadJob(org_slug=self.move.store.org_slug, invocation_token=token))
+            validate()
+            await queue.put_once(ThreadJob(org_slug=move.store.org_slug, invocation_token=token))
+            validate()
 
-    def runnable_tokens(self) -> tuple[str, ...]:
+    def runnable_tokens(self, *, _observe=None, validate_admission=None) -> tuple[str, ...]:
         """Durable release/redelivery census, no process-local defer list.
 
         Safe unstarted/correctly deferred obligations only. Unknown attempts,
         active owners and legacy started rows require their actual recovery owner.
         """
         with self.move.gate, self.db._lock:
+            if validate_admission is not None:
+                validate_admission()
             self.move.active_uncommitted()  # Malformed presence fails closed.
             result = []
             for inv in self.db.list_pending_thread_invocations():
                 if self.held_uncommitted(inv.agent_name) is not None or inv.id in self.live:
+                    if _observe is not None:
+                        _observe("local_hold")
                     continue
                 if not self.db._thread_release_pair_permitted_uncommitted(inv.thread_id, inv.agent_name):
+                    if _observe is not None:
+                        _observe("local_hold")
                     continue
                 state = self.store.read_uncommitted(inv)
                 if state is not None:
                     if state.retry_initialized is None or state.unknown or not (state.deferred and state.producer_settled):
+                        if _observe is not None:
+                            _observe("local_hold")
                         continue
                 elif inv.started_at is not None:
+                    if _observe is not None:
+                        _observe("local_hold")
                     continue
                 result.append(inv.invocation_token)
             return tuple(result)

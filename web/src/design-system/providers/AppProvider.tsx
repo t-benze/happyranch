@@ -17,9 +17,10 @@
  * that behaviour — wrapping the SPA in this provider must not change network
  * timing.
  */
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import { TooltipProvider } from '@/design-system/primitives/Tooltip';
+import { HEALTH_QUERY_KEY, isStartupUnavailableError, StartupHeldError } from '@/lib/startup';
 import { DataContext } from './DataContext';
 import { realIdentitiesApi } from './_real-identities';
 
@@ -49,7 +50,18 @@ import { realThreadsApi } from './_real-threads';
 import { realWorkHoursApi } from './_real-work-hours';
 
 export function makeQueryClient(): QueryClient {
-  return new QueryClient({
+  // A daemon startup refusal (503 daemon_recovering / daemon_recovery_failed /
+  // startup_*) means the request was NOT accepted. Refresh the one shared
+  // startup observation so every surface converges on the actual state. The
+  // refused operation itself is never retried or replayed.
+  const observeStartup = (error: unknown) => {
+    if (isStartupUnavailableError(error) && !(error instanceof StartupHeldError)) {
+      void client.invalidateQueries({ queryKey: HEALTH_QUERY_KEY, exact: true });
+    }
+  };
+  const client: QueryClient = new QueryClient({
+    queryCache: new QueryCache({ onError: observeStartup }),
+    mutationCache: new MutationCache({ onError: observeStartup }),
     defaultOptions: {
       queries: {
         staleTime: 30_000,
@@ -58,6 +70,7 @@ export function makeQueryClient(): QueryClient {
       },
     },
   });
+  return client;
 }
 
 interface AppProviderProps {

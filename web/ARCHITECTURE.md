@@ -41,6 +41,27 @@ QA's independently source-pinned public two-template scratch journey and root's
 actual Founder acceptance remain distinct. No new global mock/test seam, source
 execution/merge grant, or automated behavioral CI is introduced.
 
+## Daemon startup recovery (THR-308)
+
+`src/lib/startup.ts` interprets the ONE shared `['health']` observation polled
+by `AppShell` through `useHealth` (2 s while unavailable, 30 s once ready);
+`HealthApi.useStartup` / `useStartupStatus` read it without polling. Only a
+fresh successful `startup` block with `state=ready`, `recovery_ready`, `serving`
+and not `stopping` admits effects; everything else (checking, error, malformed or
+missing fields, unknown, stopping, recovery_failed, stale) is held. Staleness
+needs no render or network event: one per-QueryClient expiry owner in
+`_real-health.ts` arms a single timer at the ready observation's 90 s deadline and
+notifies every subscriber (no extra poller, query key or cache write). Threads stay
+mounted and readable; other org routes and onboarding render the held panel via
+a pathless gate in `routes.tsx` without mounting their pages. Real providers
+gate held reads/SSE with `enabled` plus a queryFn recheck and reject mutations
+with `StartupHeldError` before network; pages and providers recheck after every
+await. `classifyStartupRefusal` is the one owner of the daemon 503 startup family
+(`daemon_recovering|daemon_recovery_failed|daemon_stopped`, `startup_*`) used by
+both the health-refresh hook and thread error copy.
+`StartupStatusBanner` (AppShell) carries the translated copy. The prototype
+sandbox's fixed ready fixture is not daemon evidence.
+
 ## Layers (strict)
 
 1. **`src/lib/api/<X>.ts`** — Daemon route mirror. One TS module per
@@ -461,7 +482,7 @@ ordinary threads.
 
 ## Thread list cache ownership (THR-289)
 
-`useThreadsInfiniteList` observes committed page data under each provider's existing thread-list key family; legacy `useThreadsList` remains available. Real keys include org/status/page size, and the prototype uses its isolated provider client/module store. Shared request ownership is scoped to the QueryClient/key and survives multiple mounted consumers. Refresh stages to prior depth outside the query cache and commits the replacement together. Only committed pages/summary enter palette reads; optimistic pin retains shape and metadata and fences paging until authoritative reconciliation. No change to transcript queries or other domain caches.
+`useThreadsInfiniteList` observes committed page data under each provider's existing thread-list key family; legacy `useThreadsList` remains available. Real keys include org/status/page size, and the prototype uses its isolated provider client/module store. Shared request ownership is scoped to the QueryClient/key and survives multiple mounted consumers. The owner promptly observes each original raw run Promise and retains genuine pending runs plus at most the latest completed invocation. `getCommittedThreadPageRuns(client, queryKey)` returns a read-only snapshot of those same returns without starting or controlling work; an empty snapshot is unavailable work, not settlement. Explicit callers receive the original Promise unchanged. Refresh stages to prior depth outside the query cache and commits the replacement together. Only committed pages/summary enter palette reads; optimistic pin retains shape and metadata and fences paging until authoritative reconciliation. No change to transcript queries or other domain caches.
 
 Loaded inbox rows keep the newest accepted projection for each repeated thread ID, then use the complete active bucket comparator before literal subject-or-ID filtering. Open uses pin/numeric-ID/start/ID rank; Archived uses archive-or-start/ID rank; All uses global start/ID rank. This projection preserves each committed page’s authoritative totals, sample, cursor and termination metadata. Live movement can repeat IDs; only quiescent refresh/traversal promises the complete current set.
 

@@ -11,6 +11,9 @@ into the orchestrator's manager-root escalation commit point. It defines:
   manager root's proposed escalation is committed. It returns
   ``"continue_same_root"`` (the named same-root permitted action was executed)
   or ``"escalate"`` (fail closed: the existing escalation path proceeds).
+  The selected original v2 completion instead propagates actual evidence and
+  transaction failures to its existing sweep/cold failure owner; acquired
+  semantic denials and deliberate v2 pending retain their bounded outcomes.
 
 Invariants (THR-181; see ``docs/agent-guides/orchestrator-contracts.md`` —
 ``Active team authority policy``):
@@ -143,14 +146,15 @@ OUTCOME_CAPTURE_FAILURE = "capture_failure"
 # consumer that the authoritative v2 path handled the result so ordinary
 # escalation/notification must NOT run:
 #   * ``v2_continued`` -- the final continuation committed (or was exactly
-#     replayed) and post-final settlement/publication was attempted;
+#     replayed) and the real post-final outcome was reconciled; a genuine
+#     settled prefix stays positive when later queue publication is pending;
 #   * ``v2_refused``   -- refusal housekeeping returned a bounded structured
 #     result.  Its string value preserves this vocabulary while ``status`` and
 #     ``task_disposition`` identify a fresh terminal writer versus owner loss
 #     or an exact replay;
-#   * ``v2_pending``   -- the attempt/stage identity could not be safely
-#     finalized and refusal itself could not commit; the prior durable state is
-#     preserved as a bounded housekeeping obligation (later discovery unit).
+#   * ``v2_pending``   -- pre-final refusal could not safely settle, or the
+#     already-final reconciliation remains unresolved/refused/exceptional;
+#     the greatest durable prefix remains a bounded housekeeping obligation.
 HOOK_ESCALATE = "escalate"
 HOOK_CONTINUE_SAME_ROOT = "continue_same_root"
 HOOK_V2_CONTINUED = "v2_continued"
@@ -3213,12 +3217,13 @@ def _record_hook_outcome(
     fences: dict[str, AuthorityFenceResult] | None = None,
     lifecycle: str | None = None,
     error: str | None = None,
+    _preserve_errors: bool = False,
 ) -> int | None:
     """Best-effort append of exactly one `authority_hook` outcome row.
 
-    Never raises: if the audit row cannot be written, the caller still fails
-    closed (never continues); the escalation audit row and the candidate
-    lifecycle remain the capture-failure evidence.
+    Default callers retain best-effort recording. The selected v2 caller
+    instead owns an actual audit failure; it must escape before another effect
+    or pending conversion. Neither route replaces E1 with a diagnostic error.
     """
     payload: dict = {"outcome": outcome}
     if policy is not None:
@@ -3264,10 +3269,14 @@ def _record_hook_outcome(
             action=AUDIT_ACTION_HOOK_OUTCOME, payload=payload,
         )
     except Exception as exc:
+        if _preserve_errors:
+            raise
+        traceback = exc.__traceback__
         try:
             logger.warning("authority hook outcome row failed for %s: %s", task_id, exc)
-        except BaseException:
-            raise exc
+        except BaseException as later:
+            _v2_retain_later_error(exc, later, "_v2_hook_outcome_diagnostic_secondary")
+            raise exc.with_traceback(traceback)
         return None
 
 
@@ -3597,14 +3606,47 @@ _V2_INTERRUPTED_STAGE_REFUSAL = {
 }
 
 
+def _v2_startup_original_error(error: BaseException) -> BaseException:
+    """Select the actual cause from the existing private read/unsafe wrappers."""
+    from runtime.infrastructure.db.authority_v2_attempts import (
+        _V2StartupConnectionUnsafe, _V2StartupEvidenceUnavailable,
+    )
+    original = error
+    if isinstance(original, _V2StartupConnectionUnsafe) and original.causes:
+        original = original.causes[0]
+    if isinstance(original, _V2StartupEvidenceUnavailable) and original.__cause__ is not None:
+        original = original.__cause__
+    if original is not error:
+        _v2_retain_later_error(original, error, "_v2_pre_final_read_failure")
+    return original
+
+
+def _v2_startup_semantic_denial(error: BaseException, *, discovery: bool = False) -> bool:
+    """Keep the original closed acquired-denial partition, never SQL/decode E1."""
+    from pydantic import ValidationError
+    kinds = (ValueError,) if discovery else (ValueError, KeyError, TypeError)
+    return (
+        isinstance(error, kinds)
+        and not isinstance(error, (json.JSONDecodeError, UnicodeError))
+        and (error.__cause__ is None
+             or isinstance(error.__cause__, (ValidationError, KeyError, TypeError)))
+    )
+
+
 def _v2_startup_failure_log(reason: str) -> None:
-    """Bounded server categories only; no diagnostic writer or raw failure."""
+    """Bounded server categories only; a real diagnostic failure still escapes."""
+    logger.error("authority v2 startup exclusion: %s", reason)
+
+
+def _v2_fail_startup_sweep(orchestrator, primary: BaseException, slot: str) -> None:
+    """Latch the original sweep; even owner lookup cannot replace its cause."""
     try:
-        logger.error("authority v2 startup exclusion: %s", reason)
-    except Exception:
-        # The exclusion was already installed. Logging supplies no durability
-        # and cannot undo it or license continued use of an unsafe connection.
-        pass
+        from runtime.orchestrator.run_step import _startup_sweep_owner
+        sweep = _startup_sweep_owner(orchestrator)
+        if sweep is not None:
+            sweep.fail(primary)
+    except BaseException as later:
+        _v2_retain_later_error(primary, later, slot)
 
 
 def refuse_authority_policy_v2_pre_final_on_startup(
@@ -3628,246 +3670,290 @@ def refuse_authority_policy_v2_pre_final_on_startup(
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
     from runtime.infrastructure.db.authority_v2_attempts import (
         _V2StartupConnectionUnsafe,
-        _V2StartupEvidenceUnavailable,
     )
 
+    from runtime.infrastructure.startup_observation import v2_lifetime
+    boot = getattr(getattr(orchestrator, "_startup_recovery", None), "_observation", None)
     store = AuthorityPolicyStore(db)
-    with store._startup_v2_reads() as reads:
-        try:
-            targets = reads.discover()
-        except _V2StartupConnectionUnsafe:
-            raise
-        except Exception as primary:
+    primary = None
+    primary_traceback = None
+    try:
+        with v2_lifetime(boot) as observation:
             try:
-                reads.check()
-                _v2_startup_failure_log("discovery_unavailable")
-                reads.check()
-                return None
-            except _V2StartupConnectionUnsafe as unsafe:
-                if all(cause is not primary for cause in unsafe.causes):
-                    unsafe.causes = (primary, *unsafe.causes)
-                raise
-            except BaseException:
-                raise primary
-        fenced_roots: set[str] = set()
-        failed_roots: set[str] = set()
-        for discovered, anchor in targets:
-            if discovered.root_task_id in failed_roots:
-                continue
-            tail_started = False
-            try:
-                target, current_anchor = reads.exact(discovered)
-                if (
-                    target is None
-                    or target.model_dump(exclude={"stage", "finalization_state", "obligation_code"})
-                    != discovered.model_dump(exclude={"stage", "finalization_state", "obligation_code"})
-                    or (anchor is not None and current_anchor != anchor)
-                ):
-                    raise _V2StartupEvidenceUnavailable("exact_target_changed")
-                # A newly authenticated exact tuple may also exclude its own root
-                # on a later failure; no sibling or writer authority is inferred.
-                if anchor is None:
-                    anchor = current_anchor
-                if target.finalization_state != "unfinalized":
-                    reads.invalidate()
-                    # Never replay the discovery-time pre-final projection. Leave
-                    # the authentic final owner to its own reconciliation, without
-                    # another refusal or postcommit tail in this pass.
-                    if anchor is None:
-                        return None
-                    fenced_roots.add(discovered.root_task_id)
-                    failed_roots.add(discovered.root_task_id)
-                    continue
-                if target.stage == "admitted" and orchestrator is not None:
+                with store._startup_v2_reads() as reads:
+                    observation.reader = reads
                     try:
-                        from runtime.orchestrator.orchestrator import (
-                            completion_report_from_result_row,
-                        )
-                        result = next(
-                            (
-                                row for row in db.get_task_results(target.root_task_id)
-                                if row.get("id") == target.result_id
-                                and row.get("agent") == target.manager_agent
-                                and row.get("session_id") == target.manager_session_id
-                            ),
-                            None,
-                        )
-                        if result is None:
-                            raise ValueError("causal result is missing")
-                        report = completion_report_from_result_row(
-                            target.root_task_id,
-                            result,
-                            fallback_agent=target.manager_agent,
-                        )
-                        non_escalate = (
-                            report.status == "blocked"
-                            or orchestrator._parse_next_step(report).action != "escalate"
-                        )
-                    except _V2StartupConnectionUnsafe:
-                        raise
-                    except Exception as primary:
                         try:
-                            reads.invalidate()
-                            reads.check()
-                            non_escalate = False
-                        except _V2StartupConnectionUnsafe as unsafe:
-                            if all(cause is not primary for cause in unsafe.causes):
-                                unsafe.causes = (primary, *unsafe.causes)
+                            targets = reads.discover()
+                        except _V2StartupConnectionUnsafe as exc:
+                            _v2_fail_startup_sweep(
+                                orchestrator, exc, "_v2_pre_final_sweep_secondary_1",
+                            )
                             raise
-                        except BaseException:
-                            raise primary
-                    if non_escalate:
-                        # D2-B': the admission is inert residue.  Do not touch J,
-                        # Q, audits, or the task, and do not fence later branches.
-                        reads.check()
-                        continue
-                # orchestrator=None cannot reproduce shipping parsing semantics and
-                # therefore fails closed to the existing refusal path (M4).
-                fenced_roots.add(discovered.root_task_id)
-                refusal_code = (
-                    target.obligation_code
-                    or _V2_INTERRUPTED_STAGE_REFUSAL.get(
-                        target.stage, "interrupted_pre_final",
-                    )
-                )
-                outcome = reads.refuse(
-                    root_task_id=target.root_task_id,
-                    manager_agent=target.manager_agent,
-                    manager_session_id=target.manager_session_id,
-                    result_id=target.result_id,
-                    refusal_code=refusal_code,
-                    max_revise_rounds=(
-                        int(authority_policy_v2_claim_eligibility(orchestrator).get("max_revise_rounds", 0))
-                        if orchestrator is not None else None
-                    ),
-                )
-                if outcome.status == "housekeeping_pending":
-                    # A bounded writer disposition is not an exception/audit kind,
-                    # but it still excludes every later same-root operation.
-                    failed_roots.add(discovered.root_task_id)
-                if outcome.status == "refused" and orchestrator is not None:
-                    reads.invalidate()
-                    tail_started = True
-                    if outcome.task_disposition == "failed":
-                        from runtime.orchestrator.run_step import (
-                            _enqueue_parent_if_waiting,
-                            _fail_terminal_tail,
-                            _handoff_consumed_recovery_terminal_effects,
-                            _task_matches_authority_v2_refusal_failure,
-                            _maybe_post_thread_followup,
-                        )
-                        expected_note = f"authority_v2_refusal:{outcome.refusal_code}"
-                        if outcome.receipt_settled:
-                            _handoff_consumed_recovery_terminal_effects(
-                                orchestrator,
-                                target.root_task_id,
-                                target.manager_agent,
-                                target.manager_session_id,
-                                target.result_id,
-                                "failed",
-                                after_recovery_cleanup=lambda: (
-                                    _enqueue_parent_if_waiting(
+                        except BaseException as exc:
+                            observed = _v2_startup_original_error(exc)
+                            if not _v2_startup_semantic_denial(observed, discovery=True):
+                                raise
+                            reads.check()
+                            _v2_startup_failure_log("discovery_unavailable")
+                            reads.check()
+                            observation.outcome = "unavailable"
+                            return None
+                        fenced_roots: set[str] = set()
+                        failed_roots: set[str] = set()
+                        for discovered, anchor in targets:
+                            if discovered.root_task_id in failed_roots:
+                                continue
+                            tail_started = False
+                            refusal_started = False
+                            try:
+                                target, current_anchor = reads.exact(discovered)
+                                if (
+                                    target is None
+                                    or target.model_dump(exclude={"stage", "finalization_state", "obligation_code"})
+                                    != discovered.model_dump(exclude={"stage", "finalization_state", "obligation_code"})
+                                    or (anchor is not None and current_anchor != anchor)
+                                ):
+                                    raise _V2StartupEvidenceUnavailable("exact_target_changed")
+                                # A newly authenticated exact tuple may also exclude its own root
+                                # on a later failure; no sibling or writer authority is inferred.
+                                if anchor is None:
+                                    anchor = current_anchor
+                                if target.finalization_state != "unfinalized":
+                                    reads.invalidate()
+                                    # Never replay the discovery-time pre-final projection. Leave
+                                    # the authentic final owner to its own reconciliation, without
+                                    # another refusal or postcommit tail in this pass.
+                                    if anchor is None:
+                                        observation.outcome = "unavailable"
+                                        return None
+                                    fenced_roots.add(discovered.root_task_id)
+                                    failed_roots.add(discovered.root_task_id)
+                                    continue
+                                if target.stage == "admitted" and orchestrator is not None:
+                                    result_rows = db.get_task_results(target.root_task_id)
+                                    try:
+                                        from runtime.orchestrator.orchestrator import (
+                                            completion_report_from_result_row,
+                                        )
+                                        result = next(
+                                            (
+                                                row for row in result_rows
+                                                if row.get("id") == target.result_id
+                                                and row.get("agent") == target.manager_agent
+                                                and row.get("session_id") == target.manager_session_id
+                                            ),
+                                            None,
+                                        )
+                                        if result is None:
+                                            raise ValueError("causal result is missing")
+                                        report = completion_report_from_result_row(
+                                            target.root_task_id,
+                                            result,
+                                            fallback_agent=target.manager_agent,
+                                        )
+                                        non_escalate = (
+                                            report.status == "blocked"
+                                            or orchestrator._parse_next_step(report).action != "escalate"
+                                        )
+                                    except _V2StartupConnectionUnsafe:
+                                        raise
+                                    except (ValueError, KeyError, TypeError) as exc:
+                                        if not _v2_startup_semantic_denial(exc):
+                                            raise
+                                        # Only acquired malformed/missing causal evidence uses
+                                        # the existing refusal path. Acquisition errors escape.
+                                        reads.invalidate()
+                                        reads.check()
+                                        non_escalate = False
+                                    if non_escalate:
+                                        # D2-B': the admission is inert residue.  Do not touch J,
+                                        # Q, audits, or the task, and do not fence later branches.
+                                        reads.check()
+                                        continue
+                                # orchestrator=None cannot reproduce shipping parsing semantics and
+                                # therefore fails closed to the existing refusal path (M4).
+                                fenced_roots.add(discovered.root_task_id)
+                                refusal_code = (
+                                    target.obligation_code
+                                    or _V2_INTERRUPTED_STAGE_REFUSAL.get(
+                                        target.stage, "interrupted_pre_final",
+                                    )
+                                )
+                                refusal_started = True
+                                outcome = reads.refuse(
+                                    root_task_id=target.root_task_id,
+                                    manager_agent=target.manager_agent,
+                                    manager_session_id=target.manager_session_id,
+                                    result_id=target.result_id,
+                                    refusal_code=refusal_code,
+                                    max_revise_rounds=(
+                                        int(authority_policy_v2_claim_eligibility(orchestrator).get("max_revise_rounds", 0))
+                                        if orchestrator is not None else None
+                                    ),
+                                )
+                                refusal_started = False
+                                if outcome.status == "housekeeping_pending":
+                                    # A bounded writer disposition is not an exception/audit kind,
+                                    # but it still excludes every later same-root operation.
+                                    failed_roots.add(discovered.root_task_id)
+                                if outcome.status == "refused" and orchestrator is not None:
+                                    reads.invalidate()
+                                    tail_started = True
+                                    if outcome.task_disposition == "failed":
+                                        from runtime.orchestrator.run_step import (
+                                            _enqueue_parent_if_waiting,
+                                            _fail_terminal_tail,
+                                            _handoff_consumed_recovery_terminal_effects,
+                                            _task_matches_authority_v2_refusal_failure,
+                                            _maybe_post_thread_followup,
+                                        )
+                                        expected_note = f"authority_v2_refusal:{outcome.refusal_code}"
+                                        if outcome.receipt_settled:
+                                            _handoff_consumed_recovery_terminal_effects(
+                                                orchestrator,
+                                                target.root_task_id,
+                                                target.manager_agent,
+                                                target.manager_session_id,
+                                                target.result_id,
+                                                "failed",
+                                                # Cleanup may finish after discovery selects another target.
+                                                after_recovery_cleanup=lambda task_id=target.root_task_id, note=expected_note: (
+                                                    _enqueue_parent_if_waiting(
+                                                        orchestrator,
+                                                        task_id,
+                                                        root_auto_revisit_spawned=False,
+                                                    )
+                                                    if _task_matches_authority_v2_refusal_failure(
+                                                        orchestrator, task_id, note,
+                                                    )
+                                                    else None
+                                                ),
+                                            )
+                                        else:
+                                            _fail_terminal_tail(
+                                                orchestrator,
+                                                target.root_task_id,
+                                                expected_note=expected_note,
+                                            )
+                                            if _task_matches_authority_v2_refusal_failure(
+                                                orchestrator, target.root_task_id, expected_note,
+                                            ):
+                                                _enqueue_parent_if_waiting(
+                                                    orchestrator,
+                                                    target.root_task_id,
+                                                    root_auto_revisit_spawned=False,
+                                                )
+                                            if _task_matches_authority_v2_refusal_failure(
+                                                orchestrator, target.root_task_id, expected_note,
+                                            ):
+                                                _maybe_post_thread_followup(
+                                                    orchestrator,
+                                                    target.root_task_id,
+                                                    status=TaskStatus.FAILED,
+                                                    auto_revisit_spawned=False,
+                                                )
+                                        reads.check()
+                                        continue
+                                    result = db.get_latest_task_result(
+                                        target.root_task_id,
+                                        target.manager_agent,
+                                        target.manager_session_id,
+                                    )
+                                    last_summary = (
+                                        result.get("output_summary", "")
+                                        if result is not None and result.get("id") == target.result_id
+                                        else ""
+                                    )
+                                    surface_reason = "authority_v2_refusal"
+                                    if outcome.refusal_code == "policy_no_continue":
+                                        from runtime.orchestrator.orchestrator import completion_report_from_result_row
+                                        if result is None or result.get("id") != target.result_id:
+                                            raise ValueError("policy terminal causal result unavailable")
+                                        causal_report = completion_report_from_result_row(
+                                            target.root_task_id, result, fallback_agent=target.manager_agent,
+                                        )
+                                        surface_reason = orchestrator._parse_next_step(causal_report).reason or "Escalated"
+                                    orchestrator.notify_escalated(
+                                        task_id=target.root_task_id,
+                                        agent=target.manager_agent,
+                                        reason=surface_reason,
+                                        last_summary=last_summary or "",
+                                    )
+                                    # Import lazily to preserve the authority/run_step module
+                                    # boundary.  The refusal transaction committed before this
+                                    # external projection is attempted.
+                                    from runtime.orchestrator.run_step import (
+                                        _maybe_post_thread_escalation,
+                                    )
+                                    _maybe_post_thread_escalation(
                                         orchestrator,
                                         target.root_task_id,
-                                        root_auto_revisit_spawned=False,
+                                        reason=surface_reason,
                                     )
-                                    if _task_matches_authority_v2_refusal_failure(
-                                        orchestrator, target.root_task_id, expected_note,
-                                    )
-                                    else None
-                                ),
-                            )
-                        else:
-                            _fail_terminal_tail(
-                                orchestrator,
-                                target.root_task_id,
-                                expected_note=expected_note,
-                            )
-                            if _task_matches_authority_v2_refusal_failure(
-                                orchestrator, target.root_task_id, expected_note,
-                            ):
-                                _enqueue_parent_if_waiting(
-                                    orchestrator,
-                                    target.root_task_id,
-                                    root_auto_revisit_spawned=False,
+                                reads.check()
+                            except _V2StartupConnectionUnsafe as exc:
+                                _v2_fail_startup_sweep(
+                                    orchestrator, exc, "_v2_pre_final_sweep_secondary_2",
                                 )
-                            if _task_matches_authority_v2_refusal_failure(
-                                orchestrator, target.root_task_id, expected_note,
-                            ):
-                                _maybe_post_thread_followup(
-                                    orchestrator,
-                                    target.root_task_id,
-                                    status=TaskStatus.FAILED,
-                                    auto_revisit_spawned=False,
-                                )
-                        reads.check()
-                        continue
-                    result = db.get_latest_task_result(
-                        target.root_task_id,
-                        target.manager_agent,
-                        target.manager_session_id,
-                    )
-                    last_summary = (
-                        result.get("output_summary", "")
-                        if result is not None and result.get("id") == target.result_id
-                        else ""
-                    )
-                    surface_reason = "authority_v2_refusal"
-                    if outcome.refusal_code == "policy_no_continue":
-                        from runtime.orchestrator.orchestrator import completion_report_from_result_row
-                        if result is None or result.get("id") != target.result_id:
-                            raise ValueError("policy terminal causal result unavailable")
-                        causal_report = completion_report_from_result_row(
-                            target.root_task_id, result, fallback_agent=target.manager_agent,
+                                if anchor is not None:
+                                    fenced_roots.add(discovered.root_task_id)
+                                    failed_roots.add(discovered.root_task_id)
+                                raise
+                            except BaseException as exc:
+                                observed = _v2_startup_original_error(exc)
+                                if refusal_started or tail_started or not _v2_startup_semantic_denial(observed):
+                                    traceback = observed.__traceback__
+                                    # Keep the original read/writer/tail E1 even if invalidation
+                                    # or the sticky unsafe disposition itself also fails.
+                                    try:
+                                        reads.invalidate()
+                                    except BaseException as later:
+                                        _v2_retain_later_error(observed, later, "_v2_pre_final_invalidation_secondary")
+                                    if tail_started:
+                                        try:
+                                            reads._abort("postcommit_tail", observed)
+                                        except BaseException as later:
+                                            _v2_retain_later_error(observed, later, "_v2_pre_final_tail_unsafe")
+                                    raise observed.with_traceback(traceback)
+                                reads.invalidate()
+                                if anchor is not None:
+                                    fenced_roots.add(discovered.root_task_id)
+                                    failed_roots.add(discovered.root_task_id)
+                                reads.check()
+                                _v2_startup_failure_log("exact_or_refusal_unavailable")
+                                reads.check()
+                                if anchor is None:
+                                    observation.outcome = "unavailable"
+                                    return None
+                        return fenced_roots
+                    except BaseException as exc:
+                        primary = _v2_startup_original_error(exc)
+                        primary_traceback = primary.__traceback__
+                        if reads.unsafe is not None:
+                            _v2_retain_later_error(primary, reads.unsafe, "_v2_pre_final_unsafe")
+                        _v2_fail_startup_sweep(
+                            orchestrator, primary, "_v2_pre_final_sweep_secondary_3",
                         )
-                        surface_reason = orchestrator._parse_next_step(causal_report).reason or "Escalated"
-                    orchestrator.notify_escalated(
-                        task_id=target.root_task_id,
-                        agent=target.manager_agent,
-                        reason=surface_reason,
-                        last_summary=last_summary or "",
-                    )
-                    # Import lazily to preserve the authority/run_step module
-                    # boundary.  The refusal transaction committed before this
-                    # external projection is attempted.
-                    from runtime.orchestrator.run_step import (
-                        _maybe_post_thread_escalation,
-                    )
-                    _maybe_post_thread_escalation(
-                        orchestrator,
-                        target.root_task_id,
-                        reason=surface_reason,
-                    )
-                reads.check()
-            except _V2StartupConnectionUnsafe:
-                if anchor is not None:
-                    fenced_roots.add(discovered.root_task_id)
-                    failed_roots.add(discovered.root_task_id)
-                raise
+                        raise primary.with_traceback(primary_traceback)
             except BaseException as exc:
-                try:
-                    reads.invalidate()
-                    if anchor is not None:
-                        fenced_roots.add(discovered.root_task_id)
-                        failed_roots.add(discovered.root_task_id)
-                    if tail_started:
-                        # A tail can contain self-committing writers. Its escaping
-                        # failure supplies no affirmative cleanup/COMMIT disposition.
-                        reads._abort("postcommit_tail", exc)
-                    reads.check()
-                    if not isinstance(exc, Exception):
-                        raise
-                    _v2_startup_failure_log("exact_or_refusal_unavailable")
-                    reads.check()
-                    if anchor is None:
-                        return None
-                except _V2StartupConnectionUnsafe as unsafe:
-                    if all(cause is not exc for cause in unsafe.causes):
-                        unsafe.causes = (exc, *unsafe.causes)
-                    raise
-                except BaseException:
-                    raise exc
-        return fenced_roots
+                if primary is None:
+                    primary = _v2_startup_original_error(exc)
+                    primary_traceback = primary.__traceback__
+                elif exc is not primary:
+                    _v2_retain_later_error(primary, exc, "_v2_pre_final_reader_exit_secondary")
+                raise primary.with_traceback(primary_traceback)
+    except BaseException as exc:
+        if primary is None:
+            primary = _v2_startup_original_error(exc)
+            primary_traceback = primary.__traceback__
+        elif exc is not primary:
+            _v2_retain_later_error(primary, exc, "_v2_pre_final_observation_exit_secondary")
+        # Entry/exit failures also close the ORIGINAL sweep's whole DB batch.
+        _v2_fail_startup_sweep(
+            orchestrator, primary, "_v2_pre_final_sweep_exit_secondary_4",
+        )
+        raise primary.with_traceback(primary_traceback)
 
 
 def _v2_request_refusal(
@@ -3880,8 +3966,9 @@ def _v2_request_refusal(
     string-compatible structured output whose bounded fields distinguish a
     fresh terminal refusal from owner loss or an exact replay;
     ``v2_pending`` means safe attribution could not be established (or the
-    refusal transaction itself failed), so the prior durable state is preserved
-    and a later discovery unit owns the bounded obligation.
+    refusal transaction is intentionally held), so prior durable state remains.
+    Actual evidence/transaction errors escape unchanged to the original
+    completion/sweep owner, including separately retained cleanup failures.
     """
     db = orch._db
     policy_terminal = code == "policy_no_continue"
@@ -3891,30 +3978,19 @@ def _v2_request_refusal(
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
             error="v2 hook has no causal result row id; refusal housekeeping pending",
+            _preserve_errors=True,
         )
         return HOOK_V2_PENDING
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
-    try:
-        outcome = AuthorityPolicyStore(db).finalize_v2_attempt_refusal(
-            root_task_id=task.id,
-            manager_agent=task.assigned_agent or agent,
-            manager_session_id=task.current_session_id or "",
-            result_id=result_row_id,
-            refusal_code=code,
-            owner_attempt_id=owner_attempt_id,
-            max_revise_rounds=int(authority_policy_v2_claim_eligibility(orch).get("max_revise_rounds", 0)),
-        )
-    except Exception as exc:
-        try:
-            if policy_terminal or _authority_hook_caller_transaction_owned(db):
-                return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
-            _record_hook_outcome(
-                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-                error=f"v2 refusal housekeeping failed: {exc}",
-            )
-            return HOOK_V2_PENDING
-        except BaseException:
-            raise exc
+    outcome = AuthorityPolicyStore(db).finalize_v2_attempt_refusal(
+        root_task_id=task.id,
+        manager_agent=task.assigned_agent or agent,
+        manager_session_id=task.current_session_id or "",
+        result_id=result_row_id,
+        refusal_code=code,
+        owner_attempt_id=owner_attempt_id,
+        max_revise_rounds=int(authority_policy_v2_claim_eligibility(orch).get("max_revise_rounds", 0)),
+    )
     status = getattr(outcome, "status", None)
     if status in ("refused", "owner_lost", "already_refused"):
         return AuthorityHookV2RefusalOutcome(
@@ -3954,14 +4030,12 @@ def _run_authority_hook_v2(
             orch, task, agent, result_row_id=None, owner_attempt_id=None,
             code="identity_mismatch",
         )
-    try:
-        attempt = db.get_authority_policy_v2_attempt_for_result(result_row_id)
-    except Exception:
-        attempt = None
+    attempt = db.get_authority_policy_v2_attempt_for_result(result_row_id)
     if attempt is None:
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
             error="v2 launch binding has no authenticated admitted attempt",
+            _preserve_errors=True,
         )
         return _v2_request_refusal(
             orch, task, agent, result_row_id=result_row_id,
@@ -3982,15 +4056,14 @@ def _run_authority_hook_v2(
     if attempt.finalization_state == "continued":
         # Already-final causal replay: existing exact post-final reconciliation,
         # never a stage replay or a second mint.
-        try:
-            reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
-        except Exception as primary:
-            try:
-                logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
-            except BaseException:
-                raise primary
+        post_final = reconcile_authority_policy_v2_post_final(
+            orch, root_task_id=task.id, _preserve_errors=True,
+        )
+        if post_final != POST_FINAL_RECONCILED:
+            return HOOK_V2_PENDING
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
+            _preserve_errors=True,
         )
         return HOOK_V2_CONTINUED
     if attempt.finalization_state in ("refused", "owner_lost"):
@@ -4022,24 +4095,9 @@ def _run_authority_hook_v2(
     if attempt.stage == "admitted":
         for stage_name, expected_status, forwarder_name in _V2_PRE_FINAL_STAGE_SEQUENCE:
             forwarder = getattr(store, forwarder_name)
-            try:
-                outcome = forwarder(**stage_kwargs)
-            except Exception as exc:
-                try:
-                    transaction_owned = _authority_hook_caller_transaction_owned(db)
-                    if transaction_owned:
-                        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
-                    _record_hook_outcome(
-                        db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-                        error=f"v2 stage {stage_name} raised: {exc}",
-                    )
-                    return _v2_request_refusal(
-                        orch, task, agent, result_row_id=result_row_id,
-                        owner_attempt_id=attempt.owner_attempt_id,
-                        code="interrupted_pre_final",
-                    )
-                except BaseException:
-                    raise exc
+            # A genuine stage error belongs to the original caller. The writer
+            # retains its own refusal/rollback/COMMIT prefix; no pending rewrite.
+            outcome = forwarder(**stage_kwargs)
             status = getattr(outcome, "status", None)
             if status == "refused":
                 code = _V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
@@ -4053,18 +4111,16 @@ def _run_authority_hook_v2(
                 _record_hook_outcome(
                     db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
                     error=f"v2 stage {stage_name} unexpected status {status!r}",
+                    _preserve_errors=True,
                 )
                 return _v2_request_refusal(
                     orch, task, agent, result_row_id=result_row_id,
                     owner_attempt_id=attempt.owner_attempt_id,
                     code="interrupted_pre_final",
                 )
-    # Authenticate the ONCE-persisted consumed V before selecting its owner.
-    # Reentry after a3 never reclaims, re-evaluates or reconsumes the prefix.
-    try:
-        evaluation = store.get_authenticated_v2_consumed_evaluation(**stage_kwargs)
-    except Exception:
-        evaluation = None
+    # Reentry authenticates the ONCE persisted consumed evaluation, without
+    # reclaiming/re-evaluating/reconsuming the prefix. Read/cleanup E1 escapes.
+    evaluation = store.get_authenticated_v2_consumed_evaluation(**stage_kwargs)
     if evaluation is None or evaluation.diagnostic_code == "binding_mismatch":
         return _v2_request_refusal(
             orch, task, agent, result_row_id=result_row_id,
@@ -4075,25 +4131,9 @@ def _run_authority_hook_v2(
             orch, task, agent, result_row_id=result_row_id,
             owner_attempt_id=attempt.owner_attempt_id, code="policy_no_continue",
         )
-    # ---- Final continuation (atomic; mints E/N/D and returns the root Pending) ----
-    try:
-        final = store.finalize_v2_continuation(**stage_kwargs)
-    except Exception as exc:
-        try:
-            transaction_owned = _authority_hook_caller_transaction_owned(db)
-            if transaction_owned:
-                return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
-            _record_hook_outcome(
-                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-                error=f"v2 final continuation raised: {exc}",
-            )
-            return _v2_request_refusal(
-                orch, task, agent, result_row_id=result_row_id,
-                owner_attempt_id=attempt.owner_attempt_id,
-                code="final_commit_failed",
-            )
-        except BaseException:
-            raise exc
+    # Final continuation owns the atomic E/N/D/J/task transaction. An actual
+    # error preserves its greatest durable prefix and original caller custody.
+    final = store.finalize_v2_continuation(**stage_kwargs)
     final_status = getattr(final, "status", None)
     if final_status not in ("continued", "already_continued"):
         final_reason = getattr(final, "reason", None)
@@ -4103,6 +4143,7 @@ def _run_authority_hook_v2(
                 "v2 final continuation returned "
                 f"status={final_status!r} reason={final_reason!r}"
             ),
+            _preserve_errors=True,
         )
         return _v2_request_refusal(
             orch, task, agent, result_row_id=result_row_id,
@@ -4112,15 +4153,17 @@ def _run_authority_hook_v2(
     # A committed final continuation is not undone (nor ordinarily escalated)
     # because settlement/publication remains pending.  The existing C3d4b
     # post-final seam owns exact settlement and authenticated publication.
-    try:
-        reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
-    except Exception as primary:
-        try:
-            logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
-        except BaseException:
-            raise primary
+    post_final = reconcile_authority_policy_v2_post_final(
+        orch, root_task_id=task.id, _preserve_errors=True,
+    )
+    # This context asserts a committed final continuation.  Not-finalized,
+    # refused or unexpected outcomes cannot turn it into successful None at
+    # the common consumer, nor authorize ordinary escalation or receipt work.
+    if post_final != POST_FINAL_RECONCILED:
+        return HOOK_V2_PENDING
     _record_hook_outcome(
         db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
+        _preserve_errors=True,
     )
     return HOOK_V2_CONTINUED
 
@@ -4132,12 +4175,19 @@ def run_authority_hook(
     reason: str,
     result_row_id: int | None,
     manager_self_evaluation: dict | None = None,
+    *, pre_final_identity: tuple[str, str, str, int] | None = None,
 ) -> str:
     """The pre-escalation authority hook. Returns ``"continue_same_root"``
     (the named same-root permitted action was executed and audited) or
     ``"escalate"`` (fail closed — the caller proceeds through the exact
-    existing escalation path). Opaque connection-ownership failures propagate;
-    they never become autocommit success or diagnostic/fallback writes.
+    existing escalation path). Known v2 completion acquisition/transaction
+    errors escape to the existing caller's failure owner. Before family load,
+    the exact original identity retained by the common classifier or caller
+    selects this error route, including an acquired reserved/receipt R2 without
+    an unfinalized attempt; legacy/v1/default callers retain their outcomes.
+    Acquired semantic denials and intentional v2 pending remain bounded.
+    Opaque original-connection ownership errors escape; a real caller-owned
+    transaction returns structured pending before classifiers or writes.
 
     ``result_row_id`` is the immutable ``task_results`` row id whose
     CompletionReport produced this escalate decision — the causal event
@@ -4162,27 +4212,49 @@ def run_authority_hook(
     from runtime.orchestrator.active_authority_policy import (
         load_session_policy_binding, load_session_policy_snapshot, policy_from_release,
         SELF_EVALUATION_CONTRACT_DIGEST, SELF_EVALUATION_CONTRACT_ID,
-        SELF_EVALUATION_CONTRACT_VERSION,
+        SELF_EVALUATION_CONTRACT_VERSION, ActiveAuthorityPolicyError,
     )
+    selected_v2 = pre_final_identity is not None
+    if selected_v2 and pre_final_identity != (
+        task.id, task.assigned_agent or agent, task.current_session_id or "", result_row_id,
+    ):
+        return HOOK_V2_PENDING  # Original owner/result changed; never recapture.
     try:
         session_binding = load_session_policy_binding(
             db=db, task_id=task.id, session_id=task.current_session_id or "",
             agent_name=agent,
         )
     except Exception as exc:
+        if selected_v2:
+            # Match the existing binding reader's acquired-denial partition.
+            # SQL/decode/lock/projection E1 escapes before logging or any
+            # ordinary escalation/audit/notification. Never reread it away.
+            if isinstance(exc, ActiveAuthorityPolicyError):
+                return HOOK_V2_PENDING
+            if isinstance(exc, ValueError):
+                from pydantic import ValidationError
+                if not isinstance(exc, (json.JSONDecodeError, UnicodeError)) and (
+                    exc.__cause__ is None
+                    or isinstance(exc.__cause__, (ValidationError, KeyError, TypeError))
+                ):
+                    return HOOK_V2_PENDING
+            raise
         try:
             _record_hook_outcome(
                 db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
                 policy=policy, error=f"policy family resolution failed: {exc}",
             )
-            return HOOK_ESCALATE
-        except BaseException:
-            raise exc
+        except BaseException as later:
+            _v2_retain_later_error(exc, later, "_v2_family_diagnostic_secondary")
+            raise exc.with_traceback(exc.__traceback__)
+        return HOOK_ESCALATE
     binding_mode = (
         session_binding.get("mode") if isinstance(session_binding, dict) else None
     )
     if binding_mode == "v2":
         return _run_authority_hook_v2(orch, task, agent, result_row_id)
+    if selected_v2:
+        return HOOK_V2_PENDING  # Acquired absent/mixed/replaced family, no v1 fallback.
     if binding_mode not in (None, "legacy_static", "db_release"):
         # Mixed/malformed/unknown family evidence: never a v1 fallback.
         _record_hook_outcome(
@@ -4818,8 +4890,76 @@ def run_authority_hook(
     return "escalate"
 
 
+def _v2_retain_later_error(primary: BaseException, later: BaseException, slot: str) -> None:
+    """Keep an actual later failure beside its original cause, never in its place."""
+    if later is primary:
+        return
+    values = BaseException.__getattribute__(primary, "__dict__")
+    if slot not in values:
+        BaseException.__setattr__(primary, slot, (later, later.__traceback__))
+    if BaseException.__getattribute__(later, "__dict__").get("_team_move_native_unretired", False):
+        BaseException.__setattr__(primary, "_team_move_native_unretired", True)
+
+
+def _v2_log_failure(primary: BaseException, message: str, *args: object) -> bool:
+    try:
+        logger.exception(message, *args)
+    except BaseException as later:
+        _v2_retain_later_error(primary, later, "_v2_diagnostic_secondary")
+        return False
+    return True
+
+
+def _v2_publication_validation(
+    orch: Any, queue: Any, *, _publication=None, _startup_recovery=None,
+    _queue_validation: Callable[[], None] | None = None,
+) -> tuple[Callable[[], None] | None, Callable[[], None]]:
+    from runtime.daemon.queue import TaskQueue, _AttachmentNotificationQueue
+    # Pin the producer/queue/map before readiness, discovery or native waits.
+    selection = (queue._publication_selection(orch._slug)
+                 if isinstance(queue, (TaskQueue, _AttachmentNotificationQueue)) else None)
+    db, slug, original_queue = getattr(orch, "_db", None), orch._slug, getattr(orch, "_queue", None)
+    state, gate, org = orch._startup_state, orch._startup_recovery, orch._startup_org
+    if _queue_validation is not None:
+        _queue_validation()
+    if _publication is None and _startup_recovery is None:
+        from runtime.daemon.startup_recovery import ordinary_admission_validation
+        ordinary = ordinary_admission_validation(orch)
+    else:
+        ordinary = None
+
+    def validate() -> None:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if (getattr(orch, "_db", None) is not db or orch._slug != slug or getattr(orch, "_queue", None) is not original_queue
+                or orch._startup_state is not state or orch._startup_recovery is not gate
+                or orch._startup_org is not org):
+            raise StartupUnavailable("startup_attachment_changed")
+        if _queue_validation is not None:
+            _queue_validation()
+        if selection is not None:
+            selection()
+        if _publication is not None:
+            _publication.check(queue, slug, _publication.task_id, _publication.metadata)
+        elif _startup_recovery is not None:
+            _startup_recovery.require_attachment(orch)
+            _startup_recovery.require_native_owner()
+            _startup_recovery._require_phase_attachments("sweep")
+        else:
+            ordinary()
+        if selection is not None:
+            selection()
+        if _queue_validation is not None:
+            _queue_validation()
+
+    validate()
+    return selection, validate
+
+
 def publish_authority_policy_v2_notifications(
     orch, queue, *, limit: int | None = 32, root_task_id: str | None = None,
+    startup_observer: Callable[[str, object, BaseException | None], None] | None = None,
+    _publication=None, _startup_recovery=None, _preserve_errors: bool = False,
+    _queue_validation: Callable[[], None] | None = None,
 ) -> list[dict]:
     """Real publication entry for pending v2 continuation generations.
 
@@ -4844,9 +4984,18 @@ def publish_authority_policy_v2_notifications(
     audited failure path (the prior claim stays safely reclaimable).  An
     acknowledgement/audit failure leaves the exact lease/state replayable.
     This function performs no evaluation, no remint and no task mutation, and
-    returns bounded per-target receipts for the caller.
+    returns bounded per-target receipts for the caller. Only a selected original
+    completion passes _preserve_errors: that root retains actual failures through
+    its existing whole-sweep owner. Default discovery keeps per-target isolation.
     """
-    steps = _v2_publication_steps(orch, queue, limit=limit, root_task_id=root_task_id)
+    selection, validate = _v2_publication_validation(
+        orch, queue, _publication=_publication, _startup_recovery=_startup_recovery,
+        _queue_validation=_queue_validation,
+    )
+    steps = _v2_publication_steps(orch, queue, limit=limit, root_task_id=root_task_id,
+        startup_observer=startup_observer, _publication=_publication,
+        _startup_recovery=_startup_recovery, _preserve_errors=_preserve_errors,
+        _selection=selection, _validate=validate)
     error = None
     while True:
         put, receipts = _advance_v2_publication(steps, error)
@@ -4861,43 +5010,91 @@ def publish_authority_policy_v2_notifications(
 
 async def _publish_v2_notifications_native(
     orch: Any, queue: Any, *, native: Callable, root_task_id: str,
+    _queue_validation: Callable[[], None] | None = None,
+    _put_outcomes: list[Any] | None = None,
 ) -> list[dict]:
-    # The service owns/joins this whole publication. Every advance ends AFTER
-    # native DB transactions/leases have closed; only the raw put crosses out.
-    steps = _v2_publication_steps(orch, queue, root_task_id=root_task_id)
+    selection, validate = _v2_publication_validation(orch, queue, _queue_validation=_queue_validation)
+    steps = _v2_publication_steps(orch, queue, root_task_id=root_task_id,
+                                _selection=selection, _validate=validate)
     error = None
     while True:
-        put, receipts = await native(lambda: _advance_v2_publication(steps, error))
+        # Only values/errors cross. Every advance closes all native DB/profile/
+        # publisher intervals before returning the actual owning-loop raw put.
+        try:
+            put, receipts = await native(lambda: _advance_v2_publication(steps, error))
+        except BaseException as later:
+            if error is None or error is later:
+                raise
+            original_traceback = error.__traceback__
+            _v2_retain_later_error(error, later, "_v2_native_secondary")
+            raise error.with_traceback(original_traceback)
         if put is None:
+            validate()
             return receipts
         error = None
+        from concurrent.futures import Future
+        outcome: Future = Future()
+        if _put_outcomes is not None:
+            _put_outcomes.append(outcome)
         try:
-            put()  # Real asyncio queue insertion on its owning loop.
-        except Exception as exc:
+            put()
+        except BaseException as exc:
+            outcome.set_exception(exc)
+            if not isinstance(exc, Exception):
+                raise
             error = exc
+        else:
+            outcome.set_result(True)
 
 
 def _advance_v2_publication(
     steps: Generator, error: Exception | None,
 ) -> tuple[Callable | None, list[dict] | None]:
-    # StopIteration never escapes an executor Future. This owner-specific
-    # iterator retains values only, never a cursor/transaction/native lease.
+    original_traceback = None if error is None else error.__traceback__
     try:
         return steps.send(error), None
     except StopIteration as done:
         return None, done.value
+    except BaseException as later:
+        if error is not None and later is error:
+            # Bare rethrow retains the actual raw-put traceback, excluding
+            # bookkeeping and the generator's value/error transport frames.
+            BaseException.__setattr__(error, "__traceback__", original_traceback)
+        raise
 
 
 def _v2_publication_steps(
-    orch: Any, queue: Any, *, limit: int | None = 32,
-    root_task_id: str | None = None,
+    orch: Any, queue: Any, *, limit: int | None = 32, root_task_id: str | None = None,
+    startup_observer: Callable[[str, object, BaseException | None], None] | None = None,
+    _publication=None, _startup_recovery=None, _preserve_errors: bool = False,
+    _selection: Callable[[], None] | None, _validate: Callable[[], None],
 ) -> Generator[Callable[[], None], Exception | None, list[dict]]:
+    from contextlib import nullcontext
+    _validate()
     db = orch._db
     receipts: list[dict] = []
+    # Observe ORIGINAL producer values/exceptions without changing receipts,
+    # discovery order, transaction ownership or target-local isolation.
+    def observe(stage: str, value: object = None, cause: BaseException | None = None) -> None:
+        if startup_observer is not None:
+            original_traceback = None if cause is None else cause.__traceback__
+            try:
+                startup_observer(stage, value, cause)
+            except BaseException as later:
+                if cause is None or later is cause:
+                    raise
+                _v2_retain_later_error(cause, later, "_v2_observer_secondary")
+                raise cause.with_traceback(original_traceback)
     try:
+        _validate()
         targets = db.list_authority_policy_v2_publication_targets()
-    except Exception as exc:  # discovery is read-only best effort
+        _validate()
+    except Exception as exc:  # discovery is read-only best effort by default
+        if _preserve_errors:
+            raise
+        observe("discovery", cause=exc)
         return [{"status": "discovery_failed", "error": type(exc).__name__}]
+    observe("discovery", targets)
     if root_task_id is not None:
         # Common-entry single-target use: publication stays the SAME
         # authenticated claim -> raw put -> exact ack sequence; only the
@@ -4919,19 +5116,26 @@ def _v2_publication_steps(
         # permission: a refusal is returned to the caller, which still requires
         # an actual authenticated publication of the exact generation.
         try:
+            _validate()
             claim = db.claim_authority_policy_v2_notification_publication(
                 root_task_id=target.root_task_id,
                 manager_agent=target.manager_agent,
                 manager_session_id=target.manager_session_id,
                 result_id=target.result_id,
+                **({"_preserve_errors": True} if _preserve_errors else {}),
             )
         except Exception as exc:
+            if _preserve_errors:
+                raise
+            observe("claim", cause=exc)
             receipts.append({
                 "status": "publication_claim_failed",
                 "reason": type(exc).__name__,
                 "notification_id": target.notification_id,
             })
             continue
+        _validate()
+        observe("claim", claim)
         if claim.status != "claimed":
             receipts.append({
                 "status": claim.status,
@@ -4939,15 +5143,23 @@ def _v2_publication_steps(
                 "notification_id": target.notification_id,
             })
             continue
-        def put(target: Any = target, claim: Any = claim) -> None:
-            queue.put_nowait(
-                orch._slug,
-                target.root_task_id,
-                metadata={
-                    "authority_v2_generation": claim.generation_id,
-                    "publication_attempt": claim.publication_attempt,
-                },
-            )
+        metadata = {"authority_v2_generation": claim.generation_id,
+                    "publication_attempt": claim.publication_attempt}
+        raw_publication = None
+        if _publication is not None:
+            raw_publication = _publication.generation(target.root_task_id, metadata)
+        elif _startup_recovery is not None:
+            from runtime.daemon.startup_publication import _TaskPublication
+            raw_publication = _TaskPublication(_startup_recovery, orch, target.root_task_id, "v2", metadata)
+
+        def put(target: Any = target, metadata: dict = metadata, raw_publication: Any = raw_publication) -> None:
+            _validate()
+            # A synchronous scope belongs to this raw call only. No scope or
+            # thread-local publisher stack survives generator suspension.
+            with (queue._publication_scope(orch._slug, target.root_task_id, _selection=_selection)
+                  if _selection is not None else nullcontext()):
+                queue.put_nowait(orch._slug, target.root_task_id, metadata=metadata,
+                    **({"_publication": raw_publication} if raw_publication is not None else {}))
         try:
             error = yield put
             if error is not None:
@@ -4962,18 +5174,22 @@ def _v2_publication_steps(
                         result_id=target.result_id,
                         publication_attempt=claim.publication_attempt,
                         publisher_boot_id=claim.publisher_boot_id,
+                        **({"_preserve_errors": True} if _preserve_errors else {}),
                     )
                 )
                 reason = failure.reason
-            except Exception as record_exc:
-                # A failure-bookkeeping write failure keeps the prior
-                # ``publishing`` lease safely reclaimable and must not abort
-                # the pass; the original queue error stays authoritative.
+            except BaseException as record_exc:
+                _v2_retain_later_error(exc, record_exc, "_v2_publication_failure_secondary")
+                opaque_failure = not isinstance(record_exc, Exception)
                 reason = type(record_exc).__name__
-            except BaseException:
-                # The queue failure remains primary if its secondary
-                # publication-failure bookkeeping raises an opaque error.
-                raise exc
+                if not _preserve_errors and not opaque_failure:
+                    observe("failure", cause=exc)
+            else:
+                opaque_failure = False
+                if not _preserve_errors:
+                    observe("failure", failure, exc)
+            if _preserve_errors or opaque_failure:
+                raise
             receipts.append({
                 "status": "publish_failed",
                 "reason": reason,
@@ -4983,6 +5199,7 @@ def _v2_publication_steps(
             })
             continue
         try:
+            _validate()
             ack = db.acknowledge_authority_policy_v2_notification_publication(
                 root_task_id=target.root_task_id,
                 manager_agent=target.manager_agent,
@@ -4990,8 +5207,12 @@ def _v2_publication_steps(
                 result_id=target.result_id,
                 publication_attempt=claim.publication_attempt,
                 publisher_boot_id=claim.publisher_boot_id,
+                **({"_preserve_errors": True} if _preserve_errors else {}),
             )
         except Exception as exc:
+            if _preserve_errors:
+                raise
+            observe("ack", cause=exc)
             # The raw tagged put already happened; the retained claim/lease
             # stays recoverable and reclaimable, so a restart republishes and
             # the non-bypassable generation fence still admits only once.
@@ -5003,6 +5224,8 @@ def _v2_publication_steps(
                 "publication_attempt": claim.publication_attempt,
             })
             continue
+        _validate()
+        observe("ack", ack)
         receipts.append({
             "status": ack.status,
             "reason": ack.reason,
@@ -5010,7 +5233,9 @@ def _v2_publication_steps(
             "generation_id": claim.generation_id,
             "publication_attempt": claim.publication_attempt,
         })
+    _validate()
     return receipts
+
 
 
 # Closed bounded outcomes of the real post-final orchestration (THR-229 C3d4b).
@@ -5020,7 +5245,7 @@ POST_FINAL_SETTLEMENT_REFUSED = "settlement_refused"
 
 
 def reconcile_authority_policy_v2_post_final(
-    orch, *, root_task_id: str,
+    orch, *, root_task_id: str, _preserve_errors: bool = False,
 ) -> str:
     """Settle the exact final receipt and publish the pending generation (C3d4b).
 
@@ -5063,23 +5288,28 @@ def reconcile_authority_policy_v2_post_final(
     other refusal returns ``settlement_refused`` with the prior residue and zero
     queue calls, and never an ordinary fallback.
 
-    Returns one of the bounded ``POST_FINAL_*`` status strings.
+    Returns bounded semantic ``POST_FINAL_*`` status strings. The selected
+    common/hook/accepted completion passes _preserve_errors: actual acquisition
+    or transaction E1 then escapes before logging, fallback rereads or publication.
+    A genuine already committed settlement remains a prefix, never undone.
     """
     db = getattr(orch, "_db", None)
     from runtime.infrastructure.database import Database
     if not isinstance(db, Database):
         return POST_FINAL_NOT_FINALIZED
+    from runtime.daemon.queue import TaskQueue, _AttachmentNotificationQueue
+    queue = getattr(orch, "_queue", None)
+    selection = (queue._publication_selection(orch._slug)
+                 if isinstance(queue, (TaskQueue, _AttachmentNotificationQueue)) else None)
     try:
         envelope = db.get_authority_policy_v2_continue_envelope_for_root(
             root_task_id
         )
     except Exception as primary:
-        try:
-            logger.exception(
-                "post-final %s: continuation envelope read failed", root_task_id,
-            )
-        except BaseException:
-            raise primary
+        if _preserve_errors:
+            raise
+        if not _v2_log_failure(primary, "post-final %s: continuation envelope read failed", root_task_id,):
+            raise
         return POST_FINAL_SETTLEMENT_REFUSED
     if envelope is None:
         return POST_FINAL_NOT_FINALIZED
@@ -5090,12 +5320,10 @@ def reconcile_authority_policy_v2_post_final(
             result_id=envelope.result_id,
         )
     except Exception as primary:
-        try:
-            logger.exception(
-                "post-final %s: settlement receipt identity read failed", root_task_id,
-            )
-        except BaseException:
-            raise primary
+        if _preserve_errors:
+            raise
+        if not _v2_log_failure(primary, "post-final %s: settlement receipt identity read failed", root_task_id,):
+            raise
         return POST_FINAL_SETTLEMENT_REFUSED
     settled = False
     committed_receipt = bool(identity) and not identity.get("conflict") and (
@@ -5133,25 +5361,24 @@ def reconcile_authority_policy_v2_post_final(
             "settled", "already_settled_exact",
         )
     except Exception as primary:
-        try:
-            logger.exception(
-                "post-final %s: continuation receipt settlement failed", root_task_id,
-            )
-        except BaseException:
-            raise primary
+        if _preserve_errors:
+            raise
+        if not _v2_log_failure(primary, "post-final %s: continuation receipt settlement failed", root_task_id,):
+            raise
     if not settled:
         # The transition-only settlement reader above requires N ``needed``; a
         # generation already ADMITTED (or admitted + settled) by a real consumer
         # is beyond that reader, so complete/authenticate its exact R4 step6
         # bookkeeping through the EXISTING admission-settlement writer.
         settled = _settle_admitted_generation_bookkeeping(
-            db, root_task_id=root_task_id,
+            db, root_task_id=root_task_id, _preserve_errors=_preserve_errors,
         )
-    queue = getattr(orch, "_queue", None)
     receipts: list[dict] = []
     if queue is not None:
         receipts = publish_authority_policy_v2_notifications(
             orch, queue, root_task_id=root_task_id, limit=None,
+            _preserve_errors=_preserve_errors,
+            _queue_validation=selection,
         )
     if not settled and committed_receipt:
         # The exact receipt is already durably ``callback_consumed`` but the
@@ -5170,7 +5397,10 @@ def reconcile_authority_policy_v2_post_final(
     return POST_FINAL_RECONCILED if settled else POST_FINAL_SETTLEMENT_REFUSED
 
 
-def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
+
+def _settle_admitted_generation_bookkeeping(
+    db, *, root_task_id: str, _preserve_errors: bool = False,
+) -> bool:
     """Complete exact admitted/settled generation bookkeeping (C3d4b).
 
     Reached only when the transition-only receipt settlement reader could not
@@ -5189,10 +5419,10 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
     try:
         dispatch = db.get_authority_policy_v2_root_dispatch(root_task_id)
     except Exception as primary:
-        try:
-            logger.exception("post-final %s: root dispatch read failed", root_task_id)
-        except BaseException:
-            raise primary
+        if _preserve_errors:
+            raise
+        if not _v2_log_failure(primary, "post-final %s: root dispatch read failed", root_task_id):
+            raise
         return False
     if dispatch is None or getattr(dispatch, "state", None) != "admitted":
         return False
@@ -5204,12 +5434,10 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
             generation_id
         )
     except Exception as primary:
-        try:
-            logger.exception(
-                "post-final %s: admitted generation read failed", root_task_id,
-            )
-        except BaseException:
-            raise primary
+        if _preserve_errors:
+            raise
+        if not _v2_log_failure(primary, "post-final %s: admitted generation read failed", root_task_id,):
+            raise
         return False
     if (
         notification is None
@@ -5228,18 +5456,18 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
             result_id=notification.result_id,
             generation_id=generation_id,
             next_session_id=next_session_id,
+            **({"_preserve_errors": True} if _preserve_errors else {}),
         )
     except Exception as primary:
-        try:
-            logger.exception(
-                "post-final %s: admitted generation settlement failed", root_task_id,
-            )
-        except BaseException:
-            raise primary
+        if _preserve_errors:
+            raise
+        if not _v2_log_failure(primary, "post-final %s: admitted generation settlement failed", root_task_id,):
+            raise
         return False
     return getattr(settlement, "status", None) in (
         "settled", "already_settled_exact",
     )
+
 
 
 # Closed bounded outcomes of the common DB-aware enqueue entry (THR-229 C3d4a).
@@ -5251,7 +5479,7 @@ ENQUEUE_DISPATCH_NO_QUEUE = "no_queue"
 
 def enqueue_task_generation_aware(
     orch, queue, slug: str, task_id: str, *, metadata: dict | None = None,
-    ordinary_enqueue=None,
+    ordinary_enqueue=None, _publication=None,
 ) -> str:
     """Common DB-aware task enqueue entry (THR-229 checkpoint C3d4a).
 
@@ -5284,41 +5512,70 @@ def enqueue_task_generation_aware(
     original call so the tuple/metadata shape and any queue-double contract are
     unchanged; the default uses the shared legacy ``enqueue`` shape.
     """
+    from contextlib import nullcontext
+    selection, validate = _v2_publication_validation(orch, queue, _publication=_publication)
     if queue is None:
         return ENQUEUE_DISPATCH_NO_QUEUE
-
-    def _ordinary() -> None:
-        if ordinary_enqueue is not None:
-            ordinary_enqueue()
-        else:
-            _ordinary_enqueue(queue, slug, task_id, metadata)
-
-    classification = _classify_generation_enqueue(orch, task_id)
-    if classification == "pending":
-        receipts = publish_authority_policy_v2_notifications(
-            orch, queue, root_task_id=task_id,
-        )
-        return _v2_enqueue_receipt_status(receipts)
-    if classification == ENQUEUE_DISPATCH_ORDINARY:
-        _ordinary()
-    return classification
+    with (queue._publication_scope(slug, task_id, _selection=selection)
+          if selection is not None else nullcontext()):
+        validate()
+        if _publication is not None:
+            _publication.check(queue, slug, task_id, metadata)
+        classification = _classify_generation_enqueue(orch, task_id)
+        validate()
+        if classification == "pending":
+            receipts = publish_authority_policy_v2_notifications(
+                orch, queue, root_task_id=task_id, _publication=_publication,
+            )
+            return _v2_enqueue_receipt_status(receipts)
+        if classification == ENQUEUE_DISPATCH_ORDINARY:
+            validate()
+            if ordinary_enqueue is not None:
+                ordinary_enqueue()
+            else:
+                _ordinary_enqueue(queue, slug, task_id, metadata, _publication=_publication)
+        return classification
 
 
 async def _enqueue_task_generation_aware_native(
     orch: Any, queue: Any, slug: str, task_id: str, *, native: Callable,
-    metadata: dict | None = None,
+    metadata: dict | None = None, _queue_validation: Callable[[], None] | None = None,
+    _put_outcomes: list[Any] | None = None,
 ) -> str:
-    """Team-move path only; native classification/claim and real loop put."""
+    """Native classification/claim/ack; raw insertion stays on the owning loop."""
+    selection, validate = _v2_publication_validation(orch, queue, _queue_validation=_queue_validation)
     if queue is None:
         return ENQUEUE_DISPATCH_NO_QUEUE
-    classification = await native(lambda: _classify_generation_enqueue(orch, task_id))
+    def classify() -> str:
+        validate()
+        result = _classify_generation_enqueue(orch, task_id)
+        validate()
+        return result
+    classification = await native(classify)
+    validate()
     if classification == "pending":
         receipts = await _publish_v2_notifications_native(
-            orch, queue, native=native, root_task_id=task_id,
+            orch, queue, native=native, root_task_id=task_id, _queue_validation=validate,
+            _put_outcomes=_put_outcomes,
         )
+        validate()
         return _v2_enqueue_receipt_status(receipts)
     if classification == ENQUEUE_DISPATCH_ORDINARY:
-        _ordinary_enqueue(queue, slug, task_id, metadata)
+        from contextlib import nullcontext
+        with (queue._publication_scope(slug, task_id, _selection=selection)
+              if selection is not None else nullcontext()):
+            validate()
+            from concurrent.futures import Future
+            outcome: Future = Future()
+            if _put_outcomes is not None:
+                _put_outcomes.append(outcome)
+            try:
+                _ordinary_enqueue(queue, slug, task_id, metadata)
+            except BaseException as exc:
+                outcome.set_exception(exc)
+                raise
+            else:
+                outcome.set_result(True)
     return classification
 
 
@@ -5331,35 +5588,22 @@ def _v2_enqueue_receipt_status(receipts: list[dict]) -> str:
 
 
 def _classify_generation_enqueue(orch: Any, task_id: str) -> str:
-    db = getattr(orch, "_db", None)
-    # Only a genuine durable ``Database`` carries the classification read.  A
-    # duck-typed/mock orchestrator (a test double or an org with no durable
-    # authority state) is NOT permission to consult or bypass durable v2 state,
-    # so it keeps the unchanged ordinary path.
-    classifier = _durable_dispatch_classifier(db)
+    classifier = _durable_dispatch_classifier(getattr(orch, "_db", None))
     if classifier is None:
         return ENQUEUE_DISPATCH_ORDINARY
     try:
         classification = classifier(task_id)
     except Exception as primary:
-        try:
-            logger.exception("enqueue %s: v2 dispatch classification failed", task_id)
-        except BaseException:
-            raise primary
+        if not _v2_log_failure(primary, "enqueue %s: v2 dispatch classification failed", task_id):
+            raise
         return ENQUEUE_DISPATCH_REFUSED
     kind = getattr(classification, "kind", None)
     if kind == "pending":
         return "pending"
     if kind in ("admitted", "malformed", "unreadable"):
-        logger.warning(
-            "enqueue %s: v2 dispatch %s refuses ordinary enqueue", task_id, kind,
-        )
+        logger.warning("enqueue %s: v2 dispatch %s refuses ordinary enqueue", task_id, kind)
         return ENQUEUE_DISPATCH_REFUSED
-    # ``absent`` and ``retired`` keep the unchanged ordinary path; an unexpected
-    # kind can never become ordinary permission.
-    if kind != "absent" and kind != "retired":
-        return ENQUEUE_DISPATCH_REFUSED
-    return ENQUEUE_DISPATCH_ORDINARY
+    return ENQUEUE_DISPATCH_ORDINARY if kind in ("absent", "retired") else ENQUEUE_DISPATCH_REFUSED
 
 
 def _durable_dispatch_classifier(db):
@@ -5382,7 +5626,8 @@ def _durable_dispatch_classifier(db):
     return classifier if callable(classifier) else None
 
 
-def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None) -> None:
+
+def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None, *, _publication=None) -> None:
     """Raw ordinary enqueue preserving the legacy call shape exactly.
 
     The common legacy entry (``runner.enqueue_task``, startup sweep) used
@@ -5396,7 +5641,8 @@ def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None) -> 
         put = getattr(queue, "put_nowait", None)
     if not callable(put):
         raise AttributeError("queue exposes neither enqueue nor put_nowait")
+    kwargs = {"_publication": _publication} if _publication is not None else {}
     if metadata is None:
-        put(slug, task_id)
+        put(slug, task_id, **kwargs)
     else:
-        put(slug, task_id, metadata=metadata)
+        put(slug, task_id, metadata=metadata, **kwargs)

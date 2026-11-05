@@ -63,11 +63,13 @@ import { ResumeButton } from './ResumeButton';
 import { selectInFlightResponders } from './inFlightResponders';
 import { TypingBubble } from '@/design-system/patterns/TypingBubble';
 import { useTranslation } from '@/hooks/i18n';
+import { useStartupStatus } from '@/hooks/health';
 import { formatCountFor, type Locale, type MessageKey, type MessageParams } from '@/lib/i18n';
 import { formatElapsed } from '@/lib/elapsed';
 import {
   classifyThreadError,
   renderThreadError,
+  startupRefusalKey,
   type ThreadErrorView,
 } from '@/lib/threadErrors';
 import { reorderOpenThreads } from '@/design-system/providers/_real-threads';
@@ -418,6 +420,12 @@ export function ThreadsPage(): JSX.Element {
     rememberListScroll();
     setFilter(nextFilter);
   };
+  // THR-308: while daemon startup is not positively ready the transcript and
+  // inbox stay readable, but every effect (send/upload/abort/pin/rename/archive/
+  // invite/remove/new thread) and the held auxiliary reads are paused. Drafts,
+  // attachment selections, focus and the selected org/thread stay mounted.
+  const startup = useStartupStatus();
+  const held = !startup.admitted;
   useThreadsInboxSSE();
   const agentsQuery = useAgentsList();
   const agents = useMemo(() => agentsQuery.data?.agents ?? [], [agentsQuery.data]);
@@ -618,7 +626,8 @@ export function ThreadsPage(): JSX.Element {
       ),
     [messages, activeThread.data?.reply_delivery],
   );
-  const nowMs = useNowMs(anyWorking);
+  // Live elapsed ticking implies current work; it resumes only once ready.
+  const nowMs = useNowMs(anyWorking && !held);
   const knownAgentIds = useKnownAgentIds(agents);
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
@@ -644,11 +653,12 @@ export function ThreadsPage(): JSX.Element {
     if (!renameDraft.trim()) return;
     setRenameError(null);
     try {
+      startup.assertAdmittedNow();
       await renameMutation.mutateAsync({ subject: renameDraft });
       setRenaming(false);
-    } catch {
+    } catch (err) {
       // On failure retain the typed value and show the inline error (retry).
-      setRenameError('threads.page.renameFailed');
+      setRenameError(startupRefusalKey(err) ?? 'threads.page.renameFailed');
     }
   };
   const cancelRename = () => {
@@ -659,8 +669,8 @@ export function ThreadsPage(): JSX.Element {
     setPinError(null);
     try {
       await pinMutation.mutateAsync({ pinned });
-    } catch {
-      setPinError('threads.page.pinFailed');
+    } catch (err) {
+      setPinError(startupRefusalKey(err) ?? 'threads.page.pinFailed');
     }
   };
   // Locale-neutral error descriptor, rendered through renderThreadError on
@@ -722,12 +732,13 @@ export function ThreadsPage(): JSX.Element {
   // Participant pending removal — drives the confirm dialog; null keeps it closed.
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const openNew = () => {
+    if (held) return;
     setNewPrefill(undefined);
     setShowNew(true);
   };
 
   const openForward = () => {
-    if (!threadId || !activeThread.data) return;
+    if (held || !threadId || !activeThread.data) return;
     const lastFounderMsg = messages
       .filter((m) => m.kind === 'message' && m.body_markdown)
       .at(-1);
@@ -771,9 +782,15 @@ export function ThreadsPage(): JSX.Element {
     // succeed so a later send failure is never blamed on the last file.
     let failedUpload: PendingAttachment | null = null;
     try {
+      // THR-308 operation-level admission: checked before the first effect
+      // and again after every await, so a stale callback cannot upload or
+      // send once startup is no longer positively ready. A refusal is shown
+      // as "not accepted"; nothing is queued or retried automatically.
+      startup.assertAdmittedNow();
       await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', thread_id: capturedThreadId, body: markdown, canonicalAgentIds: knownAgentIds, bodyAgentIds: composerAgents.map(a => a.name), allowFounder: true });
       const refs: ThreadAttachmentRef[] = [];
       for (const pending of attachments) {
+        startup.assertAdmittedNow();
         failedUpload = pending;
         let ref = runRefs.get(pending.id);
         if (!ref) {
@@ -809,6 +826,7 @@ export function ThreadsPage(): JSX.Element {
         refs.push(ref);
       }
       failedUpload = null;
+      startup.assertAdmittedNow();
       await sendFollowUp.mutateAsync({
         body_markdown: markdown,
         ...(refs.length ? { attachments: refs } : {}),
@@ -846,6 +864,9 @@ export function ThreadsPage(): JSX.Element {
       const tag = target?.tagName?.toLowerCase();
       if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
       if (isGPrefixArmed()) return;
+      // Effectful shortcuts are inert while startup is held (R still focuses
+      // the composer so drafting continues).
+      if (held && ['n', 'i', 'a', 'f'].includes(e.key.toLowerCase())) return;
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); openNew(); }
       else if (threadId && (e.key === 'i' || e.key === 'I')) { e.preventDefault(); setShowInvite(true); }
       else if (threadId && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setShowArchive(true); }
@@ -858,7 +879,7 @@ export function ThreadsPage(): JSX.Element {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, activeThread.data, activeMessagesQuery.data]);
+  }, [threadId, activeThread.data, activeMessagesQuery.data, held]);
 
   // Inbox column — the full-width single-column conversation list shown on
   // /threads (no thread selected). When a thread IS selected the list column
@@ -905,8 +926,9 @@ export function ThreadsPage(): JSX.Element {
             <Button
               size="sm"
               onClick={openNew}
+              disabled={held}
               aria-label={t('threads.page.newThreadAria')}
-              title={t('threads.page.newThreadTitle')}
+              title={held ? t('startup.action.paused') : t('threads.page.newThreadTitle')}
             >
               {t('threads.page.newThread')}
             </Button>
@@ -1105,6 +1127,7 @@ export function ThreadsPage(): JSX.Element {
           onTogglePin={(pinned) => void togglePin(pinned)}
           pinPending={pinMutation.isPending}
           pinError={pinError ? t(pinError) : null}
+          effectsHeld={held}
           composer={
             <Composer
               agents={composerIdentityOptions}
@@ -1126,6 +1149,8 @@ export function ThreadsPage(): JSX.Element {
                 mentionList: t('threads.newThread.mentionList'),
               }}
               onSend={onSendFollowUp}
+              effectsHeld={held}
+              heldNotice={t('startup.composer.held')}
               attachments={pendingAttachments}
               onAttachmentsChange={onAttachmentsChange}
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
@@ -1133,7 +1158,9 @@ export function ThreadsPage(): JSX.Element {
               // Renders only while replies are in flight; one click aborts EVERY
               // in-flight reply (thread-level mutation, unchanged).
               abortReplies={{
-                active: inFlightResponders.length > 0,
+                // Persisted queued/working rows are not proof of current work
+                // while startup is held, so abort is not offered then.
+                active: !held && inFlightResponders.length > 0,
                 isPending: abortReplies.isPending,
                 onAbort: () => { abortReplies.mutateAsync().catch(() => {}); },
               }}
@@ -1221,6 +1248,8 @@ interface DetailColumnProps {
   onTogglePin: (pinned: boolean) => void;
   pinPending: boolean;
   pinError: string | null;
+  /** THR-308: daemon startup not positively ready — effects/live inference held. */
+  effectsHeld: boolean;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -1248,6 +1277,7 @@ function DetailColumn({
   onTogglePin,
   pinPending,
   pinError,
+  effectsHeld,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -1374,8 +1404,8 @@ function DetailColumn({
               variant="ghost"
               size="sm"
               onClick={onRenameStart}
-              disabled={renaming}
-              title={t('threads.page.action.renameTitle')}
+              disabled={renaming || effectsHeld}
+              title={effectsHeld ? t('startup.action.paused') : t('threads.page.action.renameTitle')}
             >
               {t('threads.page.action.rename')}
             </Button>
@@ -1383,13 +1413,13 @@ function DetailColumn({
               variant="ghost"
               size="sm"
               onClick={() => onTogglePin(!thread.pinned)}
-              disabled={pinPending}
+              disabled={pinPending || effectsHeld}
               aria-label={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
               title={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
             >
               {thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
             </Button>
-            <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title={t('threads.page.action.archiveTitle')}>{t('threads.page.action.archive')}</Button>
+            <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open || effectsHeld} title={effectsHeld ? t('startup.action.paused') : t('threads.page.action.archiveTitle')}>{t('threads.page.action.archive')}</Button>
             {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
           </div>
         }
@@ -1405,6 +1435,7 @@ function DetailColumn({
               threadId={threadId}
               nowMs={nowMs}
               replyDelivery={replyDelivery}
+              liveHeld={effectsHeld}
             />
           </div>
           <footer className="border-border-default bg-surface-sunken shrink-0 border-t p-3">
@@ -1430,8 +1461,15 @@ function DetailColumn({
                   // founder shows their current name alone (canonical ID when
                   // unnamed/unavailable) with no redundant role label.
                   const respStatus = statusByAgent.get(p) ?? null;
-                  const led = participantLed(p, respStatus);
-                  const statusLabel = p !== 'founder' && respStatus ? responderStatusLabel(respStatus, t) : null;
+                  // THR-308: a persisted queued/working row is history, not
+                  // proof of current work, while startup is held.
+                  const recordedOnly = effectsHeld && (respStatus === 'queued' || respStatus === 'working');
+                  const led = participantLed(p, recordedOnly ? null : respStatus);
+                  const statusLabel = p !== 'founder' && respStatus
+                    ? recordedOnly
+                      ? t('startup.threads.recordedStatus', { status: responderStatusLabel(respStatus, t) })
+                      : responderStatusLabel(respStatus, t)
+                    : null;
                   const displayName = <IdentityName canonicalId={p} founderNameOnly />;
                   return (
                     <li key={p} className="flex items-center gap-2 py-1">
@@ -1443,9 +1481,10 @@ function DetailColumn({
                           <button
                             type="button"
                             aria-label={t('threads.page.rail.removeParticipant', { name: p })}
-                            title={t('threads.page.rail.removeParticipant', { name: p })}
+                            title={effectsHeld ? t('startup.action.paused') : t('threads.page.rail.removeParticipant', { name: p })}
                             onClick={() => onRemoveParticipant(p)}
-                            className="text-text-muted hover:text-feedback-danger rounded px-1 text-xs leading-none transition-colors"
+                            disabled={effectsHeld}
+                            className="text-text-muted hover:text-feedback-danger rounded px-1 text-xs leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             ✕
                           </button>
@@ -1464,8 +1503,9 @@ function DetailColumn({
               <button
                 type="button"
                 onClick={onInvite}
-                title={t('threads.page.rail.inviteTitle')}
-                className="border-border-default text-text-secondary hover:bg-surface-raised mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs transition-colors"
+                disabled={effectsHeld}
+                title={effectsHeld ? t('startup.action.paused') : t('threads.page.rail.inviteTitle')}
+                className="border-border-default text-text-secondary hover:bg-surface-raised mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                   <circle cx="9" cy="8" r="3" />
@@ -1487,6 +1527,9 @@ function DetailColumn({
               <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
                 {t('threads.page.rail.replyDelivery')}
               </h3>
+              {effectsHeld && (
+                <p className="text-attention-text mb-1 text-xs">{t('startup.threads.recordedDelivery')}</p>
+              )}
               <ReplyDeliveryStrip entries={replyDelivery} nowMs={nowMs} />
             </div>
           )}
@@ -1511,7 +1554,11 @@ function DetailColumn({
                 <span className="text-text-disabled ml-1 tabular-nums normal-case">({formatCountFor(locale, threadTasks.data.length)})</span>
               )}
             </h3>
-            {threadTasks.isLoading ? (
+            {effectsHeld ? (
+              // Held read: neither "no linked tasks" nor an earlier cached list
+              // is presented as current while startup is not ready.
+              <p className="text-attention-text text-xs">{t('startup.action.paused')}</p>
+            ) : threadTasks.isLoading ? (
               <p className="text-text-muted text-xs">{t('threads.page.rail.tasksLoading')}</p>
             ) : threadTasks.isError ? (
               <p className="text-feedback-danger text-xs">{t('threads.page.rail.tasksError')}</p>
@@ -1561,7 +1608,7 @@ function DetailColumn({
           <div>
             <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.thisThread')}</h3>
             <dl className="space-y-1">
-              {typeof freshTokens.data === 'number' && (
+              {!effectsHeld && typeof freshTokens.data === 'number' && (
                 <div className="flex items-center justify-between gap-2">
                   <dt className="text-text-muted text-xs">{t('threads.page.rail.freshTokens')}</dt>
                   <dd className="text-text-secondary text-xs">
@@ -1645,9 +1692,11 @@ interface TranscriptProps {
   nowMs?: number;
   /** Store-projected pair reply-delivery state (GH-688 Phase 1 Slice C). */
   replyDelivery: ReplyDeliveryEntry[];
+  /** THR-308: startup held — no live typing inference, downloads held. */
+  liveHeld?: boolean;
 }
 
-function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, replyDelivery }: TranscriptProps): JSX.Element {
+function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, replyDelivery, liveHeld = false }: TranscriptProps): JSX.Element {
   const { t, locale } = useTranslation();
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -1757,7 +1806,8 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
                       systemEvent: t('threads.page.system.event'),
                     }}
                     formatTimestamp={(iso) => localeTimestamp(locale, iso)}
-                    onAttachmentDownload={slug && threadId ? (attachment) => {
+                    attachmentDownloadHeld={liveHeld ? t('startup.action.paused') : undefined}
+                    onAttachmentDownload={slug && threadId && !liveHeld ? (attachment) => {
                       if (attachment.thread_attachment_id) {
                         artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id, attachment.display_name);
                       } else {
@@ -1774,7 +1824,17 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
           </div>
         );
       })}
-      {pairLive.map((e) => (
+      {liveHeld && (pairLive.length > 0 || inferredInFlight.length > 0) && (
+        // Persisted queued/working rows recorded before the restart. They are
+        // history, not proof that an agent is working now, so no live typing
+        // bubble, elapsed timer or abort is shown until startup is ready.
+        <p role="note" className="text-attention-text text-caption break-words">
+          {t('startup.threads.recordedActivity', {
+            agents: [...new Set([...pairLive.map((e) => e.agent_name), ...inferredInFlight.map((s) => s.agent_name)])].join(', '),
+          })}
+        </p>
+      )}
+      {!liveHeld && pairLive.map((e) => (
         // Same avatar-indented turn structure as real messages above so the
         // in-flight bubble's left edge lines up with the message bubbles
         // (avatar + gap), instead of sitting flush-left / full-width.
@@ -1799,7 +1859,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
           </div>
         </div>
       ))}
-      {inferredInFlight.map((s) => (
+      {!liveHeld && inferredInFlight.map((s) => (
         // Same avatar-indented turn structure as real messages above so the
         // in-flight bubble's left edge lines up with the message bubbles
         // (avatar + gap), instead of sitting flush-left / full-width.

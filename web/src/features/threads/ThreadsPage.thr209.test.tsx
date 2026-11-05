@@ -20,6 +20,7 @@ import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import { stubReadyHealth } from '@/test/startup';
 
 const SLUG = 'alpha';
 
@@ -51,6 +52,7 @@ function QueryClientProbe(): null {
 }
 
 function mountAt(route: string) {
+  stubReadyHealth();
   server.use(
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -496,9 +498,12 @@ describe('THR-209 — Pinned section', () => {
   test('empty list renders no sections', async () => {
     stubList([]);
     mountAt(`/orgs/${SLUG}/threads`);
+    expect(await screen.findByRole('heading', { level: 3, name: 'No threads yet' })).toBeInTheDocument();
+    expect(screen.getByText('Compose a thread to start a broadcast conversation with your agents.')).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: /Pinned/i })).not.toBeInTheDocument(),
     );
+    expect(screen.queryByRole('heading', { level: 2, name: 'Threads' })).not.toBeInTheDocument();
   });
 
   test('pinned section rows are navigation-only and retain native links', async () => {
@@ -549,25 +554,126 @@ describe('THR-209 — Pinned section', () => {
   });
 
   test('row navigation reaches the detail Pin control and preserves the mutation', async () => {
-    // Stateful stub: the POST flips the durable pin state the GET returns.
+    // Modeled server state; the literal readback date cannot come from onMutate.
     const state = [mkThread('THR-A', 'Alpha subject')];
-    stubList(state);
-    stubDetail(state[0]);
-    server.use(
-      http.post(`/api/v1/orgs/${SLUG}/threads/THR-A/pin`, () => {
-        state[0].pinned = true;
-        state[0].pinned_at = '2026-05-20T00:00:00Z';
-        return HttpResponse.json({ thread_id: 'THR-A', pinned: true });
-      }),
-    );
-    mountAt(`/orgs/${SLUG}/threads`);
-    await waitFor(() => expect(screen.getByText('Alpha subject')).toBeInTheDocument());
+    const posts: Array<{ method: string; url: string }> = [];
+    const bodies: unknown[] = [];
+    const readbacks: Array<{ url: string; pinned_at: string | null }> = [];
+    const optimistic: Array<{ pinned: boolean; pinned_at: string | null }> = [];
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const handlers: Completion[] = [];
+    const mutations: Completion[] = [];
+    const fetches: Completion[] = [];
+    const observe = <T,>(original: Promise<T>, ledger: Completion[]) => {
+      ledger.push(original.then(
+        (value) => ({ status: 'fulfilled', value } as const),
+        (reason: unknown) => ({ status: 'rejected', reason } as const),
+      ));
+      return original;
+    };
+    const restores: (() => void)[] = [];
+    const recordPost = ({ request }: { request: Request }) => {
+      if (request.method === 'POST') posts.push({ method: request.method, url: request.url });
+    };
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    try {
+      server.events.on('request:start', recordPost);
+      stubList(state);
+      stubDetail(state[0]);
+      server.use(
+        http.post(`/api/v1/orgs/${SLUG}/threads/THR-A/pin`, ({ request }) => {
+          const original = (async () => {
+            bodies.push(await request.json());
+            state[0].pinned = true;
+            state[0].pinned_at = '2026-05-20T00:00:00Z';
+            return HttpResponse.json({ thread_id: 'THR-A', pinned: true });
+          })();
+          return observe(original, handlers);
+        }),
+      );
+      mountAt(`/orgs/${SLUG}/threads`);
+      await waitFor(() => expect(screen.getByText('Alpha subject')).toBeInTheDocument());
 
-    expect(screen.queryByRole('button', { name: /Pin thread|Unpin thread/i })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('link', { name: /Alpha subject/i }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
-    expect(await screen.findByRole('button', { name: 'Unpin' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Pin thread|Unpin thread/i })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('link', { name: /Alpha subject/i }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
+      const client = mountedQueryClient!;
+      const detailKey = ['thread', SLUG, 'THR-A'];
+      const query = client.getQueryCache().find({ queryKey: detailKey, exact: true })!;
+      const originalFetch = query.fetch;
+      const fetchSpy = vi.spyOn(query, 'fetch').mockImplementation((...args) =>
+        observe(originalFetch.apply(query, args), fetches));
+      restores.push(() => fetchSpy.mockRestore());
+      restores.push(client.getQueryCache().subscribe((event) => {
+        if (event.type !== 'updated' || event.query !== query || posts.length) return;
+        const data = event.query.state.data as ReturnType<typeof mkThread> | undefined;
+        if (data?.pinned) optimistic.push({ pinned: data.pinned, pinned_at: data.pinned_at });
+      }));
+      restores.push(client.getMutationCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const mutation = event.mutation;
+        const execute = mutation.execute;
+        const spy = vi.spyOn(mutation, 'execute').mockImplementation((...args) =>
+          observe(execute.apply(mutation, args), mutations));
+        restores.push(() => spy.mockRestore());
+      }));
+      server.use(http.get(`/api/v1/orgs/${SLUG}/threads/THR-A`, ({ request }) => {
+        readbacks.push({ url: request.url, pinned_at: state[0].pinned_at });
+        return HttpResponse.json({
+          ...state[0], participants: ['agent_a'], messages: [mkMessage(1, 'hi')], reply_delivery: [],
+        });
+      }));
+      await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
+      expect(await screen.findByRole('button', { name: 'Unpin' })).toBeInTheDocument();
+      await act(async () => {
+        for (const completion of mutations) await completion;
+        for (const completion of fetches) await completion;
+        for (const completion of handlers) await completion;
+      });
+      expect(posts).toEqual([{ method: 'POST', url: `${window.location.origin}/api/v1/orgs/alpha/threads/THR-A/pin` }]);
+      expect(bodies).toEqual([{ pinned: true }]);
+      expect(optimistic).toContainEqual({ pinned: true, pinned_at: expect.any(String) });
+      expect(optimistic.every((value) => value.pinned_at !== '2026-05-20T00:00:00Z')).toBe(true);
+      expect(await Promise.all(mutations)).toEqual([
+        { status: 'fulfilled', value: { thread_id: 'THR-A', pinned: true } },
+      ]);
+      expect(readbacks).toContainEqual({
+        url: `${window.location.origin}/api/v1/orgs/alpha/threads/THR-A`, pinned_at: '2026-05-20T00:00:00Z',
+      });
+      expect(await Promise.all(fetches)).toContainEqual({
+        status: 'fulfilled', value: expect.objectContaining({ pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
+      });
+      expect(client.getQueryData(detailKey)).toMatchObject({ pinned: true, pinned_at: '2026-05-20T00:00:00Z' });
+      expect(client.getQueryState(detailKey)?.fetchStatus).toBe('idle');
+      expect(client.isMutating()).toBe(0);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
+    } catch (error) {
+      primary = { error };
+    } finally {
+      try {
+        await act(async () => {
+          for (const [phase, ledger] of [['mutation', mutations], ['detail fetch', fetches], ['POST handler', handlers]] as const) {
+            for (const completion of ledger) {
+              const result = await completion;
+              if (result.status === 'rejected') later.push({ phase, error: result.reason });
+            }
+          }
+        });
+      } catch (error) { later.push({ phase: 'React delivery', error }); }
+      try { server.events.removeListener('request:start', recordPost); }
+      catch (error) { later.push({ phase: 'request observation', error }); }
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+    }
+    if (primary) {
+      if (later.length) console.error('Pin navigation secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Pin navigation completion errors');
   });
 
   test('row navigation reaches detail rollback on a pin failure', async () => {
@@ -583,6 +689,7 @@ describe('THR-209 — Pinned section', () => {
     await waitFor(() => expect(screen.getByText('Alpha subject')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('link', { name: /Alpha subject/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
     // Error banner appears (aria-live alert).
     await waitFor(() =>
@@ -609,45 +716,97 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       mkThread('THR-10', 'Ten unpinned', { started_at: '2026-05-14T00:00:00Z' }),
       mkThread('THR-1', 'One ordinary', { started_at: '2026-05-13T00:00:00Z' }),
     ];
-    stubServerOrderedList(state);
-    stubDetail(state[1]);
-    // Gated POST: the mutation stays pending until the test releases it, so the
-    // optimistic render is observable before the response and the refetch.
+    // Retain only the two original gated handler/mutation obligations.
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const handlers: Completion[] = [];
+    const mutations: Completion[] = [];
+    const restores: (() => void)[] = [];
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    const observe = <T,>(original: Promise<T>, ledger: Completion[], phase: string) => {
+      ledger.push(original.then(
+        (value) => ({ status: 'fulfilled', value } as const),
+        (reason: unknown) => {
+          later.push({ phase, error: reason });
+          return { status: 'rejected', reason } as const;
+        },
+      ));
+      return original;
+    };
     let releasePost!: () => void;
     const gate = new Promise<void>((res) => {
       releasePost = res;
     });
-    server.use(
-      http.post(`/api/v1/orgs/${SLUG}/threads/THR-10/pin`, async ({ request }) => {
-        expect(await request.json()).toEqual({ pinned: true });
-        await gate;
-        state[1].pinned = true;
-        state[1].pinned_at = '2026-05-21T00:00:00Z';
-        return HttpResponse.json({ thread_id: 'THR-10', pinned: true });
-      }),
-    );
-    mountAt(`/orgs/${SLUG}/threads`);
-    await waitFor(() => expect(screen.getByText(/Ten unpinned/i)).toBeInTheDocument());
-    // Initial server order: Pinned [THR-2], Threads [THR-10, THR-1].
-    expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Two', 'Ten', 'One']);
+    try {
+      stubServerOrderedList(state);
+      stubDetail(state[1]);
+      server.use(
+        http.post(`/api/v1/orgs/${SLUG}/threads/THR-10/pin`, ({ request }) => {
+          const original = (async () => {
+            expect(await request.json()).toEqual({ pinned: true });
+            await gate;
+            state[1].pinned = true;
+            state[1].pinned_at = '2026-05-21T00:00:00Z';
+            return HttpResponse.json({ thread_id: 'THR-10', pinned: true });
+          })();
+          return observe(original, handlers, 'POST handler');
+        }),
+      );
+      mountAt(`/orgs/${SLUG}/threads`);
+      await waitFor(() => expect(screen.getByText(/Ten unpinned/i)).toBeInTheDocument());
+      // Initial server order: Pinned [THR-2], Threads [THR-10, THR-1].
+      expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Two', 'Ten', 'One']);
 
-    await userEvent.click(screen.getByRole('link', { name: /Ten unpinned/i }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
+      await userEvent.click(screen.getByRole('link', { name: /Ten unpinned/i }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
+      // MutationCache adds synchronously, before execute/onMutate or HTTP starts.
+      restores.push(mountedQueryClient!.getMutationCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const mutation = event.mutation;
+        const execute = mutation.execute;
+        const spy = vi.spyOn(mutation, 'execute').mockImplementation((...args) =>
+          observe(execute.apply(mutation, args), mutations, 'mutation'));
+        restores.push(() => spy.mockRestore());
+      }));
+      await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
 
-    // The list unmounts on detail navigation. Its real cache still exposes
-    // the optimistic numeric ordering before the gated response settles.
-    await waitFor(() => {
-      const data = openListCache();
-      expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-2', 'THR-1']);
-      expect(data?.threads[0].pinned).toBe(true);
-    });
-    expect(screen.getByRole('button', { name: 'Unpin' })).toBeDisabled();
+      // The list unmounts on detail navigation. Its real cache still exposes
+      // the optimistic numeric ordering before the gated response settles.
+      await waitFor(() => {
+        const data = openListCache();
+        expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-2', 'THR-1']);
+        expect(data?.threads[0].pinned).toBe(true);
+      });
+      expect(screen.getByRole('button', { name: 'Unpin' })).toBeDisabled();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      // Release even when no operation started, or an optimistic assertion failed.
+      try { releasePost(); } catch (error) { later.push({ phase: 'release POST', error }); }
+      // An onMutate failure can precede handler entry. Join each actually started
+      // mutation first, then every original handler it may have started meanwhile.
+      for (const [phase, ledger] of [['mutation observation', mutations], ['handler observation', handlers]] as const) {
+        for (const completion of ledger) {
+          try { await completion; } catch (error) { later.push({ phase, error }); }
+        }
+      }
+      try {
+        await act(async () => {
+          // Deliver React work AFTER the original returns joined above.
+        });
+      } catch (error) { later.push({ phase: 'React delivery', error }); }
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+    }
+    if (primary) {
+      if (later.length) console.error('Gated pin secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Gated pin completion errors');
 
-    // Release the response — success + refetch reconcile to the same order.
-    await act(async () => {
-      releasePost();
-    });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('link', { name: /All threads/i }));
     await waitFor(() => expect(rowSubjects()).toEqual(expect.arrayContaining([
@@ -671,39 +830,94 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       }),
       mkThread('THR-1', 'One ordinary', { started_at: '2026-05-13T00:00:00Z' }),
     ];
-    stubServerOrderedList(state);
-    stubDetail(state[1]);
+    // Retain only the two original gated handler/mutation obligations.
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const handlers: Completion[] = [];
+    const mutations: Completion[] = [];
+    const restores: (() => void)[] = [];
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    const observe = <T,>(original: Promise<T>, ledger: Completion[], phase: string) => {
+      ledger.push(original.then(
+        (value) => ({ status: 'fulfilled', value } as const),
+        (reason: unknown) => {
+          later.push({ phase, error: reason });
+          return { status: 'rejected', reason } as const;
+        },
+      ));
+      return original;
+    };
     let releasePost!: () => void;
     const gate = new Promise<void>((res) => {
       releasePost = res;
     });
-    server.use(
-      http.post(`/api/v1/orgs/${SLUG}/threads/THR-2/pin`, async ({ request }) => {
-        expect(await request.json()).toEqual({ pinned: false });
-        await gate;
-        state[1].pinned = false;
-        state[1].pinned_at = null;
-        return HttpResponse.json({ thread_id: 'THR-2', pinned: false });
-      }),
-    );
-    mountAt(`/orgs/${SLUG}/threads`);
-    await waitFor(() => expect(screen.getByText(/Ten pinned/i)).toBeInTheDocument());
+    try {
+      stubServerOrderedList(state);
+      stubDetail(state[1]);
+      server.use(
+        http.post(`/api/v1/orgs/${SLUG}/threads/THR-2/pin`, ({ request }) => {
+          const original = (async () => {
+            expect(await request.json()).toEqual({ pinned: false });
+            await gate;
+            state[1].pinned = false;
+            state[1].pinned_at = null;
+            return HttpResponse.json({ thread_id: 'THR-2', pinned: false });
+          })();
+          return observe(original, handlers, 'POST handler');
+        }),
+      );
+      mountAt(`/orgs/${SLUG}/threads`);
+      await waitFor(() => expect(screen.getByText(/Ten pinned/i)).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole('link', { name: /Two pinned/i }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
+      await userEvent.click(screen.getByRole('link', { name: /Two pinned/i }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
+      // MutationCache adds synchronously, before execute/onMutate or HTTP starts.
+      restores.push(mountedQueryClient!.getMutationCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const mutation = event.mutation;
+        const execute = mutation.execute;
+        const spy = vi.spyOn(mutation, 'execute').mockImplementation((...args) =>
+          observe(execute.apply(mutation, args), mutations, 'mutation'));
+        restores.push(() => spy.mockRestore());
+      }));
+      await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
 
-    // The list is unmounted; assert the live open-list cache before POST resolution.
-    await waitFor(() => {
-      const data = openListCache();
-      expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-1', 'THR-2']);
-      expect(data?.threads[2].pinned).toBe(false);
-    });
-    expect(screen.getByRole('button', { name: 'Pin' })).toBeDisabled();
+      // The list is unmounted; assert the live open-list cache before POST resolution.
+      await waitFor(() => {
+        const data = openListCache();
+        expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-1', 'THR-2']);
+        expect(data?.threads[2].pinned).toBe(false);
+      });
+      expect(screen.getByRole('button', { name: 'Pin' })).toBeDisabled();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      // Release even when no operation started, or an optimistic assertion failed.
+      try { releasePost(); } catch (error) { later.push({ phase: 'release POST', error }); }
+      // An onMutate failure can precede handler entry. Join each actually started
+      // mutation first, then every original handler it may have started meanwhile.
+      for (const [phase, ledger] of [['mutation observation', mutations], ['handler observation', handlers]] as const) {
+        for (const completion of ledger) {
+          try { await completion; } catch (error) { later.push({ phase, error }); }
+        }
+      }
+      try {
+        await act(async () => {
+          // Deliver React work AFTER the original returns joined above.
+        });
+      } catch (error) { later.push({ phase: 'React delivery', error }); }
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+    }
+    if (primary) {
+      if (later.length) console.error('Gated pin secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Gated pin completion errors');
 
-    await act(async () => {
-      releasePost();
-    });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('link', { name: /All threads/i }));
     await waitFor(() => expect(rowSubjects()).toHaveLength(3));
@@ -732,6 +946,7 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
 
     await userEvent.click(screen.getByRole('link', { name: /Ten unpinned/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent(/Pin change failed/i),
@@ -770,6 +985,7 @@ describe('THR-209 — inline rename', () => {
     );
     server.use(http.post(`/api/v1/orgs/${SLUG}/threads/THR-1/rename`, postRename));
 
+    await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: /Rename/i }));
     const input = screen.getByRole('textbox', { name: /Thread title/i });
     expect(input).toHaveValue('Original title'); // prefilled
@@ -792,6 +1008,7 @@ describe('THR-209 — inline rename', () => {
     );
     server.use(http.post(`/api/v1/orgs/${SLUG}/threads/THR-1/rename`, postRename));
 
+    await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: /Rename/i }));
     const input = screen.getByRole('textbox', { name: /Thread title/i });
     await userEvent.clear(input);
@@ -799,6 +1016,7 @@ describe('THR-209 — inline rename', () => {
     await waitFor(() => expect(postRename).toHaveBeenCalled());
 
     // Escape cancels without saving.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: /Rename/i }));
     const input2 = screen.getByRole('textbox', { name: /Thread title/i });
     await userEvent.clear(input2);
@@ -821,6 +1039,7 @@ describe('THR-209 — inline rename', () => {
       ),
     );
 
+    await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: /Rename/i }));
     const input = screen.getByRole('textbox', { name: /Thread title/i });
     await userEvent.clear(input);
@@ -836,6 +1055,7 @@ describe('THR-209 — inline rename', () => {
 
     // Retry succeeds.
     fail = false;
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
       expect(screen.queryByRole('textbox', { name: /Thread title/i })).not.toBeInTheDocument(),
@@ -846,6 +1066,7 @@ describe('THR-209 — inline rename', () => {
   test('save is disabled for whitespace-only input', async () => {
     mountDetail();
     await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: /Rename/i }));
     const input = screen.getByRole('textbox', { name: /Thread title/i });
     await userEvent.clear(input);
@@ -904,21 +1125,122 @@ describe('THR-209 — pin from detail', () => {
   }
 
   test('header Pin button pins optimistically and calls POST /pin', async () => {
-    const state = mountDetail(false);
-    await waitFor(() => expect(screen.getByText(/Subject/i)).toBeInTheDocument());
-    server.use(
-      http.post(`/api/v1/orgs/${SLUG}/threads/THR-1/pin`, () => {
-        state.pinned = true;
-        state.pinned_at = '2026-05-20T00:00:00Z';
-        return HttpResponse.json({ thread_id: 'THR-1', pinned: true });
-      }),
-    );
+    const posts: Array<{ method: string; url: string }> = [];
+    const bodies: unknown[] = [];
+    const readbacks: Array<{ url: string; pinned_at: string | null }> = [];
+    const optimistic: Array<{ pinned: boolean; pinned_at: string | null }> = [];
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const handlers: Completion[] = [];
+    const mutations: Completion[] = [];
+    const fetches: Completion[] = [];
+    const observe = <T,>(original: Promise<T>, ledger: Completion[]) => {
+      ledger.push(original.then(
+        (value) => ({ status: 'fulfilled', value } as const),
+        (reason: unknown) => ({ status: 'rejected', reason } as const),
+      ));
+      return original;
+    };
+    const restores: (() => void)[] = [];
+    const recordPost = ({ request }: { request: Request }) => {
+      if (request.method === 'POST') posts.push({ method: request.method, url: request.url });
+    };
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    try {
+      server.events.on('request:start', recordPost);
+      const state = mountDetail(false);
+      await waitFor(() => expect(screen.getByText(/Subject/i)).toBeInTheDocument());
+      server.use(
+        http.post(`/api/v1/orgs/${SLUG}/threads/THR-1/pin`, ({ request }) => {
+          const original = (async () => {
+            bodies.push(await request.json());
+            state.pinned = true;
+            state.pinned_at = '2026-05-20T00:00:00Z';
+            return HttpResponse.json({ thread_id: 'THR-1', pinned: true });
+          })();
+          return observe(original, handlers);
+        }),
+      );
 
-    await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
-    // Optimistic flip + refetch persistence both read as Unpin.
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument(),
-    );
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
+      const client = mountedQueryClient!;
+      const detailKey = ['thread', SLUG, 'THR-1'];
+      const query = client.getQueryCache().find({ queryKey: detailKey, exact: true })!;
+      const originalFetch = query.fetch;
+      const fetchSpy = vi.spyOn(query, 'fetch').mockImplementation((...args) =>
+        observe(originalFetch.apply(query, args), fetches));
+      restores.push(() => fetchSpy.mockRestore());
+      restores.push(client.getQueryCache().subscribe((event) => {
+        if (event.type !== 'updated' || event.query !== query || posts.length) return;
+        const data = event.query.state.data as ReturnType<typeof mkThread> | undefined;
+        if (data?.pinned) optimistic.push({ pinned: data.pinned, pinned_at: data.pinned_at });
+      }));
+      restores.push(client.getMutationCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const mutation = event.mutation;
+        const execute = mutation.execute;
+        const spy = vi.spyOn(mutation, 'execute').mockImplementation((...args) =>
+          observe(execute.apply(mutation, args), mutations));
+        restores.push(() => spy.mockRestore());
+      }));
+      server.use(http.get(`/api/v1/orgs/${SLUG}/threads/THR-1`, ({ request }) => {
+        readbacks.push({ url: request.url, pinned_at: state.pinned_at });
+        return HttpResponse.json({
+          ...state, participants: ['agent_a'], messages: [mkMessage(1, 'hi')], reply_delivery: [],
+        });
+      }));
+      await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
+      // Preserve the optimistic Unpin oracle independently of server readback.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument(),
+      );
+      await act(async () => {
+        for (const completion of mutations) await completion;
+        for (const completion of fetches) await completion;
+        for (const completion of handlers) await completion;
+      });
+      expect(posts).toEqual([{ method: 'POST', url: `${window.location.origin}/api/v1/orgs/alpha/threads/THR-1/pin` }]);
+      expect(bodies).toEqual([{ pinned: true }]);
+      expect(optimistic).toContainEqual({ pinned: true, pinned_at: expect.any(String) });
+      expect(optimistic.every((value) => value.pinned_at !== '2026-05-20T00:00:00Z')).toBe(true);
+      expect(await Promise.all(mutations)).toEqual([
+        { status: 'fulfilled', value: { thread_id: 'THR-1', pinned: true } },
+      ]);
+      expect(readbacks).toContainEqual({
+        url: `${window.location.origin}/api/v1/orgs/alpha/threads/THR-1`, pinned_at: '2026-05-20T00:00:00Z',
+      });
+      expect(await Promise.all(fetches)).toContainEqual({
+        status: 'fulfilled', value: expect.objectContaining({ pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
+      });
+      expect(client.getQueryData(detailKey)).toMatchObject({ pinned: true, pinned_at: '2026-05-20T00:00:00Z' });
+      expect(client.getQueryState(detailKey)?.fetchStatus).toBe('idle');
+      expect(client.isMutating()).toBe(0);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
+    } catch (error) {
+      primary = { error };
+    } finally {
+      try {
+        await act(async () => {
+          for (const [phase, ledger] of [['mutation', mutations], ['detail fetch', fetches], ['POST handler', handlers]] as const) {
+            for (const completion of ledger) {
+              const result = await completion;
+              if (result.status === 'rejected') later.push({ phase, error: result.reason });
+            }
+          }
+        });
+      } catch (error) { later.push({ phase: 'React delivery', error }); }
+      try { server.events.removeListener('request:start', recordPost); }
+      catch (error) { later.push({ phase: 'request observation', error }); }
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+    }
+    if (primary) {
+      if (later.length) console.error('Pin header secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Pin header completion errors');
   });
 
   test('header keeps Pin/Unpin direct and does not duplicate it in an overflow menu', async () => {
@@ -934,6 +1256,7 @@ describe('THR-209 — pin from detail', () => {
 
     expect(screen.queryByRole('button', { name: /Thread actions/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument(),
@@ -948,6 +1271,7 @@ describe('THR-209 — pin from detail', () => {
         HttpResponse.json({ error: 'boom' }, { status: 500 }),
       ),
     );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent(/Pin change failed/i),

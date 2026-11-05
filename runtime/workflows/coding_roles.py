@@ -5,17 +5,19 @@ carry identity only; agents use their existing authorized repository tools.
 """
 from __future__ import annotations
 
+from runtime.daemon.startup_recovery import coding_admission_validation
+
 import base64
 import json
 import sqlite3
 import uuid
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator
+from typing import TYPE_CHECKING, Any, Callable
 
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.org_config import load_org_config
-from runtime.workflows._coding_import_support import CodingImportSupport, _capture
+from runtime.workflows._coding_import_support import CodingImportSupport, _CodingReadFrame, _capture
 from runtime.workflows._coding_role_admission import capture_body, native_owner
 from runtime.workflows._coding_settings_execution import _read_json
 from runtime.workflows._coding_settings_records import account
@@ -47,9 +49,13 @@ class CodingRoleError(ValueError):
 class CodingRoleStore:
     def __init__(self, org: Any) -> None:
         self.org, self.db = org, org.db
-        self.support = CodingImportSupport(org)
+        self._startup_state = self._startup_org = self._startup_recovery = None
+        self.support = CodingImportSupport(org, self)
 
-    def _principal(self, principal: WorkflowTemplatePrincipal) -> None:
+    def _principal(self, principal: WorkflowTemplatePrincipal, *,
+                   validate_admission: Callable[[], None] | None = None) -> None:
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         principal.revalidate()
         if (principal.org_slug != self.org.slug or principal.principal_kind != 'agent'
                 or principal.proof_kind != 'task_session' or principal.principal_id == 'founder'
@@ -57,22 +63,26 @@ class CodingRoleStore:
                 or self.org.teams.teams_for_manager(principal.principal_id) != (principal.team_slug,)):
             raise CodingRoleError('coding_role_manager_required')
 
-    def _checkpoint(self, principal: WorkflowTemplatePrincipal, references: tuple[str, ...]) -> tuple:
+    def _checkpoint(self, principal: WorkflowTemplatePrincipal, references: tuple[str, ...], *,
+                    validate_admission: Callable[[], None] | None = None) -> tuple:
         """Fresh native actor/policy after a wait, without a lease across awaits.
 
         File-backed discovery precedes the short SELECT-only ownership interval.
         A revoked publication remains metadata-only for original replay; it cannot
         become current permission in _current or the final admission writer.
         """
-        self._principal(principal)
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        self._principal(principal, validate_admission=validate)
         paths = self.org.orchestrator._paths
         actor = prompt_loader.load_agent(paths, principal.principal_id)
         if (actor is None or actor.role != 'manager' or not actor.executor
                 or actor.team != principal.team_slug):
             raise CodingRoleError('coding_role_manager_revoked')
+        validate()
         revise_limit = load_org_config(paths).max_revise_rounds
-        capture = self.support._discover()
-        with self._read(principal, capture, references) as (conn, current):
+        validate()
+        capture = self.support._discover(validate_admission=validate)
+        with self._read(principal, capture, references, validate_admission=validate) as (conn, current):
             if current is not None:
                 try:
                     self.org.workflow_authority._validate_admission_uncommitted(conn, current)
@@ -80,28 +90,62 @@ class CodingRoleStore:
                     current = None
             return current, revise_limit
 
-    @asynccontextmanager
-    async def _access(self, principal: WorkflowTemplatePrincipal) -> AsyncIterator:
+    def _access(self, principal: WorkflowTemplatePrincipal, *,
+                validate_admission: Callable[[], None] | None = None) -> AbstractAsyncContextManager:
         """Sole service lock owner: authority -> teams -> DB -> binding/read.
 
         Public callers stream outside this interval. Existing roster writers and
         their awaited bootstrap/compensation retain their authority-first owner.
         Neither direct callers nor routes may enter with teams/authority held.
         """
-        self._principal(principal)
-        references = self.support._schema_references()
-        async with self.org.workflow_authority._async_writer_lock:
-            self._principal(principal)
-            # Native checks keep DB -> binding ordering even at the first
-            # checkpoint. Release DB before waiting for teams; existing team
-            # writers may need it while finishing their authority interval.
-            async with self.org.db_lock:
-                self._checkpoint(principal, references)
-            async with self.org.teams_lock:
-                self._principal(principal)
-                async with self.org.db_lock:
-                    capture, revise_limit = self._checkpoint(principal, references)
-                    yield references, capture, revise_limit
+        store = self
+
+        class _Access:
+            async def __aenter__(self) -> tuple:
+                self.frame = frame = _CodingReadFrame(store.support)
+                try:
+                    validate = self.validate = coding_admission_validation(store) if validate_admission is None else validate_admission
+                    store._principal(principal, validate_admission=validate)
+                    references = store.support._schema_references()
+                    await frame.aenter(store.org.workflow_authority._async_writer_lock, 'authority async exit')
+                    validate()
+                    store._principal(principal, validate_admission=validate)
+                    # Same initial DB -> binding checkpoint, then release DB
+                    # before waiting for teams. No binding lease spans an await.
+                    await frame.aenter(store.org.db_lock, 'initial database async exit')
+                    validate()
+                    store._checkpoint(principal, references, validate_admission=validate)
+                    await frame.aclose_one()
+                    if frame.primary is not None:
+                        frame.deliver()
+                    await frame.aenter(store.org.teams_lock, 'teams async exit')
+                    validate()
+                    store._principal(principal, validate_admission=validate)
+                    await frame.aenter(store.org.db_lock, 'database async exit')
+                    validate()
+                    capture, revise_limit = store._checkpoint(principal, references, validate_admission=validate)
+                    validate()
+                    return references, capture, revise_limit, validate
+                except BaseException as error:
+                    frame.record('role access acquisition observation', error)
+                await self.__aexit__(None, None, None)
+                raise AssertionError('unreachable selected role access failure')
+
+            async def __aexit__(self, kind: Any, error: BaseException | None, traceback: Any) -> bool:
+                frame = self.frame
+                if error is not None:
+                    frame.record('role access body observation', error)
+                elif frame.primary is None:
+                    try:
+                        self.validate()
+                    except BaseException as validation:
+                        frame.record('role access final validation', validation)
+                while frame.pending:
+                    await frame.aclose_one()
+                frame.finish()
+                return frame.deliver(error, traceback)
+
+        return _Access()
 
     def _structure(self, conn: sqlite3.Connection, references: tuple[str, ...]) -> None:
         from runtime.infrastructure.workflow_schema import _read_structure
@@ -111,16 +155,39 @@ class CodingRoleStore:
         if not coding:
             raise CodingRoleError('coding_role_schema_required')
 
-    @contextmanager
     def _read(self, principal: WorkflowTemplatePrincipal, capture: AuthorityAdmissionCapture | None,
-              references: tuple[str, ...], *, budget: _Budget | None = None) -> Iterator:
+              references: tuple[str, ...], *, budget: _Budget | None = None,
+              validate_admission: Callable[[], None] | None = None) -> AbstractContextManager:
         # Never hold the native threading binding lease across an await.
-        with self.org.sessions._get_binding_lease(principal.task_id, principal.principal_id):
-            self._principal(principal)
-            with self.support._read(capture) as (conn, current):
-                self._structure(conn, references)
-                native_owner(self.org, principal, conn, budget=budget)  # Before private decoding.
-                yield conn, current
+        store = self
+
+        class _Read:
+            def __enter__(self) -> tuple:
+                self.frame = frame = _CodingReadFrame(store.support)
+                try:
+                    validate = coding_admission_validation(store) if validate_admission is None else validate_admission
+                    validate()
+                    frame.enter(store.org.sessions._get_binding_lease(principal.task_id, principal.principal_id), 'binding exit')
+                    store._principal(principal, validate_admission=validate)
+                    conn, current = frame.enter(store.support._read(capture, validate_admission=validate), 'selected read exit')
+                    store._structure(conn, references)
+                    native_owner(store.org, principal, conn, budget=budget)  # Before private decoding.
+                    return conn, current
+                except BaseException as error:
+                    frame.record('role read acquisition observation', error)
+                self.__exit__(None, None, None)
+                raise AssertionError('unreachable selected role read failure')
+
+            def __exit__(self, kind: Any, error: BaseException | None, traceback: Any) -> bool:
+                frame = self.frame
+                if error is not None:
+                    frame.record('role read body observation', error)
+                while frame.pending:
+                    frame.close_one()
+                frame.finish()
+                return frame.deliver(error, traceback)
+
+        return _Read()
 
     def _storage(self, conn: sqlite3.Connection, references: tuple[str, ...], *,
                  budget: _Budget | None = None) -> _CodingInventory:
@@ -132,10 +199,12 @@ class CodingRoleStore:
     def _current(self, conn: sqlite3.Connection, principal: WorkflowTemplatePrincipal,
                  capture: AuthorityAdmissionCapture | None, mapping: dict, *, fresh: bool = False,
                  command: dict | None = None, budget: _Budget | None = None,
-                 release: RegisteredCodingRelease | None = None) -> None:
+                 release: RegisteredCodingRelease | None = None,
+                 validate_admission: Callable[[], None] | None = None) -> None:
         _check(budget is None or type(budget) is _Budget)
         budget = _Budget() if budget is None else budget
-        self._principal(principal)
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        self._principal(principal, validate_admission=validate)
         native_owner(self.org, principal, conn, budget=budget)
         if capture is None:
             raise CodingRoleError('coding_role_authority_unavailable')
@@ -163,15 +232,18 @@ class CodingRoleStore:
 
     def _receipt(self, conn: sqlite3.Connection, principal: WorkflowTemplatePrincipal,
                  capture: AuthorityAdmissionCapture | None, entry: HistoricalCodingMapping,
-                 *, replayed: bool, budget: _Budget | None = None) -> dict:
+                 *, replayed: bool, budget: _Budget | None = None,
+                 validate_admission: Callable[[], None] | None = None) -> dict:
         _check(budget is None or type(budget) is _Budget)
         budget = _Budget() if budget is None else budget
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         record = _read_json(entry.mapping_bytes, budget)
         if record['format'] != RECORD_FORMAT:
             raise CodingRoleError('coding_role_agent_read_generation_required')
         current = dict(state='active', reason=None)
         try:
-            self._current(conn, principal, capture, record['mapping'], budget=budget)
+            self._current(conn, principal, capture, record['mapping'], budget=budget, validate_admission=validate)
         except (CodingRoleError, WorkflowAuthorityError, ProfileCoordinatorError):
             current = dict(state='revoked', reason='coding_role_current_authority_revoked')
         return RoleReceipt.model_validate(dict(format='workflow-coding-mapping-receipt@2',
@@ -180,15 +252,18 @@ class CodingRoleStore:
 
     def _replay(self, conn: sqlite3.Connection, principal: WorkflowTemplatePrincipal,
                 capture: AuthorityAdmissionCapture | None, history: CodingMappingHistory | None,
-                command: dict, raw: bytes, *, budget: _Budget | None = None) -> dict | None:
+                command: dict, raw: bytes, *, budget: _Budget | None = None,
+                validate_admission: Callable[[], None] | None = None) -> dict | None:
         _check(budget is None or type(budget) is _Budget)
         budget = _Budget() if budget is None else budget
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         for entry in (() if history is None else history.mappings):
             budget.step()
             if (entry.principal, entry.operation_key) == (principal.operation_principal, command['operation_key']):
                 if entry.command_bytes != raw:
                     raise CodingRoleError('coding_role_operation_conflict')
-                return self._receipt(conn, principal, capture, entry, replayed=True, budget=budget)
+                return self._receipt(conn, principal, capture, entry, replayed=True, budget=budget, validate_admission=validate)
         return None
 
     async def get(self, *, principal: WorkflowTemplatePrincipal) -> dict:
@@ -198,9 +273,9 @@ class CodingRoleStore:
         return await self._select(principal=principal, raw=raw)
 
     async def _select(self, *, principal: WorkflowTemplatePrincipal, raw: bytes | None) -> dict:
-        async with self._access(principal) as (references, capture, _):
+        async with self._access(principal) as (references, capture, _, validate):
             budget = _Budget()
-            with self._read(principal, capture, references, budget=budget) as (conn, current):
+            with self._read(principal, capture, references, budget=budget, validate_admission=validate) as (conn, current):
                 try:
                     command = None if raw is None else parse_selection(raw)
                 except ValueError:
@@ -222,11 +297,11 @@ class CodingRoleStore:
                     if command['mapping'] != dict(id=entry.mapping_id, generation=entry.generation,
                                                  digest=entry.mapping_digest):
                         raise CodingRoleError('coding_role_pin_conflict')
-                receipt = self._receipt(conn, principal, current, entry, replayed=False, budget=budget)
+                receipt = self._receipt(conn, principal, current, entry, replayed=False, budget=budget, validate_admission=validate)
                 if receipt['current']['state'] != 'active':
                     raise CodingRoleError('coding_role_eligibility_revoked')
                 if command is None:
-                    self._current(conn, principal, current, receipt['mapping'], budget=budget)
+                    self._current(conn, principal, current, receipt['mapping'], budget=budget, validate_admission=validate)
                     return receipt
                 mapping = receipt['mapping']
                 roles = json.loads(_canonical(account(mapping['roles'], budget)))
@@ -241,7 +316,7 @@ class CodingRoleStore:
                 _roles(roles, {role: [] for role in ROLES})
                 selected_mapping = {**mapping, 'roles': roles,
                     'eligible_replacements': {role: [] for role in ROLES}}
-                self._current(conn, principal, current, selected_mapping, budget=budget)
+                self._current(conn, principal, current, selected_mapping, budget=budget, validate_admission=validate)
                 subject = command['subject']
                 references_selected = [r for r in mapping['repository_references']
                     if r['repository_id'] == subject['repository']['id']
@@ -251,24 +326,24 @@ class CodingRoleStore:
                 result = SelectionReceipt.model_validate(dict(format='workflow-coding-role-selection@1',
                     mapping=command['mapping'], roles=roles, subject=subject,
                     overridden=override is not None, coding_enabled=False)).model_dump()
-                self._current(conn, principal, current, selected_mapping, budget=budget)
+                self._current(conn, principal, current, selected_mapping, budget=budget, validate_admission=validate)
                 return result
 
     async def publish(self, *, principal: WorkflowTemplatePrincipal, raw: bytes) -> dict:
-        authority = self.org.workflow_authority
-        async with self._access(principal) as (references, capture, revise_limit):
+        async with self._access(principal) as (references, capture, revise_limit, validate):
+            authority = self.org.workflow_authority
             budget = _Budget()
-            with self._read(principal, capture, references, budget=budget) as (conn, current):
+            with self._read(principal, capture, references, budget=budget, validate_admission=validate) as (conn, current):
                 try:
                     command = parse_role_command(raw, org_slug=self.org.slug)
                 except ValueError:
                     raise CodingRoleError('coding_role_invalid_request') from None
                 inventory = self._storage(conn, references, budget=budget)
                 history = inventory.mappings
-                replay = self._replay(conn, principal, current, history, command, raw, budget=budget)
+                replay = self._replay(conn, principal, current, history, command, raw, budget=budget, validate_admission=validate)
                 if replay is not None:
                     return replay  # Original full bytes before fresh CAS/current pin.
-                self._current(conn, principal, current, command['mapping'], fresh=True, budget=budget, release=inventory.release)
+                self._current(conn, principal, current, command['mapping'], fresh=True, budget=budget, release=inventory.release, validate_admission=validate)
             if capture is None:
                 raise CodingRoleError('coding_role_authority_unavailable')
             if load_org_config(self.org.orchestrator._paths).max_revise_rounds != revise_limit:
@@ -276,20 +351,20 @@ class CodingRoleStore:
             with self.org.sessions._get_binding_lease(principal.task_id, principal.principal_id):
                 try:
                     budget = _Budget()  # New snapshot; source/target share this allowance.
-                    with authority.admission_writer(capture) as conn:
-                        self._principal(principal)
+                    with authority.admission_writer(capture, validate_admission=validate) as conn:
+                        self._principal(principal, validate_admission=validate)
                         self._structure(conn, references)
                         native_owner(self.org, principal, conn, budget=budget)
                         inventory = self._storage(conn, references, budget=budget)
                         history = inventory.mappings
-                        replay = self._replay(conn, principal, capture, history, command, raw, budget=budget)
+                        replay = self._replay(conn, principal, capture, history, command, raw, budget=budget, validate_admission=validate)
                         if replay is not None:
                             return replay
                         for entry in (() if history is None else history.mappings):
                             budget.step()
                             if entry.principal == 'human:founder':
                                 raise CodingRoleError('coding_settings_human_owned')
-                        self._current(conn, principal, capture, command['mapping'], fresh=True, budget=budget, release=inventory.release)
+                        self._current(conn, principal, capture, command['mapping'], fresh=True, budget=budget, release=inventory.release, validate_admission=validate)
                         generation = 0 if history is None else history.selected.generation
                         if generation != command['expected_generation']:
                             raise CodingRoleError('coding_role_generation_stale')
@@ -321,7 +396,7 @@ class CodingRoleStore:
                             'coding_source_admission', body)
                         inventory = self._storage(conn, references, budget=budget)
                         history = inventory.mappings  # Full new cold closure before COMMIT.
-                        self._current(conn, principal, capture, command['mapping'], fresh=True, budget=budget, release=inventory.release)
-                        return self._receipt(conn, principal, capture, history.selected, replayed=False, budget=budget)
+                        self._current(conn, principal, capture, command['mapping'], fresh=True, budget=budget, release=inventory.release, validate_admission=validate)
+                        return self._receipt(conn, principal, capture, history.selected, replayed=False, budget=budget, validate_admission=validate)
                 except sqlite3.IntegrityError:
                     raise CodingRoleError('coding_role_storage_conflict') from None

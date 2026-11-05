@@ -14,10 +14,12 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import AbstractContextManager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import TYPE_CHECKING, Literal
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from runtime.infrastructure.database import Database
@@ -624,44 +626,178 @@ def _install_owner_indexes(conn: sqlite3.Connection, layout: str, *, coding_exte
         if name not in existing:
             conn.execute(statement)
 
-@contextmanager
-def _canonical_connection(layout: str, *, coding_extension: bool, owner_indexed: bool, owner_marked: bool = False):
-    """Independent literal schema; callers choose complete or bounded metadata."""
-    expected = sqlite3.connect(':memory:')
-    primary = None
-    try:
-        expected.execute('PRAGMA foreign_keys=ON')
-        _execute_ddl(expected, _g_foundation_ddl() if layout in ('G', 'H', 'I', 'J') else CANONICAL_WORKFLOW_DDL)
-        if layout in ('E', 'G', 'H', 'I', 'J'):
-            _execute_ddl(expected, _revision_draft_ddl() if layout in ('I', 'J') else CANONICAL_WORKFLOW_DRAFT_DDL)
-        elif layout != 'F':
-            raise ValueError('unsupported_workflow_layout')
-        if layout in ('G', 'H', 'I', 'J'):
-            _execute_ddl(expected, _g_additions_ddl())
-        if layout in ('H', 'I', 'J'):
-            _execute_ddl(expected, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
-        if layout in ('I', 'J'):
-            _execute_ddl(expected, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
-        if layout == 'J' or coding_extension:
-            from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
-            _execute_ddl(expected, CANONICAL_WORKFLOW_CODING_DDL)
-        if owner_indexed:
-            _install_owner_indexes(expected, layout, coding_extension=coding_extension)
-        if owner_marked:
-            from runtime.infrastructure.workflow_task_ownership import OWNERSHIP_DDL, binding_view_ddl
-            expected.execute(OWNERSHIP_DDL)
-            expected.execute(binding_view_ddl(layout, coding_extension=coding_extension))
-        yield expected
-    except BaseException as exc:
-        primary = exc
-        raise
-    finally:
+# Only the two schema contexts publish here. A selected coding frame binds its
+# own channel, so failed exception attachment cannot hide a lower raw outcome.
+_schema_read_outcomes: ContextVar[Any] = ContextVar('workflow_schema_read_outcomes', default=None)
+
+
+class _SchemaContextOutcome:
+    """Native error custody shared only by snapshot and literal reference owners."""
+    def __init__(self, conn: sqlite3.Connection | None) -> None:
+        self.conn = conn
+        self.channel = None
+        self.records: list[dict] = []
+        self.first = None
+        self.entered = self.finished = self.evidence_complete = self.dirty = False
+        self.rollback_attempted = self.rollback_returned = False
+        self.close_attempted = self.close_returned = False
+        self.attachment_attempted = self.note_attempted = False
+        self.delivery = None
+        self.started = False
+
+    def begin(self) -> None:
+        if self.started:
+            raise RuntimeError('workflow schema context already entered')
+        self.started = True
+        self.channel = _schema_read_outcomes.get()
+        if self.channel is not None:
+            self.channel['owners'].append(self)
+
+    def capture(self, phase: str, error: BaseException, *, observation: bool = False,
+                retain_prior: bool = True) -> None:
+        occurrence = dict(phase=phase, error=error,
+            traceback=BaseException.__traceback__.__get__(error),
+            arguments=BaseException.args.__get__(error),
+            context=BaseException.__context__.__get__(error),
+            cause=BaseException.__cause__.__get__(error),
+            suppress_context=BaseException.__suppress_context__.__get__(error),
+            owner=self, previous=None, nested=None, previous_occurrence=None,
+            handled=False, observation=observation, source_occurrence=None)
+        prior_records = self.records if self.channel is None else self.channel['records']
+        for prior in reversed(prior_records):
+            if prior['error'] is error:
+                occurrence['previous_occurrence'] = prior
+                break
+        self.records.append(occurrence)
+        if self.first is None:
+            self.first = occurrence
+        if self.channel is not None:
+            # This is the original occurrence, never another inferred throw.
+            self.channel['records'].append(occurrence)
+        if retain_prior:
+            try:
+                values = BaseException.__dict__['__dict__'].__get__(error)
+                occurrence['prior_attributes'] = values.copy()
+                occurrence['previous'] = values.get('_workflow_schema_context')
+                occurrence['nested'] = (values.get('_coding_read_frame'),
+                                        values.get('_workflow_authority_failure'),
+                                        values.get('_native_writer_disposition'))
+            except BaseException as later:
+                self.dirty = True
+                self.capture('schema prior retention', later, retain_prior=False)
+
+    def rollback(self) -> None:
+        if self.rollback_attempted:
+            return
+        self.rollback_attempted = True
         try:
-            expected.close()
-        except BaseException as exc:
-            if primary is None:
-                raise
-            primary.add_note('workflow reference close failed: ' + type(exc).__name__)
+            self.conn.rollback()
+            self.rollback_returned = True
+        except BaseException as error:
+            self.dirty = True
+            self.capture('schema snapshot rollback', error)
+
+    def close(self) -> None:
+        if self.close_attempted:
+            return
+        self.close_attempted = True
+        try:
+            self.conn.close()
+            self.close_returned = True
+        except BaseException as error:
+            self.dirty = True
+            self.capture('schema reference close', error)
+
+    def finish(self, *, obligations_returned: bool) -> None:
+        if self.finished:
+            return
+        if self.first is not None:
+            error = self.first['error']
+            self.attachment_attempted = True
+            try:
+                BaseException.__setattr__(error, '_workflow_schema_context', self)
+            except BaseException as later:
+                self.dirty = True
+                self.capture('schema attachment', later)
+            if self.dirty:
+                self.note_attempted = True
+                try:
+                    BaseException.add_note(error,
+                        'workflow schema context exit failed; original owner retains actual errors')
+                except BaseException as later:
+                    self.capture('schema diagnostic', later)
+        self.finished = True
+        self.evidence_complete = self.entered and obligations_returned and not self.dirty
+
+    def deliver(self, inbound: BaseException | None = None) -> bool:
+        if self.first is None:
+            return False
+        error = self.first['error']
+        BaseException.args.__set__(error, self.first['arguments'])
+        BaseException.__traceback__.__set__(error, self.first['traceback'])
+        BaseException.__context__.__set__(error, self.first['context'])
+        BaseException.__cause__.__set__(error, self.first['cause'])
+        BaseException.__suppress_context__.__set__(error, self.first['suppress_context'])
+        self.delivery = self.first  # Actual delivery provenance, not clean proof.
+        if error is inbound and not self.dirty:
+            return False
+        raise error
+
+
+def _canonical_connection(layout: str, *, coding_extension: bool, owner_indexed: bool,
+                          owner_marked: bool = False) -> AbstractContextManager[sqlite3.Connection]:
+    """Independent literal schema; callers choose complete or bounded metadata."""
+    class _CanonicalConnection:
+        def __init__(self) -> None:
+            self.outcome = _SchemaContextOutcome(None)
+
+        def __enter__(self) -> sqlite3.Connection:
+            outcome = self.outcome
+            outcome.begin()
+            try:
+                expected = sqlite3.connect(':memory:')
+                outcome.conn = expected  # Only a returned constructor owes close.
+                expected.execute('PRAGMA foreign_keys=ON')
+                _execute_ddl(expected, _g_foundation_ddl() if layout in ('G', 'H', 'I', 'J') else CANONICAL_WORKFLOW_DDL)
+                if layout in ('E', 'G', 'H', 'I', 'J'):
+                    _execute_ddl(expected, _revision_draft_ddl() if layout in ('I', 'J') else CANONICAL_WORKFLOW_DRAFT_DDL)
+                elif layout != 'F':
+                    raise ValueError('unsupported_workflow_layout')
+                if layout in ('G', 'H', 'I', 'J'):
+                    _execute_ddl(expected, _g_additions_ddl())
+                if layout in ('H', 'I', 'J'):
+                    _execute_ddl(expected, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
+                if layout in ('I', 'J'):
+                    _execute_ddl(expected, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
+                if layout == 'J' or coding_extension:
+                    from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
+                    _execute_ddl(expected, CANONICAL_WORKFLOW_CODING_DDL)
+                if owner_indexed:
+                    _install_owner_indexes(expected, layout, coding_extension=coding_extension)
+                if owner_marked:
+                    from runtime.infrastructure.workflow_task_ownership import OWNERSHIP_DDL, binding_view_ddl
+                    expected.execute(OWNERSHIP_DDL)
+                    expected.execute(binding_view_ddl(layout, coding_extension=coding_extension))
+                outcome.entered = True
+                return expected
+            except BaseException as error:
+                outcome.capture('schema reference entry', error)
+            if outcome.conn is not None:
+                outcome.close()
+            outcome.finish(obligations_returned=outcome.close_returned)
+            outcome.deliver()
+            raise AssertionError('unreachable reference entry failure')
+
+        def __exit__(self, kind: type[BaseException] | None, error: BaseException | None,
+                     traceback: TracebackType | None) -> bool:
+            outcome = self.outcome
+            if error is not None:
+                outcome.capture('schema reference body observation', error, observation=True)
+            outcome.close()  # Original sole close, before any diagnostic sink.
+            outcome.finish(obligations_returned=outcome.close_returned)
+            return outcome.deliver(error)
+
+    return _CanonicalConnection()
 
 @lru_cache(maxsize=24)
 def _canonical_layout(layout: Literal["F", "E", "G", "H", "I", "J"] = "F", *,
@@ -815,17 +951,41 @@ def _validate_installed(
                                validate_data=validate_data, advances=advances)[0]
 
 
-@contextmanager
-def _schema_snapshot(conn: sqlite3.Connection):
-    """Keep all local inventory consumers in the same read interval."""
-    owned = not conn.in_transaction
-    if owned:
-        conn.execute('BEGIN')
-    try:
-        yield
-    finally:
-        if owned:
-            conn.rollback()
+def _schema_snapshot(conn: sqlite3.Connection) -> AbstractContextManager[None]:
+    """Keep all local inventory consumers in the same original read interval."""
+    class _SchemaSnapshot:
+        def __init__(self) -> None:
+            self.outcome = _SchemaContextOutcome(conn)
+            self.owned = self.begun = False
+
+        def __enter__(self) -> None:
+            outcome = self.outcome
+            outcome.begin()
+            try:
+                self.owned = not conn.in_transaction
+                if self.owned:
+                    conn.execute('BEGIN')
+                    self.begun = True
+                outcome.entered = True
+                return None
+            except BaseException as error:
+                outcome.capture('schema snapshot entry', error)
+            # Failed BEGIN never acquires a rollback or fallback-close duty.
+            outcome.finish(obligations_returned=True)
+            outcome.deliver()
+
+        def __exit__(self, kind: type[BaseException] | None, error: BaseException | None,
+                     traceback: TracebackType | None) -> bool:
+            outcome = self.outcome
+            if error is not None:
+                outcome.capture('schema snapshot body observation', error, observation=True)
+            if self.begun:
+                self.begun = False  # Mark original single rollback before calling.
+                outcome.rollback()
+            outcome.finish(obligations_returned=not self.owned or outcome.rollback_returned)
+            return outcome.deliver(error)
+
+    return _SchemaSnapshot()
 
 
 def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], bool]:

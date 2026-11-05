@@ -154,6 +154,10 @@ class TaskInvocation:
     _repository_effect_intervals: list = field(default_factory=list, repr=False)
     _repository_retained_effects: list = field(default_factory=list, repr=False)
     _repository_worker_active: bool = False
+    _startup_validation: Callable[[], None] | None = field(default=None, repr=False)
+    _coding_selection: tuple | None = field(default=None, repr=False)
+    _held_recovery: dict | None = field(default=None, repr=False)
+    _deferred_recovery_adoption: dict | None = field(default=None, repr=False)
 
     def repository_preparation_binding(self):
         from runtime.orchestrator.workspace_adapters import _repo_owner_binding
@@ -191,31 +195,107 @@ class TaskInvocation:
     def store(self) -> TaskPauseStore:
         return self.orch._db._task_pause_store
 
-    def prepare(self) -> None:
+    def _fresh_validation(self, additional: Callable[[], None] | None = None) -> Callable[[], None] | None:
+        """Keep the original native selection across the original fresh seams."""
         if self.owner == "coding":
-            self.orch._workflow_coding_dispatch.require_task_ready(self.task.id)
-        with self.store.writer(self.task.id, admission=True) as (root, row):
-            self.store.held_uncommitted(self.task.id)
-            self.orch._team_moves.check_task_uncommitted(self.task)
-            row = row or self.store.ensure_uncommitted(root["id"])
-            _observe_settled_producers(self.store, row)
-            entries = row["journal"]["entries"]
-            if any(e["task_id"] == self.task.id and e["owner"] != "job" and not e["context"].get("producer_settled") for e in entries):
-                raise DeferredRootPause("invocation already owned")
-            self.move_reservation = self.orch._team_moves.reserve_task_uncommitted(self)
-            entries.append({"id": self.identity, "org": self.store.org_slug, "root_task_id": root["id"],
-                            "task_id": self.task.id, "agent": self.agent, "session_id": self.session_id,
-                            "owner": self.owner, "owner_identity": {key: self.metadata[key] for key in
-                                ("authority_v2_generation", "trigger", "triggering_job_id") if key in self.metadata},
-                            "fingerprint": fingerprint(self.task), "generation": row["generation"],
-                            "phase": "prepared", "retry": {}, "context": {}, "started_at": None,
-                            "captured_generation": None})
-            self.store.save_journal_uncommitted(row)
-        with self.store.db._lock:
-            self.store._live[self.identity] = self
-            coding = getattr(self.orch, "_workflow_coding_dispatch", None)
-            if coding is not None:
-                coding.bind_queue_invocation(self)
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            selection = self._coding_selection
+            if (type(selection) is not tuple or len(selection) != 3
+                    or selection[0] is not self or selection[1] is not self.workflow_dispatcher
+                    or selection[1] is not self.orch._workflow_coding_dispatch
+                    or getattr(getattr(selection[1], "org", None), "orchestrator", None) is not self.orch
+                    or not callable(selection[2])):
+                raise StartupUnavailable("startup_coding_owner_changed")
+            selected = selection[2]
+
+            def validate_coding() -> None:
+                selected()
+                if additional is not None and additional is not selected:
+                    additional()
+
+            validate_coding()
+            return validate_coding
+        if self.owner not in {"ordinary", "v2", "recovery"}:
+            return additional
+        if self._startup_validation is None:
+            from runtime.daemon.startup_recovery import ordinary_admission_validation
+            self._startup_validation = ordinary_admission_validation(self.orch)
+        selected = self._startup_validation
+
+        def validate() -> None:
+            selected()
+            if additional is not None:
+                additional()
+
+        validate()
+        return validate
+
+    def prepare(self, *, validate_admission: Callable[[], None] | None = None) -> None:
+        if self.owner == "coding" and self._coding_selection is None:
+            # Only an independently entered preparation may establish V0. A
+            # continuing dispatch/commit with missing selection must refuse.
+            from runtime.daemon.startup_recovery import StartupUnavailable, coding_admission_validation
+            if self.move_reservation is not None or self.admitted or self.attempt_committed or self.unsettled:
+                raise StartupUnavailable("startup_coding_owner_changed")
+            dispatcher = self.workflow_dispatcher or self.orch._workflow_coding_dispatch
+            if dispatcher is not self.orch._workflow_coding_dispatch:
+                raise StartupUnavailable("startup_coding_owner_changed")
+            self.workflow_dispatcher = dispatcher
+            self._coding_selection = (self, dispatcher, coding_admission_validation(dispatcher))
+        validate_admission = self._fresh_validation(validate_admission)
+        if self.owner == "coding":
+            self.workflow_dispatcher.require_task_ready(self.task.id, validate_admission=validate_admission)
+            validate_admission()
+        store, move = self.store, self.orch._team_moves
+        committed = False
+
+        def record_commit() -> None:
+            nonlocal committed
+            committed = True
+
+        try:
+            with self.store.writer(self.task.id, admission=True, validate_admission=validate_admission,
+                                   committed=record_commit if validate_admission is not None else None) as (root, row):
+                self.store.held_uncommitted(self.task.id)
+                self.orch._team_moves.check_task_uncommitted(self.task)
+                row = row or self.store.ensure_uncommitted(root["id"])
+                _observe_settled_producers(self.store, row)
+                entries = row["journal"]["entries"]
+                if any(e["task_id"] == self.task.id and e["owner"] != "job" and not e["context"].get("producer_settled") for e in entries):
+                    raise DeferredRootPause("invocation already owned")
+                self.move_reservation = self.orch._team_moves.reserve_task_uncommitted(self)
+                entries.append({"id": self.identity, "org": self.store.org_slug, "root_task_id": root["id"],
+                                "task_id": self.task.id, "agent": self.agent, "session_id": self.session_id,
+                                "owner": self.owner, "owner_identity": {key: self.metadata[key] for key in
+                                    ("authority_v2_generation", "trigger", "triggering_job_id") if key in self.metadata},
+                                "fingerprint": fingerprint(self.task), "generation": row["generation"],
+                                "phase": "prepared", "retry": {}, "context": {}, "started_at": None,
+                                "captured_generation": None})
+                self.store.save_journal_uncommitted(row)
+            with self.store.db._lock:
+                if validate_admission is not None:
+                    validate_admission()
+                self.store._live[self.identity] = self
+                coding = getattr(self.orch, "_workflow_coding_dispatch", None)
+                if coding is not None:
+                    coding.bind_queue_invocation(self)
+        except BaseException as primary:
+            if validate_admission is not None and committed:
+                # No launch can precede prepare returning. This SAME committed
+                # preparation still owes its native no-launch journal/move tail
+                # when postcommit registry admission closes. Failed settlement
+                # retains uncertainty; it never replaces the admission error.
+                try:
+                    if self.store is not store or self.orch._team_moves is not move:
+                        if self.move_reservation is not None:
+                            self.move_reservation.failed_cleanup()
+                        raise RuntimeError("task_preparation_settlement_owner_changed")
+                    release_live(self)
+                except BaseException as secondary:
+                    if self.move_reservation is not None:
+                        self.move_reservation.failed_cleanup()
+                    primary.add_note(f"task preparation settlement also failed: {secondary!r}")
+            raise
 
     def _entry(self, row: dict) -> dict:
         entries = [e for e in row["journal"]["entries"] if e["id"] == self.identity]
@@ -370,13 +450,18 @@ class TaskInvocation:
 
     def commit(self, ctx: Any = None) -> bool:
         if self.owner in ("draft", "coding"):
+            validate = self._fresh_validation() if self.owner == "coding" else None
             drafts = self.workflow_dispatcher or self.orch._workflow_drafts
-            return drafts._on_loop(drafts._commit_pause_launch(self, ctx))
+            coroutine = drafts._commit_pause_launch(self, ctx)
+            if self.owner == "coding":
+                return drafts._on_loop(coroutine, validate_admission=validate)
+            return drafts._on_loop(coroutine)
         return self._commit_local(ctx)
 
-    def _commit_local(self, ctx: Any = None) -> bool:
+    def _commit_local(self, ctx: Any = None, *, validate_admission: Callable[[], None] | None = None) -> bool:
         """One writer commits with the terminal lock last and still owned."""
         from contextlib import nullcontext
+        validate_admission = self._fresh_validation(validate_admission)
         sessions = self.orch._sessions
         lease = sessions.binding_lease(self.task.id, self.agent) if sessions else nullcontext()
         won = False
@@ -396,7 +481,8 @@ class TaskInvocation:
         cancelled_binding = None
         with lease:
             with self.store.writer(self.task.id,
-                    commit_guard=ctx._lock if ctx is not None else None, committed=record_commit, admission=True) as (_, row):
+                    commit_guard=ctx._lock if ctx is not None else None, committed=record_commit, admission=True,
+                    validate_admission=validate_admission) as (_, row):
                 if row is None:
                     raise PauseControlError("pause_control_unavailable")
                 try:
@@ -479,8 +565,9 @@ class TaskInvocation:
         This records no result/consumption and spends no recovery opportunity.
         Only the original server-observed return reaches this producer.
         """
+        from runtime.daemon.startup_recovery import StartupUnavailable
         from runtime.orchestrator.team_move import DeferredTeamMove
-        if not (self.admitted and self.owner == "recovery"):
+        if not (self.admitted and self.owner == "recovery") and self._deferred_recovery_adoption is None:
             self._begin_launch_attempt()
         with self.store.writer(self.task.id, admission=True) as (_, row):
             entry = self._entry(row)
@@ -490,6 +577,15 @@ class TaskInvocation:
                 # back into an unclaimed preparation or erase its attempt.
                 raise PauseControlError("pause_control_unavailable")
             unknown_owner = None
+            original_reservation = self.move_reservation
+            original_terminal = deepcopy(getattr(self, "native_terminal_observation", None))
+            original_launch = (None if original_reservation is None else
+                (original_reservation.owner_id, original_reservation.session_id,
+                 original_reservation.possible_launch, original_reservation.quiescent,
+                 original_reservation.cleanup_failed))
+            # Discovery and the actual adoption COMMIT, not a prepared phase,
+            # authenticate an original return on repeated held redelivery.
+            deferred_return = self._deferred_recovery_adoption
             if proof is None:
                 if (self.unsettled or entry["phase"] == "unknown" or entry["context"].get("execution_unknown")
                         or (self.move_reservation is not None and self.move_reservation.cleanup_failed)):
@@ -506,7 +602,9 @@ class TaskInvocation:
                     entry["context"].pop("execution_unknown", None)
                     entry["context"].pop("producer_settled", None)
                 proof = dict(origin_session_id=result.session_id, provider_session_id=result.agent_session_id,
-                             duration_seconds=result.duration_seconds, recovery_session_id=self.orch._build_session_id(),
+                             # Inert proof identity belongs to the already-returned
+                             # execution's owed handoff, not fresh admission.
+                             duration_seconds=result.duration_seconds, recovery_session_id=f"sess-{uuid.uuid4().hex}",
                              deadline_at=None)
                 entry["context"]["recovery_return"] = proof
             self.orch._team_moves.recovery_uncommitted(self, proof["recovery_session_id"], unknown_owner)
@@ -517,6 +615,16 @@ class TaskInvocation:
             entry["session_id"] = proof["recovery_session_id"]
             entry["started_at"] = entry["captured_generation"] = None
             self.store.save_journal_uncommitted(row)
+        self._held_recovery = dict(store=self.store, move=self.orch._team_moves,
+            sessions=self.orch._sessions, host=self.orch._host_supervisor,
+            reservation=self.move_reservation, attempt=self.refusal_attempt_id,
+            entry=deepcopy(entry), result=result,
+            returned=(result.success, result.session_id, result.agent_session_id, result.duration_seconds),
+            terminal=original_terminal, original_launch=original_launch, deferred=deferred_return,
+            intervals=([(i, dict(i)) for i in self._repository_effect_intervals]
+                       if deferred_return is None else deferred_return["intervals"]),
+            original_unknown=None if unknown_owner is None else (deepcopy(original), original_reservation))
+        held_recovery = self._held_recovery
         self.task, self.owner, self.session_id = current, "recovery", proof["recovery_session_id"]
         self.admitted = self.attempt_committed = self.unsettled = False
         try:
@@ -538,6 +646,11 @@ class TaskInvocation:
                 resume_session_id=proof["provider_session_id"], origin_runtime_session_id=proof["origin_session_id"],
                 timeout_seconds_override=120, recovery=True)
             return self.admitted, recovery_result, recovery_report
+        except StartupUnavailable as exc:
+            # Capture only THIS original refusal. The unwind and settlement
+            # owners independently authenticate it; its class grants nothing.
+            held_recovery["error"] = exc
+            raise
         except (DeferredRootPause, DeferredTeamMove, PauseControlError):
             raise
         except Exception as exc:
@@ -545,7 +658,151 @@ class TaskInvocation:
             result.error = f"completion recovery launch failed: {exc}"
             return self.admitted, result, None
 
+    def _host_recovery_refusal(self, error: BaseException) -> bool:
+        """Observe the original host's positively settled, unclaimed attempt.
+
+        Context observations use only the existing leaf locks; no host work.
+        The whole held-return predicate remains independently required later.
+        """
+        held = self._held_recovery
+        evidence = None if held is None else held.get("host_attempt")
+        if evidence is None or evidence.get("error") is not error:
+            return False
+        host, request, lease, ctx = (evidence[k] for k in ("host", "request", "lease", "ctx"))
+        reservation = evidence["reservation"]
+        pending = evidence.get("pending")
+        from runtime.platform.session_backend import PendingHandle
+        return (evidence["invocation"] is self and held is evidence["held"]
+            and host is held["host"] is self.orch._host_supervisor
+            and host._backend is evidence["backend"] and host._admission is evidence["admission"]
+            and lease._controller is evidence["admission"] and lease.ctx is ctx
+            and lease._released and evidence.get("lease_retired") is lease
+            and evidence["terminal_hook"] is not None
+            and evidence.get("terminal_settled") is evidence["terminal_hook"]
+            and request.move_reservation is reservation is self.move_reservation is held["reservation"]
+            and evidence["binding"] == (self.identity, self.task.id, self.agent,
+                                         self.session_id, self.refusal_attempt_id)
+            and evidence["attempt"] == request.retry_attempt
+            and (request.org, request.logical_id, request.agent_id, request.invocation_kind)
+                == (self.store.org_slug, self.task.id, self.agent, "task")
+            and ctx._move_identity == (request.org, request.agent_id, request.logical_id)
+            and ctx.terminal_reason() is None and ctx.running() is None
+            and ctx.cleanup_error() is None and ctx.receipt() is None
+            and not getattr(ctx, "_task_pause_launch_committed", False)
+            and not self.admitted and not self.attempt_committed and not self.unsettled
+            and not self.launch_observed and self.recovery_deadline is None
+            and reservation.owner_live and not reservation.possible_launch and not reservation.cleanup_failed
+            and not getattr(error, "__notes__", ())
+            and (not evidence["prepare_entered"] and pending is None
+                 or isinstance(pending, PendingHandle) and evidence.get("abandoned") is pending))
+
+    def _held_recovery_refusal(self, error: BaseException | None) -> bool:
+        """Authenticate the SAME unclaimed return at each original unwind seam.
+
+        This is settlement evidence, never launch admission or unknown clearance.
+        No snapshot is restored and a failed observation retains its first cause.
+        """
+        held = self._held_recovery
+        if held is None or error is None or held.get("error") is not error or getattr(error, "__notes__", ()):
+            return False
+        try:
+            # A granted attempt needs the original host's positive
+            # terminal/abandon/lease completion in addition to journal proof.
+            if held.get("host_attempt") is not None and not self._host_recovery_refusal(error):
+                return False
+            from runtime.orchestrator.launch_refusals import _current
+            with self.store.db._lock:
+                reservation = self.move_reservation
+                if (self.store is not held["store"] or self.orch._team_moves is not held["move"]
+                        or self.orch._sessions is not held["sessions"] or self.orch._host_supervisor is not held["host"]
+                        or (held["sessions"] is not None
+                            and held["sessions"].get_active(self.task.id, self.agent) is not None)
+                        or reservation is not held["reservation"] or reservation is None
+                        or self.refusal_attempt_id != held["attempt"] or self.owner != "recovery"
+                        or self.admitted or self.attempt_committed or self.unsettled or self.launch_observed
+                        or self.recovery_deadline is not None
+                        or reservation.coordinator is not held["move"]
+                        or held["move"]._reservations.get(self.identity) is not reservation
+                        or (reservation.owner_id, reservation.task_id, reservation.session_id,
+                            reservation.identity.org_slug, reservation.identity.agent_id)
+                            != (self.identity, self.task.id, self.session_id, self.store.org_slug, self.agent)
+                        or not reservation.owner_live or reservation.possible_launch or reservation.cleanup_failed
+                        or not all(reservation.repository_obligations.values()) or self._repository_worker_active
+                        or len(self._repository_effect_intervals) < len(held["intervals"])
+                        or any(self._repository_effect_intervals[n] is not i or i != saved
+                               for n, (i, saved) in enumerate(held["intervals"]))
+                        or any(not i["closed"] or i["failed"]
+                               for i in self._repository_effect_intervals[len(held["intervals"]):])
+                        or not _current(self)):
+                    return False
+                row = self.store.row_uncommitted(self.store.root_uncommitted(self.task.id)["id"])
+                entry = self._entry(row)
+                if (entry["context"].get("execution_unknown") or entry["context"].get("producer_settled")
+                        or entry["phase"] not in {"prepared", "recovery_deferred"}
+                        or {**entry, "phase": "recovery_deferred"} != held["entry"]):
+                    return False
+                result, proof = held["result"], entry["context"]["recovery_return"]
+                if (held["returned"] != (True, proof["origin_session_id"], proof["provider_session_id"],
+                                        proof["duration_seconds"])
+                        or result is not None and held["returned"] != (
+                            result.success, result.session_id, result.agent_session_id, result.duration_seconds)
+                        or result is None and held["deferred"] is None):
+                    return False
+                original_unknown = held["original_unknown"]
+                if original_unknown is not None:
+                    original, prior = original_unknown
+                    # This original unknown is a SEPARATE owner; a clean
+                    # recovery refusal cannot settle or rewrite its evidence.
+                    return (prior is not reservation and held["move"]._reservations.get(original["id"]) is prior
+                        and prior.owner_id == original["id"] and not prior.owner_live
+                        and prior.session_id == original["session_id"]
+                        and original in row["journal"]["entries"])
+                if held["deferred"] is not None:
+                    adoption = held["deferred"]
+                    # Require SAME authenticated discovery and positive original
+                    # COMMIT, including its reservation and attempt. Neither
+                    # prepared nor a memory-only discovery certifies adoption.
+                    return (adoption is self._deferred_recovery_adoption
+                        and adoption["invocation"] is self and adoption["store"] is self.store
+                        and adoption["move"] is held["move"] and adoption["sessions"] is held["sessions"]
+                        and adoption["host"] is held["host"] and adoption["reservation"] is reservation
+                        and adoption["attempt"] == self.refusal_attempt_id
+                        and adoption["metadata"] == self.metadata
+                        and adoption["entry"] == self.deferred_entry == held["entry"]
+                        and adoption.get("committed_entry") == {**adoption["entry"], "phase": "prepared"})
+                terminal = held["terminal"]
+                receipt = None if terminal is None else terminal["receipt"]
+                return (held["original_launch"] == (self.identity, proof["origin_session_id"], True, True, False)
+                    and receipt is not None and terminal["request"]["org"] == self.store.org_slug
+                    and terminal["request"]["logical_id"] == self.task.id
+                    and terminal["request"]["agent_id"] == self.agent
+                    and terminal["request"]["invocation_kind"] == "task"
+                    and receipt["backend"] != "passthrough" and receipt["quiescent"] is True
+                    and receipt["cleanup_status"] != "incomplete" and not receipt["survivors"]
+                    and terminal["cleanup_error"] is None)
+        except BaseException as secondary:
+            if self.move_reservation is not None:
+                self.move_reservation.cleanup_failed = True
+            error.add_note(f"Held recovery authentication failed: {type(secondary).__name__}")
+            return False
+
+    def _retain_deferred_recovery_refusal(self, error: BaseException) -> None:
+        """Carry a real post-COMMIT adoption refusal to the original outer tail."""
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        adoption = self._deferred_recovery_adoption
+        if not isinstance(error, StartupUnavailable) or adoption is None or "committed_entry" not in adoption:
+            return
+        proof = adoption["entry"]["context"]["recovery_return"]
+        self._held_recovery = dict(store=adoption["store"], move=adoption["move"],
+            sessions=adoption["sessions"], host=adoption["host"], reservation=adoption["reservation"],
+            attempt=adoption["attempt"], entry=deepcopy(adoption["entry"]), result=None,
+            returned=(True, proof["origin_session_id"], proof["provider_session_id"], proof["duration_seconds"]),
+            terminal=None, original_launch=None, deferred=adoption, intervals=adoption["intervals"],
+            original_unknown=None, error=error)
+
     def _begin_launch_attempt(self) -> None:
+        self._held_recovery = None
+        self._deferred_recovery_adoption = None
         # A returned producer's positive PID belongs to its previous attempt.
         # Reset only local refusal attribution before fallible preparation;
         # durable launch/unknown evidence and live-attempt protection survive.
@@ -763,7 +1020,14 @@ def _deferred_invocation_uncommitted(orch: Any, task: TaskRecord, metadata: dict
         if fingerprint(task) != f or (not consumer_only and not _unclaimed_recovery_current(store, entry)):
             raise DeferredRootPause("recovery continuation changed")
         original, admitted = task, False
-    metadata = dict(entry["owner_identity"])
+    if entry["owner"] == "recovery":
+        from runtime.orchestrator.launch_refusals import _recovery_owner_metadata_current
+        delivery = dict(entry["owner_identity"]) if metadata is None else metadata
+        if not _recovery_owner_metadata_current(store, entry, delivery):
+            raise DeferredRootPause("recovery delivery owner changed")
+        metadata = dict(delivery)
+    else:
+        metadata = dict(entry["owner_identity"])
     invocation = TaskInvocation(orch, original, entry["agent"], entry["session_id"],
                                 owner=entry["owner"], metadata=metadata, identity=entry["id"], admitted=admitted)
     invocation.deferred_recovery = entry["phase"] == "recovery_deferred"
@@ -771,6 +1035,11 @@ def _deferred_invocation_uncommitted(orch: Any, task: TaskRecord, metadata: dict
     invocation.consumer_session_id = consumer_sid
     invocation.deferred_adoption_pending = True
     invocation.deferred_entry = deepcopy(entry)
+    if invocation.deferred_recovery and not consumer_only:
+        invocation._deferred_recovery_adoption = dict(invocation=invocation, store=store,
+            move=orch._team_moves, sessions=orch._sessions, host=orch._host_supervisor,
+            entry=deepcopy(entry), metadata=deepcopy(metadata), attempt=invocation.refusal_attempt_id,
+            intervals=[(i, dict(i)) for i in invocation._repository_effect_intervals])
     return invocation
 
 
@@ -798,9 +1067,24 @@ def deferred_invocation(orch: Any, task: TaskRecord, metadata: dict | None = Non
 
 def adopt_deferred_invocation(invocation: TaskInvocation) -> None:
     """Revalidate under the native writer; the caller already owns attribution."""
-    store = invocation.store
+    store, move = invocation.store, invocation.orch._team_moves
+    validate = None if invocation.consumer_only else invocation._fresh_validation()
+    committed = False
+
+    def record_commit():
+        nonlocal committed
+        committed = True
+        adoption = invocation._deferred_recovery_adoption
+        if adoption is not None and not invocation.consumer_only:
+            adoption["committed_entry"] = deepcopy(entry)
+            adoption["reservation"] = invocation.move_reservation
+            # The durable adoption has completed; registry admission remains
+            # separately owed and cannot pretend discovery is still pending.
+            invocation.deferred_adoption_pending = False
+
     try:
-        with store.writer(invocation.task.id, admission=True) as (_, row):
+        with store.writer(invocation.task.id, admission=True, validate_admission=validate,
+                          committed=record_commit) as (_, row):
             task = store.db.get_task(invocation.task.id)
             if task is None:
                 raise DeferredRootPause("deferred owner disappeared")
@@ -812,15 +1096,60 @@ def adopt_deferred_invocation(invocation: TaskInvocation) -> None:
             entry = invocation._entry(row)
             entry["phase"] = "result_processing" if current.consumer_only else "prepared"
             store.save_journal_uncommitted(row)
-    except BaseException:
+        with store.db._lock:
+            if validate is not None:
+                validate()
+            invocation.deferred_adoption_pending = False
+            store._live[invocation.identity] = invocation
+    except BaseException as primary:
+        if committed:
+            try:
+                if invocation.store is not store or invocation.orch._team_moves is not move:
+                    if invocation.move_reservation is not None:
+                        invocation.move_reservation.failed_cleanup()
+                    raise RuntimeError("task_adoption_settlement_owner_changed")
+                invocation._retain_deferred_recovery_refusal(primary)
+                release_live(invocation, failed=(invocation._deferred_recovery_adoption is not None
+                    and not invocation._held_recovery_refusal(primary)))
+            except BaseException as secondary:
+                if invocation.move_reservation is not None:
+                    invocation.move_reservation.failed_cleanup()
+                primary.add_note(f"task adoption settlement also failed: {secondary!r}")
+            raise
+        if invocation._deferred_recovery_adoption is not None and invocation.move_reservation is not None:
+            # A missing commit callback alone does not prove rollback. Observe
+            # the SAME original journal after the writer has relinquished it;
+            # uncertain COMMIT/rollback retains the exact reservation and tail.
+            rolled_back = False
+            try:
+                with store.db._lock:
+                    row = store.row_uncommitted(store.root_uncommitted(invocation.task.id)["id"])
+                    rolled_back = (not store.db._conn.in_transaction and not getattr(primary, "__notes__", ())
+                        and invocation._entry(row) == invocation.deferred_entry)
+            except BaseException as secondary:
+                primary.add_note(f"task adoption rollback observation also failed: {secondary!r}")
+            if not rolled_back:
+                invocation.move_reservation.failed_cleanup()
+                try:
+                    release_live(invocation, failed=True)
+                except BaseException as secondary:
+                    primary.add_note(f"task adoption uncertain settlement also failed: {secondary!r}")
+                raise
+            try:
+                move.release_task(invocation)
+            except BaseException as secondary:
+                invocation.move_reservation.failed_cleanup()
+                primary.add_note(f"task adoption reservation release also failed: {secondary!r}")
+                try:
+                    release_live(invocation, failed=True)
+                except BaseException as settlement:
+                    primary.add_note(f"task adoption uncertain settlement also failed: {settlement!r}")
+            raise
         # Reservation alone has no effects. A rolled-back adoption must not
         # leave a pristine local owner_live latch blocking its next delivery;
         # release_task retains every possible-launch/failed-cleanup blocker.
         invocation.orch._team_moves.release_task(invocation)
         raise
-    with store.db._lock:
-        invocation.deferred_adoption_pending = False
-        store._live[invocation.identity] = invocation
 
 
 @contextmanager
@@ -855,12 +1184,61 @@ def release_live(invocation: TaskInvocation, *, failed: bool = False) -> None:
 def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: Any = None) -> None:
     """Close durable attribution only after reconcile and actual outer cleanup."""
     original_error = sys.exception()
-    reservation = invocation.move_reservation
+    # The traceback keeps this per-call record even if exception attachment
+    # fails. Each delivered raise has its own slot, including repeated objects.
+    failure = {
+        "invocation": invocation,
+        "first_error": None if original_error is None else (
+            "active", original_error, BaseException.__traceback__.__get__(original_error)),
+        "later_errors": [],
+        "previous": None,
+    }
+    new_failure = False
+    reservation = None
+    held = None
     native_entry = None
     close_disposition = None
-    if failed and reservation is not None:
-        reservation.failed_cleanup()
+    release_disposition = None
+    marking_attempted = False
+
+    def retain(phase: str, error: BaseException) -> None:
+        nonlocal failed, new_failure
+        occurrence = (phase, error, BaseException.__traceback__.__get__(error))
+        failed = new_failure = True
+        if failure["first_error"] is None:
+            failure["first_error"] = occurrence
+        else:
+            failure["later_errors"].append(occurrence)
+
+    def mark_failed() -> None:
+        nonlocal marking_attempted
+        if reservation is not None and not marking_attempted:
+            marking_attempted = True
+            try:
+                reservation.failed_cleanup()
+            except BaseException as secondary:
+                retain("failure marking", secondary)
+
     try:
+        reservation = invocation.move_reservation
+        held = invocation._held_recovery
+        if held is not None and "error" in held and not failed:
+            failed = (cleanup is None or cleanup.kind != "safe"
+                      or not invocation._held_recovery_refusal(original_error))
+        if failed:
+            mark_failed()
+        if held is not None and "error" in held and not failed:
+            with invocation.store.writer(invocation.task.id) as (_, row):
+                if not invocation._held_recovery_refusal(original_error):
+                    failed = True
+                    mark_failed()
+                else:
+                    # Every native preparation interval and the whole outer
+                    # batch settled positively. Keep only this SAME unclaimed
+                    # recovery for the existing deferred reader/redelivery.
+                    entry = invocation._entry(row)
+                    entry["phase"] = "recovery_deferred"
+                    invocation.store.save_journal_uncommitted(row)
         if failed:
             with invocation.store.writer(invocation.task.id) as (_, row):
                 entry = invocation._entry(row)
@@ -898,53 +1276,101 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
             close_disposition = invocation.close()
             native_entry = close_disposition["invocation"]
     except BaseException as exc:
-        failed = True
-        if reservation is not None:
-            reservation.failed_cleanup()
-        if original_error is None:
-            raise
-        # Finalization must retain the original launch/reconcile/cleanup
-        # exception. A refused save is a failed retained settlement, never a
-        # successful release; expose it without replacing the original cause.
-        original_error.add_note(f"Pause tail settlement failed for {invocation.identity}: {exc!r}")
-        logging.getLogger(__name__).exception(
-            "task %s session %s owner %s Pause tail settlement failed; original error preserved",
-            invocation.task.id, invocation.session_id, invocation.identity)
+        retain("settlement", exc)
+        mark_failed()
+        if original_error is not None:
+            try:
+                original_error.add_note(f"Pause tail settlement failed for {invocation.identity}: {exc!r}")
+            except BaseException as secondary:
+                retain("settlement note", secondary)
+            try:
+                logging.getLogger(__name__).exception(
+                    "task %s session %s owner %s Pause tail settlement failed; original error preserved",
+                    invocation.task.id, invocation.session_id, invocation.identity)
+            except BaseException as secondary:
+                retain("settlement logging", secondary)
     finally:
-        tail_error = sys.exception() or original_error
-        release_disposition = None
         try:
             # Observe the actual final release, under its native ownership.
-            # Absence alone is insufficient: close must also have committed
-            # the positive removal of this exact original native owner.
+            # A failed pre-release observation cannot skip the original release;
+            # it also cannot supply the positive removal witness.
             with invocation.store.db._lock:
-                owned = (reservation is not None and
-                    invocation.orch._team_moves._reservations.get(reservation.owner_id) is reservation)
+                ownership_observed = False
+                try:
+                    owned = (reservation is not None and
+                        invocation.orch._team_moves._reservations.get(reservation.owner_id) is reservation)
+                    ownership_observed = True
+                except BaseException as secondary:
+                    retain("release ownership observation", secondary)
+                    mark_failed()
                 invocation.orch._team_moves.release_task(invocation, failed=failed)
-                if reservation is not None:
+                if reservation is not None and ownership_observed:
                     release_disposition = dict(owner_id=reservation.owner_id, task_id=reservation.task_id,
                         agent=reservation.identity.agent_id, session_id=reservation.session_id,
                         owner_live=reservation.owner_live, cleanup_failed=reservation.cleanup_failed,
                         possible_launch=reservation.possible_launch, quiescent=reservation.quiescent,
                         removed=owned and invocation.orch._team_moves._reservations.get(reservation.owner_id) is None)
         except BaseException as exc:
-            failed = True
-            if tail_error is None:
-                raise
-            tail_error.add_note(f"Move tail release failed for {invocation.identity}: {exc!r}")
-            logging.getLogger(__name__).exception("move tail release failed; original error preserved")
-        finally:
-            active_error = sys.exception() or tail_error
-            coding = getattr(invocation.orch, "_workflow_coding_dispatch", None)
-            if coding is not None:
+            retain("release", exc)
+            if held is not None and "error" in held:
+                # Preserve the original uncertainty save without invoking a
+                # helper that would repeat an already attempted failure marker.
                 try:
+                    reservation.cleanup_failed = True
+                except BaseException as secondary:
+                    retain("release uncertainty latch", secondary)
+                mark_failed()
+                try:
+                    with invocation.store.writer(invocation.task.id) as (_, row):
+                        entry = invocation._entry(row)
+                        entry["context"]["execution_unknown"] = True
+                        entry["phase"] = "unknown"
+                        entry["started_at"] = entry["captured_generation"] = None
+                        invocation.store.save_journal_uncommitted(row)
+                except BaseException as secondary:
+                    retain("release uncertainty save", secondary)
+            primary = failure["first_error"][1]
+            if primary is not exc:
+                try:
+                    primary.add_note(f"Move tail release failed for {invocation.identity}: {exc!r}")
+                except BaseException as secondary:
+                    retain("release note", secondary)
+                try:
+                    logging.getLogger(__name__).exception("move tail release failed; original error preserved")
+                except BaseException as secondary:
+                    retain("release logging", secondary)
+        finally:
+            # Lookup and argument evaluation belong to this original observation
+            # attempt too. Neither a failed release nor diagnostics can skip it.
+            try:
+                coding = getattr(invocation.orch, "_workflow_coding_dispatch", None)
+                if coding is not None:
                     coding.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
                         close_disposition=close_disposition, release_disposition=release_disposition)
-                except BaseException as exc:
-                    if active_error is None:
-                        raise
-                    active_error.add_note(f"Coding tail observation failed for {invocation.identity}: {exc!r}")
-                    logging.getLogger(__name__).exception("coding tail observation failed; original error preserved")
+            except BaseException as exc:
+                retain("coding observation", exc)
+                primary = failure["first_error"][1]
+                if primary is not exc:
+                    try:
+                        primary.add_note(f"Coding tail observation failed for {invocation.identity}: {exc!r}")
+                    except BaseException as secondary:
+                        retain("coding observation note", secondary)
+                    try:
+                        logging.getLogger(__name__).exception("coding tail observation failed; original error preserved")
+                    except BaseException as secondary:
+                        retain("coding observation logging", secondary)
+    if new_failure:
+        _, primary, original_traceback = failure["first_error"]
+        try:
+            values = BaseException.__getattribute__(primary, "__dict__")
+            failure["previous"] = values.get("_pause_settlement_failure")
+            BaseException.__setattr__(primary, "_pause_settlement_failure", failure)
+        except BaseException as secondary:
+            retain("error attachment", secondary)
+        # A new settlement failure must escape even with an active launch or
+        # cancellation error. With no new failure, retain the original None
+        # return and let the caller's original unwind continue unchanged.
+        raise BaseException.with_traceback(primary, original_traceback)
 
 
 def pause_deferred_owner(db: Any, task_id: str) -> bool:
@@ -1010,25 +1436,49 @@ def restore_pause_preparations(orch: Any) -> None:
             store.save_journal_uncommitted(row)
 
 
-async def discover_pause_work(org: Any, queue: Any) -> None:
+def _discover_pause_roots(org: Any, queue: Any, *, validate_admission=None):
     """Bounded durable rediscovery through the existing owner publishers."""
+    from contextlib import nullcontext
+    from runtime.daemon.queue import TaskQueue
+    queue_selection = queue._publication_selection(org.slug) if isinstance(queue, TaskQueue) else None
+    from runtime.orchestrator.run_step import _task_followon_validation
+    selected = _task_followon_validation(org.orchestrator)
+    def validate():
+        if queue_selection is not None:
+            queue_selection()
+        selected()
+        if validate_admission is not None:
+            validate_admission()
+        if queue_selection is not None:
+            queue_selection()
+    if queue is not org.orchestrator._queue:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        raise StartupUnavailable("startup_attachment_changed")
     store = getattr(org.db, "_task_pause_store", None)
     if store is None or queue is None:
         return
     from runtime.workflows.recovery import classify_task
     from runtime.orchestrator.authority import enqueue_task_generation_aware
-    from runtime.daemon.routes.jobs import _run_job_core
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(org.orchestrator)
     # One bounded page per sweep, retaining cursor only as a traversal aid.
     # Release intent is acknowledged only for a fully inspected actual root.
     cursor = getattr(store, "_discovery_cursor", "")
     with org.db._lock:
+        validate()
         roots = org.db._conn.execute("SELECT root_task_id,generation FROM task_pause_controls "
                                     "WHERE root_task_id>? ORDER BY root_task_id LIMIT 32", (cursor,)).fetchall()
     if not roots:
+        validate()
         store._discovery_cursor = ""
         return
     for root_id, generation in roots:
+        validate()
+        if publication is not None:
+            publication.gate.require_redelivery_owner(org)
+        held_before = publication.snapshot()["held"] if publication is not None else 0
         with org.db.coherent_read_view() as conn:
+            validate()
             root = store.root_uncommitted(root_id)
             row = store.row_uncommitted(root_id)
             held = row["held"] and root["status"] not in {"completed", "failed", "cancelled", "superseded"}
@@ -1040,9 +1490,12 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
         # A pending job rejected without ever committing launch is closed by
         # that actual row. A terminal record for possible/unknown launch is
         # not a quiescence receipt and is deliberately retained.
-        with store.writer(root_id) as (_, current):
+        with store.writer(root_id, validate_admission=validate) as (_, current):
+            validate()
             _observe_settled_producers(store, current)
+            validate()
             retained = []
+            root_unknown = False
             for entry in current["journal"]["entries"]:
                 job = org.db.get_job(entry["owner_identity"]["job_id"]) if entry["owner"] == "job" else None
                 task = org.db.get_task(entry["task_id"])
@@ -1053,10 +1506,13 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                                    and not entry["context"].get("execution_unknown"))
                 if not closed_pending and not closed_deferred:
                     retained.append(entry)
+                    root_unknown |= entry["phase"] == "unknown" or bool(entry["context"].get("execution_unknown"))
             current["journal"]["entries"] = retained
+            validate()
             store.save_journal_uncommitted(current)
             entries = list(retained)
         if not complete:
+            yield root_id, generation, held, entries, False, False
             continue
         # Exact landed callbacks settle through the existing consumer even
         # while held. Delivery itself grants no provider-launch permission.
@@ -1065,72 +1521,204 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
             and e["phase"] in {"retry_deferred", "recovery_deferred"}}
         if held:
             for entry in deferred_callbacks.values():
-                task = org.db.get_task(entry["task_id"])
-                if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
-                    continue
-                sid = (entry["context"]["recovery_return"]["origin_session_id"]
-                       if entry["phase"] == "recovery_deferred" else entry["session_id"])
-                result = org.db.get_latest_task_result(entry["task_id"], entry["agent"], sid)
-                if result is not None and type(result["id"]) is int:
-                    if "authority_v2_generation" in entry["owner_identity"]:
-                        try:
-                            with org.db.coherent_read_view():
-                                _authenticate_deferred_v2(store, entry)
-                        except DeferredRootPause:
-                            continue
-                    queue.enqueue_if_absent(org.slug, entry["task_id"], metadata=dict(entry["owner_identity"]))
+                with (queue._publication_scope(org.slug, entry["task_id"], _selection=queue_selection)
+                      if queue_selection is not None else nullcontext()):
+                    task = org.db.get_task(entry["task_id"])
+                    if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
+                        continue
+                    sid = (entry["context"]["recovery_return"]["origin_session_id"]
+                           if entry["phase"] == "recovery_deferred" else entry["session_id"])
+                    result = org.db.get_latest_task_result(entry["task_id"], entry["agent"], sid)
+                    if result is not None and type(result["id"]) is int:
+                        if "authority_v2_generation" in entry["owner_identity"]:
+                            try:
+                                with org.db.coherent_read_view():
+                                    _authenticate_deferred_v2(store, entry)
+                            except DeferredRootPause:
+                                if publication is not None:
+                                    raise  # Unproved original v2 owner is not delivery.
+                                continue
+                        validate()
+                        _publish_pause_task(org, queue, entry["task_id"], metadata=dict(entry["owner_identity"]),
+                                            generation_aware=False)
         else:
             deferred = {e["task_id"]: e for e in entries if e["owner"] != "job"
                         and not e["context"].get("producer_settled")
                         and e["phase"] in {"retry_deferred", "recovery_deferred"}}
             for (task_id,) in task_rows:
-                task = org.db.get_task(task_id)
-                # Retain unknown evidence, but terminal owners cannot launch
-                # or replay consumed callbacks through the deferred branch.
-                if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
-                    continue
-                if task_id in deferred:
-                    entry = deferred[task_id]
-                    if "authority_v2_generation" in entry["owner_identity"]:
-                        try:
-                            with org.db.coherent_read_view():
-                                _authenticate_deferred_v2(store, entry)
-                        except DeferredRootPause:
-                            continue
-                        # This is delivery for the already admitted SAME
-                        # owner, not publication/admission of a pending G.
-                        queue.enqueue_if_absent(org.slug, task_id, metadata=dict(entry["owner_identity"]))
-                    else:
-                        queue.enqueue_if_absent(org.slug, task_id,
-                            publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
-                                org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
-                elif task is not None and eligible(org.orchestrator, task):
-                    ownership = classify_task(org.db, task_id, org_slug=org.slug)
-                    if ownership.kind == "draft":
-                        org.workflow_drafts.notify_queued(task_id, queue)
-                    elif ownership.kind == "f5":
-                        org.workflow_reviews.notify_queued(task_id, queue)
-                    elif ownership.kind == 'coding_attempt':
-                        org.workflow_coding_dispatch.notify_queued(task_id, queue)
-                    elif ownership.kind.startswith('coding_'):
+                with (queue._publication_scope(org.slug, task_id, _selection=queue_selection)
+                      if queue_selection is not None else nullcontext()):
+                    validate()
+                    task = org.db.get_task(task_id)
+                    # Retain unknown evidence, but terminal owners cannot launch
+                    # or replay consumed callbacks through the deferred branch.
+                    if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
                         continue
-                    elif ownership.kind == "legacy":
-                        enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
-            for entry in entries:
-                if entry["owner"] == "job" and entry["phase"] == "pending_job":
-                    job_id = entry["owner_identity"]["job_id"]
-                    job = org.db.get_job(job_id)
-                    if job is not None and job.status.value == "pending" and not job.review_required:
-                        try:
-                            await _run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None,
-                                trigger="agent", trigger_actor=entry["agent"], submit_session_id=entry["session_id"])
-                        except Exception:
-                            import logging
-                            logging.getLogger(__name__).exception("pause rediscovery job remains pending: %s", job_id)
-            with store.writer(root_id) as (_, current):
-                if current["generation"] == generation and not current["held"]:
-                    org.db._conn.execute("UPDATE task_pause_controls SET release_pending_generation=NULL WHERE root_task_id=?", (root_id,))
-        store._discovery_cursor = root_id
+                    if task_id in deferred:
+                        entry = deferred[task_id]
+                        if "authority_v2_generation" in entry["owner_identity"]:
+                            try:
+                                with org.db.coherent_read_view():
+                                    _authenticate_deferred_v2(store, entry)
+                            except DeferredRootPause:
+                                if publication is not None:
+                                    raise  # Unproved original v2 owner is not delivery.
+                                continue
+                            # This is delivery for the already admitted SAME
+                            # owner, not publication/admission of a pending G.
+                            _publish_pause_task(org, queue, task_id, metadata=dict(entry["owner_identity"]),
+                                                generation_aware=False)
+                        else:
+                            if publication is not None:
+                                _publish_pause_task(org, queue, task_id,
+                                                    metadata=dict(entry["owner_identity"]))
+                            else:
+                                _publish_pause_task(org, queue, task_id,
+                                    publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
+                                        org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
+                    elif task is not None and eligible(org.orchestrator, task):
+                        ownership = classify_task(org.db, task_id, org_slug=org.slug)
+                        if ownership.kind == "draft":
+                            _pause_workflow_notification(org.workflow_drafts, task_id, queue, publication)
+                        elif ownership.kind == "f5":
+                            _pause_workflow_notification(org.workflow_reviews, task_id, queue, publication)
+                        elif ownership.kind == 'coding_attempt':
+                            _pause_workflow_notification(org.workflow_coding_dispatch, task_id, queue, publication)
+                        elif ownership.kind.startswith('coding_'):
+                            if publication is not None:
+                                publication.count("held")
+                            continue
+                        elif ownership.kind == "legacy":
+                            if publication is not None:
+                                from runtime.orchestrator.run_step import _publish_redelivery_task
+                                _publish_redelivery_task(org.orchestrator, task_id)
+                            else:
+                                enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
+                        elif publication is not None:
+                            raise RuntimeError("startup_pause_task_ownership_unavailable")
+        validate()
+        if publication is not None and root_unknown:
+            publication.count("held")  # Authenticated retained root-local uncertainty.
+        task_hold = publication is not None and publication.snapshot()["held"] > held_before
+        yield root_id, generation, held, entries, True, task_hold
+
+
+def _publish_pause_task(org, queue, task_id, *, metadata=None, publisher=None,
+                        generation_aware=True):
+    from contextlib import nullcontext
+    from runtime.daemon.queue import TaskQueue
+    with queue._publication_scope(org.slug, task_id) if isinstance(queue, TaskQueue) else nullcontext():
+        from runtime.daemon.startup_publication import current_publication
+        if current_publication(org.orchestrator) is not None:
+            from runtime.orchestrator.run_step import _publish_redelivery_task
+            if queue is not org.orchestrator._queue:
+                raise RuntimeError("startup_pause_queue_changed")
+            return _publish_redelivery_task(org.orchestrator, task_id, metadata=metadata,
+                publisher=publisher, generation_aware=generation_aware)
+        return queue.enqueue_if_absent(org.slug, task_id, metadata=metadata, publisher=publisher)
+
+
+def _pause_workflow_notification(dispatcher, task_id, queue, publication):
+    outcome = dispatcher.notify_queued(task_id, queue)
+    if publication is not None:
+        from runtime.daemon.startup_recovery import RecoveryOutcome
+        if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+            raise RuntimeError("startup_pause_workflow_notification_unavailable")
+
+
+def _pending_pause_jobs(org, entries):
+    for entry in entries:
+        if entry["owner"] == "job" and entry["phase"] == "pending_job":
+            job_id = entry["owner_identity"]["job_id"]
+            job = org.db.get_job(job_id)
+            if job is not None and job.status.value == "pending" and not job.review_required:
+                yield job_id, entry
+
+
+def _ack_pause_release(org, root_id, generation, *, validate_admission=None):
+    from runtime.orchestrator.run_step import _task_followon_validation
+    selected = _task_followon_validation(org.orchestrator)
+    def validate():
+        selected()
+        if validate_admission is not None:
+            validate_admission()
+    store = org.db._task_pause_store
+    with store.writer(root_id, validate_admission=validate) as (_, current):
+        validate()
+        if current["generation"] == generation and not current["held"]:
+            org.db._conn.execute("UPDATE task_pause_controls SET release_pending_generation=NULL WHERE root_task_id=?", (root_id,))
+            return True
+        return False
+
+
+async def discover_pause_work(org: Any, queue: Any) -> None:
+    """Original ordinary per-root publication -> job attempt -> release ack."""
+    from runtime.orchestrator.run_step import _task_followon_validation
+    validate = _task_followon_validation(org.orchestrator)
+    if queue is not org.orchestrator._queue:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        raise StartupUnavailable("startup_attachment_changed")
+    if getattr(org.db, "_task_pause_store", None) is None or queue is None:
+        return
+    from runtime.daemon.routes.jobs import _run_job_core
+    from runtime.daemon.jobs_runner import require_job_admission
+    from runtime.daemon.startup_recovery import StartupUnavailable
+    for root_id, generation, held, entries, complete, task_hold in _discover_pause_roots(org, queue, validate_admission=validate):
+        validate()
+        if not complete:
+            continue
+        if not held:
+            for job_id, entry in _pending_pause_jobs(org, entries):
+                try:
+                    require_job_admission(org)
+                    validate()
+                    await _run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None,
+                        trigger="agent", trigger_actor=entry["agent"], submit_session_id=entry["session_id"])
+                except StartupUnavailable:
+                    # Preserve the original release intent AND cursor. Native
+                    # P6 has its separate authenticated held outcome.
+                    raise
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("pause rediscovery job remains pending: %s", job_id)
+            require_job_admission(org)
+            _ack_pause_release(org, root_id, generation, validate_admission=validate)
+        validate()
+        org.db._task_pause_store._discovery_cursor = root_id
+
+
+def discover_pause_work_native(org: Any, queue: Any, recovery):
+    """Same reconciliation, no job coroutine/registration or async primitive.
+
+    The eligible original pending job remains durable, including its release
+    intent, until the ordinary ready-mode suffix can actually attempt launch.
+    """
+    from runtime.daemon.startup_publication import current_publication
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    recovery.require_redelivery_owner(org)
+    publication = current_publication(org.orchestrator)
+    if (publication is None or publication.gate is not recovery
+            or queue is not recovery.state.queue
+            or getattr(org.db, "_task_pause_store", None) is None):
+        raise RuntimeError("startup_pause_owner_unavailable")
+    held_any = False
+    for root_id, generation, held, entries, complete, task_hold in _discover_pause_roots(org, queue):
+        recovery.require_redelivery_owner(org)
+        if not complete:
+            raise RuntimeError("startup_pause_root_incomplete")
+        pending_job = False
+        if not held:
+            for _job_id, _entry in _pending_pause_jobs(org, entries):
+                pending_job = True
+                break
+            if not pending_job and not task_hold:
+                task_hold = not _ack_pause_release(org, root_id, generation)
+        if held or pending_job or task_hold:
+            publication.count("held")
+            held_any = True
+        org.db._task_pause_store._discovery_cursor = root_id
+    recovery.require_redelivery_owner(org)
+    return RecoveryOutcome("local_hold" if held_any else "settled")
 
 
 def prepared_cancel_controls(db: Any, task_id: str) -> list[tuple[str, Callable[[], None]]]:

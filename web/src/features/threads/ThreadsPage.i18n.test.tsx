@@ -13,24 +13,44 @@
  *    (`HTTP 500`, a raw string equal to English catalog text, and the empty
  *    string) render exactly.
  */
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { notifyManager, type Query } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { http, HttpHandler, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
+import { seedReadyHealth, startupHealth, stubReadyHealth } from '@/test/startup';
+import { makeQueryClient } from '@/design-system/providers/AppProvider';
+import { getCommittedThreadPageRuns } from '@/design-system/providers/_real-threads';
+import { HEALTH_QUERY_KEY } from '@/lib/startup';
+import { translate } from '@/lib/i18n';
 
 const mermaidChunk = vi.hoisted(() => {
   let release!: () => void;
   const ready = new Promise<void>((resolve) => { release = resolve; });
-  return { ready, release };
+  return { ready, release, observe: undefined as ((original: Promise<unknown>, phase: string) => void) | undefined };
 });
 // External library-load delay; actual Markdown, lazy import and callers stay real.
-vi.mock('mermaid', async () => {
-  await mermaidChunk.ready;
-  return { default: { initialize: vi.fn(), render: vi.fn(async () => ({ svg: '<svg data-w5a-diagram="loaded"></svg>' })) } };
+vi.mock('mermaid', () => {
+  const original = (async () => {
+    await mermaidChunk.ready;
+    return { default: { initialize: vi.fn(), render: vi.fn(() => {
+      const result = (async () => ({ svg: '<svg data-w5a-diagram="loaded"></svg>' }))();
+      mermaidChunk.observe?.(result, 'library render');
+      return result;
+    }) } };
+  })();
+  mermaidChunk.observe?.(original, 'external library factory');
+  return original;
+});
+// Observe the actual module result; React's internal lazy transport is separate.
+vi.mock('@/design-system/patterns/Mermaid', (importOriginal) => {
+  const original = importOriginal<typeof import('@/design-system/patterns/Mermaid')>();
+  mermaidChunk.observe?.(original, 'actual Mermaid module factory');
+  return original;
 });
 
 const SLUG = 'alpha';
@@ -117,8 +137,10 @@ function composerErrorSlot(): HTMLElement | null {
 }
 
 function stubBase() {
+  stubReadyHealth();
   server.use(
     http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
+    http.get(`/api/v1/orgs/${SLUG}/identities`, () => HttpResponse.json({ identities: [] })),
     http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [] })),
     http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -158,14 +180,15 @@ function stubDetail(
   );
 }
 
-function mount(route: string, locale: 'en' | 'zh-CN') {
+function mount(route: string, locale: 'en' | 'zh-CN', client = makeQueryClient()) {
+  seedReadyHealth(client);
   return renderWithProviders(
     <>
       <AppRoutes />
       <LocaleTestSwitch to="zh-CN" />
       <LocaleTestSwitch to="en" />
     </>,
-    { route, i18n: { adapter: savedLocaleAdapter(locale) } },
+    { route, queryClient: client, i18n: { adapter: savedLocaleAdapter(locale) } },
   );
 }
 
@@ -221,52 +244,130 @@ describe('ThreadsPage list i18n (zh-CN)', () => {
       mkThread('THR-2', 'Ordinary subject'),
       mkThread('THR-3', 'Archived subject', { status: 'archived' }),
     ];
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
-        await held;
-        const status = new URL(request.url).searchParams.get('status');
-        return threadListResponse({ threads: threads.filter((t) => t.status === status) }, threads);
-      }),
-    );
-    stubDetail(threads[0], [mkMessage(1, 'founder', AUTHORED_BODY)]);
-    const user = userEvent.setup();
-    mount(`/orgs/${SLUG}/threads`, 'zh-CN');
+    const client = makeQueryClient();
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const operations: Completion[] = [];
+    const originals = new Set<Promise<unknown>>();
+    const listRuns = new Set<Promise<void>>();
+    const restores: (() => void)[] = [];
+    let view: ReturnType<typeof mount> | undefined;
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    const observe = <T,>(original: Promise<T>, phase: string) => {
+      if (!originals.has(original)) {
+        originals.add(original);
+        operations.push(original.then(
+          (value) => ({ status: 'fulfilled', value } as const),
+          (reason: unknown) => {
+            later.push({ phase, error: reason });
+            return { status: 'rejected', reason } as const;
+          },
+        ));
+      }
+      return original;
+    };
+    const captureListRuns = () => {
+      for (const original of getCommittedThreadPageRuns(client, ['threads', SLUG, { status: 'open', page_size: 50 }])) {
+        listRuns.add(original);
+        observe(original, 'original list run');
+      }
+    };
+    try {
+      // QueryCache adds synchronously before the library calls Query.fetch.
+      // Retain its actual outer return, including detail/messages/tasks reads.
+      restores.push(client.getQueryCache().subscribe((event) => {
+        if (event.type === 'added') {
+          const query = event.query;
+          const fetch = query.fetch;
+          const spy = vi.spyOn(query, 'fetch').mockImplementation((...args) =>
+            observe(fetch.apply(query, args), 'original query fetch'));
+          restores.push(() => spy.mockRestore());
+        }
+        captureListRuns();
+      }));
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+          const original = (async () => {
+            await held;
+            const status = new URL(request.url).searchParams.get('status');
+            return threadListResponse({ threads: threads.filter((t) => t.status === status) }, threads);
+          })();
+          observe(original, 'original list handler');
+          captureListRuns();
+          return original;
+        }),
+      );
+      stubDetail(threads[0], [mkMessage(1, 'founder', AUTHORED_BODY)]);
+      const user = userEvent.setup();
+      view = mount(`/orgs/${SLUG}/threads`, 'zh-CN', client);
+      captureListRuns();
+      // Absence is unavailable work, never successful list settlement.
+      expect(listRuns.size).toBeGreaterThan(0);
 
-    // Loading: localized chrome + in-progress bucket counts.
-    expect(await screen.findByRole('heading', { name: '全组织的会话' })).toBeInTheDocument();
-    const tabs = screen.getByRole('tablist', { name: '状态筛选' });
-    expect(within(tabs).getByRole('tab', { name: /^全部/ })).toBeInTheDocument();
-    expect(within(tabs).getByRole('tab', { name: /^开放/ })).toBeInTheDocument();
-    expect(within(tabs).getByRole('tab', { name: /^已归档/ })).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('筛选…')).toHaveAccessibleName('筛选会话');
-    expect(screen.getByRole('button', { name: '新建会话' })).toHaveTextContent('+ 新建会话');
-    release();
+      // Loading: localized chrome + in-progress bucket counts.
+      expect(await screen.findByRole('heading', { name: '全组织的会话' })).toBeInTheDocument();
+      const tabs = screen.getByRole('tablist', { name: '状态筛选' });
+      expect(within(tabs).getByRole('tab', { name: /^全部/ })).toBeInTheDocument();
+      expect(within(tabs).getByRole('tab', { name: /^开放/ })).toBeInTheDocument();
+      expect(within(tabs).getByRole('tab', { name: /^已归档/ })).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('筛选…')).toHaveAccessibleName('筛选会话');
+      expect(screen.getByRole('button', { name: '新建会话' })).toHaveTextContent('+ 新建会话');
+      release();
 
-    // Populated.
-    expect(await screen.findByText('3 个会话 · 1 个由梦境开启')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '已置顶' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '会话' })).toBeInTheDocument();
-    const pinnedRow = screen.getByRole('link', { name: new RegExp('THR-10') });
-    expect(within(pinnedRow).getByText(AUTHORED_SUBJECT)).toBeInTheDocument();
-    expect(within(pinnedRow).getByText('开放')).toBeInTheDocument();
-    expect(within(pinnedRow).getByText('来自梦境')).toBeInTheDocument();
-    expect(within(pinnedRow).getByText('最后发言')).toBeInTheDocument();
-    // Agent names / ids stay verbatim; relative time is localized.
-    expect(within(pinnedRow).getAllByText('engineering_manager')[0]).toBeInTheDocument();
-    expect(within(pinnedRow).getByText((_text, node) => node?.tagName === 'DIV' && node.textContent === 'founder · engineering_manager')).toBeInTheDocument();
-    expect(within(pinnedRow).getByText(/^\d+ 天前$/)).toBeInTheDocument();
-    // English copy of the same keys is absent.
-    expect(screen.queryByText('Pinned')).not.toBeInTheDocument();
-    expect(screen.queryByText(/THREADS ·/)).not.toBeInTheDocument();
-    expect(screen.queryByText('from dream')).not.toBeInTheDocument();
+      // Populated.
+      expect(await screen.findByText('3 个会话 · 1 个由梦境开启')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: '已置顶' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: '会话' })).toBeInTheDocument();
+      const pinnedRow = screen.getByRole('link', { name: new RegExp('THR-10') });
+      expect(within(pinnedRow).getByText(AUTHORED_SUBJECT)).toBeInTheDocument();
+      expect(within(pinnedRow).getByText('开放')).toBeInTheDocument();
+      expect(within(pinnedRow).getByText('来自梦境')).toBeInTheDocument();
+      expect(within(pinnedRow).getByText('最后发言')).toBeInTheDocument();
+      // Agent names / ids stay verbatim; relative time is localized.
+      expect(within(pinnedRow).getAllByText('engineering_manager')[0]).toBeInTheDocument();
+      expect(within(pinnedRow).getByText((_text, node) => node?.tagName === 'DIV' && node.textContent === 'founder · engineering_manager')).toBeInTheDocument();
+      expect(within(pinnedRow).getByText(/^\d+ 天前$/)).toBeInTheDocument();
+      // English copy of the same keys is absent.
+      expect(screen.queryByText('Pinned')).not.toBeInTheDocument();
+      expect(screen.queryByText(/THREADS ·/)).not.toBeInTheDocument();
+      expect(screen.queryByText('from dream')).not.toBeInTheDocument();
 
-    // Selection navigates to the detail; the authored title is byte-identical.
-    await user.click(pinnedRow);
-    expect((await screen.findByText('bold')).closest('article')?.textContent).toContain(
-      'Plan: bold and code for engineering_manager',
-    );
-    expect(screen.getAllByText(AUTHORED_SUBJECT).length).toBeGreaterThan(0);
-    expect(screen.getByRole('link', { name: '‹ 全部会话' })).toBeInTheDocument();
+      // Selection navigates to the detail; the authored title is byte-identical.
+      await user.click(pinnedRow);
+      expect((await screen.findByText('bold')).closest('article')?.textContent).toContain(
+        'Plan: bold and code for engineering_manager',
+      );
+      expect(screen.getAllByText(AUTHORED_SUBJECT).length).toBeGreaterThan(0);
+      expect(screen.getByRole('link', { name: '‹ 全部会话' })).toBeInTheDocument();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      try { release(); } catch (error) { later.push({ phase: 'release list', error }); }
+      // Drain only returns actually captured while this declaration owns them.
+      // React delivery may start further real reads; join those before teardown.
+      let joined = 0;
+      do {
+        captureListRuns();
+        while (joined < operations.length) {
+          const completion = operations[joined++];
+          try { await completion; } catch (error) { later.push({ phase: 'join observation', error }); }
+          captureListRuns();
+        }
+        try { await act(async () => {}); } catch (error) { later.push({ phase: 'React delivery', error }); }
+        captureListRuns();
+      } while (joined < operations.length);
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+      try { view?.unmount(); } catch (error) { later.push({ phase: 'unmount', error }); }
+      try { client.clear(); } catch (error) { later.push({ phase: 'clear client', error }); }
+    }
+    if (primary) {
+      if (later.length) console.error('Threads list secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Threads list completion errors');
   });
 
   test('error + retry, empty and filter-empty states are localized', async () => {
@@ -305,26 +406,403 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
   test('detail loading then error with retry are localized', async () => {
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => { release = resolve; });
-    stubList([]);
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/threads/THR-9`, async () => {
-        await held;
-        return HttpResponse.json({ detail: 'nope' }, { status: 500 });
-      }),
-      http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/messages`, () =>
-        HttpResponse.json({ detail: 'nope' }, { status: 500 }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/tasks`, () => HttpResponse.json([])),
-      http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/tail`, () =>
-        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
-      ),
-    );
-    mount(`/orgs/${SLUG}/threads/THR-9`, 'zh-CN');
-    expect(await screen.findByText('正在加载消息…')).toBeInTheDocument();
-    release();
-    expect(await screen.findByText('加载会话失败。', {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '‹ 全部会话' })).toBeInTheDocument();
+    const client = makeQueryClient();
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    type Operation = { original: Promise<unknown>; completion: Completion; next?: Operation };
+    const operations: Completion[] = [];
+    let firstOperation: Operation | undefined;
+    let lastOperation: Operation | undefined;
+    const listRuns = new Set<Promise<void>>();
+    type Failure = { phase: string; error: unknown };
+    type Input = { kind: unknown; pending: boolean; response?: Response; failure?: Failure };
+    type Invocation = { input?: Input; shared?: Invocation; entered: boolean; settled: boolean; escaped?: Failure; delivery?: Batch; finalization?: Phase };
+    type Phase = { name: string; invocation?: Invocation; owned: boolean; outcome?: 'returned' | 'threw'; failure?: Failure };
+    type Batch = { frame: Phase; callback: Phase; parent?: Batch; callbackActive: boolean; ambiguous: boolean };
+    type SinkFailure = { error: unknown; original: Failure; previous?: SinkFailure };
+    const inputs: Input[] = [];
+    const invocations: Invocation[] = [];
+    const phases: Phase[] = [];
+    let currentPhase: Phase | undefined;
+    let currentBatch: Batch | undefined;
+    let provenanceComplete = true;
+    let restoreBatch: (() => void) | undefined;
+    let restoreTimer: (() => void) | undefined;
+    const observedObservers = new WeakSet<object>();
+    const queryCalls = new WeakMap<object, { calling?: Invocation; running?: Invocation }>();
+    const rejections: Array<{ phase: string; error: unknown; disposition: string }> = [];
+    const restores: (() => void)[] = [];
+    let view: ReturnType<typeof mount> | undefined;
+    let primary: { error: unknown } | undefined;
+    const later: Failure[] = [];
+    let sinkFailures: SinkFailure | undefined;
+    const retain = (failure: Failure) => {
+      try { later.push(failure); } catch (error) {
+        provenanceComplete = false;
+        // A failed diagnostic sink must neither lose the occurrence nor replace
+        // the original UI/operation failure. Keep an independent fallback chain.
+        sinkFailures = { error, original: failure, previous: sinkFailures };
+      }
+    };
+    const recordPhase = (frame: Phase) => {
+      try { phases.push(frame); } catch (error) {
+        provenanceComplete = false;
+        retain({ phase: `${frame.name} provenance`, error });
+      }
+    };
+    const callPhase = <T,>(name: string, invocation: Invocation | undefined, call: () => T,
+      frame: Phase = { name, invocation, owned: true }): T => {
+      if (frame.owned) {
+        // Only an actually reached call on this supplied client's instance can
+        // bind its enclosing batches. Unrelated batches/timers pass untouched.
+        for (let batch = currentBatch; batch?.callbackActive; batch = batch.parent) {
+          const newlyOwned = !batch.frame.owned;
+          batch.frame.owned = batch.callback.owned = true;
+          if (invocation && !batch.ambiguous) {
+            if (batch.frame.invocation && batch.frame.invocation !== invocation) {
+              batch.ambiguous = true;
+              batch.frame.invocation = batch.callback.invocation = undefined;
+            } else {
+              batch.frame.invocation = batch.callback.invocation = invocation;
+            }
+          }
+          if (newlyOwned) { recordPhase(batch.frame); recordPhase(batch.callback); }
+        }
+        if (name === 'query scheduleGc' && invocation) invocation.finalization = frame;
+        recordPhase(frame);
+      }
+      const parent = currentPhase;
+      currentPhase = frame;
+      try {
+        const value = call();
+        frame.outcome = 'returned';
+        return value;
+      } catch (error) {
+        // The child transported through this same synchronous call is one
+        // occurrence. A later scheduler/GC call always has a fresh frame.
+        const failure = frame.failure && frame.failure.error === error ? frame.failure : { phase: name, error };
+        const fresh = failure !== frame.failure;
+        frame.outcome = 'threw';
+        frame.failure = failure;
+        if (frame.owned) {
+          // Save original delivery before any fallible diagnostic sink.
+          if (frame.invocation) frame.invocation.escaped = failure;
+          if (parent) parent.failure = failure;
+          if (fresh) retain(failure);
+        }
+        throw error;
+      } finally {
+        currentPhase = parent;
+      }
+    };
+    const observe = <T,>(original: Promise<T>, phase: string, classify = (_error: unknown) => 'unexpected', fulfilled = () => {}) => {
+      for (let operation = firstOperation; operation; operation = operation.next) {
+        if (operation.original === original) return original;
+      }
+      const completion = original.then(
+        (value) => {
+          try { fulfilled(); } catch (error) {
+            provenanceComplete = false;
+            retain({ phase: `${phase} fulfillment observation`, error });
+          }
+          return { status: 'fulfilled', value } as const;
+        },
+        (reason: unknown) => {
+          let disposition = 'unexpected';
+          try { disposition = classify(reason); } catch (error) {
+            provenanceComplete = false;
+            retain({ phase: `${phase} provenance`, error });
+          }
+          try { rejections.push({ phase, error: reason, disposition }); } catch (error) {
+            provenanceComplete = false;
+            sinkFailures = { error, original: { phase, error: reason }, previous: sinkFailures };
+          }
+          if (disposition === 'unexpected') retain({ phase, error: reason });
+          return { status: 'rejected', reason } as const;
+        },
+      );
+      // This custody owns the SAME completion before diagnostic insertion can
+      // fail. Reacquisition consults it, so no seen-only or duplicate observer.
+      const operation: Operation = { original, completion };
+      if (lastOperation) lastOperation.next = operation;
+      else firstOperation = operation;
+      lastOperation = operation;
+      try { operations.push(completion); } catch (error) {
+        provenanceComplete = false;
+        retain({ phase: `${phase} completion recording`, error });
+      }
+      return original;
+    };
+    const captureListRuns = () => {
+      for (const original of getCommittedThreadPageRuns(client, ['threads', SLUG, { status: 'open', page_size: 50 }])) {
+        observe(original, 'original list run');
+        try { listRuns.add(original); } catch (error) {
+          provenanceComplete = false;
+          retain({ phase: 'list run recording', error });
+        }
+      }
+    };
+    const intendedInput = (input: Input, error: unknown) =>
+      input.response?.status === 500 && error instanceof Error && error.name === 'ApiError'
+      && 'status' in error && error.status === 500 && 'code' in error && error.code === null
+      && 'detail' in error && error.detail === 'nope';
+    const pendingInput = (kind: string) => {
+      const pending = inputs.filter((input) => input.kind === kind && input.pending);
+      return pending.length === 1 ? pending[0] : undefined;
+    };
+    try {
+      const originalBatch = notifyManager.batch;
+      const batchSpy = vi.spyOn(notifyManager, 'batch').mockImplementation(function <T,>(this: typeof notifyManager, ...args: [callback: () => T]): T {
+        const enclosing = currentPhase;
+        const batch: Batch = {
+          frame: { name: 'notification batch', invocation: enclosing?.invocation, owned: enclosing?.owned === true },
+          callback: { name: 'notification batch callback', invocation: enclosing?.invocation, owned: enclosing?.owned === true },
+          parent: currentBatch, callbackActive: false, ambiguous: false,
+        };
+        const [callback] = args;
+        const forwarded: typeof args = [...args];
+        forwarded[0] = function (this: unknown, ...callbackArgs: []) {
+          batch.callbackActive = true;
+          try { return callPhase(batch.callback.name, undefined, () => callback.apply(this, callbackArgs), batch.callback); }
+          finally { batch.callbackActive = false; }
+        };
+        currentBatch = batch;
+        try {
+          return callPhase(batch.frame.name, batch.frame.invocation, () => originalBatch.apply(this, forwarded) as T, batch.frame);
+        } finally { currentBatch = batch.parent; }
+      });
+      restoreBatch = () => batchSpy.mockRestore();
+      const originalSetTimeout = globalThis.setTimeout;
+      const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(function (this: typeof globalThis, ...args: Parameters<typeof globalThis.setTimeout>) {
+        const batch = currentBatch;
+        // Locked defaultScheduler calls this global synchronously ONLY after
+        // the original batch callback exits. Keep its callback/handle untouched.
+        if (!batch?.frame.owned || batch.callbackActive) return originalSetTimeout.apply(this, args);
+        return callPhase('notification batch scheduling', batch.frame.invocation, originalSetTimeout.bind(this, ...args));
+      });
+      restoreTimer = () => timerSpy.mockRestore();
+      const cache = client.getQueryCache();
+      const notify = cache.notify;
+      const notifySpy = vi.spyOn(cache, 'notify').mockImplementation(function (this: typeof cache, event) {
+        const state = queryCalls.get(event.query);
+        const invocation = state?.calling ?? state?.running;
+        if (invocation && event.type === 'updated' && event.action.type === 'error' && currentBatch?.callbackActive) {
+          invocation.delivery = currentBatch;
+        }
+        return callPhase(`cache ${event.type}`, invocation, () => notify.call(this, event));
+      });
+      restores.push(() => notifySpy.mockRestore());
+      // Observe only callbacks that really exist; do not invent a successful
+      // callback phase when the original client has none.
+      const config = cache.config as {
+        onError?: (...args: unknown[]) => unknown;
+        onSettled?: (...args: unknown[]) => unknown;
+      };
+      for (const name of ['onError', 'onSettled'] as const) {
+        const callback = config[name];
+        if (callback) {
+          const present = config as Required<typeof config>;
+          const spy = vi.spyOn(present, name).mockImplementation(function (this: typeof config, ...args: unknown[]) {
+            const query = args[name === 'onError' ? 1 : 2] as object;
+            const state = queryCalls.get(query);
+            return callPhase(`cache ${name}`, state?.calling ?? state?.running, () => callback.apply(this, args));
+          });
+          restores.push(() => spy.mockRestore());
+        }
+      }
+      // The locked QueryCache notifies added synchronously before Query.fetch.
+      // Capture that outer return, including its error callbacks/finalization.
+      restores.push(cache.subscribe((event) => {
+        if (event.type === 'added') {
+          const query = event.query;
+          const state: { calling?: Invocation; running?: Invocation } = {};
+          queryCalls.set(query, state);
+          const wrapped = new WeakSet<(...args: unknown[]) => unknown>();
+          const observeInput = () => {
+            const options = query.options as { queryFn?: (...args: unknown[]) => unknown };
+            const queryFn = options.queryFn;
+            if (typeof queryFn !== 'function' || wrapped.has(queryFn)) return;
+            const present = options as Required<typeof options>;
+            const spy = vi.spyOn(present, 'queryFn').mockImplementation(function (this: unknown, ...args: unknown[]) {
+              const invocation = state.calling;
+              const [kind, slug, id] = query.queryKey;
+              const input: Input = {
+                kind: query.queryKey.length === 3 && slug === SLUG && id === 'THR-9'
+                  && (kind === 'thread' || kind === 'thread-messages') ? kind : undefined,
+                pending: true,
+              };
+              try { inputs.push(input); } catch (error) {
+                provenanceComplete = false;
+                retain({ phase: 'query input provenance', error });
+              }
+              if (invocation) {
+                invocation.entered = true;
+                invocation.input = input;
+                state.running = invocation;
+              }
+              const rejected = (error: unknown) => {
+                input.pending = false;
+                input.failure = { phase: `query input ${JSON.stringify(query.queryKey)}`, error };
+                return intendedInput(input, error) ? 'intended input' : 'unexpected';
+              };
+              let original: unknown;
+              try { original = queryFn.apply(this, args); } catch (error) {
+                try {
+                  if (rejected(error) === 'unexpected') retain(input.failure!);
+                } catch (diagnostic) {
+                  retain({ phase: 'query input provenance', error: diagnostic });
+                  retain({ phase: 'query input', error });
+                }
+                throw error;
+              }
+              if (original instanceof Promise) {
+                observe(original, `query input ${JSON.stringify(query.queryKey)}`, rejected, () => { input.pending = false; });
+              } else {
+                input.pending = false;
+              }
+              return original;
+            });
+            wrapped.add(present.queryFn);
+            restores.push(() => spy.mockRestore());
+          };
+          observeInput();
+          const setOptions = query.setOptions;
+          const optionsSpy = vi.spyOn(query, 'setOptions').mockImplementation(function (this: typeof query, ...args) {
+            if (state.calling) state.calling.entered = true;
+            const value = setOptions.apply(this, args);
+            observeInput();
+            return value;
+          });
+          restores.push(() => optionsSpy.mockRestore());
+          // scheduleGc is protected in TS, but is this original instance's
+          // actual finalization method. No prototype or global is replaced.
+          const gc = query as unknown as { scheduleGc: () => void };
+          const scheduleGc = gc.scheduleGc;
+          const gcSpy = vi.spyOn(gc, 'scheduleGc').mockImplementation(function (this: typeof gc, ...args) {
+            if (state.calling) state.calling.entered = true;
+            return callPhase('query scheduleGc', state.calling ?? state.running, () => scheduleGc.apply(this, args));
+          });
+          restores.push(() => gcSpy.mockRestore());
+          const fetch = query.fetch;
+          const spy = vi.spyOn(query, 'fetch').mockImplementation(function (this: typeof query, ...args) {
+            const previous = state.calling;
+            const retryer = query.promise as (Promise<unknown> & { status: string }) | undefined;
+            // Locked fetch's pending fast path returns the existing retryer;
+            // continueRetry only assigns a Boolean and invokes no callback.
+            const shared = query.state.fetchStatus !== 'idle' && retryer && retryer.status !== 'rejected'
+              && !(query.state.data !== undefined && args[1]?.cancelRefetch) && !state.running?.settled
+              ? state.running : undefined;
+            const invocation: Invocation = { shared, entered: false, settled: false };
+            try { invocations.push(invocation); } catch (error) {
+              provenanceComplete = false;
+              retain({ phase: 'query invocation provenance', error });
+            }
+            state.calling = invocation;
+            try {
+              const original = fetch.apply(this, args);
+              observe(original, `original query ${JSON.stringify(query.queryKey)}`, (error) => {
+                invocation.settled = true;
+                const source = invocation.input ? invocation : !invocation.entered ? invocation.shared : undefined;
+                if (!provenanceComplete) return 'unexpected';
+                if (invocation.escaped && invocation.escaped.error === error) return 'observed phase propagation';
+                const delivery = invocation.delivery;
+                // An input match alone cannot certify the intervening batch.
+                // Shared fast-path returns have no dispatch/finally of their own.
+                const complete = source !== invocation && source !== undefined
+                  || delivery?.frame.outcome === 'returned' && delivery.callback.outcome === 'returned'
+                    && !delivery.ambiguous && invocation.finalization?.outcome === 'returned';
+                if (complete && source?.input?.failure && source.input.failure.error === error) return 'completed input propagation';
+                return 'unexpected';
+              }, () => { invocation.settled = true; });
+              return original;
+            } finally {
+              state.calling = previous;
+            }
+          });
+          restores.push(() => spy.mockRestore());
+        }
+        if (event.type === 'observerAdded' && !observedObservers.has(event.observer)) {
+          const observer = event.observer;
+          observedObservers.add(observer);
+          const update = observer.onQueryUpdate;
+          const spy = vi.spyOn(observer, 'onQueryUpdate').mockImplementation(function (this: typeof observer, ...args) {
+            const state = queryCalls.get(event.query);
+            return callPhase('observer onQueryUpdate', state?.calling ?? state?.running, () => update.apply(this, args));
+          });
+          restores.push(() => spy.mockRestore());
+        }
+        captureListRuns();
+      }));
+      stubList([]);
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-9`, () => {
+          const input = pendingInput('thread');
+          const original = (async () => {
+            await held;
+            const response = HttpResponse.json({ detail: 'nope' }, { status: 500 });
+            if (input) input.response = response;
+            return response;
+          })();
+          observe(original, 'original detail handler');
+          captureListRuns();
+          return original;
+        }),
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/messages`, () => {
+          const input = pendingInput('thread-messages');
+          const response = HttpResponse.json({ detail: 'nope' }, { status: 500 });
+          if (input) input.response = response;
+          return response;
+        }),
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/tasks`, () => HttpResponse.json([])),
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/tail`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+      );
+      view = mount(`/orgs/${SLUG}/threads/THR-9`, 'zh-CN', client);
+      captureListRuns();
+      expect(listRuns.size).toBeGreaterThan(0);
+      expect(await screen.findByText('正在加载消息…')).toBeInTheDocument();
+      release();
+      expect(await screen.findByText('加载会话失败。', {}, { timeout: 4000 })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: '‹ 全部会话' })).toBeInTheDocument();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      try { release(); } catch (error) { retain({ phase: 'release detail', error }); }
+      // Acquire while this test owns work; a pending/latest snapshot is not a
+      // historical census. Never wait on an unstarted handler or launch a retry.
+      let joined: Operation | undefined;
+      do {
+        try { captureListRuns(); } catch (error) { retain({ phase: 'capture list', error }); }
+        let pending: Operation | undefined = joined ? joined.next : firstOperation;
+        while (pending) {
+          joined = pending;
+          try { await pending.completion; } catch (error) { retain({ phase: 'join observation', error }); }
+          try { captureListRuns(); } catch (error) { retain({ phase: 'capture list', error }); }
+          pending = joined.next;
+        }
+        try { await act(async () => {}); } catch (error) { retain({ phase: 'React delivery', error }); }
+        try { captureListRuns(); } catch (error) { retain({ phase: 'capture list', error }); }
+      } while (joined ? joined.next : firstOperation);
+      try { restoreTimer?.(); } catch (error) { retain({ phase: 'restore notification timer observation', error }); }
+      try { restoreBatch?.(); } catch (error) { retain({ phase: 'restore notification batch observation', error }); }
+      for (const restore of restores.reverse()) {
+        try { restore(); } catch (error) { retain({ phase: 'restore observation', error }); }
+      }
+      try { view?.unmount(); } catch (error) { retain({ phase: 'unmount', error }); }
+      try { client.clear(); } catch (error) { retain({ phase: 'clear client', error }); }
+    }
+    if (primary) {
+      try {
+        if (later.length || sinkFailures) console.error('Threads detail secondary errors', later, rejections, sinkFailures, invocations, phases, operations);
+      } catch (error) {
+        retain({ phase: 'report secondary errors', error });
+      }
+      throw primary.error;
+    }
+    if (sinkFailures) throw new AggregateError([sinkFailures, ...later.map(({ error }) => error)], 'Threads detail provenance sink failed');
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Threads detail completion errors');
   });
 
   test('no-messages state is localized', async () => {
@@ -418,6 +896,58 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
 });
 
 describe('ThreadsPage composer across a locale switch', () => {
+  test.each(['en', 'zh-CN'] as const)('held transitions preserve %s draft, focus, selection and attachment without replay', async (locale) => {
+    stubList([]);
+    stubDetail(mkThread('THR-1', 'Preserved recovery subject'), [mkMessage(1, 'founder', 'Original transcript bytes')]);
+    const client = makeQueryClient();
+    client.setQueryData(HEALTH_QUERY_KEY, startupHealth());
+    let sends = 0;
+    let uploads = 0;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-1/send`, () => {
+        sends++; return HttpResponse.json({ thread_id: 'THR-1', seq: 2 });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, () => {
+        uploads++; return HttpResponse.json({ name: 'held.txt', size_bytes: 3, modified_at: 'now' });
+      }),
+    );
+    const user = userEvent.setup();
+    const view = renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/threads/THR-1`, queryClient: client,
+      i18n: { adapter: savedLocaleAdapter(locale) },
+    });
+    try {
+      const input = await screen.findByRole('textbox', { name: locale === 'en' ? 'Compose follow-up' : '撰写跟进消息' }) as HTMLTextAreaElement;
+      await screen.findByText('Original transcript bytes');
+      await user.type(input, 'Retain this exact draft');
+      await user.upload(screen.getByLabelText(locale === 'en' ? 'Attach files' : '添加附件'), new File(['abc'], 'held.txt'));
+      input.focus();
+      input.setSelectionRange(2, 9);
+      const chip = screen.getByText('held.txt');
+      for (const state of ['recovering', 'recovery_failed'] as const) {
+        await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth(state)); });
+        await screen.findByText(translate(locale, state === 'recovering' ? 'startup.banner.recovering' : 'startup.banner.failed'));
+        expect(screen.getByRole('button', { name: locale === 'en' ? 'Send' : '发送' })).toBeDisabled();
+        expect(input).toHaveValue('Retain this exact draft');
+        expect(input).toHaveFocus();
+        expect([input.selectionStart, input.selectionEnd]).toEqual([2, 9]);
+        expect(screen.getByText('held.txt')).toBe(chip);
+        expect(sends).toBe(0);
+        expect(uploads).toBe(0);
+      }
+      await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth()); });
+      await waitFor(() => expect(screen.getByRole('button', { name: locale === 'en' ? 'Send' : '发送' })).toBeEnabled());
+      expect(input).toHaveValue('Retain this exact draft');
+      expect(input).toHaveFocus();
+      expect([input.selectionStart, input.selectionEnd]).toEqual([2, 9]);
+      expect(sends).toBe(0);
+      expect(uploads).toBe(0);
+    } finally {
+      view.unmount();
+      client.clear();
+    }
+  });
+
   test('draft, selection, attachment chip and controls survive resize and en -> zh-CN -> en with zero requests; one send posts once', async () => {
     stubList([]);
     stubDetail(mkThread('THR-1', 'Composer subject'), [mkMessage(1, 'founder', 'hi')]);
@@ -663,27 +1193,138 @@ describe('ThreadsPage dream-origin badge accessible names across a locale switch
 });
 
 test('Thread Mermaid loading copy switches in place without disturbing the composer or issuing requests', async () => {
-  const thread = mkThread('THR-77', 'raw title');
-  stubList([thread]);
-  stubDetail(thread, [mkMessage(1, 'founder', 'Rendering diagram…\n\n```mermaid\nflowchart LR; A-->B\n```')]);
-  const view = mount(`/orgs/${SLUG}/threads/THR-77`, 'en');
+  const client = makeQueryClient();
+  let view: ReturnType<typeof mount> | undefined;
+  type Occurrence = { phase: string; error: unknown; next?: Occurrence };
+  const errors: { first?: Occurrence; last?: Occurrence } = {};
+  const remember = (phase: string, error: unknown) => {
+    const occurrence: Occurrence = { phase, error };
+    if (errors.last) errors.last.next = occurrence;
+    else errors.first = occurrence;
+    errors.last = occurrence;
+  };
+  type Operation = { original: Promise<unknown>; completion: Promise<void>; next?: Operation };
+  let first: Operation | undefined;
+  let last: Operation | undefined;
+  const observe = (original: Promise<unknown>, phase: string) => {
+    for (let owned = first; owned; owned = owned.next) {
+      if (owned.original === original) return;
+    }
+    const completion = original.then(() => undefined, (error: unknown) => { remember(phase, error); });
+    // Both handles enter custody before any fallible diagnostic bookkeeping.
+    const owned: Operation = { original, completion };
+    if (last) last.next = owned;
+    else first = owned;
+    last = owned;
+  };
+  type Restore = { run: () => void; next?: Restore };
+  let restores: Restore | undefined;
+  const ownRestore = (run: () => void) => { restores = { run, next: restores }; };
+  const previousObserve = mermaidChunk.observe;
+  const captureListRuns = () => {
+    try {
+      for (const query of client.getQueryCache().findAll({ queryKey: ['threads', SLUG] })) {
+        for (const original of getCommittedThreadPageRuns(client, query.queryKey)) observe(original, 'committed list run');
+      }
+    } catch (error) { remember('capture original list returns', error); }
+  };
+  let joined: Operation | undefined;
+  const drain = async () => {
+    for (;;) {
+      captureListRuns();
+      let next = joined ? joined.next : first;
+      while (next) {
+        joined = next;
+        await next.completion;
+        captureListRuns();
+        next = joined.next;
+      }
+      // Original completion and actual React delivery are separate stages.
+      try { await act(async () => {}); } catch (error) { remember('React delivery', error); }
+      captureListRuns();
+      if (!(joined ? joined.next : first)) return;
+    }
+  };
   try {
-    await waitFor(() => expect(view.container.querySelector('.gl-prose-mermaid-loading')).not.toBeNull());
-    const fallback = view.container.querySelector('.gl-prose-mermaid-loading');
-    const article = view.container.querySelector('article');
+    mermaidChunk.observe = observe;
+    const cache = client.getQueryCache();
+    const captureQuery = (query: Query) => {
+      const fetch = query.fetch;
+      const spy = vi.spyOn(query, 'fetch');
+      ownRestore(() => spy.mockRestore());
+      spy.mockImplementation(function (this: typeof query, ...args) {
+        const original = fetch.apply(this, args);
+        observe(original, 'query fetch outer');
+        return original;
+      });
+    };
+    ownRestore(cache.subscribe((event) => {
+      try {
+        if (event.type === 'added') captureQuery(event.query);
+        captureListRuns();
+      } catch (error) { remember('query capture callback', error); }
+    }));
+    const thread = mkThread('THR-77', 'raw title');
+    stubList([thread]);
+    stubDetail(thread, [mkMessage(1, 'founder', 'Rendering diagram…\n\n```mermaid\nflowchart LR; A-->B\n```')]);
+    for (const handler of server.listHandlers()) {
+      if (!(handler instanceof HttpHandler)) continue;
+      const run = handler.run;
+      const spy = vi.spyOn(handler, 'run');
+      ownRestore(() => spy.mockRestore());
+      spy.mockImplementation(function (this: typeof handler, ...args) {
+        const original = run.apply(this, args);
+        observe(original, 'HTTP handler run');
+        return original;
+      });
+    }
+    const mounted = mount(`/orgs/${SLUG}/threads/THR-77`, 'en', client);
+    view = mounted;
+    captureListRuns();
+    await waitFor(() => expect(mounted.container.querySelector('.gl-prose-mermaid-loading')).not.toBeNull());
+    const fallback = mounted.container.querySelector('.gl-prose-mermaid-loading');
+    const article = mounted.container.querySelector('article');
     const input = screen.getByRole('textbox', { name: 'Compose follow-up' });
     fireEvent.change(input, { target: { value: 'raw unsent /任务' } }); input.focus();
     const requests = await countRequests(async () => {
       for (const locale of ['zh-CN', 'en'] as const) {
         await switchLocale(locale);
         expect(fallback?.textContent).toBe(locale === 'en' ? 'Rendering diagram…' : '正在渲染图表…');
-        expect(view.container.querySelector('.gl-prose-mermaid-loading')).toBe(fallback);
-        expect(view.container.querySelector('article')).toBe(article);
+        expect(mounted.container.querySelector('.gl-prose-mermaid-loading')).toBe(fallback);
+        expect(mounted.container.querySelector('article')).toBe(article);
         expect(input).toHaveFocus(); expect(input).toHaveValue('raw unsent /任务');
         expect(screen.getByText('Rendering diagram…', { selector: 'p' })).toBeInTheDocument();
       }
     });
     expect(requests).toEqual([]);
-  } finally { await act(async () => mermaidChunk.release()); }
-  await waitFor(() => expect(view.container.querySelector('svg[data-w5a-diagram]')).not.toBeNull());
+  } catch (error) {
+    remember('original UI/assertion', error);
+  } finally {
+    try { mermaidChunk.release(); } catch (error) { remember('release same library gate', error); }
+    try { await drain(); } catch (error) { remember('join originals', error); }
+    // An earlier failure must not skip the original mounted terminal oracle.
+    if (view) {
+      const mounted = view;
+      try {
+        await waitFor(() => expect(mounted.container.querySelector('svg[data-w5a-diagram]')).not.toBeNull());
+      } catch (error) { remember('loaded SVG assertion', error); }
+    }
+    try { await drain(); } catch (error) { remember('join post-oracle originals', error); }
+    // Keep capture live through unmount, then independently restore and clear.
+    try { if (view) view.unmount(); else cleanup(); } catch (error) { remember('unmount', error); }
+    try { await drain(); } catch (error) { remember('join unmount originals', error); }
+    try { mermaidChunk.observe = previousObserve; } catch (error) { remember('restore factory observation', error); }
+    for (let restore = restores; restore; restore = restore.next) {
+      try { restore.run(); } catch (error) { remember('restore pass-through observation', error); }
+    }
+    try { client.clear(); } catch (error) { remember('clear supplied client', error); }
+  }
+  const primary = errors.first;
+  if (primary) {
+    if (primary.next) {
+      try { console.error('Later Mermaid test errors (original first error retained)', primary.next); }
+      catch (error) { remember('report later errors', error); }
+    }
+    throw primary.error;
+  }
 });

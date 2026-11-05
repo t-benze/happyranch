@@ -217,6 +217,12 @@ def cmd_web(args: argparse.Namespace) -> None:
     if not _ok(r):
         print(f"error: daemon /health returned {r.status_code}", file=sys.stderr)
         sys.exit(2)
+    from cli.client.startup import startup_observation
+    try:
+        observation = startup_observation(r.json())
+    except ValueError:
+        observation = startup_observation(None)
+    print(observation.description())
     url = client.base_url.rstrip("/") + "/"
     print(f"happyranch web → {url}")
     if args.no_open:

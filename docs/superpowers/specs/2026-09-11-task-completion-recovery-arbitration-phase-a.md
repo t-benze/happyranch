@@ -6,6 +6,66 @@
 > Current source: `runtime/orchestrator/run_step.py`, `runtime/orchestrator/orchestrator.py`,
 > `runtime/infrastructure/database.py`, and `docs/agent-guides/orchestrator-contracts.md`.
 
+The amended TaskInvocation recovery-return path propagates StartupUnavailable
+unchanged from its original recovery launch. It does not mutate the successful
+original return or durably fail held recovery; committed recovery proof/SIDs and
+current ownership remain. Original native/terminal/tracker/release settlement is
+independently owed. Genuine execution errors retain their existing failure path.
+The first successful-return handoff generates its inert sess-UUID proof identity
+inside the original owed writer, even if fresh admission has closed; it allocates
+no session or claim. Registration, preparation and provider launch stay gated.
+After a host FIFO grant, only the SAME task/attempt/request/reservation/host/context
+can carry an observed preclaim refusal through actual terminal-hook completion
+and positive lease retirement. If preparation returned a handle, its actual
+successful abandonment is additionally required. No-handle refusal alone is not
+cleanup failure. Both outer tails and the final writer independently renew all
+current-owner/callback/claim/native-return and positive whole-cleanup checks.
+Failed or uncertain abandonment, terminal work, release or COMMIT, a terminal
+winner, possible launch, changed ownership and existing unknown remain sticky;
+the original error/traceback and bounded actual secondary causes are retained.
+Both original run-step unwind layers distinguish that refusal from cleanup
+failure only after rechecking the same invocation/attempt, committed journal
+proof, current task/callback and claim exclusions, original native return (or
+its separately retained unknown owner), reservation and completed preparation
+obligations. The original final settlement writer keeps recovery_deferred only
+after the whole outer cleanup batch positively settles. Claimed/possible launch,
+changed ownership, existing uncertainty or any real cleanup failure remains
+sticky and suppresses the whole batch; no exception class or purpose grants
+admission. The primary exception/traceback and secondary cleanup evidence remain.
+The zombie owner retains the exact original legacy child only after a positive
+cancellation COMMIT, before the separate audit or any import/publication tail.
+Audit or parent-publication failure still owes that child's hook exactly once;
+failed/uncertain cancellation never supplies positive cleanup proof. Synchronous
+callers retain the original inline hook, including audit failure; callers without
+an orchestrator retain original audit/error behavior. The periodic owner drains
+EVERY captured committed child on success and exceptional unwind, including v2/legacy parent
+publication failure. Each original child cleanup is joined outside writer/capture
+locks independently of other ended errors or cancellation, before the original
+root batch finishes. An earlier sweep/audit/publication cause and traceback stay
+first; otherwise the original child/root join's raised outcome and original
+traceback select the primary, independently of secondary notification order.
+An already-failed cleanup stays primary over later waiter cancellation; genuine
+cancellation before completion stays primary over later cleanup failure. After
+that selection, the SAME completed worker's actual outcome is consumed before
+bounded cancellation diagnostics, so repeated cancellation cannot exhaust custody
+of an actual cleanup failure. Selected and actual outcome identities are
+deduplicated when folding the bounded notifications. Actual worker failures reach
+the existing bounded secondary/overflow owner even when outer notes are full;
+no unfinished worker is treated as successful. Root teardown stays incomplete
+after a tail failure. No terminal-child rescan, replay or
+cleanup-success inference follows.
+Genuine deferred discovery carries its authenticated original entry through the
+actual adoption COMMIT to prepared. Repeated clean preclaim refusals retain that
+SAME proof, SIDs, attempt and reservation only after current owner/INTEGER callback/
+claim checks, positive preparation closure and whole outer cleanup; prepared or
+memory-only discovery alone proves nothing. Postcommit admission refusal owes the
+same tail; unknown COMMIT/rollback/registry/cleanup retains uncertainty. Real v2
+publication keeps G plus publication_attempt in transport, authenticating the exact
+closed journal owner projection and current settled notification attempt without
+adding a journal key or discarding foreign metadata. Ordinary redelivery retains
+its existing owner projection. No claim/deadline, winner or separate original
+unknown is reset, and no source inspection supplies behavioral acceptance.
+
 THR-247 grants one and only one recovery opportunity after a clean Codex
 provider exit omits the exact authenticated callback. Its durable claim starts
 the shared 120-second budget across claim, admission, preparation, launch,

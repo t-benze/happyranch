@@ -474,6 +474,27 @@ export const en = {
     'The rest of the app is still usable — navigate elsewhere via the top bar, or reload to retry.',
   'shell.error.retry': 'Try again',
 
+  // --- THR-308: daemon startup recovery status -------------------------------
+  'startup.banner.recovering': 'Recovering — you can read threads; new work is paused.',
+  'startup.banner.failed': 'Recovery failed — new work remains paused. Send the startup error code to engineering_manager.',
+  'startup.banner.checking': 'Checking daemon status — new work is paused until the daemon reports it is ready.',
+  'startup.banner.unknown': 'Daemon status is unavailable — new work is paused until the daemon reports it is ready.',
+  'startup.banner.stopping': 'The daemon is stopping — new work is paused.',
+  'startup.banner.code': 'Startup error code: {code}',
+  'startup.banner.aria': 'Daemon startup status',
+  'startup.held.title': 'This page opens when the daemon is ready',
+  'startup.held.body': 'New work and this page are paused until startup recovery is confirmed ready. Threads stay readable meanwhile, and this page opens by itself once the daemon reports it is ready.',
+  'startup.held.openThreads': 'Open threads',
+  'startup.action.paused': 'Paused until the daemon reports it is ready',
+  'startup.composer.held': 'Sending is paused until the daemon reports it is ready. Your draft is kept here.',
+  'startup.error.held': 'New work is paused while the daemon recovers. This request was not accepted; your input is kept.',
+  'startup.error.failed': 'New work is paused because startup recovery failed. This request was not accepted; your input is kept.',
+  'startup.error.unavailable': 'New work is paused because the daemon is not ready. This request was not accepted; your input is kept.',
+  'startup.error.reader': 'Threads could not be read during recovery. Retry shortly.',
+  'startup.threads.recordedActivity': 'Reply activity recorded before the restart: {agents}. Live status resumes after recovery.',
+  'startup.threads.recordedStatus': '{status} (recorded)',
+  'startup.threads.recordedDelivery': 'Recorded before the restart; live status resumes after recovery.',
+
   // --- W2a: Add-org dialog --------------------------------------------------
   'org.add.title': 'New org',
   'org.add.slugLabel': 'Slug',

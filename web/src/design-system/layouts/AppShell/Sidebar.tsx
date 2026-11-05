@@ -32,6 +32,7 @@ import {
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
 import { useAgentsRoutes } from '@/hooks/agents';
 import { useDashboardSummary } from '@/hooks/dashboard';
+import { useStartupStatus } from '@/hooks/health';
 import { useTranslation } from '@/hooks/i18n';
 import { identityInitials, useFounderName, useHasIdentityProvider } from '@/hooks/identities';
 
@@ -82,7 +83,9 @@ export function Sidebar(): JSX.Element {
   // consumes — React Query dedupes by key, so this is not a new data path.
   // The hook self-gates on the active org slug, so non-org routes issue no
   // fetch.
+  // Held until daemon startup is positively ready (THR-308).
   const summary = useDashboardSummary().data;
+  const startup = useStartupStatus();
   const orgAgeDays = summary?.org_age_days;
 
   // Global jump chords retained with the sidebar navigation.
@@ -196,7 +199,9 @@ export function Sidebar(): JSX.Element {
             {!isPrototype && (
               <>
                 <SelectSeparator />
-                <SelectItem value={ADD_ORG_VALUE}>{t('shell.addOrgOption')}</SelectItem>
+                <SelectItem value={ADD_ORG_VALUE} disabled={!startup.admitted}>
+                  {t('shell.addOrgOption')}
+                </SelectItem>
               </>
             )}
           </SelectContent>

@@ -338,7 +338,14 @@ enablement, deployment or a Phase1-completion claim.
   effects, and projects current eligibility separately. New admission returns201
   only after commit; disabled/fenced admission creates no successful empty receipt.
   Profile discovery precedes async serialization, sorted selected profile leases,
-  org publication ownership and the synchronized SQLite writer. No host/queue
+  org publication ownership and the synchronized SQLite writer. Fresh activation
+  captures its own original bound service/org/Database/state/org-map and document
+  admission selection after historical replay, before discovery/effects. The
+  SAME validator renews after each awaited authority/DB lock and inside the
+  existing writer through native ownership, BEGIN and before COMMIT. Unbound or
+  replaced attachment and closed readiness refuse fresh admission; owed rollback
+  and release remain ungated. Failed delivery after successful COMMIT retains
+  the original task/graph/receipt prefix. No host/queue
   effect occurs under durable ownership. Draft/F5/malformed closures are routed
   before legacy startup/run_step/completion/cancellation effects. Startup and
   periodic sweeps rediscover the same authenticated queued intent after lost

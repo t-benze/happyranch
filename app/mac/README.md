@@ -9,6 +9,28 @@ from build, spec, Vite, originals preparation, archive and independent verificat
 They supply no shipping tokens, IPC, mandatory receipts or emitted-closure gates.
 Retained historical source is nonshipping; it is not invoked indirectly.
 
+## Serving and recovery observation
+
+Process state and HTTP liveness do not imply recovery-ready. The app decodes the
+bounded public startup block separately; unknown/missing/malformed/stopping or
+failed recovery keeps new work held. A serving recovering/failed daemon can load
+the original WebView and readable threads; it is not crashed or restarted for
+readiness. Diagnostics and title distinguish process state from last observed
+recovery. Failed observations discard cached ready. One120s cancellable window
+uses spaced2s observations (each5s request/resource and16KiB body limit), with
+original handle/PID/port/state checks after suspension. Stop/exit/replacement
+invalidates it. Ready/failure ends observation; expiry is unknown. Use Daemon →
+Check Daemon Status to renew explicitly without launching another daemon.
+Swift compilation, real Mac lifecycle/races and behavioral acceptance are NOT RUN
+in this source stage. This does not authorize deployment or restart.
+
+Internal daemon records separate module-entry, actual listener, native recovery
+and ready times. Mac's direct normal launch supplies no shell late-exec marker;
+original launcher provenance stays explicitly unavailable. No sanitizer or native
+launch policy changes to supply it. Public health fields/typed observation are
+unchanged; diagnostics, health or a running WebView do not establish parent-to-
+usable API/UI <10s. See [runtime clock limits](../../docs/agent-guides/runtime-and-configuration.md#actual-owner-startup-observations--root13137).
+
 ## Development
 
 Xcode 16 / Swift 6 and a macOS build host are required. From `app/mac`, use

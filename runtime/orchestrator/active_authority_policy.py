@@ -292,6 +292,83 @@ def _prepare_session_policy_binding(
     return None, legacy_payload, selector_payload
 
 
+def _session_policy_audit_rows(
+    *, db, task_id: str, session_id: str, agent_name: str,
+) -> tuple[list[dict], list[dict]]:
+    """Collect both original audit families without discarding malformed evidence."""
+    rows: list[dict] = []
+    supplements: list[dict] = []
+    for row in db.get_audit_logs(task_id):
+        action = row["action"]
+        if action not in (SESSION_POLICY_BINDING_ACTION, SELECTOR_SESSION_BINDING_ACTION):
+            continue
+        if row.get("agent") != agent_name:
+            continue
+        payload = row.get("payload")
+        if not isinstance(payload, dict) or not isinstance(payload.get("session_id"), str):
+            raise ActiveAuthorityPolicyError("session policy audit identity is malformed")
+        if payload["session_id"] != session_id:
+            continue
+        (rows if action == SESSION_POLICY_BINDING_ACTION else supplements).append(row)
+    if supplements and not rows:
+        raise ActiveAuthorityPolicyError("session selector supplement has no legacy binding")
+    return rows, supplements
+
+
+def _authenticate_session_selector_supplement(
+    *, store: AuthorityPolicyStore, session_id: str, payload: dict,
+    supplements: list[dict],
+) -> AuthorityPolicySelector | None:
+    if not supplements:
+        # Historical unselected legacy launches have no supplement. Absence
+        # alone cannot distinguish that history from a deleted modern row.
+        return None
+    if len(supplements) != 1:
+        raise ActiveAuthorityPolicyError("session selector supplement is ambiguous")
+    pin = supplements[0]["payload"]
+    keys = {"session_id", "mode", "selector_id", "selector_epoch", "family",
+            "release_id", "activation_id"}
+    legacy_keys = {"session_id", "mode", "release_id", "policy_digest",
+                   "activation_id", "activation_epoch"}
+    modern_keys = legacy_keys | {
+        "self_evaluation_contract_id", "self_evaluation_contract_version",
+        "self_evaluation_contract_digest", "provider_id", "executor_kind", "model_id",
+    }
+    if (
+        set(pin) != keys
+        or set(payload) not in (legacy_keys, modern_keys)
+        or pin["session_id"] != session_id
+        or pin["mode"] != "selector_v1" or pin["family"] != "legacy_v1"
+        or any(not isinstance(pin[key], str) or not pin[key]
+               for key in ("selector_id", "release_id", "activation_id"))
+        or type(pin["selector_epoch"]) is not int or pin["selector_epoch"] < 1
+        or payload.get("mode") != "db_release"
+        or pin["release_id"] != payload.get("release_id")
+        or pin["activation_id"] != payload.get("activation_id")
+        or type(payload.get("activation_epoch")) is not int
+    ):
+        raise ActiveAuthorityPolicyError("session selector supplement is malformed or mixed")
+    release = store.get_release(pin["release_id"])
+    activation = store.get_activation(pin["activation_id"])
+    if (
+        release is None or activation is None or activation.team != release.team
+        or activation.release_id != release.id
+        or activation.epoch != payload["activation_epoch"]
+        or release.policy_digest != payload.get("policy_digest")
+    ):
+        raise ActiveAuthorityPolicyError("session selector supplement release is corrupt")
+    selector = store.get_authority_selector_by_id(release.team, pin["selector_id"])
+    if (
+        selector is None or selector.team != release.team
+        or selector.selector_id != pin["selector_id"]
+        or selector.family != pin["family"]
+        or selector.selector_epoch != pin["selector_epoch"]
+        or selector.legacy_activation_id != activation.id
+    ):
+        raise ActiveAuthorityPolicyError("session selector supplement pin is corrupt")
+    return selector
+
+
 def load_session_policy_snapshot(
     *, db, store: AuthorityPolicyStore, task_id: str, session_id: str,
     agent_name: str,
@@ -302,16 +379,15 @@ def load_session_policy_snapshot(
     reader cannot represent it, so it explicitly refuses instead of silently
     taking a legacy/no-policy branch. C2 owns v2 completion admission.
     """
-    rows = [row for row in db.get_audit_logs(task_id)
-            if row["action"] == SESSION_POLICY_BINDING_ACTION
-            and row.get("agent") == agent_name
-            and (row.get("payload") or {}).get("session_id") == session_id]
+    rows, supplements = _session_policy_audit_rows(
+        db=db, task_id=task_id, session_id=session_id, agent_name=agent_name,
+    )
     v2 = db.get_authority_policy_v2_session_binding(
         root_task_id=task_id, manager_agent=agent_name,
         manager_session_id=session_id,
     )
     if v2 is not None:
-        if rows:
+        if rows or supplements:
             raise ActiveAuthorityPolicyError(
                 "session has both a v2 binding and a legacy session policy binding"
             )
@@ -323,6 +399,9 @@ def load_session_policy_snapshot(
     if len(rows) != 1:
         raise ActiveAuthorityPolicyError("session policy binding is ambiguous")
     payload = rows[0].get("payload") or {}
+    selector = _authenticate_session_selector_supplement(
+        store=store, session_id=session_id, payload=payload, supplements=supplements,
+    )
     if payload == {"session_id": session_id, "mode": "legacy_static"}:
         return None
     legacy_keys = {"session_id", "mode", "release_id", "policy_digest", "activation_id", "activation_epoch"}
@@ -339,7 +418,7 @@ def load_session_policy_snapshot(
             or release.policy_digest != payload["policy_digest"]):
         raise ActiveAuthorityPolicyError("session policy binding is corrupt")
     render_active_team_policy(release=release, activation=activation)
-    return ActivePolicySnapshot(release, activation, family="legacy_v1")
+    return ActivePolicySnapshot(release, activation, family="legacy_v1", selector=selector)
 
 
 def load_session_policy_binding(*, db, task_id: str, session_id: str, agent_name: str) -> dict | None:
@@ -355,12 +434,11 @@ def load_session_policy_binding(*, db, task_id: str, session_id: str, agent_name
         root_task_id=task_id, manager_agent=agent_name,
         manager_session_id=session_id,
     )
-    rows = [row for row in db.get_audit_logs(task_id)
-            if row["action"] == SESSION_POLICY_BINDING_ACTION
-            and row.get("agent") == agent_name
-            and (row.get("payload") or {}).get("session_id") == session_id]
+    rows, supplements = _session_policy_audit_rows(
+        db=db, task_id=task_id, session_id=session_id, agent_name=agent_name,
+    )
     if v2 is not None:
-        if rows:
+        if rows or supplements:
             raise ActiveAuthorityPolicyError(
                 "session has both a v2 binding and a legacy session policy binding"
             )
@@ -386,7 +464,12 @@ def load_session_policy_binding(*, db, task_id: str, session_id: str, agent_name
         return None
     if len(rows) != 1:
         raise ActiveAuthorityPolicyError("session policy binding is ambiguous")
-    return dict(rows[0].get("payload") or {})
+    payload = dict(rows[0].get("payload") or {})
+    _authenticate_session_selector_supplement(
+        store=AuthorityPolicyStore(db), session_id=session_id,
+        payload=payload, supplements=supplements,
+    )
+    return payload
 
 
 def render_active_team_policy(

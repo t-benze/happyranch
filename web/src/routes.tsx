@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import {
+  Link,
   Navigate,
   Outlet,
   Route,
@@ -11,6 +12,9 @@ import {
 import { AppBar } from '@/design-system/layouts/AppShell/AppBar';
 import { ErrorBoundary, type ErrorBoundaryCopy } from '@/design-system/layouts/AppShell/ErrorBoundary';
 import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
+import { StartupStatusBanner } from '@/design-system/layouts/AppShell/StartupStatusBanner';
+import { Button } from '@/design-system/primitives/Button';
+import { useHealth, useStartupStatus } from '@/hooks/health';
 import { useTranslation } from '@/hooks/i18n';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
@@ -48,15 +52,48 @@ import { features } from '@/config/features';
 
 function RootRedirect(): JSX.Element {
   const orgsQuery = useOrgsList();
+  const startup = useStartupStatus();
   const { t } = useTranslation();
-  if (orgsQuery.isLoading) {
+  if (orgsQuery.isLoading || startup.phase === 'checking') {
     return <div className="text-fg-muted p-6">{t('shell.loading')}</div>;
   }
   const first = orgsQuery.data?.orgs[0]?.slug;
   if (!first) {
     return <Navigate to="/onboarding" replace />;
   }
-  return <Navigate to={`/orgs/${first}/dashboard`} replace />;
+  // THR-308: until startup is positively ready the readable surface is
+  // Threads, not the (held) dashboard.
+  return <Navigate to={`/orgs/${first}/${startup.admitted ? 'dashboard' : 'threads'}`} replace />;
+}
+
+/**
+ * THR-308 held-route gate. Pages other than Threads need held daemon reads
+ * and effects, so while startup is not positively ready they are NOT mounted
+ * (no eager queries/streams). The URL is preserved: the page mounts by itself
+ * when a ready observation arrives. A failed or unknown state never opens it.
+ */
+function StartupRouteGate(): JSX.Element {
+  const { phase, admitted } = useStartupStatus();
+  const { t } = useTranslation();
+  if (admitted) return <Outlet />;
+  if (phase === 'checking') return <div className="text-fg-muted p-6">{t('shell.loading')}</div>;
+  return <StartupHeldPanel />;
+}
+
+function StartupHeldPanel(): JSX.Element {
+  const { slug } = useParams<{ slug: string }>();
+  const { t } = useTranslation();
+  return (
+    <div className="flex h-full flex-col items-start gap-3 overflow-auto p-6">
+      <h1 className="font-display text-display text-text-primary font-medium break-words">
+        {t('startup.held.title')}
+      </h1>
+      <p className="text-body text-text-secondary max-w-prose">{t('startup.held.body')}</p>
+      <Button asChild size="sm">
+        <Link to={slug ? `/orgs/${slug}/threads` : '/'}>{t('startup.held.openThreads')}</Link>
+      </Button>
+    </div>
+  );
 }
 
 /**
@@ -94,11 +131,15 @@ function OrgLayout(): JSX.Element {
 
 function AppShell(): JSX.Element {
   const location = useLocation();
+  // The single owner of the shared /health startup observation (THR-308);
+  // every other surface reads it without polling.
+  useHealth();
   return (
     <div className="flex h-full flex-row">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <AppBar presentation={/^\/orgs\/[^/]+\/tasks\/?$/.test(location.pathname) ? 'tasks' : undefined} />
+        <StartupStatusBanner />
         <main className="flex-1 overflow-hidden">
           <AppShellErrorBoundary resetKey={location.pathname}>
             <Outlet />
@@ -124,55 +165,62 @@ export function AppRoutes(): JSX.Element {
         {/* Onboarding is GLOBAL (not org-scoped): the Welcome/create/success
             shell drives the container-level /orgs list + create routes, so a
             slug is not yet chosen. Mounted in AppShell like the org-less index. */}
-        <Route path="onboarding" element={<OnboardingPage />} />
+        <Route element={<StartupRouteGate />}>
+          <Route path="onboarding" element={<OnboardingPage />} />
+        </Route>
         <Route path="/orgs/:slug" element={<OrgLayout />}>
           <Route index element={<NavigateToHome />} />
-          <Route path="dashboard" element={<DashboardPage />} />
+          {/* THR-308: Threads stay mounted and readable while daemon startup
+              recovers or failed; every other org page is behind the held
+              gate below and mounts only after a positive ready observation. */}
           <Route path="threads" element={<ThreadsPage />} />
           <Route path="threads/:thread_id" element={<ThreadsPage />} />
-          <Route path="reviews" element={<WorkflowReviewsPage />} />
-          <Route path="reviews/:activationId" element={<WorkflowReviewsPage />} />
-          <Route path="tasks" element={<TasksPage />} />
-          <Route path="tasks/:task_id" element={<TaskDetailPage />} />
-          <Route path="todos" element={<TodosPage />} />
-          <Route path="todos/:scheduleId" element={<TodosPage />} />
-          <Route path="kb" element={<KbPage />} />
-          <Route path="kb/:entrySlug/*" element={<KbPage />} />
+          <Route element={<StartupRouteGate />}>
+            <Route path="dashboard" element={<DashboardPage />} />
+            <Route path="reviews" element={<WorkflowReviewsPage />} />
+            <Route path="reviews/:activationId" element={<WorkflowReviewsPage />} />
+            <Route path="tasks" element={<TasksPage />} />
+            <Route path="tasks/:task_id" element={<TaskDetailPage />} />
+            <Route path="todos" element={<TodosPage />} />
+            <Route path="todos/:scheduleId" element={<TodosPage />} />
+            <Route path="kb" element={<KbPage />} />
+            <Route path="kb/:entrySlug/*" element={<KbPage />} />
 
-          <Route path="audit" element={<AuditPage />} />
-          <Route path="skills" element={<SkillsPage />} />
-          {/* Static `new`/`validation` rank above the dynamic `:skillId` in
-              react-router v6, but keep them declared first for readability. */}
-          <Route path="skills/validation" element={<SkillValidationPage />} />
-          <Route path="skills/custom" element={<CustomSkillsPage />} />
-          <Route path="skills/custom/new" element={<CustomSkillCreatePage />} />
-          <Route path="skills/custom/:skillId" element={<CustomSkillDetailPage />} />
-          <Route path="skills/:skillId" element={<SkillDetailPage />} />
-          <Route path="agents" element={<AgentsPage />} />
-          <Route path="agents/:agent_name" element={<AgentsPage />} />
-          <Route path="agents/:agent_name/team-escalation-policy" element={<TeamEscalationPolicyPage />} />
-          <Route path="jobs" element={<JobsPage />} />
-          <Route path="jobs/:job_id" element={<JobDetailPage />} />
-          <Route path="health" element={<HealthPage />} />
-          <Route path="usage" element={<UsagePage />} />
-          {/* THR-061 seq79: Spend renamed to Usage. Keep the old /spend
-              bookmark (and the dashboard deep-link) working via redirect. */}
-          <Route path="spend" element={<SpendRedirect />} />
-          <Route path="dreams" element={<DreamsPage />} />
-          {/* THR-035: the standalone Schedule surface folded into Work Hours.
-              Old bookmarks redirect to the Wakes view; the wake list now lives
-              as the `?view=wakes` tab of the Work Hours surface.
-              THR-305: with `work_hours_ui` off none of these routes exist, so
-              the direct and legacy URLs fall through to the not-found route. */}
-          {features.work_hours_ui && (
-            <>
-              <Route path="schedule" element={<ScheduleRedirect />} />
-              <Route path="work-hours" element={<WorkHoursSurface />} />
-              <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
-            </>
-          )}
-          <Route path="artifacts" element={<ArtifactsPage />} />
-          <Route path="settings/*" element={<SettingsPage />} />
+            <Route path="audit" element={<AuditPage />} />
+            <Route path="skills" element={<SkillsPage />} />
+            {/* Static `new`/`validation` rank above the dynamic `:skillId` in
+                react-router v6, but keep them declared first for readability. */}
+            <Route path="skills/validation" element={<SkillValidationPage />} />
+            <Route path="skills/custom" element={<CustomSkillsPage />} />
+            <Route path="skills/custom/new" element={<CustomSkillCreatePage />} />
+            <Route path="skills/custom/:skillId" element={<CustomSkillDetailPage />} />
+            <Route path="skills/:skillId" element={<SkillDetailPage />} />
+            <Route path="agents" element={<AgentsPage />} />
+            <Route path="agents/:agent_name" element={<AgentsPage />} />
+            <Route path="agents/:agent_name/team-escalation-policy" element={<TeamEscalationPolicyPage />} />
+            <Route path="jobs" element={<JobsPage />} />
+            <Route path="jobs/:job_id" element={<JobDetailPage />} />
+            <Route path="health" element={<HealthPage />} />
+            <Route path="usage" element={<UsagePage />} />
+            {/* THR-061 seq79: Spend renamed to Usage. Keep the old /spend
+                bookmark (and the dashboard deep-link) working via redirect. */}
+            <Route path="spend" element={<SpendRedirect />} />
+            <Route path="dreams" element={<DreamsPage />} />
+            {/* THR-035: the standalone Schedule surface folded into Work Hours.
+                Old bookmarks redirect to the Wakes view; the wake list now lives
+                as the `?view=wakes` tab of the Work Hours surface.
+                THR-305: with `work_hours_ui` off none of these routes exist, so
+                the direct and legacy URLs fall through to the not-found route. */}
+            {features.work_hours_ui && (
+              <>
+                <Route path="schedule" element={<ScheduleRedirect />} />
+                <Route path="work-hours" element={<WorkHoursSurface />} />
+                <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
+              </>
+            )}
+            <Route path="artifacts" element={<ArtifactsPage />} />
+            <Route path="settings/*" element={<SettingsPage />} />
+          </Route>
         </Route>
         <Route path="*" element={<NotFound />} />
       </Route>
@@ -182,7 +230,10 @@ export function AppRoutes(): JSX.Element {
 
 function NavigateToHome(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
-  return <Navigate to={`/orgs/${slug}/dashboard`} replace />;
+  const startup = useStartupStatus();
+  const { t } = useTranslation();
+  if (startup.phase === 'checking') return <div className="text-fg-muted p-6">{t('shell.loading')}</div>;
+  return <Navigate to={`/orgs/${slug}/${startup.admitted ? 'dashboard' : 'threads'}`} replace />;
 }
 
 /**

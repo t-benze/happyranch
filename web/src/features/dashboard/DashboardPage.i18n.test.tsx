@@ -10,14 +10,17 @@
  *   - an en → zh-CN → en switch re-translates in place (same heading node),
  *     with no remount and no API request caused by the switch.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
+import { defaultScheduler, notifyManager, timeoutManager, type QueryClient } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
-import { delay, http, HttpResponse } from 'msw';
+import { delay, http, HttpHandler, HttpResponse, type HttpResponseResolver } from 'msw';
 import { Route, Routes } from 'react-router-dom';
+import { makeQueryClient } from '@/design-system/providers/AppProvider';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
-import type { DashboardSummaryResponse } from '@/lib/api/types';
+import { seedReadyHealth } from '@/test/startup';
+import type { DashboardSummaryResponse, IdentityList } from '@/lib/api/types';
 import { DashboardPage } from './DashboardPage';
 
 const SLUG = 'hk-macau-tourism';
@@ -101,7 +104,8 @@ function populatedSummary(): DashboardSummaryResponse {
   return s;
 }
 
-function renderDashboard(locale: 'en' | 'zh-CN') {
+function renderDashboard(locale: 'en' | 'zh-CN', queryClient: QueryClient = makeQueryClient()) {
+  seedReadyHealth(queryClient);
   return renderWithProviders(
     <>
       <Routes>
@@ -110,7 +114,7 @@ function renderDashboard(locale: 'en' | 'zh-CN') {
       <LocaleTestSwitch to="zh-CN" />
       <LocaleTestSwitch to="en" />
     </>,
-    { route: ROUTE, i18n: { adapter: savedLocaleAdapter(locale) } },
+    { queryClient, route: ROUTE, i18n: { adapter: savedLocaleAdapter(locale) } },
   );
 }
 
@@ -133,6 +137,7 @@ beforeEach(() => {
   sessionStorage.setItem('happyranch.token', 'tok');
   server.use(
     http.get(`/api/v1/orgs/${SLUG}/tokens`, () => HttpResponse.json({ rollup: [] })),
+    http.get(`/api/v1/orgs/${SLUG}/identities`, () => HttpResponse.json<IdentityList>({ identities: [] })),
   );
 });
 
@@ -142,15 +147,248 @@ afterEach(() => {
 
 describe('DashboardPage i18n (W3a)', () => {
   test('zh-CN loading state is localized', async () => {
-    server.use(
-      http.get(SUMMARY_PATH, async () => {
+    const client = makeQueryClient();
+    type Failure = { phase: string; error: unknown; next?: Failure };
+    const failures: { first?: Failure; last?: Failure } = {};
+    const remember = (phase: string, error: unknown) => {
+      // Presence preserves falsy throws; each observation stays attributable.
+      const failure: Failure = { phase, error };
+      if (failures.last) failures.last.next = failure;
+      else failures.first = failure;
+      failures.last = failure;
+    };
+    type Operation = {
+      phase: string;
+      original: Promise<unknown>;
+      completion?: Promise<void>;
+      result?: PromiseSettledResult<unknown>;
+      key?: readonly unknown[];
+      next?: Operation;
+    };
+    let first: Operation | undefined;
+    let last: Operation | undefined;
+    const observe = <T,>(original: Promise<T>, phase: string, key?: readonly unknown[]) => {
+      // Own the raw return BEFORE attaching outcomes or reporting diagnostics.
+      const owned: Operation = { phase, original, key };
+      if (last) last.next = owned;
+      else first = owned;
+      last = owned;
+      owned.completion = original.then(
+        (value) => { owned.result = { status: 'fulfilled', value }; },
+        (reason: unknown) => {
+          owned.result = { status: 'rejected', reason };
+          remember(`${phase} rejection observation`, reason);
+        },
+      );
+      return original;
+    };
+    type Delivery = { completion: Promise<void>; next?: Delivery };
+    let firstDelivery: Delivery | undefined;
+    let lastDelivery: Delivery | undefined;
+    type Restore = { run: () => void; next?: Restore };
+    let restores: Restore | undefined;
+    const ownRestore = (run: () => void) => { restores = { run, next: restores }; };
+    let joined: Operation | undefined;
+    let delivered: Delivery | undefined;
+    const joinStarted = async () => {
+      for (;;) {
+        let operation = joined ? joined.next : first;
+        while (operation) {
+          const owned = operation;
+          joined = owned;
+          try { await act(async () => { await owned.completion; }); } catch (error) {
+            remember('React delivery during original join', error);
+          }
+          // A failed act must not skip the SAME original return.
+          try {
+            if (owned.completion) await owned.completion;
+            else await owned.original;
+          } catch (error) { remember('independent original join', error); }
+          operation = owned.next;
+        }
+        let delivery = delivered ? delivered.next : firstDelivery;
+        while (delivery) {
+          const owned = delivery;
+          delivered = owned;
+          try { await act(async () => { await owned.completion; }); } catch (error) {
+            remember('React notification delivery', error);
+          }
+          try { await owned.completion; } catch (error) { remember('notification acknowledgement', error); }
+          delivery = owned.next;
+        }
+        try { await act(async () => {}); } catch (error) { remember('React flush', error); }
+        if (!(joined ? joined.next : first) && !(delivered ? delivered.next : firstDelivery)) return;
+      }
+    };
+    let view: ReturnType<typeof renderDashboard> | undefined;
+    try {
+      // Observe public callback/timer calls before Query.fetch can transport
+      // their error or replace it in finally. No identity-based suppression.
+      const batch = notifyManager.batch;
+      const batchSpy = vi.spyOn(notifyManager, 'batch');
+      ownRestore(() => batchSpy.mockRestore());
+      batchSpy.mockImplementation(<T,>(callback: () => T): T => {
+        try { return batch(callback); } catch (error) {
+          remember('query batch throw observation', error);
+          throw error;
+        }
+      });
+      const setQueryTimeout = timeoutManager.setTimeout;
+      const setTimeoutSpy = vi.spyOn(timeoutManager, 'setTimeout');
+      ownRestore(() => setTimeoutSpy.mockRestore());
+      setTimeoutSpy.mockImplementation(function (this: typeof timeoutManager, ...args) {
+        try { return setQueryTimeout.apply(this, args); } catch (error) {
+          remember('query timer allocation throw (including GC)', error);
+          throw error;
+        }
+      });
+      const clearQueryTimeout = timeoutManager.clearTimeout;
+      const clearTimeoutSpy = vi.spyOn(timeoutManager, 'clearTimeout');
+      ownRestore(() => clearTimeoutSpy.mockRestore());
+      clearTimeoutSpy.mockImplementation(function (this: typeof timeoutManager, ...args) {
+        try { return clearQueryTimeout.apply(this, args); } catch (error) {
+          remember('query timer clear throw (including GC)', error);
+          throw error;
+        }
+      });
+      const cacheConfig = client.getQueryCache().config;
+      const onError = cacheConfig.onError;
+      if (onError) {
+        ownRestore(() => { cacheConfig.onError = onError; });
+        cacheConfig.onError = function (this: typeof cacheConfig, ...args) {
+          try { return onError.apply(this, args); } catch (error) {
+            // Merely receiving the query's error argument is not a throw.
+            remember('cache onError callback throw', error);
+            throw error;
+          }
+        };
+      }
+      // Locked setup and production use the exported default scheduler. Keep
+      // its actual scheduled callback/order; acknowledge ONLY calls it receives.
+      ownRestore(() => notifyManager.setScheduler(defaultScheduler));
+      notifyManager.setScheduler((callback) => {
+        let finish!: () => void;
+        const delivery: Delivery = { completion: new Promise<void>((resolve) => { finish = resolve; }) };
+        if (lastDelivery) lastDelivery.next = delivery;
+        else firstDelivery = delivery;
+        lastDelivery = delivery;
+        try {
+          return defaultScheduler(() => {
+            try { return callback(); } catch (error) {
+              // This is an actual callback throw, not a transported input.
+              // Retain it for rethrow after independently owed cleanup.
+              remember('scheduled notification callback throw', error);
+            } finally { finish(); }
+          });
+        } catch (error) {
+          remember('notification scheduling throw', error);
+          finish();
+          throw error;
+        }
+      });
+      ownRestore(client.getQueryCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const query = event.query;
+        const key = query.queryKey;
+        const summary = key.length === 2 && key[0] === 'dashboard-summary' && key[1] === SLUG;
+        const tokens = key.length === 4 && key[0] === 'tokens' && key[1] === SLUG &&
+          (key[2] === 'today-total' || key[2] === 'week-total');
+        if (!summary && !tokens) return;
+        const fetch = query.fetch;
+        const spy = vi.spyOn(query, 'fetch');
+        ownRestore(() => spy.mockRestore());
+        spy.mockImplementation(function (this: typeof query, ...args) {
+          // Includes Query.fetch's callbacks/error dispatch/finally GC, rather
+          // than Query.promise (the retryer) or a successful cache observation.
+          return observe(fetch.apply(this, args), 'query.fetch', key);
+        });
+      }));
+      const resolveSummary = async (..._args: Parameters<HttpResponseResolver>) => {
         await delay(200);
         return HttpResponse.json(emptySummary());
-      }),
-    );
-    renderDashboard('zh-CN');
-    expect(await screen.findByText('正在加载仪表盘…')).toBeInTheDocument();
-    expect(screen.queryByText('Loading dashboard…')).not.toBeInTheDocument();
+      };
+      const summaryHandler = http.get(SUMMARY_PATH, function (this: unknown, ...args) {
+        return observe(resolveSummary.apply(this, args), 'summary resolver');
+      });
+      server.use(summaryHandler);
+      // Keep the existing beforeEach token handler, including BOTH windows.
+      // HttpHandler is the locked public guard; WebSocket handlers have no run.
+      for (const handler of server.listHandlers()) {
+        if (!(handler instanceof HttpHandler) || handler.info.method !== 'GET' ||
+          (handler.info.path !== SUMMARY_PATH && handler.info.path !== `/api/v1/orgs/${SLUG}/tokens`)) continue;
+        const run = handler.run;
+        const spy = vi.spyOn(handler, 'run');
+        ownRestore(() => spy.mockRestore());
+        spy.mockImplementation(function (this: typeof handler, ...args) {
+          return observe(run.apply(this, args), handler === summaryHandler ? 'summary handler.run' : 'tokens handler.run');
+        });
+      }
+      view = renderDashboard('zh-CN', client);
+      expect(await screen.findByText('正在加载仪表盘…')).toBeInTheDocument();
+      expect(screen.queryByText('Loading dashboard…')).not.toBeInTheDocument();
+    } catch (error) { remember('original render/loading assertion', error); }
+    finally {
+      try { await joinStarted(); } catch (error) { remember('join mounted originals', error); }
+      let summary: Operation | undefined;
+      for (let owned = first; owned; owned = owned.next) {
+        if (owned.phase === 'query.fetch' && owned.key?.[0] === 'dashboard-summary') summary = owned;
+      }
+      // The positive mounted response boundary is owed even if a loading
+      // assertion failed. A failed render still owns its already-created client.
+      if (view && (!failures.first || summary?.result?.status === 'fulfilled')) {
+        try {
+          expect(await screen.findByText('发出你的第一份简报')).toBeInTheDocument();
+          expect(screen.queryByText('正在加载仪表盘…')).not.toBeInTheDocument();
+        } catch (error) { remember('mounted original first-run outcome', error); }
+      }
+      try { await joinStarted(); } catch (error) { remember('join follow-on originals', error); }
+      if (view && (!failures.first || summary?.result?.status === 'fulfilled')) {
+        try {
+          let summaries = 0;
+          let today = 0;
+          let week = 0;
+          let resolvers = 0;
+          let responses = 0;
+          for (let owned = first; owned; owned = owned.next) {
+            if (owned.phase === 'summary resolver') {
+              resolvers++;
+              expect(owned.result).toMatchObject({ status: 'fulfilled', value: { status: 200 } });
+            }
+            if (owned.phase === 'summary handler.run' && owned.result?.status === 'fulfilled' && owned.result.value) {
+              responses++;
+              expect(owned.result.value).toMatchObject({ response: { status: 200 } });
+            }
+            if (owned.phase !== 'query.fetch') continue;
+            if (owned.key?.[0] === 'dashboard-summary') {
+              summaries++;
+              expect(owned.result).toMatchObject({ status: 'fulfilled', value: { org_age_days: 0 } });
+            } else {
+              if (owned.key?.[2] === 'today-total') today++;
+              if (owned.key?.[2] === 'week-total') week++;
+              expect(owned.result).toEqual({ status: 'fulfilled', value: 0 });
+            }
+          }
+          expect([summaries, today, week, resolvers, responses]).toEqual([1, 1, 1, 1, 1]);
+        } catch (error) { remember('original response/query outcomes', error); }
+      }
+      try { if (view) view.unmount(); } catch (error) { remember('unmount', error); }
+      // RTL registers the root before rendering; this also covers render throws.
+      try { cleanup(); } catch (error) { remember('RTL cleanup', error); }
+      try { await joinStarted(); } catch (error) { remember('join after unmount', error); }
+      try { client.clear(); } catch (error) { remember('clear original client', error); }
+      try { await joinStarted(); } catch (error) { remember('join after clear', error); }
+      for (let restore = restores; restore; restore = restore.next) {
+        try { restore.run(); } catch (error) { remember('restore local observation', error); }
+      }
+    }
+    const primary = failures.first;
+    if (primary) {
+      if (primary.next) {
+        try { console.error('Later Dashboard locale loading errors (first retained)', primary.next, first); }
+        catch (error) { remember('report later errors', error); }
+      }
+      throw primary.error;
+    }
   });
 
   test('zh-CN error state is localized and Retry refetches into the loaded page', async () => {

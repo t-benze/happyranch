@@ -11,10 +11,11 @@ import hashlib
 import json
 import re
 import time
+import threading
 from datetime import datetime, timezone
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, ExitStack, closing
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Iterator
 
 from runtime.infrastructure.producer_admission import ProducerAdmissionStore, ProducerLifecycle, native_owner_uncommitted, NativeWriterLifecycle, NativeWriterStore
 from runtime.infrastructure.thread_admission import ThreadAttempt
@@ -38,16 +39,327 @@ def owner_for(db):
         return native_owner_uncommitted(db)
 
 
-class NativeWriterDisposition:
-    """Only the native caller can establish a validation-only refusal.
+def require_producer_admission(org: Any = None, *, db: Any = None) -> None:
+    """Actual early DB/org binding; no same-slug or missing-binding fallback."""
+    from runtime.daemon.startup_recovery import _require_ordinary_ready, StartupUnavailable
+    if org is not None:
+        _require_ordinary_ready(org)
+        db = org.db
+    refs = getattr(db, "_jobs_startup_refs", None)
+    if refs is None:
+        if org is not None and org._startup_state is not None:
+            raise StartupUnavailable("startup_attachment_changed")
+        return
+    if not isinstance(refs, tuple) or len(refs) != 3:
+        raise StartupUnavailable("startup_attachment_changed")
+    state, gate, original = refs
+    if (original.db is not db or state.orgs.get(original.slug) is not original
+            or original._startup_state is not state or original._startup_recovery is not gate
+            or gate is not state._startup_recovery or org is not None and org is not original):
+        raise StartupUnavailable("startup_attachment_changed")
+    _require_ordinary_ready(original)
 
-    Exact exception identity matters: failed rollback/cleanup must not inherit
-    the original validation's no-effect evidence. No HTTP status is classified.
-    """
+
+def producer_admission_validation(org: Any = None, *, db: Any = None):
+    """Pin the original producer attachment before any readiness/DB wait."""
+    from runtime.daemon.startup_recovery import StartupUnavailable
+    db = org.db if org is not None else db
+    refs = getattr(db, "_jobs_startup_refs", None)
+    original = org if org is not None else (refs[2] if isinstance(refs, tuple) and len(refs) == 3 else None)
+    state = (getattr(original, "_startup_state", None) if original is not None else
+             (refs[0] if isinstance(refs, tuple) and len(refs) == 3 else None))
+    gate = None if original is None else original._startup_recovery
+    orgs = None if state is None else state.orgs
+    runtime = None if state is None else state.runtime
+    queue = None if state is None else state.queue
+    epoch = None if gate is None else gate.epoch
+    loop = None if gate is None else gate._loop
+    admission_refs = None if original is None else original._startup_admission_refs
+    move = getattr(db, "_team_move_coordinator", None)
+    producer = None if move is None else move.producers
+    move_gate = None if move is None else move.gate
+    producer_store = None if producer is None else producer.store
+    writer_store = None if producer is None else producer.writer_store
+    queues = None if original is None else (original.thread_queue, original.dream_queue,
+                                           original.wake_queue, original.schedule_queue)
+
+    def identity():
+        if (getattr(db, "_jobs_startup_refs", None) is not refs
+                or getattr(db, "_team_move_coordinator", None) is not move
+                or move is not None and (move.producers is not producer or move.gate is not move_gate
+                                         or move.store.db is not db)
+                or producer is not None and (producer.db is not db or producer.move is not move
+                    or producer.store is not producer_store or producer.writer_store is not writer_store)
+                or state is not None and (state.orgs is not orgs or state.runtime is not runtime
+                                          or state.queue is not queue)
+                or original is not None and (original.db is not db or original._startup_state is not state
+                    or original._startup_recovery is not gate or original._startup_admission_refs is not admission_refs
+                    or any(current is not selected for current, selected in zip(
+                        (original.thread_queue, original.dream_queue, original.wake_queue, original.schedule_queue), queues)))
+                or gate is not None and (gate.epoch != epoch or gate._loop is not loop)):
+            raise StartupUnavailable("startup_attachment_changed")
+
+    def validate():
+        identity()
+        require_producer_admission(original, db=db)
+        identity()  # The original gate check may itself have waited.
+
+    validate()
+    return validate
+
+
+@contextmanager
+def producer_admission_writer(org: Any, writer: Any) -> Iterator[None]:
+    """Check after original admission locks, then release before writer body."""
+    require_producer_admission(org)
+    admission = owner_for(org.db)
+    with ExitStack() as stack:
+        with admission.move.gate if admission is not None else nullcontext(), org.db._lock:
+            require_producer_admission(org)
+            stack.enter_context(writer)
+        yield
+
+
+class _ProducerWorkerOwner:
+    """Original submission, callable and preparation custody; never a retry."""
+
+    def __init__(self, org, preparation, loop):
+        self.org, self.preparation, self.loop = org, preparation, loop
+        self.lock = threading.Lock()
+        self.finished = self.handed_off = self.acknowledged = False
+        self.finish_requested = self.finish_started = self.retirement_started = False
+        self.deferred = self.failed = False
+        self.result = self.primary = self.traceback = None
+        self.errors = dict.fromkeys(("submission", "wrapper", "native", "handoff", "settlement", "retirement"))
+        self.error_tracebacks = self.errors.copy()
+        self.error_order = []
+        self.noted = set()
+        self.diagnostic_error = None
+
+    def _annotate_locked(self):
+        if self.primary is None:
+            return
+        try:
+            BaseException.__setattr__(self.primary, "_native_producer_worker_owner", self)
+        except BaseException as error:
+            self.diagnostic_error = self.diagnostic_error or error
+        for kind in self.error_order:
+            error = self.errors[kind]
+            if error is not self.primary and kind not in self.noted:
+                try:
+                    BaseException.add_note(self.primary,
+                        f"native producer {kind} failed: {type(error).__name__[:128]}; "
+                        "actual exception retained by original worker owner")
+                except BaseException as diagnostic:
+                    self.diagnostic_error = self.diagnostic_error or diagnostic
+                self.noted.add(kind)
+
+    def _fail_locked(self, kind, error):
+        if self.errors[kind] is None:
+            self.errors[kind] = error
+            self.error_tracebacks[kind] = error.__traceback__
+            self.error_order.append(kind)  # Six fixed actual-error slots.
+        self._annotate_locked()
+
+    def fail(self, kind, error):
+        with self.lock:
+            self._fail_locked(kind, error)
+
+    def remember_primary(self, error):
+        # Only the original waiter chooses its first cause. Native diagnostics
+        # and loop callbacks cannot win by running before submit returns/raises.
+        with self.lock:
+            if self.primary is None:
+                self.primary, self.traceback = error, error.__traceback__
+            self._annotate_locked()
+
+    def run(self, function):
+        try:
+            self.result = function()
+            return self.result
+        except BaseException as error:
+            self.fail("native", error)
+            raise
+        finally:
+            # Serialize post success with its acknowledgement. Enqueue followed
+            # by a posting exception is not a successful loop handoff.
+            with self.lock:
+                self.finished = True
+                try:
+                    self.loop.call_soon_threadsafe(self.acknowledge)
+                except BaseException as error:
+                    self._fail_locked("handoff", error)
+                else:
+                    self.handed_off = True
+
+    def acknowledge(self):
+        # Original loop only, never called by the native worker directly.
+        with self.lock:
+            if not self.finished or not self.handed_off or self.acknowledged:
+                return
+            self.acknowledged = True
+            finish = self.finish_requested
+        if self.preparation is None:
+            self.retire()
+        elif finish:
+            try:
+                self.preparation.finish(deferred=self.deferred, failed=self.failed)
+            except BaseException as error:
+                self.fail("settlement", error)
+                # Keep actual late errors even when there is no live waiter.
+                try:
+                    logger.exception('Retaining original native producer preparation after late finish failure')
+                except BaseException as diagnostic:
+                    with self.lock:
+                        self.diagnostic_error = self.diagnostic_error or diagnostic
+
+    def request_finish(self, *, deferred, failed):
+        # This request survives outer runner unwind. It is NOT settlement or
+        # native completion, and cannot close repository preparation early.
+        with self.lock:
+            if not self.finish_requested:
+                self.finish_requested = True
+                self.deferred = deferred
+                self.failed = failed or not self.acknowledged
+            if not self.acknowledged or self.finish_started:
+                return False
+            self.finish_started = True
+            return True
+
+    def retire(self):
+        with self.lock:
+            if not self.acknowledged or self.retirement_started:
+                return
+            self.retirement_started = True
+            try:
+                if self.org is not None:
+                    self.org._release_native_task(self)
+            except BaseException as error:
+                self._fail_locked("retirement", error)
+
+    def outcome_error(self):
+        with self.lock:
+            if self.primary is None:
+                for kind in ("native", "handoff", "settlement", "retirement"):
+                    if self.errors[kind] is not None:
+                        self.primary = self.errors[kind]
+                        self.traceback = self.error_tracebacks[kind]
+                        break
+            self._annotate_locked()
+            return self.primary, self.traceback
+
+
+async def _await_original_producer(function, *, org, preparation, loop):
+    import asyncio
+    from runtime.daemon.startup_recovery import StartupUnavailable
+    if loop is not asyncio.get_running_loop():
+        raise StartupUnavailable("startup_producer_loop_changed")
+    if preparation is not None and (org is None or preparation._native_worker_owner is not None):
+        raise StartupUnavailable("startup_producer_worker_owner_changed")
+    owner = _ProducerWorkerOwner(org, preparation, loop)
+    if org is not None and not org._acquire_native_task(owner):
+        raise StartupUnavailable("startup_producer_admission_closed")
+    if preparation is not None:
+        preparation._native_worker_owner = owner
+    try:
+        native = loop.run_in_executor(None, owner.run, function)
+    except BaseException as error:
+        owner.remember_primary(error)
+        owner.fail("submission", error)
+        # A Future was not returned; the callable may still enter later.
+        # Never wait for possibly nonexistent work or manufacture no-run proof.
+        owner.acknowledge()
+        raise
+    while True:
+        try:
+            await asyncio.shield(native)
+            break
+        except asyncio.CancelledError as error:
+            owner.remember_primary(error)
+            if native.done():
+                break
+        except BaseException as error:
+            owner.remember_primary(error)
+            break
+    try:
+        result = native.result()
+    except BaseException as error:
+        owner.remember_primary(error)
+        owner.fail("wrapper", error)
+        result = None
+    owner.acknowledge()
+    error, traceback = owner.outcome_error()
+    if error is None and not owner.acknowledged:
+        owner.remember_primary(StartupUnavailable("startup_producer_native_unsettled"))
+        error, traceback = owner.outcome_error()
+    if error is not None:
+        raise error.with_traceback(traceback)
+    return result
+
+
+async def await_producer_worker(native: Any, *, org=None, preparation=None, loop=None) -> Any:
+    """Keep the existing runner/native owner until its original worker ends."""
+    import asyncio
+    if callable(native):
+        return await _await_original_producer(native, org=org, preparation=preparation,
+            loop=asyncio.get_running_loop() if loop is None else loop)
+    cancellation = None
+    while True:
+        try:
+            result = await asyncio.shield(native)
+            break
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+            if native.done():
+                try:
+                    result = native.result()
+                except BaseException as secondary:
+                    cancellation.add_note(f"native producer worker failed: {secondary!r}")
+                    raise cancellation
+                break
+        except BaseException as exc:
+            if cancellation is not None:
+                cancellation.add_note(f"native producer worker failed: {exc!r}")
+                raise cancellation
+            raise
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
+class NativeWriterDisposition:
+    """Exact validation-only evidence; later errors never confer retirement."""
     def __init__(self):
         self.writer_id = None
         self.no_effect_error = None
         self.uncertain = False
+        self.primary = self.primary_traceback = None
+        self.previous = None  # Earlier actual writer intervals on this SAME E1.
+        self._retained = False
+        self._primary_attachment_attempted = False
+        self.errors = dict.fromkeys(("settlement", "note", "diagnostic"))
+        self.error_tracebacks = self.errors.copy()
+        self.occurrences = []
+        self._last_occurrences = {}
+        self.lock_frames = []
+        self._retention_complete = True
+        self.evidence_complete = False
+
+    def retain(self, primary, kind, error):
+        # Capture the actual later occurrence BEFORE touching even the primary.
+        # In particular an opaque settlement E1 cannot disappear behind its
+        # virtual traceback getter while an earlier body E0 is being delivered.
+        _native_writer_record(self, kind, error)
+        self.evidence_complete = False
+        self.uncertain = True
+        if self.primary is None or not self._primary_attachment_attempted:
+            _native_writer_record(self, 'primary observation', primary, primary=True, observation=True)
+        try:
+            BaseException.add_note(primary, "native writer later failure retained by original disposition")
+        except BaseException as diagnostic:
+            _native_writer_record(self, 'note', diagnostic, attach=False)
+            self._retention_complete = False
+            self.uncertain = True
 
     @contextmanager
     def validation(self):
@@ -56,6 +368,105 @@ class NativeWriterDisposition:
         except Exception as exc:
             self.no_effect_error = exc
             raise
+
+
+def _native_writer_record(disposition: NativeWriterDisposition, kind: str, error: BaseException, *,
+                          primary: bool = False, observation: bool = False, attach: bool = True) -> dict:
+    """Original native-writer occurrence custody; fixed slots remain first-only."""
+    record = dict(kind=kind, error=error,
+        traceback=BaseException.__traceback__.__get__(error),
+        arguments=BaseException.args.__get__(error), observation=observation,
+        previous=None, previous_owner=None, nested=None)
+    disposition.occurrences.append(record)
+    if primary and disposition.primary is None:
+        disposition.primary, disposition.primary_traceback = error, record['traceback']
+    if kind in disposition.errors and disposition.errors[kind] is None:
+        disposition.errors[kind], disposition.error_tracebacks[kind] = error, record['traceback']
+    values = BaseException.__dict__['__dict__'].__get__(error)
+    record['previous'] = disposition._last_occurrences.get(id(error), values.get('_native_writer_occurrence'))
+    disposition._last_occurrences[id(error)] = record  # Link, never deduplicate.
+    record['previous_owner'] = values.get('_native_writer_disposition')
+    record['nested'] = (values.get('_coding_read_frame'), values.get('_workflow_authority_failure'))
+    if not attach:
+        return record
+    try:
+        if error is disposition.primary:
+            disposition._primary_attachment_attempted = True
+        if error is disposition.primary and not disposition._retained:
+            disposition.previous = next((r['previous_owner'] for r in disposition.occurrences
+                if r['error'] is error and r['previous_owner'] is not disposition), None)
+        BaseException.__setattr__(error, '_native_writer_occurrence', record)
+        BaseException.__setattr__(error, '_native_writer_disposition', disposition)
+        if error is disposition.primary:
+            disposition._retained = True
+    except BaseException as attachment:
+        # The raw disposition/context/frame remains reachable. Never recursively
+        # retry a failed attachment or let it replace the captured first cause.
+        _native_writer_record(disposition, 'note', attachment, attach=False)
+        disposition._retention_complete = False
+        disposition.uncertain = True
+    return record
+
+
+class _NativeWriterLocks:
+    """Only native_writer's original gate/RLock exits, each independently owed."""
+    def __init__(self, disposition: NativeWriterDisposition, phase: str, *contexts: Any) -> None:
+        self.disposition, self.phase, self.contexts = disposition, phase, contexts
+        self.exits = []
+        self.history = []
+        disposition.lock_frames.append(self)
+        self.body_record = None
+        self.first = self.traceback = None
+
+    def _record(self, error: BaseException, *, observation: bool = False) -> None:
+        # This leaf runs at the actual lock/body failure, before any transport.
+        if self.first is None:
+            self.first, self.traceback = error, BaseException.__traceback__.__get__(error)
+        if observation:
+            _native_writer_record(self.disposition, self.phase + ' observation', error,
+                observation=True, attach=False)
+        elif self.disposition.primary is None:
+            _native_writer_record(self.disposition, self.phase, error, primary=True)
+        else:
+            self.disposition.retain(self.disposition.primary, self.phase, error)
+
+    def __enter__(self) -> _NativeWriterLocks:
+        try:
+            for context in self.contexts:
+                kind = type(context)
+                record = dict(context=context, exit=kind.__exit__, acquired=False, attempted=False, returned=False)
+                self.exits.append(record)
+                self.history.append(record)
+                kind.__enter__(context)
+                record['acquired'] = True
+            return self
+        except BaseException as error:
+            self._record(error)
+        self.__exit__(None, None, None)
+
+    def __exit__(self, kind: Any, error: BaseException | None, traceback: Any) -> bool:
+        if error is not None:
+            self._record(error, observation=self.body_record is not None and self.body_record['error'] is error)
+        while self.exits:
+            record = self.exits.pop()
+            if not record['acquired']:
+                self.disposition.uncertain = True
+                continue
+            args = ((None, None, None) if self.first is None
+                    else (type(self.first), self.first, self.traceback))
+            try:
+                record['attempted'] = True
+                record['exit'](record['context'], *args)
+                record['returned'] = True
+            except BaseException as later:
+                self._record(later)
+        if self.first is error:
+            if error is not None:
+                BaseException.__traceback__.__set__(error, traceback)
+            return False
+        if self.first is not None:
+            raise BaseException.with_traceback(self.first, self.traceback)
+        return False
 
 
 @contextmanager
@@ -85,78 +496,157 @@ def producer_preparation_effects(owner):
         _current.reset(token)
 
 
-@contextmanager
-def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlement=False):
-    """Reservation only, never a gate/DB lock across the writer body.
+def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlement=False, validate_admission=None):
+    """Reserve the SAME native writer; explicit context keeps real errors native.
 
-    The caller retains its existing profile/workflow/roster/store lock order.
-    Unscoped canonical changes invalidate org-wide snapshot inputs and reserve
-    that input. This does not authorize D to borrow an existing journal.
+    Durable registration/settlement and their predicates are unchanged. No real
+    body error crosses generator or ExitStack traceback restoration.
     """
     disposition = NativeWriterDisposition()
-    admission = owner_for(db)
-    if admission is None:
-        yield disposition
-        return
-    with db._lock:
-        registry = admission.move._teams_reader() if admission.move._teams_reader else None
-        member_teams = set(teams)
-        unknown_membership = False
-        for agent in agents:
-            team = None if registry is None else (registry.team_for_agent(agent) or registry.team_for_manager(agent))
-            if team is not None:
-                member_teams.add(team)
-            elif not teams:
-                unknown_membership = True
-        teams = tuple(sorted(member_teams))
-    key = uuid.uuid4().hex
-    state = NativeWriterLifecycle(org_slug=admission.move.store.org_slug,
-        writer_id=key, publisher=publisher, agents=tuple(agents), teams=tuple(teams))
-    # Native terminal recovery already owns publisher/DB; its leaf check is
-    # serialized against the operation's SAME DB COMMIT without reverse gate.
-    gate = nullcontext() if db._lock._is_owned() else admission.move.gate
-    with gate, db._lock:
-        if not settlement:
-            admission.check_uncommitted(agents=agents, teams=teams, global_write=unknown_membership or not (agents or teams))
-        if durable:
-            admission.write_writer(state)
-            disposition.writer_id = key
-        admission.writer_epoch += 1
-        admission.writers[key] = dict(owner_id=key, publisher=publisher, agents=tuple(agents), teams=tuple(teams))
-    primary = None
-    try:
-        yield disposition
-    except BaseException as exc:
-        primary = exc
-        raise
-    finally:
-        with db._lock:
-            # Do not acquire move gate from native terminal/compensation owners.
-            # A persistence failure keeps the live reservation and active audit.
+
+    class _Writer:
+        def __init__(self) -> None:
+            self.admission = self.state = self.key = None
+            self.entered = self.exited = False
+            self.enter_attempted = False
+
+        def __enter__(self) -> NativeWriterDisposition:
+            if self.enter_attempted:
+                disposition.evidence_complete = False
+                disposition.uncertain = True
+                disposition.no_effect_error = None
+                raise RuntimeError('native writer context already entered')
+            self.enter_attempted = True
             try:
-                if durable:
-                    unknown = disposition.uncertain or (primary is not None and primary is not disposition.no_effect_error)
-                    admission.write_writer(state.model_copy(update={'state': 'unknown' if unknown else 'settled'}))
-            except BaseException as settlement:
-                if primary is None:
-                    raise
-                primary.add_note(f'native writer evidence failed: {settlement}')
-                logger.exception('Retaining native writer ownership after evidence failure')
-            else:
-                admission.writers.pop(key, None)
-                admission.writer_epoch += 1
+                if validate_admission is not None:
+                    validate_admission()
+                admission = self.admission = owner_for(db)
+                if validate_admission is not None:
+                    validate_admission()
+                if admission is None:
+                    self.entered = True
+                    return disposition
+                with _NativeWriterLocks(disposition, 'admission', db._lock):
+                    registry = admission.move._teams_reader() if admission.move._teams_reader else None
+                    member_teams = set(teams)
+                    unknown_membership = False
+                    for agent in agents:
+                        team = None if registry is None else (registry.team_for_agent(agent) or registry.team_for_manager(agent))
+                        if team is not None:
+                            member_teams.add(team)
+                        elif not teams:
+                            unknown_membership = True
+                    selected_teams = tuple(sorted(member_teams))
+                key = self.key = uuid.uuid4().hex
+                state = self.state = NativeWriterLifecycle(org_slug=admission.move.store.org_slug,
+                    writer_id=key, publisher=publisher, agents=tuple(agents), teams=selected_teams)
+                gate = nullcontext() if db._lock._is_owned() else admission.move.gate
+                with _NativeWriterLocks(disposition, 'admission', gate, db._lock) as locks:
+                    if validate_admission is not None:
+                        validate_admission()
+                    if not settlement:
+                        admission.check_uncommitted(agents=agents, teams=selected_teams,
+                            global_write=unknown_membership or not (agents or selected_teams))
+                    if durable:
+                        admission.write_writer(state, validate_admission=validate_admission)
+                        disposition.writer_id = key
+                    try:
+                        if validate_admission is not None:
+                            validate_admission()
+                    except BaseException as exc:
+                        locks.body_record = _native_writer_record(disposition, 'admission refusal', exc, primary=True)
+                        # Only this exact committed reservation, without fresh
+                        # admission or a substitute owner, may be settled here.
+                        if durable:
+                            try:
+                                if admission.writer_store.history_uncommitted().get(key) != state:
+                                    raise DeferredTeamMove('team_move_writer_owner_changed')
+                                admission.write_writer(state.model_copy(update={'state': 'settled'}))
+                            except BaseException as secondary:
+                                disposition.retain(exc, 'settlement', secondary)
+                                disposition.uncertain = True
+                                admission.writers[key] = dict(owner_id=key, publisher=publisher,
+                                    agents=tuple(agents), teams=selected_teams, admitted=False,
+                                    admission_error=exc, settlement_error=secondary)
+                                admission.writer_epoch += 1
+                                try:
+                                    logger.exception('Retaining committed native writer %s after admission refusal', key)
+                                except BaseException as diagnostic:
+                                    disposition.retain(exc, 'diagnostic', diagnostic)
+                        raise
+                    admission.writer_epoch += 1
+                    admission.writers[key] = dict(owner_id=key, publisher=publisher,
+                        agents=tuple(agents), teams=selected_teams)
+                self.entered = True
+                return disposition
+            except BaseException as error:
+                # Lock owners already captured their occurrences. This is an
+                # explicit outer observation, never a second thrown occurrence.
+                _native_writer_record(disposition, 'admission observation', error,
+                    primary=True, observation=True, attach=False)
+            raise BaseException.with_traceback(disposition.primary, disposition.primary_traceback)
+
+        def __exit__(self, kind: Any, error: BaseException | None, traceback: Any) -> bool:
+            if error is not None:
+                _native_writer_record(disposition, 'body', error, primary=True)
+            # An unreturned enter owes no new settlement; repeated __exit__ does
+            # not replay the original once-only operation.
+            closing = self.entered and not self.exited
+            if closing:
+                self.exited = True
+                admission, state, key = self.admission, self.state, self.key
+                if admission is not None:
+                    try:
+                        with _NativeWriterLocks(disposition, 'settlement', db._lock):
+                            if durable:
+                                unknown = disposition.uncertain or (error is not None and error is not disposition.no_effect_error)
+                                admission.write_writer(state.model_copy(update={'state': 'unknown' if unknown else 'settled'}))
+                            admission.writers.pop(key, None)
+                            admission.writer_epoch += 1
+                    except BaseException as settlement_error:
+                        _native_writer_record(disposition, 'settlement observation', settlement_error,
+                            primary=True, observation=True, attach=False)
+                        disposition.uncertain = True
+                        if error is not None:
+                            try:
+                                logger.exception('Retaining native writer ownership after evidence failure')
+                            except BaseException as diagnostic:
+                                disposition.retain(disposition.primary, 'diagnostic', diagnostic)
+            disposition.evidence_complete = (closing and self.exited and disposition._retention_complete
+                and not disposition.uncertain and all(e is None for e in disposition.errors.values())
+                and (disposition.primary is None or disposition.primary is disposition.no_effect_error)
+                and all(record['attempted'] and record['returned']
+                    for frame in disposition.lock_frames for record in frame.history))
+            if disposition.primary is error:
+                if error is not None:
+                    if not disposition._retention_complete:
+                        # If the exception rejected its attachment, returning
+                        # would discard this raw context owner. A native raise
+                        # keeps this SAME disposition/frame reachable without
+                        # invoking a virtual traceback setter or retrying notes.
+                        raise BaseException.with_traceback(error, disposition.primary_traceback)
+                    BaseException.__traceback__.__set__(error, traceback)
+                return False
+            if disposition.primary is not None:
+                raise BaseException.with_traceback(disposition.primary, disposition.primary_traceback)
+            return False
+
+    return _Writer()
 
 
 class ProducerPreparation:
-    def __init__(self, admission, state):
+    def __init__(self, admission, state, *, validate_admission=None):
         self.admission, self.state = admission, state
+        self.validate_admission = validate_admission
         self.identity = PermanentAgentIdentity(state.org_slug, state.agent_id)
         self.owner_live = True
         self.last_spec = None
         self.executor = self.model = None
         self.attempt_open = False
         self.safe_defer = False
+        self._native_worker_owner = None
 
+        self._repository_refresh_owner = None
         self._repository_preparations = {}
         self._repository_effect_intervals = []
         self._repository_retained_effects = []
@@ -187,30 +677,54 @@ class ProducerPreparation:
     def session_id(self):
         return self.state.session_id
 
-    def save(self, **changes):
+    def save(self, *, validate_admission=None, **changes):
         candidate = self.state.model_copy(update=changes)
         db = self.admission.db
         if db._conn.in_transaction:
             self.state = self.state.model_copy(update={'failed_cleanup': True})
             raise DeferredTeamMove('team_move_producer_sql_owner_unavailable')
-        began = False
+        began = wrote = False
         try:
             db._conn.execute('BEGIN IMMEDIATE')
             began = True
+            if validate_admission is not None:
+                validate_admission()
+            wrote = True
             self.admission.store.save_uncommitted(candidate)
             db._conn.commit()
         except BaseException as exc:
-            self.state = self.state.model_copy(update={'failed_cleanup': True})
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            clean_refusal = isinstance(exc, StartupUnavailable) and not wrote
+            if not clean_refusal:
+                self.state = self.state.model_copy(update={'failed_cleanup': True})
             if began:
                 try:
                     db._conn.rollback()
                 except BaseException as rollback:
+                    self.state = self.state.model_copy(update={'failed_cleanup': True})
                     exc.add_note(f'native producer rollback failed: {rollback}')
             raise
         self.state = candidate
 
+    def admission_refused(self, error):
+        error.native_admission_owner = self
+        self.safe_defer = bool(self.attempt_open and not self.state.attempts[-1].launched)
+
+    def require_admission(self):
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        try:
+            if self.validate_admission is not None:
+                self.validate_admission()
+            else:
+                require_producer_admission(db=self.admission.db)
+        except StartupUnavailable as exc:
+            self.admission_refused(exc)
+            raise
+
     def before_fifo(self):
+        self.require_admission()
         with self.admission.move.gate, self.admission.db._lock:
+            self.require_admission()
             self.admission.revalidate_uncommitted(self)
 
     @property
@@ -220,35 +734,39 @@ class ProducerPreparation:
 
     def retry_schedule(self, boundary, schedule):
         with self.admission.move.gate, self.admission.db._lock:
+            self.require_admission()
             self.admission.revalidate_uncommitted(self)
             if self.state.retry_initialized is None:
                 raise DeferredTeamMove('team_move_producer_retry_initialization_unknown')
             if self.state.retry_initialized is False:
-                self.save(retry_initialized=True, boundary=boundary, schedule=tuple(float(x) for x in schedule))
+                self.save(validate_admission=self.require_admission, retry_initialized=True, boundary=boundary, schedule=tuple(float(x) for x in schedule))
             elif self.state.boundary != boundary:
                 raise DeferredTeamMove('team_move_producer_retry_owner')
             return self.state.ordinal, self.state.schedule
 
     def next_attempt(self, ordinal):
         with self.admission.db._lock:
+            self.require_admission()
             if not self.state.ordinal < ordinal <= len(self.state.schedule):
                 raise DeferredTeamMove('team_move_producer_retry_budget')
-            self.save(ordinal=ordinal)
+            self.save(validate_admission=self.require_admission, ordinal=ordinal)
 
     def commit(self, ctx=None):
         with self.admission.move.gate, self.admission.db._lock:
+            self.require_admission()
             self.admission.revalidate_uncommitted(self)
             with ctx._lock if ctx is not None else nullcontext():
                 if ctx is not None and ctx._terminal_reason is not None:
                     return False
+                self.require_admission()
                 if self.state.retry_initialized is None:
                     raise DeferredTeamMove('team_move_producer_retry_initialization_unknown')
                 if self.state.retry_initialized is False:
                     # Direct job/no-retry launch has an affirmative zero budget.
-                    self.save(retry_initialized=True)
+                    self.save(validate_admission=self.require_admission, retry_initialized=True)
                 if self.attempt_open:
                     raise DeferredTeamMove('team_move_producer_attempt_unsettled')
-                self.save(attempts=self.state.attempts + (ThreadAttempt(
+                self.save(validate_admission=self.require_admission, attempts=self.state.attempts + (ThreadAttempt(
                     attempt_id=uuid.uuid4().hex, phase='initial', boundary=self.state.boundary,
                     ordinal=self.state.ordinal, executor=self.executor, model=self.model, possible_launch=True),), deferred=False)
                 self.attempt_open = True
@@ -259,16 +777,18 @@ class ProducerPreparation:
         return self.last_spec if self.commit(ctx) else None
 
     def __call__(self):
-        pass  # final private commitment protocol; no pre-prepare launch grant
+        self.require_admission()
 
     def before_selflaunch(self):
+        from runtime.daemon.startup_recovery import StartupUnavailable
         try:
             self.before_fifo()
-        except DeferredTeamMove:
+            if not self.attempt_open:
+                self.commit()
+            self.require_admission()
+        except (DeferredTeamMove, StartupUnavailable):
             self.safe_defer = self.attempt_open
             raise
-        if not self.attempt_open:
-            self.commit()
 
     def on_started(self):
         with self.admission.db._lock:
@@ -327,15 +847,42 @@ class ProducerPreparation:
             _current.reset(token)
 
     def finish(self, *, deferred=False, failed=False):
+        refresh = self._repository_refresh_owner
+        if refresh is not None:
+            if not refresh.request_finish(deferred=deferred, failed=failed):
+                return
+            deferred, failed = refresh.deferred, refresh.failed
+        worker = self._native_worker_owner
+        if worker is not None:
+            if not worker.request_finish(deferred=deferred, failed=failed):
+                return
+            deferred, failed = worker.deferred, worker.failed
         failed = failed or any(not v.closed for v in self._repository_preparations.values())
-        with self.admission.db._lock:
-            if self.attempt_open:
-                self.direct_terminal()
-            self.save(producer_settled=True, deferred=deferred,
-                failed_cleanup=self.state.failed_cleanup or failed)
-            self.owner_live = False
-            if all(v.closed for v in self._repository_preparations.values()):
-                self.admission.live.pop((self.state.kind, self.state.source_id), None)
+        try:
+            with self.admission.db._lock:
+                if worker is not None and (not self.owner_live or
+                        self.admission.live.get((self.state.kind, self.state.source_id)) is not self):
+                    raise DeferredTeamMove('team_move_producer_worker_owner_changed')
+                if self.attempt_open:
+                    self.direct_terminal()
+                self.save(producer_settled=True, deferred=deferred,
+                    failed_cleanup=self.state.failed_cleanup or failed)
+                self.owner_live = False
+                if all(v.closed for v in self._repository_preparations.values()):
+                    self.admission.live.pop((self.state.kind, self.state.source_id), None)
+        except BaseException as error:
+            if refresh is not None:
+                refresh.fail("settlement", error)
+            if worker is not None:
+                worker.fail("settlement", error)
+            raise
+        if refresh is not None:
+            refresh.retire()
+        if worker is not None:
+            worker.retire()
+            error, traceback = worker.outcome_error()
+            if error is not None and worker.errors["retirement"] is not None:
+                raise error.with_traceback(traceback)
 
 
 class _DeferredJob:
@@ -404,15 +951,20 @@ class ProducerMoveAdmission:
         self.sessions = None
         self.writer_epoch = 0
 
-    def write_writer(self, state):
+    def write_writer(self, state, *, validate_admission=None):
         if self.db._conn.in_transaction:
             raise DeferredTeamMove('team_move_writer_sql_owner_unavailable')
         try:
             self.db._conn.execute('BEGIN IMMEDIATE')
+            if validate_admission is not None:
+                validate_admission()
             self.writer_store.save_uncommitted(state)
             self.db._conn.commit()
-        except BaseException:
-            self.db._conn.rollback()
+        except BaseException as exc:
+            try:
+                self.db._conn.rollback()
+            except BaseException as secondary:
+                exc.add_note(f'native writer {state.writer_id} rollback failed: {secondary!r}')
             raise
 
     def check_uncommitted(self, *, agents=(), teams=(), global_write=False):
@@ -457,8 +1009,12 @@ class ProducerMoveAdmission:
         return any(state.kind == kind and state.source_id == source_id and (not state.producer_settled or state.deferred or state.unknown)
             for state in self.history_uncommitted().values())
 
-    def reserve(self, kind, source_id):
+    def reserve(self, kind, source_id, *, validate_admission=None):
+        if validate_admission is None:
+            validate_admission = producer_admission_validation(db=self.db)
+        validate_admission()
         with self.move.gate, self.db._lock:
+            validate_admission()
             row = self.db._conn.execute(f'SELECT * FROM {_TABLES[kind]} WHERE id=?', (source_id,)).fetchone()
             if row is None:
                 return None
@@ -500,8 +1056,22 @@ class ProducerMoveAdmission:
                 retry_initialized=False, kind=kind, source_id=source_id, occurrence_id=self.occurrence(kind, row), agent_id=row['agent_name'],
                 task_id=row['task_id'] if kind == 'job' else None, enqueued_at=datetime.now(timezone.utc).isoformat(),
                 session_id=job_sid or f'sess-{uuid.uuid4().hex}', preparation_id=uuid.uuid4().hex)
-            owner = ProducerPreparation(self, state)
-            owner.save(deferred=False, producer_settled=False)
+            owner = ProducerPreparation(self, state, validate_admission=validate_admission)
+            owner.save(validate_admission=validate_admission, deferred=False, producer_settled=False)
+            try:
+                owner.require_admission()  # COMMIT may have waited before registry publication.
+            except BaseException as primary:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                try:
+                    # No provider/preparation was exposed. Settle the original
+                    # durable reservation without requiring fresh admission.
+                    owner.finish(deferred=isinstance(primary, StartupUnavailable),
+                        failed=not isinstance(primary, StartupUnavailable))
+                except BaseException as secondary:
+                    owner.state = owner.state.model_copy(update={'failed_cleanup': True})
+                    self.live[key] = owner
+                    primary.add_note("native reservation settlement also failed: " + repr(secondary)[:512])
+                raise
             self.live[key] = owner
             return owner
 
@@ -661,68 +1231,164 @@ class ProducerMoveAdmission:
                 add('native_writer_evidence_unknown', request.source_team, 'Repair native writer evidence under its owner')
         return tuple(blockers)
 
-    def _released_sources(self) -> tuple:
-        """Native notification selection only; never new launch permission."""
-        selected = []
-        with self.move.gate, self.db._lock:
-            if self.move.active_uncommitted() is not None:
+    def select_redelivery(self, *, _observe=None, validate_admission=None):
+        """Stream original cold keys; no gate/DB lock retained at yield."""
+        move, db, gate, store = self.move, self.db, self.move.gate, self.store
+        def validate():
+            if validate_admission is not None:
+                validate_admission()
+            if (self.move is not move or self.db is not db or move.gate is not gate
+                    or self.store is not store or store.db is not db
+                    or move.store.db is not db or move.producers is not self):
+                raise DeferredTeamMove('team_move_producer_owner_changed')
+        validate()
+        with gate, db._lock:
+            validate()
+            if move.active_uncommitted() is not None:
                 raise DeferredTeamMove('team_move_release_not_committed')
             states = self.history_uncommitted()
-            for kind in ('dream', 'wake', 'schedule'):
-                status = 'firing' if kind == 'schedule' else 'pending'
-                for row in self.db._conn.execute(f'SELECT * FROM {_TABLES[kind]}'):
-                    state = self.state_for_uncommitted(kind, row, states)
-                    safe = state is None or (state.deferred and state.producer_settled and not state.unknown)
-                    if safe and (row['status'] == status or state and state.deferred and row['status'] == 'running'):
-                        selected.append((kind, row['id']))
-        return tuple(selected)
+        for kind in ('dream', 'wake', 'schedule'):
+            status = 'firing' if kind == 'schedule' else 'pending'
+            with gate, db._lock:
+                validate()
+                cursor = db._conn.execute(f'SELECT * FROM {_TABLES[kind]}')
+            primary = None
+            try:
+                while True:
+                    with gate, db._lock:
+                        validate()
+                        row = cursor.fetchone()
+                        if row is None:
+                            break
+                        state = self.state_for_uncommitted(kind, row, states)
+                        safe = state is None or (state.deferred and state.producer_settled and not state.unknown)
+                        selected = safe and (row['status'] == status or state and state.deferred and row['status'] == 'running')
+                        source_id = row['id']
+                    if selected:
+                        yield kind, source_id
+                    elif _observe is not None and row['status'] in (status, 'running'):
+                        _observe("local_hold")
+            except BaseException as exc:
+                primary = exc
+                raise
+            finally:
+                try:
+                    with db._lock:
+                        cursor.close()
+                except BaseException as exc:
+                    if primary is None or isinstance(primary, GeneratorExit):
+                        raise
+                    disposition = NativeWriterDisposition()
+                    disposition.retain(primary, "settlement", exc)
+
+    def _released_sources(self, *, validate_admission=None) -> tuple:
+        """Ready native discovery closes its one cursor before returning values."""
+        with closing(self.select_redelivery(validate_admission=validate_admission)) as selected:
+            return tuple(selected)
 
     @staticmethod
-    def _publish_released_sources(org: Any, selected: tuple) -> None:
-        # Loop-owned queue/dedup mutation. Native reserve/claim still revalidates
-        # current release/history; a selected notification confers no admission.
+    def _publish_released_sources(org: Any, selected: tuple, *, validate_admission=None, queues=None) -> None:
         from runtime.daemon.dream_queue import DreamJob
         from runtime.daemon.wake_queue import WakeJob
         from runtime.daemon.schedule_queue import ScheduleJob
-        queues = {'dream': (org.dream_queue, DreamJob, 'dream_id'),
-            'wake': (org.wake_queue, WakeJob, 'work_hour_id'),
-            'schedule': (org.schedule_queue, ScheduleJob, 'schedule_id')}
+        validate = producer_admission_validation(org) if validate_admission is None else validate_admission
+        choices = (org.dream_queue, org.wake_queue, org.schedule_queue) if queues is None else queues
+        loop = None if org._startup_recovery is None else org._startup_recovery._loop
+        if loop is not None:
+            import asyncio
+            if asyncio.get_running_loop() is not loop:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_producer_loop_changed")
+        jobs = {'dream': (choices[0], DreamJob, 'dream_id'),
+                'wake': (choices[1], WakeJob, 'work_hour_id'),
+                'schedule': (choices[2], ScheduleJob, 'schedule_id')}
         for kind, source_id in selected:
-            queue, cls, field = queues[kind]
+            validate()
+            if any(current is not original for current, original in zip(
+                    (org.dream_queue, org.wake_queue, org.schedule_queue), choices)):
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
+            queue, cls, field = jobs[kind]
             queue.put_nowait(cls(org_slug=org.slug, **{field: source_id}))
 
     def redeliver_after_release(self, org):
-        """Existing synchronous scheduler entry; queues retain dedup semantics."""
-        self._publish_released_sources(org, self._released_sources())
+        """Synchronous ordinary caller; cold P6 uses its authentic publication."""
+        db, move = self.db, self.move
+        queues = (org.dream_queue, org.wake_queue, org.schedule_queue)
+        selected = producer_admission_validation(org)
+        def validate():
+            selected()
+            if (org.db is not db or self.db is not db or self.move is not move
+                    or move.producers is not self or db._team_move_coordinator is not move):
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
+        validate()
+        with closing(self.select_redelivery(validate_admission=validate)) as sources:
+            for item in sources:
+                self._publish_released_sources(org, (item,), validate_admission=validate, queues=queues)
 
 
 async def run_native_producer(org, kind, source_id, action):
+    validate_admission = producer_admission_validation(org)
     admission = owner_for(org.db)
+    validate_admission()
     if admission is None:
         return await action(None)
     owner = None
     deferred = failed = False
-    primary = None
+    primary = primary_traceback = None
     try:
-        owner = admission.reserve(kind, source_id)
+        with admission.move.gate, org.db._lock:
+            validate_admission()
+            owner = admission.reserve(kind, source_id, validate_admission=validate_admission)
         if owner is None:
             return
+        validate_admission()
         return await action(owner)
-    except DeferredTeamMove:
+    except DeferredTeamMove as exc:
+        primary, primary_traceback = exc, exc.__traceback__
+        worker = None if owner is None else (owner._repository_refresh_owner or owner._native_worker_owner)
+        if worker is not None and any(worker.errors[kind] is exc
+                for kind in ("submission", "handoff", "settlement", "retirement")):
+            # Submission/handoff/settlement uncertainty is not a genuine
+            # native validation-only move deferral, even with the same type.
+            primary, failed = exc, True
+            raise
         deferred = True  # owner rows remain unchanged; no failure/callback
     except BaseException as exc:
-        primary = exc
-        failed = True
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        primary, primary_traceback = exc, exc.__traceback__
+        deferred = isinstance(exc, StartupUnavailable)
+        failed = not deferred or bool(owner is not None and owner.attempt_open and not owner.safe_defer)
         raise
     finally:
         if owner is not None:
+            worker = owner._repository_refresh_owner or owner._native_worker_owner
+            if worker is not None and primary is not None:
+                worker.remember_primary(primary)
             try:
                 owner.finish(deferred=deferred, failed=failed)
             except BaseException as settlement:
                 if primary is None:
                     raise
-                primary.add_note(f'native producer evidence failed: {settlement}')
-                logger.exception('Retaining native producer ownership after evidence failure')
+                if worker is not None:
+                    worker.fail("settlement", settlement)
+                    try:
+                        logger.exception('Retaining native producer ownership after evidence failure')
+                    except BaseException as diagnostic:
+                        with worker.lock:
+                            worker.diagnostic_error = worker.diagnostic_error or diagnostic
+                else:
+                    disposition = NativeWriterDisposition()
+                    disposition.primary, disposition.primary_traceback = primary, primary_traceback
+                    disposition.retain(primary, "settlement", settlement)
+                    try:
+                        logger.exception('Retaining native producer ownership after evidence failure')
+                    except BaseException as diagnostic:
+                        disposition.retain(primary, "diagnostic", diagnostic)
+                BaseException.__setattr__(primary, "__traceback__", primary_traceback)
+                if deferred and not failed:
+                    raise primary.with_traceback(primary_traceback)
 
 
 class _BoundProducerExecutor:
@@ -746,15 +1412,32 @@ class _BoundProducerExecutor:
             self.owner.on_started()
             if previous is not None:
                 previous(pid)
+        previous_validator = kwargs.get('pre_launch_validator')
+        if previous_validator is not None:
+            def validate():
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                try:
+                    self.owner.require_admission()
+                    previous_validator()
+                    self.owner.require_admission()
+                except StartupUnavailable as exc:
+                    self.owner.admission_refused(exc)
+                    raise
+            kwargs['pre_launch_validator'] = validate
         running = kwargs.get('running')
         if running is None:
             kwargs['on_started'] = started
         def execute():
+            from runtime.daemon.startup_recovery import StartupUnavailable
             try:
                 result = self.executor.run(**kwargs)
             except DeferredTeamMove:
                 # Preserve the native final-before-Popen no-launch evidence;
                 # completed preparation is not an unresolved partial effect.
+                raise
+            except StartupUnavailable as exc:
+                if getattr(exc, 'native_admission_owner', None) is not self.owner:
+                    self.owner.failed_cleanup()
                 raise
             except BaseException as exc:
                 try:
@@ -786,17 +1469,29 @@ def native_claim(db, agent_id):
 
 async def redeliver_native_jobs(org):
     import asyncio
-    from runtime.daemon.jobs_runner import register_runner_task
+    from runtime.daemon.jobs_runner import register_runner_task, require_job_admission
+    validate_admission = producer_admission_validation(org)
+    require_job_admission(org)
     admission = owner_for(org.db)
     if admission is None:
         return
     for job_id, retained in tuple(admission.deferred_jobs.items()):
+        require_job_admission(org)
         try:
-            owner = admission.reserve('job', job_id)
+            with admission.move.gate, org.db._lock:
+                require_job_admission(org)
+                owner = admission.reserve('job', job_id, validate_admission=validate_admission)
         except DeferredTeamMove:
             continue
         if owner is not None:
+            # A refusal after reservation retains that actual owner and the
+            # original callback; never clear it to manufacture redelivery.
+            require_job_admission(org)
+            owner.require_admission()
+            owner.detached = True
             register_runner_task(job_id, asyncio.create_task(retained.callback(owner)),
                 db=org.db, org_slug=org.slug, move_owner=owner)
+            require_job_admission(org)
+            owner.require_admission()
             if admission.deferred_jobs.get(job_id) is retained:
                 del admission.deferred_jobs[job_id]

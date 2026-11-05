@@ -782,23 +782,157 @@ class TeamMoveOperation:
             raise TeamMoveError("team_move_recovery_owner_live_or_unknown")
         return {"owner_id": owner, "start_audit": start["id"], "different_process_identity": current}
 
+    def _require_redelivery(self, *, validate_admission=None):
+        if validate_admission is not None:
+            validate_admission()
+        # Renew after BOTH original move/DB waits, before the snapshot effect.
+        with self.move.gate, self.org.db._lock:
+            if validate_admission is not None:
+                validate_admission()
+            if self.store.read() is not None:
+                raise TeamMoveError("team_move_release_not_committed")
+            if not hasattr(self.org.orchestrator, "redeliver_team_move_tasks"):
+                raise TeamMoveError("team_move_recovery_reattach_for_redelivery")
+
+    def redeliver_native(self, recovery):
+        """Authentic synchronous P6 owner; never the ordinary native adapter."""
+        from runtime.daemon.startup_publication import current_publication
+        from runtime.daemon.thread_queue import ThreadJob
+        org, move, profiles, store = self.org, self.move, self.profiles, self.store
+        db, gate, orch = org.db, move.gate, org.orchestrator
+        threads, producers = move.threads, move.producers
+        queues = (org.thread_queue, org.dream_queue, org.wake_queue, org.schedule_queue)
+        loop, state, epoch = recovery._loop, recovery.state, recovery.epoch
+        orgs = state.orgs
+        publication = current_publication(orch)
+        def validate():
+            if (self.org is not org or self.move is not move or self.profiles is not profiles
+                    or self.store is not store or org.db is not db or move.gate is not gate
+                    or move.store is not store or store.db is not db
+                    or db._team_move_coordinator is not move or org.orchestrator is not orch
+                    or move.threads is not threads or move.producers is not producers
+                    or state.orgs is not orgs or state.profile_coordinator is not profiles
+                    or recovery._loop is not loop or recovery.epoch != epoch
+                    or any(current is not original for current, original in zip(
+                        (org.thread_queue, org.dream_queue, org.wake_queue, org.schedule_queue), queues))):
+                raise RuntimeError("startup_move_attachment_changed")
+            recovery.require_redelivery_owner(org)
+            if publication is None or publication.gate is not recovery or current_publication(orch) is not publication:
+                raise RuntimeError("startup_move_publication_owner_missing")
+        def retain(primary, kind, error):
+            # Three distinct actual later errors, with no fallible formatting.
+            try:
+                BaseException.__setattr__(primary, "_move_redelivery_" + kind, (error, error.__traceback__))
+            except BaseException:
+                pass
+        validate()
+        self._require_redelivery(validate_admission=validate)
+        orch.redeliver_team_move_tasks()
+        def observe(disposition):
+            if disposition != "local_hold":
+                raise RuntimeError("startup_move_selection_outcome_unknown")
+            publication.count("held")
+
+        for token in threads.select_redelivery_tokens(_observe=observe, validate_admission=validate):
+            validate()
+            publication.make_room(orch)
+            validate()
+            publication.submit_thread(orch, queues[0], loop,
+                ThreadJob(org_slug=org.slug, invocation_token=token))
+        publication.drain(orch)
+        validate()
+        selected = producers.select_redelivery(_observe=observe, validate_admission=validate)
+        primary = None
+        try:
+            for kind, source_id in selected:
+                validate()
+                publication.make_room(orch)
+                validate()
+                with publication.attempt(orch, "producer_attempted"):
+                    publication.submit_producer(org, kind, source_id)
+        except BaseException as exc:
+            primary = exc
+            try:
+                recovery.fail("startup_move_redelivery_failed", exc)
+            except BaseException as diagnostic:
+                retain(exc, "failure_observation", diagnostic)
+            raise
+        finally:
+            try:
+                selected.close()  # Same cold cursor closes before final drain.
+            except BaseException as exc:
+                if primary is None:
+                    primary = exc
+                    try:
+                        recovery.fail("startup_move_selection_close_failed", exc)
+                    except BaseException as diagnostic:
+                        retain(exc, "close_observation", diagnostic)
+                    raise
+                retain(primary, "cursor_close", exc)
+                try:
+                    recovery.fail("startup_move_selection_close_failed", exc)
+                except BaseException as diagnostic:
+                    retain(primary, "close_observation", diagnostic)
+        publication.drain(orch)
+        validate()
+
     async def redeliver(self, *, native: Callable | None = None) -> None:
-        """After durable release, existing deduplicating owners retain semantics."""
-        held = self.store.read() if native is None else await native(self.store.read)
-        if held is not None:
-            raise TeamMoveError("team_move_release_not_committed")
-        if not hasattr(self.org.orchestrator, "redeliver_team_move_tasks"):
-            raise TeamMoveError("team_move_recovery_reattach_for_redelivery")
+        """Original ordinary selection; each native callback returns values only."""
+        from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
+        from runtime.orchestrator.producer_move import producer_admission_validation
+        org, move, profiles, store = self.org, self.move, self.profiles, self.store
+        db, gate, orch = org.db, move.gate, org.orchestrator
+        threads, producers = move.threads, move.producers
+        queues = (org.thread_queue, org.dream_queue, org.wake_queue, org.schedule_queue)
+        state, recovery = org._startup_state, org._startup_recovery
+        orgs = None if state is None else state.orgs
+        loop = None if recovery is None else recovery._loop
+        epoch = None if recovery is None else recovery.epoch
+        def identity():
+            if (self.org is not org or self.move is not move or self.profiles is not profiles
+                    or self.store is not store or org.db is not db or move.gate is not gate
+                    or move.store is not store or store.db is not db
+                    or db._team_move_coordinator is not move or org.orchestrator is not orch
+                    or move.threads is not threads or move.producers is not producers
+                    or org._startup_state is not state or org._startup_recovery is not recovery
+                    or state is not None and (state.orgs is not orgs or state.profile_coordinator is not profiles)
+                    or recovery is not None and (recovery._loop is not loop or recovery.epoch != epoch)
+                    or any(current is not original for current, original in zip(
+                        (org.thread_queue, org.dream_queue, org.wake_queue, org.schedule_queue), queues))):
+                raise StartupUnavailable("startup_move_attachment_changed")
+        identity()
+        selected = ordinary_admission_validation(org)
+        identity()
+        producer_selected = producer_admission_validation(org)
+        def validate():
+            identity()
+            selected()
+            producer_selected()
+            identity()
+        validate()
+        if loop is not None:
+            import asyncio
+            if asyncio.get_running_loop() is not loop:
+                raise StartupUnavailable("startup_move_loop_changed")
+        queues[0]._require_ready()
+        validate()
         if native is None:
-            self.org.orchestrator.redeliver_team_move_tasks()
+            self._require_redelivery(validate_admission=validate)
+            orch.redeliver_team_move_tasks()
         else:
-            await self.org.orchestrator.redeliver_team_move_tasks(native=native)
-        await self.move.threads.redeliver_after_release(self.org.thread_queue, native=native)
+            def require():
+                self._require_redelivery(validate_admission=validate)
+            await native(require)
+            validate()
+            await orch.redeliver_team_move_tasks(native=native)
+        validate()
+        await threads.redeliver_after_release(queues[0], native=native, validate_admission=validate)
+        validate()
         if native is None:
-            # Existing startup caller retains its original synchronous entry.
-            self.move.producers.redeliver_after_release(self.org)
+            producers.redeliver_after_release(org)
         else:
-            selected = await native(self.move.producers._released_sources)
-            self.move.producers._publish_released_sources(self.org, selected)
+            sources = await native(lambda: producers._released_sources(validate_admission=validate))
+            validate()
+            producers._publish_released_sources(org, sources, validate_admission=validate, queues=queues[1:])
         # Armed schedules are intentionally not claimed here. The normal timer
         # alone decides due/missed/expiry using original persisted deadlines.

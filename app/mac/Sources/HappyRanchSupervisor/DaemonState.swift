@@ -14,7 +14,7 @@ public enum DaemonState: String, Sendable, Equatable, CustomStringConvertible {
     /// App-initiated launch in progress — process spawned, waiting for health check.
     case starting
 
-    /// Daemon is running and health check is passing.
+    /// Process is running and HTTP liveness passes; recovery is separate.
     case running
 
     /// Daemon process is alive but health check is failing (transient).

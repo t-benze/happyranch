@@ -107,11 +107,55 @@ unindexed and indexed layouts are both recognized; partial or noncanonical index
 sets refuse. The owning writer validates the complete target before COMMIT.
 Before any workflow DDL, the entire reserved coding family is observed. Partial,
 extra, case-changed, wrong-kind or malformed objects and real shared dependency
-failures refuse without repair or adoption. Body/interruption
-and COMMIT failures preserve the primary cause and secondary cleanup errors;
-uncertain COMMIT is not success or proof of absence. Audit-watermark advances
-publish only after positive COMMIT under the same lock. Failed unpublished org
+failures refuse without repair or adoption. The raw schema transaction binds
+its original RLock and connection. It captures the first actual body/interruption,
+COMMIT or exit error with native arguments and traceback before cleanup; actual
+later errors and repeated throws of the same object remain separate occurrences.
+Only a returned BEGIN IMMEDIATE creates rollback duty on body/interruption or
+COMMIT failure. Caller BEGIN/SAVEPOINT refusal and failed BEGIN owe only the
+acquired release; failed acquisition adds no rollback or close. Failed or
+incomplete rollback still attempts the one original SQLite close, invalidation
+and release, independently
+of failed diagnostics. Invalidation forbids reuse and proves no close or native
+retirement; the original handle and failed/unknown close remain retained.
+Opaque causes bypass virtual contextlib traceback restoration. Failed cleanup,
+retention or diagnostics raises the original first cause rather than returning
+clean exit proof, even when notes or attachments are unavailable. A genuinely
+clean refused body retains its original classification and successful exit.
+Uncertain COMMIT is not success or proof of absence; successful COMMIT followed
+by failed release remains a committed prefix with failed delivery, without a
+postcommit rollback. Audit-watermark advances publish only after positive COMMIT
+AND context exit under the same lock; a body-local result alone cannot publish
+watermarks, ownership or registration success. Failed unpublished org
 construction closes/refuses before attachment; later installers are separate.
+Load captures the returned Database before owner forwarding/observer exit and
+owes one original close on any later unpublished failure. Constructor nonreturn
+owes no outer close; normal load returns its exact state without closing. Native
+FIRST and separately captured later/failed-delivery evidence survive that close
+on the same owner/frame. SQLite body completion alone grants no returned-close,
+second-close, attachment-retirement or public shutdown proof. Outer attachment
+forwarding freezes FIRST before fallible diagnostics and preserves separate later
+occurrences/native snapshots and actual child delivery provenance. Its original
+selector close remains owed despite failed sinks. Dynamic attachment consumes the
+current load outcome regardless of early `owner.org`: failed/undelivered/unknown
+load-close retains the SAME owner/DB/barrier without a second close. A positively
+returned load followed by attachment failure still owes its original first org
+close. Clean close, failed owner acknowledgement and native retirement remain
+distinct, and normal publication/retirement retains its original barriers. Source
+custody establishes no behavioral or full native-public lifetime acceptance.
+The schema read contexts capture native first and later occurrences before
+cleanup or opaque exception access. A snapshot uses the same connection, joins
+caller BEGIN/SAVEPOINT without transaction cleanup, and owes one rollback only
+after its own BEGIN returns. A returned literal-reference constructor owes its
+one close even on setup or body failure; a failed constructor grants no close.
+Failed or undelivered rollback/reference close retains the actual cause and
+original handle, without fallback target close, retry or retirement proof. The
+original selected frame consumes these lower outcomes through its own interval,
+even if exception attachment fails; outer rollback, absent notes or autocommit
+cannot make failed lower cleanup clean. Clean refusal retains its original
+positive predicates. Reference layout/cache results and audit-watermark or
+installer/ownership publication still require their original positive exits;
+a local result, completed reference or COMMIT alone is insufficient.
 
 Coding validates its canonical inventory and actual shared columns, keys, FKs,
 owner histories, template/authority/native dependencies and Pause/move/naming
@@ -171,6 +215,48 @@ or allocation. Disabled remains the default; ordinary routing remains legacy.
 Literal start@1 stays readable but is not a fresh-start path. Admitted start@2
 work retains its original pins across later disable/default changes and still
 requires current selected-role/repository authority, Pause/move and native proof.
+Fresh callback and consume preflights retain the original connection and coding
+validator under the SAME Database native RLock for the entire readiness read.
+Selection renews after native-lock and BEGIN waits. The operation also pins the
+original production org-map object: replacement refuses even with the same org;
+unrelated in-place map edits retain their ordinary meaning. Identity-only owed
+callback validation remains separate from fresh readiness, and cleanup stays owed
+after stop. Readiness preserves its selected settings error through one owned
+rollback, retaining any actual cleanup error separately. Short authority lease
+transactions retain the first error even without an admission validator. The public
+admission writer also preserves the SAME original error and native traceback at
+its actual outer exit without a virtual traceback setter. Positive rollback and
+release evidence publishes only after cleanup and required diagnostics/record
+attachments succeed; any genuine later failure withholds that owner's marker,
+including a failed exception attachment retained on the original owner/frame.
+Selected metadata read, role/binding and settings access contexts also preserve the
+actual cause outside generator/ExitStack restoration and attempt each positively
+acquired original exit once in reverse order. Pre-business no-effect requires the
+same error's own completed access frame and positive read rollback/exit evidence;
+stale markers, an ended transaction or absent notes cannot qualify it. The original
+native writer captures actual admission/body/settlement errors and native tracebacks
+before virtual access, retaining repeated later occurrences and prior/nested frames
+beside unchanged first-per-kind fields, reservation and settlement predicates.
+The original start body result is captured before existing context exits and
+returned only after they succeed. A release failure after business COMMIT keeps
+that exact value as failure-frame evidence and the committed prefix; it grants
+neither successful delivery nor consume/replay or native retirement. These local
+contracts leave other publisher/profile interiors separately owned. Consume still
+hands the SAME original `_start` coroutine to the draft-dispatch loop bridge. A
+wrapper awaits it once and captures its actual exception/object/native traceback
+before Task-to-Future cancellation conversion. That early observation joins the
+SAME queue work/invocation lock order, so native-before-waiter and
+waiter-before-native causes remain distinct before delayed Future delivery. The
+failed outer join and original submission/drain/stop failure readers freeze that
+live-invocation selection before collection or later outcome reads, retaining prior
+selected causes and later actual errors. Later outcomes cannot replace an earlier
+reader cancellation. Handled holds and successful suppressed cancellation preserve
+exact return values; a successfully returned invocation's handled candidate adds no
+failure marker or later-stage blocker. Missing
+or cancelled acknowledgements and ambiguous submission retain the original
+coroutine/wrapper/Future/observed Task and UNKNOWN custody, without closing,
+cancelling, resubmitting, replaying or inferring retirement. No standalone call
+creates a queue owner.
 
 Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
 this is neither per-org admission nor installed/loaded/operational acceptance.

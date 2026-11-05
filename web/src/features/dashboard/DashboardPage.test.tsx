@@ -1,11 +1,13 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse, delay } from 'msw';
+import { http, HttpHandler, HttpResponse, delay, type HttpResponseResolver } from 'msw';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
-import type { DashboardSummaryResponse } from '@/lib/api/types';
+import { startupHealth } from '@/test/startup';
+import { makeQueryClient } from '@/design-system/providers/AppProvider';
+import type { DashboardSummaryResponse, IdentityList } from '@/lib/api/types';
 
 // Partial-mock the tokens hooks: stub the today-total and week-total hooks so
 // the "Tokens today" tile and "This week's burn" card render deterministic
@@ -16,7 +18,7 @@ vi.mock('@/hooks/tokens', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hooks/tokens')>();
   return { ...actual, useTokensToday: vi.fn(), useTokensWeek: vi.fn() };
 });
-import { useTokensToday, useTokensWeek, formatTokens } from '@/hooks/tokens';
+import { useTokensToday, useTokensWeek } from '@/hooks/tokens';
 const mockTokensToday = vi.mocked(useTokensToday);
 const mockTokensWeek = vi.mocked(useTokensWeek);
 
@@ -63,7 +65,10 @@ function seedShell(): void {
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
     ),
     http.get('/api/v1/health', () =>
-      HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/happyranch' }),
+      HttpResponse.json({ ...startupHealth(), active_runtime: '/Users/x/happyranch' }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/identities`, () =>
+      HttpResponse.json<IdentityList>({ identities: [] }),
     ),
     // The self-contained TopTokenThreadsPanel fetches its own thread rollup
     // on every established-org render; answer it (empty) so msw's
@@ -100,14 +105,145 @@ describe('DashboardPage', () => {
 
   test('renders loading state initially', async () => {
     seedShell();
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, async () => {
+    const client = makeQueryClient();
+    type Operation = {
+      boundary: string;
+      queryKey?: readonly unknown[];
+      original: Promise<unknown>;
+      outcome?: Promise<PromiseSettledResult<unknown>>;
+    };
+    const operations: Operation[] = [];
+    const restores: (() => void)[] = [];
+    const later: { phase: string; error: unknown; operation?: Operation }[] = [];
+    let primary: { error: unknown } | undefined;
+    let view: ReturnType<typeof renderWithProviders> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    const observe = (original: Promise<unknown>, boundary: string, queryKey?: readonly unknown[]) => {
+      // Retain the raw completion before recording any diagnostic outcome.
+      const operation: Operation = { original, boundary, queryKey };
+      operations.push(operation);
+      operation.outcome = original.then(
+        (value) => ({ status: 'fulfilled', value } as const),
+        (reason: unknown) => ({ status: 'rejected', reason } as const),
+      );
+    };
+    let joined = 0;
+    const joinStarted = async () => {
+      do {
+        while (joined < operations.length) {
+          const operation = operations[joined++];
+          const outcome = operation.outcome;
+          try {
+            await act(async () => { await outcome; });
+          } catch (error) {
+            later.push({ phase: 'React delivery during join', error, operation });
+          }
+          // Independently join even if act/delivery failed. No new work starts.
+          try {
+            const result = outcome ? await outcome : await operation.original.then(
+              (value) => ({ status: 'fulfilled', value } as const),
+              (reason: unknown) => ({ status: 'rejected', reason } as const),
+            );
+            if (result.status === 'rejected') {
+              later.push({ phase: operation.boundary, error: result.reason, operation });
+            }
+          } catch (error) {
+            later.push({ phase: 'join original completion', error, operation });
+          }
+        }
+        try {
+          // The locked notifyManager schedules delivery in a zero-delay turn;
+          // act then flushes React, including any newly mounted real queries.
+          await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
+        } catch (error) {
+          later.push({ phase: 'React delivery', error });
+        }
+      } while (joined < operations.length);
+    };
+    try {
+      // A local wire observation through the real shell poller, never a seed.
+      const healthHandler = http.get('/api/v1/health', () => HttpResponse.json({
+        ...startupHealth(), active_runtime: '/Users/x/happyranch',
+      }));
+      const identityHandler = http.get(`/api/v1/orgs/${SLUG}/identities`, () =>
+        HttpResponse.json<IdentityList>({ identities: [] }));
+      // Cache.add notifies synchronously within build, before first fetch.
+      // This includes Sidebar's shared summary call, not just the page's call.
+      unsubscribe = client.getQueryCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const query = event.query;
+        const key = query.queryKey;
+        const shell = key.length === 1 && (key[0] === 'health' || key[0] === 'orgs');
+        const scoped = key.length === 2 && key[1] === SLUG &&
+          (key[0] === 'dashboard-summary' || key[0] === 'identities');
+        const tokens = key.length === 4 && key[0] === 'tokens' && key[1] === SLUG && key[2] === 'thread';
+        if (!shell && !scoped && !tokens) return;
+        const fetch = query.fetch;
+        const spy = vi.spyOn(query, 'fetch').mockImplementation(function (this: typeof query, ...args) {
+          const original = fetch.apply(this, args);
+          // Query.promise is the inner retryer, not this outer fetch return.
+          observe(original, 'query fetch', key);
+          return original;
+        });
+        restores.push(() => spy.mockRestore());
+      });
+      const resolveSummary = async (..._args: Parameters<HttpResponseResolver>) => {
         await delay(200);
         return HttpResponse.json(emptySummary());
-      }),
-    );
-    renderWithProviders(<AppRoutes />, { route: ROUTE });
-    expect(await screen.findByText(/Loading dashboard/i)).toBeInTheDocument();
+      };
+      const summaryHandler = http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, function (this: unknown, ...args) {
+        const original = resolveSummary.apply(this, args);
+        observe(original, 'summary resolver');
+        return original;
+      });
+      for (const [boundary, handler] of [
+        ['summary MSW run', summaryHandler],
+        ['health MSW run', healthHandler],
+        ['identities MSW run', identityHandler],
+      ] as const) {
+        const run = handler.run;
+        const spy = vi.spyOn(handler, 'run').mockImplementation(function (this: typeof handler, ...args) {
+          const original = run.apply(this, args);
+          // Nonmatches return null. Keep the local identity run too: its
+          // consuming query may abort, which alone does not join MSW's run.
+          observe(original, boundary);
+          return original;
+        });
+        restores.push(() => spy.mockRestore());
+      }
+      server.use(summaryHandler, healthHandler, identityHandler);
+      view = renderWithProviders(<AppRoutes />, { route: ROUTE, queryClient: client });
+      expect(await screen.findByText(/Loading dashboard/i)).toBeInTheDocument();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      await joinStarted();
+      try {
+        if (view) view.unmount();
+        else cleanup(); // render can fail after mounting, before returning.
+      } catch (error) {
+        later.push({ phase: 'unmount', error });
+        try { cleanup(); } catch (cleanupError) {
+          later.push({ phase: 'cleanup after unmount failure', error: cleanupError });
+        }
+      }
+      // Keep observation through unmount and join only actual additional work.
+      await joinStarted();
+      try { unsubscribe?.(); } catch (error) { later.push({ phase: 'unsubscribe', error }); }
+      for (const restore of restores.reverse()) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+      try { client.clear(); } catch (error) { later.push({ phase: 'clear cache', error }); }
+    }
+    const failure = primary ?? later.shift();
+    if (failure) {
+      try {
+        if (later.length) console.error('Dashboard loading secondary errors', later, operations);
+      } catch (error) {
+        later.push({ phase: 'report secondary errors', error });
+      }
+      throw failure.error;
+    }
   });
 
   test('renders error state on 500', async () => {
@@ -430,7 +566,7 @@ describe('DashboardPage', () => {
     const s = emptySummary();
     s.org_age_days = 14;
     s.narrative_counts.completed_today = 5;
-    // A real today-scoped token total flows from the (mocked) useTokensToday.
+    // Supplied presentation total from the mocked useTokensToday.
     mockTokensToday.mockReturnValue({
       data: 26_500_000,
       isLoading: false,
@@ -443,11 +579,11 @@ describe('DashboardPage', () => {
 
     const rail = await screen.findByTestId('dashboard-rail');
 
-    // The honest tokens tile: label + value rendered via the shared compact
-    // formatter (26_500_000 -> '26.5M'), NOT a hand-rolled string.
+    // The tokens tile presents the supplied 26_500_000 as independent literal
+    // '26.5M'; this does not exercise aggregation or the since window.
     expect(within(rail).getByText('Tokens today')).toBeInTheDocument();
     expect(
-      within(rail).getByText(formatTokens(26_500_000)),
+      within(rail).getByText('26.5M'),
     ).toBeInTheDocument();
 
     // The dishonest dollars counter-tile is gone from the TODAY grid.
@@ -503,7 +639,7 @@ describe('DashboardPage', () => {
     const s = emptySummary();
     s.org_age_days = 14;
     s.narrative_counts.completed_today = 5;
-    // A real today-scoped total resolved by the (mocked) summing hook.
+    // Supplied presentation total; the real summing hook is not exercised.
     mockTokensToday.mockReturnValue({
       data: 1_250_000,
       isLoading: false,
@@ -516,7 +652,7 @@ describe('DashboardPage', () => {
 
     const rail = await screen.findByTestId('dashboard-rail');
     const tile = within(rail).getByText('Tokens today').parentElement as HTMLElement;
-    expect(within(tile).getByText(formatTokens(1_250_000))).toBeInTheDocument();
+    expect(within(tile).getByText('1.3M')).toBeInTheDocument();
     // The success state replaces the neutral placeholder entirely.
     expect(within(tile).queryByText('—')).not.toBeInTheDocument();
   });
@@ -524,7 +660,7 @@ describe('DashboardPage', () => {
   test("This week's burn card renders a real 7d token figure with a chevron deep-link to Usage (THR-030 HOME-06)", async () => {
     const s = emptySummary();
     s.org_age_days = 14;
-    // A real this-week token total resolved by the (mocked) week-summing hook.
+    // Supplied presentation total; no real weekly aggregation is exercised.
     mockTokensWeek.mockReturnValue({
       data: 274_400_991,
       isLoading: false,
@@ -540,16 +676,16 @@ describe('DashboardPage', () => {
       .getByText("This week's burn")
       .closest('section') as HTMLElement;
 
-    // Honest token figure via the shared compact formatter, scoped to the card.
-    expect(within(card).getByText(formatTokens(274_400_991))).toBeInTheDocument();
-    // THR-099 display-metric contract: the compacted 7d-burn keeps the EXACT
+    // Supplied token total has an independent compact-text oracle in the card.
+    expect(within(card).getByText('274.4M')).toBeInTheDocument();
+    // THR-099 display-metric contract: the supplied burn value keeps the EXACT
     // value available via the StatValue title (never lost on hover).
     expect(within(card).getByTitle('274,400,991')).toBeInTheDocument();
     // Tokens are the unit (dollar burn is deferred — no '$' on this card).
     expect(within(card).getByText('Tokens')).toBeInTheDocument();
     expect(within(card).queryByText(/\$/)).not.toBeInTheDocument();
 
-    // The chevron affordance deep-links into the Spend page (same-window number).
+    // The chevron deep-links into the Spend page; no window equality is proved.
     const link = within(card).getByRole('link', { name: /view token spend/i });
     expect(link).toHaveAttribute('href', `/orgs/${SLUG}/spend`);
   });
@@ -618,40 +754,218 @@ describe('DashboardPage', () => {
     ];
     seedShell();
 
-    let resolveBody: unknown = null;
-    server.use(
-      handler(s),
-      http.post(
-        `/api/v1/orgs/${SLUG}/tasks/TASK-301/resolve-escalation`,
-        async ({ request }) => {
-          resolveBody = await request.json();
-          return HttpResponse.json({ ok: true, task_id: 'TASK-301', new_status: 'pending' });
+    const client = makeQueryClient();
+    type Failure = { phase: string; error: unknown; next?: Failure };
+    const failures: { first?: Failure; last?: Failure } = {};
+    const remember = (phase: string, error: unknown) => {
+      // Presence, not truthiness of error, preserves even throw undefined.
+      // Each caught call is separate; never deduplicate by error identity.
+      const failure: Failure = { phase, error };
+      if (failures.last) failures.last.next = failure;
+      else failures.first = failure;
+      failures.last = failure;
+    };
+    type Operation = {
+      phase: string;
+      original: Promise<unknown>;
+      completion: Promise<PromiseSettledResult<unknown>>;
+      result?: PromiseSettledResult<unknown>;
+      next?: Operation;
+    };
+    let first: Operation | undefined;
+    let last: Operation | undefined;
+    const diagnostics: Operation[] = [];
+    const observe = <T,>(original: Promise<T>, phase: string): Promise<T> => {
+      for (let owned = first; owned; owned = owned.next) {
+        // The exact same returned Promise is propagation, not a new throw.
+        if (owned.original === original) return original;
+      }
+      const completion = original.then(
+        (value) => {
+          const result = { status: 'fulfilled', value } as const;
+          owned.result = result;
+          return result;
         },
-      ),
-    );
+        (reason: unknown) => {
+          const result = { status: 'rejected', reason } as const;
+          owned.result = result;
+          // This is a rejection observation at this original boundary, not
+          // proof of another independent throw of the same reason object.
+          remember(`${phase} original rejection observation`, reason);
+          return result;
+        },
+      );
+      const owned: Operation = { phase, original, completion };
+      if (last) last.next = owned;
+      else first = owned;
+      last = owned;
+      // Raw return and rejection-safe completion are already owned. A
+      // catchable diagnostic failure cannot replace either or escape to app.
+      try { diagnostics.push(owned); } catch (error) {
+        remember(`${phase} diagnostic recording throw`, error);
+      }
+      return original;
+    };
+    type Restore = { run: () => void; next?: Restore };
+    let restores: Restore | undefined;
+    const ownRestore = (run: () => void) => { restores = { run, next: restores }; };
+    let joined: Operation | undefined;
+    const joinStarted = async () => {
+      for (;;) {
+        let next = joined ? joined.next : first;
+        while (next) {
+          const owned = next;
+          joined = owned;
+          try { await act(async () => { await owned.completion; }); } catch (error) {
+            remember('React delivery during original join', error);
+          }
+          // Independently join the SAME return if React delivery threw.
+          try { await owned.completion; } catch (error) {
+            remember('join original completion', error);
+          }
+          next = owned.next;
+        }
+        try { await act(async () => {}); } catch (error) {
+          remember('React delivery', error);
+        }
+        if (!(joined ? joined.next : first)) return;
+      }
+    };
+    let view: ReturnType<typeof renderWithProviders> | undefined;
+    let resolveBody: unknown = null;
+    try {
+      const queryCache = client.getQueryCache();
+      ownRestore(queryCache.subscribe((event) => {
+        if (event.type !== 'added') return;
+        try {
+          const query = event.query;
+          const fetch = query.fetch;
+          const spy = vi.spyOn(query, 'fetch');
+          ownRestore(() => spy.mockRestore());
+          spy.mockImplementation(function (this: typeof query, ...args) {
+            const original = fetch.apply(this, args);
+            observe(original, 'query.fetch');
+            return original;
+          });
+        } catch (error) { remember('query observation installation throw', error); }
+      }));
+      const mutationCache = client.getMutationCache();
+      ownRestore(mutationCache.subscribe((event) => {
+        if (event.type !== 'added') return;
+        try {
+          const mutation = event.mutation;
+          const execute = mutation.execute;
+          const spy = vi.spyOn(mutation, 'execute');
+          ownRestore(() => spy.mockRestore());
+          spy.mockImplementation(function (this: typeof mutation, ...args) {
+            const original = execute.apply(this, args);
+            observe(original, 'mutation.execute');
+            return original;
+          });
+        } catch (error) { remember('mutation observation installation throw', error); }
+      }));
+      const resolveOriginal = async ({ request }: Parameters<HttpResponseResolver>[0]) => {
+        resolveBody = await request.json();
+        return HttpResponse.json({ ok: true, task_id: 'TASK-301', new_status: 'pending' });
+      };
+      const postHandler = http.post(
+        `/api/v1/orgs/${SLUG}/tasks/TASK-301/resolve-escalation`,
+        function (this: unknown, ...args) {
+          const original = resolveOriginal.apply(this, args);
+          observe(original, 'POST resolver');
+          return original;
+        },
+      );
+      server.use(handler(s), postHandler);
+      // Observe these actual mounted handlers, including seedShell's local
+      // instances; resetHandlers/unmount alone never joins their run returns.
+      for (const localHandler of server.listHandlers()) {
+        if (!(localHandler instanceof HttpHandler)) continue;
+        const run = localHandler.run;
+        const spy = vi.spyOn(localHandler, 'run');
+        ownRestore(() => spy.mockRestore());
+        spy.mockImplementation(function (this: typeof localHandler, ...args) {
+          const original = run.apply(this, args);
+          observe(original, localHandler === postHandler ? 'POST handler.run' : 'MSW handler.run');
+          return original;
+        });
+      }
 
-    const user = userEvent.setup();
-    renderWithProviders(<AppRoutes />, { route: ROUTE });
+      const user = userEvent.setup();
+      view = renderWithProviders(<AppRoutes />, { route: ROUTE, queryClient: client });
 
-    // Wait for the escalation row to render, then click it to expand.
-    await screen.findByText(/Photo licensing unclear/i);
-    const row = screen.getByText(/Photo licensing unclear/i).closest(
-      '.border-border-subtle',
-    ) as HTMLElement;
-    await user.click(row);
+      // Wait for the escalation row to render, then click it to expand.
+      await screen.findByText(/Photo licensing unclear/i);
+      const row = screen.getByText(/Photo licensing unclear/i).closest(
+        '.border-border-subtle',
+      ) as HTMLElement;
+      await user.click(row);
 
-    // The expanded view shows a "Continue & resolve" button.
-    // Click it without typing any rationale.
-    await user.click(
-      screen.getByRole('button', { name: /Continue & resolve/i }),
-    );
+      // The expanded view shows a "Continue & resolve" button.
+      // Click it without typing any rationale.
+      await user.click(
+        screen.getByRole('button', { name: /Continue & resolve/i }),
+      );
 
-    // The mutation fires asynchronously; wait for the captured body to be set.
-    await waitFor(() => {
-      expect(resolveBody).not.toBeNull();
-    });
+      // Body capture is still the original oracle, not a completion join.
+      await waitFor(() => {
+        expect(resolveBody).not.toBeNull();
+      });
 
-    expect(resolveBody).toEqual({ decision: 'continue', rationale: '', brief: '' });
+      expect(resolveBody).toEqual({ decision: 'continue', rationale: '', brief: '' });
+    } catch (error) {
+      remember('original UI/assertion failure observation', error);
+    } finally {
+      try { await joinStarted(); } catch (error) { remember('join started originals', error); }
+      // Only actually started work owes completion. The void event hides
+      // submit's outer Promise; Mutation.execute and handler/query returns
+      // are the available originals, never a fabricated submit handle.
+      let mutation: Operation | undefined;
+      let response: Operation | undefined;
+      let matchedRun: Operation | undefined;
+      let mutationCount = 0;
+      for (let owned = first; owned; owned = owned.next) {
+        if (owned.phase === 'mutation.execute') { mutation = owned; mutationCount++; }
+        if (owned.phase === 'POST resolver') response = owned;
+        if (owned.phase === 'POST handler.run' && owned.result?.status === 'fulfilled' && owned.result.value) {
+          matchedRun = owned;
+        }
+      }
+      if (!failures.first || mutation) {
+        try {
+          expect(mutationCount).toBe(1);
+          expect(response?.result).toMatchObject({ status: 'fulfilled', value: { status: 200 } });
+          expect(matchedRun?.result).toMatchObject({ status: 'fulfilled', value: { response: { status: 200 } } });
+          expect(mutation?.result).toEqual({
+            status: 'fulfilled', value: { ok: true, task_id: 'TASK-301', new_status: 'pending' },
+          });
+        } catch (error) { remember('original response/mutation completion assertion', error); }
+      }
+      // Attempt mounted React delivery independently of every earlier oracle.
+      if (view && mutation?.result?.status === 'fulfilled') {
+        try {
+          await waitFor(() => {
+            expect(screen.getByRole('button', { name: /Continue & resolve/i })).toBeEnabled();
+          });
+        } catch (error) { remember('mounted Continue after React delivery', error); }
+      }
+      try { await joinStarted(); } catch (error) { remember('join after mounted delivery', error); }
+      try { if (view) view.unmount(); else cleanup(); } catch (error) { remember('unmount', error); }
+      // Keep capture installed through unmount; no replacement fetch/mutation.
+      try { await joinStarted(); } catch (error) { remember('join unmount originals', error); }
+      for (let restore = restores; restore; restore = restore.next) {
+        try { restore.run(); } catch (error) { remember('restore local observation', error); }
+      }
+      try { client.clear(); } catch (error) { remember('clear supplied client', error); }
+    }
+    const primary = failures.first;
+    if (primary) {
+      if (primary.next) {
+        try { console.error('Later Dashboard Continue errors (first retained)', primary.next, diagnostics); }
+        catch (error) { remember('report later errors', error); }
+      }
+      throw primary.error;
+    }
   });
 
   test('EscalationInboxRow renders primary reason before v2 secondary explanation', async () => {

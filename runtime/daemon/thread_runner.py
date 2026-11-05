@@ -16,7 +16,6 @@ from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from types import TracebackType
 from typing import Any, TypeVar
 
 from runtime.config import (
@@ -53,6 +52,7 @@ from runtime.orchestrator.org_config import (
 )
 from runtime.orchestrator.workspace_adapters import (
     _REPO_REFRESH_SECONDS,
+    _RepositoryRefreshOwner,
     format_repo_refresh_note,
     materialize_workspace_skills,
     refresh_workspace_repos,
@@ -63,6 +63,7 @@ from runtime.orchestrator.workspace_adapters import (
 
 from runtime.identities.registry import read_name_metadata
 from runtime.identities.presentation import identity_display, prompt_name_context
+from runtime.daemon.startup_recovery import _require_ordinary_ready, StartupUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,15 @@ class _InvokeResult:
 # (drain or cancellation) — the row is left for daemon-restart recovery rather
 # than settled, matching the pre-wiring shutdown semantics.
 _INTERRUPTED_TERMINALS = (TerminalReason.SHUTDOWN, TerminalReason.CANCELLED)
+
+
+def _require_runner_ready(org_state: Any, host_supervisor: Any) -> None:
+    _require_ordinary_ready(org_state)
+    state = org_state._startup_state
+    if state is not None and (
+        host_supervisor is None or host_supervisor is not state.host_supervisor
+    ):
+        raise StartupUnavailable("startup_attachment_changed")
 
 
 async def _publish_invocation_event(
@@ -996,124 +1006,329 @@ class _InvocationWorker:
         self.key = owner.abort_control.key
         self.function = function
         self.context = copy_context()
+        self.loop = asyncio.get_running_loop()
         self.entered = threading.Event()
         self.returned = threading.Event()
+        self.thread_id: int | None = None
         self.value: Any = None
         self.original_error: BaseException | None = None
         self.submission_error: BaseException | None = None
-        self.lock = threading.Lock()
-        self.errors: list[tuple[str, BaseException, TracebackType | None]] = []
+        self.lock = owner._invocation_worker_lock
+        self.first = self.occurrences = self.observations = None
+        self.call_occurrence = None
+        self.native_delivery = None
+        self.repository_refresh = None
         self.cancellation: asyncio.CancelledError | None = None
+        self.handed_off = self.acknowledged = self.bridge_completed = False
+        self.release_attempted = self.released = False
 
-    def record(self, stage: str, exc: BaseException) -> None:
-        with self.lock:
-            if not any(error is exc for _, error, _ in self.errors):
-                self.errors.append((stage, exc, exc.__traceback__))
-            # A caller may handle this error before its outer finish awaits.
-            # Keep the first actual cause across that boundary, too. Calls for
-            # this owner are serial; concurrent records share this mutex.
-            if getattr(self.owner, "_invocation_worker_primary", None) is None:
-                self.owner._invocation_worker_primary = (exc, exc.__traceback__)
+    @staticmethod
+    def capture(owner: Any, stage: str, exc: BaseException, *, worker: Any = None,
+                origin: Any = None, candidate: bool = False) -> tuple:
+        # Native descriptors bypass exception-defined attribute/formatting code.
+        # One short original-owner lock orders actual observations, never a
+        # done-Future inference or late bridge delivery. Every throw gets a new
+        # snapshot, including a repeated throw of the very same exception.
+        if origin is not None:
+            # Only an explicit SAME-boundary delivery supplies origin. Object
+            # identity alone never deduplicates independent throws.
+            if worker is not None:
+                worker.observe(stage, origin)
+            return origin
+        with owner._invocation_worker_lock:
+            occurrence = (stage, exc, BaseException.args.__get__(exc),
+                BaseException.__traceback__.__get__(exc), origin,
+                owner._invocation_worker_occurrences, [not candidate], worker)
+            # The raw occurrence itself links its predecessor. There is no
+            # fallible list/set retention between raw capture and FIRST, and
+            # later observations cannot overwrite an uncollected occurrence.
+            owner._invocation_worker_pending = occurrence
+            owner._invocation_worker_occurrences = occurrence
+            if not candidate and owner._invocation_worker_primary is None:
+                owner._invocation_worker_primary = occurrence
+            if worker is not None:
+                if not candidate and worker.first is None:
+                    worker.first = occurrence
+                worker.occurrences = occurrence
+
+        return occurrence
+
+    def record(self, stage: str, exc: BaseException, *, candidate: bool = False,
+               origin: Any = None) -> tuple:
+        occurrence = self.capture(self.owner, stage, exc, worker=self,
+            candidate=candidate, origin=origin)
+        if candidate:
+            self.native_delivery = occurrence
+        return occurrence
+
+    def observe(self, stage: str, origin: tuple) -> None:
+        # Context/executor/result transport is an observation of a particular
+        # original occurrence, not another independent throw of its object.
+        try:
+            self.observations = (stage, origin, self.observations)
+        except BaseException as retention:
+            self.record("transport retention", retention)
+        if origin[6][0] is True:
+            with self.lock:
+                if self.first is None:
+                    self.first = origin
+                else:
+                    cursor = self.owner._invocation_worker_occurrences
+                    while cursor is not None and cursor is not origin:
+                        if cursor is self.first:
+                            self.first = origin  # The explicit origin is older.
+                            break
+                        cursor = cursor[5]
 
     def run(self) -> None:
         try:
             self.context.run(self.call)
         except BaseException as exc:
             self.original_error = exc
-            self.record("original callable", exc)
+            if self.call_occurrence is not None and self.call_occurrence[1] is exc:
+                self.observe("context delivery", self.call_occurrence)
+            else:
+                self.record("original context", exc)
         finally:
-            # Only this original call publishes return, including context exit.
+            # Native return, successful posting and owning-loop acknowledgement
+            # are three different facts. Enqueued-then-raised post stays unknown.
             self.returned.set()
+            try:
+                with self.lock:
+                    self.loop.call_soon_threadsafe(self.acknowledge)
+                    self.handed_off = True
+            except BaseException as exc:
+                self.record("worker acknowledgement post", exc)
+
+    def acknowledge(self) -> None:
+        if asyncio.get_running_loop() is not self.loop:
+            raise RuntimeError("thread_native_loop_changed")
+        with self.lock:
+            if self.returned.is_set() and self.handed_off:
+                self.acknowledged = True
 
     def call(self) -> None:
+        self.thread_id = threading.get_ident()
         self.entered.set()
-        self.value = self.function()
+        self.owner._invocation_worker_capture = self.record
+        succeeded = False
+        try:
+            self.value = self.function()
+            succeeded = True
+        except BaseException as exc:
+            refresh = self.repository_refresh
+            origin = (self.native_delivery if refresh is None else refresh.delivery_occurrence)
+            if origin is not None and origin[1] is exc:
+                self.call_occurrence = origin
+                self.observe("refresh callable delivery", origin)
+            else:
+                self.call_occurrence = self.record("original callable", exc)
+            raise
+        finally:
+            self.owner._invocation_worker_capture = None
+            # Preserve candidates through the original context/bridge delivery.
+            # A successful body alone has not delivered its handled value yet.
+            with self.lock:
+                cursor = self.owner._invocation_worker_occurrences
+                first = own_first = None
+                while cursor is not None:
+                    if not succeeded and cursor[7] is self and cursor[6][0] is False:
+                        cursor[6][0] = True
+                    if cursor[6][0] is True:
+                        first = cursor
+                        if cursor[7] is self:
+                            own_first = cursor
+                    cursor = cursor[5]
+                self.owner._invocation_worker_primary = first
+                self.first = own_first
 
-    def interrupt(self, stage: str, exc: BaseException) -> None:
-        if isinstance(exc, asyncio.CancelledError):
-            if self.cancellation is not None:
-                return
-            self.cancellation = exc
-        self.record(stage, exc)
-        if not isinstance(exc, asyncio.CancelledError):
-            self.owner.abort_control.record_failure(exc)
+    def control_failure(self, exc: BaseException, *, origin: Any = None) -> None:
+        try:
+            self.owner.abort_control.record_failure(exc, origin=origin)
+        except BaseException as secondary:
+            self.record("abort failure retention", secondary)
+
+    def interrupt(self, stage: str, exc: BaseException) -> tuple:
+        occurrence = self.record(stage, exc)
+        if issubclass(type(exc), asyncio.CancelledError):
+            if self.cancellation is None:
+                self.cancellation = exc
+        else:
+            self.control_failure(exc, origin=occurrence)
+        # Independent original actions remain owed even if attribution or an
+        # earlier action failed. No exception formatting runs in this owner.
         for action in (self.owner.abort_control.signal, self.owner.abort_control.dispatch):
             try:
                 action()
             except BaseException as secondary:
-                self.record("abort dispatch", secondary)
-                self.owner.abort_control.record_failure(secondary)
+                later = self.record("abort dispatch", secondary)
+                self.control_failure(secondary, origin=later)
+        return occurrence
 
     def result(self) -> Any:
         with self.lock:
-            errors = tuple(self.errors)
-        if errors:
-            stage, first, traceback = errors[0]
-            first.add_note(f"thread original worker {self.key!r}: {stage}")
-            for stage, secondary, _ in errors[1:]:
-                first.add_note(f"thread original worker {self.key!r} secondary {stage}: {secondary!r}")
-            raise first.with_traceback(traceback)
+            observed = self.first
+            cursor = self.owner._invocation_worker_occurrences
+            first = global_first = None
+            while cursor is not None:
+                if cursor[7] is self and cursor[6][0] is False:
+                    cursor[6][0] = None if observed is None else True
+                if cursor[6][0] is True:
+                    global_first = cursor
+                    if cursor[7] is self or cursor is observed:
+                        first = cursor
+                cursor = cursor[5]
+            self.first = first
+            self.owner._invocation_worker_primary = global_first
+        if first is not None:
+            self.observe("result delivery", first)
+            self.owner._invocation_worker_delivery = first
+            BaseException.args.__set__(first[1], first[2])
+            raise BaseException.with_traceback(first[1], first[3])
         return self.value
 
 
 async def _await_invocation_worker(
     org_state: Any, owner: Any, function: Callable[[], _WorkerResult],
+    *, repository_refresh: Any = None, finishing: bool = False,
 ) -> _WorkerResult:
-    """Join the ORIGINAL callable, including repeated wrapper interruption.
-
-    Native-user custody complements the runner lifetime. Stop dispatch uses an
-    independent thread, so saturated provider pools cannot queue their own stop.
-    """
-    # Construct the strong original owner/context/ack BEFORE submission. Python
-    # can enqueue and then throw without returning any Future. Neither that
-    # exception nor a done/cancelled bridge establishes original return.
+    """Join the sole original callable and its actual loop acknowledgement."""
     native_owner = _InvocationWorker(owner, function)
-    if not org_state._acquire_native_task(native_owner):
+    refresh = repository_refresh if repository_refresh is not None else (
+        owner._repository_refresh_owner if finishing else None)
+    if refresh is not None:
+        if finishing:
+            # A native finish cannot redo a loop-only deferred finish. Refuse
+            # before submission if the ORIGINAL refresh has no positive closure.
+            if (not refresh.acknowledged or not refresh.closed
+                    or refresh.errors["submission"] is not None or refresh.errors["handoff"] is not None
+                    or refresh.errors["retirement"] is not None):
+                owner._invocation_native_unsettled = True
+                raise RuntimeError("repository_refresh_finish_unavailable")
+            refresh.finish_native_worker = native_owner
+        else:
+            refresh.native_worker = native_owner
+            native_owner.repository_refresh = refresh
+    try:
+        admitted = org_state._acquire_native_task(native_owner)
+    except BaseException as exc:
+        owner._invocation_native_unsettled = True
+        occurrence = native_owner.record("native admission", exc)
+        if refresh is not None:
+            refresh.fail("settlement", exc, origin=occurrence)
+        return native_owner.result()
+    if not admitted:
+        # Positive pre-submit refusal is not an original native call. A bound
+        # refresh retains its pin for its own explicit no-run disposition.
+        if repository_refresh is not None:
+            refresh.retire(no_run=True)
+        elif refresh is not None:
+            owner._invocation_native_unsettled = True
+            refresh.fail("settlement", RuntimeError("thread_native_admission_closed"))
         raise RuntimeError("thread_native_admission_closed")
     worker = None
-    observed = False
     try:
-        try:
-            worker = asyncio.get_running_loop().run_in_executor(None, native_owner.run)
-        except BaseException as exc:
-            native_owner.submission_error = exc
-            native_owner.interrupt("executor submission", exc)
-        while not native_owner.returned.is_set():
-            if worker is not None and worker.done() and not observed:
-                observed = True
-                try:
-                    worker.result()
-                except BaseException as exc:
-                    native_owner.interrupt("executor bridge", exc)
+        if repository_refresh is not None:
+            repository_refresh.submission_attempted = True
+        worker = native_owner.loop.run_in_executor(None, native_owner.run)
+    except BaseException as exc:
+        native_owner.submission_error = exc
+        owner._invocation_native_unsettled = True
+        occurrence = native_owner.interrupt("executor submission", exc)
+        if refresh is not None:
+            refresh.fail("submission", exc, origin=occurrence)
+    if worker is not None:
+        while True:
             try:
-                # Observe the independent acknowledgement without blocking the
-                # loop or queueing a join behind the saturated provider pool.
-                # Unknown/no-Future admission retains this runner, pair guard,
-                # native DB pin and exact control indefinitely, with no replay.
-                await asyncio.sleep(0.05)
+                await asyncio.shield(worker)
             except asyncio.CancelledError as exc:
                 native_owner.interrupt("waiter cancellation", exc)
-        if worker is not None and worker.done() and not observed:
-            try:
-                worker.result()
+                if worker.cancelled():
+                    # Cancelled bridge is not native return; never spin on it.
+                    break
             except BaseException as exc:
                 native_owner.interrupt("executor bridge", exc)
+                break
+            else:
+                native_owner.bridge_completed = True
+                break
+    try:
+        await owner.abort_control.join_dispatch()
+    except BaseException as exc:
+        # A failed join before acknowledgement retains original abort custody;
+        # an acknowledged semantic failure still has a settled native lifetime.
+        if not owner.abort_control.dispatch_acknowledged:
+            owner._invocation_native_unsettled = True
+        delivered = owner.abort_control.dispatch_delivery
+        origin = delivered[3] if delivered is not None and delivered[0] is exc else None
+        occurrence = native_owner.record("abort settlement", exc, origin=origin)
+        if not issubclass(type(exc), asyncio.CancelledError):
+            native_owner.control_failure(exc, origin=occurrence)
+        if refresh is not None:
+            refresh.fail("settlement", exc, origin=occurrence)
+    if (owner.abort_control.token.cancelled
+            and not owner.abort_control.dispatch_acknowledged):
+        owner._invocation_native_unsettled = True
+    positive = (native_owner.submission_error is None and native_owner.returned.is_set()
+        and native_owner.handed_off and native_owner.acknowledged and native_owner.bridge_completed)
+    if not positive:
+        owner._invocation_native_unsettled = True
+        native_owner.record("worker retirement", RuntimeError("thread_native_acknowledgement_unavailable"))
+    elif not owner._invocation_native_unsettled:
+        # Provider acknowledgement cannot discharge UNKNOWN original abort
+        # custody. Keep this SAME registered native owner after runner/queue
+        # exit, even if healthy refresh already retired its independent pin.
+        # Preserve failed release and refresh custody without retry.
+        native_owner.release_attempted = True
         try:
-            await owner.abort_control.join_dispatch()
-        except BaseException as exc:
-            native_owner.record("abort settlement", exc)
-            if not isinstance(exc, asyncio.CancelledError):
-                owner.abort_control.record_failure(exc)
-        return native_owner.result()
-    finally:
-        if native_owner.returned.is_set():
             org_state._release_native_task(native_owner)
+            native_owner.released = True
+        except BaseException as exc:
+            owner._invocation_native_unsettled = True
+            occurrence = native_owner.record("native retirement", exc)
+            if refresh is not None:
+                refresh.fail("retirement", exc, origin=occurrence)
+        if refresh is not None and native_owner.released:
+            if native_owner.cancellation is not None:
+                refresh.failed = True
+            if finishing:
+                refresh.finish_worker_joined = True
+            else:
+                refresh.waiter_released = True
+            try:
+                refresh.acknowledge()
+                error, traceback = refresh.outcome_error()
+            except BaseException as exc:
+                owner._invocation_native_unsettled = True
+                occurrence = native_owner.record("refresh acknowledgement", exc)
+                refresh.fail("settlement", exc, origin=occurrence)
+            else:
+                if error is not None:
+                    origin = refresh.native_worker.first
+                    if origin is not None and origin[1] is error:
+                        native_owner.observe("refresh outcome delivery", origin)
+                        if native_owner.first is None:
+                            native_owner.first = origin
+                    else:
+                        native_owner.record("refresh outcome", error)
+                if (not refresh.acknowledged or not refresh.closed
+                        or finishing and refresh.errors["settlement"] is not None
+                        or refresh.errors["submission"] is not None or refresh.errors["handoff"] is not None
+                        or refresh.errors["retirement"] is not None):
+                    owner._invocation_native_unsettled = True
+                    if error is None:
+                        native_owner.record("refresh acknowledgement", RuntimeError(
+                            "repository_refresh_acknowledgement_unavailable"))
+    return native_owner.result()
 
 
 async def run_invocation(
     *, org_state, invocation_token: str, settings: Settings,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
+    _require_runner_ready(org_state, host_supervisor)
+    from runtime.daemon.startup_recovery import ordinary_admission_validation
+    validate_admission = ordinary_admission_validation(org_state)
     with org_state._runner_lifetime() as admitted:
         if not admitted:
             return
@@ -1124,7 +1339,7 @@ async def run_invocation(
         if move is None:
             move = TeamMoveCoordinator.for_org(TeamMoveStore(org_state.db, org_state.slug))
         admission: ThreadMoveAdmission = move.threads
-        owner = admission.reserve(invocation_token)
+        owner = admission.reserve(invocation_token, validate_admission=validate_admission)
         if owner is None:
             return
         deferred = failed = False
@@ -1137,12 +1352,19 @@ async def run_invocation(
                 await guard.acquire()
                 break
             except asyncio.CancelledError as exc:
-                cancellation = cancellation or exc
-                owner.abort_control.signal()
-                owner.abort_control.dispatch()
+                occurrence = _InvocationWorker.capture(owner, "predecessor waiter cancellation", exc)
+                if cancellation is None:
+                    cancellation = occurrence
+                for action in (owner.abort_control.signal, owner.abort_control.dispatch):
+                    try:
+                        action()
+                    except BaseException as secondary:
+                        _InvocationWorker.capture(owner, "predecessor stop", secondary)
         try:
             if cancellation is not None:
-                raise cancellation
+                owner._invocation_worker_delivery = cancellation
+                BaseException.args.__set__(cancellation[1], cancellation[2])
+                raise BaseException.with_traceback(cancellation[1], cancellation[3])
             with bind_thread_preparation(owner):
                 owner.before_fifo()
                 await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,
@@ -1150,9 +1372,21 @@ async def run_invocation(
         except DeferredTeamMove:
             deferred = not owner.abort_control.token.cancelled
             raise
-        except asyncio.CancelledError:
-            owner.abort_control.signal()
-            owner.abort_control.dispatch()
+        except StartupUnavailable:
+            # A refused fresh attempt is not a terminal invocation failure.
+            # Existing open/uncertain effects still retain their native owner.
+            deferred = True
+            failed = owner.attempt_open
+            raise
+        except asyncio.CancelledError as exc:
+            origin = owner._invocation_worker_delivery
+            _InvocationWorker.capture(owner, "invocation cancellation observation", exc,
+                origin=origin if origin is not None and origin[1] is exc else None)
+            for action in (owner.abort_control.signal, owner.abort_control.dispatch):
+                try:
+                    action()
+                except BaseException as secondary:
+                    _InvocationWorker.capture(owner, "invocation stop", secondary)
             # A genuinely settled turn is not made uncertain by later bookkeeping
             # cancellation; a no-effect waiter likewise needs no fake tree proof.
             failed = bool(owner.state.attempts) and not _attempts_settled_quiescent(owner)
@@ -1163,37 +1397,46 @@ async def run_invocation(
         finally:
             import sys
             escaping = sys.exception()
-            if (escaping is not None
-                    and getattr(owner, "_invocation_worker_primary", None) is None):
-                owner._invocation_worker_primary = (escaping, escaping.__traceback__)
-            settlement_errors = []
+            if escaping is not None:
+                origin = owner._invocation_worker_delivery
+                _InvocationWorker.capture(owner, "invocation escaping observation", escaping,
+                    origin=origin if origin is not None and origin[1] is escaping else None)
+            settlement_failed = False
             try:
                 try:
                     await owner.abort_control.join_dispatch()
                 except BaseException as exc:
-                    settlement_errors.append(exc)
-                    if getattr(owner, "_invocation_worker_primary", None) is None:
-                        owner._invocation_worker_primary = (exc, exc.__traceback__)
-                try:
-                    await _await_invocation_worker(org_state, owner,
-                        lambda: owner.finish(deferred=deferred, failed=failed))
-                except BaseException as exc:
-                    settlement_errors.append(exc)
-                    if getattr(owner, "_invocation_worker_primary", None) is None:
-                        owner._invocation_worker_primary = (exc, exc.__traceback__)
-                if escaping is not None or settlement_errors:
-                    primary, traceback = owner._invocation_worker_primary
-                    owner._invocation_settlement_errors = (
-                        (() if escaping is None else (escaping,)) + tuple(settlement_errors))
-                    for exc in owner._invocation_settlement_errors:
-                        if exc is not primary:
-                            BaseException.add_note(primary,
-                                f"thread lifecycle {owner.abort_control.key!r} secondary: "
-                                f"{type(exc).__name__}; actual error retained by original owner")
-                    if primary is not escaping:
-                        raise BaseException.with_traceback(primary, traceback)
+                    settlement_failed = True
+                    delivered = owner.abort_control.dispatch_delivery
+                    _InvocationWorker.capture(owner, "final abort settlement", exc,
+                        origin=delivered[3] if delivered is not None and delivered[0] is exc else None)
+                if not owner._invocation_native_unsettled:
+                    try:
+                        await _await_invocation_worker(org_state, owner,
+                            lambda: owner.finish(deferred=deferred, failed=failed), finishing=True)
+                    except BaseException as exc:
+                        origin = owner._invocation_worker_delivery
+                        settlement_failed = True
+                        _InvocationWorker.capture(owner, "finish delivery observation", exc,
+                            origin=origin if origin is not None and origin[1] is exc else None)
             finally:
-                guard.release()
+                # UNKNOWN native custody retains the SAME pair/control/DB
+                # barriers. Missing handles never authorize another generation.
+                if not owner._invocation_native_unsettled:
+                    try:
+                        guard.release()
+                    except BaseException as exc:
+                        settlement_failed = True
+                        _InvocationWorker.capture(owner, "pair release", exc)
+            if escaping is not None or settlement_failed or owner._invocation_native_unsettled:
+                first = owner._invocation_worker_primary
+                if first is None:
+                    first = _InvocationWorker.capture(owner, "unsettled invocation",
+                        RuntimeError("thread_native_acknowledgement_unavailable"))
+                owner._invocation_settlement_errors = owner._invocation_worker_occurrences
+                BaseException.args.__set__(first[1], first[2])
+                raise BaseException.with_traceback(first[1], first[3])
+
 
 
 async def _run_invocation_owned(
@@ -1213,11 +1456,14 @@ async def _run_invocation_owned(
     ``HostSessionSupervisor`` the invocation runs through it (admission lease,
     atomic ownership at grant, real backend launch into containment, opaque
     cancellation, containment cleanup before exactly-once lease release); when
-    it is ``None`` the self-launch path uses the same final admission hook
-    and retains unknown containment evidence rather than claiming quiescence.
+    the org is explicitly standalone and it is ``None``, the self-launch path
+    uses the same final admission hook and retains unknown containment evidence
+    rather than claiming quiescence. A daemon-bound org requires its actual
+    supplied host, including when that host uses the passthrough backend.
     """
     from runtime.orchestrator.team_move import DeferredTeamMove
     from runtime.orchestrator.thread_move import bind_thread_preparation
+    _require_runner_ready(org_state, host_supervisor)
     inv = org_state.db.get_pending_invocation(invocation_token)
     if inv is None:
         logger.info("run_invocation: token %s already non-pending", invocation_token[:8])
@@ -1373,6 +1619,7 @@ async def _run_invocation_owned(
     session_id = move_owner.session_id
     move_owner.executor, move_owner.model = executor_name, model_name
     move_owner.reasoning_effort = reasoning_effort
+    _require_runner_ready(org_state, host_supervisor)
     def prepare() -> Any:
         move_owner.before_fifo()
         with move_owner.preparation_effects():
@@ -1402,9 +1649,11 @@ async def _run_invocation_owned(
 
     try:
         expected_specs = await _await_invocation_worker(org_state, move_owner, prepare)
-    except DeferredTeamMove:
+    except (DeferredTeamMove, StartupUnavailable):
         raise
     except (SystemContractMaterializationError, Exception) as e:
+        if move_owner._invocation_native_unsettled:
+            raise
         decline_reason = str(e)
         if not isinstance(e, SystemContractMaterializationError):
             decline_reason = f"materialization_failed: {e}"
@@ -1417,16 +1666,22 @@ async def _run_invocation_owned(
 
     # THR-103: fast-forward-refresh every cloned repo so the agent has
     # fresh code regardless of executor (claude/codex/opencode/pi).
+    _require_runner_ready(org_state, host_supervisor)
     # ONE original offload owns retention, batch AND its finally/completion tail.
     # Freeze the existing deadline before submission, including pool queue delay.
-    # Only that whole callable's return can release native/DB and pair custody.
+    # Whole return plus actual loop/bridge acknowledgement and owed settlement
+    # precede native/DB and pair retirement.
     refresh_stop = move_owner.abort_control.preparation_stop
     refresh_deadline = time.monotonic() + _REPO_REFRESH_SECONDS
+    refresh_owner = _RepositoryRefreshOwner(org_state, move_owner, asyncio.get_running_loop(),
+        refresh_deadline, refresh_stop, copy_context(), thread_binding=True)
     repo_refresh_results = await _await_invocation_worker(org_state, move_owner,
         lambda: refresh_workspace_repos(workspace,
             preparation=move_owner, host_supervisor=host_supervisor,
             materialization=(settings, expected_specs), _deadline=refresh_deadline,
-            _cancel_requested=refresh_stop))
+            _cancel_requested=refresh_stop, _owner=refresh_owner), repository_refresh=refresh_owner)
+
+    _require_runner_ready(org_state, host_supervisor)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
@@ -1445,6 +1700,7 @@ async def _run_invocation_owned(
     resume_capable = executor_name in _RESUME_CAPABLE_EXECUTORS
     # The outer runner owns the pair guard through preparation and native finish.
     with bind_thread_preparation(move_owner):
+        _require_runner_ready(org_state, host_supervisor)
         stored_sid, last_seq = (
             org_state.db.get_thread_session(inv.thread_id, inv.agent_name)
             if resume_capable else (None, 0)
@@ -1596,25 +1852,50 @@ async def _run_invocation_owned(
 
         def _invoke(run_prompt: str, resume: str | None) -> _InvokeResult:
             control = move_owner.abort_control
+            primary_occurrence = None
             with control.lock:
                 control.mode, control.launched, control.worker_running = None, False, True
             with bind_thread_preparation(move_owner):
                 try:
                     return _invoke_bound(run_prompt, resume)
+                except BaseException as exc:
+                    capture = move_owner._invocation_worker_capture
+                    worker = capture.__self__
+                    origin = worker.native_delivery
+                    primary_occurrence = capture("provider invocation", exc, candidate=True,
+                        origin=origin if origin is not None and origin[1] is exc else None)
+                    raise
                 finally:
                     # Audit failure must not abandon an already-launched direct
                     # child before its original executor communicate/timeout.
+                    frontier = control.failure_occurrences
                     try:
                         control.unsupported_stop_audit()
-                    except BaseException:
-                        pass  # Exact failure is latched and raised by join_dispatch.
+                    except BaseException as exc:
+                        original = control.failure_occurrences
+                        if original is frontier or original is None or original[0] is not exc:
+                            control.record_failure(exc)
                     with control.lock:
                         control.worker_running = False
                     if host_supervisor is None:
-                        move_owner.direct_terminal()
+                        import sys
+                        primary = sys.exception()
+                        try:
+                            move_owner.direct_terminal()
+                        except BaseException as settlement:
+                            move_owner._invocation_worker_capture(
+                                "direct terminal settlement", settlement, candidate=True)
+                            if primary is None:
+                                raise
+                            # Both native occurrences are retained before any
+                            # virtual exception diagnostics; E1 still escapes.
+                        finally:
+                            if primary_occurrence is not None:
+                                move_owner._invocation_worker_capture.__self__.native_delivery = primary_occurrence
 
         def _invoke_bound(run_prompt: str, resume: str | None) -> _InvokeResult:
             move_owner.before_fifo()
+            _require_runner_ready(org_state, host_supervisor)
             launched = False
 
             def _on_started(_pid: int) -> None:
@@ -1623,35 +1904,57 @@ async def _run_invocation_owned(
                 move_owner.on_started()
                 with move_owner.abort_control.lock:
                     move_owner.abort_control.launched = True
+                frontier = move_owner.abort_control.failure_occurrences
                 try:
                     move_owner.abort_control.unsupported_stop_audit()
-                except BaseException:
-                    pass  # Keep waiting for the original process; settlement reports it.
+                except BaseException as exc:
+                    original = move_owner.abort_control.failure_occurrences
+                    if original is frontier or original is None or original[0] is not exc:
+                        move_owner.abort_control.record_failure(exc)
                 if move_owner.abort_control.token.cancelled:
                     return
                 loop.call_soon_threadsafe(lambda: asyncio.create_task(_publish_invocation_event(
                     org_state, thread_id=inv.thread_id, agent_name=inv.agent_name, seq=inv.triggering_seq,
                     kind="invocation_started", status="working")))
 
-            def _post_launch_exception(exc: Exception) -> _InvokeResult:
-                return _InvokeResult(result=ExecutorResult(
-                    success=False,
-                    duration_seconds=0,
-                    session_id=session_id,
-                    error=f"Provider execution failed after launch: {exc}",
-                    failure_category="post_launch_contract",
-                    provider_launched=True,
-                ))
+            def _post_launch_exception(exc: Exception, origin: tuple) -> _InvokeResult:
+                move_owner._invocation_worker_capture("post-launch delivery", exc,
+                    candidate=True, origin=origin)
+                try:
+                    handled = _InvokeResult(result=ExecutorResult(
+                        success=False,
+                        duration_seconds=0,
+                        session_id=session_id,
+                        error=f"Provider execution failed after launch: {exc}",
+                        failure_category="post_launch_contract",
+                        provider_launched=True,
+                    ))
+                except BaseException as handling:
+                    move_owner._invocation_worker_capture("post-launch handling", handling, candidate=True)
+                    raise
+                move_owner._invocation_worker_capture.__self__.native_delivery = None
+                return handled
 
             def _pre_launch_validator() -> None:
-                with move_owner.preparation_effects():
-                    validate_workspace_skills_integrity(
-                        workspace, expected_specs,
-                        settings=settings,
-                        db=org_state.db,
-                        agent_name=inv.agent_name,
-                        task_id=inv.thread_id,
-                    )
+                try:
+                    _require_runner_ready(org_state, host_supervisor)
+                    with move_owner.preparation_effects():
+                        validate_workspace_skills_integrity(
+                            workspace, expected_specs,
+                            settings=settings,
+                            db=org_state.db,
+                            agent_name=inv.agent_name,
+                            task_id=inv.thread_id,
+                        )
+                    _require_runner_ready(org_state, host_supervisor)
+                except StartupUnavailable as exc:
+                    move_owner._invocation_worker_capture("pre-launch admission", exc, candidate=True)
+                    try:
+                        move_owner.admission_refused(exc)
+                    except BaseException as attribution:
+                        move_owner._invocation_worker_capture("pre-launch attribution", attribution, candidate=True)
+                        raise
+                    raise
             if host_supervisor is None:
                 with move_owner.abort_control.lock:
                     move_owner.abort_control.mode = "direct"
@@ -1669,11 +1972,12 @@ async def _run_invocation_owned(
                     run_kwargs["resume_session_id"] = resume
                 try:
                     return _InvokeResult(result=executor.run(**run_kwargs))
-                except DeferredTeamMove:
+                except (DeferredTeamMove, StartupUnavailable):
                     raise
                 except Exception as exc:
+                    origin = move_owner._invocation_worker_capture("direct provider", exc, candidate=True)
                     if launched:
-                        return _post_launch_exception(exc)
+                        return _post_launch_exception(exc, origin)
                     raise
             # ── THR-207 supervised wiring: the invocation phase runs through
             # the daemon-wide HostSessionSupervisor (admission lease, atomic
@@ -1700,11 +2004,20 @@ async def _run_invocation_owned(
                     resume_session_id=resume, org_slug=org_state.slug,
                     timeout_seconds=timeout,
                 )
+            except StartupUnavailable:
+                raise
             except Exception as exc:
-                return _InvokeResult(
-                    result=None, terminal_reason=TerminalReason.FAILURE,
-                    error=f"launch_spec_failed: {exc}",
-                )
+                move_owner._invocation_worker_capture("launch spec", exc, candidate=True)
+                try:
+                    handled = _InvokeResult(
+                        result=None, terminal_reason=TerminalReason.FAILURE,
+                        error=f"launch_spec_failed: {exc}",
+                    )
+                except BaseException as handling:
+                    move_owner._invocation_worker_capture("launch spec handling", handling, candidate=True)
+                    raise
+                move_owner._invocation_worker_capture.__self__.native_delivery = None
+                return handled
 
             def _launch_body(running) -> LaunchResult:
                 # Real backend: the subprocess is already launched into
@@ -1714,6 +2027,18 @@ async def _run_invocation_owned(
                 # internal 429 retry disabled so the supervisor owns the
                 # finish/release/sleep/reacquire lifecycle.
                 contained = running.process is not None
+                if not contained:
+                    try:
+                        move_owner.require_admission()
+                        _require_runner_ready(org_state, host_supervisor)
+                    except StartupUnavailable as exc:
+                        move_owner._invocation_worker_capture("launch body admission", exc, candidate=True)
+                        try:
+                            move_owner.admission_refused(exc)
+                        except BaseException as attribution:
+                            move_owner._invocation_worker_capture("launch body attribution", attribution, candidate=True)
+                            raise
+                        raise
                 with move_owner.abort_control.lock:
                     move_owner.abort_control.mode = None if contained else "passthrough"
                     if not contained:
@@ -1733,13 +2058,14 @@ async def _run_invocation_owned(
                     run_kwargs["resume_session_id"] = resume
                 try:
                     res = executor.run(**run_kwargs)
-                except DeferredTeamMove:
+                except (DeferredTeamMove, StartupUnavailable):
                     raise
                 except Exception as exc:
+                    origin = move_owner._invocation_worker_capture("launch body", exc, candidate=True)
                     # A real contained process is launched before launch_body;
                     # passthrough executors publish the same fact via on_started.
                     if contained or launched:
-                        res = _post_launch_exception(exc).result
+                        res = _post_launch_exception(exc, origin).result
                     else:
                         raise
                 assert res is not None
@@ -1866,6 +2192,7 @@ async def _run_invocation_owned(
 
             if (resume_capable and resume_sid and not result.success
                     and _classify_session_evicted(executor_name, result, resume_sid)):
+                _require_runner_ready(org_state, host_supervisor)
                 # THR-200: the eviction audit AND the durable session-id
                 # invalidation commit in ONE transaction (see
                 # AuditLogger.log_agent_session_evicted_fallback /
@@ -1917,9 +2244,11 @@ async def _run_invocation_owned(
                     await _settle_no_launch(phase)
                     return
                 result = phase.result
-        except DeferredTeamMove:
+        except (DeferredTeamMove, StartupUnavailable):
             raise
         except Exception as exc:
+            if move_owner._invocation_native_unsettled:
+                raise
             _settle_or_fail_reply(
                 org_state, invocation_token=invocation_token, claim=claim,
                 status=ThreadInvocationStatus.FAILED,
@@ -2026,6 +2355,7 @@ async def _run_invocation_owned(
         # Do NOT fire after the session-not-found eviction fallback — that
         # is already a second chance, so a third would be excessive.
         if result.success and not fallback_executed:
+            _require_runner_ready(org_state, host_supervisor)
             nudge_prompt = (
                 "## URGENT — you ended without posting a reply or declining\n\n"
                 "You completed your analysis but exited the conversation "
@@ -2081,9 +2411,11 @@ async def _run_invocation_owned(
             try:
                 retry_phase = await _await_invocation_worker(
                     org_state, move_owner, lambda: _invoke(retry_prompt, retry_resume_sid))
-            except DeferredTeamMove:
+            except (DeferredTeamMove, StartupUnavailable):
                 raise
             except Exception as exc:
+                if move_owner._invocation_native_unsettled:
+                    raise
                 logger.warning(
                     "run_invocation: token %s nudge re-invoke crashed: %s",
                     invocation_token[:8], exc,

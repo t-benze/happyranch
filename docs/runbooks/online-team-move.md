@@ -39,7 +39,10 @@ For a separately authorized source release on the shell installation, the releas
 owner selects the reviewed compatible checkout using the existing release process
 and uses its supported `scripts/daemon.sh start`; it passes
 `--reader-guarded-start=online-team-move@3`. `scripts/daemon.sh status` observes that
-launcher. Start does not replace an already-running daemon: any required stop/load
+launcher, with separate finite serving/recovery status. Only fresh serving=yes
+and recovery=ready means startup-ready; PID/port/health/exit0 alone does not.
+Held/failed/unknown recovery preserves the original process; do not retry start.
+Start does not replace an already-running daemon: any required stop/load
 belongs to the separately authorized external host owner. The native Mac app's
 bundled and development launchers pass the same protocol. Runtime selection uses
 the existing `happyranch use /absolute/registered/runtime` boundary, which checks

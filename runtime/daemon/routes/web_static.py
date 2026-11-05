@@ -78,12 +78,13 @@ def _is_spa_route(path: str) -> bool:
     return True
 
 
-def register(app: FastAPI, settings: "Settings | None" = None) -> None:
+def register(app: FastAPI, settings: "Settings | None" = None) -> tuple:
     """Attach SPA static mount or placeholder to the FastAPI app.
 
     Call this AFTER all API routers are registered.
     """
     dist = _resolve_dist_dir(settings=settings)
+    assets = None
 
     if dist is not None:
         assets_dir = dist / "assets"
@@ -93,11 +94,14 @@ def register(app: FastAPI, settings: "Settings | None" = None) -> None:
                 StaticFiles(directory=str(assets_dir)),
                 name="assets",
             )
+            assets = app.routes[-1]
         index_path = dist / "index.html"
 
         @app.get("/", include_in_schema=False)
         def _spa_root() -> FileResponse:
             return FileResponse(str(index_path))
+
+        root = app.routes[-1]
 
         @app.exception_handler(StarletteHTTPException)
         async def _spa_or_404(request: Request, exc: StarletteHTTPException):
@@ -118,6 +122,8 @@ def register(app: FastAPI, settings: "Settings | None" = None) -> None:
         def _placeholder_root() -> HTMLResponse:
             return HTMLResponse(_PLACEHOLDER_HTML)
 
+        root = app.routes[-1]
+
         @app.exception_handler(StarletteHTTPException)
         async def _placeholder_or_404(request: Request, exc: StarletteHTTPException):
             if (
@@ -130,3 +136,6 @@ def register(app: FastAPI, settings: "Settings | None" = None) -> None:
                 status_code=exc.status_code,
                 content={"detail": exc.detail},
             )
+    # Capture the actual registered objects at their source, before middleware
+    # construction. Names, module spellings and handler classes are not proof.
+    return root, assets, app.exception_handlers[StarletteHTTPException]

@@ -193,8 +193,24 @@ host receipt with no survivors/cleanup error are separate facts. Capture stays
 private/bounded4096B with draining and at most two exit-tail reads. An admitted
 unsettled probe cannot become a harmless unsupported-configuration skip. Async
 cancellation stops admission and joins the real worker under its original OrgState
-lifetime before evidence completion and lease release. Completion runs in the
-same joined off-loop executor mechanism after the actual batch worker returns.
+lifetime before evidence completion and lease release. The thread caller submits
+ONE synchronous callable containing the batch and its original completion tail,
+with the original frozen deadline and preparation-stop event. Its SAME captured
+Database refresh pin is acquired before submission, independently of OrgState
+native-user custody. Native return, successful loop posting, owning-loop
+acknowledgement, bridge completion, waiter duties and retirement are distinct.
+The pin survives every original evidence/lease/finish duty; an off-loop finish
+records its own positive body return while only the owning loop retires after
+that original worker is acknowledged and joined. Failed acquisition/release,
+enqueued-then-raised submission/posting and missing/cancelled acknowledgement
+retain the same owner/pin and UNKNOWN without retry, second finish or inferred
+no-run. Positive pre-submit refusal creates no native work. The writer captures
+its native write and rollback occurrences before virtual diagnostics, using only
+the same invocation capture leaf beneath its original gates; that leaf enters no
+DB, gate, refresh mutex or callback. Transfer to the refresh owner follows gate
+release and links the early occurrence rather than assigning it a later order.
+Successful COMMIT remains a committed prefix if its callback or later delivery
+fails. All originally owed lease exits still run once in record order.
 Repository custody precedes binding, root/Pause, move and short DB arbitration.
 Worker and completion acquisition, including native owner rechecks, binding/root
 gate-map lookups and failure attribution, uses the original remaining deadline;
@@ -299,12 +315,36 @@ publishes into the original map within the original profile lease interval.
 Returned notification rediscovery keeps its existing owner and waits for actual
 loop task/thread queue puts before retirement. Their actual outcomes are retained
 before submission. An uncertain task put keeps the original attachment owner and
-bounded reservation even after native return or caught publication error; a known
-callback failure retires that put with its original error. Cancelled bridges and
+bounded reservation even after native return or caught publication error. A genuine
+per-call failure acknowledgement retains its original error; retirement additionally
+requires positive original no-run or actual worker/handoff/retirement proof. An
+unknown, missing or cancelled acknowledgement retains that SAME uncertain
+reservation and service close barrier. Cancelled bridges and
 map absence prove no retirement, and no automatic uncertainty clearance is added.
 Published attachments survive later errors;
 unknown submission/return/constructor close retains its original handle and blocks
 shutdown/removal/swap, without a second speculative close.
+The synchronous load captures its returned Database before owner forwarding or
+database-observer exit; every later unpublished failure owes its one original
+close attempt. Preconstruction refusal or a constructor that never returned
+creates no outer close duty, and successful load does not close. The same local
+frame freezes FIRST native arguments/traceback before close and retains actual
+later occurrences, failed sinks and the original owner/DB. A returned SQLite
+body with failed wrapper delivery remains UNKNOWN; only returned close can set
+`load_db_closed`. Outer load, selector, native-worker and waiter boundaries
+capture FIRST before formatting, classification, notes or attachment. Each actual
+later occurrence, including another throw of the same object, retains its own
+native snapshot; forwarding observations link the original child/frame evidence.
+Failed sinks cannot replace FIRST or skip the original selector close. An earlier
+native/load error and an earlier waiter cancellation keep their respective order.
+The dynamic owner consumes the current load outcome even after early `owner.org`:
+failed, undelivered or unknown load-close keeps the SAME owner/DB and never calls
+close again. A positively returned load followed by attachment failure still owes
+its one original `org.close`, under the original barriers. Returned close and
+failed owner acknowledgement remain distinct. Clean publication and clean close
+can retire normally; body/event/Future completion alone cannot discharge either
+the native ticket or DB barrier. This custody supplies no public shutdown or
+behavioral certification and clears no historical uncertainty.
 All shared-map iterations use finite captures. The state mutex covers only map
 membership and in-memory reader bookkeeping, never I/O/DB/profile acquisition,
 worker join or await. Native profile/metrics readers and ordinary request
@@ -353,8 +393,11 @@ INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
 The serving lifespan owns one dormant private cleanup-diagnostic coordinator.
-Only the real Uvicorn Server adapter signals it after successful ASGI/listener
-startup returns with started true and no requested exit. Early port/PID files,
+Only the real Uvicorn Server adapter supplies listener authority after successful
+ASGI/listener startup with started true and no requested exit. The original
+recovery owner signals diagnostic intake once BOTH that observation and positive
+recovery readiness exist; either arrival order converges once, without a new timer.
+Early port/PID files,
 health probes, pre-yield scheduling, maintenance and ad hoc lifespans never start
 acquisition. Signalling schedules work only; diagnostics never gate readiness.
 Initial org count is checked before enumeration: empty/over-eight/missing context
@@ -403,7 +446,39 @@ argv/environment/private paths/object IDs. Logging failure neither fails serving
 nor retries diagnostics. Runtime/SQL/timing/cancellation/crash proof UNEXECUTED;
 integration INCLUDING lifespan/SessionTracker/callback SKIPPED24342, units RETIRED.
 
-**Startup refusal safety (THR308seq133/127, ROOT12801).** Private Database-owned
+**Startup refusal safety (THR308seq133/127, ROOT12801; serving-before-recovery
+THR308seq169/173/174/175).** Storage-first P0 import, org/schema/cutover,
+Pause/move, roster/profile and original authority-owner/selector preflight still
+precedes state/app/listener publication; failure there prevents publication.
+The actual app/state binds ONE original StartupRecovery/StartupReads pair.
+Lifespan captures the real request loop and dormant consumers, submits the SAME
+original native recovery operation and yields. Each org's positively settled
+original sweep, human/bookkeeping/tail/finally boundary precedes its v2 publication;
+the remaining native phases keep their original order. P8 retains actual dormant
+consumer handles. P9 commits ready and releases ONE latch only after positive
+recovery/preparation AND the original matching live ASGI/listener agree.
+Recovery-first arms activation without blocking ASGI startup; listener-first waits
+for native completion. Both orders converge once. Deferred native recovery failure
+keeps recovery-ready, the consumer latch and every fresh launch path closed. It
+does not invalidate a genuine matching ASGI/listener signal, including failure
+before that signal or a racing native failure. Existing health and authenticated bounded
+thread reads remain available on that listener. Missing/replaced/wrong
+listener, app/loop/epoch, stop or close supplies no serving or admission proof.
+Detailed phase, early-route/read-budget, observation and launcher contracts remain
+in [Runtime and configuration](../runtime-and-configuration.md#actual-owner-startup-observations--root13137),
+[orchestrator contracts](../orchestrator-contracts.md#http-startup-admission-and-native-read-ownership--root13137)
+and [Web and CLI](../web-and-cli.md#startup-clock-limits).
+
+Fresh workflow activation captures its own original bound activation store,
+org, Database, state and org-map object after authenticated historical replay.
+The existing document admission predicate retains the original service/task
+references, gate, loop and epoch. That SAME validator renews after each awaited
+authority/DB lock and through profile/publisher/native ownership, BEGIN and
+before COMMIT. Stop or replacement refuses fresh work; rollback and release
+remain independently owed. A successful COMMIT followed by failed delivery
+retains its committed prefix.
+
+Private Database-owned
 startup reads share complete ordered root history in discovery and exact getters
 only within one exact Database/connection/invocation and stable coherent epochs.
 Fresh projections retain optional authenticated immutable scalar anchors for
@@ -416,10 +491,363 @@ current ownership, and only fresh committed `refused` owns its existing tails.
 No early diagnostic append/replacement writer is added; local exclusion/logs are
 not durable fencing. Actual writer phases and owned read cleanup determine clean
 recovery. Failed cleanup, unresolved raised COMMIT, replaced/unusable connection
-or unexpected transaction abort startup before later effects and suppress the
-entire daemon finally worktree batch. Caller read transactions remain untouched;
-the full sweep rejects them before Pause/workflow work. Earlier genuine commits
-remain intact. General readers/writers and generic coherent_read_view retain
+or unexpected transaction refuses later recovery effects and suppresses the
+ENTIRE retained root DB finally batch, INCLUDING admission/audit/report, while
+retaining its original manifest. Neither an earlier root COMMIT nor an acquired
+reserved/receipt R2 without its own unfinalized attempt restores that batch.
+Independently owed original child/worker/native and other cleanup joins remain
+owed through cancellation, stop and later publication; failure never permits
+dependent destruction or DB-close fallthrough. This deferred recovery failure
+keeps readiness and launches closed under the serving distinction above.
+Caller read transactions remain untouched; the full sweep rejects them before
+Pause/workflow work. Earlier genuine commits remain intact.
+
+Selected read/classifier/writer, common and accepted forwards, and cold/periodic
+failure owners must retain the SAME FIRST E1 object, message and original
+traceback. Actual separately raised later errors, including rollback, release,
+finally or cancellation outcomes, remain independently attributed; bounded notes
+cannot replace E1 or hide an actual later error. An already observed/retained
+failure precedes later waiter cancellation; otherwise the first cancellation
+keeps its original traceback while repeated cancellation still joins the SAME
+owned completion. The periodic sweep captures its inner cause and original
+transition manifest before its one context reset. Body E1 remains primary beside
+reset E2; reset-only E2 is primary. Its caller retains that same record and the
+original deferred-context frame before delivery, consumes the inner error before
+context exit, and retains the helper's actual ledger even on failed attachment.
+Either reset or failed manifest delivery suppresses all root-batch entry,
+including admission/audit/report; every original committed child still joins once
+in order. Separate same-object throws retain their native traceback occurrences;
+delivering a retained occurrence is an attributed observation. Retention and
+diagnostic failures remain on the same record/frame; native base rethrow avoids
+virtual traceback restoration. Clean and warm-up returns retain their original
+batch eligibility. Capture the original owned connection and real Boolean
+transaction state before fallible classification or effects. Caller BEGIN or
+SAVEPOINT is never consumed by owned cleanup. Mark each original rollback
+obligation before its at-most-once attempt. Only successful owned PRECOMMIT
+rollback proves restoration of that transaction; COMMIT/rollback/release or late
+clock/warning/return failure retains committed or unknown prefixes, not a no-effect
+or successful-return assertion. The five original retry transaction owners keep
+this same first-cause/sole-rollback evidence at their own lower boundary, before
+the synchronized wrapper observes it. Their existing transaction policy remains:
+common/accepted entry excludes caller transactions; lower default writers gain
+no new caller-transaction guard or composition guarantee. Attachment A includes
+both original LostClaim rollback paths and its feedback/exhausted-stop body;
+validation before its transaction gains no cleanup obligation. Its successful
+feedback or ROOT/nonroot exhausted-stop COMMIT remains a prefix through later
+result/delivery failure, with actual completed local values retained as evidence
+only. Feedback A's commit survives the separate no-write B reservation's
+synchronous enqueue and cleanup failure. Actual rollback throws remain separate
+even for the same object;
+transporting a retained occurrence adds no failure. Frame-local records retain
+prior nested evidence and actual attachment failure without diagnostic retry.
+Completed local values and successful COMMIT/possible queue prefixes survive as
+evidence, never as invented method returns, replay or native/DB-close clearance.
+Independently owed cleanup retains its original owner fences. A genuinely
+committed nonroot attachment stop enters its existing owed-job boundary before
+the owner-fenced envelope abort and all transition preparation, including decoding.
+Preparation E1 prevents later verdict/history/worktree/parent/thread effects;
+the original current-owner and selected-human-result checks still govern the one
+job-tail attempt. Failed checks retain uncertainty and grant no action or retry.
+ROOT stop ordering and other terminal-tail callers remain unchanged.
+The reached attachment-stop history fence retains its current-owner/history
+FIRST BaseException before the original
+one rollback and native RLock exit; cleanup-only failure is primary. `history=True`
+still owes rollback after failed BEGIN; `history=False` owes none, and failed lock
+entry owes none. Actual effect values survive failed cleanup/exit as evidence,
+never successful delivery or reversal of the stop COMMIT/partial history prefix.
+The captured active-envelope abort writer likewise retains its first cause
+before rollback and marks rowcount-refusal cleanup before its sole attempt.
+Absent envelope remains False; rowcount refusal returns False only after clean
+rollback; True follows successful original COMMIT. Its original failed-BEGIN
+no-rollback and Exception-only body-cleanup eligibility remain unchanged; other
+BaseExceptions are retained without adding a cleanup duty. Eligibility uses the
+actual native type hierarchy, never the instance's spoofed or fallible `__class__`,
+truthiness, formatting or virtual traceback lookup. Separate rollback,
+lock-exit and retention throws retain native snapshots, even for the SAME object;
+transported observations add no failure. Prior nested records/native frames stay
+reachable on failed named attachment. A successful COMMIT/local value and actual
+method/wrapper delivery remain distinct; failed/effect-then-raise COMMIT or rollback
+stays UNKNOWN. These lower owners add no caller-transaction/SAVEPOINT protection,
+envelope authority, retry, replay, cleanup or DB-close clearance.
+Legacy `workflow_start` preflight captures the original validator, Database,
+connection and native RLock; that SAME lock spans its complete readiness read
+transaction, with selection renewed after waiting and BEGIN. Caller BEGIN or
+SAVEPOINT receives no owned rollback. The selected settings-refusal mapping or
+unnormalized BaseException is retained before the one marked rollback attempt;
+actual rollback and attachment failures remain separate native-traceback evidence.
+Coordinator short transactions likewise retain their first error independently
+of fresh admission, including the separately owed lease-release transaction.
+Admission ownership keeps an earlier business error primary beside release,
+rollback and each original fence-exit failure. Local transport includes the public
+admission writer's actual enter/exit: the SAME inbound error leaves with its
+original native traceback, without invoking its virtual traceback setter, for
+selected and default callers. Diagnostics use no error formatting. Nested records
+link prior records and remain on the original coordinator/frame if exception
+attachment fails. Positive rollback/release markers publish last, only after the
+original cleanup and all required secondary, diagnostic and record publications
+succeed; a missing attachment never proves no secondary error. Selected coding
+read/role/binding/settings contexts preserve native first-cause custody outside
+unsafe generator/ExitStack restoration and independently unwind their original
+positively acquired exits. Pre-business no-effect requires that same interval's
+complete access/read rollback/exit evidence, never stale error markers or absence
+of notes. Their same-connection schema snapshot and literal-reference contexts
+capture native first/later occurrences before their one owned rollback or original
+reference close. Joined caller BEGIN/SAVEPOINT owes no schema cleanup; a failed
+constructor owes no reference close. Failed or undelivered cleanup retains the
+same handle and UNKNOWN without retry. The original selected frame consumes its
+own lower raw outcomes even on failed attachment, so outer rollback or autocommit
+cannot supply missing clean proof. Local layout/cache results, watermarks and
+installer/ownership publication remain behind their original positive exits.
+The native writer captures actual later settlement errors before virtual
+traceback/diagnostic access; its distinct occurrence and prior/nested-frame records
+supplement the compatible first-per-kind fields without changing reservation or
+settlement predicates. A completed start
+body keeps its exact result
+through original context exits; failed release after COMMIT is failed delivery
+with a committed prefix, never replay or native-retirement permission. Unedited
+publisher/profile interiors remain separate limits. The draft-dispatch loop bridge
+awaits the SAME original coroutine once, capturing its actual BaseException and
+native traceback before concurrent-Future cancellation conversion. Its original
+queue invocation, when present, orders that raw observation against waiter
+cancellation under the SAME short capture lock, before diagnostics or delivery.
+The failed outer join and original submission/drain/stop failure readers consume
+that original live-invocation observation before collection or later outcome reads;
+earlier selected owner causes stay selected and later actual errors remain separately
+linked. A later Task outcome cannot backdate a cause before an earlier reader
+cancellation. Legitimately handled holds and successful suppressed waiter cancellation
+keep exact caller values; a successfully returned invocation's handled candidate
+cannot become a later stage's failure. Original coroutine, wrapper, Future and
+observed native Task remain
+retained through ambiguous submission or missing/cancelled acknowledgement, which
+stays UNKNOWN. No close/cancel/replay, new wait or retirement permission follows.
+Standalone bridge use creates no substitute queue owner.
+Pause's `settle_live` captures the actual active cause by presence, preserving
+that SAME object and original traceback for held-refusal authentication. Its
+private per-call `_pause_settlement_failure` record links prior records and
+retains each separately raised settlement, marker, release, uncertainty-save,
+observer, diagnostic or attachment error with its captured traceback. Evidence
+precedes fallible marking, formatting, notes and logging; equal messages or the
+same raised object do not merge occurrences. Failed attachment leaves the record
+in the rethrown frame. Marking is attempted once. Earlier bookkeeping failure
+cannot skip the original final move release or applicable coding observation;
+their original order and exact failed/cleanup/native-entry/close/release meanings
+remain. Missing, raised or partial acknowledgements stay unknown, and absence
+alone proves no original removal. Any new settlement failure rethrows the first
+cause; no new error keeps the ordinary None return and original caller unwind.
+Run-step's `_JobTailErrors` selects the first actual BaseException by presence,
+captures traceback through the BaseException descriptor and rethrows through the
+base implementation. Its existing `errors` dictionary keeps the first entry per
+kind; a private ordered sequence keeps each delivered occurrence, including the
+same kind, object or message. Named attachment and prior-record lookup failures
+are retained without recursive recording or retrying the same named attachment. Earlier
+ledger occurrence sequences and their prior links survive later ledger attachment;
+nested Pause and Database records are not overwritten. Failed attachment leaves
+the ledger in the rethrown frame. The ordinary `_JobTerminationTail` uses the
+same presence-based first cause through validation, submission, completion
+publication, original-loop callback and retirement errors. Failed publication
+cannot skip the independently owed original callback or retirement; each actual
+later error is retained before diagnostics. Maintenance consumes the owner's
+original traceback without manufacturing a raise to observe it, retains partial
+registry uncertainty on that same worker, and visits the remaining original
+workers in snapshot order after ended errors or failed secondary recording.
+Task/body/Future/publication completion and acknowledgement remain separate
+prefixes; only the unchanged full native/loop/retirement predicates permit
+retirement. The shared `_await_startup_owned` captures and rethrows its selected
+actual BaseException through native BaseException access, before fallible
+observation or diagnostics. An already-completed owned error wins the existing
+cancellation race; otherwise earlier waiter cancellation survives later native
+failure. The original one-time `on_cancel` selection can return an earlier owner
+cause and still skips a cancelled wrapper; S1a's local owner selection is unchanged.
+Each delivered observation, callback or attachment failure keeps its actual object
+and traceback in order, without identity/message deduplication or recursive
+diagnostic retries. Result re-observation and final delivery are distinct from a
+new native incident. Its local `_startup_owned_failure` links earlier records and
+keeps completed values as evidence; failed attachment leaves it in the rethrown
+frame. A failed retention callback cannot skip the same original wait/result
+consumption. Hidden callback-internal errors, outer close/caller delivery and
+separate native/retirement barriers remain outside that local custody contract.
+`run_step_impl` keeps that first cause active for authentic held-refusal/Pause
+checks and handles the original root batch under its suppression rules, then
+independently attempts the installed task-tail reset and every already collected
+invocation once in order. Entry failure uses no
+missing delivery or uninstalled token. A failed root diagnostic/reset/settlement
+cannot skip a later owner or turn failed settlement into successful completion.
+`_run_step_owned` retains preparation/deferral/refusal errors before fallible
+bookkeeping, then protects original release, applicable uncertainty markers,
+installed invocation/root-owner resets, pending forwarding and retained root work.
+An actual marker/lookup/attachment error cannot replace E1 or skip an independent
+tail. Original success, None/False/positive INTEGER, human/held/pending shapes and
+legitimately handled refusals remain; only positively installed tokens are reset.
+Completed body values remain private evidence if a later tail fails, never a
+successful caller delivery or authority to consume/apply/replay them. Original
+pending and failed cold-root suppression still includes admission/audit/report;
+a failed root-owner reset retains its original manifest with the captured outer
+owner or rethrown frame and suppresses DB batch entry through the uncertain
+context. The `Orchestrator.run_step` and `Dispatcher.run_step` facades forward the SAME
+`run_step_impl` outcome without conversion or additional consumption. The original
+queue work retains that exact object before later tails, with an explicit observed
+return flag distinguishing a delivered None from missing delivery. False, INTEGER,
+strings and human/held/pending objects retain their type and identity; neither a
+pending marker nor an operation alone adds a permanent queue blocker. The human
+operation keeps its separate original registry/completion lifetime. Queue custody
+is not consumption, application, replay or parent-handoff authority.
+Queue work retains raw first captures and previous-linked pending occurrences
+before fallible collection, formatting or attachment, with the original error
+object/native traceback and separately attributed later raised or gather-delivered
+errors. Failed retention cannot erase the failure or skip independently owed tails;
+failed diagnostics are not recursively retried and nested records remain intact. Each heartbeat cancellation/join,
+qualifying prepared-owner retirement, task_done and applicable metrics attempt is
+protected separately and marked before its effect, with normal return recorded
+separately. The acknowledgement of this worker's own heartbeat cancellation is
+not a new incident. Only a positively returned prepared owner and the original
+qualifying ended/unperformed run permit worker_finished; cancelled/missing native
+Futures and uncertain submissions do not. Org-token release and queue removal wait
+for accounting/metrics success, retain their existing failure predicates and run
+once without DB work, external effects or waits under registry locks. Partial release
+is evidence,
+never re-registration, retry or inferred native success; SAME failed work retains
+the available original queue/close barrier. Known no-run StartupUnavailable refusal
+stays a refusal, without provider-activity inference. `_join_native` retains each
+join on the SAME work and Future. Before each original preparation/run/retirement
+executor handoff, the work retains that exact bound callable/item/attachment and
+attempt. Its local wrapper invokes the original callback at most once, retaining
+actual native entry, exact returned value or raised BaseException/native traceback,
+and real exit separately from submission return, Future delivery and caller return.
+A short same-work lock orders only the original raw native-error and waiter-error/
+cancellation observations before diagnostics: earlier captured native E1 survives
+later submission/wait E2, while earlier waiter cancellation survives later native E1.
+No final-state inference supplies missing chronology. The draft loop bridge also
+records its inner error on this SAME invocation before concurrent-Future callback
+or executor delivery. That ordering candidate alone adds no failure marker for a
+refusal handled by the original caller; successful held/pending values still
+return. A failed original join consumes the candidate and preserves any prior
+selected owner cause. The original coroutine/wrapper/Future/observed Task stay
+linked; a missing Task or acknowledgement stays UNKNOWN without retirement or
+replacement. The heartbeat gather keeps its existing Future observation contract; this capture cannot recover heartbeat-internal
+errors. Native callbacks, formatting and all loop/DB/registry effects run outside
+the capture lock. Presence and native BaseException traceback access preserve the
+selected object and forwarded provenance before fallible retention or attachment. Actual later occurrences
+stay separate; result re-observation and caller context delivery are labelled,
+without merging separately thrown objects or messages. Failed retention/attachment
+stays on that owner or rethrown frame and cannot skip original Future consumption.
+Repeated cancellation continues the same shielded wait. A successful original
+Future still delivers its exact value, including None/False/INTEGER/string or
+human/held/pending objects, to its original caller; suppressed cancellation alone
+creates no raised failure or permanent blocker. Preparation owner and qualifying
+retirement therefore remain reachable. A done cancelled wrapper or missing actual
+acknowledgement stays UNKNOWN; no spin, replacement operation or native-exit proof
+follows. Submission retains the original work/attachment/item, acquired and
+registered prefixes, coroutine and handoff attempt before create_task. An ambiguous
+submission error retains those originals without a no-run inference, coroutine
+close/cancel, token repair or resubmission. Stop retains one sticky drain owner
+before its task handoff; missing task or callback acknowledgement never authorizes
+a replacement. The drain snapshots actual original workers and native work,
+retains cancellation requests and individual join outcomes, and attempts the other
+original joins after an ended error or observation failure. Missing/cancelled native
+handles remain UNKNOWN; an acknowledgement of this drain's own accepted worker
+cancellation is wrapper evidence only. Other cancelled consumers remain separately
+recorded; suppression requires positive original native joins and the idle guard.
+It never settles cancelled/unknown native handles. No None handle enters a gather,
+and no done cancelled handle is polled indefinitely. Original submission, drain and stop
+readers freeze the SAME work's raw or delivered failure, or its still-live invocation's
+earlier bridge/waiter candidate, at their original failure/cancellation observation,
+before fallible error collection, diagnostics or further outcome observation. Confirmed
+failure and raw native-failure anchors retain precedence; candidate-only selection
+does not publish either marker. A successfully returned invocation's handled candidate
+is excluded from later-stage selection. The original per-invocation snapshot remains;
+an earlier captured native E1 survives later submission, cancellation or missing-handle
+E2 even before Future delivery. A genuine earlier outer cancellation remains selected
+when native E1 is first captured later. Prior selected owner causes stay selected.
+An actual failure_pending remains visible after failures-list retention fails; successful
+suppressed join cancellation alone adds no failure marker. Raw-only drain cancellation candidates remain suppressible after positive original
+joins and idle; a raw capture alone adds no permanent failure predicate. Each original reader retains
+its observation and original cause links, with later actual errors separately reachable.
+The original registry/snapshot order is not a total historical error order across owners;
+final work state supplies no earlier waiter chronology. Native raw error/body/exit
+observations still supply no missing Task/Future or retirement acknowledgement.
+Successful suppressed cancellation with positive original completion adds no new
+retirement blocker. Stop's distinct waiter still delivers its original cancellation
+after positive drain completion. Each stop keeps its original finite deadline across
+repeated cancellation; timeout/cancellation neither settles nor restarts the drain.
+The observer retains the original outcome and diagnostic errors without DB/native
+work; failed callback registration stays with the same queue/drain owner. A completed result before failed
+caller delivery supplies evidence, not close permission. A recorded native body value
+or exit never fills a missing/cancelled Future or submission acknowledgement, retires
+an owner, permits replay or releases the original queue/org close barriers. Uncertain
+handoffs stay UNKNOWN without resubmission, replacement, repair or invented acknowledgement.
+CodingDispatcher's local `_writer` captures the actual first body/schema/COMMIT
+exception and native traceback before its one original rollback, retains an actual
+rollback error separately, and delivers that same first object without formatting,
+truth tests or virtual exception methods. Prior owner/attachment records remain linked;
+a failed attachment stays with the same CodingDispatcher owner and both actual
+errors, including when contextlib restores a yielded body's traceback.
+Failed rollback proves no restored transaction, success, no-run, retirement or
+DB-close permission. `_heartbeat` internal catches, other CodingDispatcher
+preparation/terminal and helper/outer/native lifetimes remain ROOT boundaries. The shared OrgState idle guard also checks the original boot-captured
+task queue after its existing thread-release, org-token and runner checks. Retained
+work whose captured attachment is that exact OrgState refuses direct close/remove/
+swap with native_tasks_in_flight, even after token release effects-then-raises,
+consumer cancellation or a done Task/Future. Original state/gate/orchestrator and
+queue identities are validated without requiring READY, so failed/stopping recovery
+can still close an otherwise idle attachment. Missing/replaced production bindings
+refuse; only explicitly all-None standalone bindings with no captured admission
+references retain the offline contract. Work solely for another attachment, including
+a same-slug replacement, is not attributed to this org. Unattached work has no
+invented org owner; the unchanged global queue guard still refuses all retained work.
+The finite read-only identity observation holds the existing queue lock, with no
+DB/profile work, callbacks, formatting, joins or awaits under it; refusal occurs
+after release. Submission/preflight/close remain synchronous on the original event
+loop, not a general cross-thread race fence. Positive original removal leaves no
+new blocker; suppressed cancellation alone does not change retirement. An idle queue
+satisfies only this predicate: every other lifetime/close barrier remains required.
+No token repair, re-registration, removal, result replay or cleanup follows.
+Local custody cannot recover errors hidden in unedited helpers
+or certify callable/Thread/Process/pump/backend/host/lease/job/DB-close retirement.
+The contained-launch `_on_terminal`
+captures an active host cause before its own fallible entry; that earlier cause
+alone does not manufacture a hook failure or change an otherwise successful hook
+return. A new entry/workflow/tracker/context/root/marker error retains the first
+actual object and native traceback, with every later occurrence separately kept,
+including repeated objects and attachment failures. Native BaseException access
+and rethrow avoid virtual traceback dispatch. Its single local attachment links
+prior records; failed attachment leaves the record in the rethrown frame.
+Original host-terminal then applicable workflow/submission work still precedes
+one marked tracker attempt for the original task/agent/SID, including after entry
+or workflow failure. A failed predecessor grants no skipped workflow effect, and
+generation-safe clear cannot erase a newer binding. Root handling follows tracker
+and uses only the delivered original manifest: missing delivery, pending consumption
+or `_context_incomplete` suppresses ALL root batch entry, including DB admission,
+audit and report. The original manifest/owner and UNKNOWN remain; no context reset,
+tracker clear, marker or batch is replayed. Ordinary applicable batch results and
+marker errors remain separate evidence. No unknown teardown authorizes cleanup
+or dependent destruction. This is local custody, not native closure.
+Unchanged held-refusal/writer/lock helpers can swallow or replace errors before
+delivery; direct prepare/adopt/coding/draft helper catches, observer postcommit
+consumption and native-control owners remain separate. The host hook wrapper can
+swallow/log Exception; its caller, reservation marker and lease release can still
+fail or replace errors outside this callback. A local record cannot recover an
+error hidden before delivery or certify host/lease retirement.
+Committed prefixes survive; no retry, replay, close/observer success or
+DB-destruction permission follows.
+The existing shared `_synchronized.wrapper` now captures `body_returned` and
+the exact result before fallible hold timing/warning or release, distinguishing
+`None`, `False`, zero and genuine positive INTEGER/refusal/pending values from
+no body return. It rethrows the SAME first actual BaseException with its original
+traceback; later actual release and attachment failures keep separate object/
+traceback slots, without identity/message deduplication. The private exception
+`_database_synchronized_failure` record links prior nested-call records. If
+attachment fails, the rethrown wrapper frame retains its local `failure` record,
+including that actual attachment error and completed result. Acquisition must
+positively return before body entry or the single marked release attempt. A raised
+acquire/release can follow an effect; no retry, replacement, rollback, no-acquire
+or successful-release inference follows. This wrapper-local custody is not a
+successful caller return or consumed policy permission, and cannot reveal errors
+swallowed inside unchanged helpers. Actual caller consumption, other cleanup
+wrappers and original native/outer/DB-close proof remain separately owed. These
+are source error/custody contracts; source/static inspection alone proves neither
+complete transitive error propagation nor native closure.
+
+General readers/writers and generic coherent_read_view retain
 their contracts. Outside autocommit connection/data_version/total_changes/
 schema_version bookends enclose a pinned main-table snapshot under the RLock;
 no hit/target/absence/anchor escapes before clean matching closure. Movement or
@@ -460,5 +888,5 @@ implicit rowid tail. Wrong same-name definitions refuse without repair. Current
 independent complete references include it; historical preimages stay unchanged.
 Strict older readers may refuse; compatible-reader rollback preserves index/history.
 
-- **Atomic pending parent-wake admission.** Receipt-owned cleanup tails and startup recovery can produce the same bounded parent wake concurrently. Every shipping parent-wake producer and the startup delegated/blocked-job dedupe paths use `TaskQueue.enqueue_if_absent`, which claims an ephemeral per-task reservation under the queue lock, runs generation-aware/DB-aware publication with that lock released, then clears the reservation on success, refusal, or failure. A concurrent bounded producer loses to either the reservation or an actual pending item. Dequeue atomically ends pending suppression so a later legitimate transition can wake the task again; unrelated FIFO ordering and ordinary non-coalescing enqueue are unchanged. Tests join every cleanup worker they create before another sweep, queue assertions, or shared `jobs_runner` restoration because durable settlement is not cleanup completion.
+- **Atomic pending parent-wake admission.** Receipt-owned cleanup tails and startup recovery can produce the same bounded parent wake concurrently. Every shipping parent-wake producer and the startup delegated/blocked-job dedupe paths use `TaskQueue.enqueue_if_absent`, which claims an ephemeral per-task reservation under the queue lock and runs generation-aware/DB-aware publication with that lock released. The ordinary synchronous publisher keeps its existing retirement on completed success, refusal or failure. A native/loop handoff additionally requires the original publication's genuine per-call acknowledgement and positive original no-run or actual worker/handoff/retirement proof; a returned publisher, caught failure or wrapper cancellation alone proves neither that handoff's insertion nor retirement. Unknown, missing or cancelled acknowledgement retains the SAME uncertain reservation and original close barrier, without retry, unconditional clear or inferred no-run. Genuine insertion or SAME pending ownership supplies delivery acknowledgement; a reservation alone does not. A concurrent bounded producer loses to either the retained reservation or an actual pending item. Dequeue atomically ends pending-item suppression; it cannot clear an independently unretired reservation. A later legitimate transition may wake the task only after the original reservation positively retires. Unrelated FIFO ordering and ordinary non-coalescing enqueue are unchanged. Tests join every cleanup worker they create before another sweep, queue assertions, or shared `jobs_runner` restoration because durable settlement is not cleanup completion.
 - **Graceful daemon shutdown preserves blocked-on-job recovery.** Lifespan teardown permanently stops `TaskQueue` consumers and producer admission before signalling in-flight jobs. A genuinely owned signal request preserves the first actual timeout/cap/task/shutdown/Stop cause; a natural pre-signal exit keeps its result. The original job owner commits its row, terminal audit, producer observation and strict Pause disposition together; persistence failure remains unknown, never a fabricated terminal result. The stopped queue refuses `enqueue`, `put_nowait`, and `enqueue_if_absent` (`False`), so a terminal-job hook cannot claim the waiter during teardown. The task stays `in_progress(blocked_on_job)` with its session unchanged; startup rediscovers only genuine all-terminal waits through Branch 3 / the lifespan scan plus pending-item dedupe, subject to cancellation, Pause and move admission. Unproven running jobs remain running/unknown. Resume headers and non-JSON `happyranch jobs show` expose the stored reason and exit code; the existing `task_resumed_from_jobs.job_outcomes` status values remain unchanged.

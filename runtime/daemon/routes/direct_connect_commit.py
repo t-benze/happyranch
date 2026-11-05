@@ -42,6 +42,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from contextlib import nullcontext
 from typing import Literal
 
@@ -108,14 +109,23 @@ async def commit(operation_id: str, request: Request) -> dict[str, str | None]:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="direct authority unavailable"
         )
     try:
-        outcome = project(
-            authority_store,
-            operation_id,
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if getattr(authority_store, "_projection_startup_owner", None) is not daemon:
+            raise StartupUnavailable("startup_projection_attachment_changed")
+        # The task is retained before to_thread can submit the blocking probe
+        # and profile work. Cancellation joins this SAME operation while native
+        # projection ownership separately retains any actual unsettled Process.
+        worker = asyncio.create_task(asyncio.to_thread(
+            project, authority_store, operation_id,
             profile_coordinator=daemon.profile_coordinator,
-        )
+        ))
+        outcome = await daemon._await_maintenance_worker(worker)
     except Exception as exc:
         from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+        from runtime.daemon.startup_recovery import StartupUnavailable
 
+        if isinstance(exc, StartupUnavailable) or getattr(exc, "maintenance_native_unsettled", False):
+            raise
         if isinstance(exc, ProfileCoordinatorError):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

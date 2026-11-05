@@ -197,6 +197,36 @@ class PendingRetry:
     feedback: str
 
 
+def _retry_transaction_failure(owner: str, database: Any) -> dict:
+    """Local evidence for the five original retry transaction owners only."""
+    return {
+        "owner": owner, "database": database, "connection": None,
+        "phase": "body", "first_error": None, "rollback_error": None,
+        "rollback_attempted": False, "rollback_returned": False,
+        "commit_attempted": False, "commit_returned": False,
+        "enqueue_attempted": False, "enqueue_returned": False,
+        "local_result_ready": False, "local_result": None,
+        "previous": None, "retention_error": None,
+    }
+
+
+def _raise_retry_transaction_failure(failure: dict) -> None:
+    """Deliver the retained occurrence without formatting or virtual rethrow.
+
+    The native traceback keeps this frame and the owner's complete local record
+    even if named attachment fails. A body delivery is an observation; a later
+    rollback throw is a separate occurrence, including the very same object.
+    """
+    _, primary, traceback = failure["first_error"]
+    try:
+        values = BaseException.__getattribute__(primary, "__dict__")
+        failure["previous"] = values.get("_retry_transaction_failure")
+        BaseException.__setattr__(primary, "_retry_transaction_failure", failure)
+    except BaseException as error:
+        failure["retention_error"] = (error, BaseException.__traceback__.__get__(error))
+    raise BaseException.with_traceback(primary, traceback)
+
+
 _ATTACHMENT_ERROR_CODES = frozenset({
     "too_many_attachments", "duplicate_attachment", "task_attachment_not_found",
     "attachment_already_claimed", "invalid_attachment_display_name",
@@ -931,16 +961,25 @@ class TasksMixin:
 
     @_task_move_admission
     @_synchronized
-    def insert_task(self, task: TaskRecord) -> None:
+    def insert_task(self, task: TaskRecord, *, validate_admission=None) -> None:
+        if validate_admission is not None:
+            validate_admission()
         began = not self._conn.in_transaction
         if began:
             self._conn.execute("BEGIN IMMEDIATE")
         try:
+            if validate_admission is not None:
+                validate_admission()
             self._insert_task_uncommitted(task)
             self._conn.commit()
-        except BaseException:
+        except BaseException as exc:
             if began:
-                self._conn.rollback()
+                try:
+                    self._conn.rollback()
+                except BaseException as secondary:
+                    if validate_admission is None:
+                        raise
+                    exc.add_note(f"selected task insertion rollback also failed: {secondary!r}")
             raise
 
     def _insert_task_uncommitted(self, task: TaskRecord, *, ownership: tuple[str, str] | None = None) -> None:
@@ -2202,17 +2241,39 @@ class TasksMixin:
     @_synchronized
     def try_retry_feedback(self, expected_claim: RetryClaim, feedback: str) -> PendingRetry | LostClaim:
         """A: commit existing feedback result/audit and PENDING as one owned write."""
+        failure = _retry_transaction_failure("try_retry_feedback", self)
+        conn = None
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn = self._conn
+            failure["connection"] = conn
+            conn.execute("BEGIN IMMEDIATE")
             if not self._retry_claim_matches(expected_claim):
-                self._conn.rollback()
+                failure["phase"] = "rollback"
+                failure["rollback_attempted"] = True
+                conn.rollback()
+                failure["rollback_returned"] = True
+                failure["phase"] = "result"
                 return LostClaim()
             pending = self._retry_feedback_uncommitted(expected_claim, feedback)
-            self._conn.commit()
+            failure["local_result"] = pending
+            failure["local_result_ready"] = True
+            failure["phase"] = "commit"
+            failure["commit_attempted"] = True
+            conn.commit()
+            failure["commit_returned"] = True
             return pending
-        except BaseException:
-            self._conn.rollback()
-            raise
+        except BaseException as error:
+            failure["first_error"] = (failure["phase"], error, BaseException.__traceback__.__get__(error))
+            if failure["phase"] == "rollback":
+                failure["rollback_error"] = failure["first_error"]
+            if not failure["rollback_attempted"]:
+                failure["rollback_attempted"] = True
+                try:
+                    (self._conn if conn is None else conn).rollback()
+                    failure["rollback_returned"] = True
+                except BaseException as later:
+                    failure["rollback_error"] = ("rollback", later, BaseException.__traceback__.__get__(later))
+            _raise_retry_transaction_failure(failure)
 
     def _retry_feedback_uncommitted(
         self, expected_claim: RetryClaim, feedback: str, correction: dict | None = None,
@@ -2351,11 +2412,22 @@ class TasksMixin:
             raise ValueError("unrecognized attachment correction code")
         if type(feedback) is not str or not feedback:
             raise ValueError("attachment correction feedback is required")
+        failure = _retry_transaction_failure("try_attachment_retry_feedback", self)
+        conn = None
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn = self._conn
+            failure["connection"] = conn
+            conn.execute("BEGIN IMMEDIATE")
             if not self._retry_claim_matches(expected_claim):
-                self._conn.rollback()
-                return LostClaim()
+                failure["phase"] = "rollback"
+                failure["rollback_attempted"] = True
+                conn.rollback()
+                failure["rollback_returned"] = True
+                failure["phase"] = "result"
+                result = LostClaim()
+                failure["local_result"] = result
+                failure["local_result_ready"] = True
+                return result
             task = self._conn.execute("SELECT * FROM tasks WHERE id=?", (expected_claim.task_id,)).fetchone()
             _attachment_history_require(task["task_type"] == "task")
             history = self._attachment_correction_history_txn(expected_claim.task_id)
@@ -2377,12 +2449,24 @@ class TasksMixin:
                     "accepted_result_id": accepted["id"], "accepted_session_id": accepted["session_id"],
                     "error_code": attachment_error,
                 })
-                self._conn.commit()
+                failure["local_result"] = pending
+                failure["local_result_ready"] = True
+                failure["phase"] = "commit"
+                failure["commit_attempted"] = True
+                conn.commit()
+                failure["commit_returned"] = True
                 return pending
             # Count2 never writes a third feedback or enters B.
             if not self._retry_claim_matches(expected_claim):
-                self._conn.rollback()
-                return LostClaim()
+                failure["phase"] = "rollback"
+                failure["rollback_attempted"] = True
+                conn.rollback()
+                failure["rollback_returned"] = True
+                failure["phase"] = "result"
+                result = LostClaim()
+                failure["local_result"] = result
+                failure["local_result_ready"] = True
+                return result
             now = datetime.now(timezone.utc).isoformat()
             note = "attachment correction opportunities exhausted (2): " + feedback
             before = self.terminal_worktree_task_projection(expected_claim.task_id)
@@ -2410,11 +2494,25 @@ class TasksMixin:
                 json.dumps(before, sort_keys=True) if before is not None else None,
                 json.dumps(self.terminal_worktree_task_projection(expected_claim.task_id), sort_keys=True),
             )
-            self._conn.commit()
+            failure["local_result"] = stopped
+            failure["local_result_ready"] = True
+            failure["phase"] = "commit"
+            failure["commit_attempted"] = True
+            conn.commit()
+            failure["commit_returned"] = True
             return stopped
-        except BaseException:
-            self._conn.rollback()
-            raise
+        except BaseException as error:
+            failure["first_error"] = (failure["phase"], error, BaseException.__traceback__.__get__(error))
+            if failure["phase"] == "rollback":
+                failure["rollback_error"] = failure["first_error"]
+            if not failure["rollback_attempted"]:
+                failure["rollback_attempted"] = True
+                try:
+                    (self._conn if conn is None else conn).rollback()
+                    failure["rollback_returned"] = True
+                except BaseException as later:
+                    failure["rollback_error"] = ("rollback", later, BaseException.__traceback__.__get__(later))
+            _raise_retry_transaction_failure(failure)
 
     @_synchronized
     def admit_retry_feedback(self, pending: PendingRetry, enqueue) -> str | LostClaim:
@@ -2422,24 +2520,49 @@ class TasksMixin:
 
         Queue insertion is not a claim and is not crash-atomic with SQLite.
         Startup may enqueue PENDING again after either side of this boundary.
+        The sole reservation rollback is attempted even on BEGIN/body failure;
+        failed cleanup preserves the first cause and any possible queue prefix.
         """
+        failure = _retry_transaction_failure("admit_retry_feedback", self)
+        conn = None
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn = self._conn
+            failure["connection"] = conn
+            conn.execute("BEGIN IMMEDIATE")
             if not self._retry_claim_matches(pending.claim, pending=True):
-                return LostClaim()
-            row = self._conn.execute(
-                "SELECT task_id, agent, session_id, status, output_summary FROM task_results WHERE id = ?",
-                (pending.result_id,),
-            ).fetchone()
-            if row is None or tuple(row) != (pending.claim.task_id, pending.claim.assigned_agent,
-                                             "", "completed", pending.feedback):
-                return LostClaim()
-            if enqueue is None:
-                return "not_configured"
-            enqueue()
-            return "enqueued"
+                result = LostClaim()
+            else:
+                row = conn.execute(
+                    "SELECT task_id, agent, session_id, status, output_summary FROM task_results WHERE id = ?",
+                    (pending.result_id,),
+                ).fetchone()
+                if row is None or tuple(row) != (pending.claim.task_id, pending.claim.assigned_agent,
+                                                 "", "completed", pending.feedback):
+                    result = LostClaim()
+                elif enqueue is None:
+                    result = "not_configured"
+                else:
+                    failure["phase"] = "enqueue"
+                    failure["enqueue_attempted"] = True
+                    enqueue()
+                    failure["enqueue_returned"] = True
+                    result = "enqueued"
+            failure["local_result"] = result
+            failure["local_result_ready"] = True
+        except BaseException as error:
+            failure["first_error"] = (failure["phase"], error, BaseException.__traceback__.__get__(error))
         finally:
-            self._conn.rollback()
+            failure["rollback_attempted"] = True
+            try:
+                (self._conn if conn is None else conn).rollback()
+                failure["rollback_returned"] = True
+            except BaseException as error:
+                failure["rollback_error"] = ("rollback", error, BaseException.__traceback__.__get__(error))
+                if failure["first_error"] is None:
+                    failure["first_error"] = failure["rollback_error"]
+            if failure["first_error"] is not None:
+                _raise_retry_transaction_failure(failure)
+        return result
 
     @_task_move_admission
     @_synchronized
@@ -2457,9 +2580,9 @@ class TasksMixin:
         All child inserts, parent status/block_kind/active_fanout update,
         note write, attachment links/audit rows, and pipeline carrier chain
         materialization (active_chain + first leg insert) happen in one
-        transaction. On any exception the transaction rolls back — no partial
-        children, no orphan rows, no orphan attachment links, no orphan
-        carrier state.
+        transaction. Successful precommit rollback restores the entire batch.
+        Failed/unknown COMMIT or rollback retains its original uncertainty;
+        successful COMMIT survives later result construction/delivery failure.
 
         Same cancel-race semantics as try_delegate (single-child): if the
         parent is cancelled or already terminal at the time of the guarded
@@ -2483,8 +2606,12 @@ class TasksMixin:
         next_task_id() N times before invoking this method). Carrier first
         leg IDs must also be pre-allocated.
         """
+        failure = _retry_transaction_failure("try_delegate_many", self)
+        conn = None
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn = self._conn
+            failure["connection"] = conn
+            conn.execute("BEGIN IMMEDIATE")
             for carrier in carrier_chains or ():
                 self._check_team_move_task_uncommitted(children[carrier["child_index"]],
                     declared_chain=carrier["active_chain_json"])
@@ -2493,11 +2620,15 @@ class TasksMixin:
 
             )
             if refusal is not None:
-                self._conn.rollback()
+                failure["phase"] = "rollback"
+                failure["rollback_attempted"] = True
+                conn.rollback()
+                failure["rollback_returned"] = True
+                failure["phase"] = "result"
                 return refusal
             now = now_ts = datetime.now(timezone.utc).isoformat()
             for i, child in enumerate(children):
-                self._conn.execute(
+                conn.execute(
                     """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                        revision_count, created_at, updated_at, completed_at, parent_task_id,
                        revisit_of_task_id, dispatched_from_thread_id,
@@ -2541,12 +2672,12 @@ class TasksMixin:
                 for cc in carrier_chains:
                     ci = cc["child_index"]
                     cid = children[ci].id
-                    self._conn.execute(
+                    conn.execute(
                         "UPDATE tasks SET active_chain = ? WHERE id = ?",
                         (cc["active_chain_json"], cid),
                     )
                     fl = cc["first_leg"]
-                    self._conn.execute(
+                    conn.execute(
                         """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                            revision_count, created_at, updated_at, completed_at,
                            parent_task_id, revisit_of_task_id, dispatched_from_thread_id,
@@ -2576,18 +2707,34 @@ class TasksMixin:
                         ),
                     )
                     self._insert_task_owner_uncommitted(fl["id"])
-            self._conn.execute(
+            conn.execute(
                 """UPDATE tasks
                    SET status = ?, block_kind = ?, note = ?, active_fanout = ?, updated_at = ?
                    WHERE id = ?""",
                 (TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value, parent_note,
                  active_fanout_json, now, parent_id),
             )
-            self._conn.commit()
-            return Committed(tuple(child.id for child in children))
-        except BaseException:
-            self._conn.rollback()
-            raise
+            failure["phase"] = "commit"
+            failure["commit_attempted"] = True
+            conn.commit()
+            failure["commit_returned"] = True
+            failure["phase"] = "result"
+            result = Committed(tuple(child.id for child in children))
+            failure["local_result"] = result
+            failure["local_result_ready"] = True
+            return result
+        except BaseException as error:
+            failure["first_error"] = (failure["phase"], error, BaseException.__traceback__.__get__(error))
+            if failure["phase"] == "rollback":
+                failure["rollback_error"] = failure["first_error"]
+            if not failure["rollback_attempted"]:
+                failure["rollback_attempted"] = True
+                try:
+                    (self._conn if conn is None else conn).rollback()
+                    failure["rollback_returned"] = True
+                except BaseException as later:
+                    failure["rollback_error"] = ("rollback", later, BaseException.__traceback__.__get__(later))
+            _raise_retry_transaction_failure(failure)
 
     @_task_move_admission
     @_synchronized
@@ -2605,21 +2752,30 @@ class TasksMixin:
         BEGIN IMMEDIATE under RLock precedes original claim, callback binding,
         lineage and worker-of-record rereads. LostClaim takes precedence over
         InvalidLineage. Neither refusal writes; Committed alone permits enqueue.
-        All actual write/serialization errors roll back and propagate, preserving
-        prior callback results, decisions and parent state.
+        Actual errors retain their first cause through the sole owed rollback.
+        Successful precommit rollback restores the batch; failed/unknown cleanup
+        or COMMIT retains uncertainty and every earlier committed prefix.
         """
+        failure = _retry_transaction_failure("try_delegate", self)
+        conn = None
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn = self._conn
+            failure["connection"] = conn
+            conn.execute("BEGIN IMMEDIATE")
             self._check_team_move_task_uncommitted(parent_id, declared_chain=active_chain_json)
             refusal = self._retry_spawn_check(
                 parent_id, [child], expected_claim,
                 revision_delta, revision_cap, ordinary=True,
             )
             if refusal is not None:
-                self._conn.rollback()
+                failure["phase"] = "rollback"
+                failure["rollback_attempted"] = True
+                conn.rollback()
+                failure["rollback_returned"] = True
+                failure["phase"] = "result"
                 return refusal
             now = now_ts = datetime.now(timezone.utc).isoformat()
-            self._conn.execute(
+            conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
                    revisit_of_task_id, dispatched_from_thread_id,
@@ -2658,23 +2814,39 @@ class TasksMixin:
             # Write active_chain within the same transaction so a crash or
             # write failure rolls back child + parent + chain atomically.
             if active_chain_json is not None:
-                self._conn.execute(
+                conn.execute(
                     "UPDATE tasks SET active_chain = ? WHERE id = ?",
                     (active_chain_json, parent_id),
                 )
             now = datetime.now(timezone.utc).isoformat()
-            self._conn.execute(
+            conn.execute(
                 """UPDATE tasks
                    SET status = ?, block_kind = ?, note = ?, updated_at = ?, revision_count = revision_count + ?
                    WHERE id = ?""",
                 (TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value, parent_note,
                  now, revision_delta, parent_id),
             )
-            self._conn.commit()
-            return Committed((child.id,))
-        except BaseException:
-            self._conn.rollback()
-            raise
+            failure["phase"] = "commit"
+            failure["commit_attempted"] = True
+            conn.commit()
+            failure["commit_returned"] = True
+            failure["phase"] = "result"
+            result = Committed((child.id,))
+            failure["local_result"] = result
+            failure["local_result_ready"] = True
+            return result
+        except BaseException as error:
+            failure["first_error"] = (failure["phase"], error, BaseException.__traceback__.__get__(error))
+            if failure["phase"] == "rollback":
+                failure["rollback_error"] = failure["first_error"]
+            if not failure["rollback_attempted"]:
+                failure["rollback_attempted"] = True
+                try:
+                    (self._conn if conn is None else conn).rollback()
+                    failure["rollback_returned"] = True
+                except BaseException as later:
+                    failure["rollback_error"] = ("rollback", later, BaseException.__traceback__.__get__(later))
+            _raise_retry_transaction_failure(failure)
 
     @_task_move_admission
     @_synchronized
@@ -3066,6 +3238,157 @@ class TasksMixin:
             self._conn.rollback()
             raise
 
+    def _task_lifecycle_owner_is_current_uncommitted(
+        self, expected: "TaskRecord", *, completed_child: bool = False,
+    ) -> bool:
+        """Compare lifecycle ownership, excluding heartbeat/updated clocks.
+
+        A landed child callback may finish its ordinary status transition while
+        the parent handles it. Its agent/SID/claim and selected INTEGER report
+        still have to match; parent and completion writers require exact status.
+        """
+        current = self.get_task(expected.id)
+        if current is None or current.cancelled_at is not None:
+            return False
+        fields = (
+            "assigned_agent", "current_session_id", "team", "task_type",
+            "parent_task_id", "revisit_of_task_id", "orchestration_step_count",
+            "revision_count", "active_chain", "active_fanout", "block_kind", "blocked_on_job_ids",
+        )
+        if not completed_child:
+            fields += ("status",)
+        return all(getattr(current, key) == getattr(expected, key) for key in fields)
+
+    @_synchronized
+    def complete_task_if_current_owner(
+        self, *, expected: "TaskRecord", note: str, output_dir: str | None,
+        completed_at: str, validate_admission=None, current_owner=None,
+    ) -> bool:
+        """Ordinary/sessionless completion; recovery keeps its separate CAS.
+
+        The nonterminal owner check and conditional UPDATE share BEGIN IMMEDIATE,
+        including independent connections. A lost owner has no success tails.
+        """
+        if self._conn.in_transaction:
+            raise RuntimeError("completion_transaction_already_owned")
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if validate_admission is not None:
+                validate_admission()
+            if (not self._task_lifecycle_owner_is_current_uncommitted(expected)
+                    or current_owner is not None and not current_owner()):
+                self._conn.rollback()
+                return False
+            self._guard_coding_task_mutation_uncommitted(expected.id)
+            cursor = self._conn.execute(
+                """UPDATE tasks SET status='completed', block_kind=NULL, note=?,
+                   final_output_dir=?, completed_at=?, updated_at=?
+                   WHERE id=? AND cancelled_at IS NULL
+                     AND status IN ('pending','in_progress','escalated')""",
+                (note, output_dir, completed_at, completed_at, expected.id),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                return False
+            if validate_admission is not None:
+                validate_admission()
+            self._conn.commit()
+            return True
+        except BaseException as exc:
+            try:
+                self._conn.rollback()
+            except BaseException as secondary:
+                exc.add_note(f"ordinary completion rollback also failed: {secondary!r}")
+            raise
+
+    def _chain_trigger_result_uncommitted(self, child: "TaskRecord") -> dict | None:
+        """Raw selected row includes the INTEGER id and original stored bytes."""
+        if child.assigned_agent and child.current_session_id:
+            row = self._conn.execute(
+                "SELECT * FROM task_results WHERE task_id=? AND agent=? AND session_id=? "
+                "ORDER BY id DESC LIMIT 1",
+                (child.id, child.assigned_agent, child.current_session_id),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT * FROM task_results WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (child.id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def _chain_owner_is_current_uncommitted(
+        self, parent: "TaskRecord", child: "TaskRecord", result: dict | None,
+    ) -> bool:
+        """Same original delegated owner, newest child and exact report selection."""
+        if (parent.status != TaskStatus.IN_PROGRESS
+                or parent.block_kind != BlockKind.DELEGATED
+                or not self._task_lifecycle_owner_is_current_uncommitted(parent)
+                or child.parent_task_id != parent.id
+                or not self._task_lifecycle_owner_is_current_uncommitted(child, completed_child=True)):
+            return False
+        children = self.get_children(parent.id)
+        if not children or children[-1] != child.id:
+            return False
+        current_result = self._chain_trigger_result_uncommitted(child)
+        if current_result != result:
+            return False
+        if result is not None and type(result.get("id")) is not int:
+            return False
+        current = self.get_task(child.id)
+        if current.status != child.status and not (
+            child.status == TaskStatus.IN_PROGRESS and current.status == TaskStatus.COMPLETED
+        ):
+            return False
+        if current.status == TaskStatus.COMPLETED:
+            return True
+        # Preserve authenticated report-landed/status-lag recognition, never
+        # a blocked/failed/cancelled child or legacy task-wide substitution.
+        if (current.status != TaskStatus.IN_PROGRESS
+                or not current.assigned_agent or not current.current_session_id):
+            return False
+        report = self.get_latest_completion_report(
+            child.id, child.assigned_agent, child.current_session_id,
+        )
+        return report is not None and report.status == "completed"
+
+    @_synchronized
+    def try_clear_task_active_chain(
+        self, *, expected_parent: "TaskRecord", expected_child: "TaskRecord" | None = None,
+        expected_result: dict | None = None, validate_admission=None,
+    ) -> bool:
+        """Clear only the selected delegated chain; never its replacement."""
+        if self._conn.in_transaction:
+            raise RuntimeError("chain_clear_transaction_already_owned")
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if validate_admission is not None:
+                validate_admission()
+            current = (
+                self._chain_owner_is_current_uncommitted(expected_parent, expected_child, expected_result)
+                if expected_child is not None else
+                expected_parent.status == TaskStatus.IN_PROGRESS
+                and expected_parent.block_kind == BlockKind.DELEGATED
+                and self._task_lifecycle_owner_is_current_uncommitted(expected_parent)
+            )
+            if not current:
+                self._conn.rollback()
+                return False
+            self._guard_coding_task_mutation_uncommitted(expected_parent.id)
+            self._conn.execute(
+                "UPDATE tasks SET active_chain=NULL, updated_at=? WHERE id=?",
+                (datetime.now(timezone.utc).isoformat(), expected_parent.id),
+            )
+            if validate_admission is not None:
+                validate_admission()
+            self._conn.commit()
+            return True
+        except BaseException as exc:
+            try:
+                self._conn.rollback()
+            except BaseException as secondary:
+                exc.add_note(f"selected chain clear rollback also failed: {secondary!r}")
+            raise
+
     @_task_move_admission
     @_synchronized
     def try_advance_chain(
@@ -3076,6 +3399,10 @@ class TasksMixin:
         *,
         attachments: list[dict] | None = None,
         uploaded_by: str = "orchestrator",
+        validate_admission=None,
+        expected_parent: "TaskRecord",
+        expected_child: "TaskRecord",
+        expected_result: dict | None,
     ) -> bool:
         """Atomically update parent active_chain + insert next child +
         attachment links/audit in a single explicit transaction.
@@ -3084,14 +3411,36 @@ class TasksMixin:
         insert_task_with_attachments) with a single transaction so a crash
         or child/link/audit write failure rolls back the chain advance.
 
-        Returns True on success (parent chain advanced, child exists,
-        attachments linked). Returns False and rolls back on any failure.
+        Returns False only for a lost selection or an insertion integrity error
+        after successful rollback. Native/admission/COMMIT/rollback uncertainty
+        raises with its original cause. All expectations come from the caller's
+        original selection, never a refreshed replacement chain.
         """
-        now_ts = datetime.now(timezone.utc).isoformat()
+        if self._conn.in_transaction:
+            raise RuntimeError("chain_advance_transaction_already_owned")
+        commit_attempted = False
+        admission_error = None
+        def validate():
+            nonlocal admission_error
+            if validate_admission is not None:
+                try:
+                    validate_admission()
+                except BaseException as exc:
+                    admission_error = exc
+                    raise
+        validate()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            validate()
+            if (expected_parent.id != parent_id or expected_parent.active_chain is None
+                    or next_child.parent_task_id != parent_id
+                    or not self._chain_owner_is_current_uncommitted(
+                        expected_parent, expected_child, expected_result)):
+                self._conn.rollback()
+                return False
             self._check_team_move_task_uncommitted(parent_id, declared_chain=active_chain_json)
             self._check_team_move_task_uncommitted(next_child)
+            validate()
             self._conn.execute(
                 "UPDATE tasks SET active_chain = ? WHERE id = ?",
                 (active_chain_json, parent_id),
@@ -3132,15 +3481,25 @@ class TasksMixin:
                 self._insert_task_attachments_txn(
                     next_child.id, attachments, uploaded_by,
                 )
+            validate()
+            commit_attempted = True
             self._conn.commit()
             return True
-        except Exception as exc:
-            from runtime.orchestrator.team_move import DeferredTeamMove
-            if isinstance(exc, DeferredTeamMove):
+        except BaseException as exc:
+            rollback_failed = False
+            try:
                 self._conn.rollback()
+            except BaseException as secondary:
+                rollback_failed = True
+                exc.add_note(f"selected chain rollback also failed: {secondary!r}")
+            if rollback_failed:
                 raise
-            self._conn.rollback()
-            return False
+            # A known failed INSERT is an aborted advance, not chain completion.
+            # A failed COMMIT or an admission/native/other operational error is
+            # uncertain custody and must retain its actual exception/traceback.
+            if isinstance(exc, sqlite3.IntegrityError) and not commit_attempted and exc is not admission_error:
+                return False
+            raise
 
     @_synchronized
     def increment_revision_count(self, task_id: str) -> None:

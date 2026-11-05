@@ -13,6 +13,7 @@ from runtime.workflows.activation import (AbstractRole, ActivatedTemplate, Close
     DocumentTaskInput, DocumentThreadInput, SHA256, Token)
 
 
+from runtime.daemon.startup_recovery import StartupUnavailable
 from runtime.daemon.auth import _require_human, optional_bearer
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.routes.workflow_submissions import ERRORS, IDENTITY_KEYS, READ_RESPONSES, TOKEN_SCHEMA, agent_transport, fail, proof_schema, query_values, raise_error, raise_read_error, sqlite_error_types
@@ -469,5 +470,7 @@ async def stage_agent_review(org: OrgDep, request: Request,
         raise HTTPException(status_code=500, detail={'code': 'workflow_review_stage_storage_unavailable'}) from exc
     except (DraftOwnershipError, ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=500, detail={'code': 'workflow_review_stage_storage_corrupt'}) from exc
+    except StartupUnavailable:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail={'code': 'workflow_review_stage_storage_corrupt'}) from exc

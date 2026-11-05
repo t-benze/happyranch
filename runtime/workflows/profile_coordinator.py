@@ -188,8 +188,11 @@ class _ConsumerWriterInterval(_SupportedWriterInterval):
                                     org=self.org, consumer_identity=self.consumer,
                                     from_profile=target, to_profile=actual,
                                 )
-                    except BaseException:
-                        self.profiles._restore_dependency_mirror(self.org, mirror)
+                    except BaseException as primary:
+                        try:
+                            self.profiles._restore_dependency_mirror(self.org, mirror)
+                        except BaseException as secondary:
+                            primary._profile_restore_error = (secondary, secondary.__traceback__)
                         raise
 
 
@@ -325,14 +328,18 @@ class ProfileCoordinator:
                 )
                 try:
                     yield interval
-                except BaseException:
+                except BaseException as primary:
                     if interval.fenced:
-                        if not org.workflow_authority.publish_after_supported_change(
-                            publisher=f"{publisher}:compensation",
-                            fence_journal_id=interval.fence_journal_id,
-                            publisher_invocation=interval.publisher_invocation,
-                        ):
+                        try:
+                            if not org.workflow_authority.publish_after_supported_change(
+                                publisher=f"{publisher}:compensation",
+                                fence_journal_id=interval.fence_journal_id,
+                                publisher_invocation=interval.publisher_invocation,
+                            ):
+                                disposition.uncertain = True
+                        except BaseException as secondary:
                             disposition.uncertain = True
+                            primary._profile_compensation_error = (secondary, secondary.__traceback__)
                     raise
                 else:
                     if interval.fenced:
@@ -399,21 +406,41 @@ class ProfileCoordinator:
 
     @staticmethod
     @contextmanager
-    def _transaction(org: OrgState) -> Iterator[sqlite3.Connection]:
+    def _transaction(org: OrgState, *, validate_admission=None) -> Iterator[sqlite3.Connection]:
         with org.db._lock:
+            if validate_admission is not None:
+                validate_admission()
             conn = org.db._conn
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if validate_admission is not None:
+                    validate_admission()
                 yield conn
-            except BaseException:
-                conn.rollback()
+            except BaseException as primary:
+                try:
+                    conn.rollback()
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_profile_rollback_secondary", (secondary, secondary.__traceback__))
+                        BaseException.add_note(primary, f"selected profile transaction rollback also failed: {secondary!r}")
+                    except BaseException:
+                        # Secondary diagnostics must not replace the first cause.
+                        pass
                 raise
             else:
                 try:
                     conn.commit()
-                except BaseException:
+                except BaseException as primary:
                     # This context owns the transaction; do not leak a failed commit.
-                    conn.rollback()
+                    try:
+                        conn.rollback()
+                    except BaseException as secondary:
+                        try:
+                            BaseException.__setattr__(primary, "_profile_rollback_secondary", (secondary, secondary.__traceback__))
+                            BaseException.add_note(primary, f"selected profile commit rollback also failed: {secondary!r}")
+                        except BaseException:
+                            # Secondary diagnostics must not replace the first cause.
+                            pass
                     raise
 
     def _max_generation(self, profile_name: str) -> int:
@@ -492,13 +519,14 @@ class ProfileCoordinator:
         operation: _ProfileOperation,
         *,
         coordinator_invocation: str,
+        validate_admission=None,
     ) -> None:
         with self._capture_orgs() as orgs:
             members_json = _canonical_bytes(list(operation.members)).decode("utf-8")
             created_at = datetime.now(timezone.utc).isoformat()
             for slug in operation.members:
                 org = orgs[slug]
-                with self._transaction(org) as conn:
+                with self._transaction(org, validate_admission=validate_admission) as conn:
                     conn.execute(
                         "INSERT OR IGNORE INTO workflow_profile_operations("
                         "id,profile_name,operation_kind,captured_members,"
@@ -772,107 +800,153 @@ class ProfileCoordinator:
         *,
         operation_kind: str,
         publisher: str,
+        validate_admission=None,
     ) -> Iterator[None]:
         """Create the durable U1A claim after profile leases are held."""
-        with self._capture_orgs() as orgs:
-            coordinator_invocation = uuid.uuid4().hex
-            operations = tuple(
-                _ProfileOperation(
-                    operation_id=f"WPO-{uuid.uuid4().hex}",
-                    profile_name=name,
-                    operation_kind=operation_kind,
-                    members=self._required_members(name),
-                    target_generation=self._max_generation(name) + 1,
-                    prior=self._effective_profile(name),
-                )
-                for name in names
-            )
-            members = sorted({slug for op in operations for slug in op.members})
-            for slug in members:
-                org = orgs[slug]
-                with org.db._lock:
-                    active = org.workflow_authority._active_journal(org.db._conn, org.workflow_authority.namespace)
-                if active is not None and not str(active["publisher_invocation"]).startswith("profile-coordinator:"):
-                    raise ProfileCoordinatorError("profile_consumer_changed")
-            with ExitStack() as move_writers:
-                dispositions = []
-                try:
-                    for slug in members:
-                        dispositions.append(move_writers.enter_context(native_writer(orgs[slug].db,
-                            publisher=f'profile:{publisher}')))
-                except Exception as exc:
-                    # Earlier acquired reservations have not entered any profile
-                    # operation/fence/body. Only those completed reservations may
-                    # settle; a failing reservation retains its own native evidence.
-                    for disposition in dispositions:
-                        disposition.no_effect_error = exc
-                    raise
-                for operation in operations:
-                    self._insert_operation_rows(
-                        operation,
-                        coordinator_invocation=coordinator_invocation,
+        first_error = None
+        try:
+            with self._capture_orgs() as orgs:
+                validate = validate_admission or (lambda: None)
+                validate()
+                coordinator_invocation = uuid.uuid4().hex
+                operations = tuple(
+                    _ProfileOperation(
+                        operation_id=f"WPO-{uuid.uuid4().hex}",
+                        profile_name=name,
+                        operation_kind=operation_kind,
+                        members=self._required_members(name),
+                        target_generation=self._max_generation(name) + 1,
+                        prior=self._effective_profile(name),
                     )
-                bindings: dict[str, ProfileFenceBinding] = {}
-                with ExitStack() as org_stack:
-                    for slug in members:
-                        bindings[slug] = org_stack.enter_context(
-                            orgs[slug].workflow_authority.profile_change_interval(
-                                reason=f"profile:{','.join(names)}:{publisher}",
-                                coordinator_invocation=coordinator_invocation,
-                            )
-                        )
-                    for operation in operations:
-                        self._set_operation_state(operation, "fenced")
+                    for name in names
+                )
+                members = sorted({slug for op in operations for slug in op.members})
+                for slug in members:
+                    org = orgs[slug]
+                    with org.db._lock:
+                        active = org.workflow_authority._active_journal(org.db._conn, org.workflow_authority.namespace)
+                    if active is not None and not str(active["publisher_invocation"]).startswith("profile-coordinator:"):
+                        raise ProfileCoordinatorError("profile_consumer_changed")
+                validate()
+                with ExitStack() as move_writers:
                     try:
-                        yield
-                    except BaseException:
+                        dispositions = []
                         try:
-                            reconciled = self._finalize(
-                                operations=operations,
-                                bindings=bindings,
-                                publisher=publisher,
-                                mutation_succeeded=False,
-                            )
-                            if not reconciled:
-                                for disposition in dispositions:
-                                    disposition.uncertain = True
-                        except Exception:
+                            for slug in members:
+                                dispositions.append(move_writers.enter_context(native_writer(orgs[slug].db,
+                                    publisher=f'profile:{publisher}', validate_admission=validate_admission)))
+                        except BaseException as exc:
+                            # Earlier acquired reservations have not entered any profile
+                            # operation/fence/body. Only those completed reservations may
+                            # settle; a failing reservation retains its own native evidence.
                             for disposition in dispositions:
-                                disposition.uncertain = True
-                            logger.exception(
-                                "profile compensation publication deferred publisher=%s",
-                                publisher,
+                                disposition.no_effect_error = exc
+                            raise
+                        for operation in operations:
+                            self._insert_operation_rows(
+                                operation,
+                                coordinator_invocation=coordinator_invocation,
+                                validate_admission=validate_admission,
                             )
+                        bindings: dict[str, ProfileFenceBinding] = {}
+                        with ExitStack() as org_stack:
+                            try:
+                                for slug in members:
+                                    bindings[slug] = org_stack.enter_context(
+                                        orgs[slug].workflow_authority.profile_change_interval(
+                                            reason=f"profile:{','.join(names)}:{publisher}",
+                                            coordinator_invocation=coordinator_invocation,
+                                            validate_admission=validate_admission,
+                                        )
+                                    )
+                                for operation in operations:
+                                    self._set_operation_state(operation, "fenced")
+                                primary = None
+                                try:
+                                    validate()
+                                    yield
+                                except BaseException as exc:
+                                    primary = exc
+                                    try:
+                                        reconciled = self._finalize(
+                                            operations=operations,
+                                            bindings=bindings,
+                                            publisher=publisher,
+                                            mutation_succeeded=False,
+                                        )
+                                        if not reconciled:
+                                            for disposition in dispositions:
+                                                disposition.uncertain = True
+                                    except BaseException as secondary:
+                                        for disposition in dispositions:
+                                            disposition.uncertain = True
+                                        primary._profile_compensation_error = (secondary, secondary.__traceback__)
+                                        try:
+                                            logger.exception(
+                                                "profile compensation publication deferred publisher=%s",
+                                                publisher,
+                                            )
+                                        except BaseException as diagnostic:
+                                            primary._profile_diagnostic_error = (diagnostic, diagnostic.__traceback__)
+                                    raise
+                                else:
+                                    try:
+                                        reconciled = self._finalize(
+                                            operations=operations,
+                                            bindings=bindings,
+                                            publisher=publisher,
+                                            mutation_succeeded=True,
+                                        )
+                                        if not reconciled:
+                                            for disposition in dispositions:
+                                                disposition.uncertain = True
+                                    except BaseException as exc:
+                                        for disposition in dispositions:
+                                            disposition.uncertain = True
+                                        # Ordinary post-commit failure retains its response
+                                        # contract; interruption still propagates its SAME
+                                        # cause, without erasing the committed prefix.
+                                        if not isinstance(exc, Exception):
+                                            primary = exc
+                                            raise
+                                        try:
+                                            logger.exception(
+                                                "profile post-commit publication deferred publisher=%s",
+                                                publisher,
+                                            )
+                                        except BaseException as diagnostic:
+                                            exc._profile_diagnostic_error = (diagnostic, diagnostic.__traceback__)
+                                            primary = exc
+                                            raise exc
+                                finally:
+                                    try:
+                                        released = self._release_diagnostic_leases(
+                                            operations,
+                                            coordinator_invocation=coordinator_invocation,
+                                        )
+                                        if not released:
+                                            for disposition in dispositions:
+                                                disposition.uncertain = True
+                                    except BaseException as secondary:
+                                        for disposition in dispositions:
+                                            disposition.uncertain = True
+                                        if primary is None:
+                                            raise
+                                        primary._profile_release_error = (secondary, secondary.__traceback__)
+                            except BaseException as error:
+                                if first_error is None:
+                                    first_error = (error, error.__traceback__)
+                                raise
+                    except BaseException as error:
+                        if first_error is None:
+                            first_error = (error, error.__traceback__)
                         raise
-                    else:
-                        try:
-                            reconciled = self._finalize(
-                                operations=operations,
-                                bindings=bindings,
-                                publisher=publisher,
-                                mutation_succeeded=True,
-                            )
-                            if not reconciled:
-                                for disposition in dispositions:
-                                    disposition.uncertain = True
-                        except Exception:
-                            for disposition in dispositions:
-                                disposition.uncertain = True
-                            # The existing writer already committed. Preserve its
-                            # response contract while the durable operation/fence
-                            # remains discoverable for cold forward recovery.
-                            logger.exception(
-                                "profile post-commit publication deferred publisher=%s",
-                                publisher,
-                            )
-                    finally:
-                        released = self._release_diagnostic_leases(
-                            operations,
-                            coordinator_invocation=coordinator_invocation,
-                        )
-                        if not released:
-                            for disposition in dispositions:
-                                disposition.uncertain = True
+        except BaseException as error:
+            if first_error is not None and first_error[0] is not error:
+                original, traceback = first_error
+                original._profile_owner_exit_error = (error, error.__traceback__)
+                raise original.with_traceback(traceback) from error
+            raise
 
     @contextmanager
     def operation(
@@ -906,6 +980,7 @@ class ProfileCoordinator:
         operation_kind: str,
         publisher: str,
         terminal_check: Callable[[], bool],
+        validate_admission: Callable[[], None] | None = None,
     ) -> Iterator[bool]:
         """Claim a retryable writer once, before any U1A fence or mutation.
 
@@ -915,14 +990,18 @@ class ProfileCoordinator:
         A winner then records the existing U1A operation/lease claim before the
         caller can mutate adapter or profile state.
         """
+        validate = validate_admission or (lambda: None)
+        validate()
         if operation_kind not in {"register", "rebind", "remove"}:
             raise ProfileCoordinatorError("profile_operation_kind_invalid")
         with self._profile_leases(profile_names, wait=True) as names:
+            validate()
             for name in names or (None,):
                 self._assert_no_active_operation(name)
             if not names:
                 yield True
                 return
+            validate()
             if terminal_check():
                 yield False
                 return
@@ -930,6 +1009,7 @@ class ProfileCoordinator:
                 names,
                 operation_kind=operation_kind,
                 publisher=publisher,
+                validate_admission=validate_admission,
             ):
                 yield True
 
@@ -1171,12 +1251,21 @@ class ProfileCoordinator:
                 with org.workflow_authority._publisher_lock:
                     owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
                     org.workflow_authority._acquire_lease(owner)
+                    primary = None
                     try:
                         self._validate_capture(org, revision)
                         if self._sync_org_dependencies(org, desired):
                             changed.add(slug)
+                    except BaseException as error:
+                        primary = error
+                        raise
                     finally:
-                        org.workflow_authority._release_lease(owner)
+                        try:
+                            org.workflow_authority._release_lease(owner)
+                        except BaseException as secondary:
+                            if primary is None:
+                                raise
+                            primary._profile_lease_error = (secondary, secondary.__traceback__)
                     if publish and slug in changed:
                         if snapshot is None:
                             org.workflow_authority.fence(reason="profile:canonical-incoherent")
@@ -1207,6 +1296,7 @@ class ProfileCoordinator:
             with org.workflow_authority._publisher_lock:
                 owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
                 org.workflow_authority._acquire_lease(owner)
+                primary = None
                 try:
                     self._validate_capture(org, revision)
                     if capture.empty_canonical_inputs and not capture.empty_skeleton:
@@ -1227,8 +1317,16 @@ class ProfileCoordinator:
                         if unfinished is not None or outstanding is not None:
                             raise ProfileCoordinatorError("profile_dependency_incoherent")
                     changed = self._sync_org_dependencies(org, desired)
+                except BaseException as error:
+                    primary = error
+                    raise
                 finally:
-                    org.workflow_authority._release_lease(owner)
+                    try:
+                        org.workflow_authority._release_lease(owner)
+                    except BaseException as secondary:
+                        if primary is None:
+                            raise
+                        primary._profile_lease_error = (secondary, secondary.__traceback__)
                 if snapshot is None and not capture.empty_skeleton:
                     org.workflow_authority.fence(reason="profile:canonical-incoherent")
                     raise ProfileCoordinatorError("profile_dependency_incoherent")

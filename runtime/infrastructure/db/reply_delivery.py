@@ -469,6 +469,7 @@ class ReplyDeliveryMixin:
         self, *, now: datetime | None = None,
         no_episode_executor_keys: dict[tuple[str, str], str] | None = None,
         cooldown_seconds: int = 900,
+        validate_admission=None,
     ) -> list[ThreadReplyRecoveryEntry]:
         """Atomically lease and mint timer-driven probes that are actually runnable.
 
@@ -477,6 +478,10 @@ class ReplyDeliveryMixin:
         cooldown-aged probe, using the scheduler-resolved current continuity
         key; it is never silently converted into an ordinary CLOSED launch.
         """
+        # The synchronized wrapper has acquired the original DB lock. Retain
+        # ordinary/offline compatibility, but renew the selected daemon caller.
+        if validate_admission is not None:
+            validate_admission()
         if cooldown_seconds < 1:
             raise ValueError("breaker cooldown must be positive")
         at = (now or _now()).astimezone(timezone.utc)
@@ -484,6 +489,8 @@ class ReplyDeliveryMixin:
         results: list[ThreadReplyRecoveryEntry] = []
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            if validate_admission is not None:
+                validate_admission()  # BEGIN may have waited on another writer.
             # A prior tick may have committed the durable probe lease/token but
             # failed or been cancelled before publishing to the process queue.
             # Re-emit every still-pending queued probe on every tick. The
@@ -540,6 +547,8 @@ class ReplyDeliveryMixin:
                 if held is not None:
                     continue
                 episode_id = f"brep-{uuid.uuid4().hex}"
+                if validate_admission is not None:
+                    validate_admission()
                 self._conn.execute(
                     "INSERT INTO thread_reply_breaker_episodes "
                     "(thread_id,agent_name,executor_key,episode_id,state,"
@@ -581,6 +590,8 @@ class ReplyDeliveryMixin:
                 ).fetchone()
                 if held is not None:
                     continue
+                if validate_admission is not None:
+                    validate_admission()
                 lease_id = f"brlease-{uuid.uuid4().hex}"
                 token = self._mint_reply_invocation_uncommitted(
                     row["thread_id"], row["agent_name"],
@@ -607,6 +618,8 @@ class ReplyDeliveryMixin:
                     thread_id=row["thread_id"], agent_name=row["agent_name"],
                     invocation_token=token, kind="breaker_probe",
                 ))
+            if validate_admission is not None:
+                validate_admission()
             self._conn.commit()
         except Exception:
             self._conn.rollback()

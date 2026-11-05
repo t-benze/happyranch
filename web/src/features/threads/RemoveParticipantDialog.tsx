@@ -10,6 +10,7 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { useRemoveParticipant } from '@/hooks/threads';
 import { useTranslation } from '@/hooks/i18n';
+import { useStartupStatus } from '@/hooks/health';
 import { classifyThreadError, renderThreadError, type ThreadErrorView } from '@/lib/threadErrors';
 
 interface Props {
@@ -28,6 +29,8 @@ interface Props {
 export function RemoveParticipantDialog({ threadId, agentName, open, onClose }: Props): JSX.Element {
   const { t, render } = useTranslation();
   const remove = useRemoveParticipant(threadId);
+  // THR-308: held until daemon startup is positively ready.
+  const startup = useStartupStatus();
   // Locale-neutral error descriptor rendered at render time.
   const [errorView, setErrorView] = useState<ThreadErrorView | null>(null);
 
@@ -61,9 +64,12 @@ export function RemoveParticipantDialog({ threadId, agentName, open, onClose }: 
         {errorView !== null && (
           <p className="text-feedback-danger text-body">{renderThreadError(errorView, t)}</p>
         )}
+        {!startup.admitted && (
+          <p role="status" className="text-attention-text text-caption">{t('startup.action.paused')}</p>
+        )}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-          <Button type="button" onClick={submit} disabled={remove.isPending}>
+          <Button type="button" onClick={submit} disabled={remove.isPending || !startup.admitted}>
             {remove.isPending ? t('threads.dialog.remove.pending') : t('threads.dialog.remove.confirm')}
           </Button>
         </DialogFooter>

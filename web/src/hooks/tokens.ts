@@ -18,6 +18,7 @@ import { tokens as tokensApi } from '@/lib/api';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import type { TokenUsageRollup } from '@/lib/api/tokens';
 import type { QueryLike } from '@/design-system/providers/DataContext';
+import { useStartupStatus } from './health';
 
 /**
  * Shared compact token formatter (e.g. 26_500_000 -> '26.5M'). The canonical
@@ -70,9 +71,13 @@ export function useThreadFreshTokens(
   const { slug: routeSlug } = useParams<{ slug: string }>();
   const ctxSlug = useOrgSlugOptional();
   const slug = routeSlug ?? ctxSlug ?? '';
+  // Mounted by the readable thread detail; token usage is held until daemon
+  // startup is positively ready (THR-308).
+  const startup = useStartupStatus();
   return useQuery({
     queryKey: ['tokens', slug, 'thread-fresh', threadId ?? null],
     queryFn: async () => {
+      startup.assertAdmittedNow();
       const res = await tokensApi.listTokens(slug, {
         group_by: 'thread',
         thread_id: threadId,
@@ -81,7 +86,7 @@ export function useThreadFreshTokens(
       const row = rollup.find((r) => r.thread_id === threadId);
       return row ? row.input_tokens : null;
     },
-    enabled: !!slug && !!threadId,
+    enabled: !!slug && !!threadId && startup.admitted,
     staleTime: 30_000,
   }) as QueryLike<number | null>;
 }

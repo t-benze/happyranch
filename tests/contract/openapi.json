@@ -190,6 +190,15 @@
         ]
       }
     },
+    "/api/v1/health/ready": {
+      "GET": {
+        "params": [],
+        "responses": [
+          "200",
+          "503"
+        ]
+      }
+    },
     "/api/v1/metrics": {
       "GET": {
         "params": [

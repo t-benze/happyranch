@@ -8,6 +8,11 @@ import { health as healthApi } from '@/lib/api';
 
 export const useHealth = () => useData().health.useHealth();
 
+/** Startup admission (THR-308) derived from the shared `/health` observation.
+ *  `admitted` is true only for a fresh positive ready observation; use
+ *  `isAdmittedNow()` again after every await before an effect. */
+export const useStartupStatus = () => useData().health.useStartup();
+
 /** Machine-local executor CLI registration status (GET /health/prereqs).
  *  Returns every profile known to the executor registry (built-ins +
  *  custom) with a present/path/hint signal. Used by the New Agent dialog

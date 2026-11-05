@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from runtime.infrastructure.startup_observation import V2_COUNTERS
+
 import json
 import sqlite3
 import sys
+import time
 import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, TypeVar
+
+from pydantic import ValidationError
 
 from runtime.infrastructure.db._shared import (
     _late_database_now as _now,
@@ -37,6 +42,7 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES,
     AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
     AuthorityPolicyV2Attempt,
     AuthorityPolicyV2Candidate,
@@ -81,6 +87,20 @@ _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
     "already_evaluated": "interrupted_pre_final",
     "already_consumed": "interrupted_pre_final",
 }
+
+
+def _v2_attempt_retain_later_error(
+    primary: BaseException, later: BaseException, slot: str,
+) -> None:
+    """Retain the actual later object/traceback without replacing the first cause."""
+    values = BaseException.__getattribute__(primary, "__dict__")
+    evidence = (later, BaseException.__getattribute__(later, "__traceback__"))
+    if slot not in values:
+        BaseException.__setattr__(primary, slot, evidence)
+    else:
+        # Preserve any earlier actual error already carried in this private slot.
+        additional = slot + "_later"
+        BaseException.__setattr__(primary, additional, values.get(additional, ()) + (evidence,))
 
 
 class _V2StartupConnectionUnsafe(RuntimeError):
@@ -166,6 +186,9 @@ class _V2StartupReads:
 
     def __init__(self, db: Any) -> None:
         self.db = db
+        # Fixed scalar event counters participate in the existing retention
+        # accounting. No scan, payload serialization or telemetry root set.
+        self._statistics = dict.fromkeys(V2_COUNTERS, 0)
         # Values are (payload, charge); payload includes the actual root key,
         # complete raw scalar row tuples and private decoded history.
         # Accepted entries move to pending during a speculative closure; they
@@ -194,18 +217,40 @@ class _V2StartupReads:
 
     def __exit__(self, *_exc: Any) -> None:
         with self.db._lock:
-            self.invalidate()
+            self.invalidate("exit")
             self._closed = True
 
-    def invalidate(self) -> None:
+    def invalidate(self, cause: str = "explicit") -> None:
         """Drop accepted AND speculative references before effects or escape."""
         with self.db._lock:
+            self._statistics["invalidations"] += 1
+            self._observe_stat("invalidation_" + cause)
             self._memo.clear()
             self._pending.clear()
             self._epoch = None
             self._groups = ()
             self._position = -1
             self._window_end = 0
+
+    def _observe_stat(self, key: str, value: int = 1, *, maximum: bool = False) -> None:
+        try:
+            if key not in V2_COUNTERS:
+                key = "invalidation_explicit"
+            self._statistics[key] = max(self._statistics[key], value) if maximum else self._statistics[key] + value
+        except Exception:
+            try:
+                self._statistics["observation_failures"] += 1
+            except Exception:
+                pass  # Never stop actual invalidation/cleanup for telemetry.
+
+    def statistics(self) -> dict[str, int | None]:
+        """Actual performed work; characters are not claimed as UTF8 bytes."""
+        # Closed lifetime has one owner and no mutable cache or other users.
+        # Export after __exit__ without reacquiring the canonical DB mutex.
+        if self._closed:
+            return {**self._statistics, "history_payload_bytes": None}
+        with self.db._lock:
+            return {**self._statistics, "history_payload_bytes": None}
 
     def _retention_fits(
         self, pending: OrderedDict[str, _V2StartupEntry] | None = None,
@@ -252,9 +297,9 @@ class _V2StartupReads:
         # cleanup failures must keep their original ordering/escape boundary.
         try:
             if not self._retention_fits():
-                self.invalidate()
+                self.invalidate("accounting")
         except Exception:
-            self.invalidate()
+            self.invalidate("accounting")
 
     def _protected(self, root: str) -> bool:
         return any(
@@ -270,12 +315,14 @@ class _V2StartupReads:
         while True:
             if self._retention_fits(trial):
                 self._pending = trial
+                self._statistics["admissions"] += 1
                 return
             victim = next(
                 (key for key in trial if key != root and not self._protected(key)),
                 None,
             )
             if victim is None:
+                self._statistics["retention_rejections"] += 1
                 return
             del trial[victim]
 
@@ -328,7 +375,7 @@ class _V2StartupReads:
             self._position = position
             self._reconcile_retention()
         except Exception:
-            self.invalidate()
+            self.invalidate("accounting")
 
     def _clear_groups(self) -> None:
         self._groups = ()
@@ -337,7 +384,7 @@ class _V2StartupReads:
         self._reconcile_retention()
 
     def _abort(self, reason: str, *causes: BaseException) -> None:
-        self.invalidate()
+        self.invalidate("connection")
         if self.unsafe is None:
             self.unsafe = _V2StartupConnectionUnsafe(reason, *causes)
         else:
@@ -436,11 +483,13 @@ class _V2StartupReads:
             try:
                 opening = self._bookend()
                 if opening is None:
-                    self.invalidate()
+                    self._statistics["uncached_reads"] += 1
+                    self.invalidate("uncached")
                     with self._view():
                         return operation()
                 if opening != self._epoch:
-                    self.invalidate()
+                    self._statistics["epoch_changes"] += 1
+                    self.invalidate("epoch")
                     self._epoch = opening
                 # Keep the already-accounted equal epoch object on hits.
                 self._reconcile_retention()
@@ -455,36 +504,49 @@ class _V2StartupReads:
                     return result
                 # Never release a speculative target, anchor, absence or hit.
                 del result
-                self.invalidate()
+                self._statistics["moving_read_fallbacks"] += 1
+                self.invalidate("moving")
                 self.check()
                 # Exactly ONE uncached coherent fallback, after affirmative
                 # clean owned exit. Unsafe view cleanup always escapes above.
                 with self._view():
                     return operation()
             except BaseException:
-                self.invalidate()
+                self._statistics["failed_reads"] += 1
+                self.invalidate("failed_read")
                 raise
 
     def _history(self, root: str) -> list[dict]:
         # Only called by _project inside _read's locked coherent closure.
         if root in self._pending:
+            self._statistics["history_hits"] += 1
             history = self._pending[root][0][2]
             try:
                 self._pending.move_to_end(root)
                 self._reconcile_retention()
             except Exception:
-                self.invalidate()
+                self.invalidate("accounting")
             return history
+        self._statistics["history_misses"] += 1
         rows = self.conn.execute(
             "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (root,),
         ).fetchall()
+        self._statistics["history_fetches"] += 1
+        self._statistics["history_rows"] += len(rows)
+        self._observe_stat("history_max_rows", len(rows), maximum=True)
         # Match get_audit_logs exactly, including truthy-payload decoding,
         # JSON scalar types, Unicode, empty payloads and malformed siblings.
         history = []
         for row in rows:
             item = dict(row)
             if item.get("payload"):
+                if isinstance(item["payload"], str):
+                    self._statistics["history_payload_characters"] += len(item["payload"])
+                else:
+                    self._statistics["history_payload_size_unavailable"] += 1
+                self._statistics["history_decode_attempts"] += 1
                 item["payload"] = json.loads(item["payload"])
+                self._statistics["history_decodes"] += 1
             history.append(item)
         if self._epoch is not None and rows and len(rows) <= _V2_STARTUP_ROW_CAP:
             try:
@@ -494,7 +556,7 @@ class _V2StartupReads:
                 self._admit(root, (payload, charge))
             except Exception:
                 # Unsupported/failed accounting never changes full evaluation.
-                self.invalidate()
+                self.invalidate("accounting")
         return history
 
     def _project(
@@ -533,11 +595,24 @@ class _V2StartupReads:
             except BaseException:
                 # Release immediately without doing new accounting while an
                 # evidence failure/interruption is already escaping.
-                self.invalidate()
+                self.invalidate("discovery")
                 raise
             self._clear_groups()
             return result
-        return self._read(project)
+        started = time.monotonic_ns()
+        self._statistics["discovery_calls"] += 1
+        try:
+            result = self._read(project)
+        except BaseException:
+            self._observe_stat("discovery_failed")
+            raise
+        else:
+            self._observe_stat("discovery_complete")
+            return result
+        finally:
+            elapsed = time.monotonic_ns() - started
+            self._statistics["discovery_ns"] += elapsed
+            self._observe_stat("discovery_max_ns", elapsed, maximum=True)
 
     def exact(
         self, target: AuthorityPolicyV2HousekeepingTarget,
@@ -551,11 +626,24 @@ class _V2StartupReads:
                  target.manager_session_id, target.result_id),
             ).fetchone()
             return (None, None) if row is None else self._project(row)
-        return self._read(project)
+        started = time.monotonic_ns()
+        self._statistics["exact_calls"] += 1
+        try:
+            result = self._read(project)
+        except BaseException:
+            self._observe_stat("exact_failed")
+            raise
+        else:
+            self._observe_stat("exact_complete")
+            return result
+        finally:
+            elapsed = time.monotonic_ns() - started
+            self._statistics["exact_ns"] += elapsed
+            self._observe_stat("exact_max_ns", elapsed, maximum=True)
 
     def refuse(self, **identity: Any) -> AuthorityPolicyV2HousekeepingOutcome:
         with self.db._lock:
-            self.invalidate()
+            self.invalidate("refusal")
             self.check()
             phases = _V2StartupRefusalPhases()
             error = None
@@ -573,15 +661,22 @@ class _V2StartupReads:
                 or (phases.begin_attempted and not (phases.committed or phases.rolled_back))
             ):
                 causes = (() if error is None else (error,))
-                self._abort("refusal_transaction", *causes, *phases.cleanup_errors)
-            try:
-                self.check()
-            except _V2StartupConnectionUnsafe as exc:
-                if error is not None:
-                    exc.causes = (error, *exc.causes)
-                raise
+                try:
+                    self._abort("refusal_transaction", *causes, *phases.cleanup_errors)
+                except _V2StartupConnectionUnsafe:
+                    if error is None:
+                        raise
             if error is not None:
+                # Sticky unsafe connection custody survives separately. It must
+                # not replace the writer's original E1/cause/traceback with a
+                # wrapper after an actual rollback/COMMIT uncertainty.
+                if self.unsafe is not None:
+                    try:
+                        BaseException.__setattr__(error, "_v2_refusal_startup_unsafe", self.unsafe)
+                    except BaseException:
+                        pass
                 raise error.with_traceback(error.__traceback__)
+            self.check()
             return outcome
 
 
@@ -618,8 +713,14 @@ class AuthorityV2AttemptsMixin:
             )
             if binding is None:
                 return None
-            self._authenticate_v2_session_binding_uncommitted(binding)
-        except ValueError:
+        except ValueError as exc:
+            if isinstance(exc, (json.JSONDecodeError, UnicodeError)) or (
+                exc.__cause__ is not None
+                and not isinstance(exc.__cause__, (ValidationError, KeyError, TypeError))
+            ):
+                raise
+            return None
+        if not self._v2_session_binding_authenticated_uncommitted(binding):
             return None
         joined = (
             "binding_id", "team", "root_task_id", "manager_agent", "manager_session_id",
@@ -722,6 +823,85 @@ class AuthorityV2AttemptsMixin:
             require_unfinalized=True,
         )
 
+    def _v2_result_stage_is_other_history(
+        self, payload: Any, attempt_row: dict, expected: dict,
+    ) -> bool:
+        """Exclude only closed typed disjoint or legitimate other-stage history.
+
+        A different attempt/stage alone never hides a conflicting causal row.
+        This classifies history, not authority: other stages retain their own
+        authenticators, and no not-yet-created event is required here.
+        """
+        if not isinstance(payload, dict):
+            return False
+        stage = payload.get("stage")
+        if not self._v2_result_stage_shape_is_closed(stage, payload):
+            return False
+        if not all(
+            self._v2_is_int(value) and value > 0
+            if key in (
+                "result_id", "activation_epoch", "publication_attempt",
+                "spending_result_id",
+            ) else isinstance(value, str) and bool(value)
+            for key, value in payload.items()
+        ):
+            return False
+        if "finalization_state" in payload:
+            if stage == AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED:
+                if payload["finalization_state"] != "continued":
+                    return False
+            elif stage == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED:
+                if (
+                    payload["finalization_state"] not in ("refused", "owner_lost")
+                    or payload["refusal_code"] not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES
+                ):
+                    return False
+            elif payload["finalization_state"] != "unfinalized":
+                return False
+        causal = ("attempt_id", "result_id", "candidate_id")
+        states = [
+            self._v2_identity_observation(
+                payload, key, expected[key], "int" if key == "result_id" else "str",
+            )
+            for key in causal if key in payload and key in expected
+        ]
+        if states and all(state == "distinct" for state in states):
+            return True
+        if (
+            stage == expected["stage"]
+            or not states or not all(state == "match" for state in states)
+            or not all(
+                self._v2_json_type_sensitive_equal(value, expected[key])
+                for key, value in payload.items()
+                if key in expected and key not in ("stage", "finalization_state")
+            )
+        ):
+            return False
+        if stage in (
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+        ):
+            # Only stages reached by this J are legitimate history. Missing
+            # later events remain optional; a forged future event is not a0.
+            reached = AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED
+            for _ in range(len(AUTHORITY_POLICY_V2_ATTEMPT_STAGE_TRANSITIONS) + 1):
+                if reached == stage:
+                    return True
+                if reached == attempt_row["stage"]:
+                    return False
+                reached = AUTHORITY_POLICY_V2_ATTEMPT_STAGE_TRANSITIONS.get(reached)
+            return False
+        if stage == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED:
+            return (
+                payload["finalization_state"] == attempt_row["finalization_state"]
+                and payload["refusal_code"] == attempt_row["refusal_code"]
+            )
+        # Continued/publication/admission/spend/decision history belongs only
+        # to a continued J; refusal-only or unfinalized evidence cannot mint it.
+        return attempt_row["finalization_state"] == "continued"
+
     def _authenticate_v2_result_stage_audit_uncommitted(
         self, attempt_row: dict, stage: str, *, candidate_id: str | None = None,
         require_finalization: bool = False,
@@ -738,29 +918,18 @@ class AuthorityV2AttemptsMixin:
         candidate identity), and — where the stage persists it — the required
         ``unfinalized`` finalization marker.  A missing, duplicated, mutated,
         foreign-candidate or malformed/extra-key event refuses.  Events
-        belonging to a different stage are ignored, so a later legitimate stage
-        never invalidates an earlier one and a not-yet-created stage is never
-        required.
+        belonging to a genuinely independent attempt or a legitimate other
+        stage are classified before selecting the required stage. Partial or
+        conflicting evidence never disappears behind a discriminator, while
+        a not-yet-created stage is never required.
         """
         root_task_id = attempt_row["root_task_id"]
         manager_agent = attempt_row["manager_agent"]
         attempt_id = attempt_row["attempt_id"]
-        try:
-            candidates = [
-                row for row in (
-                    self.get_audit_logs(root_task_id) if _history is None else _history
-                )
-                if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
-                and row.get("agent") == manager_agent
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_id
-                and row["payload"].get("stage") == stage
-            ]
-        except Exception:
-            return False
-        if len(candidates) != 1:
-            return False
-        payload = candidates[0]["payload"]
+        # Acquisition failure is unavailable evidence, not a Boolean mismatch.
+        # In particular a nested a0..a3 read must keep its original exception
+        # all the way through terminal classification to the cold failure owner.
+        history = self.get_audit_logs(root_task_id) if _history is None else _history
         expected = {
             "stage": stage,
             "attempt_id": attempt_id,
@@ -781,9 +950,19 @@ class AuthorityV2AttemptsMixin:
             expected["candidate_id"] = candidate_id
         if require_finalization:
             expected["finalization_state"] = "unfinalized"
-        if set(payload.keys()) != set(expected.keys()):
-            return False
-        return all(payload.get(key) == value for key, value in expected.items())
+        candidates = []
+        for row in history:
+            if (
+                row.get("action") != AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+                or row.get("agent") != manager_agent
+            ):
+                continue
+            payload = row.get("payload")
+            if not self._v2_result_stage_is_other_history(payload, attempt_row, expected):
+                candidates.append(payload)
+        return len(candidates) == 1 and self._v2_json_type_sensitive_equal(
+            candidates[0], expected,
+        )
 
     def _authenticate_v2_attempt_stage_audit_uncommitted(
         self, attempt_row: dict, stage: str, *, require_unfinalized: bool = False,
@@ -792,8 +971,8 @@ class AuthorityV2AttemptsMixin:
 
         Every needed later stage is authenticated independently; a missing,
         duplicated, mutated, foreign-candidate or closed-key/malformed event for
-        the requested stage refuses.  Events belonging to a different stage are
-        ignored.
+        the requested stage refuses. Authentic events belonging to legitimate
+        other stages are ignored.
         """
         return self._authenticate_v2_result_stage_audit_uncommitted(
             attempt_row, stage, require_finalization=require_unfinalized,
@@ -946,7 +1125,7 @@ class AuthorityV2AttemptsMixin:
             attempt = AuthorityPolicyV2Attempt.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 attempt has a corrupt canonical payload") from exc
         if attempt.attempt_id != row["attempt_id"]:
             raise ValueError("authority v2 attempt identity mismatch")
@@ -1106,7 +1285,14 @@ class AuthorityV2AttemptsMixin:
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=code,
                 )
-            finally:
+            except BaseException as primary:
+                primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+                try:
+                    self._forget_v2_live_owner(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_obligation_forget_secondary")
+                raise BaseException.with_traceback(primary, primary_traceback)
+            else:
                 # Failed diagnostic persistence cannot retain a continuation
                 # capability for the already authenticated failed owner.
                 self._forget_v2_live_owner(attempt_id, owner_attempt_id)
@@ -1215,7 +1401,7 @@ class AuthorityV2AttemptsMixin:
             return False
         try:
             parsed = json.loads(raw)
-        except Exception:
+        except (TypeError, ValueError):
             return False
         if not isinstance(parsed, dict):
             return False
@@ -1226,7 +1412,7 @@ class AuthorityV2AttemptsMixin:
             return False
         try:
             return authority_policy_v2_sha256(carrier) == attempt.assessment_digest
-        except Exception:
+        except (TypeError, ValueError):
             return False
 
     def _advance_v2_attempt_stage_uncommitted(
@@ -1254,7 +1440,7 @@ class AuthorityV2AttemptsMixin:
             candidate = AuthorityPolicyV2Candidate.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 candidate has a corrupt canonical payload") from exc
         if candidate.candidate_id != row["candidate_id"]:
             raise ValueError("authority v2 candidate identity mismatch")
@@ -1268,7 +1454,7 @@ class AuthorityV2AttemptsMixin:
             pin = AuthorityPolicyV2Pin.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 pin has a corrupt canonical payload") from exc
         if pin.candidate_id != row["candidate_id"]:
             raise ValueError("authority v2 pin identity mismatch")
@@ -1639,9 +1825,7 @@ class AuthorityV2AttemptsMixin:
         )
         if binding is None:
             return "identity_mismatch", None
-        try:
-            self._authenticate_v2_session_binding_uncommitted(binding)
-        except Exception:
+        if not self._v2_session_binding_authenticated_uncommitted(binding):
             return "identity_mismatch", None
         if (
             binding.binding_id != attempt.binding_id
@@ -1929,7 +2113,11 @@ class AuthorityV2AttemptsMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
         )
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority stage connection ownership unavailable")
+        if owned:
             return self._refuse_v2_stage(
                 attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                 code="transaction_owned",
@@ -1940,17 +2128,25 @@ class AuthorityV2AttemptsMixin:
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
             origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
-        conn = self._conn
+        rollback_attempted = False
+        refusal_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            conn.rollback()
+
         try:
             conn.execute("BEGIN IMMEDIATE")
             observation = capture_authority_policy_v2_schema_observation(self)
             if observation is None:
-                conn.rollback()
+                rollback()
+                refusal_attempted = True
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="claim_failed",
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
-                    origin_boot_id=origin_boot_id,
+                    origin_boot_id=origin_boot_id, poison=authentic_owner,
                 )
             outcome = self._claim_authority_policy_v2_candidate_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
@@ -1965,7 +2161,8 @@ class AuthorityV2AttemptsMixin:
                     "already_claimed", "already_audited",
                 }:
                     authentic_owner = False
-                conn.rollback()
+                rollback()
+                refusal_attempted = True
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "claim_failed",
@@ -1973,36 +2170,37 @@ class AuthorityV2AttemptsMixin:
                     origin_boot_id=origin_boot_id,
                     poison=False if outcome.refusal_code in {
                         "already_claimed", "already_audited",
-                    } else None,
+                    } else authentic_owner,
                 )
             conn.commit()
             return outcome
-        except Exception as primary:
+        except BaseException as primary:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
             if authentic_owner:
-                # Reentry stays refusal-only even if rollback cannot finish.
-                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
-                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
-            try:
-                conn.rollback()
-            except BaseException:
+                # Revoke before cleanup; each independently owed action still runs.
                 try:
-                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            try:
-                self._refuse_v2_stage(
-                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                    code="claim_failed", origin_boot_id=origin_boot_id,
-                    poison=authentic_owner,
-                )
-            except BaseException:
+                    self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_mark_secondary")
                 try:
-                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            raise
+                    self._forget_v2_live_owner(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_forget_secondary")
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_rollback_secondary")
+            if not refusal_attempted:
+                try:
+                    self._refuse_v2_stage(
+                        attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                        code="claim_failed", origin_boot_id=origin_boot_id,
+                        poison=authentic_owner,
+                    )
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_refusal_secondary")
+            raise BaseException.with_traceback(primary, primary_traceback)
 
     def _authenticate_v2_candidate_pin_joins_uncommitted(
         self, *, attempt: AuthorityPolicyV2Attempt,
@@ -2157,7 +2355,7 @@ class AuthorityV2AttemptsMixin:
             audit = AuthorityPolicyV2CandidateAudit.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception:
+        except ValidationError:
             return False
         # Every closed event field must equal the persisted column (identity,
         # event, candidate, attempt/result/owner/boot AND the created_at
@@ -2169,10 +2367,7 @@ class AuthorityV2AttemptsMixin:
         for column, value in snapshot.items():
             if row[column] != value:
                 return False
-        try:
-            canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
-        except Exception:
-            return False
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
         if canonical != row["canonical_payload_json"]:
             return False
         if (
@@ -2256,7 +2451,7 @@ class AuthorityV2AttemptsMixin:
             evaluation = AuthorityPolicyV2Evaluation.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 evaluation has a corrupt canonical payload") from exc
         if evaluation.evaluation_id != row["evaluation_id"]:
             raise ValueError("authority v2 evaluation identity mismatch")
@@ -2540,9 +2735,12 @@ class AuthorityV2AttemptsMixin:
         max_revise_rounds: int,
     ) -> AuthorityPolicyV2Evaluation | None:
         """Read one coherent committed proof plus the current live-owner fences."""
-        if self._conn.in_transaction:
-            return None
         conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority consumed-proof connection ownership unavailable")
+        if owned:
+            return None
         evaluation = None
         try:
             conn.execute("BEGIN")
@@ -2560,15 +2758,12 @@ class AuthorityV2AttemptsMixin:
                 if code is None and ctx is not None:
                     evaluation = ctx["evaluation"]
         except BaseException as primary:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
             try:
                 conn.rollback()
-            except BaseException:
-                try:
-                    primary.add_note("authority consumed-proof rollback also failed; custody remains uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            raise
+            except BaseException as later:
+                _v2_attempt_retain_later_error(primary, later, "_v2_consumed_proof_rollback_secondary")
+            raise BaseException.with_traceback(primary, primary_traceback)
         # A successful read is not an authenticated selection until cleanup
         # succeeds on the original connection. Cleanup failure escapes too.
         conn.rollback()
@@ -2710,7 +2905,11 @@ class AuthorityV2AttemptsMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
         )
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority stage connection ownership unavailable")
+        if owned:
             return self._refuse_v2_stage(
                 attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                 code="transaction_owned",
@@ -2721,7 +2920,14 @@ class AuthorityV2AttemptsMixin:
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
             origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
-        conn = self._conn
+        rollback_attempted = False
+        refusal_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            conn.rollback()
+
         try:
             conn.execute("BEGIN IMMEDIATE")
             outcome = self._audit_authority_policy_v2_candidate_claim_uncommitted(
@@ -2736,7 +2942,8 @@ class AuthorityV2AttemptsMixin:
                     "already_audited", "already_claimed",
                 }:
                     authentic_owner = False
-                conn.rollback()
+                rollback()
+                refusal_attempted = True
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "claim_audit_missing",
@@ -2745,37 +2952,38 @@ class AuthorityV2AttemptsMixin:
                     origin_boot_id=origin_boot_id,
                     poison=False if outcome.refusal_code in {
                         "already_audited", "already_claimed",
-                    } else None,
+                    } else authentic_owner,
                 )
             conn.commit()
             return outcome
-        except Exception as primary:
+        except BaseException as primary:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
             if authentic_owner:
-                # Reentry stays refusal-only even if rollback cannot finish.
-                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
-                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
-            try:
-                conn.rollback()
-            except BaseException:
+                # Revoke before cleanup; each independently owed action still runs.
                 try:
-                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            try:
-                self._refuse_v2_stage(
-                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                    code="claim_audit_missing",
-                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
-                    origin_boot_id=origin_boot_id, poison=authentic_owner,
-                )
-            except BaseException:
+                    self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_mark_secondary")
                 try:
-                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            raise
+                    self._forget_v2_live_owner(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_forget_secondary")
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_rollback_secondary")
+            if not refusal_attempted:
+                try:
+                    self._refuse_v2_stage(
+                        attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                        code="claim_audit_missing",
+                        stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+                        origin_boot_id=origin_boot_id, poison=authentic_owner,
+                    )
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_refusal_secondary")
+            raise BaseException.with_traceback(primary, primary_traceback)
 
     # -- THR-229 checkpoint C3c: the four pre-final evaluation and single
     # consumption stages.  Each public method owns exactly ONE BEGIN
@@ -2968,7 +3176,11 @@ class AuthorityV2AttemptsMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
         )
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority stage connection ownership unavailable")
+        if owned:
             return self._refuse_v2_stage(
                 attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                 code="transaction_owned",
@@ -2979,7 +3191,14 @@ class AuthorityV2AttemptsMixin:
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
             origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
-        conn = self._conn
+        rollback_attempted = False
+        refusal_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            conn.rollback()
+
         try:
             conn.execute("BEGIN IMMEDIATE")
             outcome = self._evaluate_authority_policy_v2_candidate_uncommitted(
@@ -2994,7 +3213,8 @@ class AuthorityV2AttemptsMixin:
                     "already_evaluated", "already_consumed",
                 }:
                     authentic_owner = False
-                conn.rollback()
+                rollback()
+                refusal_attempted = True
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "evaluation_failed",
@@ -3003,37 +3223,38 @@ class AuthorityV2AttemptsMixin:
                     origin_boot_id=origin_boot_id,
                     poison=False if outcome.refusal_code in {
                         "already_evaluated", "already_consumed",
-                    } else None,
+                    } else authentic_owner,
                 )
             conn.commit()
             return outcome
-        except Exception as primary:
+        except BaseException as primary:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
             if authentic_owner:
-                # Reentry stays refusal-only even if rollback cannot finish.
-                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
-                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
-            try:
-                conn.rollback()
-            except BaseException:
+                # Revoke before cleanup; each independently owed action still runs.
                 try:
-                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            try:
-                self._refuse_v2_stage(
-                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                    code="evaluation_failed",
-                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
-                    origin_boot_id=origin_boot_id, poison=authentic_owner,
-                )
-            except BaseException:
+                    self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_mark_secondary")
                 try:
-                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            raise
+                    self._forget_v2_live_owner(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_forget_secondary")
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_rollback_secondary")
+            if not refusal_attempted:
+                try:
+                    self._refuse_v2_stage(
+                        attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                        code="evaluation_failed",
+                        stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+                        origin_boot_id=origin_boot_id, poison=authentic_owner,
+                    )
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_refusal_secondary")
+            raise BaseException.with_traceback(primary, primary_traceback)
 
     def _audit_evaluation_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
@@ -3152,7 +3373,11 @@ class AuthorityV2AttemptsMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
         )
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority stage connection ownership unavailable")
+        if owned:
             return self._refuse_v2_stage(
                 attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                 code="transaction_owned",
@@ -3163,7 +3388,14 @@ class AuthorityV2AttemptsMixin:
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
             origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
-        conn = self._conn
+        rollback_attempted = False
+        refusal_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            conn.rollback()
+
         try:
             conn.execute("BEGIN IMMEDIATE")
             outcome = self._audit_evaluation_uncommitted(
@@ -3178,7 +3410,8 @@ class AuthorityV2AttemptsMixin:
                     "already_audited", "already_consumed",
                 }:
                     authentic_owner = False
-                conn.rollback()
+                rollback()
+                refusal_attempted = True
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "evaluation_audit_missing",
@@ -3187,37 +3420,38 @@ class AuthorityV2AttemptsMixin:
                     origin_boot_id=origin_boot_id,
                     poison=False if outcome.refusal_code in {
                         "already_audited", "already_consumed",
-                    } else None,
+                    } else authentic_owner,
                 )
             conn.commit()
             return outcome
-        except Exception as primary:
+        except BaseException as primary:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
             if authentic_owner:
-                # Reentry stays refusal-only even if rollback cannot finish.
-                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
-                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
-            try:
-                conn.rollback()
-            except BaseException:
+                # Revoke before cleanup; each independently owed action still runs.
                 try:
-                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            try:
-                self._refuse_v2_stage(
-                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                    code="evaluation_audit_missing",
-                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
-                    origin_boot_id=origin_boot_id, poison=authentic_owner,
-                )
-            except BaseException:
+                    self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_mark_secondary")
                 try:
-                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            raise
+                    self._forget_v2_live_owner(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_forget_secondary")
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_rollback_secondary")
+            if not refusal_attempted:
+                try:
+                    self._refuse_v2_stage(
+                        attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                        code="evaluation_audit_missing",
+                        stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+                        origin_boot_id=origin_boot_id, poison=authentic_owner,
+                    )
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_refusal_secondary")
+            raise BaseException.with_traceback(primary, primary_traceback)
 
     def _consume_authority_policy_v2_candidate_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
@@ -3311,7 +3545,11 @@ class AuthorityV2AttemptsMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
         )
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority stage connection ownership unavailable")
+        if owned:
             return self._refuse_v2_stage(
                 attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                 code="transaction_owned",
@@ -3321,7 +3559,14 @@ class AuthorityV2AttemptsMixin:
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
             origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
-        conn = self._conn
+        rollback_attempted = False
+        refusal_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            conn.rollback()
+
         try:
             conn.execute("BEGIN IMMEDIATE")
             outcome = self._consume_authority_policy_v2_candidate_uncommitted(
@@ -3336,7 +3581,8 @@ class AuthorityV2AttemptsMixin:
                     "already_consumed",
                 }:
                     authentic_owner = False
-                conn.rollback()
+                rollback()
+                refusal_attempted = True
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "consume_failed",
@@ -3345,37 +3591,38 @@ class AuthorityV2AttemptsMixin:
                     origin_boot_id=origin_boot_id,
                     poison=False if outcome.refusal_code in {
                         "already_consumed",
-                    } else None,
+                    } else authentic_owner,
                 )
             conn.commit()
             return outcome
-        except Exception as primary:
+        except BaseException as primary:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
             if authentic_owner:
-                # Reentry stays refusal-only even if rollback cannot finish.
-                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
-                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
-            try:
-                conn.rollback()
-            except BaseException:
+                # Revoke before cleanup; each independently owed action still runs.
                 try:
-                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            try:
-                self._refuse_v2_stage(
-                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                    code="consume_failed",
-                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
-                    origin_boot_id=origin_boot_id, poison=authentic_owner,
-                )
-            except BaseException:
+                    self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_mark_secondary")
                 try:
-                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            raise
+                    self._forget_v2_live_owner(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_forget_secondary")
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_rollback_secondary")
+            if not refusal_attempted:
+                try:
+                    self._refuse_v2_stage(
+                        attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                        code="consume_failed",
+                        stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+                        origin_boot_id=origin_boot_id, poison=authentic_owner,
+                    )
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_refusal_secondary")
+            raise BaseException.with_traceback(primary, primary_traceback)
 
     def _audit_consumption_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
@@ -3498,7 +3745,11 @@ class AuthorityV2AttemptsMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
         )
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority stage connection ownership unavailable")
+        if owned:
             return self._refuse_v2_stage(
                 attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                 code="transaction_owned",
@@ -3509,7 +3760,14 @@ class AuthorityV2AttemptsMixin:
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
             origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
-        conn = self._conn
+        rollback_attempted = False
+        refusal_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            conn.rollback()
+
         try:
             conn.execute("BEGIN IMMEDIATE")
             outcome = self._audit_consumption_uncommitted(
@@ -3524,7 +3782,8 @@ class AuthorityV2AttemptsMixin:
                     "already_audited", "already_consumed",
                 }:
                     authentic_owner = False
-                conn.rollback()
+                rollback()
+                refusal_attempted = True
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "consume_failed",
@@ -3533,37 +3792,38 @@ class AuthorityV2AttemptsMixin:
                     origin_boot_id=origin_boot_id,
                     poison=False if outcome.refusal_code in {
                         "already_audited", "already_consumed",
-                    } else None,
+                    } else authentic_owner,
                 )
             conn.commit()
             return outcome
-        except Exception as primary:
+        except BaseException as primary:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
             if authentic_owner:
-                # Reentry stays refusal-only even if rollback cannot finish.
-                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
-                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
-            try:
-                conn.rollback()
-            except BaseException:
+                # Revoke before cleanup; each independently owed action still runs.
                 try:
-                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            try:
-                self._refuse_v2_stage(
-                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                    code="consume_failed",
-                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
-                    origin_boot_id=origin_boot_id, poison=authentic_owner,
-                )
-            except BaseException:
+                    self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_mark_secondary")
                 try:
-                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
-                except BaseException:
-                    pass
-                raise primary
-            raise
+                    self._forget_v2_live_owner(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_forget_secondary")
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_rollback_secondary")
+            if not refusal_attempted:
+                try:
+                    self._refuse_v2_stage(
+                        attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                        code="consume_failed",
+                        stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+                        origin_boot_id=origin_boot_id, poison=authentic_owner,
+                    )
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_stage_refusal_secondary")
+            raise BaseException.with_traceback(primary, primary_traceback)
 
     @_synchronized
     def get_authority_policy_v2_candidate(
@@ -3730,23 +3990,22 @@ class AuthorityV2AttemptsMixin:
         expected = self._v2_refusal_stage_payload(
             attempt_row, candidate_id, refusal_code, finalization_state,
         )
-        try:
-            candidates = [
-                row for row in self.get_audit_logs(attempt_row["root_task_id"])
-                if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
-                and row.get("agent") == attempt_row["manager_agent"]
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
-                and row["payload"].get("stage") == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED
-            ]
-        except Exception:
-            return False
+        # Acquisition/decode/projection failure is unavailable evidence, never
+        # an acquired semantic negative. Preserve it for the original caller.
+        candidates = [
+            row for row in self.get_audit_logs(attempt_row["root_task_id"])
+            if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+            and row.get("agent") == attempt_row["manager_agent"]
+            and isinstance(row.get("payload"), dict)
+            and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+            and row["payload"].get("stage") == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED
+        ]
         if len(candidates) != 1:
             return False
         payload = candidates[0]["payload"]
         if set(payload.keys()) != set(expected.keys()):
             return False
-        return all(payload.get(key) == value for key, value in expected.items())
+        return self._v2_json_type_sensitive_equal(payload, expected)
 
     def _v2_refusal_completion_payload(
         self, *, attempt_row: dict, refusal_code: str,
@@ -3776,16 +4035,13 @@ class AuthorityV2AttemptsMixin:
         where ``recovery_claimed`` says the stored evidence carries the exact
         recovery receipt fields.
         """
-        try:
-            candidates = [
-                row for row in self.get_audit_logs(attempt_row["root_task_id"])
-                if row.get("action") == "completion_report"
-                and row.get("agent") == attempt_row["manager_agent"]
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
-            ]
-        except Exception:
-            return False, False
+        candidates = [
+            row for row in self.get_audit_logs(attempt_row["root_task_id"])
+            if row.get("action") == "completion_report"
+            and row.get("agent") == attempt_row["manager_agent"]
+            and isinstance(row.get("payload"), dict)
+            and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+        ]
         if len(candidates) != 1:
             return False, False
         payload = candidates[0]["payload"]
@@ -3860,21 +4116,18 @@ class AuthorityV2AttemptsMixin:
         self, attempt_row: dict, *, refusal_code: str,
     ) -> str | None:
         """Authenticate exactly one complete root-escalated or child-failed shape."""
-        try:
-            rows = [
-                row for row in self.get_audit_logs(attempt_row["root_task_id"])
-                if row.get("action") in (
-                    "escalation", AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION,
-                )
-                and row.get("agent") == attempt_row["manager_agent"]
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
-            ]
-            task = self._conn.execute(
-                "SELECT * FROM tasks WHERE id=?", (attempt_row["root_task_id"],),
-            ).fetchone()
-        except Exception:
-            return None
+        rows = [
+            row for row in self.get_audit_logs(attempt_row["root_task_id"])
+            if row.get("action") in (
+                "escalation", AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION,
+            )
+            and row.get("agent") == attempt_row["manager_agent"]
+            and isinstance(row.get("payload"), dict)
+            and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+        ]
+        task = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (attempt_row["root_task_id"],),
+        ).fetchone()
         if len(rows) != 1 or task is None:
             return None
         payload = rows[0]["payload"]
@@ -3890,7 +4143,7 @@ class AuthorityV2AttemptsMixin:
                 and task["status"] == TaskStatus.ESCALATED.value
                 and task["note"] == note
                 and set(payload) == set(expected)
-                and all(payload.get(key) == value for key, value in expected.items())
+                and self._v2_json_type_sensitive_equal(payload, expected)
             ):
                 return "escalated"
             return None
@@ -3907,7 +4160,7 @@ class AuthorityV2AttemptsMixin:
             and task["note"] == note
             and task["completed_at"] is not None
             and set(payload) == set(expected)
-            and all(payload.get(key) == value for key, value in expected.items())
+            and self._v2_json_type_sensitive_equal(payload, expected)
         ):
             return "failed"
         return None
@@ -3916,19 +4169,17 @@ class AuthorityV2AttemptsMixin:
         self, attempt_row: dict, *, _history: list[dict] | None = None,
     ) -> str | None:
         """Return the closed code of exactly one authentic failed-stage obligation."""
-        try:
-            rows = [
-                row for row in (
-                    self.get_audit_logs(attempt_row["root_task_id"])
-                    if _history is None else _history
-                )
-                if row.get("action") == AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION
-                and row.get("agent") == attempt_row["manager_agent"]
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
-            ]
-        except Exception:
-            return None
+        # Unavailable history is not an acquired absence of an obligation.
+        rows = [
+            row for row in (
+                self.get_audit_logs(attempt_row["root_task_id"])
+                if _history is None else _history
+            )
+            if row.get("action") == AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION
+            and row.get("agent") == attempt_row["manager_agent"]
+            and isinstance(row.get("payload"), dict)
+            and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+        ]
         if len(rows) != 1:
             return None
         payload = rows[0]["payload"]
@@ -4021,20 +4272,25 @@ class AuthorityV2AttemptsMixin:
         refusal/completion evidence authenticates, and is never repaired.
         """
         conn = self._conn
-        # Ordinary callers use exactly their existing connection operations.
-        # Private startup observes these REAL boundaries, including cleanup that
-        # fails before the existing exception handler attempts cleanup again.
+        # Observe the original real boundaries; failed cleanup is never retried.
+        rollback_attempted = False
+        commit_completed = False
+
         def _rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
             if _startup_phases is None:
                 conn.rollback()
             else:
                 _startup_phases.rollback(conn)
 
         def _commit() -> None:
+            nonlocal commit_completed
             if _startup_phases is None:
                 conn.commit()
             else:
                 _startup_phases.commit(conn)
+            commit_completed = True
 
         attempt_id = self._authority_policy_v2_attempt_id_for_identity(
             root_task_id=root_task_id, manager_agent=manager_agent,
@@ -4062,10 +4318,10 @@ class AuthorityV2AttemptsMixin:
         try:
             if _startup_phases is not None:
                 _startup_phases.begin_attempted = True
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             if _startup_phases is not None:
                 _startup_phases.began = True
-            row = self._conn.execute(
+            row = conn.execute(
                 """SELECT * FROM authority_policy_v2_attempts
                    WHERE root_task_id=? AND manager_agent=?
                      AND manager_session_id=? AND result_id=?""",
@@ -4077,14 +4333,12 @@ class AuthorityV2AttemptsMixin:
             try:
                 attempt = self._authority_policy_v2_attempt_from_row(row)
             except ValueError as primary:
+                primary_traceback = primary.__traceback__
                 try:
                     _rollback()
-                except BaseException:
-                    try:
-                        primary.add_note("authority refusal rollback also failed; custody remains uncertain")
-                    except BaseException:
-                        pass
-                    raise primary
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_refusal_rollback_secondary")
+                    raise BaseException.with_traceback(primary, primary_traceback)
                 return _pending("identity_mismatch")
             attempt_row = dict(row)
             if attempt_id != attempt.attempt_id:
@@ -4100,7 +4354,7 @@ class AuthorityV2AttemptsMixin:
             )
             # Optional candidate (K) identity, if one was created.
             candidate = None
-            candidate_row = self._conn.execute(
+            candidate_row = conn.execute(
                 """SELECT * FROM authority_policy_v2_candidates
                    WHERE root_task_id=? AND manager_agent=?
                      AND manager_session_id=? AND result_id=?""",
@@ -4110,14 +4364,12 @@ class AuthorityV2AttemptsMixin:
                 try:
                     candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
                 except ValueError as primary:
+                    primary_traceback = primary.__traceback__
                     try:
                         _rollback()
-                    except BaseException:
-                        try:
-                            primary.add_note("authority refusal rollback also failed; custody remains uncertain")
-                        except BaseException:
-                            pass
-                        raise primary
+                    except BaseException as later:
+                        _v2_attempt_retain_later_error(primary, later, "_v2_refusal_rollback_secondary")
+                        raise BaseException.with_traceback(primary, primary_traceback)
                     return _pending("identity_mismatch")
                 if (
                     candidate.attempt_id != attempt.attempt_id
@@ -4137,7 +4389,7 @@ class AuthorityV2AttemptsMixin:
             # result BODY/assessment is deliberately NOT required: a corrupt
             # assessment or a missing pre-final audit is a legitimate refusal
             # cause and must not block terminal housekeeping or its exact replay.
-            result_row = self._conn.execute(
+            result_row = conn.execute(
                 "SELECT * FROM task_results WHERE id=?", (result_id,)
             ).fetchone()
             if (
@@ -4161,17 +4413,8 @@ class AuthorityV2AttemptsMixin:
             ):
                 _rollback()
                 return _pending("identity_mismatch")
-            try:
-                self._authenticate_v2_session_binding_uncommitted(binding)
-            except Exception as primary:
-                try:
-                    _rollback()
-                except BaseException:
-                    try:
-                        primary.add_note("authority refusal rollback also failed; custody remains uncertain")
-                    except BaseException:
-                        pass
-                    raise primary
+            if not self._v2_session_binding_authenticated_uncommitted(binding):
+                _rollback()
                 return _pending("identity_mismatch")
 
             # Optional exact Q: match only this attempt's exact recovery-session
@@ -4281,7 +4524,7 @@ class AuthorityV2AttemptsMixin:
                 _rollback()
                 return _pending("identity_mismatch")
 
-            task = self._conn.execute(
+            task = conn.execute(
                 "SELECT * FROM tasks WHERE id=?", (root_task_id,)
             ).fetchone()
             if task is None:
@@ -4369,7 +4612,7 @@ class AuthorityV2AttemptsMixin:
                 and self._v2_contender_is_authentic_owner(
                     attempt_id=attempt.attempt_id,
                     owner_attempt_id=owner_attempt_id,
-                    origin_boot_id=attempt.origin_boot_id,
+                    origin_boot_id=attempt.origin_boot_id, raise_on_read_failure=True,
                 )
             )
             old_boot = (
@@ -4387,21 +4630,21 @@ class AuthorityV2AttemptsMixin:
             refusal_failure_recorded = attempt.attempt_id in self._v2_refusal_failed_owners
             obligation = self._authenticate_v2_obligation_uncommitted(attempt_row)
             related_obligations = 0
-            for obligation_row in self._conn.execute(
+            for obligation_row in conn.execute(
                 "SELECT payload FROM audit_log WHERE task_id=? AND agent=? AND action=? ORDER BY id",
                 (root_task_id, manager_agent, AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION),
             ):
                 try:
                     payload = self._v2_retained_json(obligation_row["payload"])
                 except Exception as primary:
+                    if isinstance(primary, (json.JSONDecodeError, UnicodeError)):
+                        raise
+                    primary_traceback = primary.__traceback__
                     try:
                         _rollback()
-                    except BaseException:
-                        try:
-                            primary.add_note("authority refusal rollback also failed; custody remains uncertain")
-                        except BaseException:
-                            pass
-                        raise primary
+                    except BaseException as later:
+                        _v2_attempt_retain_later_error(primary, later, "_v2_refusal_rollback_secondary")
+                        raise BaseException.with_traceback(primary, primary_traceback)
                     return _pending("identity_mismatch")
                 if not isinstance(payload, dict) or "attempt_id" not in payload:
                     _rollback()
@@ -4492,7 +4735,7 @@ class AuthorityV2AttemptsMixin:
                         "attempt_id": attempt.attempt_id,
                     },
                 )
-                cursor = self._conn.execute(
+                cursor = conn.execute(
                     """UPDATE tasks SET status=?, block_kind=NULL, note=?, updated_at=?
                        WHERE id=? AND cancelled_at IS NULL AND status=?
                          AND block_kind IS NULL AND assigned_agent=?
@@ -4518,7 +4761,7 @@ class AuthorityV2AttemptsMixin:
                         "parent_task_id": parent_task_id,
                     },
                 )
-                cursor = self._conn.execute(
+                cursor = conn.execute(
                     """UPDATE tasks
                           SET status=?, block_kind=NULL, note=?, completed_at=?,
                               updated_at=?, active_chain=NULL, active_fanout=NULL
@@ -4536,13 +4779,13 @@ class AuthorityV2AttemptsMixin:
                 _rollback()
                 return _pending("owner_lost")
             if task_disposition == "failed":
-                env = self._conn.execute(
+                env = conn.execute(
                     """SELECT * FROM authority_continue_envelopes
                        WHERE root_task_id=? AND state='active'""",
                     (root_task_id,),
                 ).fetchone()
                 if env is not None:
-                    consumed = self._conn.execute(
+                    consumed = conn.execute(
                         """UPDATE authority_continue_envelopes
                               SET state='violated', consumed_at=?, updated_at=?
                             WHERE id=? AND state='active'""",
@@ -4606,32 +4849,31 @@ class AuthorityV2AttemptsMixin:
                 task_disposition=task_disposition,
             )
         except BaseException as primary:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
             if authentic_owner and attempt is not None and owner_attempt_id is not None:
-                self._mark_v2_refusal_failure_authority(attempt.attempt_id, owner_attempt_id)
-                self._forget_v2_live_owner(attempt.attempt_id, owner_attempt_id)
-            try:
-                _rollback()
-            except BaseException:
-                # Startup separately retains every cleanup error in its phase
-                # owner. An opaque primary must never be replaced by rollback.
+                # A failed mark must not prevent revocation, rollback or obligation.
                 try:
-                    primary.add_note("authority refusal rollback also failed; custody remains uncertain")
-                except BaseException:
-                    pass
-                raise primary
+                    self._mark_v2_refusal_failure_authority(attempt.attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_refusal_mark_secondary")
+                try:
+                    self._forget_v2_live_owner(attempt.attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_refusal_forget_secondary")
+            if not rollback_attempted and not commit_completed:
+                try:
+                    _rollback()
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_refusal_rollback_secondary")
             if authentic_owner and attempt is not None and owner_attempt_id is not None:
                 try:
                     self._record_v2_failed_stage_obligation(
                         attempt_id=attempt.attempt_id, owner_attempt_id=owner_attempt_id,
                         code="final_commit_failed" if refusal_code == "policy_no_continue" else refusal_code,
                     )
-                except BaseException:
-                    try:
-                        primary.add_note("authority refusal obligation recording also failed; persistence and custody remain uncertain")
-                    except BaseException:
-                        pass
-                    raise primary
-            raise
+                except BaseException as later:
+                    _v2_attempt_retain_later_error(primary, later, "_v2_refusal_obligation_secondary")
+            raise BaseException.with_traceback(primary, primary_traceback)
 
     def _v2_housekeeping_target_from_row(
         self, row, *, obligation_code: str | None,

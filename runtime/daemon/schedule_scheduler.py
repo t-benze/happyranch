@@ -8,7 +8,11 @@ and FastAPI lifespan wiring are added here and call the functions from
 """
 from __future__ import annotations
 
-from runtime.orchestrator.producer_move import native_writer, native_claim, owner_for
+from runtime.orchestrator.producer_move import (
+    native_writer, native_claim, owner_for, require_producer_admission, producer_admission_writer,
+    producer_admission_validation,
+)
+from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
 from runtime.orchestrator.team_move import DeferredTeamMove
 
 
@@ -30,6 +34,26 @@ logger = logging.getLogger(__name__)
 
 
 _RECURRENCE_STALE_TOLERANCE = timedelta(seconds=120)
+
+
+async def _enqueue(org, schedule_id: str) -> None:
+    try:
+        require_producer_admission(org)
+        await org.schedule_queue.put(ScheduleJob(org_slug=org.slug, schedule_id=schedule_id))
+    except BaseException as exc:
+        try:
+            logger.exception("committed schedule source %s remains firing; queue delivery unacknowledged", schedule_id)
+        except BaseException as secondary:
+            exc.add_note(f"queue refusal logging failed: {secondary!r}")
+        raise
+
+
+def _enqueue_finished(task: asyncio.Task, source_id: str) -> None:
+    # Cancellation before coroutine entry must also report the committed intent.
+    if task.cancelled():
+        logger.error("committed source %s: queue delivery cancelled/unacknowledged", source_id)
+    else:
+        task.exception()  # _enqueue already reported the original source failure.
 
 
 def schedule_due_schedules(
@@ -60,14 +84,18 @@ def schedule_due_schedules(
     are recovered first via ``ScheduleStore.recover_firing()``, so the scheduler
     never re-fires an already-claimed row.
     """
+    validate_admission = producer_admission_validation(org)
     admission = owner_for(org.db)
     if admission is not None:
         try:
             admission.redeliver_after_release(org)
         except DeferredTeamMove:
             pass
+    validate_admission()
     if startup:
-        recovered = org.db.schedules.recover_firing()
+        with org.db._lock:
+            validate_admission()
+            recovered = org.db.schedules.recover_firing(validate_admission=validate_admission)
         for schedule_id, agent_name in recovered:
             org.db.insert_audit_log(
                 task_id=schedule_id,
@@ -81,7 +109,8 @@ def schedule_due_schedules(
     count = 0
     for record in due_records:
         try:
-            with native_claim(org.db, record.agent_name):
+            with producer_admission_writer(org, native_claim(org.db, record.agent_name)):
+                validate_admission()
                 # Weekly no-replay/backfill: if fire_at is stale (missed during
                 # daemon downtime), advance to the next occurrence without firing.
                 if (
@@ -90,57 +119,66 @@ def schedule_due_schedules(
                 ):
                     recurrence = record.recurrence
                     next_fire = next_schedule_occurrence(record.kind.value, recurrence, after=now)
-                    if next_fire is None and recurrence_until_exhausted(recurrence):
-                        store.update(
-                            record.id, status=ScheduleStatus.FIRED, active=0,
-                            end_reason="date_ended",
-                        )
-                        org.db.insert_audit_log(
-                            task_id=record.id, agent=record.agent_name,
-                            action="schedule_fired", payload={"end_reason": "date_ended"},
-                        )
-                    elif (
-                        next_fire is not None
-                        and record.expires_at is not None
-                        and record.indefinite != 1
-                        and next_fire > record.expires_at
-                    ):
-                        org.db.insert_audit_log(
-                            task_id=record.id,
-                            agent=record.agent_name,
-                            action="schedule_expired",
-                            payload={"kind": record.kind.value},
-                        )
-                        store.update(
-                            record.id,
-                            status=ScheduleStatus.EXPIRED,
-                            active=0,
-                        )
-                    elif next_fire is None:
-                        store.update(
-                            record.id, status=ScheduleStatus.FAILED, active=0,
-                            error="recurrence_no_candidate",
-                        )
-                        org.db.insert_audit_log(
-                            task_id=record.id, agent=record.agent_name,
-                            action="schedule_failed", payload={"reason": "recurrence_no_candidate"},
-                        )
-                    else:
-                        store.update(
-                            record.id, fire_at=next_fire, status=ScheduleStatus.ARMED, active=1,
-                        )
-                        org.db.insert_audit_log(
-                            task_id=record.id, agent=record.agent_name,
-                            action="occurrence_missed", payload={"kind": record.kind.value},
-                        )
+                    exhausted = next_fire is None and recurrence_until_exhausted(recurrence)
+                    # native_claim retains the lock only with a native owner.
+                    # Renew after the real store wait in the absent-owner path too.
+                    with org.db._lock:
+                        validate_admission()
+                        if exhausted:
+                            store.update(
+                                record.id, status=ScheduleStatus.FIRED, active=0,
+                                end_reason="date_ended",
+                            )
+                            org.db.insert_audit_log(
+                                task_id=record.id, agent=record.agent_name,
+                                action="schedule_fired", payload={"end_reason": "date_ended"},
+                            )
+                        elif (
+                            next_fire is not None
+                            and record.expires_at is not None
+                            and record.indefinite != 1
+                            and next_fire > record.expires_at
+                        ):
+                            org.db.insert_audit_log(
+                                task_id=record.id,
+                                agent=record.agent_name,
+                                action="schedule_expired",
+                                payload={"kind": record.kind.value},
+                            )
+                            store.update(
+                                record.id,
+                                status=ScheduleStatus.EXPIRED,
+                                active=0,
+                            )
+                        elif next_fire is None:
+                            store.update(
+                                record.id, status=ScheduleStatus.FAILED, active=0,
+                                error="recurrence_no_candidate",
+                            )
+                            org.db.insert_audit_log(
+                                task_id=record.id, agent=record.agent_name,
+                                action="schedule_failed", payload={"reason": "recurrence_no_candidate"},
+                            )
+                        else:
+                            store.update(
+                                record.id, fire_at=next_fire, status=ScheduleStatus.ARMED, active=1,
+                            )
+                            org.db.insert_audit_log(
+                                task_id=record.id, agent=record.agent_name,
+                                action="occurrence_missed", payload={"kind": record.kind.value},
+                            )
                     continue
 
                 # Claim the row: armed → firing. A concurrent winner changes the
                 # status first, so this caller skips the row without side effects.
                 try:
-                    if not store.claim_firing(record.id):
-                        continue
+                    with org.db._lock:
+                        validate_admission()
+                        if not store.claim_firing(record.id):
+                            continue
                 except DeferredTeamMove:
+                    raise
+                except StartupUnavailable:
                     raise
                 except Exception:
                     logger.exception(
@@ -157,13 +195,14 @@ def schedule_due_schedules(
                 # Enqueue for the runner/worker loop.
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.create_task(
-                        org.schedule_queue.put(
-                            ScheduleJob(org_slug=org.slug, schedule_id=record.id),
-                        )
+                    require_producer_admission(org)
+                    loop.create_task(_enqueue(org, record.id)).add_done_callback(
+                        lambda task, source_id=record.id: _enqueue_finished(task, source_id),
                     )
+                except StartupUnavailable:
+                    raise
                 except RuntimeError:
-                    # No running loop (sync callers/tests): enqueue directly.
+                    # Explicit standalone caller without a loop.
                     org.schedule_queue.put_nowait(
                         ScheduleJob(org_slug=org.slug, schedule_id=record.id),
                     )
@@ -183,13 +222,18 @@ async def schedule_scheduler_loop(state, *, interval_seconds: int = 60) -> None:
     """
     startup = True
     while True:
+        require_ready(state)
         t0 = time.monotonic()
         now = datetime.now(timezone.utc)
         for org in list(state.orgs_snapshot().values()):
+            require_producer_admission(org)
             try:
                 from runtime.orchestrator.producer_move import redeliver_native_jobs
                 await redeliver_native_jobs(org)
+                require_producer_admission(org)
                 schedule_due_schedules(org=org, now=now, startup=startup)
+            except StartupUnavailable:
+                raise
             except Exception:
                 logger.exception(
                     "schedule scheduling skipped for org %s",

@@ -158,6 +158,15 @@ interface ComposerProps {
   abortReplies?: { active: boolean; isPending: boolean; onAbort: () => void };
   /** Optional localized product copy; omitted fields keep the English defaults. */
   labels?: ComposerLabels;
+  /**
+   * New effects are held (THR-308 daemon startup not ready). Unlike `disabled`
+   * the textarea, draft, focus/selection and attachment selections stay
+   * mounted and editable; only send/abort (and Enter-to-send) are inert, and
+   * `heldNotice` explains why. Clearing it restores the original controls
+   * without remounting or replaying anything.
+   */
+  effectsHeld?: boolean;
+  heldNotice?: string;
 }
 
 export function Composer({
@@ -175,6 +184,8 @@ export function Composer({
   orgSlug,
   abortReplies,
   labels,
+  effectsHeld = false,
+  heldNotice,
 }: ComposerProps): JSX.Element {
   const L = {
     closedPlaceholder: labels?.closedPlaceholder ?? 'Thread is closed.',
@@ -228,7 +239,7 @@ export function Composer({
   };
 
   const submit = async () => {
-    if (!canSend || disabled || pending || submittingRef.current) return;
+    if (!canSend || disabled || pending || effectsHeld || submittingRef.current) return;
     submittingRef.current = true;
     const submitGen = destGenRef.current;
     submittingGenRef.current = submitGen;
@@ -336,7 +347,7 @@ export function Composer({
           <button
             type="button"
             onClick={abortReplies.onAbort}
-            disabled={abortReplies.isPending}
+            disabled={abortReplies.isPending || effectsHeld}
             aria-label={abortReplies.isPending ? L.aborting : L.abortReply}
             title={abortReplies.isPending ? L.aborting : L.abortReply}
             className="border-border-default bg-surface-raised text-feedback-danger hover:border-feedback-danger hover:bg-danger-soft mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-50"
@@ -347,9 +358,9 @@ export function Composer({
         <button
           type="button"
           onClick={submit}
-          disabled={disabled || !canSend || pending}
+          disabled={disabled || !canSend || pending || effectsHeld}
           aria-label={L.send}
-          title={L.sendTitle}
+          title={effectsHeld && heldNotice ? heldNotice : L.sendTitle}
           className="bg-accent text-accent-fg hover:bg-accent-hover disabled:bg-surface-hover disabled:text-text-muted mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors"
         >
           <ArrowRight className="h-4 w-4" aria-hidden="true" />
@@ -361,6 +372,9 @@ export function Composer({
           so a raw diagnostic that is the empty string still owns its slot. */}
       {errorMessage != null && (
         <span className="text-caption text-feedback-danger">{errorMessage}</span>
+      )}
+      {effectsHeld && heldNotice && (
+        <span role="status" className="text-caption text-attention-text">{heldNotice}</span>
       )}
     </div>
   );

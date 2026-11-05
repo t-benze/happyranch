@@ -2865,8 +2865,12 @@ class AuthorityPolicyV2GenerationClaimOutcome(BaseModel):
     ``claimed`` carries the exact causal identity plus the reserved
     ``next_session_id`` and the winning ``orchestration_step_count``; the caller
     may then settle and launch with that exact session.  It is never by itself a
-    guarantee of external launch, and a non-``claimed`` status means NO
-    generation admission occurred (so no ordinary claim/launch may follow).
+    guarantee of external launch.  A non-``claimed`` status, error or lost
+    return grants NO fresh claim/launch or re-admission permission: COMMIT or
+    late wrapper clock/warning/log/return failure can leave committed or unknown
+    admission effects.  Successful owned precommit rollback undoes only that
+    transaction; rollback failure retains uncertainty.  Separate settlement
+    failure cannot erase an earlier committed claim or native preparation.
     """
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
@@ -2958,13 +2962,24 @@ class AuthorityPolicyV2AdmissionSettlementOutcome(BaseModel):
 class AuthorityPolicyV2SpendOutcome(BaseModel):
     """Bounded outcome of the ONE atomic next-result spend-to-ready transaction.
 
-    ``spent`` just committed the receipt (E active -> consumed with the exact
-    spending result + ``decision_state=ready``, D admitted -> retired); the
-    caller may then let the ordinary decision consumer process the SAME result.
+    ``spent`` identifies the new receipt (E active -> consumed with the exact
+    spending result + ``decision_state=ready``, D admitted -> retired). The public
+    writer commits before returning it; the private core's outcome remains
+    provisional until its original composing writer commits. The caller must
+    still win the decision claim before consumer entry.
     ``already_spent_exact`` is a read-only exact retry of an authenticated
-    consumed/ready receipt and performs NO write, remint or dispatch.
-    ``spend_pending`` means no spend occurred and E stayed active / D admitted
-    with the decision unapplied.  A committed outcome additionally carries
+    consumed receipt with complete original state-required decision evidence:
+    zero related events for ready, exactly claimed for claimed, claimed+applied
+    for applied, or claimed+interrupted for refused. It performs NO write,
+    remint or dispatch. ``spend_pending`` grants no consumer permission and
+    proves no absence of spend: prior consumed/retired receipts and their later
+    decision states remain intact. Only successful OWNED PRECOMMIT rollback
+    undoes this transaction; COMMIT-before-error, failed rollback or late
+    clock/warning/return loss leaves committed or unknown effects.
+    Run-step commits the public spend before a separate decision claim;
+    coding-start composes the private core, claim, graph and acknowledgement
+    in its original bootstrap writer. Prior genuine results, preparation and
+    native custody survive either boundary. A successful outcome also carries
     ``report_digest``: the exact normalized report identity of the retained
     spending result bound into the durable receipt.  None of these statuses is
     launch authority.
@@ -3039,13 +3054,19 @@ class AuthorityPolicyV2SpendOutcome(BaseModel):
 class AuthorityPolicyV2DecisionClaimOutcome(BaseModel):
     """Bounded outcome of the ONE atomic decision-dispatch claim transaction.
 
-    ``claimed`` just committed the single-use ``ready -> claimed`` CAS on the
-    exact result-keyed receipt together with one closed ``decision_claimed``
-    audit; ONLY that winning return authorizes exactly one ordinary consumer
-    entry.  ``decision_pending`` means NO consumer authority exists: the caller
-    must not run the normal decision body.  A committed outcome carries the exact
-    receipt identity plus the bound ``report_digest``; none of these statuses is
-    launch authority.
+    A successful public OWNED writer ``claimed`` return follows COMMIT of the
+    single-use ``ready -> claimed`` CAS and closed ``decision_claimed`` audit;
+    only that winning return authorizes one ordinary consumer entry.  The private
+    composing core's outcome and writes remain provisional until the ORIGINAL
+    coding ``admission_writer`` commits graph, claim and acknowledgement together.
+    ``decision_pending`` or a lost return grants no consumer entry and proves
+    neither ``ready`` nor absence of a claim.  Only successful OWNED PRECOMMIT
+    rollback restores that transaction; prior genuine spends/results/preparation/
+    native effects survive.  Failed rollback may escape and retains uncertainty;
+    COMMIT-before-error or late synchronized clock/warning/return loss can leave
+    a durable claim.  No negative/lost return permits retry, repair or remint.
+    A successful claim outcome carries the exact receipt identity and bound
+    ``report_digest``; none of these statuses is launch authority.
     """
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
@@ -3121,12 +3142,19 @@ class AuthorityPolicyV2DecisionClaimOutcome(BaseModel):
 class AuthorityPolicyV2DecisionAckOutcome(BaseModel):
     """Bounded outcome of the separate decision acknowledgement transaction.
 
-    ``applied`` just CASed ``claimed -> applied`` with one closed
-    ``decision_applied`` audit after the winning caller returned from the real
-    ordinary consumer.  ``already_applied_exact`` is a read-only replay of the
-    authenticated applied receipt and NEVER authorizes a second consumer call.
-    ``ack_pending`` means the receipt stayed ``claimed`` and no acknowledgement
-    was written; the caller must not re-run the consumer.
+    A successful public OWNED writer ``applied`` return follows COMMIT of the
+    ``claimed -> applied`` CAS and closed ``decision_applied`` audit after the
+    winning caller's ordinary consumer.  The private composing outcome and writes
+    remain provisional with graph and claim until the ORIGINAL coding
+    ``admission_writer`` COMMIT.  ``already_applied_exact`` is authenticated
+    read-only replay and never authorizes a second consumer call.
+    ``ack_pending`` is nonauthorizing, not proof of ``claimed`` or of no write:
+    ``not_claimed`` on a ready receipt leaves it ready; ``already_refused`` on a
+    refused receipt leaves it refused.  Only successful OWNED PRECOMMIT rollback
+    restores this transaction, preserving prior genuine effects.  Failed rollback
+    may escape and retains uncertainty; COMMIT-before-error or late synchronized
+    clock/warning/return loss can leave applied and its audit durable.  A pending
+    or lost return permits no consumer reentry, replay, repair or remint.
     """
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
@@ -3194,16 +3222,22 @@ class AuthorityPolicyV2DecisionAckOutcome(BaseModel):
 class AuthorityPolicyV2DecisionRefusalOutcome(BaseModel):
     """Bounded outcome of the audited decision-dispatch interruption refusal.
 
-    ``refused`` just CASed ``claimed -> refused`` on the exact result-keyed
-    receipt with one closed ``decision_dispatch_interrupted`` audit; the spent
-    envelope, causal attempt/journal evidence and every earlier committed
-    effect are preserved byte-for-byte, the exact owned obligation is retired/
-    settled only, and any replacement generation B is untouched.  A
-    still-current nonterminal reserved invocation is escalated with the closed
-    diagnostic; a cancelled/terminal/replaced task is preserved exactly.
-    ``already_refused`` is a read-only exact replay.  ``refusal_pending`` means
-    the receipt stayed ``claimed`` (or the transaction failed) and the
-    discoverable claimed state is retained.
+    A successful public OWNED writer ``refused`` return follows COMMIT of the
+    exact receipt's ``claimed -> refused`` CAS and closed
+    ``decision_dispatch_interrupted`` audit.  The spent envelope, causal evidence,
+    earlier committed effects and any replacement generation B survive.  Only
+    the exact owned obligation is retired/settled; only a still-current
+    nonterminal reserved invocation is escalated with the closed diagnostic.
+    Cancelled/terminal/replaced tasks are preserved.  Private core writes and
+    outcomes remain provisional until their original owning writer COMMIT.
+    ``already_refused`` is authenticated read-only exact replay.
+    ``refusal_pending`` proves neither ``claimed`` nor absence of refusal or
+    escalation.  Only successful OWNED PRECOMMIT rollback restores this
+    transaction; failed rollback may escape and retains uncertainty.
+    COMMIT-before-error or late synchronized clock/warning/return loss can leave
+    refusal, interruption audit and optional task escalation durable.  Prior
+    genuine task/child/native effects survive; negative/lost returns grant no
+    consumer reentry, replay, repair, remint or new authority.
     """
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
@@ -3301,6 +3335,10 @@ class AuthorityPolicyV2CompletionDispatchContext(BaseModel):
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
     kind: StrictStr
+    # Error custody only: the exact pre-final attempt or already acquired
+    # reserved/receipt R2 result from this ORIGINAL read. R2 need not own an
+    # unfinalized attempt. This grants no dispatch, stage or recovery authority.
+    pre_final_identity: tuple[StrictStr, StrictStr, StrictStr, StrictInt] | None = None
     manager_agent: StrictStr | None = None
     manager_session_id: StrictStr | None = None
     causal_result_id: StrictInt | None = Field(

@@ -9,7 +9,8 @@ import { describe, expect, test } from 'vitest';
 import { ApiError } from '@/lib/api/client';
 import { translate, type MessageKey, type MessageParams } from '@/lib/i18n';
 import { MAX_THREAD_ATTACHMENTS } from './threadAttachments';
-import { THREAD_ERROR_STRINGS, classifyThreadError, renderThreadError } from './threadErrors';
+import { StartupHeldError, isStartupUnavailableError } from './startup';
+import { THREAD_ERROR_STRINGS, classifyThreadError, renderThreadError, startupRefusalKey } from './threadErrors';
 
 const tEn = (k: MessageKey, p?: MessageParams) => translate('en', k, p);
 const tZh = (k: MessageKey, p?: MessageParams) => translate('zh-CN', k, p);
@@ -56,5 +57,53 @@ describe('classifyThreadError / renderThreadError', () => {
     expect(renderThreadError({ detail }, tZh)).toBe(`Error: ${THREAD_ERROR_STRINGS.not_found}`);
     expect(renderThreadError({ detail: classifyThreadError('') }, tZh)).toBe('');
     expect(renderThreadError({ detail: { kind: 'raw', text: 'Thread not found.' } }, tZh)).toBe('Thread not found.');
+  });
+});
+
+describe('THR-308 startup refusal family — both classifiers agree', () => {
+  test.each([
+    [503, 'daemon_recovering', 'startup.error.held'],
+    [503, 'daemon_recovery_failed', 'startup.error.failed'],
+    [503, 'daemon_stopped', 'startup.error.unavailable'],
+    [503, 'startup_gate_unbound', 'startup.error.unavailable'],
+    [503, 'startup_attachment_changed', 'startup.error.unavailable'],
+    [503, 'startup_document_attachment_changed', 'startup.error.unavailable'],
+    [503, 'startup_document_queue_changed', 'startup.error.unavailable'],
+    [503, 'startup_coding_attachment_changed', 'startup.error.unavailable'],
+    [503, 'startup_coding_owner_changed', 'startup.error.unavailable'],
+    [503, 'startup_jobs_binding_changed', 'startup.error.unavailable'],
+    [503, 'startup_reader_busy', 'startup.error.reader'],
+    [503, 'startup_reader_budget_exhausted', 'startup.error.reader'],
+  ] as const)('%i %s is a not-accepted startup refusal (%s)', (status, code, key) => {
+    const err = new ApiError(status, code, null);
+    expect(isStartupUnavailableError(err)).toBe(true);
+    expect(startupRefusalKey(err)).toBe(key);
+    const detail = classifyThreadError(err);
+    expect(detail).toEqual({ kind: 'mapped', key });
+    for (const t of [tEn, tZh]) expect(renderThreadError({ detail }, t)).not.toContain(code);
+  });
+
+  test.each([
+    ['unknown 503', new ApiError(503, 'weird_code', null)],
+    ['non-family daemon 503', new ApiError(503, 'daemon_shutting_down', null)],
+    ['codeless 503', new ApiError(503, null, null)],
+    ['startup code on a non-503', new ApiError(409, 'startup_attachment_changed', null)],
+    ['401', new ApiError(401, 'unauthorized', null)],
+    ['network', new TypeError('Failed to fetch')],
+  ])('%s is not a startup refusal and keeps its original classification', (_name, err) => {
+    expect(isStartupUnavailableError(err)).toBe(false);
+    expect(startupRefusalKey(err)).toBeNull();
+    expect(classifyThreadError(err).kind).toBe('raw');
+  });
+
+  test.each([
+    ['recovering', 'startup.error.held'],
+    ['failed', 'startup.error.failed'],
+    ['stopping', 'startup.error.unavailable'],
+    ['unknown', 'startup.error.unavailable'],
+  ] as const)('client hold in phase %s maps to %s', (phase, key) => {
+    const err = new StartupHeldError(phase);
+    expect(isStartupUnavailableError(err)).toBe(true);
+    expect(startupRefusalKey(err)).toBe(key);
   });
 });

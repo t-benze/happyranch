@@ -14,6 +14,14 @@ receipt guidance only, not enforced aggregate-host bounds; HappyRanch defines
 no aggregate `happyranch.slice` policy. The shell procedure below remains the
 offline recovery/rollout procedure.
 
+Before recovery-dependent post-start checks or effects, require a fresh positive
+startup observation: state=ready, serving=true, recovery_ready=true, stopping=false
+(or the matching finite shell line `startup serving=yes recovery=ready launches=admitted`).
+Health200, PID/port and shell exit0 establish no recovery completion. All original
+source/native/authorization gates below still apply. A held/failed/unknown result
+preserves the original process and operation; no automatic restart/replay follows.
+This clarification changes no historical measurement record or activation authority.
+
 ## Mutate configuration without dropping unrelated keys
 
 Run from the repository root. Set `HAPPYRANCH_DAEMON_HOME` first when the

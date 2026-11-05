@@ -12,6 +12,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { agents as agentsApi, tasks as tasksApi } from '@/lib/api';
 import type { AgentSummary, TaskRecord } from '@/lib/api/types';
+import { assertStartupAdmitted } from '@/lib/startup';
+import { useRealStartup } from './_real-health';
 import type {
   AgentsApi,
   ApproveAgentArgs,
@@ -69,10 +71,16 @@ export const realAgentsApi: AgentsApi = {
 
   useAgentsList: () => {
     const slug = useRealOrgSlug();
+    const qc = useQueryClient();
+    // Mounted by the readable Threads page; held until startup is ready.
+    const { admitted } = useRealStartup();
     return useQuery({
       queryKey: ['agents', slug],
-      queryFn: () => agentsApi.listAgents(slug),
-      enabled: !!slug,
+      queryFn: () => {
+        assertStartupAdmitted(qc);
+        return agentsApi.listAgents(slug);
+      },
+      enabled: !!slug && admitted,
       staleTime: 5 * 60 * 1000,
     });
   },

@@ -5,6 +5,7 @@
  */
 import { render, type RenderOptions, type RenderResult } from '@testing-library/react';
 import type { ReactElement, ReactNode } from 'react';
+import type { QueryClient } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { I18nProvider, useI18n } from '@/hooks/i18n';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
@@ -35,14 +36,15 @@ export function savedLocaleAdapter(initial: Locale): LocalePreferenceAdapter {
 export interface RenderWithProvidersOptions extends Omit<RenderOptions, 'wrapper'> {
   route?: string;
   i18n?: I18nTestOptions;
+  queryClient?: QueryClient;
 }
 
 export function renderWithProviders(
   ui: ReactElement,
   options: RenderWithProvidersOptions = {},
 ): RenderResult {
-  const client = makeQueryClient();
-  const { route = '/', i18n, ...rest } = options;
+  const { route = '/', i18n, queryClient, ...rest } = options;
+  const client = queryClient ?? makeQueryClient();
   return render(
     <MemoryRouter initialEntries={[route]}>
       <I18nProvider adapter={i18n?.adapter} mode={i18n?.mode}>

@@ -1188,6 +1188,10 @@ def _run_command(
             thread_owner = current_thread_preparation() or current_producer_preparation()
             if thread_owner is not None:
                 thread_owner.before_selflaunch()
+            if invocation is not None and invocation.owner == "coding":
+                # Renew the bound V0 after all preparation, even when the host
+                # already committed. This validates without another COMMIT.
+                invocation._fresh_validation()
             try:
                 proc = isolation.launch_executor(
                     cmd,
@@ -2441,6 +2445,10 @@ class CustomAdapterExecutor:
                 thread_owner = current_thread_preparation() or current_producer_preparation()
                 if thread_owner is not None:
                     thread_owner.before_selflaunch()
+                if invocation is not None and invocation.owner == "coding":
+                    # Renew the bound V0 after all preparation, even when the host
+                    # already committed. This validates without another COMMIT.
+                    invocation._fresh_validation()
                 try:
                     proc = subprocess.Popen(
                         [self._adapter_executable],

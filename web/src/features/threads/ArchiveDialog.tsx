@@ -11,6 +11,7 @@ import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { useArchiveThread } from '@/hooks/threads';
 import { useTranslation } from '@/hooks/i18n';
+import { useStartupStatus } from '@/hooks/health';
 import { classifyThreadError, renderThreadError, type ThreadErrorView } from '@/lib/threadErrors';
 
 interface Props {
@@ -22,6 +23,8 @@ interface Props {
 export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
   const { t } = useTranslation();
   const archive = useArchiveThread(threadId);
+  // THR-308: held until daemon startup is positively ready.
+  const startup = useStartupStatus();
   const [summary, setSummary] = useState('');
   // Locale-neutral error descriptor, rendered through `t` on every render so a
   // mapped message re-translates in place and a raw diagnostic stays byte-exact.
@@ -78,9 +81,12 @@ export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
             )}
           </FormField>
         </div>
+        {!startup.admitted && (
+          <p role="status" className="text-attention-text text-caption">{t('startup.action.paused')}</p>
+        )}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-          <Button onClick={submit} disabled={archive.isPending}>
+          <Button onClick={submit} disabled={archive.isPending || !startup.admitted}>
             {archive.isPending ? t('threads.dialog.archive.pending') : t('threads.dialog.archive.confirm')}
           </Button>
         </DialogFooter>

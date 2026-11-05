@@ -100,7 +100,31 @@ SQLite/OSError/transaction/postcommit failures retain their existing boundaries;
 only six exact built-in ValueError shapes at initial validation/preparation
 recover. Callback admission, receipt identity/history and once-only consumption
 are preserved. Old schema readers do not enforce this new budget policy.
-Stop tails use the captured winning owner and recheck before initiation. Existing
+Stop tails use the captured winning owner and recheck before initiation. After
+a genuine nonroot stop COMMIT, the existing owed-job boundary encloses the
+owner-fenced envelope abort and complete transition preparation, including decoding.
+Their failure preserves FIRST and stops later verdict/history/worktree/parent/thread
+effects, while the one original job-tail attempt retains current-owner and
+selected-human-result vetoes. False or failed owner checks grant no action or
+retry; failures retain uncertainty. ROOT ordering and other tail callers stay
+original. The stop history fence retains the FIRST current-owner/effect
+BaseException before the
+original sole rollback and RLock exit, with separately retained later native
+occurrences and actual completed effect values. History=False adds no rollback;
+history=True keeps its rollback duty even after failed BEGIN, but not failed
+lock entry. The exact captured active-envelope abort retains body/UPDATE/audit/
+serialization/COMMIT E1 before rollback E2; rowcount-refusal rollback marks before
+one attempt, so failure cannot reenter cleanup. Its absent False, clean-refusal
+False, successful-COMMIT-only True, failed-BEGIN no-rollback and Exception-only
+body-cleanup policy stay original. Eligibility uses the actual native type
+hierarchy without instance-controlled `__class__`, truthiness, formatting or
+virtual traceback lookup. Other BaseExceptions retain native evidence
+without a new rollback duty. Separate SAME-object throws and failed retention
+keep prior nested records/frames; delivered observations are not new failures.
+Stop COMMIT, partial history and actual local values survive failed delivery as
+evidence, never public returns or no-effect/native cleanup proof. Lower/default
+transaction limits and independently owed tails remain; no new caller-transaction
+or SAVEPOINT guard, spend/retry rule or clearance follows. Existing
 external cross-process/cross-await job, cleanup and notification limits remain;
 source inspection supplies no behavioral or automatic-startup coverage.
 Keep task-only evidence in output/<actual-task-id>, report output_dir and use
@@ -117,8 +141,18 @@ report claim and recorded retry evidence only after `BEGIN IMMEDIATE` under the
 Database RLock. `Committed` alone enqueues children; `InvalidLineage` uses owned
 atomic feedback, and `LostClaim` drops without writes. Ordinary revision delta
 rolls back with spawn. Retry feedback admission holds a separate no-write writer
-reservation through synchronous queue insertion, released on every path. It is
-not a durable task claim or an exactly-once queue guarantee. Cross-root provenance
+reservation through synchronous queue insertion, with one rollback attempt on
+every path. The five original retry transaction owners, including attachment A,
+retain the first actual error and native traceback before cleanup, plus separately
+thrown rollback and retention errors; refusal rollback failure never retries that obligation.
+Successful precommit rollback restores its transaction; failed BEGIN, COMMIT,
+rollback or queue publication retains uncertainty and earlier committed prefixes.
+A's feedback or exhausted-stop commit survives later failure; its feedback
+commit survives B/queue/exit failure. Both attachment LostClaim paths attempt
+their original rollback once, before constructing the no-effect result. Input
+validation before A's transaction gains no rollback obligation. An exact completed
+local value is evidence only until the method and wrapper deliver it successfully.
+B is not a durable task claim or an exactly-once queue guarantee. Cross-root provenance
 is bounded to 20 root records / 19 recorded supersession edges; failed history
 and original parent links stay intact. See orchestrator-contracts.md.
 

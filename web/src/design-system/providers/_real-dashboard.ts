@@ -9,11 +9,13 @@
  * Note: the Dashboard's escalation-resolve flow consumes the existing
  * `useResolveEscalation` hook on TasksApi, not a new dashboard-local one.
  */
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { dashboard as dashboardApi } from '@/lib/api';
 import type { DashboardSummaryResponse } from '@/lib/api/types';
+import { assertStartupAdmitted } from '@/lib/startup';
 import type { DashboardApi, QueryLike } from './DataContext';
+import { useRealStartup } from './_real-health';
 
 function useRealOrgSlug(): string {
   const { slug } = useParams<{ slug: string }>();
@@ -22,10 +24,17 @@ function useRealOrgSlug(): string {
 
 function useDashboardSummary(): QueryLike<DashboardSummaryResponse> {
   const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  // The always-mounted Sidebar reads this too; it is held until startup is
+  // positively ready (THR-308).
+  const { admitted } = useRealStartup();
   return useQuery({
     queryKey: ['dashboard-summary', slug],
-    queryFn: () => dashboardApi.getDashboardSummary(slug),
-    enabled: !!slug,
+    queryFn: () => {
+      assertStartupAdmitted(qc);
+      return dashboardApi.getDashboardSummary(slug);
+    },
+    enabled: !!slug && admitted,
     staleTime: 30_000,
   }) as QueryLike<DashboardSummaryResponse>;
 }

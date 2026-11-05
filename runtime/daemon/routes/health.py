@@ -5,6 +5,7 @@ import shutil
 from typing import Callable
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from runtime.config import Settings, settings as _settings
@@ -116,17 +117,29 @@ def health(request: Request) -> dict:
         "status": "ok",
         "active_runtime": str(state.runtime.root) if state.runtime else None,
     }
+    from runtime.daemon.startup_recovery import public_startup_status
+    body["startup"] = public_startup_status(state, request.app)
     # THR-207 observability slice: when the daemon-wide HostSessionSupervisor
     # is wired (runtime-backed states), surface a BOUNDED, NON-SENSITIVE
     # host-session health block — receipt aggregates, admission/backpressure
     # state, and the capability probe summary. The public variant drops the
     # per-receipt recent window, censused survivor identities (PIDs / start
     # identities), and the backend probe evidence string, keeping counts,
-    # aggregates, and the stable classification observable. Idle states keep
-    # the pre-existing exact two-key contract.
+    # aggregates, and the stable classification observable. Startup is an
+    # additive block; liveness alone never proves recovery readiness.
     if state.host_supervisor is not None:
         body["host_sessions"] = compose_host_sessions_block(state, public=True)
     return body
+
+
+@router.get("/health/ready", responses={503: {"description": "Startup is not recovery-ready"}})
+async def health_ready(request: Request) -> JSONResponse:
+    """No probe or history scan: require original listener and accepted epoch."""
+    from runtime.daemon.startup_recovery import public_startup_status
+    startup = public_startup_status(getattr(request.app.state, "daemon", None), request.app)
+    ready = startup["recovery_ready"]
+    return JSONResponse({"status": "ready" if ready else "unavailable", "startup": startup},
+                        status_code=200 if ready else 503)
 
 
 @router.get("/health/prereqs", response_model=PrereqsResponse)

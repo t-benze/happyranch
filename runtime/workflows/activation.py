@@ -8,7 +8,7 @@ from contextlib import ExitStack
 import json
 import sqlite3
 from datetime import datetime, timezone
-from typing import Annotated, Literal, Any
+from typing import Annotated, Callable, Literal, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
@@ -375,6 +375,37 @@ class WorkflowActivationStore:
     def __init__(self, org: Any) -> None:
         self.org = org
         self.db = org.db
+        self._startup_state: Any = None
+        self._startup_org: Any = None
+        self._startup_recovery: Any = None
+
+    def _admission_validation(self) -> Callable[[], None]:
+        """Pin this original activation attachment through fresh admission."""
+        from runtime.daemon.startup_recovery import StartupUnavailable, document_admission_validation
+
+        validate_document = document_admission_validation(self)
+        org, db, state = self.org, self.db, self._startup_state
+        org_map = state.orgs
+        gate = self._startup_recovery
+        refs, task_refs = org._startup_document_refs, org._startup_admission_refs
+        loop, epoch = gate._loop, gate.epoch
+
+        def validate() -> None:
+            validate_document()
+            try:
+                same = (self.org is org and self.db is db and org.db is db
+                        and self._startup_state is state and state.orgs is org_map
+                        and self._startup_org is org and self._startup_recovery is gate
+                        and state._startup_recovery is gate and org._startup_recovery is gate
+                        and org._startup_document_refs is refs and org._startup_admission_refs is task_refs
+                        and gate._loop is loop and gate.epoch == epoch)
+            except AttributeError as exc:
+                raise StartupUnavailable("startup_document_attachment_changed") from exc
+            if not same:
+                raise StartupUnavailable("startup_document_attachment_changed")
+
+        validate()
+        return validate
 
     def _principal(self, principal: WorkflowTemplatePrincipal) -> str:
         if (principal.org_slug != self.org.slug or principal.principal_kind != "human"
@@ -531,8 +562,10 @@ class WorkflowActivationStore:
             replay = self._replay(self.db._conn, actor=actor, request=request, request_digest=request_digest)
         if replay is not None:
             return self._project(replay)
+        validate = self._admission_validation()
         template = self._template(request)
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         if request.authority.model_dump() != dict(namespace=capture.ready.namespace,
                 generation=capture.ready.generation, snapshot_digest=capture.ready.snapshot_digest):
             raise WorkflowActivationError("workflow_activation_authority_stale")
@@ -546,8 +579,10 @@ class WorkflowActivationStore:
         # admission. Do not invert that order with a tracker scan in the writer.
         active_sessions = tuple(self.org.sessions.iter_active())
         async with self.org.workflow_authority._async_writer_lock:
+            validate()
             async with self.org.db_lock:
-                with self.org.workflow_authority.admission_writer(capture) as conn:
+                validate()
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
                     principal.revalidate()
                     if isinstance(request, (DocumentActivationRequest3, ArtifactActivationRequest)):
                         from runtime.infrastructure.workflow_schema import require_author_handoff_schema
