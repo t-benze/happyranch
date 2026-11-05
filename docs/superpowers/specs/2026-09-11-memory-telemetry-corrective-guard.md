@@ -321,6 +321,25 @@ are `source_root`, `runtime_root`, `org_root`, `package_version`, `python`,
   and does not claim backend health or enforcement beyond its existing report.
 
 Acquisition is zero durable writes and no reseal/full-history reconciliation.
+At the first genuine loaded/source hash inequality, the existing failed-attempt
+warning may carry one `loaded_source_comparison`: opening/closing pass, actual
+selection ordinal including adapters/backend, module/function/both code qualnames,
+already-read source-file SHA256, exact compared hashes and differing top-level
+projection field names. Hashing and field comparison reuse the same projections;
+no source reread, import/reload or selected-object change supplies evidence.
+Names are bounded ASCII identifiers/qualnames (<=256 characters, otherwise null),
+digests are64 lowercase hex characters or null, ordinal is1..256 and the field
+list is restricted to the13 projection names. The complete canonical JSON
+addition including wrapper/encoding is<=2048 bytes, charged to the SAME aggregate
+work/rows/bytes and original deadline before publication. Missing budget/capacity
+or secondary field/encoding/accounting/publication/log failures, including control
+exceptions in this known-mismatch diagnostic path, cannot replace
+`identity_loaded_source_mismatch`. Unrelated primary/control handling, sticky
+precedence, null failed identity/cutoff and successful public shapes remain.
+No source/constant values, locals or exception contents are emitted. Diagnostic
+absence remains unavailable evidence; a warning return proves no delivery and
+adds no retry permission or sink. Source/static inspection does not establish
+loaded-code, fault, native, recovery, reopen or rollback behavior.
 Short observer admission remains nonblocking. Founder THR091seq557/559/560
 permits at most0.5s CUMULATIVE DB-lock admission waiting across both revision
 bookends and all attempts, clipped by the ORIGINAL enclosing acquisition

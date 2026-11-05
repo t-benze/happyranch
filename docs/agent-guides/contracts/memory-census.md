@@ -151,6 +151,24 @@ file allowances never replenish per attempt. Source/lint evidence is not loaded
 qualification, health, B/C acceptance or epoch start. Cooperative work checks
 provide no hard OS-I/O/RSS guarantee.
 
+The existing hard-failure warning may include one `loaded_source_comparison`
+for the first genuine loaded/source hash inequality: opening/closing pass,
+actual selection ordinal (including builtin adapters and backend methods), module,
+function and both code qualnames, already-read source-file SHA256, the exact two
+compared hashes, and differing top-level projection field names only. The same
+projections supply hashing and field comparison; selection order and fingerprint
+format remain unchanged. Names are ASCII identifiers/qualnames of at most256 characters
+or null when unavailable/unsupported; digests are64 lowercase hex characters
+or null, ordinal is1..256, and the field list has at most13 fixed allowed names.
+The complete canonical JSON addition, including its wrapper and encoding, is
+at most2048 bytes and consumes the original aggregate work/row/byte/deadline
+budget without replenishment. Missing capacity or secondary construction,
+publication or logging failure leaves diagnostic evidence unavailable and the
+known `identity_loaded_source_mismatch` primary intact, with null identity/cutoff.
+No source/constants/locals/exception contents, new response keys or sinks are
+added. A warning return does not prove delivery; this optional diagnostic does
+not change the separate acknowledged raw-pair requirement for movement retry.
+
 Completed file, cohort, comparison and validation work is checked against the
 same original deadline before successful serving/report/preparation/current-epoch
 returns, including no-control and HTTP cutoff paths. Both full internal snapshots

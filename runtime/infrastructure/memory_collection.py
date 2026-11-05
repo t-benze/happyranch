@@ -1553,11 +1553,14 @@ def _find_code(code: CodeType, qualname: str) -> CodeType:
     raise LookupError(qualname)
 
 
-def loaded_identity(org: Any, *, budget: list[int] | None = None) -> dict:
+def loaded_identity(org: Any, *, budget: list[int] | None = None,
+                    _comparison: tuple[str, dict] | None = None) -> dict:
     """Actual interpreter/imported code and authoritative metadata, never attestation.
 
     Source is compiled without executing it, solely to compare declared loaded
     function fingerprints. No second checkout is imported to supply identity.
+    _comparison optionally names the pass and its existing failed-attempt log
+    holder; it receives only bounded evidence after a genuine hash inequality.
     """
     budget = budget if budget is not None else [0, 0]
     files: dict[str, str] = {}
@@ -1715,9 +1718,63 @@ def loaded_identity(org: Any, *, budget: list[int] | None = None) -> dict:
             compiled[origin] = compile(read(Path(origin), limit=1024 * 1024), code.co_filename,
                                        "exec", dont_inherit=True, optimize=sys.flags.optimize)
         on_disk = _find_code(compiled[origin], code.co_qualname)
-        loaded_hash = _hash_metadata({"python": python, "code": _code_projection(code)})
-        disk_hash = _hash_metadata({"python": python, "code": _code_projection(on_disk)})
+        loaded_projection = _code_projection(code)
+        loaded_hash = _hash_metadata({"python": python, "code": loaded_projection})
+        source_projection = _code_projection(on_disk)
+        disk_hash = _hash_metadata({"python": python, "code": source_projection})
         if loaded_hash != disk_hash:
+            # Only this known inequality admits optional comparison evidence.
+            # Never let secondary work, including control exceptions, replace it.
+            try:
+                acquisition = _CENSUS_BUDGET.get()
+                ordinal = len(code_rows) + 1  # ALL actual calls, including adapters/backend
+                if (acquisition is not None and _comparison is not None
+                        and type(_comparison[0]) is str and _comparison[0] in ("opening", "closing")
+                        and 1 <= ordinal <= 256):
+                    acquisition.step()
+                    fields = ("bytecode", "constants", "names", "variables", "freevars", "cellvars",
+                              "flags", "args", "filename", "qualname", "firstline", "lines", "exceptions")
+                    differing = []
+                    for field in fields:
+                        acquisition.step()
+                        if loaded_projection[field] != source_projection[field]:
+                            differing.append(field)
+
+                    def safe_name(value: Any) -> str | None:
+                        acquisition.step()
+                        # ASCII identifiers/qualnames need no JSON escaping;
+                        # unsupported, oversized or absent metadata stays null.
+                        if (type(value) is str and 0 < len(value) <= 256
+                                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|<locals>))*", value)):
+                            return value
+                        return None
+
+                    def safe_digest(value: Any) -> str | None:
+                        acquisition.step()
+                        return value if (type(value) is str and len(value) == 64
+                                         and re.fullmatch(r"[0-9a-f]{64}", value)) else None
+
+                    record = {"pass": _comparison[0], "ordinal": ordinal,
+                              "module": safe_name(function.__module__),
+                              "function_qualname": safe_name(getattr(function, "__qualname__", None)),
+                              "loaded_code_qualname": safe_name(code.co_qualname),
+                              "source_code_qualname": safe_name(on_disk.co_qualname),
+                              "source_file_sha256": safe_digest(files[origin]),
+                              "loaded_sha256": safe_digest(loaded_hash),
+                              "source_code_sha256": safe_digest(disk_hash),
+                              "differing_fields": differing}
+                    # Charge the complete JSON addition, including its wrapper
+                    # and encoding, to the original aggregate before publishing.
+                    size = len(json.dumps({"loaded_source_comparison": record}, ensure_ascii=True,
+                                          allow_nan=False, separators=(",", ":")).encode("ascii"))
+                    acquisition.rows += 1
+                    acquisition.bytes += size
+                    if (size <= 2048 and size <= MAX_CENSUS_ROW_BYTES
+                            and acquisition.rows <= acquisition.max_rows and acquisition.bytes <= acquisition.max_bytes):
+                        acquisition.check()
+                        _comparison[1]["loaded_source_comparison"] = record
+            except BaseException:
+                pass  # Missing diagnostic evidence never changes the known primary.
             raise IdentityUnavailable("identity_loaded_source_mismatch")
         code_rows.append({"module": function.__module__, "qualname": code.co_qualname,
                           "origin": origin, "loaded_sha256": loaded_hash,
@@ -2032,6 +2089,7 @@ def serving_observation(org: Any) -> dict:
             while True:
                 budget.step()  # finite even if revisions move without sleeping
                 attempt = {}
+                identity_pass = None
                 try:
                     if (org.memory_collection is not observer
                             or (org.slug, str(org.root.resolve()), org.db) != context
@@ -2053,7 +2111,9 @@ def serving_observation(org: Any) -> dict:
                         raise IdentityUnavailable(opening["observation_error"])
                     revision = _serving_revision(observer)
                     attempt["revision"] = revision
-                    identity = loaded_identity(org, budget=opening_files)
+                    identity_pass = "opening"
+                    identity = loaded_identity(org, budget=opening_files, _comparison=(identity_pass, attempt))
+                    identity_pass = None
                     budget.record(identity)
                     attempt["identity"] = identity
                     _identity_schema(identity)
@@ -2062,7 +2122,9 @@ def serving_observation(org: Any) -> dict:
                     if identity != baseline_identity:
                         raise IdentityUnavailable("observation_identity_moving")
                     cutoff = _now()
-                    closing_identity = loaded_identity(org, budget=closing_files)
+                    identity_pass = "closing"
+                    closing_identity = loaded_identity(org, budget=closing_files, _comparison=(identity_pass, attempt))
+                    identity_pass = None
                     budget.record(closing_identity)
                     attempt["closing_identity"] = closing_identity
                     _identity_schema(closing_identity)
@@ -2096,14 +2158,17 @@ def serving_observation(org: Any) -> dict:
                     # movement retries. Charge retained raw pairs before logging;
                     # log/size/deadline failure refuses, never silently drops them.
                     _retain_failed_pair(attempt, budget)
-                except Exception:
+                except Exception as exc:
                     # Diagnostics must not replace the original hard refusal,
                     # including when serialization/budget/logging is unavailable.
                     try:
                         budget.record(attempt)
                         logger.warning("Memory serving observation failed: %s", json.dumps(attempt, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
-                    except Exception:
-                        pass
+                    except BaseException as diagnostic_error:
+                        if (not isinstance(diagnostic_error, Exception)
+                                and not (identity_pass is not None and type(exc) is IdentityUnavailable
+                                         and exc.args == ("identity_loaded_source_mismatch",))):
+                            raise
                     raise
     except (IdentityUnavailable, CensusReadUnavailable) as exc:
         view["observation_error"] = view["observation_error"] or str(exc)
