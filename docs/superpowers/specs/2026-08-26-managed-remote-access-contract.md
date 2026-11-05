@@ -14,6 +14,39 @@ The package-only fixed guard probe captures the same bounded private stderr
 grammar within its original deadline, retains its actual helper/reap facts and
 returns a validated native origin through Python without changing guard authority.
 
+Suppressed operational errors retain their existing disposition and add fixed
+loss identities. Expected absence, a nonmatching restore candidate, polling and
+an existing directory are not product refusals. Validation-only predicates have
+error-returning diagnostic owners with Boolean adapters; rejecting callers chain
+the exact validation origin without rereading or changing short-circuit order.
+Private outer and native records may carry `loss_sites`: at most the first FOUR
+distinct observed sites. The list is bounded partial attribution, never a claim
+that no later loss occurred. Existing loss codes and acquisition states continue
+to describe completeness independently. Shared native close observations emit
+only while the package or package-guard handler owns the private channel.
+
+A failed Python package guard carries its marked origin, Python boundary and
+actual guard acquisition through exception propagation. A separate bounded
+`managed_private_guard` frame is consumed by the native child; that owner emits
+`managed_package_guard:STAGE:JSON` before its original child frame. It consumes
+the SAME four-frame/4096-byte outer account and the SAME nested512-byte frame/
+4096-byte acquisition bounds; there is no extra deadline or observation account.
+The optional child `guard` is a closed twenty-element positional array:
+diagnostic state; helper exit; deadline elapsed; kill requested; reaped; reap
+exit; launch; wait; wait error; kill; writer close; stderr bytes; stdout bytes;
+frame count; EOF; read; close; ordered loss codes; first four loss sites; native
+guard boundary site or null. Null retains unknown observations. These describe
+the guard, separately from the enclosing Python child process. Guard loss marks
+the child acquisition unavailable while preserving actually received origin and
+process facts. Missing/malformed/unentered guard data supplies no complete guard
+observation. A surviving origin alone never certifies intact acquisition.
+
+Native child serialization retains process/origin/loss facts before optional
+constant messages; if the unchanged1024-byte frame cannot fit, suppressed
+messages add ML at their distinct loss site. Short/failed writes, process death,
+or exhausted stream/receipt capacity can still prevent delivery. Missing records
+remain unavailable/partial/UNKNOWN; no fallback invents an unobserved origin.
+
 Private child records may add `refusal` and `boundary`, each exactly
 `{category,site}` from the closed vocabulary. `refusal` retains the earlier marked
 origin; `boundary` distinguishes a later failing return/cleanup boundary when

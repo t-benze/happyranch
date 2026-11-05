@@ -23,7 +23,9 @@ def main() -> None:
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                    and node.func.id in ('diagnostic_error', 'diagnostic_scope')):
+                    and node.func.id in ('diagnostic_error', 'diagnostic_scope', 'diagnostic_loss', 'loss')):
+                if node.func.id == 'loss' and (not node.args or not isinstance(node.args[0], ast.Constant)):
+                    continue  # already validated propagated origin, not an allocation
                 if not node.args or not isinstance(node.args[0], ast.Constant) or type(node.args[0].value) is not str:
                     raise AssertionError('nonliteral refusal allocation')
                 allocate(node.args[0].value, name + ':' + str(node.lineno))
@@ -33,7 +35,7 @@ def main() -> None:
         # Ignore comments without changing quoted/raw strings or source offsets.
         source = re.sub(r'"(?:[^"\\]|\\.)*"|`[^`]*`|//[^\n]*|/\*[\s\S]*?\*/',
                         lambda m: re.sub(r'[^\n]', ' ', m[0]) if m[0].startswith('/') else m[0], source)
-        for match in re.finditer(r'lifecycleDiagnosticError\s*\(\s*"([^"]+)"', source):
+        for match in re.finditer(r'(?:lifecycleDiagnosticError|lifecycleDiagnosticLoss|\.loss)\s*\(\s*"([^"]+)"', source):
             allocate(match[1], name + ':' + str(source.count('\n', 0, match.start()) + 1))
         for match in re.finditer(r'lifecyclePackageRefusal\("[a-z_]+", "([^\"]+)"', source):
             allocate(match[1], name + ':entry')

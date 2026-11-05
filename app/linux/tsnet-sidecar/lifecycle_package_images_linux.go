@@ -64,6 +64,7 @@ func (f *lifecycleImageFD) close() error {
 	if !f.attempted {
 		f.attempted = true
 		f.closeErr = f.file.Close()
+		lifecycleDiagnosticLoss("G500006", f.closeErr)
 	}
 	return lifecycleDiagnosticError("G000445", f.closeErr)
 }

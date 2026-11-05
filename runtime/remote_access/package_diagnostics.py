@@ -2,6 +2,44 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
+import os
+import sys
+
+PRIVATE_DIAGNOSTIC = ContextVar('private_package_loss_writer', default=False)
+
+
+def diagnostic_loss(site: str, category: str, error: BaseException) -> None:
+    """Observe a suppressed error without changing its caller's disposition."""
+    diagnostic_error(site, category, error)
+    module = sys.modules.get('runtime.remote_access.linux_package')
+    owner = getattr(module, '_MANAGED_PACKAGE_DIAGNOSTIC', None)
+    record = owner.get() if owner is not None else None
+    if record is not None:
+        sites = record.setdefault('loss_sites', [])
+        if site not in sites and len(sites) < 4:
+            sites.append(site)
+        record['reason'], record['diagnostic_state'] = None, 'unavailable'
+    if PRIVATE_DIAGNOSTIC.get():
+        try:
+            # One bounded fixed frame. Lost/short writes cannot certify delivery.
+            os.write(2, b'managed_diagnostic_loss:' + site.encode('ascii') + b'\n')
+        except OSError:
+            pass
+
+
+def exception_guard(error: BaseException) -> object:
+    seen = set()
+    for _ in range(16):
+        if id(error) in seen:
+            break
+        seen.add(id(error))
+        if hasattr(error, '_managed_package_guard'):
+            return error._managed_package_guard
+        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+        if error is None:
+            break
+    return None
 
 
 def exception_refusal(error: BaseException) -> tuple[str, str] | None:

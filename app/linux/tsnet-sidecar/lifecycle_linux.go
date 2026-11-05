@@ -167,7 +167,7 @@ func LifecycleBoot() (string, error) {
 	if err != nil {
 		return "", lifecycleDiagnosticError("G000005", ErrLifecycle, err)
 	}
-	defer f.Close()
+	defer func() { lifecycleDiagnosticLoss("G500030", f.Close()) }()
 	raw, err := io.ReadAll(io.LimitReader(f, 38))
 	if err != nil || len(raw) != 37 || raw[36] != '\n' {
 		return "", lifecycleDiagnosticError("G000006", ErrLifecycle)
@@ -462,7 +462,7 @@ func lifecycleDirectory(path string) (*os.File, error) {
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	for index, part := range parts {
 		next, e := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		unix.Close(fd)
+		lifecycleDiagnosticLoss("G500042", unix.Close(fd))
 		if e != nil {
 			if e == unix.ENOENT || e == unix.ENOTDIR || e == unix.ELOOP {
 				return nil, lifecycleDiagnosticError("G000009", errLifecycleInvalid)
@@ -473,11 +473,11 @@ func lifecycleDirectory(path string) (*os.File, error) {
 		var st unix.Stat_t
 		finalState := index == len(parts)-1 && lifecycleOneOf(path, ManagedMainDirectory, ManagedSidecarDirectory)
 		if unix.Fstat(fd, &st) != nil {
-			unix.Close(fd)
+			lifecycleDiagnosticLoss("G500043", unix.Close(fd))
 			return nil, lifecycleDiagnosticError("G000011", errLifecycleIO)
 		}
 		if st.Mode&0022 != 0 || finalState && (st.Uid != lifecycleServiceUID() || st.Mode&07777 != 0700) || !finalState && st.Uid != 0 {
-			unix.Close(fd)
+			lifecycleDiagnosticLoss("G500044", unix.Close(fd))
 			return nil, lifecycleDiagnosticError("G000012", errLifecycleInvalid)
 		}
 	}
@@ -496,7 +496,7 @@ func lifecycleReadAt(dir *os.File, name string, dst any) error {
 		return lifecycleDiagnosticError("G000015", errLifecycleIO)
 	}
 	f := os.NewFile(uintptr(fd), name)
-	defer f.Close()
+	defer func() { lifecycleDiagnosticLoss("G500031", f.Close()) }()
 	var st unix.Stat_t
 	if unix.Fstat(fd, &st) != nil {
 		return lifecycleDiagnosticError("G000016", errLifecycleIO)
@@ -582,15 +582,15 @@ func (p *LifecyclePair) Close() {
 	// Closing this duplicate never explicitly unlocks an inherited holder's
 	// open-file description. Package ownership must join before its last close.
 	if p.lock != nil {
-		p.lock.Close()
+		lifecycleDiagnosticLoss("G500001", p.lock.Close())
 		p.lock = nil
 	}
 	if p.mainDir != nil {
-		p.mainDir.Close()
+		lifecycleDiagnosticLoss("G500002", p.mainDir.Close())
 		p.mainDir = nil
 	}
 	if p.sideDir != nil {
-		p.sideDir.Close()
+		lifecycleDiagnosticLoss("G500003", p.sideDir.Close())
 		p.sideDir = nil
 	}
 }
@@ -615,7 +615,7 @@ func (p *LifecyclePair) Refresh() error {
 		}
 		f := os.NewFile(uintptr(fd), ".")
 		entries, err := f.Readdirnames(128)
-		f.Close()
+		lifecycleDiagnosticLoss("G500045", f.Close())
 		if err != nil && err != io.EOF {
 			return lifecycleDiagnosticError("G000037", errLifecycleIO, diagnosticOrigin)
 		}
@@ -654,16 +654,16 @@ func (p *LifecyclePair) publish(dir *os.File, value any) error {
 	f := os.NewFile(uintptr(fd), name)
 	var parent unix.Stat_t
 	if unix.Fstat(int(dir.Fd()), &parent) != nil {
-		f.Close()
+		lifecycleDiagnosticLoss("G500046", f.Close())
 		return lifecycleDiagnosticError("G000045", errLifecycleIO)
 	}
 	if os.Geteuid() == 0 && f.Chown(int(parent.Uid), int(parent.Gid)) != nil {
-		f.Close()
+		lifecycleDiagnosticLoss("G500047", f.Close())
 		return lifecycleDiagnosticError("G000046", errLifecycleIO)
 	}
 	n, err := f.Write(raw)
 	if err != nil || n != len(raw) || f.Sync() != nil {
-		f.Close()
+		lifecycleDiagnosticLoss("G500048", f.Close())
 		return lifecycleDiagnosticError("G000047", errLifecycleIO)
 	}
 	if f.Close() != nil {
@@ -881,7 +881,7 @@ func (p *LifecyclePin) read(name string, cap int64) ([]byte, error) {
 		return nil, lifecycleDiagnosticError("G000074", ErrLifecycle, err)
 	}
 	f := os.NewFile(uintptr(fd), name)
-	defer f.Close()
+	defer func() { lifecycleDiagnosticLoss("G500032", f.Close()) }()
 	raw, err := io.ReadAll(io.LimitReader(f, cap+1))
 	if err != nil || int64(len(raw)) > cap {
 		return nil, lifecycleDiagnosticError("G000075", ErrLifecycle)
@@ -939,11 +939,11 @@ func (p *LifecyclePin) Dead() bool {
 }
 func (p *LifecyclePin) Close() {
 	if p.proc != nil {
-		p.proc.Close()
+		lifecycleDiagnosticLoss("G500004", p.proc.Close())
 		p.proc = nil
 	}
 	if p.pidfd >= 0 {
-		unix.Close(p.pidfd)
+		lifecycleDiagnosticLoss("G500005", unix.Close(p.pidfd))
 		p.pidfd = -1
 	}
 }
@@ -1004,7 +1004,7 @@ func ManagedIdentityPreflight(c Config) error {
 	if err != nil {
 		return lifecycleDiagnosticError("G000096", ErrLifecycle, err)
 	}
-	defer f.Close()
+	defer func() { lifecycleDiagnosticLoss("G500033", f.Close()) }()
 	st, err = f.Stat()
 	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || !ownedByCurrentUser(st) || st.Size() <= 0 || st.Size() > 1<<20 {
 		return lifecycleDiagnosticError("G000097", ErrLifecycle)
@@ -1272,7 +1272,7 @@ func lifecycleCgroupMembers(unit string) ([]int, error) {
 	if err != nil {
 		return nil, lifecycleDiagnosticError("G000134", ErrLifecycle, err)
 	}
-	defer file.Close()
+	defer func() { lifecycleDiagnosticLoss("G500036", file.Close()) }()
 	raw, err := io.ReadAll(io.LimitReader(file, 4097))
 	if err != nil || len(raw) > 4096 {
 		return nil, lifecycleDiagnosticError("G000135", ErrLifecycle)
@@ -1315,7 +1315,7 @@ func ValidateLifecyclePin(ctx context.Context, pin *LifecyclePin, unit string, m
 	if err != nil {
 		return lifecycleDiagnosticError("G000143", ErrLifecycle, err)
 	}
-	defer unix.Close(exe)
+	defer func() { lifecycleDiagnosticLoss("G500037", unix.Close(exe)) }()
 	path := "/opt/happyranch/bin/happyranch-tsnet-sidecar"
 	if !main {
 		path = "/opt/happyranch/bin/happyranch-connector"
@@ -1324,7 +1324,7 @@ func ValidateLifecyclePin(ctx context.Context, pin *LifecyclePin, unit string, m
 	if err != nil {
 		return lifecycleDiagnosticError("G000144", ErrLifecycle, err)
 	}
-	defer unix.Close(expected)
+	defer func() { lifecycleDiagnosticLoss("G500038", unix.Close(expected)) }()
 	var a, b unix.Stat_t
 	if unix.Fstat(exe, &a) != nil || unix.Fstat(expected, &b) != nil || a.Mode&unix.S_IFMT != unix.S_IFREG || a.Dev != b.Dev || a.Ino != b.Ino {
 		return lifecycleDiagnosticError("G000145", ErrLifecycle)
@@ -1603,9 +1603,9 @@ func lifecycleBootServiceError(ctx context.Context, unit string, props map[strin
 			expected, e := unix.Open(args[0], unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			var left, right unix.Stat_t
 			same := e == nil && unix.Fstat(actual, &left) == nil && unix.Fstat(expected, &right) == nil && left.Mode&unix.S_IFMT == unix.S_IFREG && left.Ino == right.Ino && left.Dev == right.Dev
-			unix.Close(actual)
+			lifecycleDiagnosticLoss("G500049", unix.Close(actual))
 			if expected >= 0 {
-				unix.Close(expected)
+				lifecycleDiagnosticLoss("G500050", unix.Close(expected))
 			}
 			if !same {
 				return 0, false, lifecycleDiagnosticError("G000162", ErrLifecycle)
@@ -3409,7 +3409,7 @@ func lifecycleInheritedPair(ctx context.Context) (*LifecyclePair, error) {
 		return nil, lifecycleDiagnosticError("G400007", ErrLifecycle)
 	}
 	e := unix.Flock(separate, unix.LOCK_EX|unix.LOCK_NB)
-	unix.Close(separate)
+	lifecycleDiagnosticLoss("G500051", unix.Close(separate))
 	if e != unix.EWOULDBLOCK && e != unix.EAGAIN {
 		return nil, lifecycleDiagnosticError("G400006", ErrLifecycle)
 	}
@@ -3441,6 +3441,10 @@ func lifecycleInheritedPair(ctx context.Context) (*LifecyclePair, error) {
 // The thin fixed helper checks a borrowed lock; its parent retains the SAME
 // OFD throughout its unchanged credential body and reload/error unwind.
 func HandleLifecycleGuard(input io.Reader, kind string) int {
+	if kind == "package" {
+		previousDiagnostic := lifecycleDiagnosticActive.Swap(true)
+		defer lifecycleDiagnosticActive.Store(previousDiagnostic)
+	}
 	maximum := 120 * time.Second
 	if kind == "stopped" {
 		maximum = 60 * time.Second
@@ -3583,7 +3587,7 @@ func BootstrapLifecycle(ctx context.Context) (*LifecyclePair, error) {
 	if err != nil {
 		return nil, lifecycleDiagnosticError("G000355", err, diagnosticOrigin)
 	}
-	defer parent.Close()
+	defer func() { lifecycleDiagnosticLoss("G500040", parent.Close()) }()
 	for _, path := range []string{ManagedMainDirectory, ManagedSidecarDirectory} {
 		if _, e := os.Lstat(path); os.IsNotExist(e) {
 			continue
@@ -3865,6 +3869,7 @@ type lifecyclePackageNativeDiagnostic struct {
 	Losses     []string `json:"losses"`
 	Read       string   `json:"read"`
 	Close      string   `json:"close"`
+	LossSites  []string `json:"loss_sites,omitempty"`
 }
 
 type lifecyclePackageRefusalDiagnostic struct {
@@ -3873,6 +3878,7 @@ type lifecyclePackageRefusalDiagnostic struct {
 }
 
 type lifecyclePackageChildDiagnostic struct {
+	Guard           json.RawMessage                    `json:"-"`
 	Refusal         *lifecyclePackageRefusalDiagnostic `json:"refusal,omitempty"`
 	Boundary        *lifecyclePackageRefusalDiagnostic `json:"boundary,omitempty"`
 	Reason          *string                            `json:"reason"`
@@ -3892,7 +3898,10 @@ const lifecyclePackageInterpreterError = "Failed to pre-initialize embedded pyth
 
 var lifecyclePackageLossOrder = []string{"BL", "FL", "FC", "ML", "UN", "U8", "CT", "PE", "RE", "CE", "SD", "JS", "TL", "CX"}
 
-func (n *lifecyclePackageNativeDiagnostic) loss(code string) {
+func (n *lifecyclePackageNativeDiagnostic) loss(site, code string) {
+	if !lifecycleOneOf(site, n.LossSites...) && len(n.LossSites) < 4 {
+		n.LossSites = append(n.LossSites, site)
+	}
 	if !lifecycleOneOf(code, n.Losses...) {
 		n.Losses = append(n.Losses, code)
 	}
@@ -4061,11 +4070,12 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 		diagnostic.Native.Close = "ok"
 		if readerCloseErr != nil {
 			diagnostic.Native.Close = "error"
-			diagnostic.Native.loss("CE")
+			diagnostic.Native.loss("G500007", "CE")
 		}
 		diagnostic.Process.WriterClose = "ok"
 		if writer.Close() != nil {
 			diagnostic.Process.WriterClose = "error"
+			diagnostic.Native.loss("G500008", "TL")
 		}
 		return diagnostic, lifecycleDiagnosticError("G000379", ErrLifecycle)
 	}
@@ -4094,6 +4104,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 		return lifecycleDiagnosticError("G000380", err)
 	}
 	type observation struct {
+		guard        json.RawMessage
 		native       lifecyclePackageNativeDiagnostic
 		reason       string
 		refusal      *lifecyclePackageRefusalDiagnostic
@@ -4123,9 +4134,9 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 					}
 				}
 				if lines == 17 {
-					n.loss("FC")
+					n.loss("G500009", "FC")
 				}
-				n.loss("BL")
+				n.loss("G500010", "BL")
 				n.Redacted, n.Read = true, "limit"
 				break
 			}
@@ -4135,13 +4146,13 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 					frame[used] = value
 					used++
 				} else {
-					n.loss("FL")
+					n.loss("G500011", "FL")
 					n.Redacted = true
 				}
 				if value > 127 {
-					n.loss("U8")
+					n.loss("G500012", "U8")
 				} else if value != '\n' && value < 32 || value == 127 {
-					n.loss("CT")
+					n.loss("G500013", "CT")
 				}
 				if value != '\n' {
 					continue
@@ -4150,10 +4161,35 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 					lines++
 				}
 				if lines > 16 {
-					n.loss("FC")
+					n.loss("G500014", "FC")
 					n.Redacted = true
 				} else if length <= len(frame) {
 					raw := string(frame[:used])
+					if strings.HasPrefix(raw, "managed_diagnostic_loss:") {
+						site := strings.TrimSuffix(strings.TrimPrefix(raw, "managed_diagnostic_loss:"), "\n")
+						if lifecyclePackagePrivateSites[site] != "" {
+							n.loss(site, "TL")
+						} else {
+							n.loss("G500023", "TL")
+						}
+						used, length = 0, 0
+						continue
+					}
+					if strings.HasPrefix(raw, "managed_private_guard:") {
+						guard := []byte(strings.TrimSuffix(strings.TrimPrefix(raw, "managed_private_guard:"), "\n"))
+						if result.guard == nil && lifecyclePackageGuardValid(guard) {
+							result.guard = append([]byte(nil), guard...)
+							var facts []json.RawMessage
+							_ = json.Unmarshal(guard, &facts)
+							if string(facts[0]) != `"observed"` && string(facts[0]) != `"absent"` {
+								n.loss("G500027", "TL")
+							}
+						} else {
+							n.loss("G500024", "TL")
+						}
+						used, length = 0, 0
+						continue
+					}
 					reason := strings.TrimSuffix(strings.TrimPrefix(raw, "managed_private_refusal:"), "\n")
 					var refusal, boundary *lifecyclePackageRefusalDiagnostic
 					fields := strings.Split(reason, ":")
@@ -4177,7 +4213,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 						} else {
 							result.reason = ""
 							result.refusal, result.boundary = nil, nil
-							n.loss("CX")
+							n.loss("G500015", "CX")
 						}
 					} else if sentence := lifecyclePackageNativeSentence(frame[:used]); sentence != "" {
 						if sentence != lifecyclePackageInterpreterError {
@@ -4187,7 +4223,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 							if len(n.Messages) < 2 {
 								n.Messages = append(n.Messages, sentence)
 							} else {
-								n.loss("ML")
+								n.loss("G500016", "ML")
 								n.Redacted = true
 							}
 						}
@@ -4197,7 +4233,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 							printable = printable && b >= 32 && b <= 126
 						}
 						if printable {
-							n.loss("UN")
+							n.loss("G500017", "UN")
 						}
 					}
 				}
@@ -4207,7 +4243,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 				if readErr == io.EOF {
 					eof, n.Read = true, "eof"
 					if length != 0 {
-						n.loss("PE")
+						n.loss("G500018", "PE")
 					}
 				} else {
 					n.Read = "error"
@@ -4217,7 +4253,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 					if length != 0 {
 						n.Redacted = true
 					}
-					n.loss("RE")
+					n.loss("G500019", "RE")
 				}
 				break
 			}
@@ -4228,7 +4264,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 		n.Close = "ok"
 		if readerCloseErr != nil {
 			n.Close = "error"
-			n.loss("CE")
+			n.loss("G500020", "CE")
 		}
 		observed <- result
 	}()
@@ -4250,6 +4286,10 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 	}
 	result := <-observed
 	diagnostic.Native = result.native
+	diagnostic.Guard = result.guard
+	if closeErr != nil {
+		diagnostic.Native.loss("G500026", "TL")
+	}
 	diagnostic.KillRequested = killRequested.Load()
 	diagnostic.Process.Kill = []string{"not_requested", "requested", "sent", "not_found", "failed"}[killState.Load()]
 	if state := cmd.ProcessState; state != nil {
@@ -4263,11 +4303,11 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 		}
 	}
 	if result.reason != "" {
+		diagnostic.Refusal, diagnostic.Boundary = result.refusal, result.boundary
 		if diagnostic.Reaped && diagnostic.HelperExit != nil && *diagnostic.HelperExit == 78 {
 			diagnostic.Reason = &result.reason
-			diagnostic.Refusal, diagnostic.Boundary = result.refusal, result.boundary
 		} else {
-			diagnostic.Native.loss("CX")
+			diagnostic.Native.loss("G500021", "CX")
 		}
 	}
 	if startErr != nil {
@@ -4289,6 +4329,9 @@ func lifecyclePackageChildFrame(stage string, diagnostic lifecyclePackageChildDi
 	if !lifecycleOneOf(stage, "admission_child", "stopped_admission_child", "package_body") {
 		return
 	}
+	if diagnostic.Guard != nil {
+		_, _ = unix.Write(2, []byte("managed_package_guard:"+stage+":"+string(diagnostic.Guard)+"\n"))
+	}
 	prefix := "managed_package_child_observation:"
 	encode := func() ([]byte, error) {
 		if failed {
@@ -4309,7 +4352,14 @@ func lifecyclePackageChildFrame(stage string, diagnostic lifecyclePackageChildDi
 	}
 	raw, err := encode()
 	if err != nil {
-		diagnostic.Native.loss("JS")
+		diagnostic.Native.loss("G500022", "JS")
+		diagnostic.finishNative()
+		raw, err = encode()
+	}
+	if err == nil && len(prefix)+len(raw)+1 > 1024 {
+		// Retain process/origin/losses; optional constant messages cannot fit.
+		diagnostic.Native.Messages = []string{}
+		diagnostic.Native.loss("G500025", "ML")
 		diagnostic.finishNative()
 		raw, err = encode()
 	}
@@ -4349,6 +4399,8 @@ func lifecyclePackageRefusal(reason, boundary string, causes ...error) int {
 }
 
 func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
+	previousDiagnostic := lifecycleDiagnosticActive.Swap(true)
+	defer lifecycleDiagnosticActive.Store(previousDiagnostic)
 	entry := time.Now()
 	ctx, cancel, request, err := lifecycleEntryContext(input, 180*time.Second)
 	if err != nil {
@@ -4379,7 +4431,7 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	if err != nil {
 		return lifecyclePackageRefusal("executable_open", "N000006", err)
 	}
-	defer executable.Close()
+	defer func() { lifecycleDiagnosticLoss("G500039", executable.Close()) }()
 	var p *LifecyclePair
 	if _, e := os.Lstat(ManagedMainDirectory + "/" + managedRecord); os.IsNotExist(e) {
 		if request.Operation != "package-install" {
@@ -4816,7 +4868,7 @@ func lifecycleBootIdentity() error {
 	if err != nil {
 		return ErrLifecycle
 	}
-	defer f.Close()
+	defer func() { lifecycleDiagnosticLoss("G500034", f.Close()) }()
 	raw, err := io.ReadAll(io.LimitReader(f, 4097))
 	if err != nil || len(raw) > 4096 {
 		return ErrLifecycle
@@ -4927,7 +4979,7 @@ func lifecycleIncoming(packageFile, connector *os.File) error {
 	if err != nil {
 		return lifecycleDiagnosticError("G000441", ErrLifecycle, err)
 	}
-	defer self.Close()
+	defer func() { lifecycleDiagnosticLoss("G500041", self.Close()) }()
 	hash = sha256.New()
 	if _, err = io.Copy(hash, io.LimitReader(self, 256<<20)); err != nil || hex.EncodeToString(hash.Sum(nil)) != hashes["bin/happyranch-tsnet-sidecar"] {
 		return lifecycleDiagnosticError("G000442", ErrLifecycle)
@@ -5033,9 +5085,9 @@ func lifecycleRunHelper(ctx context.Context) (int64, bool) {
 		installed, e := unix.Open(expected, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 		var a, b unix.Stat_t
 		same := e == nil && unix.Fstat(executable, &a) == nil && unix.Fstat(installed, &b) == nil && a.Ino == b.Ino && a.Dev == b.Dev
-		unix.Close(executable)
+		lifecycleDiagnosticLoss("G500052", unix.Close(executable))
 		if installed >= 0 {
-			unix.Close(installed)
+			lifecycleDiagnosticLoss("G500053", unix.Close(installed))
 		}
 		if !same {
 			pin.Close()

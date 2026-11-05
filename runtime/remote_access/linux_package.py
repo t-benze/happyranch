@@ -1,7 +1,7 @@
 """Deterministic Linux composite package for the managed embedded transport."""
 from __future__ import annotations
 
-from runtime.remote_access.package_diagnostics import diagnostic_error, diagnostic_scope
+from runtime.remote_access.package_diagnostics import diagnostic_error, diagnostic_scope, diagnostic_loss
 
 import hashlib
 import io
@@ -311,11 +311,44 @@ def _package_refusal_projection(value: object) -> dict[str, str] | None:
     return {"category": record["category"], "site": site}
 
 
+def _package_loss_sites(value: object) -> list[str]:
+    from runtime.remote_access.package_diagnostic_codes import SITE_CATEGORIES
+    if (type(value) is not list or len(value) > 4
+            or any(type(site) is not str or site not in SITE_CATEGORIES for site in value)
+            or len(set(value)) != len(value)):
+        raise diagnostic_error("P400001", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
+    return list(value)
+
+
+def _package_guard_projection(value: object) -> list[object]:
+    # Compact positional acquisition facts; distinct from the enclosing child.
+    if type(value) is not list or len(value) != 20:
+        raise diagnostic_error("P400002", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
+    return [
+        _package_literal(value[0], _PACKAGE_DIAGNOSTIC_STATES),
+        _package_integer(value[1], -64, 255), _package_boolean(value[2]),
+        _package_boolean(value[3]), _package_boolean(value[4]),
+        _package_integer(value[5], -64, 255),
+        _package_literal(value[6], ("not_attempted", "failed", "started")),
+        _package_literal(value[7], ("not_attempted", "pending", "failed", "reaped")),
+        _package_boolean(value[8]),
+        _package_literal(value[9], ("not_requested", "requested", "sent", "not_found", "failed")),
+        _package_literal(value[10], ("not_opened", "unknown", "ok", "error")),
+        _package_integer(value[11], 0, 4097), _package_integer(value[12], 0, 4097),
+        _package_integer(value[13], 0, 4), _package_boolean(value[14]),
+        _package_literal(value[15], ("eof", "limit", "error", "cancelled", "not_started", "unavailable", "unknown")),
+        _package_literal(value[16], ("ok", "error", "not_opened", "unknown")),
+        _package_loss_projection(value[17]), _package_loss_sites(value[18]),
+        (_package_loss_sites([value[19]])[0] if value[19] is not None else None),
+    ]
+
+
 def _managed_package_child_projection(value: object) -> dict[str, object]:
     keys = ("reason", "diagnostic_state", "helper_exit", "deadline_elapsed", "kill_requested", "reaped", "reap_exit", "native", "process")
     extended = type(value) is dict and "refusal" in value
     boundary = type(value) is dict and "boundary" in value
-    child = _package_keys(value, keys + (("refusal",) if extended else ()) + (("boundary",) if boundary else ()))
+    guard = type(value) is dict and "guard" in value
+    child = _package_keys(value, keys + (("refusal",) if extended else ()) + (("boundary",) if boundary else ()) + (("guard",) if guard else ()))
     result = {"reason": _package_literal(child["reason"], _PACKAGE_PRIVATE_REASONS, nullable=True),
               "diagnostic_state": _package_literal(child["diagnostic_state"], _PACKAGE_DIAGNOSTIC_STATES),
               "helper_exit": _package_integer(child["helper_exit"], -64, 255),
@@ -334,7 +367,10 @@ def _managed_package_child_projection(value: object) -> dict[str, object]:
         result["refusal"] = {"category": refusal["category"], "site": site}
     if boundary:
         result["boundary"] = _package_refusal_projection(child["boundary"])
-    n = _package_keys(child["native"], ("source", "state", "messages", "eof", "bytes_seen", "frames_seen", "redacted", "truncated", "losses", "read", "close"))
+    if guard:
+        result["guard"] = _package_guard_projection(child["guard"])
+    loss_sites = type(child["native"]) is dict and "loss_sites" in child["native"]
+    n = _package_keys(child["native"], ("source", "state", "messages", "eof", "bytes_seen", "frames_seen", "redacted", "truncated", "losses", "read", "close") + (("loss_sites",) if loss_sites else ()))
     if type(n["messages"]) is not list or len(n["messages"]) > 2 or type(n["redacted"]) is not bool or type(n["truncated"]) is not bool:
         raise diagnostic_error("P000021", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     native = {
@@ -349,6 +385,8 @@ def _managed_package_child_projection(value: object) -> dict[str, object]:
         "read": _package_literal(n["read"], ("eof", "limit", "error", "cancelled", "not_started", "unavailable", "unknown")),
         "close": _package_literal(n["close"], ("ok", "error", "not_opened", "unknown")),
     }
+    if loss_sites:
+        native["loss_sites"] = _package_loss_sites(n["loss_sites"])
     losses = native["losses"] or []
     has = lambda *codes: any(code in losses for code in codes)
     complete = (result["process"]["launch"] == "started" and native["eof"] is True
@@ -398,7 +436,7 @@ def _managed_package_child_projection(value: object) -> dict[str, object]:
 
 
 def _empty_managed_package_diagnostic() -> dict[str, object]:
-    return {"refusal": None, "boundary": None, "reason": None, "diagnostic_state": "unavailable", "helper_exit": None,
+    return {"refusal": None, "boundary": None, "loss_sites": [], "reason": None, "diagnostic_state": "unavailable", "helper_exit": None,
             "deadline_elapsed": None, "kill_requested": False, "reaped": False, "reap_exit": None,
             "outcome": "unknown", "process": {"launch": "not_attempted", "wait": "not_attempted", "wait_error": None, "kill": "not_requested", "writer_close": "not_opened"},
             "transport": {"bytes_seen": None, "stdout_seen": None, "frames_seen": None, "eof": None, "read": "not_started", "close": "not_opened", "losses": None}, "stages": []}
@@ -428,6 +466,8 @@ def _managed_package_diagnostic_projection(value: object) -> dict[str, object]:
         value = {**value, "refusal": None}
     if type(value) is dict and "boundary" not in value:
         value = {**value, "boundary": None}
+    if type(value) is dict and "loss_sites" not in value:
+        value = {**value, "loss_sites": []}
     d = _package_keys(value, tuple(_empty_managed_package_diagnostic()))
     result = {"reason": _package_literal(d["reason"], _PACKAGE_REASONS, nullable=True),
               "diagnostic_state": _package_literal(d["diagnostic_state"], _PACKAGE_DIAGNOSTIC_STATES),
@@ -439,6 +479,7 @@ def _managed_package_diagnostic_projection(value: object) -> dict[str, object]:
               "process": _package_process_projection(d)}
     result["refusal"] = _package_refusal_projection(d["refusal"])
     result["boundary"] = _package_refusal_projection(d["boundary"])
+    result["loss_sites"] = _package_loss_sites(d["loss_sites"])
     t = _package_keys(d["transport"], ("bytes_seen", "stdout_seen", "frames_seen", "eof", "read", "close", "losses"))
     transport = {"bytes_seen": _package_integer(t["bytes_seen"], 0, 4097),
                  "stdout_seen": _package_integer(t["stdout_seen"], 0, 4097),
@@ -490,7 +531,9 @@ def _managed_package_diagnostic_projection(value: object) -> dict[str, object]:
             if reason is not None or result["helper_exit"] != 0 or failed:
                 raise diagnostic_error("P000034", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
             count, frames = 3, 3
-        if [v[0] for v in result["stages"]] != list(_PACKAGE_STAGES[:count]) or transport["frames_seen"] != frames:
+        frames += sum("guard" in triple[2] for triple in result["stages"])
+        if (result["loss_sites"] or [v[0] for v in result["stages"]] != list(_PACKAGE_STAGES[:count])
+                or transport["frames_seen"] != frames):
             raise diagnostic_error("P000035", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
     elif result["reason"] is not None:
         raise diagnostic_error("P000036", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
@@ -521,7 +564,9 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     package_check = operation == "managed-package-check" and _package_diagnostic is not None
     diagnostic = (_package_diagnostic if _package_diagnostic is not None else {}) if operation == "managed-package" or package_check else None
     if diagnostic is not None:
+        prior_sites = diagnostic.get("loss_sites", [])
         diagnostic.update(_empty_managed_package_diagnostic())
+        diagnostic["loss_sites"] = prior_sites
         diagnostic["outcome"] = "refused"
     process = diagnostic["process"] if diagnostic is not None else {}
     transport = diagnostic["transport"] if diagnostic is not None else {}
@@ -538,11 +583,37 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     diagnostic_read = "not_started"
     diagnostic_close = "not_opened"
     result = bytearray()
+    guards: dict[str, list[object]] = {}
+
+    def loss(site: str, *codes: str) -> None:
+        losses.update(codes)
+        if diagnostic is not None and site not in diagnostic["loss_sites"] and len(diagnostic["loss_sites"]) < 4:
+            diagnostic["loss_sites"].append(site)
 
     def accept_frame(raw_frame: bytes) -> None:
         nonlocal bare, failure_seen, bare_refusal, bare_boundary
         if diagnostic_lines > 4:
-            losses.update(("CX", "TL"))
+            loss("P400003", "CX", "TL")
+            return
+        if raw_frame.startswith(b"managed_diagnostic_loss:"):
+            try:
+                sites = _package_loss_sites([raw_frame[24:-1].decode("ascii")])
+            except (ValueError, UnicodeError):
+                loss("P400004", "TL")
+            else:
+                loss(sites[0], "TL")
+            return
+        if raw_frame.startswith(b"managed_package_guard:"):
+            try:
+                stage_raw, guard_raw = raw_frame[22:-1].split(b":", 1)
+                stage = _package_literal(stage_raw.decode("ascii"), _PACKAGE_STAGES)
+                guard = _package_guard_projection(_package_json(guard_raw, 512))
+                if stage in guards or failure_seen or bare is not None:
+                    loss("P400005", "CX", "TL")
+                else:
+                    guards[stage] = guard
+            except (ValueError, UnicodeError, TypeError):
+                loss("P400006", "TL")
             return
         if raw_frame.startswith(b"managed_package_refusal:"):
             fields = raw_frame[:-1].split(b":")
@@ -554,15 +625,15 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                         if len(fields) == 4:
                             candidate_boundary = _package_refusal_projection({"category": "managed_lifecycle_refused", "site": fields[3].decode("ascii")})
                 except (ValueError, UnicodeError):
-                    losses.add("TL")
+                    loss("P400008", "TL")
                     return
                 raw_frame = b"managed_package_refusal:" + fields[1] + b"\n"
             with diagnostic_scope("P100014", "managed_operational_error"):
                 reason = next((r for r in _PACKAGE_REASONS if raw_frame == b"managed_package_refusal:" + r.encode("ascii") + b"\n"), None)
             if reason is None:
-                losses.add("TL")
+                loss("P400009", "TL")
             elif bare is not None or failure_seen:
-                losses.add("CX")
+                loss("P400010", "CX")
             else:
                 bare = reason
                 bare_refusal, bare_boundary = candidate_refusal, candidate_boundary
@@ -593,7 +664,7 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                         raise diagnostic_error("P000043", "managed_operational_error", ValueError)
                 elif child["reason"] is not None:
                     raise diagnostic_error("P000044", "managed_operational_error", ValueError)
-                losses.add("TL")
+                loss("P400011", "TL")
                 return
             key = "stage" if success else "reason"
             record = _package_keys(record, ("version", key, "child"))
@@ -601,16 +672,18 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 raise diagnostic_error("P000045", "managed_operational_error", ValueError)
             stage = _package_literal(record[key], _PACKAGE_STAGES)
             child = _managed_package_child_projection(record["child"])
+            if stage in guards:
+                child["guard"] = guards[stage]
             if (bare is not None or failure_seen or stages and _PACKAGE_STAGES.index(stage) <= _PACKAGE_STAGES.index(stages[-1][0])):
-                losses.add("CX")
+                loss("P400012", "CX")
                 return
             if success and (child["helper_exit"] != 0 or child["reaped"] is not True or child["deadline_elapsed"] is True or child["process"]["wait_error"] is not False or child["process"]["writer_close"] != "ok"):
-                losses.add("CX")
+                loss("P400013", "CX")
                 return
             stages.append([stage, "success" if success else "failure", child])
             failure_seen = not success
         except (ValueError, UnicodeError, PackageError, RecursionError, TypeError, KeyError):
-            losses.add("TL")
+            loss("P400014", "TL")
 
     source_read = source_write = output_read = output_write = null = -1
     error_read = error_write = -1
@@ -630,7 +703,7 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 os.close(descriptor)
         except OSError:
             if diagnostic is not None:
-                losses.add("CE")
+                loss("P400015", "CE")
                 if is_reader:
                     diagnostic_close = "error"
                 if is_writer:
@@ -723,18 +796,18 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                             if not is_output:
                                 diagnostic_eof, diagnostic_read = True, "eof"
                                 if frame or frame_overflow:
-                                    losses.update(("PE", "TL"))
+                                    loss("P400016", "PE", "TL")
                             continue
                         if is_output:
                             result.extend(piece)
                             if len(result) + diagnostic_bytes > 4096:
                                 if diagnostic is not None:
-                                    losses.update(("BL", "TL"))
+                                    loss("P400017", "BL", "TL")
                                 raise diagnostic_error("P000051", "managed_lifecycle_response_invalid", PackageError("managed_lifecycle_response_invalid"))
                         else:
                             diagnostic_bytes += len(piece)
                             if diagnostic_bytes + len(result) > 4096:
-                                losses.update(("BL", "TL"))
+                                loss("P400018", "BL", "TL")
                                 diagnostic_read = "limit"
                                 frame.clear()
                                 with diagnostic_scope("P200010", "managed_operational_error"):
@@ -750,9 +823,9 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                                 if byte == 10:
                                     diagnostic_lines += 1
                                     if diagnostic_lines > 4:
-                                        losses.update(("CX", "TL"))
+                                        loss("P400019", "CX", "TL")
                                     elif frame_overflow:
-                                        losses.update(("FL", "TL"))
+                                        loss("P400020", "FL", "TL")
                                     else:
                                         accept_frame(bytes(frame))
                                     frame.clear()
@@ -789,7 +862,7 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 diagnostic["_initiating"] = {"kind": "package_error", "category": category, "status": 1}
             if not diagnostic_eof and diagnostic_read != "limit":
                 diagnostic_read = "cancelled" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "error"
-                losses.add("RE")
+                loss("P400021", "RE")
             if isinstance(exc, PackageError):
                 diagnostic["outcome"] = {"managed_lifecycle_deadline": "deadline", "managed_lifecycle_response_invalid": "response_invalid"}.get(str(exc), "refused")
         raise
@@ -837,9 +910,9 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
             if diagnostic is not None:
                 diagnostic["deadline_elapsed"] = time.monotonic_ns() >= deadline if diagnostic["deadline_elapsed"] is None else diagnostic["deadline_elapsed"]
                 if frame or frame_overflow:
-                    losses.add("TL")
+                    loss("P400022", "TL")
                 if not diagnostic_eof:
-                    losses.add("TL")
+                    loss("P400023", "TL")
                 # Reap after cancellation is still an actual helper exit.
                 if diagnostic["helper_exit"] is None and diagnostic["reaped"] is True:
                     diagnostic["helper_exit"] = diagnostic["reap_exit"]
@@ -850,7 +923,7 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 if helper_exit == 0:
                     expected = [] if package_check else list(_PACKAGE_STAGES)
                     if bare is not None or failure_seen:
-                        losses.add("CX")
+                        loss("P400024", "CX")
                 elif helper_exit == 78:
                     if failure_seen:
                         reason = stages[-1][0]
@@ -860,14 +933,18 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                         count = (1 if bare in ("inhibit_policy", "inhibit_deadline", "manager_stop", "reacquire_pair", "stopped_admission_deadline", "stopped_current") else 2 if bare == "retire_policy" else 3 if bare in ("final_refresh", "final_current") else 0)
                         expected = [] if package_check else list(_PACKAGE_STAGES[:count])
                         if bare in _PACKAGE_STAGES:
-                            losses.add("TL")
+                            loss("P400025", "TL")
                     else:
-                        losses.add("TL")
+                        loss("P400026", "TL")
                 elif bare is not None or failure_seen:
-                    losses.add("CX")
+                    loss("P400027", "CX")
                 if expected is None or known_prefix != expected:
-                    losses.add("TL")
+                    loss("P400028", "TL")
                 if process.get("writer_close") == "error":
+                    loss("P400029", "TL")
+                if any(stage not in known_prefix for stage in guards):
+                    loss("P400007", "TL")
+                if diagnostic["loss_sites"]:
                     losses.add("TL")
                 diagnostic.update(reason=reason if not losses else None,
                                   diagnostic_state=("observed" if reason else "absent") if not losses else "contradictory" if "CX" in losses else "unavailable",
@@ -886,17 +963,28 @@ def _managed_guard_probe(kind: str, descriptor: int, deadline: int) -> None:
     request = {"version": 2, "operation": kind, "operation_id": secrets.token_hex(16), "deadline_ns": deadline}
     executable = "/proc/self/fd/6" if kind == "package" else _MANAGED_EXECUTABLE
     mapping = {3: descriptor, 6: 6} if kind == "package" else {3: descriptor}
-    guard_diagnostic = {} if kind == "package" else None
+    guard_diagnostic = _empty_managed_package_diagnostic() if kind == "package" else None
     try:
         _spawn_fixed_lifecycle(executable, "managed-" + kind + "-check", request, mapping,
                                _package_diagnostic=guard_diagnostic)
+        if time.monotonic_ns() >= deadline:
+            raise diagnostic_error("P000055", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
     except Exception as error:
         if guard_diagnostic is not None:
             from runtime.remote_access.package_diagnostics import diagnostic_propagate
             diagnostic_propagate(guard_diagnostic.get("refusal"), error)
+            p, t = guard_diagnostic.get("process"), guard_diagnostic.get("transport")
+            if type(p) is dict and type(t) is dict:
+                error._managed_package_guard = _package_guard_projection([
+                    guard_diagnostic["diagnostic_state"], guard_diagnostic["helper_exit"],
+                    guard_diagnostic["deadline_elapsed"], guard_diagnostic["kill_requested"],
+                    guard_diagnostic["reaped"], guard_diagnostic["reap_exit"],
+                    p["launch"], p["wait"], p["wait_error"], p["kill"], p["writer_close"],
+                    t["bytes_seen"], t["stdout_seen"], t["frames_seen"], t["eof"],
+                    t["read"], t["close"], t["losses"], guard_diagnostic["loss_sites"],
+                    (guard_diagnostic["boundary"]["site"] if guard_diagnostic["boundary"] is not None else None),
+                ])
         raise
-    if time.monotonic_ns() >= deadline:
-        raise diagnostic_error("P000055", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
 
 
 @contextmanager
@@ -1146,6 +1234,7 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
                 with diagnostic_scope("P100039", "managed_operational_error"):
                     os.close(descriptor)
             except OSError as exc:
+                diagnostic_loss("P400035", "managed_operational_error", exc)
                 if close_error is None:
                     close_error = exc
         if close_error is not None and not unwinding:
@@ -1918,21 +2007,27 @@ def _backup_inventory(path: Path) -> dict:
 
 
 def _backup_intact(path: Path, expected: object) -> bool:
+    return _backup_intact_error(path, expected) is None
+
+
+def _backup_intact_error(path: Path, expected: object) -> BaseException | None:
     _require_package_operand(path, directory=False)
     if expected is None:
-        return not (path.exists() or path.is_symlink())
+        return diagnostic_error("P500001", "transaction_state_invalid", PackageError("transaction_state_invalid")) if path.exists() or path.is_symlink() else None
     if not isinstance(expected, dict) or not path.is_file() or path.is_symlink():
-        return False
+        return diagnostic_error("P500002", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     try:
         with diagnostic_scope("P100063", "managed_operational_error"):
             metadata = path.lstat()
         with diagnostic_scope("P100064", "managed_operational_error"):
-            return (
+            matches = (
                 stat.S_IMODE(metadata.st_mode) == expected["mode"]
                 and _sha(path.read_bytes()) == expected["sha256"]
             )
-    except OSError:
-        return False
+            return None if matches else diagnostic_error("P500003", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+    except OSError as error:
+        diagnostic_loss("P400030", "managed_operational_error", error)
+        return error
 
 
 def _backup_present(path: Path) -> bool:
@@ -2012,7 +2107,8 @@ def _tree_matches(path: Path, inventory: object) -> bool:
         if stat.S_IMODE(metadata.st_mode) != inventory.get("root_mode"):
             return False
         return _inventory_tree(path) == inventory
-    except OSError:
+    except OSError as error:
+        diagnostic_loss("P400031", "managed_operational_error", error)
         return False
 
 
@@ -2033,7 +2129,8 @@ def _tree_is_owned_partial(path: Path, inventory: object) -> bool:
     try:
         with diagnostic_scope("P100073", "managed_operational_error"):
             metadata = path.lstat()
-    except OSError:
+    except OSError as error:
+        diagnostic_loss("P400032", "managed_operational_error", error)
         return False
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         return False
@@ -2041,7 +2138,8 @@ def _tree_is_owned_partial(path: Path, inventory: object) -> bool:
         return False
     try:
         present = _inventory_tree(path)["entries"]
-    except OSError:
+    except OSError as error:
+        diagnostic_loss("P400033", "managed_operational_error", error)
         return False
     if not set(present).issubset(entries):
         return False
@@ -2062,7 +2160,8 @@ def _file_matches(path: Path, identity: object) -> bool:
                 stat.S_IMODE(metadata.st_mode) == identity.get("mode")
                 and _sha(path.read_bytes()) == identity.get("sha256")
             )
-    except OSError:
+    except OSError as error:
+        diagnostic_loss("P400034", "managed_operational_error", error)
         return False
 
 
@@ -2075,36 +2174,40 @@ def _valid_file_identity(identity: object) -> bool:
 
 
 def _valid_inventory(inventory: object) -> bool:
+    return _valid_inventory_error(inventory) is None
+
+
+def _valid_inventory_error(inventory: object) -> BaseException | None:
     if not isinstance(inventory, dict) or set(inventory) != {"root_mode", "entries"}:
-        return False
+        return diagnostic_error("P500004", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if type(inventory.get("root_mode")) is not int:
-        return False
+        return diagnostic_error("P500005", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     entries = inventory.get("entries")
     if not isinstance(entries, dict):
-        return False
+        return diagnostic_error("P500006", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     for key, value in entries.items():
         if (not isinstance(key, str) or not key or key.startswith("/")
                 or ".." in PurePosixPath(key).parts or not isinstance(value, dict)):
-            return False
+            return diagnostic_error("P500007", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         kind = value.get("type")
         if kind == "dir":
             if set(value) != {"type", "mode"} or type(value.get("mode")) is not int:
-                return False
+                return diagnostic_error("P500008", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         elif kind == "file":
             if (set(value) != {"type", "mode", "sha256"}
                     or type(value.get("mode")) is not int
                     or not isinstance(value.get("sha256"), str)
                     or len(value["sha256"]) != 64):
-                return False
+                return diagnostic_error("P500009", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         elif kind == "link":
             if set(value) != {"type", "target"} or not isinstance(value.get("target"), str):
-                return False
+                return diagnostic_error("P500010", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         elif kind == "other":
             if set(value) != {"type"}:
-                return False
+                return diagnostic_error("P500011", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         else:
-            return False
-    return True
+            return diagnostic_error("P500012", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+    return None
 
 
 def _assert_safe_root_ancestry(root: Path) -> None:
@@ -2339,17 +2442,22 @@ def _allowed_created_parents(record: Mapping[str, object]) -> set[str]:
 
 
 def _backups_complete(record: Mapping[str, object]) -> bool:
+    return _backups_complete_error(record) is None
+
+
+def _backups_complete_error(record: Mapping[str, object]) -> BaseException | None:
     """True when recorded prior-existence matches the recorded backup inventory."""
     backups = record["backups"]
     if not isinstance(backups, dict):
-        return False
+        return diagnostic_error("P500013", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if (backups["payload"] is not None) != record["payload_present"]:
-        return False
+        return diagnostic_error("P500014", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if (backups["dropin"] is not None) != record["dropin_present"]:
-        return False
-    return all(
+        return diagnostic_error("P500015", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+    matches = all(
         (backups["units"][unit] is not None) == record["units"][unit] for unit in UNITS
     )
+    return None if matches else diagnostic_error("P500016", "transaction_state_invalid", PackageError("transaction_state_invalid"))
 
 
 def _validate_progress(record: Mapping[str, object]) -> None:
@@ -2373,8 +2481,8 @@ def _validate_progress(record: Mapping[str, object]) -> None:
         # A rollback may have consumed any subset of the recorded backups;
         # per-path identity classification already refuses unexplained gaps.
         return
-    if not _backups_complete(record):
-        raise diagnostic_error("P000140", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+    if (failure := _backups_complete_error(record)) is not None:
+        raise diagnostic_error("P000140", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
     if phase in {"prepared", "payload_retained", "payload_published"}:
         if published or record["dropin_published"]:
             raise diagnostic_error("P000141", "transaction_state_invalid", PackageError("transaction_state_invalid"))
@@ -2458,8 +2566,8 @@ def _load_record(root: Path, marker: Path) -> dict:
         raise diagnostic_error("P000164", "transaction_state_invalid", PackageError("transaction_state_invalid"))
     if _STAGE_SUFFIX_PATTERN.fullmatch(stage_path.name[len(prefix):]) is None:
         raise diagnostic_error("P000165", "transaction_state_invalid", PackageError("transaction_state_invalid"))
-    if not _valid_inventory(record["new_payload"]):
-        raise diagnostic_error("P000166", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+    if (failure := _valid_inventory_error(record["new_payload"])) is not None:
+        raise diagnostic_error("P000166", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
     new_units = record["new_units"]
     if not isinstance(new_units, dict) or set(new_units) != set(UNITS):
         raise diagnostic_error("P000167", "transaction_state_invalid", PackageError("transaction_state_invalid"))
@@ -2470,8 +2578,9 @@ def _load_record(root: Path, marker: Path) -> dict:
     backups = record["backups"]
     if not isinstance(backups, dict) or set(backups) != {"payload", "units", "dropin"}:
         raise diagnostic_error("P000170", "transaction_state_invalid", PackageError("transaction_state_invalid"))
-    if backups["payload"] is not None and not _valid_inventory(backups["payload"]):
-        raise diagnostic_error("P000171", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+    if backups["payload"] is not None:
+        if (failure := _valid_inventory_error(backups["payload"])) is not None:
+            raise diagnostic_error("P000171", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
     backup_units = backups["units"]
     if not isinstance(backup_units, dict) or set(backup_units) != set(UNITS):
         raise diagnostic_error("P000172", "transaction_state_invalid", PackageError("transaction_state_invalid"))
@@ -2581,8 +2690,8 @@ def _classify_units(root: Path, record: dict) -> dict[str, str]:
             if expected is None:
                 raise diagnostic_error("P000180", "transaction_state_invalid", PackageError("transaction_state_invalid"))
             if _backup_present(saved):
-                if not _backup_intact(saved, expected):
-                    raise diagnostic_error("P000181", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+                if (failure := _backup_intact_error(saved, expected)) is not None:
+                    raise diagnostic_error("P000181", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
                 actions[unit] = "already" if _file_matches(target, expected) else "restore"
             elif _file_matches(target, expected):
                 actions[unit] = "already"
@@ -2612,8 +2721,8 @@ def _classify_dropin(root: Path, record: dict) -> str:
         if expected is None:
             raise diagnostic_error("P000186", "transaction_state_invalid", PackageError("transaction_state_invalid"))
         if _backup_present(dropin_backup):
-            if not _backup_intact(dropin_backup, expected):
-                raise diagnostic_error("P000187", "transaction_state_invalid", PackageError("transaction_state_invalid"))
+            if (failure := _backup_intact_error(dropin_backup, expected)) is not None:
+                raise diagnostic_error("P000187", "transaction_state_invalid", PackageError("transaction_state_invalid")) from failure
             return "already" if _file_matches(dropin, expected) else "restore"
         if _file_matches(dropin, expected):
             return "already"
@@ -3666,6 +3775,8 @@ def managed_private_entry(operation: str) -> int:
         # Last entered guard/call boundary only: helper internals remain opaque.
         # Never inspect or serialize an exception, operand, path or stderr body.
         reason = "effective_uid"
+        from runtime.remote_access.package_diagnostics import PRIVATE_DIAGNOSTIC
+        loss_token = PRIVATE_DIAGNOSTIC.set(True)
         try:
             if os.geteuid() != 0:
                 raise diagnostic_error("P000275", "managed_package_context_required", PackageError("managed_package_context_required"))
@@ -3751,6 +3862,12 @@ def managed_private_entry(operation: str) -> int:
                 with diagnostic_scope("P100157", "managed_operational_error"):
                     from runtime.remote_access.package_diagnostics import exception_refusal
                 refusal = exception_refusal(exc)
+                from runtime.remote_access.package_diagnostics import exception_guard
+                guard = exception_guard(exc)
+                if guard is not None:
+                    guard_raw = json.dumps(_package_guard_projection(guard), separators=(",", ":")).encode("ascii")
+                    if len(guard_raw) <= 450:
+                        os.write(2, b"managed_private_guard:" + guard_raw + b"\n")
                 with diagnostic_scope("P100158", "managed_operational_error"):
                     suffix = b"" if refusal is None else b":" + refusal[0].encode("ascii") + b":" + refusal[1].encode("ascii")
                     marked = getattr(exc, "_managed_package_boundary", getattr(exc, "_managed_package_refusal", None))
@@ -3761,4 +3878,6 @@ def managed_private_entry(operation: str) -> int:
             except OSError:
                 pass
             return 78
+        finally:
+            PRIVATE_DIAGNOSTIC.reset(loss_token)
     return 78

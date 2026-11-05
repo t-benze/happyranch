@@ -28,7 +28,7 @@ packaging + ceremony surface only.
 """
 from __future__ import annotations
 
-from runtime.remote_access.package_diagnostics import diagnostic_error, diagnostic_scope
+from runtime.remote_access.package_diagnostics import diagnostic_error, diagnostic_scope, diagnostic_loss
 
 import argparse
 from contextlib import nullcontext
@@ -785,15 +785,15 @@ def _close_and_reap_query_process(process: subprocess.Popen[bytes], deadline: fl
         try:
             with diagnostic_scope("Q100004", "managed_operational_error"):
                 process.stdout.close()
-        except OSError:
-            pass
+        except OSError as error:
+            diagnostic_loss("Q300001", "managed_operational_error", error)
     with diagnostic_scope("Q100005", "managed_operational_error"):
         if process.poll() is None:
             try:
                 with diagnostic_scope("Q100006", "managed_operational_error"):
                     process.kill()
-            except OSError:
-                pass
+            except OSError as error:
+                diagnostic_loss("Q300002", "managed_operational_error", error)
     with diagnostic_scope("Q100007", "managed_operational_error"):
         from runtime.remote_access.linux_package import _MANAGED_DEADLINE, _MANAGED_LOCK
     inherited = _MANAGED_DEADLINE.get()
@@ -803,8 +803,8 @@ def _close_and_reap_query_process(process: subprocess.Popen[bytes], deadline: fl
     try:
         with diagnostic_scope("Q100008", "managed_operational_error"):
             process.wait(timeout=max(0, reap_deadline - time.monotonic()))
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    except (subprocess.TimeoutExpired, OSError) as error:
+        diagnostic_loss("Q300003", "managed_operational_error", error)
     with diagnostic_scope("Q100009", "managed_operational_error"):
         if process.poll() is None:
             if managed:
