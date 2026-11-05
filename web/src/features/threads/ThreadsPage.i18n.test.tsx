@@ -394,8 +394,10 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
     const held = new Promise<void>((resolve) => { release = resolve; });
     const client = makeQueryClient();
     type Completion = Promise<PromiseSettledResult<unknown>>;
+    type Operation = { original: Promise<unknown>; completion: Completion; next?: Operation };
     const operations: Completion[] = [];
-    const originals = new Set<Promise<unknown>>();
+    let firstOperation: Operation | undefined;
+    let lastOperation: Operation | undefined;
     const listRuns = new Set<Promise<void>>();
     type Failure = { phase: string; error: unknown };
     type Input = { kind: unknown; pending: boolean; response?: Response; failure?: Failure };
@@ -479,31 +481,50 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
       }
     };
     const observe = <T,>(original: Promise<T>, phase: string, classify = (_error: unknown) => 'unexpected', fulfilled = () => {}) => {
-      if (!originals.has(original)) {
-        originals.add(original);
-        operations.push(original.then(
-          (value) => { fulfilled(); return { status: 'fulfilled', value } as const; },
-          (reason: unknown) => {
-            let disposition = 'unexpected';
-            try { disposition = classify(reason); } catch (error) {
-              provenanceComplete = false;
-              retain({ phase: `${phase} provenance`, error });
-            }
-            try { rejections.push({ phase, error: reason, disposition }); } catch (error) {
-              provenanceComplete = false;
-              sinkFailures = { error, original: { phase, error: reason }, previous: sinkFailures };
-            }
-            if (disposition === 'unexpected') retain({ phase, error: reason });
-            return { status: 'rejected', reason } as const;
-          },
-        ));
+      for (let operation = firstOperation; operation; operation = operation.next) {
+        if (operation.original === original) return original;
+      }
+      const completion = original.then(
+        (value) => {
+          try { fulfilled(); } catch (error) {
+            provenanceComplete = false;
+            retain({ phase: `${phase} fulfillment observation`, error });
+          }
+          return { status: 'fulfilled', value } as const;
+        },
+        (reason: unknown) => {
+          let disposition = 'unexpected';
+          try { disposition = classify(reason); } catch (error) {
+            provenanceComplete = false;
+            retain({ phase: `${phase} provenance`, error });
+          }
+          try { rejections.push({ phase, error: reason, disposition }); } catch (error) {
+            provenanceComplete = false;
+            sinkFailures = { error, original: { phase, error: reason }, previous: sinkFailures };
+          }
+          if (disposition === 'unexpected') retain({ phase, error: reason });
+          return { status: 'rejected', reason } as const;
+        },
+      );
+      // This custody owns the SAME completion before diagnostic insertion can
+      // fail. Reacquisition consults it, so no seen-only or duplicate observer.
+      const operation: Operation = { original, completion };
+      if (lastOperation) lastOperation.next = operation;
+      else firstOperation = operation;
+      lastOperation = operation;
+      try { operations.push(completion); } catch (error) {
+        provenanceComplete = false;
+        retain({ phase: `${phase} completion recording`, error });
       }
       return original;
     };
     const captureListRuns = () => {
       for (const original of getCommittedThreadPageRuns(client, ['threads', SLUG, { status: 'open', page_size: 50 }])) {
-        listRuns.add(original);
         observe(original, 'original list run');
+        try { listRuns.add(original); } catch (error) {
+          provenanceComplete = false;
+          retain({ phase: 'list run recording', error });
+        }
       }
     };
     const intendedInput = (input: Input, error: unknown) =>
@@ -736,17 +757,19 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
       try { release(); } catch (error) { retain({ phase: 'release detail', error }); }
       // Acquire while this test owns work; a pending/latest snapshot is not a
       // historical census. Never wait on an unstarted handler or launch a retry.
-      let joined = 0;
+      let joined: Operation | undefined;
       do {
         try { captureListRuns(); } catch (error) { retain({ phase: 'capture list', error }); }
-        while (joined < operations.length) {
-          const completion = operations[joined++];
-          try { await completion; } catch (error) { retain({ phase: 'join observation', error }); }
+        let pending: Operation | undefined = joined ? joined.next : firstOperation;
+        while (pending) {
+          joined = pending;
+          try { await pending.completion; } catch (error) { retain({ phase: 'join observation', error }); }
           try { captureListRuns(); } catch (error) { retain({ phase: 'capture list', error }); }
+          pending = joined.next;
         }
         try { await act(async () => {}); } catch (error) { retain({ phase: 'React delivery', error }); }
         try { captureListRuns(); } catch (error) { retain({ phase: 'capture list', error }); }
-      } while (joined < operations.length);
+      } while (joined ? joined.next : firstOperation);
       try { restoreTimer?.(); } catch (error) { retain({ phase: 'restore notification timer observation', error }); }
       try { restoreBatch?.(); } catch (error) { retain({ phase: 'restore notification batch observation', error }); }
       for (const restore of restores.reverse()) {
@@ -757,7 +780,7 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
     }
     if (primary) {
       try {
-        if (later.length || sinkFailures) console.error('Threads detail secondary errors', later, rejections, sinkFailures, invocations, phases);
+        if (later.length || sinkFailures) console.error('Threads detail secondary errors', later, rejections, sinkFailures, invocations, phases, operations);
       } catch (error) {
         retain({ phase: 'report secondary errors', error });
       }
