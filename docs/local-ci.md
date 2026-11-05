@@ -3528,12 +3528,13 @@ restored controls failed: the new dropped-LF input still contained the full
 SOURCE because its original suffix began LF. That fixture now preserves the
 whole prefix/suffix and inserts a literal boundary marker at the missing LF;
 the unchanged assertion requires whole refusal. No production rule was relaxed.
-Corrected-head full controls and static receipts remain PENDING. An earlier
-overlapping lexical/owner guard
+At that historical checkpoint corrected-head controls/static were PENDING;
+the later complete5988 controls and static receipts passed at their own head.
+An earlier overlapping lexical/owner guard
 proves whole refusal only; individual predicate, temporal and native proof is
 PROOF NOT RUN. No fit or test-authoring PASS follows from source inspection.
 
-Reached-complete missing-public, action/response/browser-event copies,
+Reached terminal-browser presence, action/response/browser-event copies,
 marked/scenario/detached/result/cross-member/prefix-final and BOTH pair terminal
 text/full K5-K6 integration remain unfinished ROOT work, along with final whole
 accumulated review, separate same-final-head final-compound QA and actual-main
@@ -3575,8 +3576,11 @@ and unconditional byte-exact restoration; clean committed-head lint/static
 checks passed. The restored controls failed at the repeated-prefix pair's
 original fact cap. That failure is retained. Closure now compares already-paid
 iterator/lookup operands directly, removing only extra forwarding argument
-slots while retaining every full comparison and all original limits. Corrected
-complete controls and final-head lint/static verification remain PENDING. The
+slots while retaining every full comparison and all original limits. The next
+restored run reached the whole-original raw-image byte cap after Case closure;
+that failure is also retained. The shared sizing correction below has now
+completed the full controls and result reconciliation; final-head lint/static
+verification remains PENDING. The
 previous PRESENT-terminal checkpoint obtained its authentic5988 source
 controls/static receipt; that historical result remains at its own head. All
 5988/5660/5428/5324/5208/4572 full named values, built-in types and key/list order
@@ -3612,9 +3616,21 @@ The existing public-row loop compares its schema key and full primitive value
 in its already paid iterator/lookup frame. Each removed helper call loses only
 its16B/2fact forwarding slots; both full original byte costs, strict builtin
 types, key order, SQL-peer equality and declared false/INTEGER0 mappings remain.
-No earlier operation savings are counted again. These source changes establish
-no capacity fit or result PASS: the complete existing aggregate controls and
-full typed/ordered historical result reconciliation must actually complete at
-the original C8388608/F200000/depth64/end before acceptance. Shared parser,
-raw/required-original, sibling/fatal-I-O, prior-file, output/result and C8
-contracts renew alongside the complete Case/public/terminal case inventory.
+No earlier operation savings are counted again. One complete existing aggregate
+controls command exited0 at the original C8388608/F200000/depth64/end, with8584
+results. Every planned8580 result and2592 addition, all5988/5660/5428/5324/5208/
+4572 full historical names/values/built-in types/key-list order and1761 affected
+shared keeper values reconcile exactly. Four inherited completed-public
+`case-start-field-nested-array-start0` refusals, one per writer/raw/raw-prefix/
+required-prefix boundary, were missing from the bookkeeping inventory: actual
+completed-public variants1892, additions2596. Their original malformed nested
+field, full independent expected refusal and all preservation assertions stay.
+The post-command8580 count assertion failed; that failed wrapper result remains
+recorded separately from the successful aggregate. No fixture/assertion changed
+and no successful command was repeated to repair the inventory. Historical
+output deltas remain empty. This verifies these SOURCE/file-control subjects,
+including shared parser/raw-original/sibling/fatal-I-O/prior-file/output/result/
+C8 keepers; independent predicate, allocation, temporal and native proof remain
+PROOF NOT RUN. Final-head lint/static, independent affected-owner review and
+separate scoped QA remain pending. No general capacity or whole-source/native
+acceptance follows.
