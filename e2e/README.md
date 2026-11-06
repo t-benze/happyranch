@@ -2426,11 +2426,11 @@ and decoded backslash. It builds no virtual replacement or comparison spans;
 actual sanitation, every full pass debit, strict output measurement, complete
 equality and residual-secret checks remain. The raw callback's later duplicate
 unchanged-value comparison is removed; the first full comparison remains.
-The unescaped primitive-value correction below consumes sanitation
-in its existing decoded slot at every admitted size. Unescaped keys use their
-own original range in the same key slot; escaped scalars and keys retain
-separate output-reference admission. Other transforming raw-text sanitation retains the
-general planner.
+The current decoded-original-slot correction below consumes sanitation in the
+existing value/key slot at every admitted size, for unescaped and escaped raw
+scalars alike. The consumed token-kind or unused nonmatching ordering slot
+retains this occurrence's original decoded string for the complete independent
+comparison. Other transforming raw-text sanitation retains the general planner.
 Original-plus-safe projection bytes remain charged even for borrowed objects,
 aliases and no-match strings. Every replacement pass pays its whole safe scalar;
 one charged longest-first view preserves the original context list for identity
@@ -3785,8 +3785,8 @@ still run. The raw scalar callback omits its second
 identical unchanged-value comparison after the first full builtin-string
 comparison and final eligibility check. Only that duplicate's 8B/1fact debit
 ceases; every original/safe secret pass, sanitizer pass and distinct full
-comparison remains. Reference admission follows the current unescaped
-primitive-value and key corrections below; escaped paths retain the separate safe slot. These operation removals make no capacity,
+comparison remains. Current raw scalar/key reference admission follows the
+decoded-original-slot correction below, including escaped spellings. These operation removals make no capacity,
 causal-proof or native-acceptance claim before actual complete verification.
 
 
@@ -4394,7 +4394,8 @@ selects this behavior. Only the six existing registered JSON/JSONL names use it.
 Keys still undergo duplicate/order admission before their own sanitation;
 SOURCE, encoded, deferred and matching-value policies retain their own owners.
 
-For a nondeferred raw primitive value, the existing value frame reuses its
+Historical original-range implementation (superseded by the decoded-original-slot
+correction below): for a nondeferred raw primitive value, the value frame reused its
 finished token-kind slot for this occurrence's original start before decoding.
 Strict JSON escapes always shorten the original codepoint spelling, so equal
 complete decoded/original codepoint lengths prove an unescaped range. The string
@@ -4454,7 +4455,8 @@ SKIPPED24342/211270-271; Product DAILY19UTC ONLY with no new run/trigger/observa
 The retained decoded-value candidate also failed the repeated-prefix Case at
 its live command comparison:16B/2facts requested with W7925957/F199999.
 No complete11184 reconciliation or lint/static success came from that run.
-The key correction reuses the nonmatching parser frame's otherwise unused
+Historical key-range implementation (superseded by the decoded-original-slot
+correction below): the key correction reused the nonmatching frame's otherwise unused
 previous-key slot for this key's original start, prepaid16B/0facts.
 Duplicate checking still precedes safety. Complete equal codepoint lengths
 identify an unescaped key; its existing slot consumes the actual sanitizer
@@ -4535,3 +4537,55 @@ comparison remain. This grants no generic text policy or cap/rate/fixture
 change. Complete changed-source controls and independent full historical
 reconciliation remain required; this source description claims no fit or
 behavioral/native acceptance.
+
+
+### Registered-raw decoded-original-slot correction
+
+The preceding eligibility candidate still failed the repeated-prefix Case at a
+required full submitted-row comparison:2132B/2facts requested with
+W8388489/reserved0/F192872. Empty stdout supplies no complete11184 result;
+historical/addition/1761-keeper reconciliation and conditional clean-head
+lint/static were NOT RUN. Earlier capacity failures and the original intended
+missing-terminal assertion/exact restoration retain their actual strength.
+
+Raw primitive values now reuse the consumed token-kind slot for THIS decoded
+original, rather than its source-range start. Nonmatching raw keys reuse their
+otherwise unused expected-order slot in the same way. Both assignments retain
+16B/0fact prepaid setup. The actual sanitizer still consumes the existing
+value/key slot; its result compares directly with that same occurrence's
+complete decoded original. No extra safe-result variable, bound holder, span,
+slice, parser, cache, public flag or input-size witness exists. The former range
+construction, complete-length tests and native startswith call are absent; only
+their additional16B/0fact comparison-selection term ceases. The complete builtin
+string comparison and setup keep64B/0facts. No retained input/library/iterator
+work, actual sanitizer pass or distinct full comparison is discounted.
+
+This direct comparison covers escaped and unescaped raw values and keys at
+every admitted size. Each still undergoes its own strict original grammar,
+single decoding, duplicate-before-value admission, decoded-backslash refusal,
+original per-secret scans, full input UTF8 sizing, EVERY whole-scalar sanitizer
+pass at the existing rate, strict output type/UTF8-size measurement, full
+original/result equality, residual-secret scans and settlement/end checks.
+Escaped raw scalars no longer forward into raw_scalar or allocate its separate
+safe-result reference; their actual retained decoded bytes and facts remain
+paid. Reused original slots are cleared before outgoing scalar/key events and
+on refusal. Matching, deferred SOURCE/encoded policies, generic callbacks,
+string construction and all other semantic owners remain unchanged. No other
+occurrence, alias result or previously successful comparison supplies proof.
+
+The retained-work budget still spans every Case copy, command/Submission,
+SOURCE/SQL/public/parked row and final original emission independently. Original
+C8388608/F200000/depth64/end and copy/carry/storage/final-buffer limits/rates are
+unchanged. All11184 full independent expectations, seven complete historical
+result sets,2600 additions/384 migrations/1761 keepers, original full literals,
+assertions and87 independent readers remain unchanged. Complete restored
+controls, full names/values/builtin-types/key-list-order reconciliation and
+clean committed-head lint/static remain pending; source inspection is no fit,
+behavioral, test-authoring, native, whole-PR or readiness acceptance. Normal
+SAME-draft-ref publication and independent accumulated affected-owner review
+then SEPARATE identical-produced-head scoped QA remain required before handoff.
+ROOT retains remaining source/main convergence/final full cross-closure review,
+separate final compound QA, guarded merge/exact-main two lints and distinct
+daily-native acceptance. Units RETIRED; integration SKIPPED24342/211270-271;
+3.12 and unsupported individual/read/decode/allocation/race/temporal/native
+proof NOT RUN/PROOF NOT RUN. Product DAILY19UTC ONLY/no run-trigger-observation.

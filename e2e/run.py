@@ -4920,25 +4920,18 @@ class _EvidenceJSON:
         if route == 2 and char != "[" or route == 3 and char != "{":
             raise ValueError("Relay entry shape withheld")
         if char == '"':
-            # The original token-kind slot is no longer used after this
-            # branch wins. Reuse it for THIS occurrence's original start,
-            # before decoding; no new bound holder/flag is retained.
-            if (scalar is not None and not deferred and not matching
-                    and getattr(scalar, '__self__', None) is self
-                    and scalar.__func__ is _EvidenceJSON.raw_scalar):
-                self.ledger.charge(16, 0, self.check)  # Replacement range setup, before assignment.
-                char = self.index + 1
             value = self.string()
             try:
                 if scalar is not None and not deferred and not matching:
                     if (getattr(scalar, '__self__', None) is self
-                            and scalar.__func__ is _EvidenceJSON.raw_scalar
-                            and len(value) == self.index - char - 1):
-                        # Strict JSON escapes always shorten the original
-                        # codepoint spelling. Equal complete lengths prove
-                        # this SAME range is unescaped, at every scalar size.
-                        # Consume sanitation in the existing decoded slot;
-                        # no extra safe-result reference is constructed.
+                            and scalar.__func__ is _EvidenceJSON.raw_scalar):
+                        # The consumed token-kind slot can own THIS decoded
+                        # original. No original-range construction, length
+                        # tests or startswith call is needed, even for escapes.
+                        # Keep its prepaid setup and every complete comparison;
+                        # no extra safe-result holder or forwarding call exists.
+                        self.ledger.charge(16, 0, self.check)
+                        char = value
                         self.check()
                         if "\\" in value:
                             raise ValueError("raw decoded representation withheld")
@@ -4957,17 +4950,15 @@ class _EvidenceJSON:
                                 actual = _evidence_utf8_size(value, self.check, size)
                             except ValueError as exc:
                                 raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
-                            # Keep original64B comparison/setup and prepay16B
-                            # for the full original-range comparison below.
-                            self.ledger.charge(80, 0, self.check)
-                            if (actual != size or len(value) != self.index - char - 1
-                                    or not self.text.startswith(value, char, self.index - 1)
+                            self.ledger.charge(64, 0, self.check)
+                            if (actual != size or value != char
                                     or any(secret in value for secret in self.raw_context)):
                                 raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
                             self.check()
                         finally:
                             self.ledger.settle(0, 0)  # Original invariant/cleanup check remains.
                         self.check()  # Original final eligibility boundary.
+                        char = None
                     else:
                         scalar(value)
                 if selected is not None:
@@ -4979,7 +4970,7 @@ class _EvidenceJSON:
                     event("scalar", value)
                 return value
             except BaseException:
-                value = None
+                value = char = None
                 raise
         if char in "-0123456789":
             value = self.number()
@@ -5097,14 +5088,6 @@ class _EvidenceJSON:
                 return output if tree else None
             while True:
                 if char == "{":
-                    # Nonmatching scans do not use previous_key for expected
-                    # ordering. Reuse that existing slot for THIS raw key's
-                    # original start, before decoding, without a new holder.
-                    if (not matching and scalar is not None
-                            and getattr(scalar, '__self__', None) is self
-                            and scalar.__func__ is _EvidenceJSON.raw_scalar):
-                        self.ledger.charge(16, 0, self.check)
-                        previous_key = self.index + 1
                     key = self.string()
                     if matching:
                         # Strict expected membership/order replaces BOTH the
@@ -5120,13 +5103,14 @@ class _EvidenceJSON:
                         self.error()  # Decoded escaped-equal keys, before their value.
                     if scalar is not None:
                         if (not matching and getattr(scalar, '__self__', None) is self
-                                and scalar.__func__ is _EvidenceJSON.raw_scalar
-                                and len(key) == self.index - previous_key - 1):
+                                and scalar.__func__ is _EvidenceJSON.raw_scalar):
                             # Duplicate admission above sees the original key.
-                            # As for raw values, strict escapes shorten spelling:
-                            # equal complete lengths identify this own unescaped
-                            # range. Sanitize in the existing key slot, without
-                            # a second safe-result reference or its one fact.
+                            # Nonmatching scans need no expected-order state.
+                            # Reuse that existing slot for THIS decoded key,
+                            # keeping full sanitation equality without original
+                            # range bookkeeping or a second safe-result holder.
+                            self.ledger.charge(16, 0, self.check)
+                            previous_key = key
                             self.check()
                             if "\\" in key:
                                 raise ValueError("raw decoded representation withheld")
@@ -5145,15 +5129,15 @@ class _EvidenceJSON:
                                     actual = _evidence_utf8_size(key, self.check, size)
                                 except ValueError as exc:
                                     raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
-                                self.ledger.charge(80, 0, self.check)
-                                if (actual != size or len(key) != self.index - previous_key - 1
-                                        or not self.text.startswith(key, previous_key, self.index - 1)
+                                self.ledger.charge(64, 0, self.check)
+                                if (actual != size or key != previous_key
                                         or any(secret in key for secret in self.raw_context)):
                                     raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
                                 self.check()
                             finally:
                                 self.ledger.settle(0, 0)
                             self.check()
+                            previous_key = None
                         else:
                             scalar(key)
                     if command_keys is None:
@@ -5341,7 +5325,7 @@ class _EvidenceJSON:
             if not tree and not borrowed_keys:
                 if output is not None:
                     output.clear()
-            key = None
+            key = previous_key = None
 
     def read(self, *, top: str | None = None, scalar: Callable[[str], None] | None = None,
              jsonl: bool = False, observations: bool = False, context: tuple | list = (),
