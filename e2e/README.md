@@ -4144,9 +4144,13 @@ comparison retain their charges. The final mapped SOURCE comparison uses its
 own bounded full-range comparison after separate full anchor selection; BOTH
 native operand traversals and call/bounds setup prepay2*source_size+64B/8facts.
 Only absent per-character Python indexing/reference constructions lose their
-16B/2fact-per-offset costs. SOURCE eligibility retains its separate complete
-traversal and debit. Original end checks still surround native work; these
-cooperative limits do not certify hard wall time. No normalization, first-match
+16B/2fact-per-offset costs. SOURCE eligibility independently checks the complete
+LF-plus-ASCII32..126 alphabet with native strip, retaining the nonempty/ending-LF
+conditions. Its3*source_size+256B/8fact prepayment covers both scan directions,
+possible full residual copy and the literal alphabet/result/call setup; only the
+absent generator and Python per-character/ord references lose their charges.
+Original end checks still surround native work; these cooperative limits do not
+certify hard wall time. No normalization, first-match
 choice or generic browser/stdout grant.
 Facts and comparisons stay private until existing Case/Observations close,
 including late metadata/rows and the separately retained Case-jobs-last image.
@@ -4512,3 +4516,22 @@ The complete unchanged11184 controls, all named typed/ordered historical sets,
 lint/static and normal SAME-ref publication. Every earlier failure and missing
 proof retains its original scope. Product DAILY19UTC ONLY; units RETIRED;
 integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342/211270-271.
+
+### Terminal SOURCE eligibility operation replacement
+
+The prior terminal-text candidate still failed the repeated-prefix Case at
+actual sanitizer-pass admission: the original byte cap refused3686B/3facts at
+W8386154/reserved0/F198957. Its full11184 reconciliation and conditional lint
+remained NOT RUN; progression past prior failures was not accepted fit. The
+current source replaces only SOURCE eligibility's Python generator/character
+state with native strip over exactly LF and printable ASCII32..126. Nonempty
+SOURCE ending LF is eligible iff its complete residual is empty. Both native
+scan directions, a possible full residual copy, the96B literal alphabet and
+result/call/comparison setup prepay3*source_size+256B/8facts. No alias-based
+saving is assumed. Original/source sizing, every secret scan and actual
+sanitizer pass, full output equality, all anchors/overlaps/ambiguity, separate
+full anchor and final mapped comparisons, outside-span R1 and every late row
+comparison remain. This grants no generic text policy or cap/rate/fixture
+change. Complete changed-source controls and independent full historical
+reconciliation remain required; this source description claims no fit or
+behavioral/native acceptance.

@@ -3239,9 +3239,14 @@ class _EvidenceObservations:
                 raise _EvidenceUnsafe('unsafe evidence sanitation postcondition') from exc
             finally:
                 safe = None
-            ledger.charge(8 * len(source) + 32, len(source) + 4, check)
-            eligible = bool(source) and source.endswith('\n') and all(
-                char == '\n' or 32 <= ord(char) <= 126 for char in source)
+            # Native stripping tests the SAME complete finite alphabet without
+            # a generator or a Python character/ord reference at every offset.
+            # Pay BOTH scan directions, the worst-case full residual copy and
+            # alphabet/result/call setup before invoking it, including aliases.
+            ledger.charge(3 * source_size + 256, 8, check)
+            eligible = bool(source) and source.endswith('\n') and not source.strip(
+                '\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                '[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~')
             candidate, count, cursor = None, 0, 0
             if eligible:
                 while cursor < len(text):
