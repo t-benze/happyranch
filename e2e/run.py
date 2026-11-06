@@ -1551,11 +1551,10 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 parts = chunk = value = None
             return finish
 
-        # One source-owned suffix state, before its first assignment. A
-        # completed token validates punctuation directly instead of rebuilding
-        # the full comment/literal/name/number dispatch for every glyph.
-        ledger.charge(8, 1, check)
-        suffix_paid = False
+        # ONE loop owns each token and punctuation glyph. The former suffix
+        # loop selected whitespace and next-token glyphs before returning them
+        # to this loop for another selection. Those constructions and its
+        # state are absent; every actual glyph/dispatch stays prepaid below.
         while index < end:
             if index % 1024 == 0:
                 check()
@@ -1578,7 +1577,7 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 continue
             if char in "\"'":
                 index = literal(index, index)
-                suffix_paid = False
+                continue
             elif char.isascii() and (char.isalpha() or char == '_'):
                 # The prepaid glyph classifier already chose this branch;
                 # only the original token-start slot remains to construct.
@@ -1595,7 +1594,7 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                     if index - begin > 2:
                         fail()
                     index = literal(begin, index)
-                suffix_paid = False
+                continue
             elif (char in '0123456789'
                     or char == '.' and index + 1 < end
                         and source.startswith(('0','1','2','3','4','5','6','7','8','9'), index + 1)):
@@ -1615,54 +1614,38 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                         fail()
                 if index < end and (source[index].isascii() and (source[index].isalpha() or source[index] == '_')):
                     fail()
-                suffix_paid = False
-            else:
-                suffix_paid = True
-            while index < end:
-                if index % 1024 == 0:
-                    check()
-                if not suffix_paid:
-                    # The original suffix admission now owns its indexed
-                    # glyph and direct classifier. An initial punctuation
-                    # token still owns the glyph paid by the prefix above.
-                    ledger.charge(16, 1, check)
-                    char = source[index]
-                # A dot followed by a digit belongs to the original numeric
-                # grammar. Other token classes return to the full dispatch.
-                if (char == '.' and index + 1 < end
-                        and source.startswith(('0','1','2','3','4','5','6','7','8','9'), index + 1)):
-                    break
-                if char not in '([{)]}\\:.,;+-*/%&|^~<>=!@':
-                    if suffix_paid:
-                        fail()
-                    break
-                suffix_paid = False
-                if char in '([{':
-                    if depth + len(stack) + 3 > 64:
-                        raise _EvidenceCapacity('Python depth capacity refused')
-                    ledger.charge(8, 1, check)
-                    stack.append(char)  # The prepaid selected glyph itself.
-                    ledger.charge(16, 0, check)
-                    index += 1
-                    continue
-                if char in ')]}':
-                    if not stack or '([{'.index(stack.pop()) != ')]}'.index(char):
-                        fail()
-                    ledger.charge(16, 0, check)
-                    index += 1
-                    continue
-                if char == '\\':
-                    index += 1
-                    if index < end and source[index] == '\r':
-                        index += 1
-                    if index == end or source[index] != '\n':
-                        fail()
-                    ledger.charge(16, 0, check)
-                    index += 1
-                    continue
-                if char == '!' and (index + 1 == end or not source.startswith('=', index + 1)):
-                    fail()
+                continue
+            # A dot followed by a digit already took the numeric branch.
+            # Keep every punctuation predicate and the SAME paid glyph, with
+            # no extra suffix traversal, dispatch state or duplicate selection.
+            if char not in '([{)]}\\:.,;+-*/%&|^~<>=!@':
+                fail()
+            if char in '([{':
+                if depth + len(stack) + 3 > 64:
+                    raise _EvidenceCapacity('Python depth capacity refused')
+                ledger.charge(8, 1, check)
+                stack.append(char)  # The prepaid selected glyph itself.
+                ledger.charge(16, 0, check)
                 index += 1
+                continue
+            if char in ')]}':
+                if not stack or '([{'.index(stack.pop()) != ')]}'.index(char):
+                    fail()
+                ledger.charge(16, 0, check)
+                index += 1
+                continue
+            if char == '\\':
+                index += 1
+                if index < end and source[index] == '\r':
+                    index += 1
+                if index == end or source[index] != '\n':
+                    fail()
+                ledger.charge(16, 0, check)
+                index += 1
+                continue
+            if char == '!' and (index + 1 == end or not source.startswith('=', index + 1)):
+                fail()
+            index += 1
         if stack:
             fail()
         check()
