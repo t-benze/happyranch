@@ -4439,6 +4439,40 @@ class _EvidenceJSON:
             index += 1
         return code, index
 
+    def raw_scalar(self, value: str) -> None:
+        self.check()
+        if "\\" in value:
+            raise ValueError("raw decoded representation withheld")
+        # Required replacement is an ordinary WHOLE-member
+        # refusal, before the independent promised safe pass.
+        for secret in self.raw_context:
+            self.ledger.charge(8, 1, self.check)
+            if secret in value:
+                raise ValueError("raw decoded content withheld")
+        size = _evidence_utf8_size(value, self.check)
+        # THIS decoded occurrence already rejected every
+        # original secret. Its expected safe value is
+        # the complete original, without a virtual plan
+        # or either comparison-span holder. Keep every
+        # actual pass, output reference and comparison.
+        self.ledger.charge(16, 0, self.check)
+        for secret in self.raw_context:
+            self.ledger.charge(size, 1, self.check)
+        self.ledger.reserve(0, 1, self.check)
+        try:
+            safe = self.raw_sanitize(value)
+            try:
+                actual = _evidence_utf8_size(safe, self.check, size)
+            except ValueError as exc:
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+            self.ledger.charge(64, 0, self.check)
+            if actual != size or safe != value or any(secret in safe for secret in self.raw_context):
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+            self.check()
+        finally:
+            self.ledger.settle(0, 0)
+        self.check()  # Keep the former final debit's eligibility boundary.
+
     def string(self) -> str:
         if self.index >= self.end or self.text[self.index] != '"':
             self.error()
@@ -4803,10 +4837,53 @@ class _EvidenceJSON:
         if route == 2 and char != "[" or route == 3 and char != "{":
             raise ValueError("Relay entry shape withheld")
         if char == '"':
+            # The original token-kind slot is no longer used after this
+            # branch wins. Reuse it for THIS occurrence's original start,
+            # before decoding; no new bound holder/flag is retained.
+            if (scalar is not None and not deferred and not matching
+                    and getattr(scalar, '__self__', None) is self
+                    and scalar.__func__ is _EvidenceJSON.raw_scalar):
+                self.ledger.charge(16, 0, self.check)  # Replacement range setup, before assignment.
+                char = self.index + 1
             value = self.string()
             try:
                 if scalar is not None and not deferred and not matching:
-                    scalar(value)
+                    if (getattr(scalar, '__self__', None) is self
+                            and scalar.__func__ is _EvidenceJSON.raw_scalar
+                            and len(value) == self.index - char - 1):
+                        # Strict JSON escapes always shorten the original
+                        # codepoint spelling. Equal complete lengths prove
+                        # this SAME range is unescaped, at every scalar size.
+                        # Consume sanitation in the existing decoded slot;
+                        # no extra safe-result reference is constructed.
+                        self.check()
+                        if "\\" in value:
+                            raise ValueError("raw decoded representation withheld")
+                        for secret in self.raw_context:
+                            self.ledger.charge(8, 1, self.check)
+                            if secret in value:
+                                raise ValueError("raw decoded content withheld")
+                        size = _evidence_utf8_size(value, self.check)
+                        self.ledger.charge(16, 0, self.check)
+                        for secret in self.raw_context:
+                            self.ledger.charge(size, 1, self.check)
+                        self.check()
+                        value = self.raw_sanitize(value)
+                        try:
+                            actual = _evidence_utf8_size(value, self.check, size)
+                        except ValueError as exc:
+                            raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+                        # Keep original64B comparison/setup and prepay16B
+                        # for the full original-range comparison below.
+                        self.ledger.charge(80, 0, self.check)
+                        if (actual != size or len(value) != self.index - char - 1
+                                or not self.text.startswith(value, char, self.index - 1)
+                                or any(secret in value for secret in self.raw_context)):
+                            raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                        self.check()
+                        self.check()  # Original final eligibility boundary.
+                    else:
+                        scalar(value)
                 if selected is not None:
                     if primitive_field or row_field or case_field:
                         selected(selected_path, 'scalar', value, field=selected_field)
@@ -5134,6 +5211,10 @@ class _EvidenceJSON:
         """Validate the SAME image; JSONL bounds are indices, never line copies."""
         records = result = None
         try:
+            if (getattr(scalar, '__self__', None) is self
+                    and scalar.__func__ is _EvidenceJSON.raw_scalar):
+                self.ledger.charge(16, 2, self.check)  # Original scan bindings, before retention.
+                self.raw_context, self.raw_sanitize = context, sanitize
             if expected is not _EvidenceUnsafe and (
                     type(expected) is not dict or tree or jsonl or observations
                     or submission is None or event is not None or top != '{' or submission_identity is not None):
@@ -5191,6 +5272,9 @@ class _EvidenceJSON:
             raise
         finally:
             result = records = None
+            if (getattr(scalar, '__self__', None) is self
+                    and scalar.__func__ is _EvidenceJSON.raw_scalar):
+                self.raw_context = self.raw_sanitize = None
             if expected is not _EvidenceUnsafe:
                 self.comparison_submission = None
             self.text = ""  # Refused-image traceback keeps syntax facts, not input.
@@ -5416,46 +5500,22 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                         if path.name in {"observations.json", "e07.json", "e07-prefix.json",
                                          "browser-events.json", "e05-browser-events.json", "launch-witnesses.jsonl"}:
                             ledger.charge(32, 4, eligible)  # Scanner/callback/bounds before allocation.
-                            def raw_scalar(value: str) -> None:
-                                eligible()
-                                if "\\" in value:
-                                    raise ValueError("raw decoded representation withheld")
-                                # Required replacement is an ordinary WHOLE-member
-                                # refusal, before the independent promised safe pass.
-                                for secret in ordered:
-                                    ledger.charge(8, 1, eligible)
-                                    if secret in value:
-                                        raise ValueError("raw decoded content withheld")
-                                size = _evidence_utf8_size(value, eligible)
-                                # THIS decoded occurrence already rejected every
-                                # original secret. Its expected safe value is
-                                # the complete original, without a virtual plan
-                                # or either comparison-span holder. Keep every
-                                # actual pass, output reference and comparison.
-                                ledger.charge(16, 0, eligible)
-                                for secret in ordered:
-                                    ledger.charge(size, 1, eligible)
-                                ledger.reserve(0, 1, eligible)
-                                try:
-                                    safe = sanitize(value)
-                                    try:
-                                        actual = _evidence_utf8_size(safe, eligible, size)
-                                    except ValueError as exc:
-                                        raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
-                                    ledger.charge(64, 0, eligible)
-                                    if actual != size or safe != value or any(secret in safe for secret in ordered):
-                                        raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
-                                    eligible()
-                                finally:
-                                    ledger.settle(0, 0)
-                                eligible()  # Keep the former final debit's eligibility boundary.
-
                             top = "[" if path.name in {"browser-events.json", "e05-browser-events.json"} else "{"
-                            _EvidenceJSON(text, ledger, eligible).scan(
-                                top, raw_scalar, jsonl=path.name == "launch-witnesses.jsonl",
+                            scanner = _EvidenceJSON(text, ledger, eligible)
+                            scanner.scan(
+                                top, scanner.raw_scalar, jsonl=path.name == "launch-witnesses.jsonl",
                                 observations=path.name in {"observations.json", "e07-prefix.json"},
                                 context=ordered, sanitize=sanitize, submission_identity=(str(root), receipt.get("source_sha")))
                             safe = text  # ONE original image, only after full closure.
+                            eligible()
+                            size = _evidence_utf8_size(safe, eligible)
+                            # This registered original needs no begin/end slots.
+                            # Keep token/holder admissions and prepay the existing
+                            # whole-string dispatch; final buffer/scratch stay paid.
+                            ledger.charge(32, 3, eligible)
+                            ledger.charge(16, 0, eligible)
+                            content = step("TEXT_UTF8", lambda: _evidence_buffer(
+                                [("literal", safe)], size, ledger, eligible))
                         else:
                             if "\\" in text:
                                 raise ValueError("raw text representation withheld")
@@ -5464,14 +5524,12 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                             if "\\" in safe or any(secret in safe for secret in state["context"]):
                                 state["fatal"] = True
                                 raise ValueError("unsafe raw sanitation")
-                        eligible()
-                        size = _evidence_utf8_size(safe, eligible)
-                        # Literal emission preserves original whitespace/escapes/LFs.
-                        # Charge span facts before allocation; the buffer precharges
-                        # its complete bytes and bounded scratch before encoding.
-                        ledger.charge(48, 5, eligible)
-                        content = step("TEXT_UTF8", lambda: _evidence_buffer(
-                            [("literal", [(safe, 0, len(safe))])], size, ledger, eligible))
+                            eligible()
+                            size = _evidence_utf8_size(safe, eligible)
+                            # Unregistered raw text retains its original span path.
+                            ledger.charge(48, 5, eligible)
+                            content = step("TEXT_UTF8", lambda: _evidence_buffer(
+                                [("literal", [(safe, 0, len(safe))])], size, ledger, eligible))
                         staged[path.name] = content
                     elif path.suffix == ".png":
                         staged[path.name] = step("IMAGE_READ", path.read_bytes)

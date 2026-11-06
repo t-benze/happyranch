@@ -2425,7 +2425,10 @@ and decoded backslash. It builds no virtual replacement or comparison spans;
 actual sanitation, every full pass debit, strict output measurement, complete
 equality and residual-secret checks remain. The raw callback's later duplicate
 unchanged-value comparison is removed; the first full comparison remains.
-Other transforming raw-text sanitation retains the general planner.
+The unescaped primitive-value correction below consumes sanitation
+in its existing decoded slot. Keys, escaped and longer scalars retain separate
+output-reference admission. Other transforming raw-text sanitation retains the
+general planner.
 Original-plus-safe projection bytes remain charged even for borrowed objects,
 aliases and no-match strings. Every replacement pass pays its whole safe scalar;
 one charged longest-first view preserves the original context list for identity
@@ -3779,8 +3782,9 @@ including scan-only arrays. Every member's grammar, depth and scalar checks
 still run. The raw scalar callback omits its second
 identical unchanged-value comparison after the first full builtin-string
 comparison and final eligibility check. Only that duplicate's 8B/1fact debit
-ceases; every original/safe secret pass, sanitizer pass, reference admission and
-distinct full comparison remains. These operation removals make no capacity,
+ceases; every original/safe secret pass, sanitizer pass and distinct full
+comparison remains. Reference admission follows the current unescaped
+primitive-value correction below; other paths retain the separate safe slot. These operation removals make no capacity,
 causal-proof or native-acceptance claim before actual complete verification.
 
 
@@ -4352,3 +4356,77 @@ Python3.12 NOT RUN; individual/read/decode/allocation/race/temporal/native proof
 NOT RUN/PROOF NOT RUN. No rate/cap/reset/refund/fixture reduction, cross-occurrence
 safety reuse, new parser/framework/seam, history/custody clearance or budget
 renewal is implied. Every older adverse receipt/UNKNOWN/hold/spend survives.
+
+
+### Registered-raw decoded-value ownership correction
+
+The preceding lexical candidate actually failed the restored controls at
+`C5-Case-copy-positive-index4-repeated-prefix`: its registered-raw per-secret
+scan requested8B/1fact at W7783905/reserved0/F200000. This was required live
+safety work, not a charge that could disappear. Empty stdout supplied no
+complete11184 result; historical/addition reconciliation and clean-head
+lint/static were NOT RUN. Both that failure and the earlier lexical-setup
+capacity failure remain adverse evidence. The original missing-terminal
+intended assertion and byte-exact restoration retain only their actual scope.
+
+The registered-raw callback now belongs to the same existing strict JSON parser
+that owns its original input. The original scanner/callback/bounds32B/4facts
+remain; private context/sanitizer bindings cost16B/2facts before retention and
+are cleared at scan exit. No public flag, input-size claim, new parser or cache
+selects this behavior. Only the six existing registered JSON/JSONL names use it.
+Keys still undergo duplicate/order admission before their original callback;
+SOURCE, encoded, deferred and matching-value policies retain their own owners.
+
+For a nondeferred raw primitive value, the existing value frame reuses its
+finished token-kind slot for this occurrence's original start before decoding.
+Strict JSON escapes always shorten the original codepoint spelling, so equal
+complete decoded/original codepoint lengths prove an unescaped range. The string
+constructor, all chunk/storage charges and each scalar's single decode remain
+unchanged, at every size. On this branch the existing decoded-value slot consumes
+the actual sanitizer result. There is no separate
+safe-result reference or its0B/1fact reservation. The original decoded storage
+and fact remain paid. This is an eliminated local reference, not a discount
+because a library returns an alias: EVERY actual sanitizer pass still runs and
+pays its whole scalar at the unchanged rate. Every original per-secret8B/1fact
+scan and decoded-backslash refusal remains before sanitation. Original-range setup
+prepays16B/0facts before the token-slot assignment, and the complete comparison retains64B/0facts plus16B/0facts
+for the new original-range selection before its use.
+
+That SAME value frame uses its own exact original begin and closing cursor.
+The original decoded sizing walk and independent strict UTF8 output-size check
+both still run. Size/actual local state moves from the absent callback frame;
+no extra bound holder, iterator or flag is allocated. Exact codepoint length plus
+a full `startswith`
+comparison bounded by BOTH original endpoints compares the entire sanitizer
+result with this occurrence's original unescaped range. It constructs no new
+slice, span, iterator or expected string and borrows no other occurrence's proof.
+The residual-secret scan and final eligibility boundaries remain. Empty, ASCII,
+nonASCII and longer unescaped values use the same full checks. An escaped scalar
+and every key keep the original callback, separate safe-reference reservation and
+full original comparison. Each scalar is decoded only once; whole-original,
+SOURCE/literal/second-layer safety, private late joins and all distinct full
+bytes/types/order/count/hash/content comparisons remain independent.
+
+The final registered-raw literal token passes its complete original scalar to the
+existing buffer. Its two begin/end slots and their16B/2facts are absent;32B/3facts
+retain token/holder admissions and16B/0facts prepay whole-string selection.
+Unregistered text keeps its original span path and accounting. Complete output-
+byte and fixed scratch reservations, original whitespace/escapes/
+JSONL-LFs, exact buffer position and replacement-before-postcheck are unchanged.
+No earlier saving is counted twice; C8388608/F200000/depth64/original end and
+nonrenewing work/copy/carry/storage/final-buffer rates remain unchanged.
+
+All11184 independent full result expectations,2600 additions,384 completed-positive
+fixture migrations, explicit historical field/outcome qualifications,1761 shared
+keepers,87 independent readers and complete literal/assertion inputs are retained.
+One substantively changed candidate full existing aggregate controls command and
+complete historical typed/ordered reconciliation remain PENDING, as do clean
+committed-head lint/static and normal SAME-draft-PR publication. No sufficient-fit,
+behavioral, test-authoring, native, whole-PR or readiness PASS follows source
+inspection. Individual/read/decode/allocation/race/temporal/native proof is
+NOT RUN/PROOF NOT RUN. Independent accumulated affected-owner review then SEPARATE
+identical-produced-head scoped QA follow only a complete published maker handoff;
+other SOURCE, actual-main convergence, final full cross-closure review/final-compound
+QA, guarded merge/exact-main TWO lints and daily-native acceptance remain ROOT-owned.
+Units RETIRED; integration INCLUDING actual callback/lifespan/SessionTracker
+SKIPPED24342/211270-271; Product DAILY19UTC ONLY with no new run/trigger/observation.
