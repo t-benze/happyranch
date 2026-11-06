@@ -826,97 +826,98 @@ def test_startup_isolation_invalid_evidence(startup_case: _StartupCase, variant:
     if variant.startswith('members-') or variant in ('missing-mirror', 'operation-identity', 'operation-state', 'operation-movement'):
         _startup_shared_operation(case, state)
     before = {s: _startup_rows(o) for s, o in case.original.items()}
-    if variant.startswith('members-'):
-        value = {'members-scalar': 'alpha', 'members-duplicate': ['alpha', 'alpha', 'beta'],
-                 'members-unknown': ['alpha', 'beta', 'not-attached']}[variant]
-        for org in (alpha, beta):
-            with org.db._lock:
-                org.db._conn.execute('UPDATE workflow_profile_operations SET captured_members=?', (json.dumps(value),))
-                org.db._conn.commit()
-    elif variant == 'missing-mirror':
-        with beta.db._lock:
-            beta.db._conn.execute('DELETE FROM workflow_profile_operations')
-            beta.db._conn.commit()
-    elif variant == 'operation-identity':
-        with beta.db._lock:
-            beta.db._conn.execute('UPDATE workflow_profile_operations SET target_generation=target_generation+1')
-            beta.db._conn.commit()
-    elif variant == 'operation-state':
-        with beta.db._lock:
-            beta.db._conn.execute('PRAGMA ignore_check_constraints=ON')
-            beta.db._conn.execute("UPDATE workflow_profile_operations SET state='invalid-fixture-state'")
-            beta.db._conn.commit()
-            beta.db._conn.execute('PRAGMA ignore_check_constraints=OFF')
-    elif variant == 'canonical-missing-dependency':
-        with alpha.db._lock:
-            alpha.db._conn.execute("DELETE FROM workflow_profile_dependencies WHERE profile_name='startup-p'")
-            alpha.db._conn.commit()
-        case.ordinary(beta)
-    elif variant == 'native-malformed':
-        case.ordinary(alpha)
-        with alpha.db._lock:
-            row = alpha.db._conn.execute("SELECT id FROM audit_log WHERE action='team_move_native_writer' ORDER BY id DESC LIMIT 1").fetchone()
-            assert row is not None
-            alpha.db._conn.execute('UPDATE audit_log SET payload=? WHERE id=?', ('{"invalid":"native"}', row['id']))
-            alpha.db._conn.commit()
-    elif variant == 'operation-movement':
-        # This distinct final-capture boundary must reject movement itself;
-        # an earlier UNKNOWN/group gate cannot supply its negative oracle.
-        capture = coordinator._capture_org_dependencies(alpha)
-        def validate_selected() -> None:
-            with ExitStack() as locks:
-                for name in sorted(_STARTUP_PROFILES):
-                    locks.enter_context(coordinator.profile_read(name))
-                locks.enter_context(alpha.workflow_authority._publisher_lock)
-                with alpha.db._lock:
-                    coordinator._validate_capture(alpha, capture.revision)
-        validate_selected()  # SAME genuine capture's positive validation
-        with closing(sqlite3.connect(alpha.db.path)) as mover:
-            mover.execute('UPDATE workflow_profile_operations SET target_generation=target_generation+1')
-            mover.commit()
-        moved = _startup_rows(alpha)
-        assert moved['workflow_authority_pointers'] == before['alpha']['workflow_authority_pointers']
-        assert moved['workflow_profile_operations'] != before['alpha']['workflow_profile_operations']
-        _startup_record(case.request, 'operation-evidence-moved-pointer-stable', before=before['alpha'], after=moved)
-        with pytest.raises(ProfileCoordinatorError, match='^profile_consumer_changed$'):
-            validate_selected()
-    elif variant == 'dependency-reader':
-        # SQLite's real selected reader fails, rather than replacing capture.
-        def deny(action: int, table: str, column: str, database: str, source: str) -> int:
-            if action == sqlite3.SQLITE_READ and table == 'workflow_profile_dependencies':
-                return sqlite3.SQLITE_DENY
-            return sqlite3.SQLITE_OK
-        alpha.db._conn.set_authorizer(deny)
-    else:
-        # A delegating observation at the actual discovery->validation cut.
-        # Every invocation moves real selected evidence; existing bounded retry
-        # cannot accidentally accept a later static snapshot.
-        original = coordinator._capture_org_dependencies
-        def moving(org: object, **kwargs: object) -> object:
-            capture = original(org, **kwargs)
-            if org is alpha:
-                if variant == 'pointer-movement':
-                    with alpha.workflow_authority.writer_interval(publisher='startup-pointer-movement') as writer:
-                        with writer.canonical_change():
-                            alpha.db.upsert_org_setting('startup_race', str(time.time_ns()))
-                elif variant == 'native-movement':
-                    with native_writer(alpha.db, publisher='startup-native-movement'):
-                        pass
-                else:
-                    with alpha.db._lock:
-                        if variant == 'dependency-movement':
-                            alpha.db._conn.execute("UPDATE workflow_profile_dependencies SET bound_generation=bound_generation+1 WHERE profile_name='startup-p'")
-                        else:
-                            alpha.db._conn.execute('UPDATE workflow_profile_operations SET target_generation=target_generation+1')
-                        alpha.db._conn.commit()
-                actual = _startup_rows(alpha)
-                fault_rows['alpha'] = actual
-                _startup_record(case.request, 'actual-evidence-moved', variant=variant, rows=actual)
-            return capture
-        case.patch.setattr(coordinator, '_capture_org_dependencies', moving)
     fault_rows: dict = {}
     try:
-        if variant != 'dependency-reader':
+        if variant.startswith('members-'):
+            value = {'members-scalar': 'alpha', 'members-duplicate': ['alpha', 'alpha', 'beta'],
+                     'members-unknown': ['alpha', 'beta', 'not-attached']}[variant]
+            for org in (alpha, beta):
+                with org.db._lock:
+                    org.db._conn.execute('UPDATE workflow_profile_operations SET captured_members=?', (json.dumps(value),))
+                    org.db._conn.commit()
+        elif variant == 'missing-mirror':
+            with beta.db._lock:
+                beta.db._conn.execute('DELETE FROM workflow_profile_operations')
+                beta.db._conn.commit()
+        elif variant == 'operation-identity':
+            with beta.db._lock:
+                beta.db._conn.execute('UPDATE workflow_profile_operations SET target_generation=target_generation+1')
+                beta.db._conn.commit()
+        elif variant == 'operation-state':
+            with beta.db._lock:
+                beta.db._conn.execute('PRAGMA ignore_check_constraints=ON')
+                beta.db._conn.execute("UPDATE workflow_profile_operations SET state='invalid-fixture-state'")
+                beta.db._conn.commit()
+                beta.db._conn.execute('PRAGMA ignore_check_constraints=OFF')
+        elif variant == 'canonical-missing-dependency':
+            with alpha.db._lock:
+                alpha.db._conn.execute("DELETE FROM workflow_profile_dependencies WHERE profile_name='startup-p'")
+                alpha.db._conn.commit()
+            case.ordinary(beta)
+        elif variant == 'native-malformed':
+            case.ordinary(alpha)
+            with alpha.db._lock:
+                row = alpha.db._conn.execute("SELECT id FROM audit_log WHERE action='team_move_native_writer' ORDER BY id DESC LIMIT 1").fetchone()
+                assert row is not None
+                alpha.db._conn.execute('UPDATE audit_log SET payload=? WHERE id=?', ('{"invalid":"native"}', row['id']))
+                alpha.db._conn.commit()
+        elif variant == 'operation-movement':
+            # This distinct final-capture boundary must reject movement itself;
+            # an earlier UNKNOWN/group gate cannot supply its negative oracle.
+            capture = coordinator._capture_org_dependencies(alpha)
+            def validate_selected() -> None:
+                with ExitStack() as locks:
+                    for name in sorted(_STARTUP_PROFILES):
+                        locks.enter_context(coordinator.profile_read(name))
+                    locks.enter_context(alpha.workflow_authority._publisher_lock)
+                    with alpha.db._lock:
+                        coordinator._validate_capture(alpha, capture.revision)
+            validate_selected()  # SAME genuine capture's positive validation
+            with closing(sqlite3.connect(alpha.db.path)) as mover:
+                mover.execute('UPDATE workflow_profile_operations SET target_generation=target_generation+1')
+                mover.commit()
+            moved = _startup_rows(alpha)
+            fault_rows = {s: _startup_rows(o) for s, o in case.original.items()}
+            assert moved['workflow_authority_pointers'] == before['alpha']['workflow_authority_pointers']
+            assert moved['workflow_profile_operations'] != before['alpha']['workflow_profile_operations']
+            _startup_record(case.request, 'operation-evidence-moved-pointer-stable', before=before['alpha'], after=moved)
+            with pytest.raises(ProfileCoordinatorError, match='^profile_consumer_changed$'):
+                validate_selected()
+        elif variant == 'dependency-reader':
+            # SQLite's real selected reader fails, rather than replacing capture.
+            def deny(action: int, table: str, column: str, database: str, source: str) -> int:
+                if action == sqlite3.SQLITE_READ and table == 'workflow_profile_dependencies':
+                    return sqlite3.SQLITE_DENY
+                return sqlite3.SQLITE_OK
+            alpha.db._conn.set_authorizer(deny)
+        else:
+            # A delegating observation at the actual discovery->validation cut.
+            # Every invocation moves real selected evidence; existing bounded retry
+            # cannot accidentally accept a later static snapshot.
+            original = coordinator._capture_org_dependencies
+            def moving(org: object, **kwargs: object) -> object:
+                capture = original(org, **kwargs)
+                if org is alpha:
+                    if variant == 'pointer-movement':
+                        with alpha.workflow_authority.writer_interval(publisher='startup-pointer-movement') as writer:
+                            with writer.canonical_change():
+                                alpha.db.upsert_org_setting('startup_race', str(time.time_ns()))
+                    elif variant == 'native-movement':
+                        with native_writer(alpha.db, publisher='startup-native-movement'):
+                            pass
+                    else:
+                        with alpha.db._lock:
+                            if variant == 'dependency-movement':
+                                alpha.db._conn.execute("UPDATE workflow_profile_dependencies SET bound_generation=bound_generation+1 WHERE profile_name='startup-p'")
+                            else:
+                                alpha.db._conn.execute('UPDATE workflow_profile_operations SET target_generation=target_generation+1')
+                            alpha.db._conn.commit()
+                    actual = _startup_rows(alpha)
+                    fault_rows['alpha'] = actual
+                    _startup_record(case.request, 'actual-evidence-moved', variant=variant, rows=actual)
+                return capture
+            case.patch.setattr(coordinator, '_capture_org_dependencies', moving)
+        if variant not in ('dependency-reader', 'operation-movement'):
             fault_rows = {s: _startup_rows(o) for s, o in case.original.items()}
         if variant.startswith('members-') or variant in ('missing-mirror', 'operation-identity', 'operation-state'):
             invocation = next(r['coordinator_invocation'] for row in fault_rows.values()
@@ -979,12 +980,32 @@ def test_startup_isolation_admission(startup_case: _StartupCase, boundary: str,
     beta, gamma = case.original['beta'], case.original['gamma']
     capture = beta.workflow_authority.capture_admission()  # genuine, SAME object, before hold
     _startup_final_read(beta, capture)  # exact same-object positive SQL control
-    async def positive_native() -> None:
+    async def positive_native() -> object:
         token = object()
-        assert beta._acquire_native_task(token) is True and token in beta._native_task_users
-        beta._release_native_task(token)  # acquired token, released exactly once
+        users, runners = set(beta._native_task_users), set(beta._runner_tasks)
+        acquired = beta._acquire_native_task(token)
+        member = token in beta._native_task_users
+        _startup_record(case.request, 'C6-native-acquired-before-hold', boundary=boundary,
+                        org=id(beta), authority=id(beta.workflow_authority), capture=id(capture),
+                        token=id(token), acquired=acquired, member=member,
+                        users_before=sorted(map(id, users)), users_acquired=sorted(map(id, beta._native_task_users)))
+        try:
+            assert acquired is True and member
+        finally:
+            if acquired:
+                beta._release_native_task(token)  # only this genuinely acquired token, once
+            _startup_record(case.request, 'C6-native-released-before-hold', boundary=boundary,
+                            org=id(beta), token=id(token), released=acquired,
+                            member=token in beta._native_task_users,
+                            users_after=sorted(map(id, beta._native_task_users)),
+                            runners_before=sorted(map(id, runners)), runners_after=sorted(map(id, beta._runner_tasks)))
         assert token not in beta._native_task_users
-    asyncio.run(positive_native())
+        assert set(beta._native_task_users) == users and set(beta._runner_tasks) == runners
+        return token  # retain this object so a later refused token has a distinct identity
+    prehold_token = asyncio.run(positive_native())
+    _startup_record(case.request, 'C6-same-object-ready-before-hold', boundary=boundary,
+                    org=id(beta), authority=id(beta.workflow_authority), capture_identity=id(capture),
+                    capture=repr(capture), rows=_startup_rows(beta))
     if boundary in ('thread', 'schedule', 'dream', 'work-hours'):
         _startup_producer_pass(case, state, beta, gamma, boundary, fake_claude_thread_plan_env)
         return
@@ -1014,6 +1035,7 @@ def test_startup_isolation_admission(startup_case: _StartupCase, boundary: str,
                for r in sorted(before['workflow_profile_registry'], key=lambda r: r['profile_name'])])
         assert mirror == capture.profile_mirror
         _startup_record(case.request, 'C6-final-ready-preconditions', capture=repr(capture),
+                        org=id(beta), authority=id(authority), capture_identity=id(capture), cache_identity=id(cache),
                         cache_entry=cache_entry, pointer=pointer, journal=journal, mirror=mirror)
     case.ordinary(case.original['alpha'])
     case.classify(state)
@@ -1041,8 +1063,12 @@ def test_startup_isolation_admission(startup_case: _StartupCase, boundary: str,
         callbacks = witness_path.read_bytes() if witness_path.exists() else b''
         async def retained() -> None:
             refused = object()
+            assert refused is not prehold_token
             users, runners = set(beta._native_task_users), set(beta._runner_tasks)
-            assert beta._acquire_native_task(refused) is False
+            acquired = beta._acquire_native_task(refused)
+            _startup_record(case.request, 'C6-fresh-token-after-hold', org=id(beta), token=id(refused),
+                            acquired=acquired, member=refused in beta._native_task_users)
+            assert acquired is False
             assert refused not in beta._native_task_users
             async def runner() -> None:
                 with beta._runner_lifetime() as admitted:
@@ -1072,6 +1098,7 @@ def test_startup_isolation_admission(startup_case: _StartupCase, boundary: str,
         assert authority._cache.get(authority.namespace) == cache_entry
         _startup_original_unchanged(before, held_rows)
         _startup_record(case.request, 'C6-final-held-preconditions', cache_entry=cache_entry,
+                        org=id(beta), authority=id(authority), capture_identity=id(capture), cache_identity=id(cache),
                         before=before, held=held_rows)
         with pytest.raises(WorkflowAuthorityError, match='^authority_pointer_not_ready$'):
             _startup_final_read(beta, capture)
@@ -1211,10 +1238,14 @@ def _startup_producer_pass(case: _StartupCase, state: object, held: object, heal
     # The SAME actual loop pauses between passes; no startup restart/rerun.
     controls = _startup_producer_inputs(case, (healthy,), boundary)
     now = datetime.fromisoformat(controls['now'])
+    # Founder-only reply avoids a real broadcast follow-on to the composer;
+    # callback predicates/consumption remain entirely production-owned.
+    trigger_seq = controls['orgs'][healthy.slug]['seq'] if boundary == 'thread' else None
     thread_plan.write_text('#!/bin/bash\nset -eu\n' +
         'thread_id=$1; token=$2; agent=$3; org_slug=$4; purpose=$5\n' +
+        f'trigger_seq={trigger_seq}\n' +
         'payload="$PWD/startup-thread-$token.json"\n' +
-        'printf \'{"thread_id":"%s","invocation_token":"%s","speaker":"%s","body_markdown":"startup synthetic reply","in_response_to_seq":1}\' "$thread_id" "$token" "$agent" > "$payload"\n' +
+        'printf \'{"thread_id":"%s","invocation_token":"%s","speaker":"%s","body_markdown":"@founder startup synthetic reply","in_response_to_seq":%s}\' "$thread_id" "$token" "$agent" "$trigger_seq" > "$payload"\n' +
         'happyranch threads reply --org "$org_slug" --thread-id "$thread_id" --from-file "$payload"\n')
     thread_plan.chmod(0o755)
     if boundary != 'thread':
@@ -1225,34 +1256,101 @@ def _startup_producer_pass(case: _StartupCase, state: object, held: object, heal
                 return now if tz is None else now.astimezone(tz)
         case.patch.setattr(module, 'datetime', FixedDateTime)
     async def execute() -> None:
+        import sys
+        from runtime.daemon import thread_runner
         first_end, second_end, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         task_name = 'startup-' + boundary
         real_sleep = asyncio.sleep
+        producer = (thread_queue.thread_worker_loop if boundary == 'thread' else
+                    getattr(module, {'schedule': 'schedule_scheduler_loop', 'dream': 'dream_scheduler_loop',
+                                     'work-hours': 'work_hours_scheduler_loop'}[boundary]))
+        loop = None
+        runner_returns: list = []
+        native_returns: list = []  # retain actual original tokens, not just printed identities
+        acknowledgements: list = []
+        original_users = set(healthy._native_task_users)
+        original_runners = set(healthy._runner_tasks)
+        if boundary == 'thread':
+            real_invocation = thread_runner.run_invocation
+            real_release = healthy._release_native_task
+            real_acknowledge = healthy.thread_queue.acknowledge_once
+            def native_released(token: object) -> None:
+                returned = getattr(token, 'returned', None)
+                observed_return = returned.is_set() if returned is not None else None
+                real_release(token)
+                native_returns.append((token, observed_return))
+                _startup_record(case.request, 'thread-original-native-release', token=id(token),
+                                org=id(healthy), returned=observed_return,
+                                member_after=token in healthy._native_task_users)
+            async def invocation_returned(**kwargs: object) -> None:
+                completed = False
+                try:
+                    await real_invocation(**kwargs)
+                    completed = True
+                    runner_returns.append((kwargs['org_state'], kwargs['invocation_token']))
+                finally:
+                    _startup_record(case.request, 'thread-original-runner-return',
+                                    org=id(kwargs['org_state']), token=kwargs['invocation_token'],
+                                    returned_normally=completed,
+                                    native_users=sorted(map(id, healthy._native_task_users)),
+                                    runner_tasks=sorted(map(id, healthy._runner_tasks)))
+            def acknowledged(job: object) -> None:
+                real_acknowledge(job)
+                acknowledgements.append(job)
+                _startup_record(case.request, 'thread-queue-acknowledged', job=id(job),
+                                token=job.invocation_token, queue_size=healthy.thread_queue.size,
+                                owned_tokens=sorted(healthy.thread_queue._published_once_tokens))
+            case.patch.setattr(healthy, '_release_native_task', native_released)
+            case.patch.setattr(thread_runner, 'run_invocation', invocation_returned)
+            case.patch.setattr(healthy.thread_queue, 'acknowledge_once', acknowledged)
         async def pause_between_passes(delay: float, result: object = None) -> object:
-            if asyncio.current_task().get_name() == task_name and delay in (0.05, 3600):
+            # Only the selected loop's DIRECT await is its pass boundary. A
+            # nested native waiter on that SAME task is delegated unchanged.
+            if asyncio.current_task() is loop and sys._getframe(1).f_code is producer.__code__:
                 if not first_end.is_set():
                     first_end.set()
                     await release.wait()
                     return await real_sleep(0, result)
                 second_end.set()
             return await real_sleep(delay, result)
-        # This observes only the real end-of-pass await; no business result,
-        # registry, dispatcher or membership is supplied by the observer.
         case.patch.setattr(asyncio, 'sleep', pause_between_passes)
-        if boundary == 'thread':
-            coroutine = thread_queue.thread_worker_loop(state, state.settings)
-        else:
-            coroutine = getattr(module, {'schedule': 'schedule_scheduler_loop', 'dream': 'dream_scheduler_loop',
-                'work-hours': 'work_hours_scheduler_loop'}[boundary])(state, interval_seconds=3600)
+        coroutine = (producer(state, state.settings) if boundary == 'thread' else
+                     producer(state, interval_seconds=3600))
         loop = asyncio.create_task(coroutine, name=task_name)
         try:
             await asyncio.wait_for(first_end.wait(), 30)
             positive = _startup_rows(healthy)
             if boundary == 'thread':
-                own = [r for r in positive[table] if r['invocation_token'] == controls['orgs'][healthy.slug]['token']]
+                from tests.helpers.integration_stub_guard.guard import assert_launch_witness
+                selected = controls['orgs'][healthy.slug]
+                own = [r for r in positive[table] if r['invocation_token'] == selected['token']]
+                with closing(sqlite3.connect(healthy.db.path.resolve().as_uri() + '?mode=ro', uri=True)) as observer:
+                    observer.row_factory = sqlite3.Row
+                    replies = [dict(r) for r in observer.execute(
+                        'SELECT * FROM thread_messages WHERE thread_id=? ORDER BY seq', (selected['thread'],))]
+                witness_path = Path(os.environ['HAPPYRANCH_TEST_WITNESS_DIR']) / 'identities.jsonl'
+                witnesses = witness_path.read_bytes() if witness_path.exists() else b''
+                _startup_record(case.request, 'thread-positive-boundary-before-assertion',
+                    selected=selected, org=id(healthy), rows=positive, invocation=own, replies=replies,
+                    queue_size=healthy.thread_queue.size,
+                    owned_tokens=sorted(healthy.thread_queue._published_once_tokens),
+                    acknowledgements=[{'job': id(j), 'token': j.invocation_token} for j in acknowledgements],
+                    runner_returns=[{'org': id(o), 'token': t} for o, t in runner_returns],
+                    native_returns=[{'token': id(t), 'returned': returned} for t, returned in native_returns],
+                    users_before=sorted(map(id, original_users)), users_after=sorted(map(id, healthy._native_task_users)),
+                    runners_before=sorted(map(id, original_runners)), runners_after=sorted(map(id, healthy._runner_tasks)),
+                    witness=witnesses)
                 assert len(own) == 1 and own[0]['status'] == 'consumed' and own[0]['started_at'] is not None
                 assert own[0]['reply_message_seq'] is not None
+                assert any(r['seq'] == own[0]['reply_message_seq'] and r['speaker'] == 'engineering_head'
+                           and r['body_markdown'] == '@founder startup synthetic reply' for r in replies)
                 assert healthy.thread_queue.size == 0
+                assert selected['token'] not in healthy.thread_queue._published_once_tokens
+                assert any(j.invocation_token == selected['token'] for j in acknowledgements)
+                assert any(o is healthy and t == selected['token'] for o, t in runner_returns)
+                assert native_returns and all(returned is True for _, returned in native_returns)
+                assert set(healthy._native_task_users) == original_users and set(healthy._runner_tasks) == original_runners
+                assert_launch_witness('claude')
             else:
                 assert len(positive[table]) == 1 and positive[table][0]['status'] == ('firing' if boundary == 'schedule' else 'pending')
                 assert getattr(healthy, queue_name).size == 1
@@ -1282,6 +1380,7 @@ def _startup_producer_pass(case: _StartupCase, state: object, held: object, heal
             _startup_original_unchanged(before, after)
             assert getattr(held, queue_name).size == (1 if boundary == 'thread' else 0)
         finally:
+            release.set()
             loop.cancel()
             result = await asyncio.gather(loop, return_exceptions=True)
             _startup_record(case.request, 'producer-loop-returned', boundary=boundary, result=[repr(r) for r in result])
@@ -1483,6 +1582,8 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
             observe_read(org.db.schedules, 'recover_firing')
             observe_read(org.db.schedules, 'list_due')
     closes: list = []
+    close_invocations: list = []
+    close_errors: list = []
     candidates: list = []
     transferred: dict = {}
     real_close, real_post = OrgState.close, DaemonState.__post_init__
@@ -1493,23 +1594,41 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
         real_post(candidate)
         candidates.append(candidate)
     def close(org: object) -> None:
-        if tail == 'old-close' and org is originals['beta']:
-            case.failed_close.add(id(org))
-            raise primary
-        if tail == 'loaded-candidate' and org not in originals.values():
-            case.failed_close.add(id(org))
-            raise cleanup
-        assert id(org) not in case.closed, 'positive close repeated'
-        real_close(org)
-        with pytest.raises(sqlite3.ProgrammingError):
-            org.db._conn.execute('SELECT 1')
-        case.closed.add(id(org))
-        closes.append(id(org))
+        close_invocations.append(org)  # actual calls, including failed calls, retain the exact objects
+        error = None
+        try:
+            if tail == 'old-close' and org is originals['beta']:
+                case.failed_close.add(id(org))
+                raise primary
+            if tail == 'loaded-candidate' and org not in originals.values():
+                case.failed_close.add(id(org))
+                raise cleanup
+            assert id(org) not in case.closed, 'positive close repeated'
+            real_close(org)
+            with pytest.raises(sqlite3.ProgrammingError):
+                org.db._conn.execute('SELECT 1')
+            case.closed.add(id(org))
+            closes.append(id(org))
+        except BaseException as exc:
+            error = exc
+            close_errors.append((org, exc))
+            raise
+        finally:
+            _startup_record(case.request, 'C7-actual-close-invocation', tail=tail, org=id(org), slug=org.slug,
+                            positive_closed=id(org) in case.closed,
+                            actual_error=(repr(error) if error is not None else None),
+                            actual_error_identity=(id(error) if error is not None else None))
     def reconcile(coordinator: object) -> None:
         if tail == 'loaded-candidate':
             case.all_handles.update({id(o): o for o in coordinator.orgs.values()})
             case.retained_unknown.update(id(o) for o in coordinator.orgs.values())
             assert len(coordinator.orgs) == 2  # actual loaded candidate handles
+            for org in coordinator.orgs.values():
+                admission = producer_move.owner_for(org.db)
+                assert admission is not None
+                observe_read(admission, '_released_sources', org)
+                observe_read(org.db.schedules, 'recover_firing', org)
+                observe_read(org.db.schedules, 'list_due', org)
             raise primary
         if tail == 'successful-transfer':
             coordinator.synchronize_all_dependencies()
@@ -1522,144 +1641,204 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
     case.patch.setattr(ProfileCoordinator, 'reconcile_startup', reconcile)
     client = TestClient(create_app(state), raise_server_exceptions=True)
     client.headers.update(_auth_headers())
-    if tail == 'active-reader':
-        with state.capture_orgs(('alpha',), original=originals['alpha']):
-            response = client.post('/api/v1/runtime', json={'path': str(case.container)})
-            assert response.status_code == 409 and 'attachment_readers_in_flight' in response.text
-        assert closes == [] and candidates == []
-        assert originals['alpha'].db._conn.execute('SELECT 1').fetchone()[0] == 1
-        client.close()
-        return
-    if tail == 'successful-transfer':
-        response = client.post('/api/v1/runtime', json={'path': str(case.container)})
-    else:
-        with pytest.raises(RuntimeError) as refusal:
-            client.post('/api/v1/runtime', json={'path': str(case.container)})
-        assert refusal.value is primary
-        response = None
-    _startup_record(case.request, 'runtime-route-after-finally', tail=tail, status=(response.status_code if response is not None else None),
-                    body=(response.text if response is not None else repr(refusal.value)), closed=closes, candidate_count=len(candidates),
-                    swap_pending=state._attachment_swap_pending,
-                    owners=repr(state._attachment_owners))
-    if tail == 'successful-transfer':
-        assert response.status_code == 200, response.text
-        assert len(closes) == len(originals)
-        assert candidates and state.profile_coordinator is candidates[-1].profile_coordinator
-        callback = state.profile_coordinator._attachment_capture
-        assert callback.__self__ is state, 'profile capture retained discarded candidate owner'
-        with callback() as actual:
-            assert actual['alpha'] is transferred['alpha']
-            assert actual['beta'] is state.get_org('beta')
-            assert 'alpha' not in state.orgs_snapshot()
-        case.states.append(candidates[-1])
-        client.close()
-        return
-    assert response is None, 'failure was observed as the original raised route exception'
-    if tail == 'old-close':
-        assert closes == [id(originals['alpha'])] and candidates == []
-        # Failure branch refuses BEFORE calling the real later close. Observe
-        # actual usability independently; no fabricated positive retirement.
-        assert originals['beta'].db._conn.execute('SELECT 1').fetchone()[0] == 1
-    else:
-        assert set(closes) == {id(o) for o in originals.values()}
-        assert len(candidates) == 1 and len(candidates[0].orgs) == 2
-        candidate = candidates[0]
-        # Retained original construction owner must be reachable from the
-        # published state, not just this observer's local reference.
-        def owns(value: object, target: object, depth: int = 0) -> bool:
-            if value is target:
-                return True
-            if depth > 6:
-                return False
-            if isinstance(value, dict):
-                return any(owns(v, target, depth + 1) for v in value.values())
-            if isinstance(value, (tuple, list, set)):
-                return any(owns(v, target, depth + 1) for v in value)
-            return False
-        candidate_owned = owns(vars(state), candidate) or all(
-            owns(vars(state), org) for org in candidate.orgs.values())
-        _startup_record(case.request, 'candidate-custody', owned=candidate_owned,
-                        first_error=repr(primary), secondary=repr(cleanup),
-                        handles=[{'slug': o.slug, 'usable': o.db._conn.execute('SELECT 1').fetchone()[0]}
-                                 for o in candidate.orgs.values()])
-        assert candidate_owned, 'failed loaded candidate lost original construction custody'
-        assert owns(vars(state), primary) and owns(vars(state), cleanup), 'original owner lost primary/secondary error identities'
-        assert any(id(o) in case.failed_close for o in candidate.orgs.values()), 'secondary close cut never reached'
-    # All assertions below happen AFTER the route finally, including native and
-    # a real scheduler pass. They cannot be supplied by the failed HTTP alone.
-    for slug, original in originals.items():
-        with pytest.raises(_OrgBusyError, match='^attachment_retiring$'):
-            with state.capture_orgs((slug,), original=original):
-                pytest.fail('post-failure old attachment capture admitted')
-        response = client.get('/api/v1/orgs/' + slug + '/agents')
-        assert response.status_code == 409 and 'attachment_retiring' in response.text
-        try:
-            returned = state.get_org(slug)
-        except (KeyError, _OrgBusyError):
-            returned = None
-        assert returned is None, 'closed/retiring old object returned after failed swap'
-        async def denied_native() -> None:
-            token = object()
-            assert original._acquire_native_task(token) is False
-            assert token not in original._native_task_users
-        asyncio.run(denied_native())
-    assert not any(o in originals.values() for o in state.orgs_snapshot().values())
-    from runtime.daemon.schedule_scheduler import schedule_scheduler_loop
-    # Baseline AFTER the genuine failure includes candidate-load diagnostics.
-    # Read closed originals through separate short read-only SQLite connections.
-    producer_before = {s: _startup_rows(o.db.path) for s, o in originals.items()}
-    queue_before = {s: (o.schedule_queue.size, set(o.schedule_queue._owned),
-                        set(o._native_task_users), set(o._runner_tasks)) for s, o in originals.items()}
-    native_work = set(state.queue._native_work)
-    witness_path = Path(os.environ['HAPPYRANCH_TEST_WITNESS_DIR']) / 'identities.jsonl'
-    callbacks = witness_path.read_bytes() if witness_path.exists() else b''
-    for slug, org in originals.items():
-        schedule = next(r for r in producer_before[slug]['schedules']
-                        if r['id'] == eligible['orgs'][slug]['schedule'])
-        assert schedule['status'] == 'armed' and schedule['active'] == 1
-        assert datetime.fromisoformat(schedule['fire_at']) <= datetime.now(timezone.utc)
-    real_tick = state.metrics_registry.record_loop_tick
-    async def producer_after_finally() -> None:
-        reached = asyncio.Event()
-        def tick(*args: object, **kwargs: object) -> object:
-            result = real_tick(*args, **kwargs)
-            if args[0] == 'schedule_scheduler':
-                reached.set()
-            return result
-        case.patch.setattr(state.metrics_registry, 'record_loop_tick', tick)
-        loop = asyncio.create_task(schedule_scheduler_loop(state, interval_seconds=3600))
-        try:
-            await asyncio.wait_for(reached.wait(), 5)
-            await asyncio.sleep(0)  # allow any actual queued put tasks to finish
-        finally:
-            loop.cancel()
-            result = await asyncio.gather(loop, return_exceptions=True)
-            _startup_record(case.request, 'C7-owned-producer-return', cancelled=loop.cancelled(),
-                            result=[type(value).__name__ for value in result])
-            assert loop.done() and loop.cancelled() and isinstance(result[0], asyncio.CancelledError), result
-    observing_producer = True
     try:
-        asyncio.run(producer_after_finally())
+        if tail == 'active-reader':
+            with state.capture_orgs(('alpha',), original=originals['alpha']):
+                response = client.post('/api/v1/runtime', json={'path': str(case.container)})
+                assert response.status_code == 409 and 'attachment_readers_in_flight' in response.text
+            assert closes == [] and candidates == []
+            assert originals['alpha'].db._conn.execute('SELECT 1').fetchone()[0] == 1
+            return
+        if tail == 'successful-transfer':
+            response = client.post('/api/v1/runtime', json={'path': str(case.container)})
+        else:
+            with pytest.raises(RuntimeError) as refusal:
+                client.post('/api/v1/runtime', json={'path': str(case.container)})
+            assert refusal.value is primary
+            response = None
+        _startup_record(case.request, 'runtime-route-after-finally', tail=tail, status=(response.status_code if response is not None else None),
+                        body=(response.text if response is not None else repr(refusal.value)), closed=closes, candidate_count=len(candidates),
+                        swap_pending=state._attachment_swap_pending,
+                        owners=repr(state._attachment_owners))
+        if tail == 'successful-transfer':
+            assert response.status_code == 200, response.text
+            assert len(closes) == len(originals)
+            assert candidates and state.profile_coordinator is candidates[-1].profile_coordinator
+            callback = state.profile_coordinator._attachment_capture
+            assert callback.__self__ is state, 'profile capture retained discarded candidate owner'
+            with callback() as actual:
+                assert actual['alpha'] is transferred['alpha']
+                assert actual['beta'] is state.get_org('beta')
+                assert 'alpha' not in state.orgs_snapshot()
+            case.states.append(candidates[-1])
+            return
+        assert response is None, 'failure was observed as the original raised route exception'
+        # Observe all otherwise-safe independent boundaries BEFORE the expected
+        # product assertions. No failed close is retried and no state is repaired.
+        candidate_owned = primary_owned = cleanup_owned = False
+        if tail == 'loaded-candidate':
+            candidate = candidates[0]
+            def owns(value: object, target: object, depth: int = 0) -> bool:
+                if value is target:
+                    return True
+                if depth > 6:
+                    return False
+                if isinstance(value, dict):
+                    return any(owns(v, target, depth + 1) for v in value.values())
+                if isinstance(value, (tuple, list, set)):
+                    return any(owns(v, target, depth + 1) for v in value)
+                return False
+            candidate_owned = owns(vars(state), candidate) or all(
+                owns(vars(state), org) for org in candidate.orgs.values())
+            primary_owned, cleanup_owned = owns(vars(state), primary), owns(vars(state), cleanup)
+            handles = []
+            for org in candidate.orgs.values():
+                try:
+                    usable = org.db._conn.execute('SELECT 1').fetchone()[0]
+                    error = None
+                except sqlite3.ProgrammingError as exc:
+                    usable, error = None, repr(exc)
+                handles.append({'slug': org.slug, 'identity': id(org), 'usable': usable, 'error': error})
+            _startup_record(case.request, 'candidate-custody', owned=candidate_owned,
+                            primary_owned=primary_owned, cleanup_owned=cleanup_owned,
+                            authored_primary=repr(primary), authored_secondary=repr(cleanup), handles=handles,
+                            close_invocations=[id(o) for o in close_invocations],
+                            actual_close_errors=[{'org': id(o), 'error': repr(e), 'error_identity': id(e)}
+                                                 for o, e in close_errors],
+                            secondary_close_cut=('REACHED' if any(e is cleanup for _, e in close_errors) else 'UNREACHED'),
+                            dependency='from_runtime reconcile_startup escape -> _swap has no candidate cleanup on this path')
+        if tail == 'old-close':
+            beta_usable = originals['beta'].db._conn.execute('SELECT 1').fetchone()[0]
+        # The baseline is AFTER the genuine route/finally, including any owed
+        # candidate-load diagnostics. Original closed DBs are read independently.
+        producer_before = {s: _startup_rows(o.db.path) for s, o in originals.items()}
+        observed_handles = {id(o): o for o in originals.values()}
+        for candidate in candidates:
+            observed_handles.update({id(o): o for o in candidate.orgs.values()})
+        queue_before = {identity: (o.schedule_queue.size, set(o.schedule_queue._owned),
+                                   set(o._native_task_users), set(o._runner_tasks))
+                        for identity, o in observed_handles.items()}
+        native_work = set(state.queue._native_work)
+        witness_path = Path(os.environ['HAPPYRANCH_TEST_WITNESS_DIR']) / 'identities.jsonl'
+        callbacks = witness_path.read_bytes() if witness_path.exists() else b''
+        admission_observations: dict = {}
+        for slug, original in originals.items():
+            capture_error = None
+            try:
+                with state.capture_orgs((slug,), original=original):
+                    pass
+            except Exception as exc:
+                capture_error = exc
+            response_error = None
+            try:
+                response = client.get('/api/v1/orgs/' + slug + '/agents')
+            except Exception as exc:
+                response, response_error = None, exc
+            returned = get_error = None
+            try:
+                returned = state.get_org(slug)
+            except (KeyError, _OrgBusyError) as exc:
+                get_error = exc
+            async def observe_native() -> tuple:
+                token = object()
+                acquired = original._acquire_native_task(token)
+                member = token in original._native_task_users
+                try:
+                    return acquired, member, token
+                finally:
+                    if acquired:
+                        original._release_native_task(token)  # own unexpected acquisition only, never a refused token
+            acquired, member, token = asyncio.run(observe_native())
+            admission_observations[slug] = (capture_error, response, response_error, returned, acquired, member)
+            _startup_record(case.request, 'C7-post-finally-admission-observed', slug=slug, org=id(original),
+                            capture_error=(repr(capture_error) if capture_error is not None else None),
+                            status=(response.status_code if response is not None else None),
+                            body=(response.text if response is not None else None),
+                            response_error=(repr(response_error) if response_error is not None else None),
+                            returned_org=(id(returned) if returned is not None else None),
+                            get_error=(repr(get_error) if get_error is not None else None),
+                            token=id(token), acquired=acquired, member_at_acquire=member,
+                            member_after=token in original._native_task_users)
+        snapshot = state.orgs_snapshot()
+        _startup_record(case.request, 'C7-post-finally-snapshot-observed',
+                        snapshot={s: id(o) for s, o in snapshot.items()})
+        from runtime.daemon.schedule_scheduler import schedule_scheduler_loop
+        real_tick = state.metrics_registry.record_loop_tick
+        async def producer_after_finally() -> None:
+            reached = asyncio.Event()
+            def tick(*args: object, **kwargs: object) -> object:
+                result = real_tick(*args, **kwargs)
+                if args[0] == 'schedule_scheduler':
+                    reached.set()
+                return result
+            case.patch.setattr(state.metrics_registry, 'record_loop_tick', tick)
+            loop = asyncio.create_task(schedule_scheduler_loop(state, interval_seconds=3600))
+            try:
+                await asyncio.wait_for(reached.wait(), 5)
+                await asyncio.sleep(0)  # allow any actual queued put tasks to finish
+            finally:
+                loop.cancel()
+                result = await asyncio.gather(loop, return_exceptions=True)
+                _startup_record(case.request, 'C7-owned-producer-return', cancelled=loop.cancelled(),
+                                result=[type(value).__name__ for value in result])
+                assert loop.done() and loop.cancelled() and isinstance(result[0], asyncio.CancelledError), result
+        observing_producer = True
+        try:
+            asyncio.run(producer_after_finally())
+        finally:
+            observing_producer = False
+            producer_after = {s: _startup_rows(o.db.path) for s, o in originals.items()}
+            _startup_record(case.request, 'C7-producer-after-finally', before=producer_before, after=producer_after,
+                            producer_visits=producer_visits, database_visits=database_visits, errors=scan_errors,
+                            witness_before=callbacks,
+                            witness_after=(witness_path.read_bytes() if witness_path.exists() else b''),
+                            native_work_before=sorted(map(id, native_work)),
+                            native_work_after=sorted(map(id, state.queue._native_work)),
+                            queues_before={str(i): [size, sorted(map(str, owned)), sorted(map(id, users)), sorted(map(id, runners))]
+                                           for i, (size, owned, users, runners) in queue_before.items()},
+                            queues_after={str(i): [o.schedule_queue.size, sorted(map(str, o.schedule_queue._owned)),
+                                                  sorted(map(id, o._native_task_users)), sorted(map(id, o._runner_tasks))]
+                                          for i, o in observed_handles.items()})
+        # The original assertions remain failures for EACH original contract; only
+        # their evaluation moved past the independent observations above.
+        if tail == 'old-close':
+            assert closes == [id(originals['alpha'])] and candidates == []
+            assert beta_usable == 1
+        else:
+            assert set(closes) == {id(o) for o in originals.values()}
+            assert len(candidates) == 1 and len(candidates[0].orgs) == 2
+            assert candidate_owned, 'failed loaded candidate lost original construction custody'
+            assert primary_owned and cleanup_owned, 'original owner lost primary/secondary error identities'
+            assert any(id(o) in case.failed_close for o in candidates[0].orgs.values()), 'secondary close cut never reached'
+            assert any(e is cleanup for _, e in close_errors), 'authored secondary exception was never invoked'
+        for slug, original in originals.items():
+            capture_error, response, response_error, returned, acquired, member = admission_observations[slug]
+            assert isinstance(capture_error, _OrgBusyError) and str(capture_error) == 'attachment_retiring', 'post-failure old attachment capture admitted'
+            assert response_error is None and response is not None
+            assert response.status_code == 409 and 'attachment_retiring' in response.text
+            assert returned is None, 'closed/retiring old object returned after failed swap'
+            assert acquired is False and member is False
+        assert not any(o in originals.values() for o in snapshot.values())
+        for slug, org in originals.items():
+            schedule = next(r for r in producer_before[slug]['schedules']
+                            if r['id'] == eligible['orgs'][slug]['schedule'])
+            assert schedule['status'] == 'armed' and schedule['active'] == 1
+            assert datetime.fromisoformat(schedule['fire_at']) <= datetime.now(timezone.utc)
+        assert producer_visits == [], 'producer selected a retained old or failed candidate object'
+        assert database_visits == [], 'producer attempted retired original DB use, even if scan error was swallowed'
+        assert scan_errors == [], 'swallowed producer failure is no exclusion witness'
+        assert set(state.queue._native_work) == native_work
+        assert (witness_path.read_bytes() if witness_path.exists() else b'') == callbacks
+        for identity, org in observed_handles.items():
+            assert (org.schedule_queue.size, set(org.schedule_queue._owned),
+                    set(org._native_task_users), set(org._runner_tasks)) == queue_before[identity]
+        for slug, org in originals.items():
+            for table in ('schedules', 'tasks', 'task_results', 'thread_invocations', 'audit_log'):
+                assert producer_after[slug][table] == producer_before[slug][table], (slug, table)
+            _startup_original_unchanged(producer_before[slug], producer_after[slug])
+        assert len(closes) == (1 if tail == 'old-close' else 2)
     finally:
-        observing_producer = False
-    producer_after = {s: _startup_rows(o.db.path) for s, o in originals.items()}
-    _startup_record(case.request, 'C7-producer-after-finally', before=producer_before, after=producer_after,
-                    producer_visits=producer_visits, database_visits=database_visits, errors=scan_errors,
-                    witness_before=callbacks,
-                    witness_after=(witness_path.read_bytes() if witness_path.exists() else b''))
-    assert producer_visits == [], 'producer selected a retained old or failed candidate object'
-    assert database_visits == [], 'producer attempted retired original DB use, even if scan error was swallowed'
-    assert scan_errors == [], 'swallowed producer failure is no exclusion witness'
-    assert set(state.queue._native_work) == native_work
-    assert (witness_path.read_bytes() if witness_path.exists() else b'') == callbacks
-    for slug, org in originals.items():
-        assert (org.schedule_queue.size, set(org.schedule_queue._owned),
-                set(org._native_task_users), set(org._runner_tasks)) == queue_before[slug]
-        for table in ('schedules', 'tasks', 'task_results', 'thread_invocations', 'audit_log'):
-            assert producer_after[slug][table] == producer_before[slug][table], (slug, table)
-        _startup_original_unchanged(producer_before[slug], producer_after[slug])
-    assert len(closes) == (1 if tail == 'old-close' else 2)
-    client.close()
+        client.close()
 
 
 def test_startup_isolation_status_repeat(startup_case: _StartupCase) -> None:
