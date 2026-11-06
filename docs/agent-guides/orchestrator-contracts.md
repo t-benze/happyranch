@@ -3815,7 +3815,15 @@ compound fault remains runtime NOT RUN; source inspection is not fault proof.
 
 Under the existing RLock, outside autocommit connection identity,
 main.data_version, total_changes and main.schema_version bookends enclose each
-owned coherent_read_view and a real main-table snapshot pin. Only matching clean
+owned coherent_read_view and a real main-table snapshot pin. Eligible metadata
+requires main alone or main plus positively empty connection-local
+TEMP with an empty filename. Workflow integrity validation can initialize empty
+TEMP. Its actual integer temp.schema_version joins opening/closing and retained
+epochs; absent TEMP is not probed into existence. Attachments, unknown shapes
+and every nonempty TEMP bypass sharing; create/drop ending empty changes the
+epoch. Default isolation, legacy autocommit and read_uncommitted=0 remain guarded.
+Fixed metadata-denial and TEMP-epoch movement counts join only the existing final
+startup_authority_counts aggregate. Only matching clean
 closure releases hits/targets/absence/anchors or admits speculative entries.
 Within discovery, repeated roots can reuse a pending scalar catalogue; every exact
 getter opens its own current closure. Moved/missing/failed tokens, local DML

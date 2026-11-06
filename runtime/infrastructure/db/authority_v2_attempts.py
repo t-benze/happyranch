@@ -321,25 +321,54 @@ class _V2StartupReads:
             return None
         try:
             # The supported Database uses default DEFERRED isolation, no
-            # attachments, and ordinary isolated reads. Drift bypasses sharing.
+            # attachments, and ordinary isolated reads. Workflow integrity
+            # validation can leave an empty connection-local TEMP schema.
             databases = tuple(tuple(row) for row in self.conn.execute("PRAGMA database_list"))
-            if (
-                self.conn.isolation_level != ""
-                or self.conn.autocommit != sqlite3.LEGACY_TRANSACTION_CONTROL
-                or len(databases) != 1 or databases[0][1] != "main"
-                or self.conn.execute("PRAGMA read_uncommitted").fetchone()[0] != 0
-            ):
+            if self.conn.isolation_level != "":
+                self.count("metadata_isolation")
                 return None
+            if self.conn.autocommit != sqlite3.LEGACY_TRANSACTION_CONTROL:
+                self.count("metadata_autocommit")
+                return None
+            if (
+                len(databases) not in (1, 2)
+                or len(databases[0]) != 3
+                or type(databases[0][0]) is not int or databases[0][:2] != (0, "main")
+                or type(databases[0][2]) is not str
+                or (len(databases) == 2 and (
+                    len(databases[1]) != 3
+                    or type(databases[1][0]) is not int
+                    or databases[1] != (1, "temp", "")
+                ))
+            ):
+                self.count("metadata_unsupported_databases")
+                return None
+            if self.conn.execute("PRAGMA read_uncommitted").fetchone()[0] != 0:
+                self.count("metadata_read_uncommitted")
+                return None
+            # Do not probe an absent TEMP into existence. Its observed absence
+            # is distinct from an empty schema with an actual integer cookie.
+            temp_schema_version = None
+            if len(databases) == 2:
+                if self.conn.execute("SELECT 1 FROM temp.sqlite_schema LIMIT 1").fetchone() is not None:
+                    self.count("metadata_nonempty_temp")
+                    return None
+                temp_schema_version = self.conn.execute("PRAGMA temp.schema_version").fetchone()[0]
+                if type(temp_schema_version) is not int:
+                    self.count("metadata_integer_invalid")
+                    return None
             data_version = self.conn.execute("PRAGMA main.data_version").fetchone()[0]
             changes = self.conn.total_changes
             schema_version = self.conn.execute("PRAGMA main.schema_version").fetchone()[0]
             if any(type(value) is not int for value in (data_version, changes, schema_version)):
+                self.count("metadata_integer_invalid")
                 return None
             return (id(self.conn), data_version, changes, schema_version, databases,
-                    self.conn.isolation_level, self.conn.autocommit)
+                    self.conn.isolation_level, self.conn.autocommit, temp_schema_version)
         except Exception:
             # This is not affirmative connection health. The caller checks
             # ownership/usability again before any uncached fallback.
+            self.count("metadata_failure")
             return None
 
     def _read(self, operation: Callable[[], _StartupResult]) -> _StartupResult:
@@ -353,7 +382,7 @@ class _V2StartupReads:
                 if opening != self._epoch:
                     if self._epoch is not None:
                         names = ("connection", "external_commit", "local_changes", "schema",
-                                 "databases", "isolation", "autocommit")
+                                 "databases", "isolation", "autocommit", "temp_schema")
                         for name, old, new in zip(names, self._epoch, opening):
                             if old != new:
                                 self.count("changed_" + name)
@@ -368,6 +397,8 @@ class _V2StartupReads:
                     return result
                 # No speculative output or catalogue escapes a moved closure.
                 del result
+                if closing is not None and closing[-1] != opening[-1]:
+                    self.count("changed_temp_schema")
                 self.invalidate("closure_moved")
                 self.check()
                 self.count("clean_fallbacks")

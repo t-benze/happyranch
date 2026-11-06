@@ -94,11 +94,22 @@ whole-epoch invalidation, one clean uncached fallback, caller custody, anchored
 quarantine-before-log, global ambiguous exclusion and entire unsafe finally
 suppression retain their contracts. No inert admission is skipped/finalized or
 changed, and no authority verdict/history payload is retained in the catalogue.
+Metadata eligibility permits only main alone or main plus positively empty local
+TEMP with an empty filename. Normal workflow integrity validation can initialize
+that TEMP. Its actual integer schema cookie is compared at both bookends and
+across retained epochs; absent TEMP is observed without creating it. Every
+attachment/unknown shape or nonempty TEMP bypasses sharing; create/drop ending
+empty invalidates retained evidence. Default isolation, legacy autocommit,
+read_uncommitted=0 and all main freshness/custody guards remain. Moved/nonempty
+closure releases no speculative output before the existing clean fallback.
 Scalar ownership ends at last exact use (including skips), invalidation/exit
 releases evidence; full root/reducer data ends before another root or results.
 Counts and monotonic success/incomplete timing use fixed aggregates at actual
-owners; only real same-app ASGI/listener startup records serving. See
-[orchestrator detail](../orchestrator-contracts.md) and
+owners; only real same-app ASGI/listener startup records serving. Use
+the existing final startup_authority_counts for bounded unsupported-database,
+nonempty-TEMP, isolation/autocommit/read_uncommitted, integer/metadata-failure
+and TEMP-epoch movement reasons, without per-attempt or raw exception logging.
+See [orchestrator detail](../orchestrator-contracts.md) and
 [lifecycle timing definitions](runtime-lifecycle.md#synchronous-startup-observations).
 Six runtime/count/lifetime/timing/speed cases remain NOT RUN and sensitivity
 PROOF NOT RUN under manager acceptance, not behavioral PASS or a new proof gate.

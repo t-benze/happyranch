@@ -421,7 +421,15 @@ entire daemon finally worktree batch. Caller read transactions remain untouched;
 the full sweep rejects them before Pause/workflow work. Earlier genuine commits
 remain intact. General readers/writers and generic coherent_read_view retain
 their contracts. Outside autocommit connection/data_version/total_changes/
-schema_version bookends enclose a pinned main-table snapshot under the RLock;
+main.schema_version bookends enclose a pinned main-table snapshot under the RLock;
+only main alone or main plus positively empty connection-local TEMP is eligible.
+Workflow integrity validation can initialize that empty TEMP. Its actual integer
+temp.schema_version joins both bookends and retained epochs; absent TEMP stays
+absent without probing it. Every attachment/unknown database shape and every
+nonempty TEMP, including nonshadowing objects, disables sharing. TEMP create/drop
+ending empty changes the epoch, and a moved/nonempty closure discards speculative
+output before the existing clean uncached fallback. Default isolation, legacy
+autocommit and read_uncommitted=0 guards remain required;
 no hit/target/absence/anchor escapes before clean matching closure. Movement or
 unavailable tokens discard the whole memo; only clean ownership/cleanup permits
 one fresh uncached coherent fallback. Caller transactions bypass sharing.
@@ -482,6 +490,9 @@ One aggregate authority counter record separates discovery/exact full-history
 fetch attempts/completions/rows and truthy decodes from selected-row work,
 materializations/reuse/rebuilds/fallbacks and fixed invalidation reasons,
 current/peak scalar entries and exact classifications/result-list calls/rows.
+Existing final startup_authority_counts also records fixed metadata reasons:
+unsupported databases, nonempty TEMP, isolation, autocommit, read_uncommitted,
+invalid integers and metadata failure, plus TEMP-schema epoch movement.
 Anchor-result reads are counted separately; no generic result-JSON count is
 claimed. Fixed labels/outcomes/counts only: no identities, payloads, SQL or
 exception dumps, no per-attempt log stream or extra evidence scans. Clock/log
