@@ -4926,12 +4926,18 @@ class _EvidenceJSON:
                         self.check()
                         try:
                             char = self.raw_sanitize(value)
+                            # Compare the strict measurement directly: no
+                            # separate actual-size assignment/holder exists.
+                            # Retain and prepay all remaining comparison setup.
+                            self.ledger.charge(48, 0, self.check)
                             try:
-                                actual = _evidence_utf8_size(char, self.check, size)
+                                if _evidence_utf8_size(char, self.check, size) != size:
+                                    raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                            except _EvidenceUnsafe:
+                                raise
                             except ValueError as exc:
                                 raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
-                            self.ledger.charge(64, 0, self.check)
-                            if (actual != size or value != char
+                            if (value != char
                                     or any(secret in char for secret in self.raw_context)):
                                 raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
                             self.check()
@@ -5104,12 +5110,17 @@ class _EvidenceJSON:
                             self.check()
                             try:
                                 previous_key = self.raw_sanitize(key)
+                                # The same strict result check needs no retained
+                                # actual-size temporary. Full comparison stays.
+                                self.ledger.charge(48, 0, self.check)
                                 try:
-                                    actual = _evidence_utf8_size(previous_key, self.check, size)
+                                    if _evidence_utf8_size(previous_key, self.check, size) != size:
+                                        raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                                except _EvidenceUnsafe:
+                                    raise
                                 except ValueError as exc:
                                     raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
-                                self.ledger.charge(64, 0, self.check)
-                                if (actual != size or key != previous_key
+                                if (key != previous_key
                                         or any(secret in previous_key for secret in self.raw_context)):
                                     raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
                                 self.check()

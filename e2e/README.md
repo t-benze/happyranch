@@ -4222,9 +4222,11 @@ original fact cap. That failure is retained. Closure now compares already-paid
 iterator/lookup operands directly, removing only extra forwarding argument
 slots while retaining every full comparison and all original limits. The next
 restored run reached the whole-original raw-image byte cap after Case closure;
-that failure is also retained. The shared sizing correction below has now
-completed the full controls and result reconciliation; final-head lint/static
-verification remains PENDING. The
+that failure is also retained. At its historical8584-result source checkpoint,
+the shared sizing correction below completed controls and result reconciliation;
+final-head lint/static was
+then PENDING. That earlier result does not establish the current11184 controls
+or the later changed-head reconciliation/static requirements. The
 previous PRESENT-terminal checkpoint obtained its authentic5988 source
 controls/static receipt; that historical result remains at its own head. All
 5988/5660/5428/5324/5208/4572 full named values, built-in types and key/list order
@@ -4564,8 +4566,10 @@ their16B/0fact setup each are absent. The existing sanitizer-result assignment
 only changes its target; its16B/0fact setup remains prepaid. Both complete
 operands still exist in their original slots. No new holder, forwarding call,
 range construction, length test or startswith call replaces the removed work.
-Full builtin equality/setup keeps64B/0facts; every sanitizer pass, output
-measurement, secret scan and retained input/library/iterator work stays paid.
+At that historical step, full builtin equality/setup kept64B/0facts; the
+direct-size correction below removes only the subsequently absent measurement
+assignment. Every sanitizer pass, output measurement, secret scan and retained
+input/library/iterator work stays paid.
 The decoded original continues to its semantic caller only after this complete
 unchanged-value proof, as with the original raw_scalar callback contract.
 
@@ -4682,3 +4686,50 @@ native/whole-PR/readiness acceptance; publication and the same independent
 review/QA and ROOT-owned final gates above remain required. Units RETIRED;
 integration SKIPPED24342/211270-271;3.12 and unsupported proof NOT RUN/PROOF NOT
 RUN. Product DAILY19UTC ONLY/no run-trigger-observation.
+
+
+### Registered-raw direct size comparisons
+
+Actual JOB6010 still failed the repeated-prefix Case at final original emission:
+239236B/1fact requested at W8213835/reserved0/F194394. Empty stdout supplies no
+complete11184 result; full historical/addition/1761-keeper reconciliation and
+conditional clean-head lint/static did not run. Every earlier failure and the
+original intended missing-terminal assertion/exact restoration remain authentic.
+
+Both raw key/value sanitation blocks now compare the strict UTF8 measurement's
+return directly to the same occurrence's original size. They construct no
+`actual` measurement-holder assignment. Only that absent assignment's16B/0fact
+fixed setup disappears from the former64B;48B/0facts for all remaining comparison
+setup is prepaid before measurement. No new holder, forwarding call, scalar
+construction, cached size or cross-occurrence proof replaces the removed work.
+The original size short-circuit precedes the full value/residual condition; it
+is split into its own condition without new branch state. Its direct mismatch
+raises the same unsafe type/message and is rethrown unchanged. Actual strict
+measurement ValueError/capacity retains its original cause wrapping. This
+supersedes earlier raw-block64B setup descriptions only for these two absent
+assignments; unrelated raw_scalar/matching/general safe setup retains its costs.
+
+Each escaped/unescaped raw value and key at every admitted size still receives
+its complete grammar/single decoding/duplicate-before-value checks, decoded
+backslash refusal, original input UTF8 sizing and per-secret scans, EVERY actual
+whole-scalar sanitizer pass and its full debit, strict returned builtin type
+and UTF8-size measurement, independent complete original/result equality and
+residual-secret scans. The original/result slots, retained decoded bytes/facts,
+result clearing, settlement/end/refusal boundaries and every distinct full
+Case/Submission/SOURCE/SQL/public/original-emission comparison remain. String
+construction, matching/generic policies, ledger implementation/rates/caps and
+actual final buffer are unchanged. The earlier longer-scalar contradiction stays
+corrected: construction does not exempt any raw scalar from these own checks.
+
+All11184 independent full expectations, seven historical typed/ordered result
+sets,2600 additions,384 migrations,1761 keepers,2112 inherited Case+232 direct+
+328 terminal cases,1256+636/J FOUR+FOUR/four nested-array bookkeeping variants,
+full original literals/assertions and87 independent readers remain unchanged.
+Only ONE complete existing aggregate command can establish restored SOURCE
+control success and complete historical reconciliation; this source correction
+claims no sufficient fit, isolated sensitivity, native or Product acceptance.
+Clean committed-head lint/static and normal SAME-ref publication remain required
+before maker handoff. Units RETIRED; integration INCLUDING callback/lifespan/
+SessionTracker SKIPPED24342/211270-271;3.12 and unsupported individual/read/decode/
+allocation/race/temporal/native proof NOT RUN/PROOF NOT RUN. Product DAILY19UTC
+ONLY/no run-trigger-observation. No cap/rate/reset/refund/fixture/allowance change.
