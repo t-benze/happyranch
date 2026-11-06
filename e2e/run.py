@@ -4907,13 +4907,11 @@ class _EvidenceJSON:
                 if scalar is not None and not deferred and not matching:
                     if (getattr(scalar, '__self__', None) is self
                             and scalar.__func__ is _EvidenceJSON.raw_scalar):
-                        # The consumed token-kind slot can own THIS decoded
-                        # original. No original-range construction, length
-                        # tests or startswith call is needed, even for escapes.
-                        # Keep its prepaid setup and every complete comparison;
-                        # no extra safe-result holder or forwarding call exists.
-                        self.ledger.charge(16, 0, self.check)
-                        char = value
+                        # Keep THIS decoded original in its existing value
+                        # slot. Put the sanitizer result directly in the
+                        # consumed token-kind slot below, eliminating the
+                        # separate original-preservation assignment/setup.
+                        # Every pass, result setup and full check stays paid.
                         self.check()
                         if "\\" in value:
                             raise ValueError("raw decoded representation withheld")
@@ -4927,14 +4925,14 @@ class _EvidenceJSON:
                             self.ledger.charge(size, 1, self.check)
                         self.check()
                         try:
-                            value = self.raw_sanitize(value)
+                            char = self.raw_sanitize(value)
                             try:
-                                actual = _evidence_utf8_size(value, self.check, size)
+                                actual = _evidence_utf8_size(char, self.check, size)
                             except ValueError as exc:
                                 raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
                             self.ledger.charge(64, 0, self.check)
                             if (actual != size or value != char
-                                    or any(secret in value for secret in self.raw_context)):
+                                    or any(secret in char for secret in self.raw_context)):
                                 raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
                             self.check()
                         finally:
@@ -5088,11 +5086,10 @@ class _EvidenceJSON:
                                 and scalar.__func__ is _EvidenceJSON.raw_scalar):
                             # Duplicate admission above sees the original key.
                             # Nonmatching scans need no expected-order state.
-                            # Reuse that existing slot for THIS decoded key,
-                            # keeping full sanitation equality without original
-                            # range bookkeeping or a second safe-result holder.
-                            self.ledger.charge(16, 0, self.check)
-                            previous_key = key
+                            # Keep THIS decoded original in key. The unused
+                            # ordering slot takes the sanitizer result directly;
+                            # no original-preservation assignment/setup exists.
+                            # Result setup and every full safety check remain.
                             self.check()
                             if "\\" in key:
                                 raise ValueError("raw decoded representation withheld")
@@ -5106,14 +5103,14 @@ class _EvidenceJSON:
                                 self.ledger.charge(size, 1, self.check)
                             self.check()
                             try:
-                                key = self.raw_sanitize(key)
+                                previous_key = self.raw_sanitize(key)
                                 try:
-                                    actual = _evidence_utf8_size(key, self.check, size)
+                                    actual = _evidence_utf8_size(previous_key, self.check, size)
                                 except ValueError as exc:
                                     raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
                                 self.ledger.charge(64, 0, self.check)
                                 if (actual != size or key != previous_key
-                                        or any(secret in key for secret in self.raw_context)):
+                                        or any(secret in previous_key for secret in self.raw_context)):
                                     raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
                                 self.check()
                             finally:

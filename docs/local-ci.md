@@ -659,11 +659,11 @@ pass debit, output-reference admission, strict output measurement, full equality
 residual-secret checks and the first full unchanged-value comparison remain.
 The raw callback's later duplicate comparison is removed. This
 does not change general transforming raw-text sanitation or grant decoded text
-permission elsewhere. The current decoded-original-slot correction below
-consumes sanitation in its existing value/key slot at every admitted size, for
+permission elsewhere. The current sanitation-result-slot correction below
+retains the original in its existing value/key slot at every admitted size, for
 unescaped and escaped raw scalars alike. The consumed token-kind or unused
-nonmatching ordering slot retains this occurrence's original decoded string
-for the complete independent comparison.
+nonmatching ordering slot takes the sanitizer result directly for the complete
+independent comparison.
 For mixed or longer JSON scalars of at most4096 decoded UTF8 bytes, one bounded
 byte buffer and strict UTF8 decode replace all fragment strings/lists/chunk joins.
 Before allocation,8+2*size bytes/two facts cover both copies and64 bytes cover
@@ -3935,7 +3935,7 @@ reconciliation remain required; this source description claims no fit or
 behavioral/native acceptance.
 
 
-### Registered-raw decoded-original-slot correction
+### Registered-raw sanitation result slots
 
 The preceding eligibility candidate still failed the repeated-prefix Case at a
 required full submitted-row comparison:2132B/2facts requested with
@@ -3944,17 +3944,21 @@ historical/addition/1761-keeper reconciliation and conditional clean-head
 lint/static were NOT RUN. Earlier capacity failures and the original intended
 missing-terminal assertion/exact restoration retain their actual strength.
 
-Raw primitive values now reuse the consumed token-kind slot for THIS decoded
-original, rather than its source-range start. Nonmatching raw keys reuse their
-otherwise unused expected-order slot in the same way. Both assignments retain
-16B/0fact prepaid setup. The actual sanitizer still consumes the existing
-value/key slot; its result compares directly with that same occurrence's
-complete decoded original. No extra safe-result variable, bound holder, span,
-slice, parser, cache, public flag or input-size witness exists. The former range
-construction, complete-length tests and native startswith call are absent; only
-their additional16B/0fact comparison-selection term ceases. The complete builtin
-string comparison and setup keep64B/0facts. No retained input/library/iterator
-work, actual sanitizer pass or distinct full comparison is discounted.
+The subsequent single-loop SOURCE candidate failed actual JOB6008 at final
+original emission:239236B/1fact requested at W8344427/reserved0/F194394.
+Complete11184 reconciliation and conditional lint/static did not run.
+
+Raw primitives retain THIS decoded original in value/key. The actual sanitizer
+result goes directly into the consumed token-kind or unused nonmatching-order
+slot. The former char=value and previous_key=key preservation assignments and
+their16B/0fact setup each are absent. The existing sanitizer-result assignment
+only changes its target; its16B/0fact setup remains prepaid. Both complete
+operands still exist in their original slots. No new holder, forwarding call,
+range construction, length test or startswith call replaces the removed work.
+Full builtin equality/setup keeps64B/0facts; every sanitizer pass, output
+measurement, secret scan and retained input/library/iterator work stays paid.
+The decoded original continues to its semantic caller only after this complete
+unchanged-value proof, as with the original raw_scalar callback contract.
 
 This direct comparison covers escaped and unescaped raw values and keys at
 every admitted size. Each still undergoes its own strict original grammar,
@@ -3964,7 +3968,7 @@ pass at the existing rate, strict output type/UTF8-size measurement, full
 original/result equality, residual-secret scans and settlement/end checks.
 Escaped raw scalars no longer forward into raw_scalar or allocate its separate
 safe-result reference; their actual retained decoded bytes and facts remain
-paid. Reused original slots are cleared before outgoing scalar/key events and
+paid. Reused result slots are cleared before outgoing scalar/key events and
 on refusal. Matching, deferred SOURCE/encoded policies, generic callbacks,
 string construction and all other semantic owners remain unchanged. No other
 occurrence, alias result or previously successful comparison supplies proof.
@@ -4055,9 +4059,11 @@ secret/residual/strict safety and actual sanitizer passes. All independent full
 Case/Submission/SQL/public/parked command/row comparisons and final original
 emission remain. Original C8388608/F200000/depth64/end and retained/copy/carry/
 storage/scratch/final-buffer limits/rates, fixtures/assertions and87 independent
-readers are unchanged. The longer raw-scalar rule remains full own decoded-slot
-sanitation comparison at every admitted escaped/unescaped size, independent of
-string construction. No cross-occurrence reuse, discount, refund or fit claim.
+readers are unchanged. The longer raw-scalar rule remains full own decoded
+original/result-slot comparison at every admitted escaped/unescaped size,
+independent of string construction. The result-slot correction above supersedes
+the earlier original-preservation assignments only. No cross-occurrence reuse,
+discount, refund or fit claim.
 
 Complete existing11184 controls and full original independently expected
 historical/addition/1761-keeper named value/builtin-type/key-list-order
