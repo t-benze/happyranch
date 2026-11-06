@@ -1562,10 +1562,13 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
             if source[index] in ' \t\f\r\n':
                 index += 1
                 continue
-            # Full dispatch and original token fact, including punctuation
-            # reached directly from whitespace/comment or source start.
-            ledger.charge(32, 1, check)
-            if source.startswith('#', index):
+            # Select ONE original glyph for the whole token classifier.
+            # The former repeated startswith dispatch is absent. Prepay the
+            # indexed glyph and direct classification before constructing it;
+            # retain every original token fact, including punctuation.
+            ledger.charge(16, 1, check)
+            char = source[index]
+            if char == '#':
                 while index < end and source[index] not in '\r\n':
                     if index % 4096 == 0:
                         check()
@@ -1573,15 +1576,13 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                         fail()
                     index += 1
                 continue
-            if source.startswith(('"', "'"), index):
+            if char in "\"'":
                 index = literal(index, index)
                 suffix_paid = False
-            elif source.startswith(('a','b','c','d','e','f','g','h','i','j','k','l','m',
-                                  'n','o','p','q','r','s','t','u','v','w','x','y','z',
-                                  'A','B','C','D','E','F','G','H','I','J','K','L','M',
-                                  'N','O','P','Q','R','S','T','U','V','W','X','Y','Z','_'), index):
-                # Original start slot plus new branch-local setup/check work.
-                ledger.charge(24, 1, check)
+            elif char.isascii() and (char.isalpha() or char == '_'):
+                # The prepaid glyph classifier already chose this branch;
+                # only the original token-start slot remains to construct.
+                ledger.charge(8, 1, check)
                 begin = index
                 index += 1
                 while index < end and source[index].isascii() and (source[index].isalnum() or source[index] == '_'):
@@ -1595,12 +1596,12 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                         fail()
                     index = literal(begin, index)
                 suffix_paid = False
-            elif (source.startswith(('0','1','2','3','4','5','6','7','8','9'), index)
-                    or source.startswith('.', index) and index + 1 < end
+            elif (char in '0123456789'
+                    or char == '.' and index + 1 < end
                         and source.startswith(('0','1','2','3','4','5','6','7','8','9'), index + 1)):
-                # Keep the original begin fact and branch setup; only the
-                # per-token closure construction has moved to this source owner.
-                ledger.charge(16, 1, check)
+                # Keep the original begin fact; classification already used
+                # the SAME prepaid glyph, without another prefix dispatch.
+                ledger.charge(8, 1, check)
                 begin = index
                 index = digits(index)
                 if index < end and source[index] == '.':
@@ -1620,39 +1621,37 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
             while index < end:
                 if index % 1024 == 0:
                     check()
+                if not suffix_paid:
+                    # The original suffix admission now owns its indexed
+                    # glyph and direct classifier. An initial punctuation
+                    # token still owns the glyph paid by the prefix above.
+                    ledger.charge(16, 1, check)
+                    char = source[index]
                 # A dot followed by a digit belongs to the original numeric
                 # grammar. Other token classes return to the full dispatch.
-                if (source.startswith('.', index) and index + 1 < end
+                if (char == '.' and index + 1 < end
                         and source.startswith(('0','1','2','3','4','5','6','7','8','9'), index + 1)):
                     break
-                if not source.startswith(('(', '[', '{', ')', ']', '}', '\\',
-                        ':','.',',',';','+','-','*','/','%','&','|','^','~','<','>','=','!','@'), index):
+                if char not in '([{)]}\\:.,;+-*/%&|^~<>=!@':
                     if suffix_paid:
                         fail()
                     break
-                if not suffix_paid:
-                    # Only the narrower suffix classifier executes. Keep
-                    # every token fact and its16B selection work; the full
-                    # prefix classifier is absent at these positions.
-                    ledger.charge(16, 1, check)
                 suffix_paid = False
-                if source.startswith(('(', '[', '{'), index):
+                if char in '([{':
                     if depth + len(stack) + 3 > 64:
                         raise _EvidenceCapacity('Python depth capacity refused')
                     ledger.charge(8, 1, check)
-                    ledger.charge(8, 0, check)  # Still-indexed append lookup.
-                    stack.append(source[index])
+                    stack.append(char)  # The prepaid selected glyph itself.
                     ledger.charge(16, 0, check)
                     index += 1
                     continue
-                if source.startswith((')', ']', '}'), index):
-                    ledger.charge(8, 0, check)  # Still-indexed closing lookup.
-                    if not stack or '([{'.index(stack.pop()) != ')]}'.index(source[index]):
+                if char in ')]}':
+                    if not stack or '([{'.index(stack.pop()) != ')]}'.index(char):
                         fail()
                     ledger.charge(16, 0, check)
                     index += 1
                     continue
-                if source.startswith('\\', index):
+                if char == '\\':
                     index += 1
                     if index < end and source[index] == '\r':
                         index += 1
@@ -1661,7 +1660,7 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                     ledger.charge(16, 0, check)
                     index += 1
                     continue
-                if source.startswith('!', index) and (index + 1 == end or not source.startswith('=', index + 1)):
+                if char == '!' and (index + 1 == end or not source.startswith('=', index + 1)):
                     fail()
                 index += 1
         if stack:

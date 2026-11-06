@@ -629,16 +629,18 @@ work and no intermediate construction or join. Above1021B, a new8B/1fact escape
 flag is paid before assignment and tracks only this occurrence through the full
 preflight. Other scalars up to4096B use a bounded buffer and strict decode;
 larger scalars use bounded local fragments and fixed reference slots.
-After its original whitespace check, the SOURCE token loop uses prefix predicates
-with fixed one-character constants/tuples instead of constructing indexed token-start
-characters or per-token class tuples. Its fixed token fact and 32B/0facts
-selection setup remain. Only absent indexed lookups lose their 8B charges;
-the still-indexed opening append and closing lookup each prepay 8B/0facts.
-ASCII classes and numeric lookahead retain exact membership/end guards.
-Explicit delimiter/continuation exits pay
-16B/0facts; reached precharges never refund. Word/number start aliases,
-all grammar/safety/comparisons and the original shared limits remain charged.
-This logical slot change certifies neither allocation bounds nor fit.
+SOURCE lexical scanning uses one original indexed glyph in the existing char
+slot for its complete token classifier, prepaid16B/1fact before selection.
+Fixed ASCII identifier/digit/quote/comment predicates replace repeated prefix
+calls. Identifier and numeric branches retain8B/1fact for their original begin
+slot, without the removed classifier setup. Each suffix position reuses an
+already selected punctuation glyph or prepays16B/1fact before selecting its
+own glyph, including positions that break back to the outer loop. Stack append
+and closing comparison consume that same character, so their former additional
+8B indexed lookups are absent; stack retention remains8B/1fact. Original
+16B delimiter/continuation increment work, lookahead/end guards, full lexical
+and decoded-literal safety and all shared limits remain. No fit or allocation
+bound is established by this source change.
 Unchanged-original admission first rejects every original secret in that same
 occurrence. Its expected sanitation result is then the complete original, so it
 constructs no virtual replacement or comparison spans. Each actual sanitizer
@@ -3315,7 +3317,10 @@ admission. No local result holder, second traversal, new sentinel/cache/index,
 shared safety result or comparison is introduced or omitted.
 
 
-The SOURCE numeric digit scanner is now created once within each original
+Historical numeric-scanner checkpoint (its classifier debits are superseded
+by the current character-selection correction below):
+
+The SOURCE numeric digit scanner was created once within each original
 SOURCE invocation, prepaid8B/1fact before construction. Each numeric token
 retains its16B branch setup and original begin fact; only the former per-token
 8B closure creation is absent. The original32B/1fact token admission, complete
@@ -3378,7 +3383,10 @@ four shipping boundaries. Full controls/reconciliation and intended-predicate
 proof remain required; source inspection alone supplies no execution claim.
 
 
-The existing SOURCE lexer now consumes punctuation after an identifier, number
+Historical suffix-classifier checkpoint (the current correction below replaces
+its prefix dispatch and selected delimiter lookups):
+
+The existing SOURCE lexer consumed punctuation after an identifier, number
 or literal in its current loop, without repeating the full prefix classifier
 for each glyph. It still admits every punctuation token separately, preserves
 all bracket/operator/continuation predicates and stack charges, and returns a
@@ -3975,3 +3983,48 @@ separate final compound QA, guarded merge/exact-main two lints and distinct
 daily-native acceptance. Units RETIRED; integration SKIPPED24342/211270-271;
 3.12 and unsupported individual/read/decode/allocation/race/temporal/native
 proof NOT RUN/PROOF NOT RUN. Product DAILY19UTC ONLY/no run-trigger-observation.
+
+
+### SOURCE token character-selection correction
+
+The preceding decoded-slot candidate failed actual JOB6004 at the complete
+original sanitizer pass for the repeated-prefix Case:239236B/1fact requested
+at W8361203/reserved0/F194508 under original C8388608. Complete11184 output,
+full independent historical/addition/keeper reconciliation and conditional
+lint/static did not run. Every prior failed receipt remains historical.
+
+The current existing SOURCE lexer replaces repeated one-character prefix calls
+with one prepaid indexed character and direct fixed-alphabet classification.
+Prefix selection pays16B/1fact before construction; identifier and number begin
+slots each retain8B/1fact. The old prefix dispatch and its separate branch setup
+are absent. Suffix selection retains16B/1fact and now pays BEFORE its indexed
+character is constructed, including a nonpunctuation or numeric-lookahead
+position that breaks to the outer loop. An initial punctuation glyph is reused
+from the already paid prefix. Stack append/close use this same glyph without
+the former additional indexed lookups, preserving stack retention/depth/order,
+all16B increment work and every token fact. New work is paid even where it
+increases an individual path. No retained work, library pass or full comparison
+is discounted, and no other occurrence supplies proof.
+
+All original SOURCE/physical-line/literal/depth/end rules, prefix and numeric
+grammars, original and decoded secret/residual safety, actual sanitizer passes,
+strict measurements, full comparisons and final-original emission remain.
+Caps/rates, retained/carry/scratch/final-buffer work, fixtures/assertions and
+ALL87 independent readers stay unchanged. The historical classifier paragraphs
+above describe their original checkpoints; their32B prefix dispatch and extra
+branch/stack lookup debits are superseded only by this actual replacement.
+The current longer raw-scalar rule remains the preceding escaped/unescaped
+own-decoded-slot comparison at every admitted size; string construction is
+unchanged. BOTH maintained guides describe these same current rules.
+
+ONE complete changed-candidate aggregate command and full independent named
+value/builtin-type/key-list-order11184 reconciliation, including every historical
+set,2600 additions/384 migrations/1761 keepers, remain pending. Conditional
+clean committed-head lint/static follows only actual complete green. No fit,
+behavioral/test-authoring/native/whole-PR/readiness acceptance follows source
+inspection. Publication and independent accumulated affected-owner review then
+SEPARATE identical-head scoped QA remain required. ROOT owns remaining source,
+main convergence/final full review/final-compound QA/guarded merge/exact-main
+TWO lints/daily-native acceptance. Units RETIRED; integration SKIPPED24342/
+211270-271;3.12 and unsupported individual/read/decode/allocation/race/temporal/
+native proof NOT RUN/PROOF NOT RUN. Product DAILY19UTC ONLY/no run-trigger-observation.
