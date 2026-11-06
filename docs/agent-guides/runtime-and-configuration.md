@@ -4117,6 +4117,12 @@ schedules or budgets. Contained running-stop uses existing backend controls;
 direct/passthrough retains original exit/timeout waiting and an attributable
 could-not-stop audit. Original worker return and native/backend settlement
 precede successors; missing cleanup evidence keeps the predecessor veto.
+Before republishing a strictly validated, clean settled deferred producer,
+reservation rechecks the actual predecessor veto without changing its original
+control, live ownership or lifecycle. Repeated blocked polls append no lifecycle
+rows. Fresh producers still record initial evidence and first deferral; genuine
+resumption and attempts retain their writes. Final validation still rechecks
+predecessors, abort and team-move state after reservation.
 Founder-approved era cutoff: a started founder-aborted predecessor with no
 lifecycle row, no in-process control, a terminal status and `consumed_at`
 strictly before the org's first `thread_move_lifecycle` row ran under
