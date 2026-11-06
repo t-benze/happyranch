@@ -4868,19 +4868,22 @@ class _EvidenceJSON:
                         for secret in self.raw_context:
                             self.ledger.charge(size, 1, self.check)
                         self.check()
-                        value = self.raw_sanitize(value)
                         try:
-                            actual = _evidence_utf8_size(value, self.check, size)
-                        except ValueError as exc:
-                            raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
-                        # Keep original64B comparison/setup and prepay16B
-                        # for the full original-range comparison below.
-                        self.ledger.charge(80, 0, self.check)
-                        if (actual != size or len(value) != self.index - char - 1
-                                or not self.text.startswith(value, char, self.index - 1)
-                                or any(secret in value for secret in self.raw_context)):
-                            raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
-                        self.check()
+                            value = self.raw_sanitize(value)
+                            try:
+                                actual = _evidence_utf8_size(value, self.check, size)
+                            except ValueError as exc:
+                                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+                            # Keep original64B comparison/setup and prepay16B
+                            # for the full original-range comparison below.
+                            self.ledger.charge(80, 0, self.check)
+                            if (actual != size or len(value) != self.index - char - 1
+                                    or not self.text.startswith(value, char, self.index - 1)
+                                    or any(secret in value for secret in self.raw_context)):
+                                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                            self.check()
+                        finally:
+                            self.ledger.settle(0, 0)  # Original invariant/cleanup check remains.
                         self.check()  # Original final eligibility boundary.
                     else:
                         scalar(value)
