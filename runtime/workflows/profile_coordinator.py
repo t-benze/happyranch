@@ -1397,8 +1397,10 @@ class ProfileCoordinator:
                     or not self._authority_profile_projection_coherent(org)
                 ):
                     raise ProfileCoordinatorError("profile_dependency_incoherent")
-            # The caller inserts the org into the shared mapping before these
-            # profile leases are released, so the next writer must capture it.
+            # Final attachment inserts into the shared mapping before these
+            # leases are released, so the next writer must capture it. An earlier
+            # unpublished preparation must enter again with fresh inputs at final
+            # insertion; releasing preparation's leases supplies no admission.
             yield
 
     def _publish_dependency_change(
