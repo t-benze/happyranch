@@ -1,4 +1,123 @@
 # Managed Remote Access — Normative Contract
+## Current per-unit mount and private observation correction — THR327seq96 / ROOT14238
+
+Founder96 resumes the SAME secure remote-access goal and six-iteration allowance,
+lifts TASK14190's coarse P000262 stop and authorizes this per-unit relationship
+correction. Manager-owned ROOT14238 ledgers are authoritative: THREE counted
+spent / ZERO reserved / THREE remaining, FOUR physical prior publications/runs;
+only run42124081991/1 has zero charge. Historical original3+Founder68one remain
+FOUR earlier spent. No future automatic refund, reset or extra allowance follows.
+P800004 has ONE known hosted failure42136663635/1. Run42114170098 has aggregate
+P000262 but UNKNOWN sub-check; it is not a second P800004. Stop after the SAME
+identifiable product check fails on TWO hosted runs, including attributable
+nonconsecutive history. Local engineering failures do not meet that rule.
+
+Each loaded unit's OWN observed `RequiresMountsFor` adds only its component
+ancestor mount names, including root, to that unit's applicable fixed Requires
+and After allowances. Empty own paths add nothing. No arbitrary `.mount`, sibling
+prefix or another unit's path grants permission. Existing fixed tmp/var-tmp and
+remount-fs allowances and every explicit HappyRanch peer/property/auth/image check
+remain. String arrays are decoded from systemctl's shell display quoting;
+mount names escape hyphens, spaces, leading dots and non-ASCII UTF8 bytes using
+systemd unit-name rules. Nonabsolute/dot-component/malformed paths and unsupported
+hashed long names fail closed. Paths are not resolved through host filesystem
+aliases. The bounded query now requests `RequiresMountsFor` in the SAME per-unit
+base query, with unchanged output/shared operation deadlines and once-only reap.
+
+Version-specific primary sources: [systemd255 mount dependency walk](https://github.com/systemd/systemd/blob/v255/src/core/unit.c),
+[systemd259 walk](https://github.com/systemd/systemd/blob/v259/src/core/unit.c),
+[v255 escaping](https://github.com/systemd/systemd/blob/v255/src/basic/unit-name.c),
+[v255 property formatting](https://github.com/systemd/systemd/blob/v255/src/shared/bus-print-properties.c)
+and [v259 formatting](https://github.com/systemd/systemd/blob/v259/src/shared/bus-print-properties.c).
+Both versions walk own-path ancestors and shell-quote string arrays. This is
+source evidence, not candidate systemd255 acceptance. Actual prepublication LOCAL
+manager/client259.5 observation is retained in engineering_manager
+`output/TASK-14238/local-systemd-assessment.json` with original command/exit streams:
+stock loaded systemd-pstore.service has StateDirectory=systemd/pstore,
+RequiresMountsFor=/var/lib/systemd/pstore and Requires='-.mount system.slice';
+After contains root and remount-fs, and findmnt selects root. Correct HappyRanch
+units were not-found; no isolated managed fixture/separate /var layout was
+available or exercised. The local manager is running with no failed units.
+Historical runner255 degraded/ready/query1 is real, but its failed-unit identities,
+cause and unexpected dependency values were NOT RETAINED and remain UNKNOWN.
+
+All reached loaded mismatches retain original category/site (including aggregate
+P000262 plus P800001..033 detail), supplemented by OPTIONAL private refusal
+`loaded` facts. New P800034 identifies invalid mount paths; P800035 identifies
+malformed displayed dependency words. P400040 observes later query-close loss
+without replacing the initiating query failure; G500064 identifies invalid
+loaded-fact transport while retaining the parsed initiating identity.
+Facts use a closed positional array, at most240 encoded ASCII bytes:
+`[unit_index, property, relation, expected, observed, Wants, Requires, After, Before, PartOf, Conflicts, RequiresMountsFor, BindsTo]`.
+Unit indices0/1/2 mean connector/sidecar/managed.target. Relations are equal,
+subset, peers, after or query; after retains mandatory service network-online and
+peer obligations as well as its allowed set. Every value is tagged `=` complete,
+`~` truncated prefix, `!` unsafe/sensitive withheld, or `?` missing/not collected.
+Only a narrow ASCII property-value alphabet is retained. Exec, environment and
+credential properties always withhold expected AND observed operands while
+identifying the failed property. Non-ASCII raw values are withheld; escaped
+ASCII unit names remain eligible. Long prefixes shrink explicitly, never silently.
+
+The SAME private refusal frame carries facts to the Go512-byte native-frame
+reader, its typed refusal, child1024-byte JSON frame, Python closed projections
+and existing N3 receipt/checkpoint/primitive fallback. Frame pressure shortens
+optional prefixes with `~` before removing existing optional fixed sentences;
+original category/site/boundary/process facts have priority. Installer JSON4096,
+status capsule512, native4096/16frames and outer combined4096+sentinel stay fixed.
+Historical records lacking facts remain readable with unknown values. Primary
+and fallback encoders validate the same facts; no arbitrary exception/stderr,
+public API/audit/evidence-v4 schema, credential custody, channel or cap expansion.
+Lost reads/closes/saves retain explicit existing loss observations; an encoded
+snapshot cannot certify a later failed save/close. Missing/capped frames never
+certify successful propagation or override the initiating disposition.
+
+Existing fixture failure snapshots add bounded actual failed-unit identity,
+status and dependency observations under `system_manager`, sharing the ORIGINAL
+sidecar8s/1024-byte section (including its remaining time/bytes). At most one
+failed unit is selected; further units, missing properties, unsafe/truncated
+values, query failure and unavailable budget remain explicit losses/tags. No
+additional section allowance, preflight change, reset-failed, host-service repair
+or cause/harmlessness inference follows. Diagnostic collection stays first-failure
+observation; cleanup is not an installation or retry.
+
+Initial product46cbc2e57e07dfcfae54de86314fb9f5743aae0f/tree6664f2f1ae5c611dbe33eeca778f8891474c22f9
+is the direct child of next-before87fa5d9455a0c76451d350d055b693beaebeeabf/tree6abec77bc2c15a4c81870baace873ed6f11c2253.
+Source-alphabet parity then found the native grammar omitted escaped backslash.
+Actual corrected productc0e79999d69032d5a3de4c2709aec4a4f606b157/tree721f4d264b8b55316d00491056c2290ebf9959ca
+is that initial product's direct child, with exactly one changed native diagnostic
+file. Both commits and the original failed static finding remain retained.
+Composition also verifies exact initial-product six and correction one slices.
+The six product paths implement the loaded reader, private exception/carrier and
+two equal code maps. Seven composition paths are workflow, AGENTS, three guides,
+real_systemd_n3.sh and n3_installer_only.py. Composition verifies exact historical
+E8->P9 three paths, P9->published E six paths, E->new product six, product->final
+seven, E->final thirteen and P9->final fourteen. Historical P9 remains E8's direct
+child, never relabeled. The unchanged checker is present only in historical/full
+slices. Manifest creation AND consumed-package readers pin the same real product,
+before and final head/tree; both strict admission guards retain all source,
+request/cap/account/singleton/history checks. No new trigger or admission easing.
+
+Independent FULL code_reviewer APPROVE and SEPARATE scoped qa_engineer PASS on
+EXACT final composed head/tree/interactions, then manager assessment, precede any
+publication/run. Changed source renews gates. Leaves spend/reserve ZERO and do
+not push/dispatch/write PR metadata. The seq87 exact-description disclosure hold
+remains unchanged. No new architecture/security policy beyond this relationship,
+infrastructure/reboot/merge/deploy/release, local managed install or service/
+credential operation is authorized. Required PR/merge checks are LINT/STATIC ONLY:
+Source Boundary Lint and Web Lint(Node24). Python units RETIRED; suspended proof
+NOT RUN; integration INCLUDING callback/lifespan/SessionTracker SKIPPED THR243seq42.
+Daily19UTC/nonblocking Product E2E has NO ad hoc trigger here. All runtime cases,
+installation/current/READY/recovery/stops/withdrawal/reset/remote authorization and
+whole-goal cleanup remain NOT RUN/UNMET. Preserve first-failure/deadline/reap facts,
+three generation spends/600s,30/60/120s backoff/reset-after300s qualified observations,
+acknowledged stops and accepted undetected-health limitation. LRA1 FIFO hang stays
+HIGH/OPEN/KNOWN/DEFERRED/unprobed; retain whole-boot ready images, failures and
+historical custody UNKNOWN. Source/static progress is not goal completion.
+
+Everything below records earlier checkpoints at their actual historical scope.
+Its stale current-owner, stop, allocation and no-value language does not override
+this Founder96 contract; unrelated invariants and all receipts remain unchanged.
+
 
 ## Local runner-admission successor — THR327seq82 / ROOT14190
 

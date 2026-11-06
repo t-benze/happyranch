@@ -29,8 +29,8 @@ def save(path: Path, value: object) -> None:
     os.chmod(path, 0o644)
 
 
-def observe(argv: list[str], *, seconds: int, env: dict[str, str] | None = None,
-            cwd: Path | None = None, script_input: bool = False) -> tuple[dict, bytes]:
+def observe(argv: list[str], *, seconds: int | float, env: dict[str, str] | None = None,
+            cwd: Path | None = None, script_input: bool = False, stream_cap: int = 32768) -> tuple[dict, bytes]:
     """Bound launch/read/wait; retain actual exit separately from collection loss.
 
     Raw streams/argv/environment are never logged. Native diagnostics stay in
@@ -38,10 +38,12 @@ def observe(argv: list[str], *, seconds: int, env: dict[str, str] | None = None,
     termination/reap is within the proposal's maximum five-second allowance.
     This observation deadline never changes a shipping operation's 180s bound.
     """
+    if type(stream_cap) is not int or not 1 <= stream_cap <= 32768:
+        raise ValueError
     started = time.monotonic()
     deadline = started + seconds
     record = {"observation_seconds": seconds, "reap_allowance_seconds": 1,
-              "stream_cap": 32768, "launch": "not_attempted", "launch_errno": None,
+              "stream_cap": stream_cap, "launch": "not_attempted", "launch_errno": None,
               "exit": None, "waited": False, "group_settled": False,
               "loss": None, "stdout_bytes": 0, "stderr_bytes": 0,
               "elapsed_seconds": None, "preparation_timing": "unavailable"}
@@ -90,9 +92,9 @@ def observe(argv: list[str], *, seconds: int, env: dict[str, str] | None = None,
                             continue
                     for key, _ in selector.select(min(0.05, max(0, deadline - time.monotonic()))):
                         field = "stdout_bytes" if key.fileobj is process.stdout else "stderr_bytes"
-                        chunk = os.read(key.fd, min(4096, 32769 - record[field]))
+                        chunk = os.read(key.fd, min(4096, stream_cap + 1 - record[field]))
                         record[field] += len(chunk)
-                        if record[field] > 32768:
+                        if record[field] > stream_cap:
                             record["loss"] = "truncated"
                             break
                         if key.fileobj is process.stdout:
@@ -397,13 +399,107 @@ def prepare_install_parents() -> dict:
     return record
 
 
+def manager_snapshot(seconds: int, cap: int) -> dict:
+    """Read-only failed-unit evidence inside the existing sidecar section.
+
+    At most one failed unit's status/dependencies; no descriptions, journals,
+    command/environment/credential properties or host repair. Every omission
+    remains a tagged loss. This is not a cause or harmlessness conclusion.
+    """
+    if not 1 <= seconds <= 5 or not 256 <= cap <= 1024:
+        raise ValueError
+    deadline = time.monotonic() + seconds
+    result = {"list_exit": None, "show_exit": None, "unit": None, "properties": {}, "losses": []}
+
+    def query(argv):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            result["losses"].append("timeout")
+            return None, b''
+        record, raw = observe(argv, seconds=remaining, stream_cap=cap)
+        if not successful(record):
+            result["losses"].append(record["loss"] or "query_failed")
+            return record["exit"], b''
+        return record["exit"], raw
+
+    status, raw = query(['/usr/bin/systemctl', 'list-units', '--failed', '--plain', '--no-legend', '--no-pager', '--full'])
+    result['list_exit'] = status
+    names = []
+    for line in raw.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        try:
+            name = fields[0].decode('ascii')
+        except UnicodeError:
+            result['losses'].append('unsafe_unit')
+            continue
+        if re.fullmatch(r'[A-Za-z0-9_.:@\\-]+\.(?:service|socket|target|mount|automount|swap|timer|path|slice|scope)', name) is None or len(name) > 255:
+            result['losses'].append('unsafe_unit')
+            continue
+        if not names:
+            names.append(name)
+        else:
+            result['losses'].append('unit_limit')
+            break
+    if names:
+        result['unit'] = names[0]
+        properties = ('Id', 'LoadState', 'ActiveState', 'SubState', 'Result', 'Wants', 'Requires', 'After',
+                      'Before', 'PartOf', 'Conflicts', 'RequiresMountsFor', 'BindsTo')
+        result['properties'] = {k: '?' for k in properties}
+        status, raw = query(['/usr/bin/systemctl', 'show', names[0], *['--property=' + k for k in properties]])
+        result['show_exit'] = status
+        seen = set()
+        for line in raw.splitlines():
+            key, separator, value = line.partition(b'=')
+            try:
+                key, value = key.decode('ascii'), value.decode('ascii')
+            except UnicodeError:
+                result['losses'].append('unsafe_value')
+                continue
+            if not separator or key not in properties or key in seen:
+                result['losses'].append('schema')
+                continue
+            seen.add(key)
+            if re.fullmatch(r"[A-Za-z0-9_./:@ \\\"'~-]*", value) is None:
+                result['properties'][key] = '!'
+            else:
+                result['properties'][key] = ('=' if len(value) <= 64 else '~') + value[:64]
+        if seen != set(properties):
+            result['losses'].append('missing')
+    elif status == 0 and not result['losses']:
+        result['losses'].append('empty')
+    result['losses'] = list(dict.fromkeys(result['losses']))
+    # Bound the consumed snapshot, reserving framing/newline. Preserve actual
+    # query status and unit identity before optional property prefixes.
+    def size():
+        return len(json.dumps(result, sort_keys=True, separators=(',', ':')).encode('ascii')) + 1
+    while size() > cap and any(len(v) > 1 for v in result['properties'].values()):
+        key = max(result['properties'], key=lambda k: len(result['properties'][k]))
+        result['properties'][key] = '~' + result['properties'][key][1:-1]
+    if size() > cap:
+        result['properties'] = {}
+        result['losses'] = list(dict.fromkeys([*result['losses'], 'property_limit']))
+    if size() > cap:
+        # A maximal failed-unit name cannot fit a very small remaining section.
+        result['unit'] = None
+        result['losses'] = list(dict.fromkeys([*result['losses'], 'identity_limit']))
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("help", "operation", "current", "images", "verify", "prepare-parents"))
+    parser.add_argument("mode", choices=("help", "operation", "current", "images", "verify", "prepare-parents", "manager"))
     parser.add_argument("output", type=Path)
     parser.add_argument("operands", nargs="*")
     args = parser.parse_args()
     try:
+        if args.mode == "manager":
+            if len(args.operands) != 2:
+                raise ValueError
+            record = manager_snapshot(int(args.operands[0]), int(args.operands[1]))
+            save(args.output, record)
+            return 0  # Diagnostic outcome only, never admission success.
         if args.mode == "prepare-parents":
             if args.operands:
                 raise ValueError

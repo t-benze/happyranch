@@ -1377,11 +1377,39 @@ capture_connector_instance() {
   fi
   rm -f "$safe_file"
 }
+capture_manager_snapshot() {
+  # Share the ORIGINAL sidecar 8s/1024-byte section, never a fresh budget.
+  manager_observation='{"list_exit":null,"show_exit":null,"unit":null,"properties":{},"losses":["unattempted"]}'
+  local pending bytes status=0 remaining restore_errexit=0
+  observe_remaining || return
+  (( observe_bytes_left >= 256 )) || return
+  remaining=$((observe_deadline - SECONDS - 2))
+  (( remaining > 5 )) && remaining=5
+  pending="$(mktemp "$diagnostics/.n3-manager.XXXXXX")" || return
+  case "$-" in *e*) restore_errexit=1 ;; esac
+  set +e
+  timeout --kill-after=1 "$remaining" python "$installer_driver" manager "$pending.value" "$((remaining > 1 ? remaining - 1 : 1))" "$observe_bytes_left" >/dev/null 2>/dev/null
+  status=$?
+  (( restore_errexit )) && set -e || set +e
+  if (( status == 0 )) && [[ -f "$pending.value" ]]; then
+    bytes="$(wc -c <"$pending.value")" || bytes=invalid
+    if [[ "$bytes" =~ ^[0-9]{1,4}$ ]] && (( bytes <= observe_bytes_left )); then
+      manager_observation="$(cat "$pending.value")" || manager_observation='{"losses":["read_error"]}'
+      observe_bytes_left=$((observe_bytes_left - bytes))
+    else
+      manager_observation='{"losses":["truncated"]}'
+    fi
+  else
+    manager_observation='{"losses":["query_or_collection_failed"]}'
+  fi
+  rm -f "$pending" "$pending.value"
+}
+
 capture_failure_snapshot() {
   # Essential failure sections have independent bounded budgets. No observation
   # changes the exit status that entered cleanup; all retained values are closed.
   local name="${1:-failure-snapshot}" snapshot unit first=1 active sub result main pre source held marker dropin staging source_loss held_loss marker_loss dropin_loss staging_loss loss_first=1 losses_file snapshot_until_us
-  local side_active side_sub side_result side_main side_active_loss side_sub_loss side_result_loss side_main_loss
+  local side_active side_sub side_result side_main side_active_loss side_sub_loss side_result_loss side_main_loss manager_observation
   snapshot="$diagnostics/$name.json"
   losses_file="$(mktemp "$diagnostics/.n3-losses.XXXXXX")" || return 1
   snapshot_since_us="${capture_window_since_us:-$(capture_now_us)}"
@@ -1406,6 +1434,7 @@ capture_failure_snapshot() {
   observe_systemctl_value happyranch-tsnet-sidecar.service SubState; side_sub="$observation_value"; side_sub_loss="$observation_loss"
   observe_systemctl_value happyranch-tsnet-sidecar.service Result; side_result="$observation_value"; side_result_loss="$observation_loss"
   observe_systemctl_value happyranch-tsnet-sidecar.service ExecMainStatus; side_main="$observation_value"; side_main_loss="$observation_loss"
+  capture_manager_snapshot
   begin_observation_section 8 8192
   capture_completed_jobs
   begin_observation_section 8 8192
@@ -1453,7 +1482,7 @@ capture_failure_snapshot() {
     observe_presence /run/credentials/happyranch-tsnet-sidecar.service -d; staging="$presence_value"; staging_loss="$presence_loss"
     snapshot_until_us="$(capture_now_us)"
     (( snapshot_until_us >= snapshot_since_us )) || snapshot_until_us="$snapshot_since_us"
-    printf '},"jobs":%s,"diagnostic_receipts":%s,"sidecar_failure_lines":%s,"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_start_us":%s,"window_end_us":%s,"journal_since_epoch_seconds":%s,"window_seconds":45,"output_cap_bytes":24064,"legacy_aggregate_metadata":true,"scheduled_section_allowance_seconds":82,"section_accounted_bytes":32256,"aggregate_cap_enforced":false,"budget_model":"reserved-sections","connector_journal_capture":{"command_budget_seconds":4,"kill_grace_seconds":1,"raw_cap_bytes":65536,"frame_cap_bytes":8192,"frame_cap":256,"event_cap":6,"output_cap_bytes":2048},"connector_process_capture":{"command_budget_seconds":8,"kill_grace_seconds":1,"output_cap_bytes":2048},"source":"systemctl-filtered-sidecar-text-and-attributed-systemd-journals","sidecar_failure_capture":{"unit":"happyranch-tsnet-sidecar.service","window_start_us":%s,"window_end_us":%s,"line_cap":32,"output_cap_bytes":4096}},"observation_loss":{' "$completed_jobs" "$diagnostic_receipts" "$sidecar_failure_lines" "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$snapshot_boot_id" "$snapshot_since_us" "$snapshot_until_us" "$snapshot_since_seconds" "$snapshot_since_us" "$sidecar_failure_until_us"
+    printf '},"system_manager":%s,"jobs":%s,"diagnostic_receipts":%s,"sidecar_failure_lines":%s,"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_start_us":%s,"window_end_us":%s,"journal_since_epoch_seconds":%s,"window_seconds":45,"output_cap_bytes":24064,"legacy_aggregate_metadata":true,"scheduled_section_allowance_seconds":82,"section_accounted_bytes":32256,"aggregate_cap_enforced":false,"budget_model":"reserved-sections","connector_journal_capture":{"command_budget_seconds":4,"kill_grace_seconds":1,"raw_cap_bytes":65536,"frame_cap_bytes":8192,"frame_cap":256,"event_cap":6,"output_cap_bytes":2048},"connector_process_capture":{"command_budget_seconds":8,"kill_grace_seconds":1,"output_cap_bytes":2048},"source":"systemctl-filtered-sidecar-text-and-attributed-systemd-journals","sidecar_failure_capture":{"unit":"happyranch-tsnet-sidecar.service","window_start_us":%s,"window_end_us":%s,"line_cap":32,"output_cap_bytes":4096}},"observation_loss":{' "$manager_observation" "$completed_jobs" "$diagnostic_receipts" "$sidecar_failure_lines" "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$snapshot_boot_id" "$snapshot_since_us" "$snapshot_until_us" "$snapshot_since_seconds" "$snapshot_since_us" "$sidecar_failure_until_us"
     for property_loss in "credential.source:$source_loss" "credential.held_source:$held_loss" "credential.consumed_marker:$marker_loss" "credential.transient_dropin:$dropin_loss" "credential.staged_directory:$staging_loss"; do
       [[ "$property_loss" == *:observed_present || "$property_loss" == *:observed_absent ]] && continue
       (( loss_first )) || printf ',' >>"$losses_file"; loss_first=0
@@ -1547,10 +1576,13 @@ def cancel(signum, _frame):
 
 def freeze_refusal(error):
     # Only the closed source literals can leave the exception boundary. No text.
-    from runtime.remote_access.package_diagnostics import exception_refusal
+    from runtime.remote_access.package_diagnostics import exception_refusal, exception_loaded
     value = exception_refusal(error)
     if facts.get("refusal") is None and value is not None:
         facts["refusal"] = {"category": value[0], "site": value[1]}
+        loaded = exception_loaded(error)
+        if loaded is not None:
+            facts["refusal"]["loaded"] = loaded
         boundary = getattr(error, "_managed_package_boundary", getattr(error, "_managed_package_refusal", None))
         if boundary is not None and boundary != value:
             facts["boundary"] = {"category": boundary[0], "site": boundary[1]}
@@ -1662,7 +1694,17 @@ def primitive(value):
     if type(value) is list:
         return "[" + ",".join(primitive(v) for v in value) + "]"
     if type(value) is dict:
-        return "{" + ",".join(primitive(k) + ":" + primitive(value[k]) for k in sorted(value)) + "}"
+        from runtime.remote_access.package_diagnostics import loaded_projection
+        def member(key):
+            if key != "loaded":
+                return primitive(key) + ":" + primitive(value[key])
+            checked = loaded_projection(value[key])
+            # The validator admits ASCII with only quote/backslash escaping.
+            # Never fall back to arbitrary object/exception serialization.
+            def quoted(text):
+                return '"' + text.replace('\\', '\\\\').replace('"', '\\"') + '"'
+            return '"loaded":[' + str(checked[0]) + ',' + ','.join(quoted(v) for v in checked[1:]) + ']'
+        return "{" + ",".join(member(k) for k in sorted(value)) + "}"
     raise ValueError
 
 raw = None
