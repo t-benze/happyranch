@@ -658,7 +658,25 @@ def _build_state(settings: Settings) -> DaemonState:
             logger.error("runtime auto-provision failed — starting in idle mode")
             return DaemonState.idle(settings)
     runtime = RuntimeDir.load(reg.active)
-    state = DaemonState.from_runtime(runtime, settings, move_diagnostics=move_diagnostics)
+    owner = {"runtime": runtime, "candidate": None}
+    try:
+        state = DaemonState.from_runtime(runtime, settings, move_diagnostics=move_diagnostics,
+                                         construction_owner=owner)
+    except BaseException as primary:
+        # The original exception carries its original candidate/close owner
+        # through the normal startup traceback; no second constructor or retry.
+        primary._attachment_owner = owner
+        raise
+    try:
+        _initialize_runnable_startup(state)
+    except BaseException as primary:
+        state._fail_construction(owner, primary)
+        primary._attachment_owner = owner
+        raise
+    return state
+
+
+def _initialize_runnable_startup(state: DaemonState) -> None:
     for org in state.orgs_snapshot().values():
         # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
         # (the existing ``authority_v2_origin_boot_id``) and the existing
@@ -699,7 +717,6 @@ def _build_state(settings: Settings) -> DaemonState:
     # Worker-pool bootstrap is deferred to the FastAPI lifespan startup
     # event because we need a running event loop. See `create_app` →
     # lifespan.
-    return state
 
 
 def _bind_port(host: str, port: int = 0) -> tuple[socket.socket, int]:

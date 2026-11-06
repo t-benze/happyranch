@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -130,6 +131,10 @@ class OrgState:
     # Event-loop-only: admission and detach/close contain no await. This tracks
     # actual runner callers through native finish, not durable owner clearance.
     _runner_admission_closed: bool = field(init=False, default=False, repr=False)
+    _startup_authority_error: BaseException | None = field(init=False, default=None, repr=False)
+    _startup_publication_held: bool = field(init=False, default=False, repr=False)
+    _local_close_complete: bool = field(init=False, default=False, repr=False)
+    _local_close_error: BaseException | None = field(init=False, default=None, repr=False)
     _runner_tasks: set[asyncio.Task] = field(init=False, default_factory=set, repr=False)
     # Queue tokens survive consumer cancellation through native retirement.
     _native_task_users: set[object] = field(init=False, default_factory=set, repr=False)
@@ -483,32 +488,53 @@ class OrgState:
                 settings=settings,
                 orchestrator=orchestrator,
             )
+            if attachment_owner is not None:
+                attachment_owner["org"] = state
             from runtime.identities.registry import read_name_metadata, refresh_names
             # Binding reads current validated org metadata at prompt construction;
             # no cached snapshot, reconciliation or new launch/readiness gate.
             orchestrator._name_metadata_reader = lambda: read_name_metadata(state)
             state.naming_diagnostic = naming_preflight
-            # Cold load has no concurrent route coroutine. Capture/install is
-            # outside short authority/profile leases, after baseline admission.
-            with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
-                refresh_names(state, install=True, writer=interval.native_disposition)
-            # U2A publishes/reconciles the org authority generation before the
-            # state is returned. Failure remains fail-closed in the workflow
-            # pointer but does not detach the org or alter legacy task/chain
-            # behavior; later supported writers and the next cold start retain
-            # the same recovery path.
+            # Observe original native/ordinary ownership before any startup
+            # writer. UNKNOWN survives a cold boot and cannot be republished or
+            # adopted merely because its process/lease disappeared.
+            from runtime.infrastructure.producer_admission import NativeWriterStore
+            from runtime.workflows.authority import WorkflowAuthorityError
             try:
-                state.workflow_authority.recover_or_publish()
-            except Exception:
-                logger.exception(
-                    "org %r: workflow authority startup publication remains fenced",
-                    slug,
-                )
+                with db._lock:
+                    history = NativeWriterStore(db, slug).history_uncommitted()
+                    active = state.workflow_authority._active_journal(db._conn, state.workflow_authority.namespace)
+                    unsettled = any(row.state != "settled" for row in history.values())
+                    ordinary = (active is not None and active["publisher"] != "org-startup"
+                                and not active["publisher_invocation"].startswith("profile-coordinator:"))
+                if unsettled or ordinary:
+                    raise WorkflowAuthorityError("authority_pointer_not_ready")
+            except (ValueError, sqlite3.DatabaseError, WorkflowAuthorityError) as exc:
+                state._startup_publication_held = True
+                state._runner_admission_closed = True
+                state._startup_authority_error = exc
+                logger.exception("org %r: original startup authority owner remains held", slug)
+            if not state._startup_publication_held:
+                # Cold load has no concurrent route coroutine. Discovery stays
+                # outside short publication/profile leases.
+                with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
+                    refresh_names(state, install=True, writer=interval.native_disposition)
+                try:
+                    state.workflow_authority.recover_or_publish()
+                except Exception as exc:
+                    state._startup_authority_error = exc
+                    logger.exception(
+                        "org %r: workflow authority startup publication remains fenced", slug,
+                    )
             # Inert definition only, after the actual recovery/authority tail.
             # A serving-before-recovery owner must defer this call with that tail.
             state.workflow_coding_builtin.ensure_registered()
             return state
         except BaseException as primary:
+            if attachment_owner is not None:
+                attachment_owner["primary"] = primary
+                if attachment_owner.get("org") is not None:
+                    attachment_owner["org"]._runner_admission_closed = True
             # Unpublished construction has no queue/runner admission yet.
             try:
                 db.close()
@@ -521,10 +547,19 @@ class OrgState:
             raise
 
     def close(self) -> None:
+        if self._local_close_complete:
+            return
+        if self._local_close_error is not None:
+            raise self._local_close_error
         self._revoke_thread_releases()
         self._assert_thread_releases_idle()
         self._revoke_cleanup_diagnostics()
         self._assert_cleanup_diagnostics_idle()
         self._assert_runners_idle()
         self._runner_admission_closed = True
-        self.db.close()
+        try:
+            self.db.close()
+        except BaseException as exc:
+            self._local_close_error = exc
+            raise
+        self._local_close_complete = True
