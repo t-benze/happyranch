@@ -552,10 +552,24 @@ class ThreadMoveAdmission:
             state = self.store.read_uncommitted(inv)
             control = self.controls.get(inv.id)
             if (state is None and inv.started_at is not None
+                    and not self._pre_lifecycle_settled_uncommitted(inv, control)
                     or state is not None and (state.unknown or not state.producer_settled)
                     or control is not None and (control.failure is not None
                         or control.dispatch_future is None or not control.dispatch_future.done())):
                 raise DeferredTeamMove("thread_abort_predecessor_unsettled")
+
+    def _pre_lifecycle_settled_uncommitted(self, inv: Any, control: Any) -> bool:
+        # Founder-approved era cutoff: an abort that closed before this org
+        # wrote any lifecycle row ran under pre-lifecycle code and can never
+        # gain lifecycle evidence. Only a terminal, consumed, uncontrolled row
+        # that finished strictly before the first lifecycle row qualifies.
+        if control is not None or inv.status == ThreadInvocationStatus.PENDING or inv.consumed_at is None:
+            return False
+        epoch = self.store.lifecycle_epoch_uncommitted()
+        consumed = inv.consumed_at
+        if epoch is None or consumed.tzinfo is None:
+            return False
+        return consumed < epoch
 
     def revalidate_uncommitted(self, owner: ThreadPreparation) -> None:
         if self.live.get(owner.inv.id) is not owner or not owner.owner_live:

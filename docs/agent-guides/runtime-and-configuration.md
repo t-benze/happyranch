@@ -4117,6 +4117,12 @@ schedules or budgets. Contained running-stop uses existing backend controls;
 direct/passthrough retains original exit/timeout waiting and an attributable
 could-not-stop audit. Original worker return and native/backend settlement
 precede successors; missing cleanup evidence keeps the predecessor veto.
+Founder-approved era cutoff: a started founder-aborted predecessor with no
+lifecycle row, no in-process control, a terminal status and `consumed_at`
+strictly before the org's first `thread_move_lifecycle` row ran under
+pre-lifecycle code and is settled for this veto only. A missing/unparseable or
+naive epoch, any lifecycle row (including `failed_cleanup`) or a later
+`consumed_at` keeps the veto; nothing is written or repaired.
 Each offload owns its original callable/context and return acknowledgement before
 executor submission. A submission may throw after queueing; a missing, done or
 cancelled Future proves neither no effects nor original return. Unknown admission
