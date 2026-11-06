@@ -77,8 +77,25 @@ sidecar8s/1024-byte section (including its remaining time/bytes). At most one
 failed unit is selected; further units, missing properties, unsafe/truncated
 values, query failure and unavailable budget remain explicit losses/tags. No
 additional section allowance, preflight change, reset-failed, host-service repair
-or cause/harmlessness inference follows. Diagnostic collection stays first-failure
-observation; cleanup is not an installation or retry.
+or cause/harmlessness inference follows. The F1 correction charges actual acquired
+stdout AND stderr bytes, including discarded stderr and failed/truncated queries,
+to ONE remaining account. Each read uses that remainder plus at most ONE aggregate
+overflow sentinel; reaching/exceeding the allowance prevents later acquisition
+with explicit exhaustion/unattempted losses. Other observe callers retain their
+existing stream caps, deadlines, stdin, cancellation, process-group and reap rules.
+The existing private summary carries acquired_bytes (including any sentinel).
+Its caller validates the bounded regular file, closed types/keys/finite losses
+and canonical JSON before restoring only the true remainder; missing, malformed,
+late, failed-save/read/close evidence leaves acquisition UNKNOWN and conservatively
+exhausts the section. Summary serialization/framing has its own unchanged cap,
+never a replacement raw-byte debit. Empty responses spend zero; stderr and failed
+attempts still spend bytes. Optional property/name prefixes may shrink explicitly
+while actual query statuses/account survive; an unrepresentable summary refuses.
+Finite source cases cover empty/one-unit, combined-stream and cross-query
+exhaustion, failed first query, zero remainder, deadlines/cancel/close/save/read
+loss, malformed accounting and summary pressure. Runtime cases remain NOT RUN.
+Diagnostic collection stays first-failure observation; cleanup is not an
+installation or retry.
 
 Initial product46cbc2e57e07dfcfae54de86314fb9f5743aae0f/tree6664f2f1ae5c611dbe33eeca778f8891474c22f9
 is the direct child of next-before87fa5d9455a0c76451d350d055b693beaebeeabf/tree6abec77bc2c15a4c81870baace873ed6f11c2253.
@@ -89,9 +106,12 @@ file. Both commits and the original failed static finding remain retained.
 Composition also verifies exact initial-product six and correction one slices.
 The six product paths implement the loaded reader, private exception/carrier and
 two equal code maps. Seven composition paths are workflow, AGENTS, three guides,
-real_systemd_n3.sh and n3_installer_only.py. Composition verifies exact historical
-E8->P9 three paths, P9->published E six paths, E->new product six, product->final
-seven, E->final thirteen and P9->final fourteen. Historical P9 remains E8's direct
+real_systemd_n3.sh and n3_installer_only.py. Saved composition190a62096fd60f9c9447755208c03ffa5b45c7f3/tree3a5be8da3dcd27c55310d0df99b1010dc32a29ca
+is the corrected product's direct child. The fixture-only F1 correction follows
+that saved composition directly, without another product checkpoint or changed
+product/manifest pins. Composition verifies exact historical E8->P9 three paths,
+P9->published E six paths, E->new product six, product->saved composition seven,
+saved->final seven, product->final seven, E->final thirteen and P9->final fourteen. Historical P9 remains E8's direct
 child, never relabeled. The unchanged checker is present only in historical/full
 slices. Manifest creation AND consumed-package readers pin the same real product,
 before and final head/tree; both strict admission guards retain all source,

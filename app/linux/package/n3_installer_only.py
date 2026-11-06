@@ -30,7 +30,8 @@ def save(path: Path, value: object) -> None:
 
 
 def observe(argv: list[str], *, seconds: int | float, env: dict[str, str] | None = None,
-            cwd: Path | None = None, script_input: bool = False, stream_cap: int = 32768) -> tuple[dict, bytes]:
+            cwd: Path | None = None, script_input: bool = False, stream_cap: int = 32768,
+            acquisition_cap: int | None = None) -> tuple[dict, bytes]:
     """Bound launch/read/wait; retain actual exit separately from collection loss.
 
     Raw streams/argv/environment are never logged. Native diagnostics stay in
@@ -39,6 +40,8 @@ def observe(argv: list[str], *, seconds: int | float, env: dict[str, str] | None
     This observation deadline never changes a shipping operation's 180s bound.
     """
     if type(stream_cap) is not int or not 1 <= stream_cap <= 32768:
+        raise ValueError
+    if acquisition_cap is not None and (type(acquisition_cap) is not int or not 1 <= acquisition_cap <= 32768):
         raise ValueError
     started = time.monotonic()
     deadline = started + seconds
@@ -92,9 +95,14 @@ def observe(argv: list[str], *, seconds: int | float, env: dict[str, str] | None
                             continue
                     for key, _ in selector.select(min(0.05, max(0, deadline - time.monotonic()))):
                         field = "stdout_bytes" if key.fileobj is process.stdout else "stderr_bytes"
-                        chunk = os.read(key.fd, min(4096, stream_cap + 1 - record[field]))
+                        read_cap = min(4096, stream_cap + 1 - record[field])
+                        if acquisition_cap is not None:
+                            # ONE overflow sentinel across both captured streams.
+                            read_cap = min(read_cap, acquisition_cap + 1 - record["stdout_bytes"] - record["stderr_bytes"])
+                        chunk = os.read(key.fd, read_cap)
                         record[field] += len(chunk)
-                        if record[field] > stream_cap:
+                        if (record[field] > stream_cap or acquisition_cap is not None
+                                and record["stdout_bytes"] + record["stderr_bytes"] > acquisition_cap):
                             record["loss"] = "truncated"
                             break
                         if key.fileobj is process.stdout:
@@ -399,6 +407,42 @@ def prepare_install_parents() -> dict:
     return record
 
 
+MANAGER_PROPERTIES = ('Id', 'LoadState', 'ActiveState', 'SubState', 'Result', 'Wants', 'Requires', 'After',
+                      'Before', 'PartOf', 'Conflicts', 'RequiresMountsFor', 'BindsTo')
+MANAGER_LOSSES = frozenset(('owner_unavailable', 'cancelled', 'timeout', 'launch_error', 'truncated',
+                           'observation_error', 'close_error', 'query_failed', 'unsafe_unit', 'unit_limit',
+                           'unsafe_value', 'schema', 'missing', 'empty', 'property_limit', 'identity_limit',
+                           'acquisition_exhausted', 'unattempted', 'show_unattempted'))
+
+
+def read_manager_snapshot(path: Path, cap: int) -> tuple[int, bytes]:
+    """Read the existing private summary; never trust malformed byte accounting."""
+    from runtime.remote_access.linux_package import _package_json
+    if type(cap) is not int or not 256 <= cap <= 1024:
+        raise ValueError
+    raw = regular(path, cap)
+    data = _package_json(raw, cap)
+    if (type(data) is not dict or set(data) != {'list_exit', 'show_exit', 'unit', 'properties', 'losses', 'acquired_bytes'}
+            or type(data['acquired_bytes']) is not int or not 0 <= data['acquired_bytes'] <= cap + 1
+            or any(data[k] is not None and (type(data[k]) is not int or not -255 <= data[k] <= 255)
+                   for k in ('list_exit', 'show_exit'))
+            or data['unit'] is not None and (type(data['unit']) is not str or len(data['unit']) > 255
+                or re.fullmatch(r'[A-Za-z0-9_.:@\\-]+\.(?:service|socket|target|mount|automount|swap|timer|path|slice|scope)', data['unit']) is None)
+            or type(data['properties']) is not dict or not set(data['properties']) <= set(MANAGER_PROPERTIES)
+            or any(type(v) is not str or re.fullmatch(r"[!?]|[=~][A-Za-z0-9_./:@ \\\"'~-]{0,64}", v) is None
+                   for v in data['properties'].values())
+            or type(data['losses']) is not list or len(data['losses']) > len(MANAGER_LOSSES)
+            or any(type(v) is not str or v not in MANAGER_LOSSES for v in data['losses'])
+            or len(set(data['losses'])) != len(data['losses'])):
+        raise ValueError
+    if (('acquisition_exhausted' in data['losses']) != (data['acquired_bytes'] >= cap)
+            or ('truncated' in data['losses']) != (data['acquired_bytes'] == cap + 1)):
+        raise ValueError
+    if raw != (json.dumps(data, sort_keys=True, separators=(',', ':')) + '\n').encode('ascii'):
+        raise ValueError
+    return data['acquired_bytes'], raw.rstrip(b'\n')
+
+
 def manager_snapshot(seconds: int, cap: int) -> dict:
     """Read-only failed-unit evidence inside the existing sidecar section.
 
@@ -406,17 +450,27 @@ def manager_snapshot(seconds: int, cap: int) -> dict:
     command/environment/credential properties or host repair. Every omission
     remains a tagged loss. This is not a cause or harmlessness conclusion.
     """
-    if not 1 <= seconds <= 5 or not 256 <= cap <= 1024:
+    if type(seconds) is not int or not 1 <= seconds <= 5 or type(cap) is not int or not 256 <= cap <= 1024:
         raise ValueError
     deadline = time.monotonic() + seconds
-    result = {"list_exit": None, "show_exit": None, "unit": None, "properties": {}, "losses": []}
+    result = {"list_exit": None, "show_exit": None, "unit": None, "properties": {}, "losses": [], "acquired_bytes": 0}
 
     def query(argv):
+        bytes_left = cap - result['acquired_bytes']
+        if bytes_left <= 0:
+            result['losses'].extend(('acquisition_exhausted', 'unattempted'))
+            return None, b''
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            result["losses"].append("timeout")
+            result["losses"].extend(("timeout", "unattempted"))
             return None, b''
-        record, raw = observe(argv, seconds=remaining, stream_cap=cap)
+        record, raw = observe(argv, seconds=remaining, stream_cap=bytes_left, acquisition_cap=bytes_left)
+        # Debit acquired stdout AND discarded stderr before testing success.
+        # Failed/truncated queries spend bytes too; a sentinel exhausts all
+        # later acquisition rather than renewing a per-query/stream allowance.
+        result['acquired_bytes'] += record['stdout_bytes'] + record['stderr_bytes']
+        if result['acquired_bytes'] >= cap:
+            result['losses'].append('acquisition_exhausted')
         if not successful(record):
             result["losses"].append(record["loss"] or "query_failed")
             return record["exit"], b''
@@ -444,8 +498,7 @@ def manager_snapshot(seconds: int, cap: int) -> dict:
             break
     if names:
         result['unit'] = names[0]
-        properties = ('Id', 'LoadState', 'ActiveState', 'SubState', 'Result', 'Wants', 'Requires', 'After',
-                      'Before', 'PartOf', 'Conflicts', 'RequiresMountsFor', 'BindsTo')
+        properties = MANAGER_PROPERTIES
         result['properties'] = {k: '?' for k in properties}
         status, raw = query(['/usr/bin/systemctl', 'show', names[0], *['--property=' + k for k in properties]])
         result['show_exit'] = status
@@ -469,6 +522,8 @@ def manager_snapshot(seconds: int, cap: int) -> dict:
             result['losses'].append('missing')
     elif status == 0 and not result['losses']:
         result['losses'].append('empty')
+    else:
+        result['losses'].append('show_unattempted')
     result['losses'] = list(dict.fromkeys(result['losses']))
     # Bound the consumed snapshot, reserving framing/newline. Preserve actual
     # query status and unit identity before optional property prefixes.
@@ -484,6 +539,10 @@ def manager_snapshot(seconds: int, cap: int) -> dict:
         # A maximal failed-unit name cannot fit a very small remaining section.
         result['unit'] = None
         result['losses'] = list(dict.fromkeys([*result['losses'], 'identity_limit']))
+    if size() > cap:
+        # Never expand the separate serialized-summary cap to retain evidence.
+        # The caller treats an unavailable account as exhausted/unknown.
+        raise ValueError
     return result
 
 

@@ -601,6 +601,8 @@ jobs:
           H_TREE = "721f4d264b8b55316d00491056c2290ebf9959ca"
           B_TREE = "6abec77bc2c15a4c81870baace873ed6f11c2253"
           H_PARENT_TREE = "6664f2f1ae5c611dbe33eeca778f8891474c22f9"
+          COMPOSITION_BASE = "190a62096fd60f9c9447755208c03ffa5b45c7f3"
+          COMPOSITION_BASE_TREE = "3a5be8da3dcd27c55310d0df99b1010dc32a29ca"
           OLD_H = "d54b6cf97f9e63a0e23985041d0f10e8eccad0d0"
           OLD_H_TREE = "0aea87b6e6954de6b2e175cb3097b82ec8d78543"
           OLD_H_PARENT = "7b5eadae67d647fe14a077813bbc44610952411b"
@@ -716,11 +718,13 @@ jobs:
                       refuse("A100010", "composition_tree_format")
               if (git("show", "-s", "--format=%T", H) != H_TREE or git("show", "-s", "--format=%T", B) != B_TREE
                   or git("show", "-s", "--format=%T", H_PARENT) != H_PARENT_TREE
+                  or git("show", "-s", "--format=%T", COMPOSITION_BASE) != COMPOSITION_BASE_TREE
                   or git("show", "-s", "--format=%T", OLD_H) != OLD_H_TREE
                   or git("show", "-s", "--format=%T", OLD_H_PARENT) != OLD_H_PARENT_TREE):
                   refuse("A100011", "composition_pinned_tree")
               if (git("show", "-s", "--format=%P", H_PARENT) != B or git("show", "-s", "--format=%P", H) != H_PARENT
-                  or git("show", "-s", "--format=%P", head) != H
+                  or git("show", "-s", "--format=%P", COMPOSITION_BASE) != H
+                  or git("show", "-s", "--format=%P", head) != COMPOSITION_BASE
                   or git("show", "-s", "--format=%P", OLD_H) != OLD_H_PARENT):
                   refuse("A100012", "composition_parent")
               with boundary("A100013", "composition_ancestry"):
@@ -729,7 +733,9 @@ jobs:
                   subprocess.check_call(["git", "diff", "--quiet", "HEAD", "--"], timeout=2, stderr=subprocess.DEVNULL)
               # Historical P9 remains E8's direct child. Current real product
               # starts at published87fa5d9, then one actual native alphabet
-              # correction; final composition is the corrected product's child. Each meaningful slice remains exact, never subset.
+              # correction. The saved composition and its fixture-only F1
+              # correction follow; neither invents another product checkpoint.
+              # Each meaningful slice remains exact, never subset.
               operation = "historical_product"
               exact_delta(OLD_H_PARENT, OLD_H, HISTORICAL_PRODUCT_ALLOWED)
               operation = "published_composition"
@@ -741,6 +747,10 @@ jobs:
               operation = "current_product"
               exact_delta(B, H, PRODUCT_ALLOWED)
               operation = "current_composition"
+              exact_delta(H, COMPOSITION_BASE, ALLOWED)
+              operation = "composition_accounting_correction"
+              exact_delta(COMPOSITION_BASE, head, ALLOWED)
+              operation = "combined_composition"
               exact_delta(H, head, ALLOWED)
               operation = "current_full"
               exact_delta(B, head, PRODUCT_ALLOWED | ALLOWED)

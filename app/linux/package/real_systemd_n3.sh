@@ -1379,28 +1379,58 @@ capture_connector_instance() {
 }
 capture_manager_snapshot() {
   # Share the ORIGINAL sidecar 8s/1024-byte section, never a fresh budget.
-  manager_observation='{"list_exit":null,"show_exit":null,"unit":null,"properties":{},"losses":["unattempted"]}'
-  local pending bytes status=0 remaining restore_errexit=0
-  observe_remaining || return
-  (( observe_bytes_left >= 256 )) || return
+  manager_observation='{"acquired_bytes":0,"losses":["unattempted"]}'
+  local pending value acquired cap status=0 remaining restore_errexit=0 loss=collection_failed
+  if ! observe_remaining; then
+    if (( observe_bytes_left <= 0 )); then loss=acquisition_exhausted; else loss=timeout; fi
+    manager_observation="{\"acquired_bytes\":0,\"losses\":[\"unattempted\",\"$loss\"]}"
+    return 0
+  fi
+  (( observe_bytes_left >= 256 )) || {
+    manager_observation='{"acquired_bytes":0,"losses":["unattempted","summary_budget"]}'
+    return 0
+  }
+  cap="$observe_bytes_left"
   remaining=$((observe_deadline - SECONDS - 2))
   (( remaining > 5 )) && remaining=5
-  pending="$(mktemp "$diagnostics/.n3-manager.XXXXXX")" || return
+  pending="$(mktemp "$diagnostics/.n3-manager.XXXXXX")" || {
+    manager_observation='{"acquired_bytes":0,"losses":["unattempted","launch_failure"]}'
+    return 0
+  }
   case "$-" in *e*) restore_errexit=1 ;; esac
   set +e
-  timeout --kill-after=1 "$remaining" python "$installer_driver" manager "$pending.value" "$((remaining > 1 ? remaining - 1 : 1))" "$observe_bytes_left" >/dev/null 2>/dev/null
+  timeout --kill-after=1 "$remaining" python "$installer_driver" manager "$pending.value" "$((remaining > 1 ? remaining - 1 : 1))" "$cap" >/dev/null 2>/dev/null
   status=$?
-  (( restore_errexit )) && set -e || set +e
-  if (( status == 0 )) && [[ -f "$pending.value" ]]; then
-    bytes="$(wc -c <"$pending.value")" || bytes=invalid
-    if [[ "$bytes" =~ ^[0-9]{1,4}$ ]] && (( bytes <= observe_bytes_left )); then
-      manager_observation="$(cat "$pending.value")" || manager_observation='{"losses":["read_error"]}'
-      observe_bytes_left=$((observe_bytes_left - bytes))
-    else
-      manager_observation='{"losses":["truncated"]}'
+  # Until the existing private file yields a validated acquisition account,
+  # no later acquisition may reuse an uncertain allowance. JSON length is a
+  # SEPARATE serialization bound; it never supplies the raw-byte debit.
+  observe_bytes_left=0
+  if (( status == 0 && SECONDS + 2 < observe_deadline )); then
+    value="$(timeout --kill-after=1 1 python - "$installer_driver" "$pending.value" "$cap" 2>/dev/null <<'PY_MANAGER_ACCOUNT'
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+from n3_installer_only import read_manager_snapshot
+acquired, raw = read_manager_snapshot(Path(sys.argv[2]), int(sys.argv[3]))
+sys.stdout.buffer.write(str(acquired).encode('ascii') + b'\n' + raw)
+PY_MANAGER_ACCOUNT
+)"
+    status=$?
+    loss=read_or_accounting_failed
+    if (( status == 0 )) && [[ "$value" == *$'\n'* ]]; then
+      acquired="${value%%$'\n'*}"
+      if [[ "$acquired" =~ ^(0|[1-9][0-9]{0,3})$ ]] && (( acquired <= cap + 1 )); then
+        manager_observation="${value#*$'\n'}"
+        observe_bytes_left=$((acquired < cap ? cap - acquired : 0))
+        loss=none
+      fi
     fi
-  else
-    manager_observation='{"losses":["query_or_collection_failed"]}'
+  elif (( status == 0 || status == 124 || status == 137 )); then
+    loss=timeout
+  fi
+  (( restore_errexit )) && set -e || set +e
+  if [[ "$loss" != none ]]; then
+    manager_observation="{\"acquired_bytes\":null,\"losses\":[\"$loss\",\"acquisition_unknown\"]}"
   fi
   rm -f "$pending" "$pending.value"
 }
