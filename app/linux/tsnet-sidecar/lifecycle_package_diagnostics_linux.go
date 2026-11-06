@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"golang.org/x/sys/unix"
+	"regexp"
 	"strconv"
 	"sync/atomic"
 )
@@ -148,4 +149,59 @@ func lifecycleDiagnosticCheck(origin *error, failure error) bool {
 		*origin = failure
 	}
 	return failure == nil
+}
+
+// Same private positional grammar as Python loaded_projection. No raw stderr,
+// command/environment/credential operands or new acquisition/channel/budget.
+var lifecycleLoadedSafe = regexp.MustCompile(`^[A-Za-z0-9_./:@ \"'~-]*$`)
+var lifecycleLoadedProperty = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{0,31}$`)
+
+func lifecyclePackageLoadedValid(raw []byte) bool {
+	var facts []json.RawMessage
+	if len(raw) > 240 || json.Unmarshal(raw, &facts) != nil || len(facts) != 13 {
+		return false
+	}
+	unit, err := strconv.Atoi(string(facts[0]))
+	if err != nil || unit < 0 || unit > 2 || strconv.Itoa(unit) != string(facts[0]) {
+		return false
+	}
+	var prop, relation string
+	if json.Unmarshal(facts[1], &prop) != nil || !lifecycleLoadedProperty.MatchString(prop) ||
+		json.Unmarshal(facts[2], &relation) != nil || !lifecycleOneOf(relation, "equal", "subset", "after", "peers", "query") {
+		return false
+	}
+	sensitive := lifecycleOneOf(prop, "Environment", "EnvironmentFiles", "PassEnvironment", "LoadCredential", "LoadCredentialEncrypted", "ExecStartEx", "ExecStartPreEx", "ExecStartPostEx", "ExecStop", "ExecStopPost")
+	for i := 3; i < len(facts); i++ {
+		var value string
+		if json.Unmarshal(facts[i], &value) != nil || len(value) == 0 ||
+			!lifecycleOneOf(value[:1], "=", "~", "!", "?") ||
+			(value[0] == '!' || value[0] == '?') && len(value) != 1 ||
+			!lifecycleLoadedSafe.MatchString(value[1:]) || sensitive && i < 5 && value != "!" {
+			return false
+		}
+	}
+	return true
+}
+
+func lifecyclePackageLoadedShrink(raw *json.RawMessage) bool {
+	var facts []json.RawMessage
+	if !lifecyclePackageLoadedValid(*raw) || json.Unmarshal(*raw, &facts) != nil {
+		return false
+	}
+	longest, selected := 1, -1
+	for i := 3; i < len(facts); i++ {
+		var value string
+		_ = json.Unmarshal(facts[i], &value)
+		if len(value) > longest {
+			longest, selected = len(value), i
+		}
+	}
+	if selected < 0 {
+		return false
+	}
+	var value string
+	_ = json.Unmarshal(facts[selected], &value)
+	facts[selected], _ = json.Marshal("~" + value[1:len(value)-1])
+	*raw, _ = json.Marshal(facts)
+	return true
 }

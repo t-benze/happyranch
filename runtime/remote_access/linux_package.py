@@ -7,6 +7,9 @@ from runtime.remote_access.package_diagnostics import (
     diagnostic_loss,
     diagnostic_propagate,
     exception_refusal,
+    exception_loaded,
+    loaded_observation,
+    loaded_projection,
 )
 
 import hashlib
@@ -311,13 +314,16 @@ def _package_process_projection(record: dict) -> dict[str, object]:
 def _package_refusal_projection(value: object) -> dict[str, str] | None:
     if value is None:
         return None
-    record = _package_keys(value, ("category", "site"))
+    record = _package_keys(value, ("category", "site") + (("loaded",) if type(value) is dict and "loaded" in value else ()))
     with diagnostic_scope("P100010", "managed_operational_error"):
         from runtime.remote_access.package_diagnostic_codes import SITE_CATEGORIES
     site = record["site"]
     if type(site) is not str or SITE_CATEGORIES.get(site) != record["category"]:
         raise diagnostic_error("P000019", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
-    return {"category": record["category"], "site": site}
+    result = {"category": record["category"], "site": site}
+    if "loaded" in record:
+        result["loaded"] = loaded_projection(record["loaded"])
+    return result
 
 
 def _package_loss_sites(value: object) -> list[str]:
@@ -367,13 +373,15 @@ def _managed_package_child_projection(value: object) -> dict[str, object]:
               "reap_exit": _package_integer(child["reap_exit"], -64, 255),
               "process": _package_process_projection(child)}
     if extended:
-        refusal = _package_keys(child["refusal"], ("category", "site"))
+        refusal = _package_keys(child["refusal"], ("category", "site") + (("loaded",) if type(child["refusal"]) is dict and "loaded" in child["refusal"] else ()))
         with diagnostic_scope("P100011", "managed_operational_error"):
             from runtime.remote_access.package_diagnostic_codes import SITE_CATEGORIES
         site = refusal["site"]
         if type(site) is not str or SITE_CATEGORIES.get(site) != refusal["category"]:
             raise diagnostic_error("P000020", "private_diagnostic_invalid", ValueError("private_diagnostic_invalid"))
         result["refusal"] = {"category": refusal["category"], "site": site}
+        if "loaded" in refusal:
+            result["refusal"]["loaded"] = loaded_projection(refusal["loaded"])
     if boundary:
         result["boundary"] = _package_refusal_projection(child["boundary"])
     if guard:
@@ -1238,6 +1246,9 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
             refusal = exception_refusal(exc)
             if refusal is not None:
                 diagnostic["refusal"] = {"category": refusal[0], "site": refusal[1]}
+                loaded = exception_loaded(exc)
+                if loaded is not None:
+                    diagnostic["refusal"]["loaded"] = loaded
                 marked = getattr(exc, "_managed_package_boundary", getattr(exc, "_managed_package_refusal", None))
                 if marked is not None and marked != refusal:
                     diagnostic["boundary"] = {"category": marked[0], "site": marked[1]}
@@ -3453,6 +3464,33 @@ def _package_managed_history(deadline_ns: int) -> tuple[Path | None, dict[str, P
     return prefix, selected_units, selected_dropin, not record["payload_present"] and not any(record["units"].values()) and not record["dropin_present"]
 
 
+def _systemd_show_words(value: str) -> list[str]:
+    # v255/v259 bus_print_property uses shell_maybe_quote for string arrays.
+    # shlex removes ONLY this display quoting, never the unit's \xHH bytes.
+    import shlex
+    return shlex.split(value, comments=False, posix=True)
+
+
+def _requires_mount_units(value: str) -> set[str]:
+    result: set[str] = set()
+    for path in _systemd_show_words(value):
+        if not path.startswith('/') or any(c in ('..', '.') for c in path.split('/')) or '\x00' in path:
+            raise ValueError('managed_mount_path_invalid')
+        components = [c for c in path.split('/') if c]
+        result.add('-.mount')
+        for count in range(1, len(components) + 1):
+            raw = '/'.join(components[:count]).encode('utf-8', 'strict')
+            escaped = ''.join('-' if c == 47 else chr(c) if
+                              (65 <= c <= 90 or 97 <= c <= 122 or 48 <= c <= 57 or c in (58, 95)
+                               or c == 46 and i != 0) else f'\\x{c:02x}' for i, c in enumerate(raw))
+            # systemd hashes long unit names. Refuse unsupported long paths;
+            # never accept an unrelated hashed/suffix-only mount as authority.
+            if len(escaped) + 6 >= 256:
+                raise ValueError('managed_mount_path_invalid')
+            result.add(escaped + '.mount')
+    return result
+
+
 def _installed_managed_contract(*, deadline_ns: int | None = None, _package: bool = False) -> dict[str, int]:
     """Independent current disk AND loaded PID1 proof, with no repair.
 
@@ -3509,49 +3547,70 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             with diagnostic_scope("P100126", "managed_operational_error"):
                 os.close(descriptor)
 
-    def properties(unit: str, names: tuple[str, ...]) -> dict[str, str]:
-        with diagnostic_scope("P100127", "managed_operational_error"):
-            from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
-        current()
-        bound = min(deadline / 1_000_000_000, time.monotonic() + 1)
-        with diagnostic_scope("P100128", "managed_operational_error"):
-            child = subprocess.Popen(["/usr/bin/systemctl", "show", unit, *["--property=" + n for n in names]],
-                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL,
-                                     env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
-                                     pass_fds=(() if _MANAGED_LOCK.get() is None else (_MANAGED_LOCK.get(),)))
-        try:
-            raw, overflow = _capture_bounded_query_output(child, bound)
-            remaining = bound - time.monotonic()
-            with diagnostic_scope("P100129", "managed_operational_error"):
-                if overflow:
-                    raise diagnostic_error("P000238", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
-                if remaining <= 0:
-                    raise diagnostic_error("P300005", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
-                query_status = child.wait(timeout=remaining)
-                if query_status == 1:
-                    raise diagnostic_error("P300006", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
-                if query_status != 0:
-                    raise diagnostic_error("P300007", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
-        finally:
-            with diagnostic_scope("P100130", "managed_operational_error"):
-                _close_and_reap_query_process(child, min(bound, deadline / 1_000_000_000), managed=True)
-        current()
-        with diagnostic_scope("P100131", "managed_operational_error"):
-            text = raw.decode("utf-8")
-        values: dict[str, str] = {}
-        if not text.endswith("\n"):
-            raise diagnostic_error("P000239", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
-        for line in text[:-1].split("\n"):
-            key, separator, value = line.partition("=")
-            if (not separator or key not in names or key in values
-                    or any(ord(c) < 32 or ord(c) == 127 for c in line)):
-                raise diagnostic_error("P000240", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
-            values[key] = value
-        if set(values) != set(names):
-            raise diagnostic_error("P000241", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
-        return values
+    base: dict[str, str] = {}
 
+    def loaded_error(error: BaseException, prop: str, expected: str | None,
+                     observed: str | None, relation: str = "equal", *, context=None) -> BaseException:
+        if exception_loaded(error) is None:
+            error._managed_package_loaded = loaded_observation(UNITS.index(unit), prop, relation,
+                                                              expected, observed, base if context is None else context)
+        return error
+
+    def properties(unit: str, names: tuple[str, ...]) -> dict[str, str]:
+        values: dict[str, str] = {}
+        try:
+            with diagnostic_scope("P100127", "managed_operational_error"):
+                from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
+            current()
+            bound = min(deadline / 1_000_000_000, time.monotonic() + 1)
+            with diagnostic_scope("P100128", "managed_operational_error"):
+                child = subprocess.Popen(["/usr/bin/systemctl", "show", unit, *["--property=" + n for n in names]],
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL,
+                                         env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+                                         pass_fds=(() if _MANAGED_LOCK.get() is None else (_MANAGED_LOCK.get(),)))
+            initiating = None
+            try:
+                raw, overflow = _capture_bounded_query_output(child, bound)
+                remaining = bound - time.monotonic()
+                with diagnostic_scope("P100129", "managed_operational_error"):
+                    if overflow:
+                        raise diagnostic_error("P000238", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+                    if remaining <= 0:
+                        raise diagnostic_error("P300005", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+                    query_status = child.wait(timeout=remaining)
+                    if query_status == 1:
+                        raise diagnostic_error("P300006", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+                    if query_status != 0:
+                        raise diagnostic_error("P300007", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+            except BaseException as error:
+                initiating = loaded_error(error, "Query", "complete", None, "query", context={**base, **values})
+                raise
+            finally:
+                try:
+                    with diagnostic_scope("P100130", "managed_operational_error"):
+                        _close_and_reap_query_process(child, min(bound, deadline / 1_000_000_000), managed=True)
+                except BaseException as error:
+                    if initiating is None:
+                        raise
+                    diagnostic_loss("P400040", "managed_operational_error", error)
+            current()
+            with diagnostic_scope("P100131", "managed_operational_error"):
+                text = raw.decode("utf-8")
+            if not text.endswith("\n"):
+                raise diagnostic_error("P000239", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+            for line in text[:-1].split("\n"):
+                key, separator, value = line.partition("=")
+                if (not separator or key not in names or key in values
+                        or any(ord(c) < 32 or ord(c) == 127 for c in line)):
+                    raise diagnostic_error("P000240", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+                values[key] = value
+            if set(values) != set(names):
+                raise diagnostic_error("P000241", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+            return values
+        except Exception as error:
+            loaded_error(error, "Query", "complete", None, "query", context={**base, **values})
+            raise
     try:
         if _package:
             if os.geteuid() != 0:
@@ -3658,24 +3717,26 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
         dropin_dir = Path("/etc/systemd/system") / _DROPIN_SERVICE_DIR
 
         def dependency_mismatch(detail: PackageError) -> PackageError:
-            # P000262 remains the original aggregate check/count. The existing
-            # second fixed-identity slot records only this unit/property clause;
-            # no observed dependency names or values enter the diagnostic.
+            # Original aggregate and unit/property detail remain immutable.
+            # Private bounded observations supplement them, never public errors.
             error = diagnostic_error("P000262", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
             error._managed_package_boundary = exception_refusal(detail)
-            return error
+            return loaded_error(error, checking, allowed, base[checking], relation)
 
         for unit in UNITS:
+            base = {}  # Never borrow another unit's paths/observations.
             # An empty unexpected directory is also a changed unit input.
             if unit != UNITS[1] and (Path("/etc/systemd/system") / (unit + ".d")).exists():
                 raise diagnostic_error("P000257", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
             base = properties(unit, ("LoadState", "FragmentPath", "DropInPaths", "NeedDaemonReload",
-                                     "Wants", "Requires", "BindsTo", "PartOf", "After", "Before", "Conflicts",
+                                     "Wants", "Requires", "BindsTo", "PartOf", "After", "Before", "Conflicts", "RequiresMountsFor",
                                      "DefaultDependencies", "StopWhenUnneeded", "RefuseManualStart", "RefuseManualStop"))
             if fresh or _package and (empty_prior or _MANAGED_FRESH.get()):
                 if base["LoadState"] == "not-found":
                     if base["FragmentPath"] or base["DropInPaths"] or base["NeedDaemonReload"] != "no":
-                        raise diagnostic_error("P000258", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
+                        expected_absent = {"FragmentPath": "", "DropInPaths": "", "NeedDaemonReload": "no"}
+                        prop = next(k for k in expected_absent if base[k] != expected_absent[k])
+                        raise loaded_error(diagnostic_error("P000258", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), prop, expected_absent[prop], base[prop])
                     continue
                 # An owned fresh transaction can already have published units
                 # observed by PID1. Any actually loaded selection must pass the
@@ -3684,16 +3745,26 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                 # Actual PID1 mapping is independently closed even while fixed
                 # disk units are in an owned intent-before-write transition.
                 if base["DropInPaths"] not in ("", str(dropin_dir / _DROPIN_FILE_NAME)):
-                    raise diagnostic_error("P000259", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
+                    raise loaded_error(diagnostic_error("P000259", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), "DropInPaths", str(dropin_dir / _DROPIN_FILE_NAME), base["DropInPaths"])
                 loaded_dropin = bool(base["DropInPaths"])
             else:
                 loaded_dropin = dropin_present
             if (base["LoadState"] != "loaded" or base["NeedDaemonReload"] not in (("no", "yes") if _package else ("no",))
                     or base["FragmentPath"] != str(Path("/etc/systemd/system") / unit)
                     or base["DropInPaths"] != (str(dropin_dir / _DROPIN_FILE_NAME) if unit == UNITS[1] and loaded_dropin else "")):
-                raise diagnostic_error("P000260", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
+                expected_mapping = {"LoadState": ("loaded",), "NeedDaemonReload": ("no", "yes") if _package else ("no",),
+                                    "FragmentPath": (str(Path("/etc/systemd/system") / unit),),
+                                    "DropInPaths": (str(dropin_dir / _DROPIN_FILE_NAME) if unit == UNITS[1] and loaded_dropin else "",)}
+                prop = next(k for k in expected_mapping if base[k] not in expected_mapping[k])
+                raise loaded_error(diagnostic_error("P000260", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), prop, " ".join(expected_mapping[prop]), base[prop])
+            edges = {}
+            for prop in ("Wants", "Requires", "BindsTo", "PartOf", "After", "Before", "Conflicts"):
+                try:
+                    edges[prop] = set(_systemd_show_words(base[prop]))
+                except ValueError as error:
+                    raise loaded_error(diagnostic_error("P800035", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), prop, "quoted unit names", base[prop]) from error
             peers = set(UNITS) - {unit}
-            selected = {name: set(base[name].split()) & peers for name in ("Wants", "Requires", "BindsTo", "PartOf", "After", "Before")}
+            selected = {name: edges[name] & peers for name in ("Wants", "Requires", "BindsTo", "PartOf", "After", "Before")}
             expected = ({"Wants": {UNITS[1]}, "Requires": set(), "BindsTo": set(),
                          "PartOf": {UNITS[1], UNITS[2]}, "After": set(), "Before": {UNITS[2]}}
                         if unit == UNITS[0] else
@@ -3703,72 +3774,89 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                         {"Wants": {UNITS[0], UNITS[1]}, "Requires": set(), "BindsTo": set(),
                          "PartOf": set(), "After": {UNITS[0], UNITS[1]}, "Before": set()})
             if selected != expected:
-                raise diagnostic_error("P000261", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
+                prop = next(k for k in expected if selected[k] != expected[k])
+                raise loaded_error(diagnostic_error("P000261", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), prop, " ".join(sorted(expected[prop])), base[prop], "peers")
             # Account for the bounded v255 default graph as well as explicit
             # edges; unknown unrelated dependencies cannot disappear through a
             # peer-only projection.
             # v255 unit_add_exec_dependencies adds Wants/After tmp.mount for
             # PrivateTmp, and After remount-fs for State/Logs directories.
-            # Their RequiresMountsFor paths also order after the root mount.
-            # These fixed defaults do not admit arbitrary mount-layout edges.
+            # v255/v259 unit_add_mount_dependencies walks each OWN path's
+            # component ancestors (including root), using unit_name_from_path.
+            # No suffix wildcard or cross-unit union grants an implicit edge.
             wants = ({UNITS[0], UNITS[1]} if unit == UNITS[2]
                      else {"network-online.target", "tmp.mount", UNITS[1]} if unit == UNITS[0]
                      else {"network-online.target", "tmp.mount"})
-            implicit_requires = {"sysinit.target", "system.slice", "tmp.mount", "var-tmp.mount"} if unit != UNITS[2] else set()
+            try:
+                mounts = _requires_mount_units(base["RequiresMountsFor"])
+            except ValueError as error:
+                raise loaded_error(diagnostic_error("P800034", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), "RequiresMountsFor", "absolute normalized paths", base["RequiresMountsFor"]) from error
+            implicit_requires = ({"sysinit.target", "system.slice", "tmp.mount", "var-tmp.mount"} if unit != UNITS[2] else set()) | mounts
             implicit_after = implicit_requires | {"basic.target", "network-online.target", "systemd-journald.socket", "systemd-tmpfiles-setup.service"}
             if unit != UNITS[2]:
-                implicit_after |= {"-.mount", "systemd-remount-fs.service"}
-            if set(base["Wants"].split()) != wants:
+                implicit_after |= {"systemd-remount-fs.service"}
+            checking, allowed, relation = "Wants", " ".join(sorted(wants)), "equal"
+            if edges["Wants"] != wants:
                 raise dependency_mismatch(
                     diagnostic_error("P800001", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800002", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800003", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
-            if not set(base["Requires"].split()) <= implicit_requires:
+            checking, allowed, relation = "Requires", " ".join(sorted(implicit_requires)), "subset"
+            if not edges["Requires"] <= implicit_requires:
                 raise dependency_mismatch(
                     diagnostic_error("P800004", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800005", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800006", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            checking, allowed, relation = "BindsTo", "", "equal"
             if base["BindsTo"]:
                 raise dependency_mismatch(
                     diagnostic_error("P800007", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800008", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800009", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
-            if set(base["PartOf"].split()) != expected["PartOf"]:
+            checking, allowed, relation = "PartOf", " ".join(sorted(expected["PartOf"])), "equal"
+            if edges["PartOf"] != expected["PartOf"]:
                 raise dependency_mismatch(
                     diagnostic_error("P800010", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800011", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800012", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
-            if ((unit != UNITS[2] and "network-online.target" not in set(base["After"].split()))
-                    or not set(base["After"].split()) <= expected["After"] | implicit_after):
+            checking, allowed, relation = "After", " ".join(sorted(expected["After"] | implicit_after)), "after"
+            if ((unit != UNITS[2] and "network-online.target" not in edges["After"])
+                    or not edges["After"] <= expected["After"] | implicit_after):
                 raise dependency_mismatch(
                     diagnostic_error("P800013", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800014", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800015", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
-            if not set(base["Before"].split()) <= expected["Before"] | {"shutdown.target"}:
+            checking, allowed, relation = "Before", " ".join(sorted(expected["Before"] | {"shutdown.target"})), "subset"
+            if not edges["Before"] <= expected["Before"] | {"shutdown.target"}:
                 raise dependency_mismatch(
                     diagnostic_error("P800016", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800017", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800018", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
-            if set(base["Conflicts"].split()) != {"shutdown.target"}:
+            checking, allowed, relation = "Conflicts", "shutdown.target", "equal"
+            if edges["Conflicts"] != {"shutdown.target"}:
                 raise dependency_mismatch(
                     diagnostic_error("P800019", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800020", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800021", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            checking, allowed, relation = "DefaultDependencies", "yes", "equal"
             if base["DefaultDependencies"] != "yes":
                 raise dependency_mismatch(
                     diagnostic_error("P800022", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800023", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800024", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            checking, allowed, relation = "StopWhenUnneeded", "no", "equal"
             if base["StopWhenUnneeded"] != "no":
                 raise dependency_mismatch(
                     diagnostic_error("P800025", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800026", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800027", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            checking, allowed, relation = "RefuseManualStart", "no", "equal"
             if base["RefuseManualStart"] != "no":
                 raise dependency_mismatch(
                     diagnostic_error("P800028", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800029", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800030", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
+            checking, allowed, relation = "RefuseManualStop", "no", "equal"
             if base["RefuseManualStop"] != "no":
                 raise dependency_mismatch(
                     diagnostic_error("P800031", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
@@ -3794,8 +3882,10 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             }
             if unit == UNITS[1]:
                 del scalar["RestartUSec"]
-            if properties(unit, tuple(scalar)) != scalar:
-                raise diagnostic_error("P000263", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
+            actual_scalar = properties(unit, tuple(scalar))
+            if actual_scalar != scalar:
+                prop = next(k for k in scalar if actual_scalar[k] != scalar[k])
+                raise loaded_error(diagnostic_error("P000263", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), prop, scalar[prop], actual_scalar[prop])
             commands = properties(unit, ("ExecStartEx", "ExecStartPreEx", "ExecStartPostEx", "LoadCredential", "RestartPreventExitStatus", "RestrictAddressFamilies", "SystemCallArchitectures"))
             unit_text = rendered[unit]
             for directive in ("ExecStart", "ExecStartPre", "ExecStartPost"):
@@ -3811,14 +3901,17 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                         or any(r[0] != r[1].split(" ", 1)[0]
                                or r[2].strip() != ("fully-privileged" if declaration.startswith("+") else "")
                                for r, declaration in zip(records, declared_raw))):
-                    raise diagnostic_error("P000264", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
+                    raise loaded_error(diagnostic_error("P000264", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), directive + "Ex", None, None)
             credentials = ("daemon.token:/etc/happyranch/daemon.token" if unit == UNITS[0]
                            else "enrollment.key:/etc/happyranch/enrollment.key" if loaded_dropin else "")
             prevented = " ".join(str(code) for code in range(2, 256)) if unit == UNITS[0] else ""
             if (commands["LoadCredential"] != credentials or commands["RestartPreventExitStatus"] != prevented
                     or set(commands["RestrictAddressFamilies"].split()) != {"AF_INET", "AF_INET6", "AF_UNIX", "AF_NETLINK"}
                     or commands["SystemCallArchitectures"] != "native"):
-                raise diagnostic_error("P000265", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
+                command_expected = {"LoadCredential": credentials, "RestartPreventExitStatus": prevented,
+                                    "RestrictAddressFamilies": "AF_INET AF_INET6 AF_UNIX AF_NETLINK", "SystemCallArchitectures": "native"}
+                prop = next(k for k, v in command_expected.items() if (set(commands[k].split()) != set(v.split()) if k == "RestrictAddressFamilies" else commands[k] != v))
+                raise loaded_error(diagnostic_error("P000265", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), prop, command_expected[prop], commands[prop])
         current()
         with diagnostic_scope("P100145", "managed_operational_error"):
             return {"dropin_mode": int(PAYLOAD_MODES["systemd/" + UNITS[1]], 8), "dropin_directory_mode": 0o755}
@@ -4048,7 +4141,9 @@ def managed_private_entry(operation: str) -> int:
                     if refusal is not None and marked is not None and marked != refusal:
                         suffix += b":" + marked[0].encode("ascii") + b":" + marked[1].encode("ascii")
                 with diagnostic_scope("P100159", "managed_operational_error"):
-                    os.write(2, b"managed_private_refusal:" + reason.encode("ascii") + suffix + b"\n")
+                    loaded = exception_loaded(exc)
+                    facts = b"" if loaded is None else b"|" + json.dumps(loaded, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+                    os.write(2, b"managed_private_refusal:" + reason.encode("ascii") + suffix + facts + b"\n")
             except OSError:
                 pass
             return 78

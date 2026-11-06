@@ -3875,8 +3875,9 @@ type lifecyclePackageNativeDiagnostic struct {
 }
 
 type lifecyclePackageRefusalDiagnostic struct {
-	Category string `json:"category"`
-	Site     string `json:"site"`
+	Category string          `json:"category"`
+	Site     string          `json:"site"`
+	Loaded   json.RawMessage `json:"loaded,omitempty"`
 }
 
 type lifecyclePackageChildDiagnostic struct {
@@ -4201,7 +4202,9 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 					}
 					reason := strings.TrimSuffix(strings.TrimPrefix(raw, "managed_private_refusal:"), "\n")
 					var refusal, boundary *lifecyclePackageRefusalDiagnostic
-					fields := strings.Split(reason, ":")
+					identity, loaded, hasLoaded := strings.Cut(reason, "|")
+					fields := strings.Split(identity, ":")
+					reason = fields[0]
 					valid := len(fields) == 1
 					if (len(fields) == 3 || len(fields) == 5) && lifecyclePackagePrivateSites[fields[2]] == fields[1] && fields[1] != "" {
 						reason = fields[0]
@@ -4212,6 +4215,14 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 							if valid {
 								boundary = &lifecyclePackageRefusalDiagnostic{Category: fields[3], Site: fields[4]}
 							}
+						}
+					}
+					if hasLoaded {
+						if refusal != nil && lifecyclePackageLoadedValid([]byte(loaded)) {
+							refusal.Loaded = json.RawMessage(loaded)
+						} else {
+							// Preserve the validated initiating identity on value loss.
+							n.loss("G500064", "TL")
 						}
 					}
 					if strings.HasPrefix(raw, "managed_private_refusal:") && strings.HasSuffix(raw, "\n") && valid && lifecyclePackagePrivateReason(reason) {
@@ -4363,6 +4374,14 @@ func lifecyclePackageChildFrame(stage string, diagnostic lifecyclePackageChildDi
 	if err != nil {
 		diagnostic.Native.loss("G500022", "JS")
 		diagnostic.finishNative()
+		raw, err = encode()
+	}
+	// Context never displaces original category/site/process facts. Truncated
+	// values carry '~', including the empty prefix when no bytes fit.
+	for err == nil && len(prefix)+len(raw)+1 > 1024 && diagnostic.Refusal != nil && len(diagnostic.Refusal.Loaded) > 0 {
+		if !lifecyclePackageLoadedShrink(&diagnostic.Refusal.Loaded) {
+			break
+		}
 		raw, err = encode()
 	}
 	if err == nil && len(prefix)+len(raw)+1 > 1024 {

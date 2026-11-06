@@ -1119,4 +1119,8 @@ SITE_CATEGORIES = {
 'P600011': 'managed_operational_error',
 'P600012': 'managed_lifecycle_owner_unknown',
 'P600013': 'managed_lifecycle_owner_unknown',
+'P800034': 'managed_loaded_contract_mismatch',
+'P400040': 'managed_operational_error',
+'G500064': 'managed_lifecycle_refused',
+'P800035': 'managed_loaded_contract_mismatch',
 }
