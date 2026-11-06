@@ -1401,9 +1401,166 @@ def registration_lock_peer():
                 if close_error is not None: raise close_error
 
 
+def registration_signature_diagnostic(kind: str) -> dict:
+    """C19-L/P: real reader deltas, with an independent no-follow stat oracle."""
+    assert kind in ('snapshot', 'pre_git', 'post_git', 'appeared', 'disappeared', 'equal', 'first_cause', 'report')
+    with fixture() as f:
+        started = time.monotonic()
+        deadline = started + 20
+        commands, events, pairs, reads = [], [], [], []
+
+        def fixture_git(root: Path, *args: str) -> str:
+            ds.check(deadline)
+            child = subprocess.run(['git', '-C', str(root), *args], capture_output=True, text=True,
+                                   timeout=max(.001, min(8, deadline - time.monotonic())))
+            commands.append(dict(args=args, exit=child.returncode))
+            child.check_returncode()
+            ds.check(deadline)
+            return child.stdout
+
+        f.git = fixture_git
+        repo, a = f.worktree('TASK-1'); _, b = f.worktree('TASK-2')
+        entry = repo / '.git/worktrees' / a.name
+        note, index = entry / 'fixture-note', entry / 'index'
+        if kind != 'appeared': note.write_text('before\n')
+        refs = f.git(repo, 'show-ref')
+        original_chmod = os.chmod
+        original_mode = index.lstat().st_mode
+        if kind == 'first_cause': index.chmod(0)
+        native_error = []
+
+        def raw(path: Path) -> dict | None:
+            try: value = os.stat(path, follow_symlinks=False)
+            except FileNotFoundError: return None
+            return dict(device=value.st_dev, inode=value.st_ino, type=stat.S_IFMT(value.st_mode),
+                        mode=value.st_mode, size=value.st_size, mtime_ns=value.st_mtime_ns,
+                        ctime_ns=value.st_ctime_ns, nlink=value.st_nlink)
+
+        def change(seam: str) -> None:
+            ds.check(deadline)
+            old = raw(note)
+            if kind == 'appeared': note.write_text('new ordinary auxiliary\n')
+            elif kind == 'disappeared': note.unlink()
+            else:
+                with note.open('a') as stream: stream.write('actual append\n')
+                # Intentionally test-owned mode/mtime writes, never sweeper repair.
+                original_chmod(note, 0o640)
+                os.utime(note, ns=(note.lstat().st_atime_ns, old['mtime_ns'] + 1_000_000))
+            new = raw(note)
+            assert old != new, (kind, old, new)
+            pairs.append(dict(before=old, after=new))
+            events.append(seam)
+
+        real_snapshot, real_metadata, real_git, real_registrations = ds.snapshot, ds._registration_metadata, ds.git, ds.registrations
+        census_count = 0
+
+        def snapshot(path: Path, limit: float, **kwargs) -> dict:
+            assert limit == deadline
+            tree = real_snapshot(path, limit, **kwargs)
+            if kind in ('snapshot', 'report') and Path(path) == repo / '.git/worktrees' and not pairs:
+                # Check the independent observation agrees with the captured census.
+                value = tree[a.name + '/fixture-note']
+                assert raw(note) == dict(device=value.st_dev, inode=value.st_ino, type=stat.S_IFMT(value.st_mode),
+                                         mode=value.st_mode, size=value.st_size, mtime_ns=value.st_mtime_ns,
+                                         ctime_ns=value.st_ctime_ns, nlink=value.st_nlink)
+                change('complete snapshot -> ordinary read')
+            return tree
+
+        def metadata(root: Path, limit: float) -> ds._Registrations:
+            nonlocal census_count
+            assert limit == deadline
+            observed = real_metadata(root, limit)
+            census_count += 1
+            if census_count == 1 and kind in ('pre_git', 'appeared', 'disappeared', 'first_cause'):
+                before = raw(note)
+                assert observed.metadata[str(a)].get(str(note)) == (tuple(before.values()) if before else None)
+                if kind == 'first_cause':
+                    native_error.append(observed.errors[str(a)])
+                    assert str(index) in native_error[0] and 'Permission denied' in native_error[0]
+                    original_chmod(index, stat.S_IMODE(original_mode))
+                change('first complete census -> second census')
+            return observed
+
+        def git(root: Path, limit: float, *args: str) -> str:
+            assert limit == deadline
+            value = real_git(root, limit, *args)
+            commands.append(dict(args=args, exit=0, shipping=True))
+            if args[:2] == ('worktree', 'list'):
+                events.append('genuine Git list returned')
+                if kind == 'post_git' and not pairs: change('successful Git list -> final census')
+            return value
+
+        def registrations(root: Path, limit: float, **kwargs) -> ds._Registrations:
+            observed = real_registrations(root, limit, **kwargs)
+            reads.append(dict(observed.errors))
+            return observed
+
+        observed = dict(kind=kind, events=events, pairs=pairs, commands=commands, reader_errors=reads,
+                        original_deadline=deadline, fixture=str(f.base))
+        latched = {}
+        try:
+            with patch.object(ds, 'snapshot', snapshot), patch.object(ds, '_registration_metadata', metadata), \
+                    patch.object(ds, 'git', git), patch.object(ds, 'registrations', registrations):
+                if kind == 'report':
+                    summary = f.base / 'policy-summary.json'
+                    with refuse_mutations(), patch.object(time, 'time', return_value=NOW):
+                        projected = ds.sweep([str(f.org)], deadline, summary, dry_run=True,
+                                             scheduled_date=None, revision='signature-fixture', started_monotonic=started)
+                        ds._manual_audit(projected, [str(f.org)], summary)
+                    report = projected['orgs'][0]
+                    payload = ds._audit_payload(projected, report, summary)
+                    saved = f.db.execute("SELECT task_id,agent,action,payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+                    observed.update(org=report, audit=payload)
+                    assert payload['org'] is report
+                    assert len(saved) == 1 and saved[0][:3] == ('', 'daemon', 'disk_sweep_summary'), observed
+                    assert json.loads(saved[0][3]) == payload and json.loads(summary.read_text()) == projected, observed
+                    reason = row(report, a)['reason']
+                    assert reason == reads[0][str(a)], observed
+                    assert report['discovery'] == 'partial' and report['outcome'] == 'incomplete', observed
+                    assert report['known_candidate_count'] == 2 and report['known_unreached_count'] == 0, observed
+                    assert report['unreached'] is None and report['physical_freed_bytes'] is None, observed
+                    assert report['retained_count'] == 1 and report['retained_reasons'] == {'metadata_changed': 1}, observed
+                    assert row(report, a).get('allocated_bytes') is None and row(report, b)['state'] == 'eligible', observed
+                    assert all(p['removed_attributable_bytes'] == 0 and not p['attribution_unknown'] for p in report['phases'].values()), observed
+                    scope = next(s for s in report['discovery_scopes'] if s['path'] == str(a))
+                    assert scope['reason'] == reason and scope['candidate_count'] is None, observed
+                    assert report['unknown_scope']['discovery_scopes'] == report['discovery_scopes'], observed
+                else:
+                    rows = ds.registrations(repo, deadline, retained=latched)
+                    assert set(rows) == {str(repo), str(a), str(b)} and str(b) not in rows.errors, observed
+                    reason = rows.errors.get(str(a))
+                    if kind == 'equal':
+                        assert reason is None and not rows.errors and not latched[str(repo)], observed
+                    elif kind == 'first_cause':
+                        assert pairs and reason == native_error[0] and ';signature_change=' not in reason, observed
+                        again = ds.registrations(repo, deadline, retained=latched)
+                        assert again.errors[str(a)] == reason and latched[str(repo)][str(a)][0] == reason, observed
+                        observed['native_first_cause'] = reason
+            observed.update(censuses=census_count, cause=reason)
+            assert refs == f.git(repo, 'show-ref') and a.exists() and b.exists(), observed
+            if kind not in ('equal', 'first_cause'):
+                before, after = pairs[0]['before'], pairs[0]['after']
+                fields = before if before is not None else after
+                expected = {field: [before[field] if before is not None else None, after[field] if after is not None else None]
+                            for field in fields if (before[field] if before is not None else None) != (after[field] if after is not None else None)}
+                label = 'snapshot_to_read' if kind in ('snapshot', 'report') else 'post_git_census' if kind == 'post_git' else 'pre_git_censuses'
+                expected_reason = 'metadata_changed:' + str(note) + ';signature_change=' + json.dumps(
+                    dict(comparison=label, changes=expected), separators=(',', ':'))
+                assert reason == expected_reason, observed
+                observed['expected_changes'] = expected
+                if kind == 'post_git': assert events.index('genuine Git list returned') < events.index('successful Git list -> final census'), observed
+                if kind in ('appeared', 'disappeared'): assert len(expected) == 8, observed
+            ds.check(deadline)
+            observed['seconds'] = time.monotonic() - started
+            return observed
+        finally:
+            original_chmod(index, stat.S_IMODE(original_mode))
+
+
 def registration_local_peers():
     """C19-L/E/P: a proven local unknown never grants or vetoes peer eligibility."""
-    observations = []
+    observations = [registration_signature_diagnostic(kind) for kind in
+                    ('snapshot', 'pre_git', 'post_git', 'appeared', 'disappeared', 'equal', 'first_cause', 'report')]
     scenarios = [('unreadable_index', None), ('missing_head', None), ('changed_note', None)]
     scenarios += [('unreadable_index', protection) for protection in
                   ('active_owner', 'active_root', 'pending', 'queued', 'running', 'dirty', 'untracked')]

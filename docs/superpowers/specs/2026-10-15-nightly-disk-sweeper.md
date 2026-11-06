@@ -307,6 +307,18 @@ zone/window/date, discovery status, outcome, retained reasons/paths, dirty paths
 known eligible leftovers, unreached counts/orgs and errors. In-flight checkpoint
 survives ordinary worker interruption; report failure is never fabricated success.
 
+The three local `metadata_changed:<exact native path>` comparisons append compact
+`;signature_change={"comparison":...,"changes":...}` JSON. Fixed comparison labels
+are `snapshot_to_read`, `pre_git_censuses` and `post_git_census`; `changes` contains
+only differing old/new integer pairs, in signature order: device, inode, type,
+mode, size, mtime_ns, ctime_ns, nlink. A missing observation is null, so at most
+eight pairs occur. These are the already compared observations, with no new I/O,
+contents, atime, capture timestamp or history. Equal observations add no reason.
+Earlier native causes stay latched; within-read and shared errors keep their
+existing text. The prefix/category and every report/audit key remain unchanged;
+the audit carries the same updated org object. Deltas identify neither a writer
+nor data loss and grant no eligibility or clearance.
+
 `measured_allocated_bytes` counts eligible observed `st_blocks*512` once per inode
 across the whole batch. Retained/unreached allocation is explicitly unknown.
 `removed_attributable_bytes` counts only verified successful candidate removal,
