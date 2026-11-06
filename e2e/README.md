@@ -2417,7 +2417,8 @@ For that SAME occurrence the expected result is the complete original; no
 virtual replacement or comparison-span holder is constructed. Actual sanitizer
 passes still pay their full scalar work even when aliasing, and actual output
 measurement, complete original-output equality and residual-secret checks remain.
-Original scalar/output-reference and comparison charges remain. Transforming
+Original scalar/output-reference and comparison charges remain except for the
+explicitly absent operations in the same-occurrence corrections below. Transforming
 sanitation still uses the original planner; this fusion alone proves no fit.
 The registered raw JSON/JSONL decoded-scalar callback uses the same local
 unchanged-result rule only after that occurrence rejects every original secret
@@ -3952,7 +3953,8 @@ non-JSONL single-object scan. Full builtin type/value equality, complete string
 operand sizing, allowed object/array depth, sorted or original key order,
 decoded duplicate membership and complete cardinality checks remain. Every key
 and decoded scalar still receives its own ordinary or SOURCE admission; no
-other occurrence supplies safety or a comparison result.
+other occurrence supplies safety or a comparison result. The sizing correction
+below removes only a repeated walk in the SAME ordinary-string comparison frame.
 
 The raw/required-tree parser retains named Case meta, start and job scalars
 directly in its existing original member loop. Selecting the SAME parent
@@ -4229,7 +4231,8 @@ each raw nonASCII increment costs8B/1fact before assignment. The handoff checks
 the actual parser, original string, ledger, eligibility callback and complete
 cursor, paying32B/4facts plus8B/1fact for the original reference. Only the
 separate whole-image sizing traversal and its sizeB/1fact debit disappear on
-this path. Other original-safety callers retain their existing sizing path.
+this path. Other original-safety callers retain their existing sizing path
+except for the same-occurrence command/SOURCE sizing corrections below.
 This is one current parser frame's scalar accounting, never a cross-image cache
 or a supplied byte count. Whole-original secret searches, actual full-image
 sanitizer passes at their original rates, complete safe sizing/equality/residual
@@ -4458,3 +4461,45 @@ lookups, every remaining late join and full original output still pay their cost
 Complete controls, full historical typed/ordered reconciliation, clean-head
 lint/static and normal SAME-ref publication remain required before handoff;
 source inspection supplies no fit, behavior or native-acceptance PASS.
+
+
+### Same-occurrence command and SOURCE closure sizing
+
+The raw-key candidate failed the repeated-prefix Case again at public-row
+closure:1736B/217facts requested at W8286613/F199880. This remains an actual
+capacity failure, with no complete11184 reconciliation or lint/static result.
+The following operation eliminations do not establish fit before verification.
+
+The existing parser parent directly retains recognized finite command primitives
+in their original shape maps. It prepays16B/0facts for branch selection and
+removes only the absent selected-field8B/1fact forwarding slot. Original leaf
+grammar/node, duplicate-before-value, ordinary/deferred safety, complete string
+retention and required-tree insertion charges remain. Unknown fields, containers
+and legacy wire discovery retain their event path and refusal semantics.
+
+Nested ordinary-string comparison reuses its consumed token-kind slot for that
+SAME decoded string's complete UTF8 size, with16B/0facts replacement setup. Its
+full expected-value comparison already performs that sizing. Subsequent ordinary
+admission therefore omits only a second original sizing walk/sizeB1fact charge.
+Backslash/original-secret refusal, every actual whole-size sanitizer pass, the
+separate safe-result reference, independent safe sizing, full original/safe
+equality, residual-secret scan and settlement remain. SOURCE comparisons still
+receive their own complete lexical admission.
+
+The SOURCE lexical owner likewise uses its own full initial source sizing,
+prepaying16B/0facts setup instead of repeating that walk/sizeB1fact admission.
+Whole-source original-secret/sanitizer/safe-reference/full comparison obligations
+remain. A bounded unescaped literal already has its own complete grammar and
+decoded-size preflight. Its existing decoded-value slot consumes sanitation,
+then compares exact UTF8 size, codepoint length and complete content bounded by
+BOTH original SOURCE endpoints, with80B/0facts comparison setup. Only the absent
+second sizing operation and safe-result reference lose their charges. Original
+literal storage/facts, per-secret scans, every actual sanitizer pass, residual
+safety and settlement stay paid; escaped, normalized and long fallbacks retain
+their separate sizing/reference path. No alias or other occurrence supplies proof.
+
+The complete unchanged11184 controls, all named typed/ordered historical sets,
+2600 additions and1761 keepers must still reconcile before clean committed-head
+lint/static and normal SAME-ref publication. Every earlier failure and missing
+proof retains its original scope. Product DAILY19UTC ONLY; units RETIRED;
+integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342/211270-271.

@@ -1190,7 +1190,31 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 raise ValueError('Python lone CR withheld')
             if char == '\n':
                 line = 0
-        _evidence_original(source, context, ledger, check, sanitize)
+        # This SAME SOURCE frame already measured its complete immutable input.
+        # Remove only the duplicate sizing walk/size admission, keeping all
+        # original-secret, actual sanitizer, output-reference and full checks.
+        ledger.charge(16, 0, check)
+        for secret in context:
+            ledger.charge(8, 1, check)
+            if secret in source:
+                raise ValueError("original evidence content withheld")
+        ledger.charge(16, 0, check)
+        for secret in context:
+            ledger.charge(size, 1, check)
+        ledger.reserve(0, 1, check)
+        try:
+            safe = sanitize(source)
+            try:
+                actual = _evidence_utf8_size(safe, check, size)
+            except ValueError as exc:
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+            ledger.charge(64, 0, check)
+            if actual != size or safe != source or any(secret in safe for secret in context):
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+            check()
+        finally:
+            ledger.settle(0, 0)
+            safe = None
         end, index, stack = len(source), 0, []
 
         def fail() -> None:
@@ -1311,7 +1335,32 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                     try:
                         if '\\' in value:
                             fail()
-                        _evidence_original(value, context, ledger, check, sanitize)
+                        # The full literal preflight already measured THIS
+                        # decoded occurrence. Sanitize in its existing slot,
+                        # then compare against both own original endpoints.
+                        # No second sizing walk or safe-reference holder exists.
+                        for secret in context:
+                            ledger.charge(8, 1, check)
+                            if secret in value:
+                                raise ValueError("original evidence content withheld")
+                        ledger.charge(16, 0, check)
+                        for secret in context:
+                            ledger.charge(decoded_size, 1, check)
+                        check()
+                        try:
+                            value = sanitize(value)
+                            try:
+                                actual = _evidence_utf8_size(value, check, decoded_size)
+                            except ValueError as exc:
+                                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+                            ledger.charge(80, 0, check)
+                            if (actual != decoded_size or len(value) != finish - len(quote) - opening
+                                    or not source.startswith(value, opening, finish - len(quote))
+                                    or any(secret in value for secret in context)):
+                                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                            check()
+                        finally:
+                            ledger.settle(0, 0)
                     finally:
                         value = None
                     return finish
@@ -4743,7 +4792,12 @@ class _EvidenceJSON:
                         else:
                             self.error()
                     if type(value) is str:
-                        self.ledger.charge(_evidence_utf8_size(value, self.check) +
+                        # Reuse the consumed token-kind slot for THIS decoded
+                        # occurrence's size. The later ordinary admission needs
+                        # no second complete original sizing traversal.
+                        self.ledger.charge(16, 0, self.check)
+                        char = _evidence_utf8_size(value, self.check)
+                        self.ledger.charge(char +
                             (_evidence_utf8_size(expected, self.check) if type(expected) is str else 0), 1, self.check)
                     if type(value) is not type(expected) or value != expected:
                         raise ValueError('completion ordered waiting equality withheld' if type(selected_field) is int
@@ -4754,7 +4808,30 @@ class _EvidenceJSON:
                                 self.check, self.comparison_submission.owner.sanitize,
                                 self.comparison_submission.depth + 4)
                         else:
-                            self.comparison_submission.ordinary(value)
+                            if '\\' in value:
+                                raise ValueError('submission ordinary representation withheld')
+                            for secret in self.comparison_submission.owner.context:
+                                self.ledger.charge(8, 1, self.check)
+                                if secret in value:
+                                    raise ValueError("original evidence content withheld")
+                            self.ledger.charge(16, 0, self.check)
+                            for secret in self.comparison_submission.owner.context:
+                                self.ledger.charge(char, 1, self.check)
+                            self.ledger.reserve(0, 1, self.check)
+                            try:
+                                safe = self.comparison_submission.owner.sanitize(value)
+                                try:
+                                    actual = _evidence_utf8_size(safe, self.check, char)
+                                except ValueError as exc:
+                                    raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+                                self.ledger.charge(64, 0, self.check)
+                                if (actual != char or safe != value
+                                        or any(secret in safe for secret in self.comparison_submission.owner.context)):
+                                    raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                                self.check()
+                            finally:
+                                self.ledger.settle(0, 0)
+                                safe = None
                     return value
                 except BaseException:
                     value = None
@@ -5115,7 +5192,32 @@ class _EvidenceJSON:
                             and (row[1] == 'jobs' or row[1] in ('tasks', 'results')
                                  and row[3] in ('parked', 'first_terminal'))):
                         self.ledger.charge(16, 0, self.check)
-                    if (case_fields is not None and self.index < self.end and self.text[self.index] not in '[{'
+                    if (command_keys is not None and self.index < self.end and self.text[self.index] not in '[{'
+                            and (command_keys is command_owner.metadata and key in command_owner.fields
+                                or command_keys is command_owner.provider and key in ('task', 'session', 'agent', 'org', 'pid')
+                                or command_keys is command_owner.payload and key in command_owner.payload_fields + command_owner.completion_fields
+                                or command_keys is command_owner.file and key in ('path', 'text', 'bytes', 'sha256')
+                                or command_keys is command_owner.wire and key in ('path', 'method', 'body_sha256', 'status', 'dropped')
+                                or command_keys is command_owner.response and key in command_owner.result_fields + ('deferred', 'code', 'ok')
+                                or command_keys is command_owner.authentication and key in ('task_id', 'session_id')
+                                or command_keys is command_owner.decision and key in ('action', 'summary'))):
+                        # The parent already owns the original key and map.
+                        # Keep its leaf grammar/safety/string-retention debits;
+                        # remove only the extra selected-field forwarding slot.
+                        # Unsupported fields and containers retain event routing.
+                        self.ledger.charge(16, 0, self.check)
+                        child = self.value(depth + 1,
+                            None if (command_keys is command_owner.metadata and key == 'stdout'
+                                     or command_keys is command_owner.payload and key == 'script'
+                                     or command_keys is command_owner.file and key == 'text') else scalar,
+                            tree=tree, event=event, relay_context=relay_context, relay_sanitize=relay_sanitize,
+                            submission_identity=submission_identity)
+                        if type(child) is str:
+                            self.ledger.charge(_evidence_utf8_size(child, self.check), 1, self.check)
+                        command_keys[key] = child
+                        if tree and not borrowed_keys:
+                            output[key] = child
+                    elif (case_fields is not None and self.index < self.end and self.text[self.index] not in '[{'
                             and (case_kind == 1 or case_kind == 0 and key in ('method', 'variant', 'index', 'source_sha', 'task')
                                  or case_kind == 2 and key in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap', 'out', 'err'))):
                         # Parse this occurrence with its own scalar grammar and
