@@ -3521,9 +3521,18 @@ including overlapping candidates, for the FULL same-body SOURCE. Exactly one
 candidate grants its mapped span that occurrence's completed proof, with full
 comparison/traversal debits. Zero candidates retains ordinary R1; multiple
 candidates refuse. Prefix/suffix remain R1 without renderer equality. Original
-secret matching stays continuous across all regions and <=4096 UTF8-byte chunks;
-slices, carry, search, sanitizer passes and retained bytes are charged before
-allocation. No normalization, first-match choice or generic browser/stdout grant.
+secret matching searches the complete immutable text separately for EACH secret,
+including every region and former chunk boundary. Each full native search prepays
+size+16B/2facts; no chunk slice, concatenation or carry is constructed. Actual
+sanitizer passes, output-reference admission, strict UTF8 size and full unchanged
+comparison retain their charges. The final mapped SOURCE comparison uses its
+own bounded full-range comparison after separate full anchor selection; BOTH
+native operand traversals and call/bounds setup prepay2*source_size+64B/8facts.
+Only absent per-character Python indexing/reference constructions lose their
+16B/2fact-per-offset costs. SOURCE eligibility retains its separate complete
+traversal and debit. Original end checks still surround native work; these
+cooperative limits do not certify hard wall time. No normalization, first-match
+choice or generic browser/stdout grant.
 Facts and comparisons stay private until existing Case/Observations close,
 including late metadata/rows and the separately retained Case-jobs-last image.
 

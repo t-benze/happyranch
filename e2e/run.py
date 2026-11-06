@@ -3218,21 +3218,15 @@ class _EvidenceObservations:
             size = _evidence_utf8_size(text, check)
             source_size = _evidence_utf8_size(source, check)
             ledger.charge(128 + size + source_size, 16, check)
-            # Continuous ORIGINAL-secret matching, including boundaries between
-            # prefix/anchor/span/suffix and each <=4096 UTF8-byte chunk. Reserve
-            # slices, concatenation, search and the retained carry before allocation.
+            # This complete immutable original is already present. Search it
+            # directly, retaining continuous matching across every region and
+            # former chunk boundary without allocating slices, joins or carry.
+            # Prepay EACH full native search and its context/reference slots.
             for secret in self.context:
-                carry = ''
-                ledger.charge(16, 2, check)
-                for begin in range(0, len(text), 1024):
-                    stop = min(begin + 1024, len(text))
-                    ledger.charge(8 * (len(carry) + stop - begin) + 32, 4, check)
-                    chunk = carry + text[begin:stop]
-                    if secret in chunk:
-                        raise ValueError('original evidence content withheld')
-                    count = min(len(secret) - 1, len(chunk))
-                    ledger.charge(4 * count + 8, 1, check)
-                    carry = chunk[len(chunk) - count:] if count else ''
+                ledger.charge(size + 16, 2, check)
+                if secret in text:
+                    raise ValueError('original evidence content withheld')
+                check()
             # The existing literal sanitizer must leave the entire text unchanged.
             # All actual replacement passes, the output reference and full comparison
             # remain paid, including aliases. No text normalization is performed.
@@ -3270,17 +3264,17 @@ class _EvidenceObservations:
             stop = candidate + len(source)
             if text.find('\\', 0, candidate) >= 0 or text.find('\\', stop) >= 0:
                 raise ValueError('Case terminal browser outside SOURCE span withheld')
-            # Compare/traverse the mapped occurrence in full, after its own body's
-            # completed proof and complete terminal/oracle/submit equality. No decode.
-            ledger.charge(16 * len(source) + source_size + 32, 2 * len(source) + 4, check)
-            for offset in range(len(source)):
-                if offset % 1024 == 0:
-                    check()
-                if text[candidate + offset] != source[offset]:
-                    raise ValueError('Case terminal browser mapped SOURCE withheld')
+            # Independently compare the entire mapped occurrence after its own
+            # body's proof and terminal/oracle/submit equality. BOTH native
+            # operand traversals and call/bounds slots remain prepaid; only the
+            # absent per-character Python index/reference constructions disappear.
+            # Anchor selection above retains its separate full comparison.
+            ledger.charge(2 * source_size + 64, 8, check)
+            if not text.startswith(source, candidate, stop):
+                raise ValueError('Case terminal browser mapped SOURCE withheld')
             check()
         finally:
-            text = source = safe = chunk = carry = None
+            text = source = safe = None
 
     def case_row_event(self, local: tuple, kind: str, value: object, *, field: str | None = None) -> None:
         """Descendants of the already opened original row; no ancestor replay."""
