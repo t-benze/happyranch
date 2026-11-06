@@ -153,7 +153,7 @@ func lifecycleDiagnosticCheck(origin *error, failure error) bool {
 
 // Same private positional grammar as Python loaded_projection. No raw stderr,
 // command/environment/credential operands or new acquisition/channel/budget.
-var lifecycleLoadedSafe = regexp.MustCompile(`^[A-Za-z0-9_./:@ \"'~-]*$`)
+var lifecycleLoadedSafe = regexp.MustCompile(`^[A-Za-z0-9_./:@ \x5c"'~-]*$`)
 var lifecycleLoadedProperty = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{0,31}$`)
 
 func lifecyclePackageLoadedValid(raw []byte) bool {
