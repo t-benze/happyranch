@@ -2426,8 +2426,9 @@ actual sanitation, every full pass debit, strict output measurement, complete
 equality and residual-secret checks remain. The raw callback's later duplicate
 unchanged-value comparison is removed; the first full comparison remains.
 The unescaped primitive-value correction below consumes sanitation
-in its existing decoded slot. Keys, escaped and longer scalars retain separate
-output-reference admission. Other transforming raw-text sanitation retains the
+in its existing decoded slot at every admitted size. Unescaped keys use their
+own original range in the same key slot; escaped scalars and keys retain
+separate output-reference admission. Other transforming raw-text sanitation retains the
 general planner.
 Original-plus-safe projection bytes remain charged even for borrowed objects,
 aliases and no-match strings. Every replacement pass pays its whole safe scalar;
@@ -3784,7 +3785,7 @@ identical unchanged-value comparison after the first full builtin-string
 comparison and final eligibility check. Only that duplicate's 8B/1fact debit
 ceases; every original/safe secret pass, sanitizer pass and distinct full
 comparison remains. Reference admission follows the current unescaped
-primitive-value correction below; other paths retain the separate safe slot. These operation removals make no capacity,
+primitive-value and key corrections below; escaped paths retain the separate safe slot. These operation removals make no capacity,
 causal-proof or native-acceptance claim before actual complete verification.
 
 
@@ -4374,7 +4375,7 @@ that owns its original input. The original scanner/callback/bounds32B/4facts
 remain; private context/sanitizer bindings cost16B/2facts before retention and
 are cleared at scan exit. No public flag, input-size claim, new parser or cache
 selects this behavior. Only the six existing registered JSON/JSONL names use it.
-Keys still undergo duplicate/order admission before their original callback;
+Keys still undergo duplicate/order admission before their own sanitation;
 SOURCE, encoded, deferred and matching-value policies retain their own owners.
 
 For a nondeferred raw primitive value, the existing value frame reuses its
@@ -4401,9 +4402,9 @@ comparison bounded by BOTH original endpoints compares the entire sanitizer
 result with this occurrence's original unescaped range. It constructs no new
 slice, span, iterator or expected string and borrows no other occurrence's proof.
 The residual-secret scan and final eligibility boundaries remain. Empty, ASCII,
-nonASCII and longer unescaped values use the same full checks. An escaped scalar
-and every key keep the original callback, separate safe-reference reservation and
-full original comparison. Each scalar is decoded only once; whole-original,
+nonASCII and longer unescaped values and keys use the same full checks. Escaped
+values and keys keep the original callback, separate safe-reference reservation
+and full original comparison. Each scalar is decoded only once; whole-original,
 SOURCE/literal/second-layer safety, private late joins and all distinct full
 bytes/types/order/count/hash/content comparisons remain independent.
 
@@ -4430,3 +4431,30 @@ other SOURCE, actual-main convergence, final full cross-closure review/final-com
 QA, guarded merge/exact-main TWO lints and daily-native acceptance remain ROOT-owned.
 Units RETIRED; integration INCLUDING actual callback/lifespan/SessionTracker
 SKIPPED24342/211270-271; Product DAILY19UTC ONLY with no new run/trigger/observation.
+
+
+### Same-occurrence raw-key ownership and ordered command comparison
+
+The retained decoded-value candidate also failed the repeated-prefix Case at
+its live command comparison:16B/2facts requested with W7925957/F199999.
+No complete11184 reconciliation or lint/static success came from that run.
+The key correction reuses the nonmatching parser frame's otherwise unused
+previous-key slot for this key's original start, prepaid16B/0facts.
+Duplicate checking still precedes safety. Complete equal codepoint lengths
+identify an unescaped key; its existing slot consumes the actual sanitizer
+result and compares it to BOTH endpoints of its own full original range.
+Only the absent safe-result reference0B/1fact is removed. Every original
+per-secret scan, actual whole-scalar sanitizer pass, sizing walk, complete
+range/content/residual comparison and settlement/eligibility check remains.
+The comparison retains64B plus16B prepaid range selection. Escaped keys keep
+the original callback and output reservation; matching/generic policy and all
+string/lexical construction remain unchanged. The own-range check applies to
+unescaped values and keys at every admitted size, independently of construction.
+
+Case argv/wait comparison retains both ordered operand traversals, full original
+bytes/types/values, and8B/1fact for the live right operand; only the extra left
+forwarding argument into the removed comparator call disappears. Live command
+lookups, every remaining late join and full original output still pay their costs.
+Complete controls, full historical typed/ordered reconciliation, clean-head
+lint/static and normal SAME-ref publication remain required before handoff;
+source inspection supplies no fit, behavior or native-acceptance PASS.

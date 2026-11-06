@@ -3338,11 +3338,18 @@ class _EvidenceObservations:
                 return False
             # No zip pair is constructed. Keep both operand traversal slots;
             # remove only its two temporary references, and pay the explicit
-            # right iterator before allocation. Every same() still runs.
+            # right iterator before allocation. Every full comparison still runs.
             self.ledger.charge(16 * len(left) + 8, 2 * len(left) + 1, self.check)
             remaining = iter(right)
             for value in left:
-                if not same(value, next(remaining)):
+                # This loop already owns its left operand. Retain and pay the
+                # actual right lookup/reference; omit only same()'s additional
+                # left forwarding slot. Every full operand comparison remains.
+                self.ledger.charge(8, 1, self.check)
+                other_value = next(remaining)
+                self.ledger.charge((_evidence_utf8_size(value, self.check) if type(value) is str else 8)
+                    + (_evidence_utf8_size(other_value, self.check) if type(other_value) is str else 8), 0, self.check)
+                if type(value) is not type(other_value) or value != other_value:
                     return False
             return True
         def command_equal(left: tuple, right: tuple) -> bool:
@@ -5014,6 +5021,14 @@ class _EvidenceJSON:
                 return output if tree else None
             while True:
                 if char == "{":
+                    # Nonmatching scans do not use previous_key for expected
+                    # ordering. Reuse that existing slot for THIS raw key's
+                    # original start, before decoding, without a new holder.
+                    if (not matching and scalar is not None
+                            and getattr(scalar, '__self__', None) is self
+                            and scalar.__func__ is _EvidenceJSON.raw_scalar):
+                        self.ledger.charge(16, 0, self.check)
+                        previous_key = self.index + 1
                     key = self.string()
                     if matching:
                         # Strict expected membership/order replaces BOTH the
@@ -5028,7 +5043,43 @@ class _EvidenceJSON:
                     elif key in output:
                         self.error()  # Decoded escaped-equal keys, before their value.
                     if scalar is not None:
-                        scalar(key)
+                        if (not matching and getattr(scalar, '__self__', None) is self
+                                and scalar.__func__ is _EvidenceJSON.raw_scalar
+                                and len(key) == self.index - previous_key - 1):
+                            # Duplicate admission above sees the original key.
+                            # As for raw values, strict escapes shorten spelling:
+                            # equal complete lengths identify this own unescaped
+                            # range. Sanitize in the existing key slot, without
+                            # a second safe-result reference or its one fact.
+                            self.check()
+                            if "\\" in key:
+                                raise ValueError("raw decoded representation withheld")
+                            for secret in self.raw_context:
+                                self.ledger.charge(8, 1, self.check)
+                                if secret in key:
+                                    raise ValueError("raw decoded content withheld")
+                            size = _evidence_utf8_size(key, self.check)
+                            self.ledger.charge(16, 0, self.check)
+                            for secret in self.raw_context:
+                                self.ledger.charge(size, 1, self.check)
+                            self.check()
+                            try:
+                                key = self.raw_sanitize(key)
+                                try:
+                                    actual = _evidence_utf8_size(key, self.check, size)
+                                except ValueError as exc:
+                                    raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+                                self.ledger.charge(80, 0, self.check)
+                                if (actual != size or len(key) != self.index - previous_key - 1
+                                        or not self.text.startswith(key, previous_key, self.index - 1)
+                                        or any(secret in key for secret in self.raw_context)):
+                                    raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                                self.check()
+                            finally:
+                                self.ledger.settle(0, 0)
+                            self.check()
+                        else:
+                            scalar(key)
                     if command_keys is None:
                         if descendants is not None:
                             descendants((), 'key', key)
