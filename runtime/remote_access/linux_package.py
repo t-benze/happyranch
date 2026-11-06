@@ -3550,10 +3550,12 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
     base: dict[str, str] = {}
 
     def loaded_error(error: BaseException, prop: str, expected: str | None,
-                     observed: str | None, relation: str = "equal", *, context=None) -> BaseException:
+                     observed: str | None, relation: str = "equal", *, context=None,
+                     missing=None, unexpected=None) -> BaseException:
         if exception_loaded(error) is None:
             error._managed_package_loaded = loaded_observation(UNITS.index(unit), prop, relation,
-                                                              expected, observed, base if context is None else context)
+                                                              expected, observed, base if context is None else context,
+                                                              missing=missing, unexpected=unexpected)
         return error
 
     def properties(unit: str, names: tuple[str, ...]) -> dict[str, str]:
@@ -3721,7 +3723,14 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             # Private bounded observations supplement them, never public errors.
             error = diagnostic_error("P000262", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
             error._managed_package_boundary = exception_refusal(detail)
-            return loaded_error(error, checking, allowed, base[checking], relation)
+            missing = unexpected = None
+            if checking in edges:
+                permitted = set(allowed.split())  # These are fixed/derived unit names, not show quoting.
+                required = (permitted if relation == "equal" else
+                            {"network-online.target"} if relation == "after" and unit != UNITS[2] else set())
+                missing, unexpected = required - edges[checking], edges[checking] - permitted
+            return loaded_error(error, checking, allowed, base[checking], relation,
+                                missing=missing, unexpected=unexpected)
 
         for unit in UNITS:
             base = {}  # Never borrow another unit's paths/observations.
@@ -3775,7 +3784,8 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                          "PartOf": set(), "After": {UNITS[0], UNITS[1]}, "Before": set()})
             if selected != expected:
                 prop = next(k for k in expected if selected[k] != expected[k])
-                raise loaded_error(diagnostic_error("P000261", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), prop, " ".join(sorted(expected[prop])), base[prop], "peers")
+                raise loaded_error(diagnostic_error("P000261", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), prop, " ".join(sorted(expected[prop])), base[prop], "peers",
+                                   missing=expected[prop] - selected[prop], unexpected=selected[prop] - expected[prop])
             # Account for the bounded v255 default graph as well as explicit
             # edges; unknown unrelated dependencies cannot disappear through a
             # peer-only projection.

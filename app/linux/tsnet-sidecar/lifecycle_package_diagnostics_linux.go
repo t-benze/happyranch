@@ -8,6 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync/atomic"
 )
 
@@ -158,26 +159,43 @@ var lifecycleLoadedProperty = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{0,31}$`)
 
 func lifecyclePackageLoadedValid(raw []byte) bool {
 	var facts []json.RawMessage
-	if len(raw) > 240 || json.Unmarshal(raw, &facts) != nil || len(facts) != 13 {
+	if len(raw) > 240 || json.Unmarshal(raw, &facts) != nil || (len(facts) != 13 && len(facts) != 16) {
 		return false
 	}
-	unit, err := strconv.Atoi(string(facts[0]))
-	if err != nil || unit < 0 || unit > 2 || strconv.Itoa(unit) != string(facts[0]) {
+	offset := 0
+	if len(facts) == 16 {
+		if string(facts[0]) != "2" {
+			return false
+		}
+		offset = 1
+	}
+	unit, err := strconv.Atoi(string(facts[offset]))
+	if err != nil || unit < 0 || unit > 2 || strconv.Itoa(unit) != string(facts[offset]) {
 		return false
 	}
 	var prop, relation string
-	if json.Unmarshal(facts[1], &prop) != nil || !lifecycleLoadedProperty.MatchString(prop) ||
-		json.Unmarshal(facts[2], &relation) != nil || !lifecycleOneOf(relation, "equal", "subset", "after", "peers", "query") {
+	if json.Unmarshal(facts[offset+1], &prop) != nil || !lifecycleLoadedProperty.MatchString(prop) ||
+		json.Unmarshal(facts[offset+2], &relation) != nil || !lifecycleOneOf(relation, "equal", "subset", "after", "peers", "query") {
 		return false
 	}
 	sensitive := lifecycleOneOf(prop, "Environment", "EnvironmentFiles", "PassEnvironment", "LoadCredential", "LoadCredentialEncrypted", "ExecStartEx", "ExecStartPreEx", "ExecStartPostEx", "ExecStop", "ExecStopPost")
-	for i := 3; i < len(facts); i++ {
+	if offset == 1 && (!lifecycleOneOf(prop, "Wants", "Requires", "After", "Before", "PartOf", "Conflicts", "RequiresMountsFor", "BindsTo") || relation == "query") {
+		return false
+	}
+	for i := offset + 3; i < len(facts); i++ {
 		var value string
 		if json.Unmarshal(facts[i], &value) != nil || len(value) == 0 ||
 			!lifecycleOneOf(value[:1], "=", "~", "!", "?") ||
 			(value[0] == '!' || value[0] == '?') && len(value) != 1 ||
 			!lifecycleLoadedSafe.MatchString(value[1:]) || sensitive && i < 5 && value != "!" {
 			return false
+		}
+		if offset == 1 && (i == 4 || i == 5) && value != "!" && value != "?" {
+			count, _, found := strings.Cut(value[1:], ":")
+			n, err := strconv.Atoi(count)
+			if !found || err != nil || n < 0 || len(count) > 5 || strconv.Itoa(n) != count {
+				return false
+			}
 		}
 	}
 	return true
@@ -188,12 +206,26 @@ func lifecyclePackageLoadedShrink(raw *json.RawMessage) bool {
 	if !lifecyclePackageLoadedValid(*raw) || json.Unmarshal(*raw, &facts) != nil {
 		return false
 	}
-	longest, selected := 1, -1
-	for i := 3; i < len(facts); i++ {
-		var value string
-		_ = json.Unmarshal(facts[i], &value)
-		if len(value) > longest {
-			longest, selected = len(value), i
+	groups := [][2]int{{3, 13}}
+	if len(facts) == 16 {
+		groups = [][2]int{{8, 16}, {6, 8}, {4, 6}}
+	}
+	selected := -1
+	for _, group := range groups {
+		longest := 1
+		for i := group[0]; i < group[1]; i++ {
+			var value string
+			_ = json.Unmarshal(facts[i], &value)
+			floor := 1
+			if len(facts) == 16 && (i == 4 || i == 5) && (value[0] == '=' || value[0] == '~') {
+				floor = strings.IndexByte(value, ':') + 1
+			}
+			if len(value) > floor && len(value) > longest {
+				longest, selected = len(value), i
+			}
+		}
+		if selected >= 0 {
+			break
 		}
 	}
 	if selected < 0 {
