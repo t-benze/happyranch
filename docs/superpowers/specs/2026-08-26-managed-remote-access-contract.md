@@ -1,4 +1,92 @@
 # Managed Remote Access — Normative Contract
+## Current run-status evidence correction — THR327seq96 / ROOT14238
+
+This continuation controls stale checkpoint facts below. Actual original push
+42160211291/attempt1 at Hprime110e5d7db017236ec89acda7833a1556704a6cef /
+tree5a10ea6edcf6e56427f80658c59d30843195723b refused check1, own_run,
+run_status/A000054 (outer admission_process/A200004 exit1). Three requests,
+active0.9014938459999939s, no retained losses. The actual rejected status and
+conclusion were not retained and remain UNKNOWN. Check2/checkout/build/package/
+install were unreached; no systemd observation resulted. Later terminal metadata
+cannot recover the earlier value. The manager's two local anonymous403 probes
+are inconclusive. Queued, caching and timing explanations are hypotheses only.
+
+The existing direct anonymous HTTPS GETs add `Cache-Control: no-cache` to request
+origin validation of any stored response, as defined by [RFC9111 section5.2.1.4](https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.1.4).
+This is prospective freshness hygiene, not proof GitHub served a stale response,
+a historical-cause repair, synchronization or eventual admission. The [GitHub
+workflow-run API](https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run)
+is still queried through the same endpoints, serial order and original budgets.
+No request/retry/poll/sleep, conditional304 fallback, redirect, credential change,
+extra API capability or relaxed state follows. Both checks still require literal
+in_progress AND null conclusion plus exact attempt1/push/singleton/history/PR/
+repository/ref/workflow/head/tree identity before their dependent effects.
+
+Before the actual run status/conclusion predicates, `run_tuple` captures a closed
+private `predicate` object in its existing account:
+`{"version":1,"expected":["in_progress",null],"observed":[STATUS,CONCLUSION]}`.
+Each field is `[state,value]`. State value retains only one of the fixed enums;
+status: queued, in_progress, completed, waiting, requested, pending; conclusion:
+action_required, cancelled, failure, neutral, skipped, stale, success, timed_out,
+startup_failure, or JSON null. These diagnostic enums grant no admission.
+A missing key is `["missing",null]`; wrong type (including null status) is
+`["invalid",null]`; strings longer than32 characters are `["truncated",null]`;
+other strings outside lowercase ASCII/underscore are `["unsafe",null]`;
+unrecognized bounded safe strings are `["unknown",null]`. No raw unknown operand,
+API body/header, exception/error, path or credential is emitted. The closed
+projection bounds each field and the entire facts object below192 ASCII bytes.
+
+A000054/run_status and A000055/run_conclusion keep their original site/category;
+missing keys still use the original A000049/run_schema. The account operation
+identifies own_run/history_first/history_second/closing_run and the check field
+identifies check1/check2. The same first-origin and four-later-loss semantics
+retain these facts through existing close/save failures. `encode_account`
+validates the closed facts schema for both primary save and exclusive failure
+fallback. Each remains capped4096 bytes; no diagnostic cap grows. Fixed failure
+stdout includes the same bounded facts. A snapshot encoded before a later close
+loss cannot claim that loss was retained; unavailable storage remains incomplete.
+The actual always collector copies the whole account into admission-status.json
+and optional failure.json before the independent existing evidence upload, even
+when checkout/package is unreached. Copy/upload failures remain explicit and do
+not invent retention or an unbuilt package. These consumer paths drop no facts.
+A successful run status/conclusion pair clears predicate to null; check2 requires
+that null alongside the complete successful first-check account, counters and
+identity. Neither diagnostic content nor transport success grants admission.
+
+Next publication-before is Hprime110e5d7/tree5a10ea6e, not E87fa5d9/tree6abec77b.
+Actual productc0e79999d69032d5a3de4c2709aec4a4f606b157/tree721f4d26 stays the direct
+child of initial product46cbc2e57/tree6664f2f1, whose parent is historical E.
+Saved composition190a62096/tree3a5be8da and published accounting correction
+Hprime/tree5a10ea6e retain exact parents/trees and original six/seven-file slices.
+The new candidate is Hprime's direct child with exactly five changed files:
+workflow, AGENTS and the two operations guides plus this spec. Full accumulated
+D6b74995..new, E..new, product/composition and next-before..new inventories remain
+independent/exact; no product checkpoint, rebase or main integration is invented.
+Manifest producer and consumed reader use the same new next-before and unchanged
+actual product/tree pins. Own-unit mount checks, explicit peer/property/auth/image
+and F1 single raw acquisition/debit/overflow closures remain unchanged.
+
+Current manager ledger: FOUR counted spent / ZERO reserved / TWO remaining of
+SAME six, FIVE physical publications/runs. Only42124081991/1 is excluded;
+original3+Founder68one earlier spent remains FOUR, zero old remaining. P800004,
+P000208 and recognized archive-load each have one known failure. A000054 has one
+known admission refusal; earlier42124081991's predicate and aggregate42114170098's
+underlying sub-check stay UNKNOWN, not inferred repeats. No threshold is currently
+established. Two hosted failures of the SAME identifiable product check stop work;
+local tooling failures do not. No refund, new allowance or leaf external effect.
+
+Source/syntax/isolated composition checks establish source only. New runtime
+admission, revalidation effect, diagnostic propagation and managed acceptance
+remain NOT RUN; ALL shipping acceptance UNMET. Required PR/merge gates remain
+LINT/STATIC ONLY Source Boundary Lint + Web Lint(Node24). Python units RETIRED;
+suspended proofs NOT RUN; integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342; no ad hoc Product E2E. No tests/assertions/allocations change and
+unchanged historical uniqueness proof is not repeated merely for a new receipt.
+Fresh independent FULL review then SEPARATE exact-final scoped QA and manager
+assessment precede any publication. LRA1 HIGH OPEN DEFERRED/unprobed, custody
+UNKNOWN, whole-boot ready images and separate seq87 metadata hold remain. No
+install/service/credential/merge/deploy/reboot/new infrastructure is authorized.
+
 ## Current per-unit mount and private observation correction — THR327seq96 / ROOT14238
 
 Founder96 resumes the SAME secure remote-access goal and six-iteration allowance,

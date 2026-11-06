@@ -51,9 +51,9 @@ jobs:
 
   managed-n3-real-systemd:
     name: Managed installer-only observation (Ubuntu 24.04)
-    # Founder THR327seq96 / ROOT14238: exact published87fa5d9->candidate only.
+    # Founder THR327seq96 / ROOT14238: exact published Hprime110e5d7->candidate only.
     # Any publication/automatic attempt remains manager-owned after renewed gates.
-    # Same allowance3counted/0reserved/3remaining; four physical prior effects. Only42124081991 excluded.
+    # Same allowance4counted/0reserved/2remaining; five physical effects. Only42124081991 excluded.
     if: >-
       ${{ github.event_name == 'push' &&
           github.repository == 't-benze/happyranch' &&
@@ -61,7 +61,7 @@ jobs:
           github.event.repository.full_name == github.repository &&
           github.event.created == false && github.event.deleted == false &&
           github.event.forced == false &&
-          github.event.before == '87fa5d9455a0c76451d350d055b693beaebeeabf' &&
+          github.event.before == '110e5d7db017236ec89acda7833a1556704a6cef' &&
           github.event.after != github.event.before &&
           github.event.after == github.sha && github.run_attempt == '1' }}
     concurrency:
@@ -90,11 +90,11 @@ jobs:
           from contextlib import contextmanager
 
           P = "/repos/t-benze/happyranch"
-          B = "87fa5d9455a0c76451d350d055b693beaebeeabf"
+          B = "110e5d7db017236ec89acda7833a1556704a6cef"
           ADMISSION_HOME = Path(os.environ["N3_ADMISSION_HOME"])
           STATE = ADMISSION_HOME / "status.json"
           start = time.monotonic()
-          account = {"deadline": start + 1200, "active": 0, "requests": 0, "bodies": 0, "headers": 0, "event": None, "tree": None, "check1": "refused", "check2": "unreached", "operation": "startup", "origin": None, "losses": []}
+          account = {"deadline": start + 1200, "active": 0, "requests": 0, "bodies": 0, "headers": 0, "event": None, "tree": None, "check1": "refused", "check2": "unreached", "operation": "startup", "origin": None, "losses": [], "predicate": None}
 
 
           class Refusal(Exception):
@@ -180,9 +180,56 @@ jobs:
                           raise
 
 
+          RUN_STATUSES = ("queued", "in_progress", "completed", "waiting", "requested", "pending")
+          RUN_CONCLUSIONS = ("action_required", "cancelled", "failure", "neutral", "skipped", "stale", "success", "timed_out", "startup_failure")
+          VALUE_LOSSES = ("missing", "invalid", "unknown", "unsafe", "truncated")
+
+
+          def run_field(run, name, values, nullable=False):
+              # No unrecognized API operand is ever copied into retained evidence.
+              if name not in run:
+                  return ["missing", None]
+              value = run[name]
+              if nullable and value is None:
+                  return ["value", None]
+              if type(value) is not str:
+                  return ["invalid", None]
+              if len(value) > 32:
+                  return ["truncated", None]
+              if re.fullmatch(r"[a-z_]+", value) is None:
+                  return ["unsafe", None]
+              return ["value", value] if value in values else ["unknown", None]
+
+
+          def run_predicate(run):
+              return {"version": 1, "expected": ["in_progress", None],
+                      "observed": [run_field(run, "status", RUN_STATUSES), run_field(run, "conclusion", RUN_CONCLUSIONS, True)]}
+
+
+          def encode_account():
+              predicate = account["predicate"]
+              if predicate is not None:
+                  if (type(predicate) is not dict or set(predicate) != {"version", "expected", "observed"}
+                          or type(predicate["version"]) is not int or predicate["version"] != 1
+                          or predicate["expected"] != ["in_progress", None]
+                          or type(predicate["observed"]) is not list or len(predicate["observed"]) != 2):
+                      raise ValueError
+                  for index, field in enumerate(predicate["observed"]):
+                      if type(field) is not list or len(field) != 2 or type(field[0]) is not str:
+                          raise ValueError
+                      state, value = field
+                      if state == "value":
+                          values = RUN_CONCLUSIONS if index else RUN_STATUSES
+                          if not (index == 1 and value is None) and (type(value) is not str or value not in values):
+                              raise ValueError
+                      elif state not in VALUE_LOSSES or value is not None:
+                          raise ValueError
+              return json.dumps(account, sort_keys=True, separators=(",", ":")) + "\n"
+
+
           def save():
               with boundary("A000007", "retention_encode"):
-                  raw = json.dumps(account, sort_keys=True, separators=(",", ":")) + "\n"
+                  raw = encode_account()
               # Two fixed snapshots together fit below the existing 16384-byte state cap.
               if len(raw) > 4096:
                   refuse("A000008", "retention_size")
@@ -318,7 +365,7 @@ jobs:
                       connection.sock = HeaderSocket(connection.sock)
                       sock = connection.sock
                   with boundary("A000027", "request_send"):
-                      connection.request("GET", path, headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10", "User-Agent": "happyranch-pr800-admission", "Accept-Encoding": "identity", "Connection": "close"})
+                      connection.request("GET", path, headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10", "User-Agent": "happyranch-pr800-admission", "Accept-Encoding": "identity", "Connection": "close", "Cache-Control": "no-cache"})
                   with boundary("A000028", "header_parse"):
                       response = connection.getresponse()
                       headers = response.getheaders()
@@ -409,10 +456,14 @@ jobs:
                       refuse("A000052", "run_workflow")
                   if run["head_sha"] != C or run["head_branch"] != "task/TASK-6475" or run["event"] != "push":
                       refuse("A000053", "run_source")
+                  # Capture at the actual predicate, before any fallible unwind.
+                  # Missing fields still refuse at the original run_schema boundary.
+                  account["predicate"] = run_predicate(run)
                   if run["status"] != "in_progress":
                       refuse("A000054", "run_status")
                   if run["conclusion"] is not None:
                       refuse("A000055", "run_conclusion")
+                  account["predicate"] = None
                   for name in ("repository", "head_repository"):
                       repo = run[name]
                       if type(repo.get("id")) is not int or repo["id"] != 1207510174 or repo.get("full_name") != "t-benze/happyranch" or repo.get("private") is not False:
@@ -453,7 +504,7 @@ jobs:
                           or type(loaded["bodies"]) is not int or not 0 <= loaded["bodies"] <= 4194304
                           or type(loaded["headers"]) is not int or not 0 <= loaded["headers"] <= 229376):
                       refuse("A000065", "state_accounting")
-                  if loaded["origin"] is not None or loaded["losses"] != [] or loaded["operation"] != "closing_pr":
+                  if loaded["origin"] is not None or loaded["losses"] != [] or loaded["operation"] != "closing_pr" or loaded["predicate"] is not None:
                       refuse("A000066", "state_diagnostic")
                   original = loaded["event"]
                   if type(original) is not dict or set(original) != {"before", "head", "run_id", "attempt"}:
@@ -548,7 +599,7 @@ jobs:
                   # A separate once-only bounded fallback, never retry/overwrite pending.
                   try:
                       with boundary("A000103", "retention_fallback_encode"):
-                          raw = json.dumps(account, sort_keys=True, separators=(",", ":")) + "\n"
+                          raw = encode_account()
                       if len(raw) > 4096:
                           refuse("A000088", "retention_fallback_size")
                       with boundary("A000087", "retention_fallback_open"):
@@ -571,8 +622,8 @@ jobs:
                   except Refusal as failure:
                       record(failure)
               if error is not None:
-                  # Only fixed identities/counters; no exception, response, path or stdin.
-                  print(json.dumps({"origin": account["origin"], "losses": account["losses"]}, sort_keys=True, separators=(",", ":")))
+                  # Only fixed identities/counters and closed enum facts; no raw response/error/path.
+                  print(json.dumps({"origin": account["origin"], "losses": account["losses"], "predicate": account["predicate"]}, sort_keys=True, separators=(",", ":")))
           if error is not None:
               raise SystemExit(1) from None
           PYGUARD
@@ -596,10 +647,12 @@ jobs:
           from contextlib import contextmanager
 
           H = "c0e79999d69032d5a3de4c2709aec4a4f606b157"
-          B = "87fa5d9455a0c76451d350d055b693beaebeeabf"
+          B = "110e5d7db017236ec89acda7833a1556704a6cef"
           H_PARENT = "46cbc2e57e07dfcfae54de86314fb9f5743aae0f"
           H_TREE = "721f4d264b8b55316d00491056c2290ebf9959ca"
-          B_TREE = "6abec77bc2c15a4c81870baace873ed6f11c2253"
+          B_TREE = "5a10ea6edcf6e56427f80658c59d30843195723b"
+          PRODUCT_BASE = "87fa5d9455a0c76451d350d055b693beaebeeabf"
+          PRODUCT_BASE_TREE = "6abec77bc2c15a4c81870baace873ed6f11c2253"
           H_PARENT_TREE = "6664f2f1ae5c611dbe33eeca778f8891474c22f9"
           COMPOSITION_BASE = "190a62096fd60f9c9447755208c03ffa5b45c7f3"
           COMPOSITION_BASE_TREE = "3a5be8da3dcd27c55310d0df99b1010dc32a29ca"
@@ -628,6 +681,13 @@ jobs:
           ALLOWED = (PREVIOUS_ALLOWED - {'app/linux/package/check_refusal_sites.py'}) | {
               'app/linux/package/real_systemd_n3.sh',
               'app/linux/package/n3_installer_only.py',
+          }
+          ADMISSION_ALLOWED = {
+              '.github/workflows/ci.yml',
+              'AGENTS.md',
+              'docs/operations/managed-remote-access-linux-package.md',
+              'docs/operations/managed-remote-access-staged-credential-cases.md',
+              'docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md',
           }
           operation = "composition"
           diagnostic = {"origin": None, "losses": []}
@@ -717,14 +777,16 @@ jobs:
                   if re.fullmatch(r"[0-9a-f]{40}", tree) is None:
                       refuse("A100010", "composition_tree_format")
               if (git("show", "-s", "--format=%T", H) != H_TREE or git("show", "-s", "--format=%T", B) != B_TREE
+                  or git("show", "-s", "--format=%T", PRODUCT_BASE) != PRODUCT_BASE_TREE
                   or git("show", "-s", "--format=%T", H_PARENT) != H_PARENT_TREE
                   or git("show", "-s", "--format=%T", COMPOSITION_BASE) != COMPOSITION_BASE_TREE
                   or git("show", "-s", "--format=%T", OLD_H) != OLD_H_TREE
                   or git("show", "-s", "--format=%T", OLD_H_PARENT) != OLD_H_PARENT_TREE):
                   refuse("A100011", "composition_pinned_tree")
-              if (git("show", "-s", "--format=%P", H_PARENT) != B or git("show", "-s", "--format=%P", H) != H_PARENT
+              if (git("show", "-s", "--format=%P", H_PARENT) != PRODUCT_BASE or git("show", "-s", "--format=%P", H) != H_PARENT
                   or git("show", "-s", "--format=%P", COMPOSITION_BASE) != H
-                  or git("show", "-s", "--format=%P", head) != COMPOSITION_BASE
+                  or git("show", "-s", "--format=%P", B) != COMPOSITION_BASE
+                  or git("show", "-s", "--format=%P", head) != B
                   or git("show", "-s", "--format=%P", OLD_H) != OLD_H_PARENT):
                   refuse("A100012", "composition_parent")
               with boundary("A100013", "composition_ancestry"):
@@ -734,26 +796,29 @@ jobs:
               # Historical P9 remains E8's direct child. Current real product
               # starts at published87fa5d9, then one actual native alphabet
               # correction. The saved composition and its fixture-only F1
-              # correction follow; neither invents another product checkpoint.
+              # correction follow; next-before Hprime is pinned separately.
+              # This admission-only correction invents no product checkpoint.
               # Each meaningful slice remains exact, never subset.
               operation = "historical_product"
               exact_delta(OLD_H_PARENT, OLD_H, HISTORICAL_PRODUCT_ALLOWED)
               operation = "published_composition"
-              exact_delta(OLD_H, B, PREVIOUS_ALLOWED)
+              exact_delta(OLD_H, PRODUCT_BASE, PREVIOUS_ALLOWED)
               operation = "current_product_checkpoint"
-              exact_delta(B, H_PARENT, PRODUCT_ALLOWED)
+              exact_delta(PRODUCT_BASE, H_PARENT, PRODUCT_ALLOWED)
               operation = "current_product_correction"
               exact_delta(H_PARENT, H, {'app/linux/tsnet-sidecar/lifecycle_package_diagnostics_linux.go'})
               operation = "current_product"
-              exact_delta(B, H, PRODUCT_ALLOWED)
+              exact_delta(PRODUCT_BASE, H, PRODUCT_ALLOWED)
               operation = "current_composition"
               exact_delta(H, COMPOSITION_BASE, ALLOWED)
               operation = "composition_accounting_correction"
-              exact_delta(COMPOSITION_BASE, head, ALLOWED)
+              exact_delta(COMPOSITION_BASE, B, ALLOWED)
+              operation = "admission_status_correction"
+              exact_delta(B, head, ADMISSION_ALLOWED)
               operation = "combined_composition"
               exact_delta(H, head, ALLOWED)
               operation = "current_full"
-              exact_delta(B, head, PRODUCT_ALLOWED | ALLOWED)
+              exact_delta(PRODUCT_BASE, head, PRODUCT_ALLOWED | ALLOWED)
               operation = "full_composition"
               exact_delta(OLD_H, head, PRODUCT_ALLOWED | ALLOWED | PREVIOUS_ALLOWED)
               operation = "composition_bind"
@@ -842,7 +907,7 @@ jobs:
 
           stage = Path(os.environ["N3_PACKAGE_STAGE"])
           manifest = {"version": 2, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
-                      "before": "87fa5d9455a0c76451d350d055b693beaebeeabf", "head": os.environ["GITHUB_SHA"],
+                      "before": "110e5d7db017236ec89acda7833a1556704a6cef", "head": os.environ["GITHUB_SHA"],
                       "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
                       "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
                       "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1, "harness_uuid": None,
@@ -982,6 +1047,8 @@ jobs:
           set -euo pipefail
           mkdir -p -- "${RUNNER_TEMP}/managed-n3-evidence"
           admission_retention_status=0
+          # Whole account bytes include the bounded status/conclusion predicate.
+          # This path runs before checkout/package dependencies and preserves facts.
           if [[ -n "${N3_ADMISSION_HOME:-}" && -f "$N3_ADMISSION_HOME/status.json" ]]; then
             cp -- "$N3_ADMISSION_HOME/status.json" "${RUNNER_TEMP}/managed-n3-evidence/admission-status.json" 2>/dev/null || { echo '{"site":"A200009","category":"admission_copy"}'; admission_retention_status=1; }
           else
@@ -1034,7 +1101,7 @@ jobs:
           from n3_provenance import validate_runtime
           validate_runtime(manifest["runtime"])
           expected = {"version": 2, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
-                      "before": "87fa5d9455a0c76451d350d055b693beaebeeabf", "head": os.environ["GITHUB_SHA"],
+                      "before": "110e5d7db017236ec89acda7833a1556704a6cef", "head": os.environ["GITHUB_SHA"],
                       "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
                       "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1,
                       "product_head": "c0e79999d69032d5a3de4c2709aec4a4f606b157", "product_tree": "721f4d264b8b55316d00491056c2290ebf9959ca", "mode": "installer-only"}
