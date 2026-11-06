@@ -1220,26 +1220,28 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
             return cursor
 
         def literal(begin: int, quote_at: int) -> int:
-            # No prefix generator, lowercase characters, join or prefix scalar.
-            # The five original flag/quote/opening slots and prefix selection
-            # remain paid; decoder closures still belong only to the fallback.
-            ledger.charge(40, 5, check)
+            # Validate the complete prefix without constructing decoder flags.
+            # The direct unescaped path needs neither raw nor binary state.
+            # Keep the quote/opening slots (16B/2facts), and prepay16B for
+            # replacement delimiter selection before selecting constants.
+            ledger.charge(32, 2, check)
             if begin == quote_at:
-                raw = binary = False
+                pass
             elif quote_at == begin + 1:
                 if not source.startswith(('u', 'U', 'b', 'B', 'r', 'R'), begin):
                     fail()
-                raw = source.startswith(('r', 'R'), begin)
-                binary = source.startswith(('b', 'B'), begin)
             elif quote_at == begin + 2 and (
                     source.startswith(('b', 'B'), begin) and source.startswith(('r', 'R'), begin + 1)
                     or source.startswith(('r', 'R'), begin) and source.startswith(('b', 'B'), begin + 1)):
-                raw = binary = True
+                pass
             else:
                 fail()
-            quote = source[quote_at]
-            triple = source.startswith(quote * 3, quote_at)
-            opening = quote_at + (3 if triple else 1)
+            # One immutable delimiter replaces the quote glyph, triple flag
+            # and repeated quote*3 construction. No copied prefix/delimiter.
+            quote = ('"""' if source.startswith('"""', quote_at) else
+                     "'''" if source.startswith("'''", quote_at) else
+                     '"' if source.startswith('"', quote_at) else "'")
+            opening = quote_at + len(quote)
 
             # Locate the closing spelling without slices, including escaped quote
             # and raw termination rules. Grammar/decoded length preflight follows.
@@ -1252,8 +1254,8 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
             while cursor < end:
                 if cursor % 1024 == 0:
                     check()
-                if source[cursor] == quote and (not triple or source.startswith(quote * 3, cursor)):
-                    finish = cursor + (3 if triple else 1)
+                if source.startswith(quote, cursor):
+                    finish = cursor + len(quote)
                     break
                 if source[cursor] == '\\':
                     escaped_spelling = True
@@ -1277,15 +1279,20 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 # SAME original grammar/decoded-size preflight, without either
                 # decoder closure or generator. No decoded scalar exists yet.
                 decoded_size, cursor = 0, opening
-                while cursor < finish - (3 if triple else 1):
+                while cursor < finish - len(quote):
                     if cursor % 1024 == 0:
                         check()
                     code = ord(source[cursor])
                     cursor += 1
-                    if code in (10, 13) and not triple:
+                    if code in (10, 13) and len(quote) == 1:
                         fail()
-                    if binary and code >= 128:
-                        fail()
+                    if code >= 128:
+                        # This branch alone needs a binary-prefix decision.
+                        # Prepay its indexed selection; retain no flag slot.
+                        ledger.charge(16, 0, check)
+                        if (source.startswith(('b', 'B'), begin, quote_at)
+                                or quote_at == begin + 2 and source.startswith(('b', 'B'), begin + 1, quote_at)):
+                            fail()
                     if code == 13:
                         if cursor == end or source[cursor] != '\n':
                             fail()
@@ -1296,11 +1303,11 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                         raise _EvidenceCapacity('Python literal output capacity refused')
                 ledger.charge(24, 0, check)  # Original selection slots remain.
                 if (decoded_size <= 4096
-                        and spelling_size - (opening - begin) - (3 if triple else 1) == decoded_size):
+                        and spelling_size - (opening - begin) - len(quote) == decoded_size):
                     # The entire literal is one bounded original slice. No
                     # decoder closures, decoded chunks or final join exist.
                     ledger.charge(decoded_size + 32, 4, check)
-                    value = source[opening:finish - (3 if triple else 1)]
+                    value = source[opening:finish - len(quote)]
                     try:
                         if '\\' in value:
                             fail()
@@ -1308,6 +1315,13 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                     finally:
                         value = None
                     return finish
+            # Only an actual decoder fallback constructs these two flags.
+            # Prepay both original slots and the new delayed selection work.
+            ledger.charge(32, 2, check)
+            raw = (quote_at != begin and (quote_at == begin + 2
+                   or source.startswith(('r', 'R'), begin)))
+            binary = (quote_at != begin and (quote_at == begin + 2
+                      or source.startswith(('b', 'B'), begin)))
             ledger.charge(16, 2, check)  # Two fallback closures, before creation.
             def codes() -> Iterator[int]:
                 cursor = opening
@@ -1315,13 +1329,13 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                     if cursor % 1024 == 0:
                         check()
                     char = source[cursor]
-                    if char == quote and (not triple or source.startswith(quote * 3, cursor)):
+                    if source.startswith(quote, cursor):
                         return
-                    if char in '\r\n' and not triple:
+                    if char in '\r\n' and len(quote) == 1:
                         fail()
                     code = ord(char)
                     cursor += 1
-                    if char == '\r' and triple:
+                    if char == '\r' and len(quote) == 3:
                         if cursor == end or source[cursor] != '\n':
                             fail()
                         cursor += 1

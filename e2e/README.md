@@ -3652,11 +3652,15 @@ count still excludes newline normalization. The slice retains its full scalar
 debit and all fixed 32B/4facts; selection still pays 24B. Absent intermediate
 decoded storage, chunk references, per-codepoint concatenation and construction
 scratch remain absent. Unescaped grammar/size preflight traverses the original
-characters directly, including binary and CRLF checks. Five flag/quote/opening
-slots retain40B/5facts; finite indexed prefix predicates construct no prefix
-generator, lowercase characters, join or prefix scalar. Only a fallback
-constructs the two decoder closures, paying
-16B/2facts before creation. Escaped or CRLF-normalized literals of at most4096
+characters directly, including binary and CRLF checks. Prefix validation
+constructs no raw/binary flags on that path. One immutable single/triple delimiter
+replaces the former quote glyph plus triple flag and repeated quote*3 temporary;
+quote/opening slots pay16B/2facts and replacement delimiter selection prepays16B.
+A nonASCII unescaped glyph prepays16B for its indexed binary-prefix decision,
+without retaining a flag. Only a fallback creates raw/binary slots, prepaying
+16B/2facts plus16B for delayed prefix selection, then constructs the two decoder
+closures, paying16B/2facts before creation. Finite indexed prefix predicates
+construct no prefix generator, lowercase characters, join or prefix scalar. Escaped or CRLF-normalized literals of at most4096
 decoded bytes use one bounded UTF8 buffer and strict decode instead of growing
 chr/concatenation, chunk references and a final join. Before allocation they pay
 2*size+40B/5facts (both full writes, original32B/4fact scalar admission and new
@@ -4300,3 +4304,51 @@ E2E stays DAILY19UTC ONLY; units are RETIRED and integration INCLUDING callbacks
 lifespan and SessionTracker is SKIPPED24342/211270-271. All caps/rates/original
 ends, nonrenewing accounting, prior-file/result/FAIL/C8, UNKNOWNs, holds, failed
 histories and spent allowances remain unchanged.
+
+
+### Retained terminal-holder SOURCE capacity correction
+
+The retained terminal-presence candidate's actual restored controls stopped at
+`C5-Case-copy-positive-index4-repeated-prefix`: nested Submission file-SOURCE
+literal setup requested40B/5facts with W7721333/reserved0/F199996. Original
+F200000 refused before later safety/closure/output. Empty stdout establishes no
+complete11184 result; clean-head lint/static was not run. The earlier intended
+missing-terminal assertion1 and exact unconditional restoration remain genuine
+proof only for that unchanged terminal-presence obligation.
+
+The correction eliminates actual literal state/construction, preserving every
+independent occurrence and full comparison. Prefix validation constructs neither
+raw nor binary flags until fallback needs them. Quote/opening retain16B/2facts;
+16B replacement selection is prepaid before choosing one immutable single/triple
+delimiter. No triple Boolean or repeated quote*3 temporary is constructed. The
+separate escaped-spelling8B/1fact remains. A nonASCII unescaped glyph prepays16B
+for its complete indexed binary-prefix decision without retaining a flag. Actual
+fallback prepays16B/2facts for raw/binary plus16B delayed selection before the
+original16B/2fact decoder closures. Relative to the former setup, the unescaped
+direct path saves8B/3facts; fallback spends24B MORE and one fewer fact. Each
+full original/decoded secret, residual, second-layer, strict bytes UTF8, prefix,
+quote, CRLF, numeric, delimiter, depth and size obligation remains. These are
+logical absent-operation savings, not a claimed physical allocation bound.
+
+ALL11184=8584+2600 full results and independently fixed historical/addition maps
+still need complete successful reconciliation. Keep384 entire original omitted
+terminal-holder refusals,24 genuine oracle-before-browser partials,24 earlier
+omitted-running refusals,1892 terminal-completed original corruption variants,
+276 missing-terminal stage/job refusals and384 completed-positive migrations.
+Every historical field/outcome delta remains explicitly inventoried at its
+authentic subject, including J's four strong annotation corrections; no blanket
+claim that all old annotations were always unchanged follows. All87 independent
+readers and every saved fixture/assertion/full literal remain unchanged by this
+lexical correction. Only the existing full controls can establish candidate fit.
+
+At this committed-source checkpoint, complete candidate controls, exact full
+reconciliation and clean-head lint/static are PENDING, never PASS. Independent
+affected-owner review and SEPARATE identical-produced-head scoped QA remain
+required after normal SAME-draft-PR publication. Whole-PR/cross-closure/final
+compound/native/readiness/merge acceptance remain with ROOT. Product remains
+DAILY19UTC ONLY; no manual run, new trigger or observation follows. Units RETIRED;
+integration INCLUDING actual callback/lifespan/SessionTracker SKIPPED24342;
+Python3.12 NOT RUN; individual/read/decode/allocation/race/temporal/native proof
+NOT RUN/PROOF NOT RUN. No rate/cap/reset/refund/fixture reduction, cross-occurrence
+safety reuse, new parser/framework/seam, history/custody clearance or budget
+renewal is implied. Every older adverse receipt/UNKNOWN/hold/spend survives.
