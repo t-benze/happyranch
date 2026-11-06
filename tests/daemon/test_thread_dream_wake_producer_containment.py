@@ -256,7 +256,7 @@ class _RecordingExecutor:
         pass
 
     def build_launch_spec(
-        self, *, workspace, prompt, session_id=None, model=None,
+        self, *, workspace, prompt, session_id=None, model=None, reasoning_effort=None,
         resume_session_id=None, org_slug=None, timeout_seconds=1800,
     ) -> LaunchSpec:
         argv = ["fake-cli"]
