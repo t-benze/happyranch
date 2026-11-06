@@ -97,6 +97,7 @@ class _OrgDependencyCapture:
     refusal: str | None = None
     effective_profiles: dict[str, _EffectiveProfile] = field(default_factory=dict)
     canonical_error: str | None = None
+    effective_identity: tuple = ()
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -410,6 +411,72 @@ class ProfileCoordinator:
     def profile_digest(self, profile_name: str) -> str:
         """Return the global digest used by production closure coherence."""
         return self._effective_profile(profile_name).digest
+
+    @staticmethod
+    def _effective_file_identity(path: Path) -> tuple:
+        """Re-read identity only; never load YAML or hash executables in leases."""
+        def identity(metadata: os.stat_result) -> tuple:
+            return (metadata.st_dev, metadata.st_ino, metadata.st_mode,
+                    metadata.st_uid, metadata.st_gid, metadata.st_nlink,
+                    metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+        try:
+            link = path.lstat()
+        except FileNotFoundError:
+            return (None, None, False)
+        try:
+            target = path.stat()
+        except FileNotFoundError:
+            return (identity(link), None, False)
+        return (identity(link), identity(target), os.access(path, os.X_OK))
+
+    def _effective_input_identity(self, names: Sequence[str], executables: Sequence[Path]) -> tuple:
+        from runtime.orchestrator.adapter_store import _store_path as adapter_store_path
+        from runtime.orchestrator.runtime_executor_store import _store_path as profile_store_path
+        registry = get_registry()
+        registered = _canonical_bytes({
+            name: None if (profile := registry.get_profile(name)) is None else asdict(profile)
+            for name in names
+        })
+        paths = (profile_store_path(), adapter_store_path(), *executables)
+        return (id(registry), registered,
+                tuple((str(path), self._effective_file_identity(path)) for path in paths))
+
+    def _capture_effective_profiles(self, names: Sequence[str]) -> tuple[dict[str, _EffectiveProfile], tuple]:
+        """Bookend every global input to the existing effective projection."""
+        if not names:
+            return {}, ()
+        from runtime.orchestrator.adapter_store import load_adapters
+        # Store/registry discovery itself is bracketed before discovering the
+        # selected executable paths, including currently ineligible adapters.
+        stores = self._effective_input_identity(names, ())
+        adapters = load_adapters()
+        registry = get_registry()
+        executables = set()
+        for name in names:
+            profile = registry.get_profile(name)
+            command = "" if profile is None else profile.command_adapter_id or ""
+            if profile is not None and profile.kind != "builtin" and command.startswith("custom-adapter:"):
+                entry = adapters.get(command[len("custom-adapter:"):])
+                if entry is not None:
+                    executables.add(Path(entry.executable))
+        paths = tuple(sorted(executables))
+        before = self._effective_input_identity(names, paths)
+        if stores != (before[0], before[1], before[2][:2]):
+            raise ProfileCoordinatorError("profile_consumer_changed")
+        effective = {name: self._effective_profile(name) for name in names}
+        if before != self._effective_input_identity(names, paths):
+            raise ProfileCoordinatorError("profile_consumer_changed")
+        return effective, (tuple(names), paths, before)
+
+    def _validate_effective_inputs(self, identity: tuple) -> None:
+        # Caller owns ALL selected profiles, before any org/durable lease. A
+        # cross-process store replacement is visible even if this registry did
+        # not change and the org has never joined the published inventory.
+        if identity:
+            names, paths, expected = identity
+            if self._effective_input_identity(names, paths) != expected:
+                raise ProfileCoordinatorError("profile_consumer_changed")
 
     @staticmethod
     @contextmanager
@@ -1034,7 +1101,8 @@ class ProfileCoordinator:
                         (org.workflow_authority.namespace,),
                     ).fetchall()
                 }
-            effective_profiles = {name: self._effective_profile(name) for name in sorted(set(desired.values()) | outstanding)}
+            profile_names = tuple(sorted(set(desired.values()) | outstanding))
+            effective_profiles, effective_identity = self._capture_effective_profiles(profile_names)
             after = self._roster_revision(org)
             if before != after:
                 continue
@@ -1061,6 +1129,7 @@ class ProfileCoordinator:
             return _OrgDependencyCapture(
                 desired, tuple(sorted(set(desired.values()) | outstanding)),
                 after, snapshot, empty_skeleton, bool(empty_inputs), refusal, effective_profiles, capture_error,
+                effective_identity,
             )
         raise ProfileCoordinatorError("profile_consumer_changed")
 
@@ -1236,6 +1305,8 @@ class ProfileCoordinator:
     def _synchronize_captured(self, captured, *, publish):
         profile_names = sorted({name for _, _, capture in captured for name in capture.profile_names})
         with self._profile_leases(profile_names, wait=True) as names:
+            for _, _, capture in captured:
+                self._validate_effective_inputs(capture.effective_identity)
             for name in names or (None,):
                 self._assert_no_active_operation(name, captured_orgs=tuple(slug for slug, _, _ in captured))
             with ExitStack() as publishers:
@@ -1283,6 +1354,7 @@ class ProfileCoordinator:
         capture = self._capture_org_dependencies(org, attachment=True)
         desired, revision, snapshot = capture.desired, capture.revision, capture.snapshot
         with self._profile_leases(capture.profile_names, wait=True) as names:
+            self._validate_effective_inputs(capture.effective_identity)
             for name in names or (None,):
                 self._assert_no_active_operation(name, attaching_org=org)
             with org.workflow_authority._publisher_lock:
@@ -1529,15 +1601,26 @@ class ProfileCoordinator:
         self,
         coordinator_invocation: str,
         profile_names: Sequence[str],
+        *,
+        expected_operations: Sequence[_ProfileOperation],
+        expected_captures: dict[str, _OrgDependencyCapture],
     ) -> None:
         with self._capture_orgs() as orgs:
             operations = self._load_group_operations(coordinator_invocation, profile_names)
+            if operations != tuple(expected_operations):
+                raise ProfileCoordinatorError("profile_consumer_changed")
             captures = {slug: self._capture_org_dependencies(orgs[slug])
                         for slug in {slug for op in operations for slug in op.members}}
-            effective_profiles = {name: self._effective_profile(name) for name in
-                                  set(profile_names) | {name for c in captures.values() for name in c.profile_names}}
+            for slug, capture in captures.items():
+                original = expected_captures[slug]
+                if (capture.revision != original.revision or capture.desired != original.desired
+                        or capture.profile_names != original.profile_names or capture.snapshot != original.snapshot):
+                    raise ProfileCoordinatorError("profile_consumer_changed")
+            closure_profiles = sorted(set(profile_names) | {name for c in captures.values() for name in c.profile_names})
+            effective_profiles, effective_identity = self._capture_effective_profiles(closure_profiles)
             already_ready = self._members_are_already_ready(operations, effective_profiles=effective_profiles)
-            with self._profile_leases(profile_names, wait=False):
+            with self._profile_leases(closure_profiles, wait=False):
+                self._validate_effective_inputs(effective_identity)
                 with ExitStack() as publishers:
                     for slug in sorted(captures):
                         publishers.enter_context(orgs[slug].workflow_authority._publisher_lock)
@@ -1628,7 +1711,7 @@ class ProfileCoordinator:
                     else:
                         captures[slug] = capture
                         refused((slug,), exc)
-                except (sqlite3.DatabaseError, ValueError, OSError, OrgConsistencyError) as exc:
+                except (WorkflowAuthorityError, sqlite3.DatabaseError, ValueError, OSError, OrgConsistencyError) as exc:
                     refused((slug,), exc, uncertain=True)
                 if slug in captures:
                     capture = captures[slug]
@@ -1644,7 +1727,8 @@ class ProfileCoordinator:
                         reasons.setdefault(slug, "profile_consumer_changed")
                     try:
                         self._validate_capture(org, capture.revision)
-                    except (ProfileCoordinatorError, sqlite3.DatabaseError, ValueError) as exc:
+                    except (ProfileCoordinatorError, WorkflowAuthorityError, sqlite3.DatabaseError,
+                            ValueError, OSError, OrgConsistencyError) as exc:
                         refused((slug,), exc, uncertain=True)
 
             groups = {}
@@ -1680,7 +1764,8 @@ class ProfileCoordinator:
                     except ProfileCoordinatorError as exc:
                         affected = tuple(slug for slug in edges if edges[slug] & names)
                         refused(affected, exc, uncertain=exc.code == "profile_operation_members_unknown")
-            except (sqlite3.DatabaseError, ValueError, OSError, ProfileCoordinatorError) as exc:
+            except (sqlite3.DatabaseError, ValueError, OSError, ProfileCoordinatorError,
+                    WorkflowAuthorityError, OrgConsistencyError) as exc:
                 refused(tuple(orgs), exc, uncertain=True)
 
             def closure() -> None:
@@ -1700,7 +1785,8 @@ class ProfileCoordinator:
             for slug, capture in captures.items():
                 try:
                     self._validate_capture(orgs[slug], capture.revision)
-                except (ProfileCoordinatorError, sqlite3.DatabaseError, ValueError) as exc:
+                except (ProfileCoordinatorError, WorkflowAuthorityError, sqlite3.DatabaseError,
+                        ValueError, OSError, OrgConsistencyError) as exc:
                     refused((slug,), exc, uncertain=True)
             closure()
             for invocation, names in sorted(groups.items()):
@@ -1710,13 +1796,21 @@ class ProfileCoordinator:
                 if members & reasons.keys():
                     continue
                 try:
-                    self._recover_group(invocation, sorted(names))
+                    self._recover_group(invocation, sorted(names),
+                                        expected_operations=operations[invocation], expected_captures=captures)
                     # Recovery changes owned journals/mirrors; take complete new
                     # captures only for this eligible group's actual members.
                     for slug in members:
-                        captures[slug] = self._capture_org_dependencies(orgs[slug])
-                except (ProfileCoordinatorError, WorkflowAuthorityError, sqlite3.DatabaseError, ValueError, OSError) as exc:
-                    refused(tuple(members), exc)
+                        renewed = self._capture_org_dependencies(orgs[slug])
+                        if set(renewed.profile_names) - edges[slug]:
+                            raise ProfileCoordinatorError("profile_consumer_changed")
+                        captures[slug] = renewed
+                except (ProfileCoordinatorError, WorkflowAuthorityError, sqlite3.DatabaseError,
+                        ValueError, OSError, OrgConsistencyError) as exc:
+                    # Renewed group/canonical discovery or a post-recovery
+                    # capture may have lost a member/edge absent from the old
+                    # map. No later component may use that independence proof.
+                    refused(tuple(members), exc, uncertain=True)
                     closure()
 
             self._startup_holds.update(reasons)
@@ -1736,13 +1830,18 @@ class ProfileCoordinator:
                 remaining.difference_update(component)
                 try:
                     self._synchronize_captured([(slug, orgs[slug], captures[slug]) for slug in sorted(component)], publish=True)
-                except (ProfileCoordinatorError, WorkflowAuthorityError, sqlite3.DatabaseError, ValueError, OSError) as exc:
-                    refused(tuple(component), exc, uncertain=exc.code == "profile_consumer_changed"
-                            if isinstance(exc, ProfileCoordinatorError) else True)
+                except (ProfileCoordinatorError, WorkflowAuthorityError, sqlite3.DatabaseError,
+                        ValueError, OSError, OrgConsistencyError) as exc:
+                    # These are fresh reads/validation after classification;
+                    # an incomplete current map cannot prove another scope
+                    # independent. Initial complete ordinary refusals remain
+                    # local and still permit their proved disjoint components.
+                    refused(tuple(component), exc, uncertain=True)
                     closure()
                     remaining.difference_update(reasons)
                     self._startup_holds.update(reasons)
                     self._startup_hold_profiles.update(name for slug in reasons for name in edges.get(slug, ()))
+                    self._startup_unknown = unknown
             self._startup_unknown = unknown
             if self._hold_startup is not None:
                 self._hold_startup(self._startup_holds)
