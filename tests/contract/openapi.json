@@ -3761,6 +3761,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/threads/{thread_id}/abort-predecessors/{invocation_id}/attest": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "invocation_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "thread_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/threads/{thread_id}/abort-replies": {
       "POST": {
         "params": [

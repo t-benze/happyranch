@@ -251,6 +251,7 @@ happyranch threads archive --org <slug> --thread-id THR-001 --from-file /tmp/arc
 happyranch threads resume --org <slug> --thread-id THR-001
 happyranch threads extend --org <slug> --thread-id THR-001 --new-cap 1000
 happyranch threads abort-replies --org <slug> --thread-id THR-001
+happyranch threads attest-abort-predecessor --org <slug> --thread-id THR-001 --invocation-id 123 --reason "..."
 ```
 
 Archive is synchronous: the daemon writes the transcript file and flips the
