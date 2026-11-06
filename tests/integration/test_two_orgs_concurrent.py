@@ -548,7 +548,9 @@ def _startup_http(case: _StartupCase, state: object, *, tasks: bool = True) -> I
 
 
 def _startup_original_unchanged(before: dict, after: dict) -> None:
-    for table in ('workflow_authority_pointers', 'workflow_publication_journals', 'workflow_profile_operations', 'canonical_files'):
+    for table in ('workflow_authority_pointers', 'workflow_publication_journals',
+                  'workflow_profile_dependencies', 'workflow_profile_store', 'workflow_profile_registry',
+                  'workflow_profile_operations', 'canonical_files'):
         assert after[table] == before[table], table
     originals = [r for r in before['audit_log'] if r['action'] == 'team_move_native_writer']
     original_ids = {r['task_id'] for r in originals}
@@ -642,21 +644,67 @@ def test_startup_isolation_shared_closure(startup_case: _StartupCase, variant: s
     case = startup_case
     case.seed({'alpha': 'startup-p', 'beta': 'startup-p', 'gamma': 'startup-q', 'delta': None})
     state = case.boot()
+    beta = case.original['beta']
+    definition = prompt_loader.load_agent(OrgPaths(root=beta.root), 'dev_agent')
+    canonical = beta.root / 'org/agents/dev_agent.md'
+    produced = _startup_rows(beta)
+    dependency = next(r for r in produced['workflow_profile_dependencies']
+                      if r['profile_name'] == 'startup-p' and r['consumer_identity'] == 'dev_agent')
+    assert dependency['state'] == 'active'  # genuine startup-produced relation
+    if variant == 'unbound-absent-canonical':
+        # Remove beta BEFORE native operation capture. Real synchronization
+        # preserves the original relation as removed and publishes builtin beta.
+        canonical.write_text(render_agent_text(replace(definition, executor='claude')))
+        state.profile_coordinator.synchronize_all_dependencies()
+        beta.workflow_authority.capture_admission()  # genuine ready, no operation owner
     baseline = _startup_shared_operation(case, state)
     if variant != 'active':
-        beta = case.original['beta']
-        definition = prompt_loader.load_agent(OrgPaths(root=beta.root), 'dev_agent')
-        # Fixture corruption represents an outstanding consumer that is no
-        # longer canonical; its authenticated captured operation remains.
-        (beta.root / 'org/agents/dev_agent.md').write_text(render_agent_text(replace(definition, executor='claude')))
-        if variant == 'unbound-absent-canonical':
-            with beta.db._lock:
-                beta.db._conn.execute("UPDATE workflow_profile_dependencies SET state='unbound' WHERE profile_name='startup-p'")
-                beta.db._conn.commit()
+        canonical.write_text(render_agent_text(replace(definition, executor='claude')))
+        # Model only the outstanding-row fault AFTER genuine operation capture.
+        # Never author captured_members: ordering determines the real membership.
+        with beta.db._lock:
+            changed = beta.db._conn.execute(
+                "UPDATE workflow_profile_dependencies SET state=? "
+                "WHERE org_namespace=? AND profile_name='startup-p' AND consumer_identity='dev_agent'",
+                ('unbound' if variant == 'unbound-absent-canonical' else 'removed', dependency['org_namespace']))
+            assert changed.rowcount == 1
+            beta.db._conn.commit()
         baseline['beta'] = _startup_rows(beta)
+    # Assert edge isolation from canonical discovery and independently committed
+    # rows BEFORE classification. No classifier-produced membership is an oracle.
+    definitions = prompt_loader.list_agents(OrgPaths(root=beta.root))
+    canonical_profiles = {d.executor for d in definitions} & set(_STARTUP_PROFILES)
+    outstanding = [r for r in baseline['beta']['workflow_profile_dependencies']
+                   if r['state'] in ('active', 'unbound')]
+    operations = [r for rows in baseline.values() for r in rows['workflow_profile_operations']]
+    members = {r['profile_name']: set(json.loads(r['captured_members'])) for r in operations}
+    assert members['startup-q'] == {'gamma'}
+    assert all(set(json.loads(r['captured_members'])) == members[r['profile_name']] for r in operations)
+    assert len({r['coordinator_invocation'] for r in operations}) == 1
+    if variant == 'unbound-absent-canonical':
+        assert not canonical_profiles
+        assert len(outstanding) == 1 and outstanding[0]['state'] == 'unbound'
+        assert outstanding[0]['profile_name'] == 'startup-p'
+        assert all(outstanding[0][key] == dependency[key] for key in dependency if key != 'state')
+        assert members['startup-p'] == {'alpha'}
+        assert all('beta' not in json.loads(r['captured_members']) for r in operations)
+        assert baseline['beta']['workflow_profile_operations'] == []
+        assert all(r['state'] in ('cache_installed', 'aborted')
+                   for r in baseline['beta']['workflow_publication_journals'])
+    elif variant == 'captured-absent-canonical':
+        assert not canonical_profiles and not outstanding
+        assert members['startup-p'] == {'alpha', 'beta'}
+        assert baseline['beta']['workflow_profile_operations']
+    else:
+        assert canonical_profiles == {'startup-p'}
+        assert outstanding and members['startup-p'] == {'alpha', 'beta'}
+    _startup_record(case.request, 'closure-edge-preconditions', variant=variant,
+                    produced=produced, canonical_profiles=sorted(canonical_profiles),
+                    outstanding=outstanding, rows=baseline)
     case.classify(state)
     case.held(state, ('alpha', 'beta', 'gamma'))
     assert state.get_org('delta') is case.original['delta']
+    assert state.get_org('delta').workflow_authority.capture_admission().profile_names == ()
     from runtime.workflows.profile_coordinator import ProfileCoordinatorError
     for name in _STARTUP_PROFILES:
         with pytest.raises(ProfileCoordinatorError):
@@ -943,6 +991,30 @@ def test_startup_isolation_admission(startup_case: _StartupCase, boundary: str,
     if boundary in ('public-workflow', 'final-sql'):
         _startup_workflow_control(case, state, gamma)
     before = _startup_rows(beta)
+    authority = beta.workflow_authority
+    cache = authority._cache
+    cache_entry = cache.get(authority.namespace)
+    if boundary == 'final-sql':
+        pointer = next(r for r in before['workflow_authority_pointers'] if r['namespace'] == authority.namespace)
+        assert tuple(pointer[k] for k in ('current_generation', 'journal_id', 'snapshot_digest', 'state', 'profile_fence')) == capture.pointer
+        assert pointer['state'] == 'ready' and pointer['current_generation'] > 0
+        assert cache_entry == (capture.ready.generation, capture.ready.snapshot_digest)
+        journal = next(r for r in before['workflow_publication_journals'] if r['id'] == pointer['journal_id'])
+        assert journal['state'] == 'cache_installed' and journal['generation'] == capture.ready.generation
+        assert journal['snapshot_digest'] == hashlib.sha256(journal['snapshot_bytes']).hexdigest() == capture.ready.snapshot_digest
+        assert journal['snapshot_bytes'] == capture.ready.snapshot_bytes
+        assert before['canonical_files']['org/.workflow-authority.json'] == capture.ready.snapshot_bytes
+        assert all(r['state'] in ('cache_installed', 'aborted') for r in before['workflow_publication_journals'])
+        mirror = tuple(
+            [('dependency', *(r[k] for k in ('org_namespace', 'profile_name', 'consumer_identity', 'bound_generation', 'state')))
+             for r in sorted(before['workflow_profile_dependencies'], key=lambda r: (r['org_namespace'], r['profile_name'], r['consumer_identity']))]
+            + [('store', *(r[k] for k in ('profile_name', 'generation', 'profile_digest', 'state')))
+               for r in sorted(before['workflow_profile_store'], key=lambda r: r['profile_name'])]
+            + [('registry', r['profile_name'], r['published_generation'])
+               for r in sorted(before['workflow_profile_registry'], key=lambda r: r['profile_name'])])
+        assert mirror == capture.profile_mirror
+        _startup_record(case.request, 'C6-final-ready-preconditions', capture=repr(capture),
+                        cache_entry=cache_entry, pointer=pointer, journal=journal, mirror=mirror)
     case.ordinary(case.original['alpha'])
     case.classify(state)
     case.held(state, ('alpha', 'beta'))
@@ -964,6 +1036,9 @@ def test_startup_isolation_admission(startup_case: _StartupCase, boundary: str,
             task = _submit_task(port, 'gamma', 'C6 actual shipping queue control')
             _wait_for_completed(port, 'gamma', task, 30)
     elif boundary == 'retained-native':
+        native_work = set(state.queue._native_work)
+        witness_path = Path(os.environ['HAPPYRANCH_TEST_WITNESS_DIR']) / 'identities.jsonl'
+        callbacks = witness_path.read_bytes() if witness_path.exists() else b''
         async def retained() -> None:
             refused = object()
             users, runners = set(beta._native_task_users), set(beta._runner_tasks)
@@ -975,6 +1050,10 @@ def test_startup_isolation_admission(startup_case: _StartupCase, boundary: str,
             await asyncio.create_task(runner())
             assert set(beta._native_task_users) == users and set(beta._runner_tasks) == runners
         asyncio.run(retained())
+        assert set(state.queue._native_work) == native_work
+        assert (witness_path.read_bytes() if witness_path.exists() else b'') == callbacks
+        _startup_record(case.request, 'C6-retained-no-native-or-callback', witness=callbacks,
+                        rows=_startup_rows(beta))
     elif boundary == 'public-workflow':
         for read in (beta.workflow_authority.verify_admission_ready, beta.workflow_authority.capture_admission):
             with pytest.raises(WorkflowAuthorityError, match='^authority_pointer_not_ready$'):
@@ -986,9 +1065,18 @@ def test_startup_isolation_admission(startup_case: _StartupCase, boundary: str,
         _startup_record(case.request, 'public-earliest-refusal', error=repr(refusal.value),
                         claim='earliest gate only; no final-SQL reach claim')
     elif boundary == 'final-sql':
+        # Exclude every otherwise-ready SQL/cache/mirror denial BEFORE repeating
+        # the SAME capture. Evicting its cache cannot impersonate a final hold.
+        held_rows = _startup_rows(beta)
+        assert beta.workflow_authority is authority and authority._cache is cache
+        assert authority._cache.get(authority.namespace) == cache_entry
+        _startup_original_unchanged(before, held_rows)
+        _startup_record(case.request, 'C6-final-held-preconditions', cache_entry=cache_entry,
+                        before=before, held=held_rows)
         with pytest.raises(WorkflowAuthorityError, match='^authority_pointer_not_ready$'):
             _startup_final_read(beta, capture)
         # KeyError, profile denial, stale/malformed capture are NOT the oracle.
+        assert authority._cache is cache and cache.get(authority.namespace) == cache_entry
         _startup_original_unchanged(before, _startup_rows(beta))
     after = _startup_rows(beta)
     assert after['tasks'] == before['tasks'] and after['task_results'] == before['task_results']
@@ -1339,6 +1427,61 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
         _startup_other_custody(case, state, tail)
         return
     originals = dict(case.original)
+    producer_visits: list = []
+    database_visits: list = []
+    scan_errors: list = []
+    observing_producer = False
+    if tail in ('old-close', 'loaded-candidate'):
+        from runtime.daemon import schedule_scheduler
+        from runtime.orchestrator import producer_move
+        # Real eligible rows and real due-reader positives precede ANY close.
+        eligible = _startup_producer_inputs(case, tuple(originals.values()), 'schedule')
+        _startup_record(case.request, 'C7-eligible-before-close', inputs=eligible,
+                        rows={s: _startup_rows(o) for s, o in originals.items()})
+        real_due = schedule_scheduler.schedule_due_schedules
+        real_redeliver = producer_move.redeliver_native_jobs
+        def due(**kwargs: object) -> int:
+            org = kwargs['org']
+            if observing_producer:
+                producer_visits.append(('schedule', org.slug, id(org)))
+            try:
+                return real_due(**kwargs)
+            except Exception as exc:
+                if observing_producer:
+                    scan_errors.append((org.slug, id(org), type(exc).__name__, repr(exc)))
+                raise
+        async def redeliver(org: object) -> None:
+            if observing_producer:
+                producer_visits.append(('redeliver', org.slug, id(org)))
+            try:
+                await real_redeliver(org)
+            except Exception as exc:
+                if observing_producer:
+                    scan_errors.append((org.slug, id(org), type(exc).__name__, repr(exc)))
+                raise
+        case.patch.setattr(schedule_scheduler, 'schedule_due_schedules', due)
+        case.patch.setattr(producer_move, 'redeliver_native_jobs', redeliver)
+        # Install before closure, while original owners/connections are usable.
+        # These observers delegate every real read and retain attempted closed
+        # DB use even when the production scheduler catches the raised error.
+        for org in originals.values():
+            admission = producer_move.owner_for(org.db)
+            assert admission is not None
+            def observe_read(owner: object, name: str, org: object = org) -> None:
+                real_read = getattr(owner, name)
+                def read(*args: object, **kwargs: object) -> object:
+                    if observing_producer:
+                        database_visits.append((org.slug, id(org), name, id(org) in case.closed))
+                    try:
+                        return real_read(*args, **kwargs)
+                    except Exception as exc:
+                        if observing_producer:
+                            scan_errors.append((org.slug, id(org), type(exc).__name__, repr(exc)))
+                        raise
+                case.patch.setattr(owner, name, read)
+            observe_read(admission, '_released_sources')
+            observe_read(org.db.schedules, 'recover_firing')
+            observe_read(org.db.schedules, 'list_due')
     closes: list = []
     candidates: list = []
     transferred: dict = {}
@@ -1462,22 +1605,59 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
         asyncio.run(denied_native())
     assert not any(o in originals.values() for o in state.orgs_snapshot().values())
     from runtime.daemon.schedule_scheduler import schedule_scheduler_loop
+    # Baseline AFTER the genuine failure includes candidate-load diagnostics.
+    # Read closed originals through separate short read-only SQLite connections.
+    producer_before = {s: _startup_rows(o.db.path) for s, o in originals.items()}
+    queue_before = {s: (o.schedule_queue.size, set(o.schedule_queue._owned),
+                        set(o._native_task_users), set(o._runner_tasks)) for s, o in originals.items()}
+    native_work = set(state.queue._native_work)
+    witness_path = Path(os.environ['HAPPYRANCH_TEST_WITNESS_DIR']) / 'identities.jsonl'
+    callbacks = witness_path.read_bytes() if witness_path.exists() else b''
+    for slug, org in originals.items():
+        schedule = next(r for r in producer_before[slug]['schedules']
+                        if r['id'] == eligible['orgs'][slug]['schedule'])
+        assert schedule['status'] == 'armed' and schedule['active'] == 1
+        assert datetime.fromisoformat(schedule['fire_at']) <= datetime.now(timezone.utc)
     real_tick = state.metrics_registry.record_loop_tick
     async def producer_after_finally() -> None:
         reached = asyncio.Event()
         def tick(*args: object, **kwargs: object) -> object:
             result = real_tick(*args, **kwargs)
-            reached.set()
+            if args[0] == 'schedule_scheduler':
+                reached.set()
             return result
         case.patch.setattr(state.metrics_registry, 'record_loop_tick', tick)
         loop = asyncio.create_task(schedule_scheduler_loop(state, interval_seconds=3600))
         try:
             await asyncio.wait_for(reached.wait(), 5)
+            await asyncio.sleep(0)  # allow any actual queued put tasks to finish
         finally:
             loop.cancel()
             result = await asyncio.gather(loop, return_exceptions=True)
-            assert isinstance(result[0], asyncio.CancelledError), result
-    asyncio.run(producer_after_finally())
+            _startup_record(case.request, 'C7-owned-producer-return', cancelled=loop.cancelled(),
+                            result=[type(value).__name__ for value in result])
+            assert loop.done() and loop.cancelled() and isinstance(result[0], asyncio.CancelledError), result
+    observing_producer = True
+    try:
+        asyncio.run(producer_after_finally())
+    finally:
+        observing_producer = False
+    producer_after = {s: _startup_rows(o.db.path) for s, o in originals.items()}
+    _startup_record(case.request, 'C7-producer-after-finally', before=producer_before, after=producer_after,
+                    producer_visits=producer_visits, database_visits=database_visits, errors=scan_errors,
+                    witness_before=callbacks,
+                    witness_after=(witness_path.read_bytes() if witness_path.exists() else b''))
+    assert producer_visits == [], 'producer selected a retained old or failed candidate object'
+    assert database_visits == [], 'producer attempted retired original DB use, even if scan error was swallowed'
+    assert scan_errors == [], 'swallowed producer failure is no exclusion witness'
+    assert set(state.queue._native_work) == native_work
+    assert (witness_path.read_bytes() if witness_path.exists() else b'') == callbacks
+    for slug, org in originals.items():
+        assert (org.schedule_queue.size, set(org.schedule_queue._owned),
+                set(org._native_task_users), set(org._runner_tasks)) == queue_before[slug]
+        for table in ('schedules', 'tasks', 'task_results', 'thread_invocations', 'audit_log'):
+            assert producer_after[slug][table] == producer_before[slug][table], (slug, table)
+        _startup_original_unchanged(producer_before[slug], producer_after[slug])
     assert len(closes) == (1 if tail == 'old-close' else 2)
     client.close()
 
