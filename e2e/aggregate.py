@@ -182,6 +182,10 @@ def failure_result_controls() -> dict:
         elif type(wanted) is list:
             assert len(actual) == len(wanted)
             for item,other in zip(actual,wanted): exact(item,other)
+        elif type(wanted) is float and math.isnan(wanted):
+            # New nonfinite action input is preserved as NaN, whose builtin
+            # equality is deliberately false. All old exact branches remain.
+            assert math.isnan(actual)
         else:
             assert actual == wanted
 
@@ -5324,6 +5328,16 @@ def failure_result_controls() -> dict:
             'screenshot': 'e04-JOB-707.png',
             'at': 15.0}]}
 
+    def case_action_holder(root: Path, index: int, number: int) -> dict:
+        # Independent accepted running-public literal, not a SQL projection or
+        # admission/serializer result. Preserve all27 fields/types/key order.
+        public = copy.deepcopy(case_literals[str(index)]['jobs'][number]['running_browser'])
+        public['cwd_resolved'] = str(root/'runtime/orgs/alpha/workspaces/case_manager')
+        public['stdout_path'] = str(root/'runtime/orgs/alpha/jobs'/(public['id']+'.out'))
+        public['stderr_path'] = str(root/'runtime/orgs/alpha/jobs'/(public['id']+'.err'))
+        return dict(path='/api/v1/orgs/alpha/jobs/'+public['id'],method='GET',request=None,
+                    status=200,response=public,no_run_controls=True,at=15.0)
+
     def case_terminal_holder(root: Path, index: int, number: int, browser_source: str | None = None) -> dict:
         browser = copy.deepcopy(case_pair_terminal_literals[str(index)][number] if index >= 4
                                 else case_terminal_literals[str(index)])
@@ -5536,10 +5550,13 @@ def failure_result_controls() -> dict:
             'block-before-parked','parked-before-run','action-before-open','public-before-terminal')}
     case_running_partials.update({f'running-public-partial-{stage}-index{i}': (i,stage)
         for i in (4,5) for stage in ('action-second-before-open','second-public-before-terminal')})
+    case_action_positive = {f'action-index{i}-{order}': (i,order)
+        for i in (0,2,3,4,5) for order in ('early','jobs-last','before-open')}
+    case_action_positive.update({'action-at-int':(0,'at-int'),'action-at-negative':(0,'at-negative')})
     # Every original later-stage positive remains an entire named refusal.
     # Earlier partials and previously complete direct-public subjects keep
     # their original images. No production selector distinguishes the inputs.
-    case_positive_specs = (case_full + list(case_partials) + ['repeated'] + list(case_stages)
+    case_positive_specs = (list(case_action_positive) + case_full + list(case_partials) + ['repeated'] + list(case_stages)
         + list(case_copy_positive) + list(case_direct_positive) + list(case_terminal_positive)
         + list(case_running_partials))
     case_original_omitted = [spec for spec in case_positive_specs if
@@ -5571,14 +5588,38 @@ def failure_result_controls() -> dict:
         for boundary in ('writer','raw','raw-prefix','prefix'):
             with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
                 writer.revision = row['source_sha'] = old_source
-                if type(spec) is tuple:
+                if type(spec) is str and spec in case_action_positive:
+                    index,order = case_action_positive[spec]
+                    image = case_input(root,index,direct_public=True,terminal_public=True)
+                    case = image['durable'][-1]['jobs_cases'][0]
+                    for number,selected_job in enumerate(case['jobs']):
+                        # Only insert the new holder before the original
+                        # job_open response. Every pre-existing field stays in
+                        # its own order and keeps its entire literal value.
+                        if order != 'before-open' or number == 0:
+                            pairs = list(selected_job.items()); selected_job.clear()
+                            for key,item in pairs:
+                                if key == 'running_browser': selected_job['action'] = case_action_holder(root,index,number)
+                                selected_job[key] = item
+                            if order in ('at-int','at-negative'):
+                                selected_job['action']['at'] = 15 if order == 'at-int' else -1.5
+                        if order == 'before-open':
+                            for key in ('running_browser','terminal','oracle','rejection_drain','browser'):
+                                selected_job.pop(key)
+                    if order == 'before-open':
+                        for key in ('first_terminal','live_s2','final_snapshot','final_callback'): case.pop(key,None)
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                    if order == 'jobs-last': case['jobs'] = case.pop('jobs')
+                    label = 'C5-Case-'+spec+'-'+boundary
+                elif type(spec) is tuple:
                     index,late,mode = spec
                     image = case_input(root,index,late=late,mode=mode,direct_public=not original_omitted)
                     label = f'C5-Case-full-index{index}-'+('late' if late else 'early')+'-'+mode+'-'+boundary
                 elif spec in case_running_partials:
                     index,stage = case_running_partials[spec]
-                    # Plain SOURCE lets the real action response remain ordinary
-                    # R1 data. Escaped action-copy admission is separate ROOT work.
+                    # These retained original partials keep their plain SOURCE.
+                    # The new PRESENT-action controls above own escaped SOURCE.
                     image = case_input(root,index,direct_public=True,
                         browser_source='print("public")\n' if stage in ('action-before-open','action-second-before-open') else None)
                     case = image['durable'][-1]['jobs_cases'][0]
@@ -5838,7 +5879,7 @@ def failure_result_controls() -> dict:
                 compact = json.dumps(wanted,ensure_ascii=False,separators=(',',':')).encode()
                 name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
                 destination = root/'raw'/name
-                if type(spec) is str and (spec in case_oracle_partials or spec in case_direct_positive or spec in case_terminal_positive):
+                if type(spec) is str and (spec in case_oracle_partials or spec in case_direct_positive or spec in case_terminal_positive or spec in case_action_positive):
                     raw_names = {p.name for p in (root/'raw').iterdir()}
                     prior_staged,prior_published = copy.deepcopy(staged),copy.deepcopy(published)
                 try:
@@ -5868,7 +5909,7 @@ def failure_result_controls() -> dict:
                 assert (root/'scenario.json').read_bytes() == scenario
                 for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
                 assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists()
-                if type(spec) is str and (spec in case_oracle_partials or spec in case_direct_positive or spec in case_terminal_positive):
+                if type(spec) is str and (spec in case_oracle_partials or spec in case_direct_positive or spec in case_terminal_positive or spec in case_action_positive):
                     actual = destination.read_bytes()
                     assert len(actual) == len(expected_image) and hashlib.sha256(actual).digest() == hashlib.sha256(expected_image).digest()
                     # Required-prefix keeps BOTH its original observations
@@ -6027,12 +6068,74 @@ def failure_result_controls() -> dict:
     case_terminal_missing.update({f'terminal-browser-missing-{stage}-index{i}-job0':(i,0,stage)
         for i in (4,5) for stage in ('first_terminal','first_terminal_cli','first_terminal_browser')})
     case_shape_refusals.update({name:spec[0] for name,spec in case_terminal_missing.items()})
+    # A1-A5 PRESENT action only: no old input gains an action-presence rule.
+    # The tables are independent fixture literals, before candidate execution.
+    case_action_fields = ('path','method','request','status','response','no_run_controls','at')
+    case_action_public_fields = tuple(case_literals['0']['jobs'][0]['running_browser'])
+    case_action_values = {
+        'path-foreign':('path','/api/v1/orgs/alpha/jobs/JOB-foreign'),
+        'path-org':('path','/api/v1/orgs/beta/jobs/JOB-701'),
+        'path-suffix':('path','/api/v1/orgs/alpha/jobs/JOB-701/'),
+        'method-post':('method','POST'), 'method-null':('method',None),
+        'request-object':('request',{}), 'request-array':('request',[]), 'request-string':('request',''),
+        'status-float':('status',200.0), 'status-bool':('status',True),
+        'status-other':('status',201), 'status-string':('status','200'),
+        'controls-int':('no_run_controls',1), 'controls-false':('no_run_controls',False),
+        'controls-null':('no_run_controls',None),
+        'at-bool':('at',True), 'at-string':('at','15.0'), 'at-null':('at',None),
+        'at-nan':('at',float('nan')), 'at-inf':('at',float('inf')), 'at-neginf':('at',float('-inf')),
+        'response-null':('response',None), 'response-array':('response',[]),
+        'response-string':('response','public'), 'response-empty':('response',{})}
+    case_action_response_values = {
+        'id':('id','JOB-foreign'), 'task':('task_id','TASK-foreign'),
+        'agent':('agent_name','foreign'), 'interpreter':('interpreter','bash'),
+        'script-byte':('script_text',case_literals['0']['jobs'][0]['script']+'# changed full SOURCE\n'),
+        'script-secret':('script_text','print("SYNTHETIC_TOKEN")\n'),
+        'script-decoded-secret':('script_text','print("\\x53YNTHETIC_TOKEN")\n'),
+        'script-residual':('script_text','value = "\\q"\n'),
+        'script-second-layer':('script_text','print("second\\\\nlayer")\n'),
+        'script-null':('script_text',None), 'script-type':('script_text',7),
+        'status-completed':('status','completed'), 'status-pending':('status','pending'),
+        'exit-bool':('exit_code',False), 'exit-int':('exit_code',0),
+        'reason':('reason','timeout'), 'stdout-head':('stdout_head','early output'),
+        'stderr-head':('stderr_head','early error'), 'duration-int':('duration_ms',1),
+        'duration-bool':('duration_ms',False), 'finished':('finished_at','2026-01-01T00:00:02+00:00'),
+        'flag-review-int':('review_required',0), 'flag-persistent-int':('persistent',0),
+        'flag-review-true':('review_required',True), 'flag-persistent-null':('persistent',None),
+        'cwd-int':('cwd_hint',0), 'created-null':('created_at',None),
+        'started-null':('started_at',None), 'reviewed-by-int':('reviewed_by',1),
+        'reject-reason-int':('reject_reason',0), 'stdout-path-int':('stdout_path',0),
+        'max-bytes-bool':('max_output_bytes',True), 'max-runtime-bool':('max_runtime_seconds',True)}
+    case_action_changes = (['holder-empty','holder-null','holder-array','holder-scalar','response-terminal',
+        'public-disagreement','sql-disagreement','source-without-public','sql-without-public',
+        'early-conflict-later-correct','early-correct-later-conflict']
+        + ['missing-'+key for key in case_action_fields]
+        + ['order-'+str(n) for n in range(len(case_action_fields)-1)]
+        + ['extra-'+key for key in ('body','event','group_id','document','wire')]
+        + list(case_action_values) + ['value-'+key for key in case_action_response_values]
+        + ['response-missing-'+key for key in case_action_public_fields]
+        + ['response-order-'+str(n) for n in range(len(case_action_public_fields)-1)]
+        + ['response-extra-'+key for key in ('body','event','group_id','document')])
+    case_action_refusals = {f'action-{change}-index0-job0':(0,0,change) for change in case_action_changes}
+    case_action_refusals.update({f'action-{change}-index{i}-job{n}':(i,n,change)
+        for i in (2,3) for n in (0,) for change in ('response-terminal','value-script-byte','value-flag-review-int')})
+    # Every target role in BOTH pair plans is selected by its submitted ID.
+    # All six other literal responses include same-role and cross-role swaps.
+    case_action_refusals.update({f'action-swap-{other}-{other_n}-index{i}-job{n}':(i,n,f'swap-{other}-{other_n}')
+        for i in (4,5) for n in (0,1) for other in (0,2,3,4,5)
+        for other_n in range(2 if other >= 4 else 1) if (i,n) != (other,other_n)})
+    case_action_refusals.update({f'action-{change}-index{i}-job{n}':(i,n,change)
+        for i in (4,5) for n in (0,1)
+        for change in ('value-script-byte','value-flag-review-int','response-terminal','wrapper-swap',
+                       'early-conflict-later-correct','early-correct-later-conflict')})
+    case_shape_refusals.update({name:spec[0] for name,spec in case_action_refusals.items()})
     case_refusals += list(case_shape_refusals)
     # Original negative subjects keep their full old images AND old result names.
     # The additional completed variants isolate their existing corruption after
     # the direct-public prerequisite; direct-public originals already have it.
     for case_name, complete_public, complete_terminal in [(name,complete,terminal) for name in case_refusals
-            for complete,terminal in ([(True,True)] if name in case_terminal_missing else
+            for complete,terminal in ([(True,not case_action_refusals[name][2].endswith('without-public'))]
+                if name in case_action_refusals else [(True,True)] if name in case_terminal_missing else
                 [(complete,False) for complete in ((True,) if name in case_running_missing else
                     (False,) if name in case_direct_refusals or name.endswith('index1') else (False,True))]
                 + ([(True,True)] if not name.endswith('index1')
@@ -6069,7 +6172,50 @@ def failure_result_controls() -> dict:
                 job = case['jobs'][0] if case['jobs'] else None
                 snapshot = case['final_snapshot']; sql_job = job['oracle']['row'] if job is not None else None
                 column_case = next(((t,c,top,case_name[len(t+'.'+c+'-'):]) for t,c,top in sql_columns if case_name.startswith(t+'.'+c+'-')),None)
-                if case_name in case_shape_refusals:
+                if case_name in case_action_refusals:
+                    _,number,change = case_action_refusals[case_name]
+                    for position,selected_job in enumerate(case['jobs']):
+                        selected_job['action'] = case_action_holder(root,fixture_index,position)
+                    selected_job = case['jobs'][number]
+                    action = selected_job['action']; public = action['response']
+                    if change.startswith('holder-'):
+                        selected_job['action'] = {'holder-empty':{},'holder-null':None,'holder-array':[],
+                            'holder-scalar':'public'}[change]
+                    elif change.startswith('response-missing-'): del public[change.removeprefix('response-missing-')]
+                    elif change.startswith('response-order-'):
+                        pairs = list(public.items()); n = int(change.removeprefix('response-order-'))
+                        pairs[n],pairs[n+1] = pairs[n+1],pairs[n]; public.clear(); public.update(pairs)
+                    elif change.startswith('response-extra-'): public[change.removeprefix('response-extra-')] = None
+                    elif change.startswith('missing-'): del action[change.removeprefix('missing-')]
+                    elif change.startswith('order-'):
+                        pairs = list(action.items()); n = int(change.removeprefix('order-'))
+                        pairs[n],pairs[n+1] = pairs[n+1],pairs[n]; action.clear(); action.update(pairs)
+                    elif change.startswith('extra-'): action[change.removeprefix('extra-')] = None
+                    elif change in case_action_values:
+                        key,value = case_action_values[change]; action[key] = copy.deepcopy(value)
+                    elif change.startswith('value-'):
+                        key,value = case_action_response_values[change.removeprefix('value-')]
+                        public[key] = copy.deepcopy(value)
+                    elif change.startswith('swap-'):
+                        _,other,other_n = change.split('-')
+                        action['response'] = case_action_holder(root,int(other),int(other_n))['response']
+                    elif change == 'wrapper-swap': selected_job['action'] = copy.deepcopy(case['jobs'][1-number]['action'])
+                    elif change == 'response-terminal': action['response'] = case_terminal_holder(root,fixture_index,number)['body']
+                    elif change == 'public-disagreement': selected_job['running_browser']['cwd_hint'] = 'different direct public original'
+                    elif change in ('sql-disagreement','sql-without-public'): selected_job['running']['cwd_hint'] = 'different SQL original'
+                    elif change == 'source-without-public': public['script_text'] += '# different action SOURCE\n'
+                    elif change in ('early-conflict-later-correct','early-correct-later-conflict'):
+                        later = copy.deepcopy(case)
+                        image['durable'][0]['jobs_cases'].append(later)
+                        (case if change == 'early-conflict-later-correct' else later)['jobs'][number]['action']['response']['cwd_hint'] = 'changed original occurrence'
+                    else: raise AssertionError(change)
+                    if change in ('source-without-public','sql-without-public'):
+                        for key in ('first_terminal','live_s2','final_snapshot','final_callback'): case.pop(key,None)
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                        for partial in case['jobs']:
+                            for key in ('running_browser','terminal','oracle','rejection_drain'): partial.pop(key)
+                elif case_name in case_shape_refusals:
                     if case_name in case_terminal_missing:
                         _,number,stage = case_terminal_missing[case_name]
                         case_complete_terminal(image,root,fixture_index,tuple(range(2 if fixture_index >= 4 else 1)))
@@ -6599,9 +6745,9 @@ def failure_result_controls() -> dict:
                     assert set(published) == set(prior_published) | ({'eligible-case.txt'} if boundary in ('raw','raw-prefix') else set())
                 result_name = ('C5-Case-stage-refusal-'+case_name.removeprefix('stage-') if case_name in case_stage_refusals
                                else 'C5-Case-refusal-'+case_name)
-                if complete_public and case_name not in case_running_missing and case_name not in case_terminal_missing:
+                if complete_public and case_name not in case_running_missing and case_name not in case_terminal_missing and case_name not in case_action_refusals:
                     result_name += '-with-running-public'
-                if complete_terminal and case_name not in case_terminal_missing:
+                if complete_terminal and case_name not in case_terminal_missing and case_name not in case_action_refusals:
                     result_name += '-with-terminal-browser'
                 results[result_name+'-'+boundary] = 'whole original input/prior member/output/result/FAIL/tree exact; no selected pending/publication; overlapping owner/strict/R1/capacity guards; specific sensitivity PROOF NOT RUN'
 

@@ -3568,7 +3568,8 @@ An earlier overlapping lexical/owner guard
 proves whole refusal only; individual predicate, temporal and native proof is
 PROOF NOT RUN. No fit or test-authoring PASS follows from source inspection.
 
-Reached terminal-browser presence, action/response/browser-event copies,
+At this historical PRESENT-terminal checkpoint, reached terminal-browser
+presence, action/response/browser-event copies,
 marked/scenario/detached/result/cross-member/prefix-final and BOTH pair terminal
 text/full K5-K6 integration remain unfinished ROOT work, along with final whole
 accumulated review, separate same-final-head final-compound QA and actual-main
@@ -3625,7 +3626,8 @@ remain reconciliation obligations, with explicit new refusal rows and fixture
 correspondence. Inspection and lints supply no behavioral/native acceptance.
 Individual/temporal/race/read/decode/allocation/native proof is PROOF NOT RUN.
 
-Reached terminal-browser presence, escaped action/response/browser-event and
+At this historical reached-running checkpoint, terminal-browser presence,
+escaped action/response/browser-event and
 other cross-copy families, both pair terminal-text/full K5-K6, actual-main
 convergence, final full accumulated review and separate same-final-head
 final-compound QA remain ROOT work. Original nonrenewing work/facts/copy/carry/
@@ -4112,7 +4114,8 @@ construction, matching/generic policies, ledger implementation/rates/caps and
 actual final buffer are unchanged. The earlier longer-scalar contradiction stays
 corrected: construction does not exempt any raw scalar from these own checks.
 
-All11184 independent full expectations, seven historical typed/ordered result
+This historical capacity checkpoint retained11184 inventoried expectations
+(the later corrected archive inventory is11196), seven historical typed/ordered result
 sets,2600 additions,384 migrations,1761 keepers,2112 inherited Case+232 direct+
 328 terminal cases,1256+636/J FOUR+FOUR/four nested-array bookkeeping variants,
 full original literals/assertions and87 independent readers remain unchanged.
@@ -4124,3 +4127,58 @@ before maker handoff. Units RETIRED; integration INCLUDING callback/lifespan/
 SessionTracker SKIPPED24342/211270-271;3.12 and unsupported individual/read/decode/
 allocation/race/temporal/native proof NOT RUN/PROOF NOT RUN. Product DAILY19UTC
 ONLY/no run-trigger-observation. No cap/rate/reset/refund/fixture/allowance change.
+
+
+### PRESENT Case action response
+
+The existing Case owner selects a PRESENT `jobs[k].action` only as the actual
+nonreject job_action wrapper, in producer order:
+`path,method,request,status,response,no_run_controls,at`. Path is exactly
+`/api/v1/orgs/alpha/jobs/` plus THIS submitted ID; method is GET, request null,
+status builtin INTEGER200, no_run_controls Boolean true, and at a finite
+non-Boolean int/float. Missing/extra/reordered keys, wrong containers or types,
+wrong-family body/event/group/document/wire wrappers and pending/reject forms
+refuse the entire containing member before selected assignment or publication.
+
+Its DIRECT response has all27 public fields in their own original order and
+running state, including every nullable field and full SOURCE. It independently
+receives original-secret, lexical, decoded-literal, residual and second-layer
+checks, full job.script/script_sha256/provider/submission/Case joins, and full
+same-job running Store27 equality. Only the two declared SQL INTEGER0/public
+false mappings apply. When direct running_browser also exists, its complete
+original public row and the action response are compared by builtin type,
+key order and full value, in addition to each occurrence's own safety and SQL
+joins. A later correct row cannot repair an earlier conflict. Both jobs of BOTH
+pair plans are selected independently by their actual submitted IDs and roles.
+
+The typed writer and registered raw/raw-prefix/required-prefix paths use their
+existing Case/row callback dispatch. Wrapper/scalar/reference retention, every
+own SOURCE proof and distinct full comparison consume the SAME original
+C8388608/F200000/depth64/end. Action-absent Cases retain no new public-row slot;
+there is no second parser/index/cache, borrowed safety proof, budget renewal,
+rate/cap discount, normalization, clipping or sufficient-fit assertion.
+
+Existing aggregate failure_result_controls adds A1-A5 tables with independent
+full running literals for completed0/completed7/timeout and both pair plans,
+original Case order/Case-jobs-last, action-before-open partials, wrapper/public
+shape/type/order/state/owner/SOURCE and role-swap refusals, and early/late
+conflicting occurrences. Entire original images, typed ordered trees, prior
+files/staged/published/member/result/FAIL state and no-pending assertions remain.
+Historical11196 includes the12 pre-existing rows omitted by the earlier inventory:
+corrected2612 additions/392 migrations retain every original2600/384, full seven
+historical expectation sets and1761 keepers. No old input is migrated to require
+an action. Actual intended-failure/exact-restoration/ONE complete restored command
+and full historical-plus-new reconciliation remain required evidence, never
+inferred from source inspection or lint. Earlier failed receipts stay failed.
+
+A genuinely absent action and index1's no-job branch keep their previous exact
+results. This PRESENT-only unit does not close reached/missing-action, browser
+job-read/job-action/response-observation, scenario/marked/detached/result-copy or
+other remaining ROOT-owned families. It supplies no whole-family, compound,
+behavioral/native, Product or100MiB-fit acceptance. Units remain RETIRED;
+integration INCLUDING callbacks/lifespan/SessionTracker SKIPPED24342/211270-271;
+3.12 and unsupported individual/read/decode/allocation/race/temporal/native proof
+NOT RUN/PROOF NOT RUN. Product remains DAILY19UTC ONLY/no ad hoc run or observation.
+Normal SAME-ref publication, exact-head two lint/static checks, independent
+accumulated affected-owner review, SEPARATE same-head scoped QA and ROOT's final
+six-file/cross-closure/current-main/guarded-merge/native gates remain distinct.

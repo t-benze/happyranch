@@ -2877,6 +2877,8 @@ class _EvidenceObservations:
                 return local[:3], 'jobs', local[1], local[2]
             if len(local) >= 4 and local[2] == 'browser' and local[3] == 'body':
                 return local[:4], 'jobs', local[1], 'browser'
+            if len(local) >= 4 and local[2] == 'action' and local[3] == 'response':
+                return local[:4], 'jobs', local[1], 'action'
             if len(local) >= 5 and local[2] == 'pending' and type(local[3]) is int:
                 if local[4] == 'row':
                     return local[:5], 'jobs', local[1], 'pending'
@@ -3090,6 +3092,41 @@ class _EvidenceObservations:
             if (len(local) == 6 and local[2] in ('oracle','rejection_drain') and local[3] == 'outputs'
                     and type(local[4]) is int and local[5] == 'text' and (kind != 'scalar' or type(value) is not str)):
                 raise ValueError('Case literal stream type withheld')
+        if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'action':
+            # PRESENT action only. These original seven fields belong to the
+            # nonreject job_action producer, not a generic response wrapper.
+            self.ledger.charge(24, 3, self.check)
+            job = c['jobs'][local[1]]
+            c['used'] = True
+            if len(local) == 3:
+                if kind == 'object':
+                    self.ledger.charge(64, 8, self.check)
+                    job['action'] = {}
+                elif kind == 'key':
+                    action = job['action']
+                    self.ledger.charge(32, 4, self.check)
+                    if len(action) >= 7 or value != ('path', 'method', 'request', 'status', 'response', 'no_run_controls', 'at')[len(action)]:
+                        raise ValueError('Case action holder order withheld')
+                    action[value] = None
+                elif kind == 'end-object':
+                    if len(job['action']) != 7:
+                        raise ValueError('Case action holder schema withheld')
+                else:
+                    raise ValueError('Case action holder type withheld')
+            elif len(local) == 4:
+                if local[3] == 'response':
+                    if kind not in ('object', 'key', 'end-object'):
+                        raise ValueError('Case action response type withheld')
+                else:
+                    key = local[3]
+                    if (kind != 'scalar' or key not in ('path', 'method', 'request', 'status', 'no_run_controls', 'at')
+                            or key in ('path', 'method') and type(value) is not str
+                            or key == 'request' and value is not None
+                            or key == 'status' and (type(value) is not int or value != 200)
+                            or key == 'no_run_controls' and value is not True
+                            or key == 'at' and (type(value) not in (int, float) or type(value) is float and not math.isfinite(value))):
+                        raise ValueError('Case action scalar withheld')
+                    retain(job['action'], key, value)
         if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'browser':
             self.ledger.charge(24, 3, self.check)
             job = c['jobs'][local[1]]
@@ -3137,6 +3174,11 @@ class _EvidenceObservations:
             if local == row_path and kind == 'object':
                 self.ledger.charge(80, 10, self.check)
                 c['rows'].append((row_path, table, job_index, holder, {}, {}))
+                if table == 'jobs' and holder == 'action':
+                    # Retain THIS original occurrence, not another row's proof.
+                    # Both full public rows are independently checked at close.
+                    self.ledger.charge(16, 2, self.check)
+                    c['jobs'][job_index]['action']['response'] = c['rows'][-1][4]
                 # Keep the same six canonical row references at their original
                 # opening events. Every field and own safety check still runs;
                 # closure validates these rows before accepting any comparison.
@@ -3162,7 +3204,7 @@ class _EvidenceObservations:
             elif len(local) > len(row_path):
                 if (len(local) != len(row_path) + 1 or kind != 'scalar'
                         or type(value) not in (str, int, float, type(None))
-                            and not (holder in ('running_browser', 'browser') and local[-1] in ('review_required', 'persistent')
+                            and not (holder in ('running_browser', 'browser', 'action') and local[-1] in ('review_required', 'persistent')
                                      and type(value) is bool)):
                     raise ValueError('Case SQL scalar withheld')
                 if not c['rows'] or c['rows'][-1][0] != row_path:
@@ -3184,7 +3226,7 @@ class _EvidenceObservations:
                 or len(local) == 2 and local[0] == 'live_s2' and local[1] != 'snapshot'
                 or len(local) == 3 and local[0] == 'jobs' and type(local[1]) is int
                     and local[2] not in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap',
-                                        'out', 'err', 'running', 'terminal', 'running_browser', 'browser', 'pending', 'oracle', 'rejection_drain')
+                                        'out', 'err', 'running', 'terminal', 'running_browser', 'action', 'browser', 'pending', 'oracle', 'rejection_drain')
                 or len(local) == 5 and local[0] == 'jobs' and type(local[1]) is int
                     and local[2] == 'pending' and type(local[3]) is int and local[4] not in ('row', 'audit')
                 or len(local) == 4 and local[0] == 'jobs' and type(local[1]) is int
@@ -3275,7 +3317,7 @@ class _EvidenceObservations:
         if field is None:
             field = local[0]
         if (type(value) not in (str, int, float, type(None))
-                and not (holder in ('running_browser', 'browser') and field in ('review_required', 'persistent')
+                and not (holder in ('running_browser', 'browser', 'action') and field in ('review_required', 'persistent')
                          and type(value) is bool)):
             raise ValueError('Case SQL scalar withheld')
         # Pair task/results compare the complete original parked
@@ -3592,6 +3634,17 @@ class _EvidenceObservations:
                         or number == 0 and c['first_oracle_reached']) and (
                         c['oracle_first'] if number == 0 else c['oracle_second']) is None:
                     raise ValueError('Case required oracle row unavailable')
+                if 'action' in job:
+                    self.ledger.charge(128 + 4 * _evidence_utf8_size(jid, self.check), 16, self.check)
+                    action = job['action']
+                    if (len(action) != 7 or not same(action.get('path'), '/api/v1/orgs/alpha/jobs/' + jid)
+                            or not same(action.get('method'), 'GET') or action.get('request') is not None
+                            or type(action.get('status')) is not int or action['status'] != 200
+                            or action.get('no_run_controls') is not True
+                            or type(action.get('at')) not in (int, float)
+                            or type(action['at']) is float and not math.isfinite(action['at'])
+                            or type(action.get('response')) is not dict):
+                        raise ValueError('Case action original holder withheld')
                 # S2/final reaches both jobs; first-terminal reaches only job0.
                 # Pending/parked/block/action-only partials remain before this
                 # assignment. Presence still undergoes every full row check below.
@@ -3784,13 +3837,20 @@ class _EvidenceObservations:
                 jid, original_command = owner
                 proof, submitted, provider = original_command[2], original_command[4], original_command[1]
                 job = jobs[job_number]
-                if holder in ('running_browser', 'browser'):
-                    # Only the direct running path and terminal holder body
-                    # select public JobRecords. Their own ordered public schema
-                    # differs from each independently validated Store.jobs peer.
+                if holder in ('running_browser', 'browser', 'action'):
+                    # Direct running, PRESENT action response and terminal body
+                    # have their own ordered public schema, different from each
+                    # independently validated Store.jobs peer.
                     self.ledger.charge(64, 8, self.check)
                     self.ledger.charge(16, 2, self.check)
-                    public_running = holder == 'running_browser'
+                    public_running = holder in ('running_browser', 'action')
+                    # Both occurrences are independently admitted below. Compare
+                    # their complete original rows once where both exist, with
+                    # no new reference/cache for action-absent historical Cases.
+                    if holder == 'running_browser' and 'action' in job:
+                        self.ledger.charge(32, 4, self.check)
+                        if not full_row(row, job['action']['response']):
+                            raise ValueError('Case action full running public equality withheld')
                     public_original = ((c['running_first'] if job_number == 0 else c['running_second']) if public_running
                                        else (c['oracle_first'] if job_number == 0 else c['oracle_second']))
                     if public_original is None:
