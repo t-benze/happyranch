@@ -27,7 +27,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from contextvars import ContextVar
 
 _move_batch_owner = ContextVar("profile_move_batch_owner", default=None)
@@ -40,6 +40,7 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 from runtime.orchestrator.teams import TeamsRegistry
+from runtime.orchestrator.org_validation import OrgConsistencyError
 from runtime.workflows.authority import (
     ProfileFenceBinding,
     WorkflowAuthorityError,
@@ -93,6 +94,9 @@ class _OrgDependencyCapture:
     snapshot: bytes | None
     empty_skeleton: bool = False
     empty_canonical_inputs: bool = False
+    refusal: str | None = None
+    effective_profiles: dict[str, _EffectiveProfile] = field(default_factory=dict)
+    canonical_error: str | None = None
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -203,11 +207,16 @@ class ProfileCoordinator:
         orgs: dict[str, OrgState],
         lock_wait_seconds: float = _LOCK_WAIT_SECONDS,
         capture_orgs: Callable | None = None,
+        hold_startup: Callable | None = None,
     ) -> None:
         self._daemon_home = Path(daemon_home)
         self.orgs = orgs
         self._attachment_capture = capture_orgs
         self._lock_wait_seconds = lock_wait_seconds
+        self._hold_startup = hold_startup
+        self._startup_holds: dict[str, str] = {}
+        self._startup_hold_profiles: set[str] = set()
+        self._startup_unknown = False
 
     @contextmanager
     def _capture_orgs(self) -> Iterator[dict[str, OrgState]]:
@@ -217,6 +226,11 @@ class ProfileCoordinator:
         else:
             with self._attachment_capture() as orgs:
                 yield orgs
+
+    def assert_org_admission(self, slug: str) -> None:
+        # Process-held membership is checked before a retained object's DB/map.
+        if slug in self._startup_holds:
+            raise WorkflowAuthorityError("authority_pointer_not_ready")
 
     @property
     def _lock_dir(self) -> Path:
@@ -446,7 +460,7 @@ class ProfileCoordinator:
             return tuple(members)
 
     def _assert_no_active_operation(
-        self, profile_name: str | None, *, move_org=None, attaching_org=None,
+        self, profile_name: str | None, *, move_org=None, attaching_org=None, captured_orgs=None,
     ) -> None:
         """Check native DB owners only; diagnostic discovery owns no leases.
 
@@ -455,6 +469,11 @@ class ProfileCoordinator:
         only add_org removes the diagnostic after joining the shared org map.
         A None profile still checks diagnostics for EMPTY dependency sets.
         """
+        if (self._startup_unknown
+                or (self._startup_holds and profile_name is None
+                    and (captured_orgs is None or self._startup_holds.keys() & set(captured_orgs)))
+                or profile_name in self._startup_hold_profiles):
+            raise ProfileCoordinatorError("profile_consumer_changed")
         with self._capture_orgs() as orgs:
             diagnostics = getattr(self, "_move_diagnostic_orgs", {})
             admitted = _move_batch_owner.get()
@@ -652,7 +671,7 @@ class ProfileCoordinator:
                         )
             return publishable
 
-    def _closure_coherent(self, org: OrgState) -> bool:
+    def _closure_coherent(self, org: OrgState, *, effective_profiles: dict[str, _EffectiveProfile] | None = None) -> bool:
         with org.db._lock:
             rows = org.db._conn.execute(
                 "SELECT d.profile_name,d.state,d.bound_generation,s.generation,"
@@ -667,6 +686,8 @@ class ProfileCoordinator:
             ).fetchall()
         for row in rows:
             profile_name = str(row["profile_name"])
+            effective = (self._effective_profile(profile_name) if effective_profiles is None
+                         else effective_profiles[profile_name])
             if not (
                 row["state"] == "active"
                 and row["store_state"] == "active"
@@ -675,8 +696,8 @@ class ProfileCoordinator:
                 and row["published_generation"] is not None
                 and int(row["published_generation"])
                 == int(row["bound_generation"])
-                and row["profile_digest"] == self.profile_digest(profile_name)
-                and self._effective_profile(profile_name).resolvable
+                and row["profile_digest"] == effective.digest
+                and effective.resolvable
             ):
                 return False
         return True
@@ -688,12 +709,13 @@ class ProfileCoordinator:
         bindings: dict[str, ProfileFenceBinding],
         publisher: str,
         expected_fenced: set[str],
+        effective_profiles: dict[str, _EffectiveProfile] | None = None,
     ) -> bool:
         with self._capture_orgs() as orgs:
             all_published = True
             for slug in sorted(expected_fenced):
                 org = orgs[slug]
-                if not self._closure_coherent(org):
+                if not self._closure_coherent(org, effective_profiles=effective_profiles):
                     all_published = False
                     continue
                 try:
@@ -720,13 +742,15 @@ class ProfileCoordinator:
         bindings: dict[str, ProfileFenceBinding],
         publisher: str,
         mutation_succeeded: bool,
+        effective_profiles: dict[str, _EffectiveProfile] | None = None,
     ) -> bool:
         fenced = set(bindings)
         all_resolved = True
         changed_operations: list[_ProfileOperation] = []
         unchanged_operations: list[_ProfileOperation] = []
         for operation in operations:
-            effective = self._effective_profile(operation.profile_name)
+            effective = (self._effective_profile(operation.profile_name) if effective_profiles is None
+                         else effective_profiles[operation.profile_name])
             changed = (
                 effective.digest != operation.prior.digest
                 or operation.recovery_state
@@ -753,10 +777,12 @@ class ProfileCoordinator:
             bindings=bindings,
             publisher=publisher if mutation_succeeded else f"{publisher}:compensation",
             expected_fenced=fenced,
+            effective_profiles=effective_profiles,
         )
         if republished:
             for operation in changed_operations:
-                effective = self._effective_profile(operation.profile_name)
+                effective = (self._effective_profile(operation.profile_name) if effective_profiles is None
+                             else effective_profiles[operation.profile_name])
                 if effective.state == "removed" or effective.resolvable:
                     self._set_operation_state(
                         operation, "published", profile_digest=effective.digest,
@@ -933,25 +959,48 @@ class ProfileCoordinator:
             ):
                 yield True
 
-    @staticmethod
-    def _roster_revision(org):
-        # Every supported canonical writer changes this existing durable fence
-        # before file replacement. No new persisted revision/store is needed.
+    def _roster_revision(self, org: OrgState) -> tuple:
+        """Complete DB/native bookend; no discovery or filesystem I/O."""
+        from runtime.infrastructure.producer_admission import NativeWriterStore, native_owner_uncommitted
         authority = org.workflow_authority
         with org.db._lock:
-            pointer = authority._pointer(org.db._conn, authority.namespace)
-            active = authority._active_journal(org.db._conn, authority.namespace)
-            lease = org.db._conn.execute(
-                "SELECT owner_pid FROM workflow_publication_leases WHERE namespace=?",
-                (authority.namespace,),
-            ).fetchone()
-            return pointer, None if active is None else tuple(active), lease is not None and _pid_is_live(int(lease["owner_pid"]))
+            conn = org.db._conn
+            pointer = authority._pointer(conn, authority.namespace)
+            active = authority._active_journal(conn, authority.namespace)
+            leases = tuple(tuple(r) for r in conn.execute(
+                "SELECT namespace,owner_token,owner_pid FROM workflow_publication_leases ORDER BY namespace"
+            ))
+            if any(not isinstance(r[1], str) or not r[1] or type(r[2]) is not int or r[2] <= 0 for r in leases):
+                raise ProfileCoordinatorError("profile_consumer_changed")
+            live = any(r[0] == authority.namespace and _pid_is_live(r[2]) for r in leases)
+            operations = tuple(tuple(r) for r in conn.execute("SELECT * FROM workflow_profile_operations ORDER BY id"))
+            journals = tuple(tuple(r) for r in conn.execute("SELECT * FROM workflow_publication_journals ORDER BY id"))
+            history = NativeWriterStore(org.db, org.slug).history_uncommitted()
+            native = native_owner_uncommitted(org.db)
+            writers = () if native is None else (native.writer_epoch, _canonical_bytes(native.writers))
+            return (pointer, None if active is None else tuple(active), live, leases,
+                    self._dependency_mirror_snapshot(org), operations, journals,
+                    tuple((key, value.model_dump_json()) for key, value in sorted(history.items())),
+                    writers, (id(org), org.slug, org.root, id(org.db), org.db.db_path, id(authority)),
+                    tuple(tuple(r) for r in conn.execute("SELECT * FROM workflow_profile_leases ORDER BY profile_name")),
+                    tuple(tuple(r) for r in conn.execute("SELECT id,task_id,agent,payload FROM audit_log "
+                                                        "WHERE action='team_move_native_writer' ORDER BY id")))
 
-    def _capture_org_dependencies(self, org, *, completed_writer_invocation=None, attachment=False):
+    def _capture_org_dependencies(self, org: OrgState, *, completed_writer_invocation: str | None = None,
+                                  attachment: bool = False) -> _OrgDependencyCapture:
+        capture = self._observe_org_dependencies(org, completed_writer_invocation=completed_writer_invocation,
+                                                 attachment=attachment)
+        if capture.refusal:
+            error = ProfileCoordinatorError(capture.refusal)
+            error.capture = capture
+            raise error
+        return capture
+
+    def _observe_org_dependencies(self, org: OrgState, *, completed_writer_invocation: str | None = None,
+                                  attachment: bool = False) -> _OrgDependencyCapture:
         for _attempt in range(3):
             before = self._roster_revision(org)
-            if org.workflow_authority._async_writer_lock.locked():
-                raise ProfileCoordinatorError("profile_consumer_changed")
+            async_writer = org.workflow_authority._async_writer_lock.locked()
             paths = OrgPaths(root=org.root)
             definitions = list(prompt_loader.list_agents(paths))
             # The default skeleton has no canonical consumers of either status.
@@ -971,9 +1020,6 @@ class ProfileCoordinator:
                 # with admission fenced. Dependency discovery still completes;
                 # an invalid canonical snapshot is never a ready publication.
                 snapshot = None
-            after = self._roster_revision(org)
-            if before != after or after[2]:
-                continue
             desired = {
                 definition.name: profile
                 for definition in definitions
@@ -988,14 +1034,18 @@ class ProfileCoordinator:
                         (org.workflow_authority.namespace,),
                     ).fetchall()
                 }
-            if (
+            effective_profiles = {name: self._effective_profile(name) for name in sorted(set(desired.values()) | outstanding)}
+            after = self._roster_revision(org)
+            if before != after:
+                continue
+            ordinary = (
                 snapshot is not None and after[1] is not None
                 and not str(after[1][6]).startswith("profile-coordinator:")
                 and str(after[1][6]) != completed_writer_invocation
-            ):
-                # A prepared ordinary writer may be paused outside its durable
-                # lease. It still owns a canonical batch, so never reopen it.
-                raise ProfileCoordinatorError("profile_consumer_changed")
+            )
+            # A prepared ordinary writer may be paused outside its durable
+            # lease. Its rejected observation supplies membership, never consent.
+            refusal = "profile_consumer_changed" if ordinary or async_writer or after[2] else None
             active = after[1]
             initial_publication = active is None or (
                 active[5] == "org-startup"
@@ -1010,15 +1060,23 @@ class ProfileCoordinator:
             )
             return _OrgDependencyCapture(
                 desired, tuple(sorted(set(desired.values()) | outstanding)),
-                after, snapshot, empty_skeleton, bool(empty_inputs),
+                after, snapshot, empty_skeleton, bool(empty_inputs), refusal, effective_profiles, capture_error,
             )
         raise ProfileCoordinatorError("profile_consumer_changed")
 
-    def _validate_capture(self, org, revision):
-        if (
-            self._roster_revision(org)[:2] != revision[:2] or revision[2]
-            or org.workflow_authority._async_writer_lock.locked()
-        ):
+    def _validate_capture(self, org: OrgState, revision: tuple) -> None:
+        if (self._roster_revision(org) != revision or revision[2]
+                or org.workflow_authority._async_writer_lock.locked()):
+            raise ProfileCoordinatorError("profile_consumer_changed")
+
+    def _validate_owned_capture(self, org: OrgState, revision: tuple, owner: str) -> None:
+        # The original capture is checked before acquisition too. Only THIS
+        # newly acquired lease may differ; every other DB/native image stays exact.
+        fresh = self._roster_revision(org)
+        leases = tuple(r for r in revision[3] if r[0] != org.workflow_authority.namespace)
+        leases = tuple(sorted((*leases, (org.workflow_authority.namespace, owner, os.getpid()))))
+        expected = (*revision[:2], True, leases, *revision[4:])
+        if fresh != expected or org.workflow_authority._async_writer_lock.locked():
             raise ProfileCoordinatorError("profile_consumer_changed")
 
     def _dependency_mirror_snapshot(self, org: OrgState) -> tuple[tuple[object, ...], ...]:
@@ -1037,6 +1095,25 @@ class ProfileCoordinator:
                 "SELECT profile_name,published_generation "
                 "FROM workflow_profile_registry ORDER BY profile_name"
             ).fetchall()
+        if any(
+            row["org_namespace"] != org.workflow_authority.namespace
+            or not isinstance(row["profile_name"], str) or not row["profile_name"]
+            or not isinstance(row["consumer_identity"], str) or not row["consumer_identity"]
+            or type(row["bound_generation"]) is not int or row["bound_generation"] < 0
+            or row["state"] not in {"active", "unbound", "removed"}
+            for row in dependencies
+        ) or any(
+            not isinstance(row["profile_name"], str) or not row["profile_name"]
+            or type(row["generation"]) is not int or row["generation"] < 0
+            or row["state"] not in {"active", "removed"}
+            or not isinstance(row["profile_digest"], str) or len(row["profile_digest"]) != 64
+            for row in stores
+        ) or any(
+            not isinstance(row["profile_name"], str) or not row["profile_name"]
+            or type(row["published_generation"]) is not int or row["published_generation"] < 0
+            for row in registry
+        ):
+            raise ProfileCoordinatorError("profile_dependency_incoherent")
         return tuple(
             [("dependency", *tuple(row)) for row in dependencies]
             + [("store", *tuple(row)) for row in stores]
@@ -1064,15 +1141,11 @@ class ProfileCoordinator:
                 }[kind]
                 conn.execute(f"INSERT INTO {table} VALUES ({','.join('?' for _ in range(count))})", row)
 
-    def _sync_org_dependencies(self, org: OrgState, desired: dict[str, str]) -> bool:
+    def _sync_org_dependencies(self, org: OrgState, desired: dict[str, str], *, effective_profiles: dict[str, _EffectiveProfile]) -> bool:
         """Consume validated canonical discovery; never scan under leases."""
         org.workflow_authority._profile_coordinator = self
-        # Resolve the machine-global YAML/registry view before opening the
-        # org transaction.  No SQLite transaction spans filesystem I/O.
-        effective_profiles = {
-            profile_name: self._effective_profile(profile_name)
-            for profile_name in sorted(set(desired.values()))
-        }
+        # Effective inputs were discovered before the caller acquired profile
+        # leases. No SQLite transaction spans filesystem I/O.
         before = self._dependency_mirror_snapshot(org)
         with self._transaction(org) as conn:
             existing_rows = conn.execute(
@@ -1164,16 +1237,20 @@ class ProfileCoordinator:
         profile_names = sorted({name for _, _, capture in captured for name in capture.profile_names})
         with self._profile_leases(profile_names, wait=True) as names:
             for name in names or (None,):
-                self._assert_no_active_operation(name)
+                self._assert_no_active_operation(name, captured_orgs=tuple(slug for slug, _, _ in captured))
             changed = set()
+            for _, org, capture in captured:
+                with org.workflow_authority._publisher_lock:
+                    self._validate_capture(org, capture.revision)
             for slug, org, capture in captured:
                 desired, revision, snapshot = capture.desired, capture.revision, capture.snapshot
                 with org.workflow_authority._publisher_lock:
                     owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
+                    self._validate_capture(org, revision)
                     org.workflow_authority._acquire_lease(owner)
                     try:
-                        self._validate_capture(org, revision)
-                        if self._sync_org_dependencies(org, desired):
+                        self._validate_owned_capture(org, revision, owner)
+                        if self._sync_org_dependencies(org, desired, effective_profiles=capture.effective_profiles):
                             changed.add(slug)
                     finally:
                         org.workflow_authority._release_lease(owner)
@@ -1181,7 +1258,8 @@ class ProfileCoordinator:
                         if snapshot is None:
                             org.workflow_authority.fence(reason="profile:canonical-incoherent")
                         else:
-                            self._publish_dependency_change(org, canonical_snapshot=snapshot, expected_revision=revision[:2])
+                            self._publish_dependency_change(org, canonical_snapshot=snapshot, expected_revision=revision[:2],
+                                                                effective_profiles=capture.effective_profiles)
             return changed
 
     def _authority_profile_projection_coherent(self, org: OrgState) -> bool:
@@ -1206,9 +1284,10 @@ class ProfileCoordinator:
                 self._assert_no_active_operation(name, attaching_org=org)
             with org.workflow_authority._publisher_lock:
                 owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
+                self._validate_capture(org, revision)
                 org.workflow_authority._acquire_lease(owner)
                 try:
-                    self._validate_capture(org, revision)
+                    self._validate_owned_capture(org, revision, owner)
                     if capture.empty_canonical_inputs and not capture.empty_skeleton:
                         raise ProfileCoordinatorError("profile_dependency_incoherent")
                     if capture.empty_skeleton:
@@ -1226,17 +1305,18 @@ class ProfileCoordinator:
                             ).fetchone()
                         if unfinished is not None or outstanding is not None:
                             raise ProfileCoordinatorError("profile_dependency_incoherent")
-                    changed = self._sync_org_dependencies(org, desired)
+                    changed = self._sync_org_dependencies(org, desired, effective_profiles=capture.effective_profiles)
                 finally:
                     org.workflow_authority._release_lease(owner)
                 if snapshot is None and not capture.empty_skeleton:
                     org.workflow_authority.fence(reason="profile:canonical-incoherent")
                     raise ProfileCoordinatorError("profile_dependency_incoherent")
                 if not capture.empty_skeleton and (changed or not self._authority_profile_projection_coherent(org)):
-                    if not self._publish_dependency_change(org, canonical_snapshot=snapshot, expected_revision=revision[:2]):
+                    if not self._publish_dependency_change(org, canonical_snapshot=snapshot, expected_revision=revision[:2],
+                                                                effective_profiles=capture.effective_profiles):
                         raise ProfileCoordinatorError("profile_dependency_incoherent")
                 if not capture.empty_skeleton and (
-                    not self._closure_coherent(org)
+                    not self._closure_coherent(org, effective_profiles=capture.effective_profiles)
                     or not self._authority_profile_projection_coherent(org)
                 ):
                     raise ProfileCoordinatorError("profile_dependency_incoherent")
@@ -1246,6 +1326,7 @@ class ProfileCoordinator:
 
     def _publish_dependency_change(
         self, org: OrgState, *, canonical_snapshot: bytes | None = None, expected_revision=None,
+        effective_profiles: dict[str, _EffectiveProfile] | None = None,
     ) -> bool:
         invocation = f"dependency-sync-{uuid.uuid4().hex}"
         with org.workflow_authority.profile_change_interval(
@@ -1253,7 +1334,7 @@ class ProfileCoordinator:
             coordinator_invocation=invocation,
             expected_revision=expected_revision,
         ) as binding:
-            if self._closure_coherent(org):
+            if self._closure_coherent(org, effective_profiles=effective_profiles):
                 org.workflow_authority.publish_profile_change(
                     publisher="profile-dependency-sync",
                     binding=binding,
@@ -1340,94 +1421,87 @@ class ProfileCoordinator:
 
     def _discover_operation_groups(self) -> dict[str, set[str]]:
         with self._capture_orgs() as orgs:
-            groups: dict[str, set[str]] = {}
+            rows = []
             for org in orgs.values():
                 with org.db._lock:
-                    rows = org.db._conn.execute(
-                        "SELECT coordinator_invocation,profile_name "
-                        "FROM workflow_profile_operations "
-                        "WHERE state NOT IN ('published','aborted')"
-                    ).fetchall()
-                for row in rows:
-                    groups.setdefault(str(row["coordinator_invocation"]), set()).add(
-                        str(row["profile_name"])
-                    )
+                    rows.extend(org.db._conn.execute(
+                        "SELECT coordinator_invocation,profile_name,state FROM workflow_profile_operations"
+                    ).fetchall())
+            active = {r["coordinator_invocation"] for r in rows if r["state"] not in ("published", "aborted")}
+            groups: dict[str, set[str]] = {}
+            for row in rows:
+                if row["coordinator_invocation"] in active:
+                    invocation, name = row["coordinator_invocation"], row["profile_name"]
+                    if not isinstance(invocation, str) or not invocation or not isinstance(name, str) or not name:
+                        raise ProfileCoordinatorError("profile_operation_members_unknown")
+                    groups.setdefault(invocation, set()).add(name)
             return groups
 
     def _load_group_operations(
-        self,
-        coordinator_invocation: str,
-        profile_names: Sequence[str],
+        self, coordinator_invocation: str, profile_names: Sequence[str],
     ) -> tuple[_ProfileOperation, ...]:
+        """Read a complete invocation, including every original member mirror."""
         with self._capture_orgs() as orgs:
-            operation_rows: dict[str, list[sqlite3.Row]] = {}
-            for org in orgs.values():
+            operation_rows: dict[str, list[tuple[str, sqlite3.Row]]] = {}
+            for slug, org in orgs.items():
                 with org.db._lock:
                     rows = org.db._conn.execute(
-                        "SELECT id,profile_name,operation_kind,captured_members,"
-                        "target_generation,state,profile_digest "
-                        "FROM workflow_profile_operations "
-                        "WHERE coordinator_invocation=?",
+                        "SELECT * FROM workflow_profile_operations WHERE coordinator_invocation=?",
                         (coordinator_invocation,),
                     ).fetchall()
                 for row in rows:
-                    name = str(row["profile_name"])
-                    if name not in profile_names:
-                        continue
-                    operation_rows.setdefault(name, []).append(row)
+                    operation_rows.setdefault(row["profile_name"], []).append((slug, row))
             if set(operation_rows) != set(profile_names):
                 raise ProfileCoordinatorError("profile_operation_missing")
-            rank = {
-                "captured": 0,
-                "fenced": 1,
-                "store_committed": 2,
-                "forward_recovery_required": 3,
-                "published": 4,
-                "aborted": 4,
-            }
-            operations: dict[str, _ProfileOperation] = {}
-            for name, rows in operation_rows.items():
-                first = rows[0]
-                identity = (
-                    str(first["id"]),
-                    str(first["operation_kind"]),
-                    str(first["captured_members"]),
-                    int(first["target_generation"]),
-                )
-                if any(
-                    (
-                        str(row["id"]),
-                        str(row["operation_kind"]),
-                        str(row["captured_members"]),
-                        int(row["target_generation"]),
-                    )
-                    != identity
-                    for row in rows[1:]
-                ):
+            rank = {"captured": 0, "fenced": 1, "store_committed": 2,
+                    "forward_recovery_required": 3, "published": 4, "aborted": 4}
+            operations = {}
+            for name, mirrors in operation_rows.items():
+                first = mirrors[0][1]
+                try:
+                    members = json.loads(first["captured_members"])
+                except (TypeError, ValueError) as exc:
+                    raise ProfileCoordinatorError("profile_operation_members_unknown") from exc
+                if (not isinstance(members, list)
+                        or any(not isinstance(slug, str) or not slug or slug not in orgs for slug in members)):
+                    raise ProfileCoordinatorError("profile_operation_members_unknown")
+                if len(set(members)) != len(members):
                     raise ProfileCoordinatorError("profile_operation_incoherent")
-                state = max((str(row["state"]) for row in rows), key=rank.__getitem__)
-                prior_rows = [
-                    row for row in rows if str(row["state"]) in {"captured", "fenced"}
-                ]
-                prior_digest = str((prior_rows or rows)[0]["profile_digest"])
+                if {slug for slug, _ in mirrors} != set(members) or len(mirrors) != len(members):
+                    raise ProfileCoordinatorError("profile_operation_missing")
+                identity_fields = ("id", "profile_name", "operation_kind", "captured_members",
+                                   "target_generation", "coordinator_invocation", "compensation_generation", "created_at")
+                identity = tuple(first[key] for key in identity_fields)
+                if (not isinstance(name, str) or not name or first["operation_kind"] not in {"register", "rebind", "remove"}
+                        or type(first["target_generation"]) is not int or first["target_generation"] <= 0
+                        or any(not isinstance(first[key], str) or not first[key] for key in
+                               ("id", "coordinator_invocation", "created_at"))):
+                    raise ProfileCoordinatorError("profile_operation_incoherent")
+                rows = [row for _, row in mirrors]
+                for row in rows:
+                    if (tuple(row[key] for key in identity_fields) != identity
+                            or row["state"] not in rank
+                            or type(row["compensation_generation"]) is not int or row["compensation_generation"] < 0
+                            or not isinstance(row["profile_digest"], str) or len(row["profile_digest"]) != 64
+                            or any(c not in "0123456789abcdef" for c in row["profile_digest"])):
+                        raise ProfileCoordinatorError("profile_operation_incoherent")
+                if {r["state"] for r in rows} >= {"published", "aborted"}:
+                    raise ProfileCoordinatorError("profile_operation_incoherent")
+                prior_rows = [r for r in rows if r["state"] in {"captured", "fenced"}]
+                if len({r["profile_digest"] for r in prior_rows}) > 1:
+                    raise ProfileCoordinatorError("profile_operation_incoherent")
                 operations[name] = _ProfileOperation(
-                    operation_id=identity[0],
-                    profile_name=name,
-                    operation_kind=identity[1],
-                    members=tuple(json.loads(identity[2])),
-                    target_generation=identity[3],
-                    prior=_EffectiveProfile(
-                        digest=prior_digest,
-                        state="active",
-                        resolvable=False,
-                    ),
-                    recovery_state=state,
+                    operation_id=first["id"], profile_name=name, operation_kind=first["operation_kind"],
+                    members=tuple(members), target_generation=first["target_generation"],
+                    prior=_EffectiveProfile((prior_rows or rows)[0]["profile_digest"], "active", False),
+                    recovery_state=max((r["state"] for r in rows), key=rank.__getitem__),
                 )
             return tuple(operations[name] for name in sorted(operations))
 
     def _members_are_already_ready(
         self,
         operations: Sequence[_ProfileOperation],
+        *, effective_profiles: dict[str, _EffectiveProfile] | None = None,
     ) -> bool:
         with self._capture_orgs() as orgs:
             members = {slug for operation in operations for slug in operation.members}
@@ -1437,7 +1511,7 @@ class ProfileCoordinator:
                     readiness = org.workflow_authority.verify_admission_ready()
                 except Exception:
                     return False
-                if not self._closure_coherent(org):
+                if not self._closure_coherent(org, effective_profiles=effective_profiles):
                     return False
                 snapshot = json.loads(readiness.snapshot_bytes)
                 if (
@@ -1454,15 +1528,23 @@ class ProfileCoordinator:
         profile_names: Sequence[str],
     ) -> None:
         with self._capture_orgs() as orgs:
+            operations = self._load_group_operations(coordinator_invocation, profile_names)
+            captures = {slug: self._capture_org_dependencies(orgs[slug])
+                        for slug in {slug for op in operations for slug in op.members}}
+            effective_profiles = {name: self._effective_profile(name) for name in
+                                  set(profile_names) | {name for c in captures.values() for name in c.profile_names}}
+            already_ready = self._members_are_already_ready(operations, effective_profiles=effective_profiles)
             with self._profile_leases(profile_names, wait=False):
-                operations = self._load_group_operations(
-                    coordinator_invocation, profile_names,
-                )
+                if operations != self._load_group_operations(coordinator_invocation, profile_names):
+                    raise ProfileCoordinatorError("profile_consumer_changed")
+                for slug, capture in captures.items():
+                    with orgs[slug].workflow_authority._publisher_lock:
+                        self._validate_capture(orgs[slug], capture.revision)
                 # A crash after all canonical publications but before the final
                 # operation-row update must not manufacture another generation.
-                if self._members_are_already_ready(operations):
+                if already_ready:
                     for operation in operations:
-                        effective = self._effective_profile(operation.profile_name)
+                        effective = effective_profiles[operation.profile_name]
                         terminal = (
                             "published"
                             if effective.digest != operation.prior.digest
@@ -1502,6 +1584,7 @@ class ProfileCoordinator:
                         bindings=bindings,
                         publisher="profile-startup-recovery",
                         mutation_succeeded=True,
+                        effective_profiles=effective_profiles,
                     )
                     self._release_diagnostic_leases(
                         operations,
@@ -1509,23 +1592,153 @@ class ProfileCoordinator:
                     )
 
     def reconcile_startup(self) -> None:
-        """Recover interrupted work, then publish current exact dependencies."""
+        """Classify complete startup evidence, recover eligible groups, then sync.
+
+        Refusals latch for this attachment. An ordinary local journal is never
+        adopted; only the existing complete eligible profile groups can recover.
+        """
         with self._capture_orgs() as orgs:
-            if getattr(self, "_move_diagnostic_orgs", None):
-                logger.warning("profile startup reconciliation deferred: diagnostic team-move org remains held")
-                return
-            for invocation, names in sorted(self._discover_operation_groups().items()):
-                self._recover_group(invocation, sorted(names))
-            changed = self.synchronize_all_dependencies(publish=False)
-            for slug in sorted(changed):
-                org = orgs[slug]
+            captures = {}
+            edges: dict[str, set[str]] = {slug: set() for slug in orgs}
+            reasons = dict(self._startup_holds)
+            unknown = self._startup_unknown or bool(getattr(self, "_move_diagnostic_orgs", None))
+            first = next(iter(reasons.values()), None)
+            def refused(slugs: Sequence[str], exc: Exception, *, uncertain: bool = False) -> None:
+                nonlocal first, unknown
+                cause = getattr(exc, "code", str(exc))
+                first = first or cause
+                unknown = unknown or uncertain
+                logger.warning("profile startup held: %s", cause, exc_info=True)
+                for slug in slugs:
+                    reasons.setdefault(slug, cause)
+
+            for slug, org in sorted(orgs.items()):
                 try:
-                    org.workflow_authority.verify_admission_ready()
-                except Exception:
-                    # An interrupted operation owns this fence; its recovery above
-                    # either completed it or intentionally left the org fenced.
+                    captures[slug] = self._capture_org_dependencies(org, attachment=True)
+                except ProfileCoordinatorError as exc:
+                    capture = getattr(exc, "capture", None)
+                    if capture is None:
+                        refused((slug,), exc, uncertain=True)
+                    else:
+                        captures[slug] = capture
+                        refused((slug,), exc)
+                except (sqlite3.DatabaseError, ValueError, OSError, OrgConsistencyError) as exc:
+                    refused((slug,), exc, uncertain=True)
+                if slug in captures:
+                    capture = captures[slug]
+                    edges[slug].update(capture.profile_names)
+                    if capture.canonical_error is not None and not capture.empty_skeleton:
+                        reasons.setdefault(slug, capture.canonical_error)
+                        first = first or capture.canonical_error
+                    # Strict authenticated native ownership, independently of a
+                    # PID, kernel lease or an ordinary journal's current phase.
+                    history = [json.loads(raw) for _, raw in capture.revision[7]]
+                    if (any(row["state"] != "settled" for row in history)
+                            or (capture.revision[8] and json.loads(capture.revision[8][1]))):
+                        reasons.setdefault(slug, "profile_consumer_changed")
+                    try:
+                        self._validate_capture(org, capture.revision)
+                    except (ProfileCoordinatorError, sqlite3.DatabaseError, ValueError) as exc:
+                        refused((slug,), exc, uncertain=True)
+
+            groups = {}
+            operations = {}
+            try:
+                groups = self._discover_operation_groups()
+                for invocation, names in sorted(groups.items()):
+                    # All profiles of ONE invocation form one hyperedge, even
+                    # if a current canonical consumer or mirror is absent.
+                    for slug in edges:
+                        if edges[slug] & names:
+                            edges[slug].update(names)
+                    # Preserve known captured-only members even if a missing or
+                    # invalid mirror later makes the complete group ineligible.
+                    for capture in captures.values():
+                        for row in capture.revision[5]:
+                            if row[7] != invocation:
+                                continue
+                            try:
+                                members = json.loads(row[3])
+                            except (TypeError, ValueError):
+                                members = None
+                            if not isinstance(members, list) or any(not isinstance(m, str) or m not in orgs for m in members):
+                                unknown = True
+                            else:
+                                for member in members:
+                                    edges[member].update(names)
+                    try:
+                        operations[invocation] = self._load_group_operations(invocation, sorted(names))
+                        for op in operations[invocation]:
+                            for slug in op.members:
+                                edges[slug].update(names)
+                    except ProfileCoordinatorError as exc:
+                        affected = tuple(slug for slug in edges if edges[slug] & names)
+                        refused(affected, exc, uncertain=exc.code == "profile_operation_members_unknown")
+            except (sqlite3.DatabaseError, ValueError, OSError, ProfileCoordinatorError) as exc:
+                refused(tuple(orgs), exc, uncertain=True)
+
+            def closure() -> None:
+                if unknown:
+                    for slug in orgs:
+                        reasons.setdefault(slug, first or "profile_consumer_changed")
+                changed = True
+                while changed:
+                    profiles = {name for slug in reasons for name in edges.get(slug, ())}
+                    added = {slug for slug in edges if edges[slug] & profiles and slug not in reasons}
+                    for slug in added:
+                        reasons[slug] = "profile_consumer_changed: " + (first or next(iter(reasons.values())))
+                    changed = bool(added)
+
+            # Close the WHOLE discovery before the first recovery/sync effect.
+            # Movement may have introduced a previously unknown hyperedge.
+            for slug, capture in captures.items():
+                try:
+                    self._validate_capture(orgs[slug], capture.revision)
+                except (ProfileCoordinatorError, sqlite3.DatabaseError, ValueError) as exc:
+                    refused((slug,), exc, uncertain=True)
+            closure()
+            for invocation, names in sorted(groups.items()):
+                if invocation not in operations:
                     continue
-                self._publish_dependency_change(org)
+                members = {slug for op in operations[invocation] for slug in op.members}
+                if members & reasons.keys():
+                    continue
+                try:
+                    self._recover_group(invocation, sorted(names))
+                    # Recovery changes owned journals/mirrors; take complete new
+                    # captures only for this eligible group's actual members.
+                    for slug in members:
+                        captures[slug] = self._capture_org_dependencies(orgs[slug])
+                except (ProfileCoordinatorError, WorkflowAuthorityError, sqlite3.DatabaseError, ValueError, OSError) as exc:
+                    refused(tuple(members), exc)
+                    closure()
+
+            self._startup_holds.update(reasons)
+            self._startup_hold_profiles.update(name for slug in reasons for name in edges.get(slug, ()))
+            self._startup_unknown = unknown
+            # Synchronize disjoint components independently. A failed capture
+            # invalidates its complete connected scope BEFORE any member writes.
+            remaining = set(orgs) - reasons.keys()
+            while remaining:
+                component = {min(remaining)}
+                while True:
+                    names = {name for slug in component for name in edges[slug]}
+                    expanded = component | {slug for slug in remaining if edges[slug] & names}
+                    if expanded == component:
+                        break
+                    component = expanded
+                remaining.difference_update(component)
+                try:
+                    self._synchronize_captured([(slug, orgs[slug], captures[slug]) for slug in sorted(component)], publish=True)
+                except (ProfileCoordinatorError, WorkflowAuthorityError, sqlite3.DatabaseError, ValueError, OSError) as exc:
+                    refused(tuple(component), exc, uncertain=exc.code == "profile_consumer_changed"
+                            if isinstance(exc, ProfileCoordinatorError) else True)
+                    closure()
+                    remaining.difference_update(reasons)
+                    self._startup_holds.update(reasons)
+                    self._startup_hold_profiles.update(name for slug in reasons for name in edges.get(slug, ()))
+            if self._hold_startup is not None:
+                self._hold_startup(self._startup_holds)
 
     def _move_batch_inputs(self, org: OrgState, operation_id: str) -> tuple:
         from runtime.infrastructure.team_move_store import MoveRequest, _decode

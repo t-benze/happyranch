@@ -23,20 +23,22 @@ def _assert_can_swap(state: DaemonState) -> None:
     """Preflight ALL old orgs without fencing or closing any of them."""
     if state._runner_shutdown:
         raise HTTPException(status_code=409, detail={"code": "daemon_shutting_down"})
+    if state._attachment_swap_failed or state._startup_held_orgs:
+        raise HTTPException(status_code=409, detail={"code": "attachment_retiring"})
     state.team_move_service.assert_no_owner()
     try:
         state._assert_attachment_loads_idle()
-        state._assert_attachment_readers_idle(tuple(state.orgs_snapshot().values()))
+        state._assert_attachment_readers_idle(tuple(state._all_orgs_snapshot().values()))
     except _OrgBusyError as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
     from runtime.orchestrator.team_move_startup import refuse_runtime_detach
     refuse_runtime_detach(state.runtime, diagnostics=state.broken_orgs)
-    for org in state.orgs_snapshot().values():
+    for org in state._all_orgs_snapshot().values():
         try:
             org._assert_runners_idle()
         except _OrgBusyError as exc:
             raise HTTPException(status_code=409, detail={"code": exc.code, "org": org.slug}) from exc
-    for org in state.orgs_snapshot().values():
+    for org in state._all_orgs_snapshot().values():
         if org.db._team_move_coordinator.store.read() is not None:
             from runtime.infrastructure.team_move_store import TeamMoveError
             raise TeamMoveError("team_move_runtime_detach_held")
@@ -58,11 +60,11 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     # No await separates the all-org admission decision from map replacement.
     _assert_can_swap(state)
     state._revoke_thread_releases()
-    for org in state.orgs_snapshot().values():
+    for org in state._all_orgs_snapshot().values():
         org._assert_thread_releases_idle()
     state._revoke_cleanup_diagnostics()
     # Synchronous callers cannot bypass the asynchronous drain barrier.
-    for org in state.orgs_snapshot().values():
+    for org in state._all_orgs_snapshot().values():
         try:
             org._assert_cleanup_diagnostics_idle()
         except _OrgBusyError as exc:
@@ -70,11 +72,27 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     from runtime.orchestrator.team_move_startup import require_runtime_reader
     diagnostics = dict(move_diagnostics or {})
     diagnostics.update(require_runtime_reader(runtime))
-    old_orgs = tuple(state.orgs_snapshot().values())
-    state._begin_attachment_close(old_orgs)
-    for org in old_orgs:
-        org.close()
-    new_state = DaemonState.from_runtime(runtime, state.settings, move_diagnostics=diagnostics)
+    old_orgs = tuple(state._all_orgs_snapshot().values())
+    owner = {"runtime": runtime, "old_orgs": old_orgs, "candidate": None}
+    token = object()
+    state._attachment_owners[token] = owner
+    # From this first close onward an incomplete replacement has no runnable
+    # old map and the route's finally must not reopen its read barrier.
+    state._attachment_swap_failed = True
+    try:
+        state._begin_attachment_close(old_orgs)
+        with state._org_map_lock:
+            # Direct existing map readers must also lose retired originals;
+            # their exact handles remain on the original close/swap owners.
+            state.orgs.clear()
+            state._startup_held_orgs.clear()
+        state._close_attachments(old_orgs)
+        new_state = DaemonState.from_runtime(runtime, state.settings, move_diagnostics=diagnostics,
+                                             construction_owner=owner)
+    except BaseException as primary:
+        owner.setdefault("primary", primary)
+        owner["old_closes"] = state._attachment_closes
+        raise
     # Move the worker queue and lock instances into the new state so an
     # in-flight worker pool keeps consuming. Old orgs have no nonterminal tasks
     # or active native runners (checked above).
@@ -83,13 +101,15 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     state.runtime = new_state.runtime
     with state._org_map_lock:
         state.orgs = new_state.orgs
+        state._startup_held_orgs = new_state._startup_held_orgs
         state._retiring_orgs.difference_update(id(org) for org in old_orgs)
-    for org in state.orgs_snapshot().values():
+    for org in state._all_orgs_snapshot().values():
         org._cleanup_diagnostic_unavailable = "runtime_attachment_unsupported"
     state.broken_orgs = new_state.broken_orgs
     state.profile_coordinator = new_state.profile_coordinator
     if state.profile_coordinator is not None:
-        state.profile_coordinator._attachment_capture = state.capture_orgs
+        state.profile_coordinator._attachment_capture = state._capture_profile_orgs
+        state.profile_coordinator._hold_startup = state._hold_startup_orgs
     # No live owner can cross the switch (checked above). Keep diagnostic
     # trackers/errors scoped to this runtime rather than the reused org slug.
     from runtime.daemon.team_move_service import TeamMoveService
@@ -106,6 +126,10 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     # Reset the snapshot throttle so the freshly-active runtime snapshots
     # promptly on the next scheduler tick.
     state._last_metrics_snapshot_at = 0.0
+    with state._org_map_lock:
+        state._attachment_owners.pop(token)
+        state._attachment_closes = new_state._attachment_closes
+        state._attachment_swap_failed = False
 
 
 async def _drain_before_swap(daemon: DaemonState) -> tuple:
@@ -129,7 +153,7 @@ async def _drain_before_swap(daemon: DaemonState) -> tuple:
 def _renew_swap_preflight(daemon: DaemonState, captured: tuple) -> None:
     try:
         daemon._assert_attachments_unchanged(captured)
-        for org in daemon.orgs_snapshot().values():
+        for org in daemon._all_orgs_snapshot().values():
             org._assert_thread_releases_idle()
     except _OrgBusyError as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code}) from exc

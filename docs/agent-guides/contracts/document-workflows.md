@@ -439,8 +439,9 @@ Missing dependency rows are never proof of an empty canonical requirement set.
 A profile contender refuses an unfinished ordinary canonical batch before its
 global operation claim; startup authority recovery owns interrupted batches. Removal leaves
 an outstanding consumer unbound and the org fenced until an explicit coherent
-rebind/removal. Cold startup completes interrupted operations once; a
-post-commit republish failure preserves the writer's established response while
+rebind/removal. Cold startup recovers only complete eligible interrupted profile
+operations through their existing synchronous owner; a post-commit republish
+failure preserves the writer's established response while
 leaving a machine-readable fenced recovery state. Direct same-UID file/DB edits
 remain outside the cooperative guarantee. Dynamic org attachment scans its
 canonical profile requirements and authority inputs before taking the corresponding
@@ -465,6 +466,31 @@ still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
 operation evidence, unfinished canonical writers, and stale captures refuse this
 exception before synchronization. Reviewer policy and snapshot validation do not
 change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
+Startup first classifies the complete retained inventory. Membership is the union
+of active canonical consumers, active/unbound dependency rows and every captured
+member of every profile in the same unfinished coordinator invocation. Strict
+operation readers reject scalar, duplicate, unknown or missing members and
+inconsistent mirrors/identities/states. Failed reads or unknown membership hold
+the broader scope whose independence cannot be proved. An ordinary prepared
+journal remains org-local and retains its original invocation; absent PID/lease
+or a terminal task never settles it. Original native UNKNOWN/active ownership
+also prevents startup writers from adopting or republishing it on a later boot.
+
+Complete pointer, journal, dependency/store/registry, operation, lease and native
+history/epoch images bracket discovery and are revalidated before mutation.
+Discovery and effective-profile scans precede durable leases/SQL. Only eligible
+components synchronize; rejected captures cannot supply a new baseline. Held
+attachments retain their original handles and first diagnostics, leave runnable
+lookup/producer snapshots, and close existing runner admission. Profile readers
+still capture runnable plus held inventory, and conflicting writers refuse.
+Direct readiness and final SQL validation reject held membership with
+`authority_pointer_not_ready` before map/DB access, including an earlier genuine
+ready capture, without clearing its cache or rewriting its journal. The hold is
+latched for this attachment; no automatic unhold or new journal-recovery action
+is supplied. Independent orgs complete ordinary synchronous startup before serving.
+HTTP health, attachment/broken status and workflow authority readiness remain
+separate observations.
 
 Adapter approval carries its initially selected intended profile (including no
 target) through to the durable registry writer. Under the existing adapter

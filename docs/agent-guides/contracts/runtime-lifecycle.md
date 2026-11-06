@@ -322,6 +322,26 @@ original map/profile identity on replacement. Shutdown fences native insertion a
 joins attachment children before host/DB close. Source/static evidence establishes
 no behavioral readiness, hard completion bound or new launch permission.
 
+Synchronous startup retains every positively loaded handle before selectors or
+reconciliation can fail. A narrow startup-held inventory preserves original
+objects and diagnostics while ordinary lookup and producer snapshots expose only
+runnable attachments. Profile readers, identity/drain preflights and shutdown
+include both inventories. Dynamic add refuses a retained held slug and never
+constructs a replacement to clear it. An idle local DB close does not settle an
+external ordinary writer or its durable UNKNOWN evidence.
+
+Whole-runtime construction records its actual candidate on the original caller's
+owner before later fallible work. Both normal startup and runtime replacement
+preserve the first error through unwind, execute independently owed safe closes
+once, and retain exact failed/unknown handles and actual secondary errors. A
+partial old close or failed loaded candidate leaves replacement incomplete:
+`attachment_retiring` continues through route finally, `get_org`/producer snapshots
+expose no retired originals or failed candidate, and stale native objects refuse
+admission. No rollback, second constructor or retry of a failed close is implied.
+Successful adoption transfers the full held inventory and binds profile capture
+and hold callbacks to the adopted actual state. Startup recovery/enqueue stays
+synchronous, before serving, and visits runnable orgs only.
+
 The four async runner entrypoints retain a private org lifetime through native
 finish (including failure), beyond the refresh Future. Org unload refuses active
 runners and fences detached instances against late starts. Runtime registration

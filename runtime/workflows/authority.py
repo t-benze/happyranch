@@ -1241,11 +1241,15 @@ class WorkflowAuthorityCoordinator:
 
     def verify_admission_ready(self) -> AuthorityReadiness:
         """Read-only readiness check for later units; U2A has no consumer."""
+        if self._profile_coordinator is not None:
+            self._profile_coordinator.assert_org_admission(self._org_slug)
         with self._publisher_lock, self._db._lock:
             return self._verify_ready_locked(self._db._conn)
 
     def capture_admission(self) -> AuthorityAdmissionCapture:
         """Capture the complete org and profile closure without leasing scans."""
+        if self._profile_coordinator is not None:
+            self._profile_coordinator.assert_org_admission(self._org_slug)
         with self._db._lock:
             before = self._pointer(self._db._conn, self.namespace)
         ready = self.verify_admission_ready()
@@ -1316,6 +1320,9 @@ class WorkflowAuthorityCoordinator:
         and the private task composition. It neither commits nor takes a lease.
         """
         coordinator = self._profile_coordinator
+        if coordinator is None:
+            raise WorkflowAuthorityError("authority_profile_coordinator_unavailable")
+        coordinator.assert_org_admission(self._org_slug)
         pointer = self._pointer(conn, self.namespace)
         if pointer != capture.pointer or self._active_journal(conn, self.namespace) is not None:
             raise WorkflowAuthorityError("workflow_activation_authority_stale")

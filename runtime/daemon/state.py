@@ -81,6 +81,9 @@ class DaemonState:
     # this mutex. Never acquire DB/profile locks, await or close under it.
     _org_map_lock: threading.RLock = field(init=False, default_factory=threading.RLock, repr=False)
     _attachment_swap_pending: bool = field(init=False, default=False, repr=False)
+    _attachment_swap_failed: bool = field(init=False, default=False, repr=False)
+    _startup_held_orgs: dict[str, OrgState] = field(init=False, default_factory=dict, repr=False)
+    _attachment_closes: dict[int, dict] = field(init=False, default_factory=dict, repr=False)
     _org_readers: dict[int, int] = field(init=False, default_factory=dict, repr=False)
     _retiring_orgs: set[int] = field(init=False, default_factory=set, repr=False)
     _attachment_tasks: set[asyncio.Task] = field(init=False, default_factory=set, repr=False)
@@ -90,17 +93,49 @@ class DaemonState:
     def orgs_snapshot(self) -> dict[str, OrgState]:
         """Membership only; existing runner admission still owns execution."""
         with self._org_map_lock:
-            return dict(self.orgs)
+            return {slug: org for slug, org in self.orgs.items()
+                    if id(org) not in self._retiring_orgs and not self._attachment_swap_failed}
+
+    def _all_orgs_snapshot(self) -> dict[str, OrgState]:
+        """Custody inventory, including nonrunnable startup attachments."""
+        with self._org_map_lock:
+            retired = {record["org"].slug: record["org"] for record in self._attachment_closes.values()}
+            return {**retired, **self.orgs, **self._startup_held_orgs}
+
+    def _hold_startup_orgs(self, reasons: dict[str, str]) -> None:
+        with self._org_map_lock:
+            for slug, reason in reasons.items():
+                org = self.orgs.pop(slug, None) or self._startup_held_orgs.get(slug)
+                if org is not None:
+                    org._runner_admission_closed = True
+                    self._startup_held_orgs[slug] = org
+                    original = org._startup_authority_error
+                    detail = reason if original is None else reason + "; " + str(original)
+                    self.broken_orgs.setdefault(slug, detail[:1024])
+
+    @contextmanager
+    def _capture_profile_orgs(self) -> Iterator[dict[str, OrgState]]:
+        with self._capture_org_inventory(profiles=True) as orgs:
+            yield orgs
 
     @contextmanager
     def capture_orgs(self, slugs: tuple[str, ...] | None = None, *, original: OrgState | None = None) -> Iterator[dict[str, OrgState]]:
-        """Retain the actual DB attachments for a native read interval."""
+        with self._capture_org_inventory(slugs, original=original) as orgs:
+            yield orgs
+
+    @contextmanager
+    def _capture_org_inventory(self, slugs: tuple[str, ...] | None = None, *, original: OrgState | None = None,
+                               profiles: bool = False) -> Iterator[dict[str, OrgState]]:
         with self._org_map_lock:
-            orgs = dict(self.orgs) if slugs is None else {slug: self.orgs[slug] for slug in slugs if slug in self.orgs}
+            if (self._attachment_swap_pending or self._attachment_swap_failed
+                    or (original is not None and id(original) in self._retiring_orgs)):
+                raise _OrgBusyError("attachment_retiring")
+            inventory = self._all_orgs_snapshot() if profiles else dict(self.orgs)
+            orgs = inventory if slugs is None else {slug: inventory[slug] for slug in slugs if slug in inventory}
+            if any(id(org) in self._retiring_orgs for org in orgs.values()):
+                raise _OrgBusyError("attachment_retiring")
             if original is not None and orgs.get(original.slug) is not original:
                 raise _OrgBusyError("attachment_changed_during_read")
-            if self._attachment_swap_pending or any(id(org) in self._retiring_orgs for org in orgs.values()):
-                raise _OrgBusyError("attachment_retiring")
             for org in orgs.values():
                 self._org_readers[id(org)] = self._org_readers.get(id(org), 0) + 1
         try:
@@ -114,6 +149,47 @@ class DaemonState:
                     else:
                         del self._org_readers[id(org)]
 
+    def _close_attachments(self, orgs: tuple[OrgState, ...]) -> None:
+        """Close each original local handle once; retain first/secondary causes."""
+        self._begin_attachment_close(orgs)
+        primary = None
+        for org in orgs:
+            identity = id(org)
+            record = self._attachment_closes.get(identity)
+            if record is not None and record.get("attempted"):
+                if record.get("error") is not None:
+                    primary = primary or record["error"]
+                elif not record.get("closed"):
+                    primary = primary or _OrgBusyError("attachment_native_return_unknown")
+                continue
+            record = self._attachment_closes.setdefault(identity, {"org": org, "closed": False})
+            record["attempted"] = True
+            try:
+                org.close()
+            except BaseException as exc:
+                record["error"] = exc
+                primary = primary or exc
+            else:
+                record["closed"] = True
+        if primary is not None:
+            raise primary
+
+    def _fail_construction(self, owner: dict, primary: BaseException) -> None:
+        owner["candidate"], owner["primary"] = self, primary
+        try:
+            self._stop_runner_admission()
+        except BaseException as cleanup:
+            owner["admission_error"] = cleanup
+            primary.add_note("runtime construction admission close failed: " + type(cleanup).__name__)
+        try:
+            # A failed unpublished load keeps its own owner. It cannot suppress
+            # independently owed closes of the other positively loaded handles.
+            self._close_attachments(tuple(self._all_orgs_snapshot().values()))
+        except BaseException as cleanup:
+            owner["close_error"] = cleanup
+            primary.add_note("runtime construction cleanup failed: " + type(cleanup).__name__)
+        owner["closes"] = self._attachment_closes
+
     def _assert_attachment_readers_idle(self, orgs: tuple[OrgState, ...]) -> None:
         with self._org_map_lock:
             if any(self._org_readers.get(id(org), 0) for org in orgs):
@@ -125,6 +201,10 @@ class DaemonState:
         with self._org_map_lock:
             self._assert_attachment_readers_idle(orgs)
             self._retiring_orgs.update(id(org) for org in orgs)
+            for org in orgs:
+                # Retain all originals before the first close, including on an
+                # unpublished candidate whose original map remains diagnostic.
+                self._attachment_closes.setdefault(id(org), {"org": org, "closed": False, "attempted": False})
         for org in orgs:
             org._runner_admission_closed = True
 
@@ -137,17 +217,18 @@ class DaemonState:
         # Called at the final loop preflight, before registry/activation effects.
         # Prevent a new native reader from opening the close race afterward.
         with self._org_map_lock:
-            self._assert_attachment_readers_idle(tuple(self.orgs.values()))
+            self._assert_attachment_readers_idle(tuple(self._all_orgs_snapshot().values()))
             self._attachment_swap_pending = True
 
     def _finish_attachment_swap(self) -> None:
         with self._org_map_lock:
-            self._attachment_swap_pending = False
+            if not self._attachment_swap_failed:
+                self._attachment_swap_pending = False
 
     def _assert_attachment_unpublished_idle(self, slug: str) -> None:
         """Fresh-org rollback cannot delete a published or uncertain owner."""
         with self._org_map_lock:
-            if slug in self.orgs or any(o["slug"] == slug for o in self._attachment_owners.values()):
+            if slug in self._all_orgs_snapshot() or any(o.get("slug") == slug for o in self._attachment_owners.values()):
                 raise _OrgBusyError("attachment_published_or_unsafe")
 
     async def _drain_attachments(self) -> None:
@@ -170,13 +251,13 @@ class DaemonState:
         if self._thread_release_service is not None:
             self._thread_release_service.revoke(org)
         else:
-            for current in self.orgs_snapshot().values() if org is None else (org,):
+            for current in self._all_orgs_snapshot().values() if org is None else (org,):
                 current._revoke_thread_releases()
 
     async def _drain_thread_releases(self, org=None) -> None:
         if self._thread_release_service is not None:
             await self._thread_release_service.drain(org)
-        for current in self.orgs_snapshot().values() if org is None else (org,):
+        for current in self._all_orgs_snapshot().values() if org is None else (org,):
             current._assert_thread_releases_idle()
 
     def _capture_attachments(self) -> tuple:
@@ -186,21 +267,26 @@ class DaemonState:
     def _capture_attachments_locked(self) -> tuple:
         # Private two-phase detach identity, captured under orgs_lock. Paths
         # accompany object identity so in-place root/DB changes also refuse.
-        return (self.orgs, self.runtime, self.runtime.root if self.runtime else None,
+        return (self.orgs, self._startup_held_orgs, self.runtime, self.runtime.root if self.runtime else None,
                 self.host_supervisor, self._thread_release_service, tuple((slug, org, org.root, org.db, org.db.db_path, org.sessions, org._thread_release_attachment)
-                                            for slug, org in self.orgs_snapshot().items()))
+                                            for slug, org in self._all_orgs_snapshot().items()),
+                tuple((slug, id(org)) for slug, org in self.orgs.items()),
+                tuple((slug, id(org)) for slug, org in self._startup_held_orgs.items()))
 
     def _assert_attachments_unchanged(self, captured: tuple) -> None:
         with self._org_map_lock:
             self._assert_attachments_unchanged_locked(captured)
 
     def _assert_attachments_unchanged_locked(self, captured: tuple) -> None:
-        org_map, runtime, root, supervisor, release_service, orgs = captured
-        if (self.orgs is not org_map or self.runtime is not runtime
+        org_map, held_map, runtime, root, supervisor, release_service, orgs, runnable, held = captured
+        inventory = self._all_orgs_snapshot()
+        if (self.orgs is not org_map or self._startup_held_orgs is not held_map or self.runtime is not runtime
                 or (self.runtime.root if self.runtime else None) != root
                 or self.host_supervisor is not supervisor or self._thread_release_service is not release_service
-                or len(self.orgs) != len(orgs)
-                or any(self.orgs.get(slug) is not org or org.slug != slug or org.root != org_root
+                or tuple((slug, id(org)) for slug, org in self.orgs.items()) != runnable
+                or tuple((slug, id(org)) for slug, org in self._startup_held_orgs.items()) != held
+                or len(inventory) != len(orgs)
+                or any(inventory.get(slug) is not org or org.slug != slug or org.root != org_root
                        or org.db is not db or db.db_path != db_path or org.sessions is not tracker
                        or org._thread_release_attachment is not release_attachment
                        for slug, org, org_root, db, db_path, tracker, release_attachment in orgs)):
@@ -209,20 +295,20 @@ class DaemonState:
     def _revoke_cleanup_diagnostics(self) -> None:
         if self._cleanup_diagnostics is not None:
             self._cleanup_diagnostics.revoke()
-        for org in self.orgs_snapshot().values():
+        for org in self._all_orgs_snapshot().values():
             org._revoke_cleanup_diagnostics()
 
     async def _drain_cleanup_diagnostics(self, org: OrgState | None = None) -> None:
         if self._cleanup_diagnostics is not None:
             await self._cleanup_diagnostics.drain(org)
-        for current in self.orgs_snapshot().values() if org is None else (org,):
+        for current in self._all_orgs_snapshot().values() if org is None else (org,):
             current._assert_cleanup_diagnostics_idle()
 
     def _stop_runner_admission(self) -> None:
         # No await: fence both existing OrgState references and later add_org.
         with self._org_map_lock:
             self._runner_shutdown = True
-            orgs = tuple(self.orgs.values())
+            orgs = tuple(self._all_orgs_snapshot().values())
         self.queue.close_admission()
         for org in orgs:
             org._runner_admission_closed = True
@@ -255,146 +341,167 @@ class DaemonState:
             )
 
     @classmethod
-    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, move_diagnostics=None) -> "DaemonState":
+    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, move_diagnostics=None, construction_owner: dict | None = None) -> "DaemonState":
         from runtime.orchestrator.team_move_startup import require_runtime_reader
         diagnostics = dict(move_diagnostics or {})
         diagnostics.update(require_runtime_reader(runtime))
         state = cls(runtime=runtime, settings=settings)
-        state.broken_orgs.update(diagnostics)
-        from runtime.orchestrator.team_move_startup import diagnostic_move_orgs
-        state.broken_orgs.update(diagnostic_move_orgs(runtime))
-        # __post_init__ constructs metrics_store at runtime.root/metrics.db
+        construction = construction_owner if construction_owner is not None else {}
+        construction["candidate"] = state
+        try:
+            state.broken_orgs.update(diagnostics)
+            from runtime.orchestrator.team_move_startup import diagnostic_move_orgs
+            state.broken_orgs.update(diagnostic_move_orgs(runtime))
+            # __post_init__ constructs metrics_store at runtime.root/metrics.db
 
-        # THR-207 task-producer wiring: construct the daemon-wide supervisor
-        # with the capability-factory-selected REAL backend (Linux
-        # systemd/cgroup-v2 when the operational probe is healthy, macOS
-        # process-group otherwise, honest no-enforcement passthrough as the
-        # fallback) and the configured 429 retry schedule owned by the
-        # supervisor (finish/release/sleep/reacquire with original enqueue
-        # age + fresh backend handle). The same 5/15/45 values the executor
-        # throttle used — no policy-default change. Task, schedule, thread,
-        # dream, and wake sessions run through it (thread/dream/wake via the
-        # worker loops below, which pass ``state.host_supervisor`` to each
-        # producer; when it is absent — tests / idle state — the producers
-        # keep the legacy uncontained path).
-        from runtime.orchestrator.host_supervisor import (
-            build_default_host_supervisor,
-            canary_policy,
-        )
-        from runtime.platform.backend_factory import select_session_backend
-        state.host_supervisor = build_default_host_supervisor(
-            backend=select_session_backend(),
-            policy=canary_policy(
-                global_session_cap=settings.host_global_session_cap,
-                producer_envelope=settings.queue_workers + 7,
-            ),
-            publisher=state.host_session_store.publish,
-            max_retry_attempts=len(settings.executor_rate_limit_backoff_seconds),
-            backoff_seconds=tuple(settings.executor_rate_limit_backoff_seconds),
-        )
-
-        from runtime.orchestrator.runtime_executor_store import (
-            load_runtime_profiles,
-        )
-        from runtime.runtime import daemon_home
-
-        state.profile_coordinator = ProfileCoordinator(
-            daemon_home=daemon_home(),
-            orgs=state.orgs,
-            capture_orgs=state.capture_orgs,
-        )
-
-        # Load runtime-level executor profiles into the process-wide registry
-        # so every org can resolve them (machine-global, visible to all orgs).
-        #
-        # Per-profile iteration: a bad persisted profile must not prevent
-        # valid later profiles from loading. Each profile is validated and
-        # registered individually; invalid entries are logged and skipped.
-        from runtime.orchestrator.executor_registry import get_registry
-        runtime_profiles = load_runtime_profiles()
-        if runtime_profiles:
-            registry = get_registry()
-            for name in runtime_profiles:
-                try:
-                    with state.profile_coordinator.profile_read(name):
-                        # Re-read this exact profile while paired with the
-                        # process cache publication. A concurrent supported
-                        # writer can never expose split YAML/registry state.
-                        current = load_runtime_profiles().get(name)
-                        if current is not None:
-                            profile = registry.validate_custom_profile_config(
-                                name, current
-                            )
-                            registry.register_custom_profile(profile)
-                except Exception as exc:
-                    logger.warning(
-                        "runtime executor profile %r skipped during "
-                        "startup load: %s",
-                        name,
-                        exc,
-                    )
-
-        for slug, root in runtime.iter_org_roots():
-            if slug in state.broken_orgs:
-                continue
-            try:
-                org = OrgState.load(slug=slug, root=root, settings=settings)
-            except (OrgConsistencyError, ValueError) as exc:
-                # One broken org must not crash the daemon. Record the
-                # error for GET /orgs and skip; the folder stays intact
-                # on disk so the founder can fix teams.yaml and restart.
-                state.broken_orgs[slug] = str(exc)
-                logger.error("org %r failed consistency check: %s", slug, exc)
-                continue
-            # U2A: every whole-runtime construction path (normal startup and
-            # live register/switch) initializes eligible selectors before the
-            # resulting DaemonState is returned or published. Raw
-            # ``OrgState.load`` retains its generation-1 recovery seam; this
-            # containing lifecycle owner makes it launch-ready.
-            from runtime.orchestrator.active_authority_policy import (
-                is_eligible_policy_manager,
+            # THR-207 task-producer wiring: construct the daemon-wide supervisor
+            # with the capability-factory-selected REAL backend (Linux
+            # systemd/cgroup-v2 when the operational probe is healthy, macOS
+            # process-group otherwise, honest no-enforcement passthrough as the
+            # fallback) and the configured 429 retry schedule owned by the
+            # supervisor (finish/release/sleep/reacquire with original enqueue
+            # age + fresh backend handle). The same 5/15/45 values the executor
+            # throttle used — no policy-default change. Task, schedule, thread,
+            # dream, and wake sessions run through it (thread/dream/wake via the
+            # worker loops below, which pass ``state.host_supervisor`` to each
+            # producer; when it is absent — tests / idle state — the producers
+            # keep the legacy uncontained path).
+            from runtime.orchestrator.host_supervisor import (
+                build_default_host_supervisor,
+                canary_policy,
             )
-            try:
-                for team in org.teams.teams():
-                    manager = org.teams.executable_manager_for_team(team)
-                    if manager is not None and is_eligible_policy_manager(
-                        root=org.root,
-                        agent_name=manager,
-                        team=team,
-                        teams=org.teams,
-                    ):
-                        org.workflow_authority.ensure_authority_selector(
-                            team=team,
-                            publisher="daemon-state-load:selector-initialization",
+            from runtime.platform.backend_factory import select_session_backend
+            state.host_supervisor = build_default_host_supervisor(
+                backend=select_session_backend(),
+                policy=canary_policy(
+                    global_session_cap=settings.host_global_session_cap,
+                    producer_envelope=settings.queue_workers + 7,
+                ),
+                publisher=state.host_session_store.publish,
+                max_retry_attempts=len(settings.executor_rate_limit_backoff_seconds),
+                backoff_seconds=tuple(settings.executor_rate_limit_backoff_seconds),
+            )
+
+            from runtime.orchestrator.runtime_executor_store import (
+                load_runtime_profiles,
+            )
+            from runtime.runtime import daemon_home
+
+            state.profile_coordinator = ProfileCoordinator(
+                daemon_home=daemon_home(),
+                orgs=state.orgs,
+                capture_orgs=state._capture_profile_orgs,
+                hold_startup=state._hold_startup_orgs,
+            )
+
+            # Load runtime-level executor profiles into the process-wide registry
+            # so every org can resolve them (machine-global, visible to all orgs).
+            #
+            # Per-profile iteration: a bad persisted profile must not prevent
+            # valid later profiles from loading. Each profile is validated and
+            # registered individually; invalid entries are logged and skipped.
+            from runtime.orchestrator.executor_registry import get_registry
+            runtime_profiles = load_runtime_profiles()
+            if runtime_profiles:
+                registry = get_registry()
+                for name in runtime_profiles:
+                    try:
+                        with state.profile_coordinator.profile_read(name):
+                            # Re-read this exact profile while paired with the
+                            # process cache publication. A concurrent supported
+                            # writer can never expose split YAML/registry state.
+                            current = load_runtime_profiles().get(name)
+                            if current is not None:
+                                profile = registry.validate_custom_profile_config(
+                                    name, current
+                                )
+                                registry.register_custom_profile(profile)
+                    except Exception as exc:
+                        logger.warning(
+                            "runtime executor profile %r skipped during "
+                            "startup load: %s",
+                            name,
+                            exc,
                         )
-            except Exception:
-                org.close()
-                raise
-            # Attach the global queue + per-org sessions + daemon-wide host
-            # supervisor so the orchestrator can re-enqueue tasks (e.g. parent
-            # wake-up after a child resolves) and run task sessions through
-            # admission/containment. The lifespan wiring also does this, but
-            # `from_runtime` is used by tests that bypass lifespan, so we do
-            # it here too — idempotent.
-            org.orchestrator.attach_queue(state.queue)
-            org.orchestrator.attach_sessions(org.sessions)
-            org.orchestrator.attach_host_supervisor(state.host_supervisor)
-            state.orgs[slug] = org
-        assert state.profile_coordinator is not None
-        for org in state.orgs.values():
-            # Keep the established route-call signatures intact: org-scoped
-            # writers reach their daemon-owned machine coordinator through
-            # the already-injected OrgState.
-            org._profile_coordinator = state.profile_coordinator
-        # Diagnostic move orgs remain outside runnable orgs. Global profile
-        # writers must not omit their held dependency closure merely because
-        # ordinary attachment correctly refused the partial roster.
-        state.profile_coordinator._move_diagnostic_orgs = {
-            slug: runtime.orgs_dir / slug for slug, reason in state.broken_orgs.items()
-            if "team_move_" in reason
-        }
-        state.profile_coordinator.reconcile_startup()
-        return state
+
+            for slug, root in runtime.iter_org_roots():
+                if slug in state.broken_orgs:
+                    continue
+                owner = {"slug": slug, "root": root, "org": None, "published": False}
+                token = object()
+                state._attachment_owners[token] = owner
+                try:
+                    org = OrgState.load(slug=slug, root=root, settings=settings, attachment_owner=owner)
+                    owner["org"] = org
+                    # Strong custody and both coordinator bindings precede selectors
+                    # and any other fallible post-load work.
+                    state.orgs[slug] = org
+                    org._profile_coordinator = state.profile_coordinator
+                    org.workflow_authority._profile_coordinator = state.profile_coordinator
+                    del state._attachment_owners[token]
+                except (OrgConsistencyError, ValueError) as exc:
+                    # One broken org must not crash the daemon. Record the
+                    # error for GET /orgs and skip; the folder stays intact
+                    # on disk so the founder can fix teams.yaml and restart.
+                    owner["primary"] = exc
+                    if owner.get("load_db_closed") or not owner.get("db_construction_started"):
+                        del state._attachment_owners[token]
+                    state.broken_orgs[slug] = str(exc)
+                    logger.error("org %r failed consistency check: %s", slug, exc)
+                    continue
+                # U2A: every whole-runtime construction path (normal startup and
+                # live register/switch) initializes eligible selectors before the
+                # resulting DaemonState is returned or published. Raw
+                # ``OrgState.load`` retains its generation-1 recovery seam; this
+                # containing lifecycle owner makes it launch-ready.
+                from runtime.orchestrator.active_authority_policy import (
+                    is_eligible_policy_manager,
+                )
+                if not org._startup_publication_held:
+                    for team in org.teams.teams():
+                        manager = org.teams.executable_manager_for_team(team)
+                        if manager is not None and is_eligible_policy_manager(
+                            root=org.root,
+                            agent_name=manager,
+                            team=team,
+                            teams=org.teams,
+                        ):
+                            org.workflow_authority.ensure_authority_selector(
+                                team=team,
+                                publisher="daemon-state-load:selector-initialization",
+                            )
+                # Attach the global queue + per-org sessions + daemon-wide host
+                # supervisor so the orchestrator can re-enqueue tasks (e.g. parent
+                # wake-up after a child resolves) and run task sessions through
+                # admission/containment. The lifespan wiring also does this, but
+                # `from_runtime` is used by tests that bypass lifespan, so we do
+                # it here too — idempotent.
+                org.orchestrator.attach_queue(state.queue)
+                org.orchestrator.attach_sessions(org.sessions)
+                org.orchestrator.attach_host_supervisor(state.host_supervisor)
+                state.orgs[slug] = org
+            assert state.profile_coordinator is not None
+            for org in state.orgs.values():
+                # Keep the established route-call signatures intact: org-scoped
+                # writers reach their daemon-owned machine coordinator through
+                # the already-injected OrgState.
+                org._profile_coordinator = state.profile_coordinator
+            # Diagnostic move orgs remain outside runnable orgs. Global profile
+            # writers must not omit their held dependency closure merely because
+            # ordinary attachment correctly refused the partial roster.
+            state.profile_coordinator._move_diagnostic_orgs = {
+                slug: runtime.orgs_dir / slug for slug, reason in state.broken_orgs.items()
+                if "team_move_" in reason
+            }
+            if state.broken_orgs:
+                # An unloaded root cannot certify its absent profile membership.
+                state.profile_coordinator._startup_unknown = True
+            state.profile_coordinator.reconcile_startup()
+            return state
+        except BaseException as primary:
+            state._fail_construction(construction, primary)
+            primary._attachment_owner = construction
+            raise
 
     @property
     def is_idle(self) -> bool:
@@ -402,10 +509,10 @@ class DaemonState:
 
     def get_org(self, slug: str) -> OrgState:
         with self._org_map_lock:
-            try:
-                return self.orgs[slug]
-            except KeyError as exc:
-                raise KeyError(slug) from exc
+            org = self.orgs.get(slug)
+            if org is None or self._attachment_swap_failed or id(org) in self._retiring_orgs:
+                raise KeyError(slug)
+            return org
 
     async def add_org(self, slug: str) -> OrgState:
         """Own the entire native/loop attachment before the first await."""
@@ -467,9 +574,13 @@ class DaemonState:
         async with self.orgs_lock:
             if self._runner_shutdown:
                 raise _OrgBusyError("daemon_shutting_down")
+            if self._attachment_swap_pending or self._attachment_swap_failed or slug in self._startup_held_orgs:
+                raise _OrgBusyError("attachment_retiring")
             current = self.orgs_snapshot().get(slug)
             if current is not None:
                 return current
+            if any(owner.get("slug") == slug for owner in self._attachment_owners.values()):
+                raise _OrgBusyError("attachment_native_in_flight_or_unsafe")
             assert self.runtime is not None
             owner = {"slug": slug, "runtime": self.runtime, "org_map": self.orgs,
                      "root": self.runtime.orgs_dir / slug,
@@ -491,6 +602,7 @@ class DaemonState:
                 org.orchestrator.attach_sessions(org.sessions)
                 org.orchestrator.attach_host_supervisor(self.host_supervisor)
                 org._profile_coordinator = owner["profiles"]
+                org.workflow_authority._profile_coordinator = owner["profiles"]
                 org._cleanup_diagnostic_unavailable = "dynamic_attachment_unsupported"
                 loop = asyncio.get_running_loop()
                 org.orchestrator.attach_thread_queue(org.thread_queue, loop, rediscover=False)
@@ -552,6 +664,9 @@ class DaemonState:
             inspect_team_move_org(root, org_slug=slug, require_database=True)
         org = OrgState.load(slug=slug, root=root, settings=self.settings, attachment_owner=owner)
         owner["org"] = org  # strong handle before selector validation can fail
+        if org._startup_publication_held:
+            from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+            raise ProfileCoordinatorError("profile_consumer_changed")
         from runtime.orchestrator.active_authority_policy import is_eligible_policy_manager
         for team in org.teams.teams():
             manager = org.teams.executable_manager_for_team(team)
@@ -586,6 +701,8 @@ class DaemonState:
         if self._runner_shutdown:
             raise _OrgBusyError("daemon_shutting_down")
         self.team_move_service.assert_no_owner(slug)
+        if slug in self._startup_held_orgs or self._attachment_swap_failed:
+            raise _OrgBusyError("attachment_retiring")
         current = self.orgs_snapshot().get(slug)
         if current is not None:
             current._assert_runners_idle()
@@ -619,10 +736,10 @@ class DaemonState:
             self._assert_attachments_unchanged(captured)
             current = self._assert_can_remove_org(slug)
             if current is not None:
-                self._begin_attachment_close((current,))
-                current.close()
+                self._close_attachments((current,))
                 with self._org_map_lock:
                     self.orgs.pop(slug)
+                    self._attachment_closes.pop(id(current))
                     self._retiring_orgs.discard(id(current))
 
     async def close_all(self) -> None:
@@ -636,7 +753,7 @@ class DaemonState:
         # Refuse native users before any service/org closure. The final
         # all-org preflight below renews this after the service/lock awaits.
         self.queue.assert_native_idle()
-        for org in self.orgs_snapshot().values():
+        for org in self._all_orgs_snapshot().values():
             org._assert_runners_idle()
         await self.team_move_service.close()
         async with self.orgs_lock:
@@ -644,15 +761,14 @@ class DaemonState:
             # Fail before any close if an unexpected caller still owns an org.
             # Lifespan joins the actual runners; cancellation is not that proof.
             self.queue.assert_native_idle()
-            for org in self.orgs_snapshot().values():
+            for org in self._all_orgs_snapshot().values():
                 org._assert_runners_idle()
                 org._assert_cleanup_diagnostics_idle()
-            orgs = tuple(self.orgs_snapshot().values())
-            self._begin_attachment_close(orgs)
-            for org in orgs:
-                org.close()
+            orgs = tuple(self._all_orgs_snapshot().values())
+            self._close_attachments(orgs)
             with self._org_map_lock:
                 self.orgs.clear()
+                self._startup_held_orgs.clear()
                 self._retiring_orgs.difference_update(id(org) for org in orgs)
         if self.direct_connect_authority_store is not None:
             self.direct_connect_authority_store.close()

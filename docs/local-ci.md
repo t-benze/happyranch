@@ -1851,6 +1851,21 @@ runs remain FAILED; broader restart, simultaneous-race, process-tree and
 scheduler proof remains UNPROVEN. No general integration/E2E/protected proof,
 Jenkins, deployment, automatic trigger, retry or notification is added.
 
+The same workflow's explicit `startup` opt-in (Founder THR308 seq301,
+ROOT TASK-14301) selects exactly eight startup-isolation nodes / 39 finite
+variants in `tests/integration/test_two_orgs_concurrent.py`; the default attachment
+selection is unchanged. The root charges its separate ledger before dispatch:
+two cycles, one maker qualification and one separate final-head QA slot per
+cycle, four hosted jobs total, at most 20 minutes per whole job / 80 minutes.
+Setup/refusal/failure consumes the original slot, without rerun, transfer or an
+extra maker pass. It uses GitHub-hosted Ubuntu24.04, frozen Python3.14, unchanged
+integration parent/lockfile and expected full event/checkout SHA, retaining actual
+source, case, cut, outcome and cleanup evidence. Qualification and independent
+source/fixture assessment precede production edits; only attributed execution
+supplies behavior or sensitivity evidence. This exception grants no general
+integration, Product E2E, live-host, deployment or restart authority. Required
+PR/main checks remain Source Boundary Lint and Web Lint(Node24) only.
+
 ## Explicitly selected guarded-merge CLI acceptance
 
 Sole ROOT TASK-12299 releases this manual support for PR1159's adapter repair:
