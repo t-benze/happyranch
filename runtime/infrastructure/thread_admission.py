@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -78,6 +79,30 @@ class ThreadLifecycle(Closed):
 class ThreadAdmissionStore:
     def __init__(self, db: Any, org_slug: str) -> None:
         self.db, self.org_slug = db, org_slug
+        self._lifecycle_epoch: datetime | None = None
+
+    def lifecycle_epoch_uncommitted(self) -> datetime | None:
+        """Timestamp of this org's first lifecycle row, or None when unknown.
+
+        Audit rows are append-only, so once found the epoch never moves and
+        is cached. Absent or unparseable evidence returns None (fail closed).
+        """
+        if self._lifecycle_epoch is not None:
+            return self._lifecycle_epoch
+        row = self.db._conn.execute(
+            "SELECT timestamp FROM audit_log WHERE action='thread_move_lifecycle' "
+            "ORDER BY id LIMIT 1"
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        try:
+            epoch = datetime.fromisoformat(str(row[0]))
+        except ValueError:
+            return None
+        if epoch.tzinfo is None:
+            return None
+        self._lifecycle_epoch = epoch
+        return epoch
 
     def read_uncommitted(self, inv: Any) -> ThreadLifecycle | None:
         # Scope remains the real thread ID, not an overloaded task identity.
