@@ -13,6 +13,22 @@ for parent isolation, explicit plans, source/callback identity and bounded two-o
 exception observation. General integration remains SKIPPED under THR-243 seq42;
 a focused task authorization does not establish full-suite health.
 
+Founder THR-308 seq301 / ROOT TASK-14301 permits only the eight named
+`test_startup_isolation_*` nodes in `test_two_orgs_concurrent.py` through the
+existing manual `attachment-focused-qa.yml` opt-in `startup` selection. Its
+default attachment-only command is unchanged. The manager must charge the
+separate ledger before dispatch: at most two cycles, one qualification/proof
+slot and one separate final-head QA slot per cycle, four hosted jobs total,
+20 minutes per entire job / 80 runner-minutes. Setup/refusal/failure consumes
+its slot; no rerun, extra maker pass or transfer of older exhausted allowances.
+The fixed selection uses GitHub-hosted Ubuntu24.04, Python3.14, unchanged frozen
+uv.lock, expected full event/checkout SHA and retained runner/case/cut/cleanup
+evidence. Qualification and independent source/fixture assessment precede
+production edits. Authoring is preparation: behavior NOT RUN and sensitivity
+PROOF NOT RUN until actual attributed execution. Required PR/main checks stay
+only Source Boundary Lint and Web Lint(Node24). This is neither a general
+integration revival, Product E2E trigger nor live-host/deployment authority.
+
 THR-291's separately authorized standalone `e2e/run.py` uses public bootstrap,
 registered deterministic external stubs and actual CLI/HTTP/browser boundaries,
 without pytest, integration-parent monkeypatches or product hooks. It runs only

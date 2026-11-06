@@ -1,16 +1,41 @@
 name: Attachment focused QA
+run-name: ${{ inputs.selection == 'startup' && format('startup-isolation-TASK-14301-c{0}-{1}', inputs.cycle, inputs.slot) || 'Attachment focused QA' }}
 
 on:
   workflow_dispatch:
+    inputs:
+      selection:
+        description: Fixed finite selection (startup requires ROOT14301 allocation)
+        type: choice
+        options: [attachment, startup]
+        default: attachment
+      expected_sha:
+        description: Full expected event and checkout SHA; required for startup
+        type: string
+        default: ''
+      cycle:
+        description: Manager-charged startup correction cycle
+        type: choice
+        options: ['1', '2']
+        default: '1'
+      slot:
+        description: Manager-charged startup slot; no additional maker green run
+        type: choice
+        options: [qualification, final-qa]
+        default: qualification
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   attachment-focused:
-    name: Ordinary attachment F1-F8 (Python 3.14)
+    name: ${{ inputs.selection == 'startup' && 'Startup isolation C1-C8 (Python 3.14)' || 'Ordinary attachment F1-F8 (Python 3.14)' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: ${{ inputs.selection == 'startup' && 20 || 10 }}
+    concurrency:
+      group: ${{ inputs.selection == 'startup' && 'startup-isolation-TASK-14301' || github.run_id }}
+      cancel-in-progress: false
     steps:
       - name: Create owned evidence outside checkout
         run: |
@@ -33,7 +58,75 @@ jobs:
         with:
           enable-cache: false
           python-version: '3.14'
+      - name: Authenticate finite startup allocation and hosted runner
+        if: ${{ inputs.selection == 'startup' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CYCLE: ${{ inputs.cycle }}
+          SLOT: ${{ inputs.slot }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$RUNNER_OS" = Linux
+          test "$RUNNER_ARCH" = X64
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 - <<'STARTUP_ADMISSION'
+          import json, os, pathlib, time, urllib.request
+          evidence = pathlib.Path(os.environ['QA_EVIDENCE'])
+          base = 'https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY']
+          deadline = time.monotonic() + 60
+          def get(path):
+              request = urllib.request.Request(base + path, headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+              remaining = deadline - time.monotonic()
+              assert remaining > 0, 'startup admission deadline exhausted'
+              with urllib.request.urlopen(request, timeout=min(20, remaining)) as response:
+                  return json.load(response)
+          run_id = int(os.environ['GITHUB_RUN_ID'])
+          jobs = get('/actions/runs/' + str(run_id) + '/jobs?filter=latest&per_page=100')
+          (evidence / 'startup-runner-jobs.json').write_text(json.dumps(jobs, sort_keys=True))
+          selected = [job for job in jobs['jobs'] if job['runner_name'] == os.environ['RUNNER_NAME']]
+          assert len(selected) == 1
+          job = selected[0]
+          assert job['runner_group_name'] == 'GitHub Actions' and job['runner_id'] > 0
+          assert 'ubuntu-24.04' in job['labels'] and job['status'] == 'in_progress'
+          assert os.environ['CYCLE'] in ('1', '2') and os.environ['SLOT'] in ('qualification', 'final-qa')
+          titles = {f'startup-isolation-TASK-14301-c{cycle}-{slot}'
+                    for cycle in ('1', '2') for slot in ('qualification', 'final-qa')}
+          runs = []
+          for page in range(1, 11):
+              result = get('/actions/workflows/attachment-focused-qa.yml/runs?event=workflow_dispatch&per_page=100&page=' + str(page))
+              runs.extend(result['workflow_runs'])
+              if len(result['workflow_runs']) < 100:
+                  break
+          else:
+              raise AssertionError('startup budget history incomplete')
+          charged = [run for run in runs if run['display_title'] in titles]
+          (evidence / 'startup-budget-observation.json').write_text(json.dumps(charged, sort_keys=True))
+          title = f"startup-isolation-TASK-14301-c{os.environ['CYCLE']}-{os.environ['SLOT']}"
+          current = [run for run in charged if run['id'] == run_id]
+          assert len(current) == 1 and current[0]['display_title'] == title
+          assert current[0]['head_sha'] == os.environ['EXPECTED_SHA']
+          assert sum(run['run_attempt'] for run in charged) <= 4
+          assert sum(run['run_attempt'] for run in charged if '-c' + os.environ['CYCLE'] + '-' in run['display_title']) <= 2
+          assert sum(run['display_title'] == title for run in charged) == 1
+          if os.environ['SLOT'] == 'final-qa':
+              makers = [run for run in charged if run['display_title'] == title.replace('final-qa', 'qualification')]
+              assert len(makers) == 1 and makers[0]['status'] == 'completed'
+          # This observes the fixed 4x20-minute ceiling and duplicate-slot
+          # refusal. ROOT14301 owns prior authorization/charging and accepts
+          # qualification before production. An API receipt grants no authority.
+          STARTUP_ADMISSION
       - name: Frozen setup and source identity
+        env:
+          QA_SELECTION: ${{ inputs.selection }}
         run: |
           set -euo pipefail
           trap 'status=$?; printf "%s\n" "$status" > "$QA_EVIDENCE/setup-exit-code.txt"' EXIT
@@ -41,13 +134,18 @@ jobs:
           git rev-parse HEAD | tee "$QA_EVIDENCE/source-sha.txt"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --porcelain)"
-          uv sync --frozen --python 3.14
+          if [ "$QA_SELECTION" = startup ]; then
+            timeout --signal=TERM --kill-after=10s 180s uv sync --frozen --python 3.14
+          else
+            uv sync --frozen --python 3.14
+          fi
           git diff --exit-code -- uv.lock
           test -z "$(git status --porcelain)"
           "$UV_PROJECT_ENVIRONMENT/bin/python" -c 'import json,sys; print(json.dumps({"executable":sys.executable,"prefix":sys.prefix,"version":sys.version}))' \
             | tee "$QA_EVIDENCE/python.json"
           test "$("$UV_PROJECT_ENVIRONMENT/bin/python" -c 'import sys; print(sys.version_info[:2] == (3, 14))')" = True
       - name: Run fixed ordinary integration file through unchanged parent
+        if: ${{ inputs.selection != 'startup' }}
         run: |
           set -euo pipefail
           command=(uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest -m integration tests/integration/test_attachment_feedback_shipping.py -q --tb=short "--junitxml=$QA_EVIDENCE/attachment-focused.xml")
@@ -66,11 +164,87 @@ jobs:
           # Missing/invalid/empty JUnit is a failure, even when the command returned 0.
           "$UV_PROJECT_ENVIRONMENT/bin/python" -c 'import sys,xml.etree.ElementTree as E; r=E.parse(sys.argv[1]).getroot(); assert r.findall(".//testcase"), "no per-case JUnit"' "$QA_EVIDENCE/attachment-focused.xml"
           test -z "$(git status --porcelain)"
+      - name: Run literal C1-C8 through unchanged parent (one startup slot)
+        if: ${{ inputs.selection == 'startup' }}
+        env:
+          STARTUP_SLOT: ${{ inputs.slot }}
+        run: |
+          set -euo pipefail
+          command=(uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest -m integration
+            tests/integration/test_two_orgs_concurrent.py::test_startup_isolation_prepared_journal
+            tests/integration/test_two_orgs_concurrent.py::test_startup_isolation_independent_org
+            tests/integration/test_two_orgs_concurrent.py::test_startup_isolation_shared_closure
+            tests/integration/test_two_orgs_concurrent.py::test_startup_isolation_writer_custody
+            tests/integration/test_two_orgs_concurrent.py::test_startup_isolation_invalid_evidence
+            tests/integration/test_two_orgs_concurrent.py::test_startup_isolation_admission
+            tests/integration/test_two_orgs_concurrent.py::test_startup_isolation_failure_custody
+            tests/integration/test_two_orgs_concurrent.py::test_startup_isolation_status_repeat
+            -v --tb=short "--junitxml=$QA_EVIDENCE/startup-isolation.xml")
+          printf '%q ' "${command[@]}" > "$QA_EVIDENCE/startup-command.txt"
+          printf '\n' >> "$QA_EVIDENCE/startup-command.txt"
+          # Entire job includes frozen setup, this bound, cleanup and upload.
+          # No rerun, mutation campaign or extra maker pass lives in this job.
+          set +e
+          timeout --signal=TERM --kill-after=20s 900s "${command[@]}" \
+            > "$QA_EVIDENCE/startup.stdout.log" 2> "$QA_EVIDENCE/startup.stderr.log"
+          status=$?
+          set -e
+          printf '%s\n' "$status" > "$QA_EVIDENCE/startup-exit-code.txt"
+          cat "$QA_EVIDENCE/startup.stdout.log"
+          cat "$QA_EVIDENCE/startup.stderr.log" >&2
+          "$UV_PROJECT_ENVIRONMENT/bin/python" - <<'STARTUP_RESULTS'
+          import json, os, pathlib, xml.etree.ElementTree as E
+          evidence = pathlib.Path(os.environ['QA_EVIDENCE'])
+          root = E.parse(evidence / 'startup-isolation.xml').getroot()
+          cases = root.findall('.//testcase')
+          prefix = 'test_startup_isolation_'
+          expected = {
+              'prepared_journal': [''],
+              'independent_org': ['builtin', 'custom-disjoint'],
+              'shared_closure': ['active', 'unbound-absent-canonical', 'captured-absent-canonical'],
+              'writer_custody': ['flock', 'ordinary-outside-lease', 'durable-unknown'],
+              'invalid_evidence': ['members-scalar', 'members-duplicate', 'members-unknown', 'missing-mirror',
+                  'operation-identity', 'operation-state', 'dependency-reader', 'canonical-missing-dependency',
+                  'native-malformed', 'pointer-movement', 'dependency-movement', 'operation-movement', 'native-movement'],
+              'admission': ['lookup', 'retained-native', 'public-workflow', 'final-sql', 'thread', 'schedule', 'dream', 'work-hours'],
+              'failure_custody': ['old-close', 'loaded-candidate', 'successful-transfer', 'active-reader',
+                  'dynamic-attachment', 'shutdown-close', 'unknown-native', 'stale-capture'],
+              'status_repeat': [''],
+          }
+          names = {prefix + name + ('[' + variant + ']' if variant else '')
+                   for name, variants in expected.items() for variant in variants}
+          actual = [{'name': c.attrib['name'], 'failure': [e.attrib for e in c.findall('failure')],
+                     'error': [e.attrib for e in c.findall('error')],
+                     'skipped': [e.attrib for e in c.findall('skipped')]} for c in cases]
+          phases = [json.loads(line) for path in sorted((evidence / 'startup-cases').glob('*.jsonl'))
+                    for line in path.read_text().splitlines()]
+          c1 = next((c for c in actual if c['name'] == prefix + 'prepared_journal'), None)
+          original_red = bool(c1 and not c1['error'] and any(
+              'startup did not reach serving: profile_consumer_changed' in f.get('message', '') for f in c1['failure'])
+              and any(p['phase'] == 'historical-guard-reached' for p in phases))
+          report = {'cases': actual, 'expected_count': len(names), 'original_C1_assertion_RED': original_red,
+                    'behavior': 'actual per-case results only', 'sensitivity': 'PROOF NOT RUN',
+                    'slot': os.environ['STARTUP_SLOT'], 'cleanup': [p for p in phases if p['phase'] in
+                    ('final-custody', 'http-return', 'positive-close', 'W-positive-return', 'flock-owner-return')]}
+          (evidence / 'startup-results.json').write_text(json.dumps(report, sort_keys=True))
+          assert len(actual) == len(names) and {c['name'] for c in actual} == names, 'finite case inventory mismatch'
+          assert not any(c['skipped'] or c['error'] for c in actual), 'skip/setup/teardown error is no RED or PASS'
+          assert len({p['node'] for p in phases if p['phase'] == 'final-custody'}) == len(names), 'missing case custody evidence'
+          # C7 deliberately retains its original selected close/constructor
+          # UNKNOWN. Retention is that case's contract, not a positive close.
+          # Unexpected teardown failures remain JUnit errors above.
+          assert not any(p.get('close_unknown') or p.get('retained_unknown') for p in phases
+              if p['phase'] == 'final-custody' and 'test_startup_isolation_failure_custody[' not in p['node']), 'unexpected cleanup uncertainty'
+          if os.environ['STARTUP_SLOT'] == 'final-qa':
+              assert not any(c['failure'] for c in actual), 'final repaired holds not all passing'
+          STARTUP_RESULTS
+          test -z "$(git status --porcelain)"
+          exit "$status"
       - name: Upload evidence on success or failure
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: attachment-focused-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ inputs.selection == 'startup' && 'startup-isolation' || 'attachment-focused' }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.QA_EVIDENCE }}
           if-no-files-found: error
           retention-days: 7
