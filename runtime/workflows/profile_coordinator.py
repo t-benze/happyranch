@@ -1238,29 +1238,32 @@ class ProfileCoordinator:
         with self._profile_leases(profile_names, wait=True) as names:
             for name in names or (None,):
                 self._assert_no_active_operation(name, captured_orgs=tuple(slug for slug, _, _ in captured))
-            changed = set()
-            for _, org, capture in captured:
-                with org.workflow_authority._publisher_lock:
-                    self._validate_capture(org, capture.revision)
-            for slug, org, capture in captured:
-                desired, revision, snapshot = capture.desired, capture.revision, capture.snapshot
-                with org.workflow_authority._publisher_lock:
-                    owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
-                    self._validate_capture(org, revision)
-                    org.workflow_authority._acquire_lease(owner)
-                    try:
-                        self._validate_owned_capture(org, revision, owner)
-                        if self._sync_org_dependencies(org, desired, effective_profiles=capture.effective_profiles):
-                            changed.add(slug)
-                    finally:
-                        org.workflow_authority._release_lease(owner)
-                    if publish and slug in changed:
-                        if snapshot is None:
-                            org.workflow_authority.fence(reason="profile:canonical-incoherent")
-                        else:
-                            self._publish_dependency_change(org, canonical_snapshot=snapshot, expected_revision=revision[:2],
-                                                                effective_profiles=capture.effective_profiles)
-            return changed
+            with ExitStack() as publishers:
+                for _, org, _ in sorted(captured, key=lambda item: item[0]):
+                    publishers.enter_context(org.workflow_authority._publisher_lock)
+                changed = set()
+                for _, org, capture in captured:
+                    with org.workflow_authority._publisher_lock:
+                        self._validate_capture(org, capture.revision)
+                for slug, org, capture in captured:
+                    desired, revision, snapshot = capture.desired, capture.revision, capture.snapshot
+                    with org.workflow_authority._publisher_lock:
+                        owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
+                        self._validate_capture(org, revision)
+                        org.workflow_authority._acquire_lease(owner)
+                        try:
+                            self._validate_owned_capture(org, revision, owner)
+                            if self._sync_org_dependencies(org, desired, effective_profiles=capture.effective_profiles):
+                                changed.add(slug)
+                        finally:
+                            org.workflow_authority._release_lease(owner)
+                        if publish and slug in changed:
+                            if snapshot is None:
+                                org.workflow_authority.fence(reason="profile:canonical-incoherent")
+                            else:
+                                self._publish_dependency_change(org, canonical_snapshot=snapshot, expected_revision=revision[:2],
+                                                                    effective_profiles=capture.effective_profiles)
+                return changed
 
     def _authority_profile_projection_coherent(self, org: OrgState) -> bool:
         try:
@@ -1535,61 +1538,64 @@ class ProfileCoordinator:
                                   set(profile_names) | {name for c in captures.values() for name in c.profile_names}}
             already_ready = self._members_are_already_ready(operations, effective_profiles=effective_profiles)
             with self._profile_leases(profile_names, wait=False):
-                if operations != self._load_group_operations(coordinator_invocation, profile_names):
-                    raise ProfileCoordinatorError("profile_consumer_changed")
-                for slug, capture in captures.items():
-                    with orgs[slug].workflow_authority._publisher_lock:
-                        self._validate_capture(orgs[slug], capture.revision)
-                # A crash after all canonical publications but before the final
-                # operation-row update must not manufacture another generation.
-                if already_ready:
-                    for operation in operations:
-                        effective = effective_profiles[operation.profile_name]
-                        terminal = (
-                            "published"
-                            if effective.digest != operation.prior.digest
-                            or operation.recovery_state
-                            in {"store_committed", "published", "forward_recovery_required"}
-                            else "aborted"
-                        )
-                        self._set_operation_state(
-                            operation, terminal, profile_digest=effective.digest,
-                        )
-                    self._release_diagnostic_leases(
-                        operations,
-                        coordinator_invocation=coordinator_invocation,
-                    )
-                    return
-                for operation in operations:
-                    self._insert_operation_rows(
-                        operation,
-                        coordinator_invocation=coordinator_invocation,
-                    )
-                bindings: dict[str, ProfileFenceBinding] = {}
-                members = sorted({slug for op in operations for slug in op.members})
-                with ExitStack() as stack:
-                    for slug in members:
-                        bindings[slug] = stack.enter_context(
-                            orgs[slug].workflow_authority.profile_change_interval(
-                                reason="profile:startup-recovery",
-                                coordinator_invocation=coordinator_invocation,
-                                resume=True,
+                with ExitStack() as publishers:
+                    for slug in sorted(captures):
+                        publishers.enter_context(orgs[slug].workflow_authority._publisher_lock)
+                    if operations != self._load_group_operations(coordinator_invocation, profile_names):
+                        raise ProfileCoordinatorError("profile_consumer_changed")
+                    for slug, capture in captures.items():
+                        with orgs[slug].workflow_authority._publisher_lock:
+                            self._validate_capture(orgs[slug], capture.revision)
+                    # A crash after all canonical publications but before the final
+                    # operation-row update must not manufacture another generation.
+                    if already_ready:
+                        for operation in operations:
+                            effective = effective_profiles[operation.profile_name]
+                            terminal = (
+                                "published"
+                                if effective.digest != operation.prior.digest
+                                or operation.recovery_state
+                                in {"store_committed", "published", "forward_recovery_required"}
+                                else "aborted"
                             )
+                            self._set_operation_state(
+                                operation, terminal, profile_digest=effective.digest,
+                            )
+                        self._release_diagnostic_leases(
+                            operations,
+                            coordinator_invocation=coordinator_invocation,
                         )
+                        return
                     for operation in operations:
-                        if operation.recovery_state in {"captured", "fenced"}:
-                            self._set_operation_state(operation, "fenced")
-                    self._finalize(
-                        operations=operations,
-                        bindings=bindings,
-                        publisher="profile-startup-recovery",
-                        mutation_succeeded=True,
-                        effective_profiles=effective_profiles,
-                    )
-                    self._release_diagnostic_leases(
-                        operations,
-                        coordinator_invocation=coordinator_invocation,
-                    )
+                        self._insert_operation_rows(
+                            operation,
+                            coordinator_invocation=coordinator_invocation,
+                        )
+                    bindings: dict[str, ProfileFenceBinding] = {}
+                    members = sorted({slug for op in operations for slug in op.members})
+                    with ExitStack() as stack:
+                        for slug in members:
+                            bindings[slug] = stack.enter_context(
+                                orgs[slug].workflow_authority.profile_change_interval(
+                                    reason="profile:startup-recovery",
+                                    coordinator_invocation=coordinator_invocation,
+                                    resume=True,
+                                )
+                            )
+                        for operation in operations:
+                            if operation.recovery_state in {"captured", "fenced"}:
+                                self._set_operation_state(operation, "fenced")
+                        self._finalize(
+                            operations=operations,
+                            bindings=bindings,
+                            publisher="profile-startup-recovery",
+                            mutation_succeeded=True,
+                            effective_profiles=effective_profiles,
+                        )
+                        self._release_diagnostic_leases(
+                            operations,
+                            coordinator_invocation=coordinator_invocation,
+                        )
 
     def reconcile_startup(self) -> None:
         """Classify complete startup evidence, recover eligible groups, then sync.
@@ -1737,6 +1743,7 @@ class ProfileCoordinator:
                     remaining.difference_update(reasons)
                     self._startup_holds.update(reasons)
                     self._startup_hold_profiles.update(name for slug in reasons for name in edges.get(slug, ()))
+            self._startup_unknown = unknown
             if self._hold_startup is not None:
                 self._hold_startup(self._startup_holds)
 
