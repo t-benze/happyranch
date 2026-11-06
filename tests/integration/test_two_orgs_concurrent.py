@@ -326,6 +326,38 @@ class _StartupCase:
         self.failed_close: set[int] = set()
         self.retained_unknown: set[int] = set()
         self.metrics_closed: set[int] = set()
+        self.metrics_owned: dict[int, dict] = {}
+
+    def track_state(self, state: object) -> None:
+        if not any(current is state for current in self.states):
+            self.states.append(state)
+        store = state.metrics_store
+        if store is None or id(store) in self.metrics_owned:
+            return
+        owner = {'store': store, 'thread': threading.get_ident(), 'attempted': False, 'attempts': 0}
+        self.metrics_owned[id(store)] = owner
+        real_close = store.close
+        def close() -> None:
+            current_thread = threading.get_ident()
+            owner['attempts'] += 1
+            try:
+                assert current_thread == owner['thread'], 'metrics close left its construction thread'
+                assert not owner['attempted'], 'actual metrics close repeated'
+                owner['attempted'] = True
+                real_close()
+                with pytest.raises(sqlite3.ProgrammingError, match='closed database'):
+                    store._conn.execute('SELECT 1')
+            except BaseException as exc:
+                owner['error'] = exc
+                _startup_record(self.request, 'metrics-close-unknown', identity=id(store),
+                                owner_thread=owner['thread'], close_thread=current_thread, error=repr(exc))
+                raise
+            self.metrics_closed.add(id(store))
+            _startup_record(self.request, 'metrics-positive-close', identity=id(store),
+                            owner_thread=owner['thread'], close_thread=current_thread,
+                            attempts=1, closed_connection_readback=True)
+        self.patch.setattr(store, 'close', close)
+        _startup_record(self.request, 'metrics-constructed', identity=id(store), owner_thread=owner['thread'])
 
     def seed(self, assignments: dict[str, str | None]) -> None:
         import shutil
@@ -361,14 +393,20 @@ class _StartupCase:
         from runtime.workflows.profile_coordinator import ProfileCoordinator, ProfileCoordinatorError
         real = ProfileCoordinator.reconcile_startup
         real_construct = DaemonState.__post_init__
+        reconciliation_count = 0
         def constructed(state: object) -> None:
             real_construct(state)
-            self.states.append(state)
+            self.track_state(state)
         def observed(coordinator: object) -> None:
-            # The real factory has loaded all original handles and selectors.
-            self.original = dict(coordinator.orgs)
-            self.all_handles.update({id(o): o for o in self.original.values()})
-            if cut is not None:
+            nonlocal reconciliation_count
+            reconciliation_count += 1
+            # Keep original custody from the first coherent preparation. The
+            # selected fault still occurs AFTER eligible selector initialization,
+            # immediately before final classification, preserving C2 no-churn.
+            if reconciliation_count == 1:
+                self.original = dict(coordinator.orgs)
+                self.all_handles.update({id(o): o for o in self.original.values()})
+            elif cut is not None:
                 coordinator.synchronize_all_dependencies()
                 cut(coordinator)
             real(coordinator)
@@ -442,6 +480,7 @@ class _StartupCase:
         handles = dict(self.all_handles)
         for state in self.states:
             handles.update({id(o): o for o in state.orgs_snapshot().values()})
+        first_error = None
         for identity, org in handles.items():
             if identity in self.closed or identity in self.failed_close or identity in self.retained_unknown:
                 continue
@@ -451,15 +490,28 @@ class _StartupCase:
             except BaseException as exc:
                 self.failed_close.add(identity)
                 _startup_record(self.request, 'cleanup-unknown', slug=org.slug, error=repr(exc))
-                raise
+                first_error = first_error or exc
+                continue
             self.closed.add(identity)
             _startup_record(self.request, 'positive-close', slug=org.slug, identity=identity)
+        # Candidates, originals and adopted states can reference the SAME store.
+        # Own each actual object independently, including failed construction.
+        for identity, owner in self.metrics_owned.items():
+            if owner.get('error') is not None:
+                first_error = first_error or owner['error']
+                continue
+            if identity in self.metrics_closed:
+                assert owner['attempts'] == 1
+                continue
+            try:
+                owner['store'].close()
+            except BaseException as exc:
+                first_error = first_error or exc
         for state in self.states:
-            if state.metrics_store is not None:
-                if id(state.metrics_store) not in self.metrics_closed:
-                    state.metrics_store.close()
-                    self.metrics_closed.add(id(state.metrics_store))
+            if state.metrics_store is not None and id(state.metrics_store) in self.metrics_closed:
                 state.metrics_store = None
+        if first_error is not None:
+            raise first_error
 
 
 @pytest.fixture
@@ -492,6 +544,10 @@ def startup_case(request: pytest.FixtureRequest, runtime_container: Path, tmp_ho
                 witnesses = Path(os.environ['HAPPYRANCH_TEST_WITNESS_DIR']) / 'identities.jsonl'
                 _startup_record(request, 'final-custody', positive_closed=sorted(case.closed),
                     close_unknown=sorted(case.failed_close), retained_unknown=sorted(case.retained_unknown),
+                    metrics=[{'identity': identity, 'owner_thread': owner['thread'],
+                              'attempts': owner['attempts'], 'closed': identity in case.metrics_closed,
+                              'error': repr(owner['error']) if owner.get('error') is not None else None}
+                             for identity, owner in case.metrics_owned.items()],
                     witness=([json.loads(line) for line in witnesses.read_text().splitlines()] if witnesses.exists() else []))
 
 
@@ -1514,7 +1570,6 @@ def _startup_other_custody(case: _StartupCase, state: object, tail: str) -> None
 @pytest.mark.parametrize('tail', ['old-close', 'loaded-candidate', 'successful-transfer', 'active-reader',
                                 'dynamic-attachment', 'shutdown-close', 'unknown-native', 'stale-capture'])
 def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str) -> None:
-    from fastapi.testclient import TestClient
     from runtime.daemon.app import create_app
     from runtime.daemon.org_state import OrgState, _OrgBusyError
     from runtime.daemon.state import DaemonState
@@ -1592,6 +1647,7 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
     cleanup = RuntimeError('startup-secondary-close')
     def observe_candidate(candidate: object) -> None:
         real_post(candidate)
+        case.track_state(candidate)
         candidates.append(candidate)
     def close(org: object) -> None:
         close_invocations.append(org)  # actual calls, including failed calls, retain the exact objects
@@ -1618,7 +1674,13 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
                             positive_closed=id(org) in case.closed,
                             actual_error=(repr(error) if error is not None else None),
                             actual_error_identity=(id(error) if error is not None else None))
+    reconciliation_count = 0
     def reconcile(coordinator: object) -> None:
+        nonlocal reconciliation_count
+        reconciliation_count += 1
+        if reconciliation_count == 1:
+            real_reconcile(coordinator)
+            return  # selected cut remains after coherent selector initialization
         if tail == 'loaded-candidate':
             case.all_handles.update({id(o): o for o in coordinator.orgs.values()})
             case.retained_unknown.update(id(o) for o in coordinator.orgs.values())
@@ -1630,7 +1692,7 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
                 observe_read(org.db.schedules, 'recover_firing', org)
                 observe_read(org.db.schedules, 'list_due', org)
             raise primary
-        if tail == 'successful-transfer':
+        if tail == 'successful-transfer' and not transferred:
             coordinator.synchronize_all_dependencies()
             transferred.update(coordinator.orgs)
             case.all_handles.update({id(o): o for o in coordinator.orgs.values()})
@@ -1639,21 +1701,28 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
     case.patch.setattr(OrgState, 'close', close)
     case.patch.setattr(DaemonState, '__post_init__', observe_candidate)
     case.patch.setattr(ProfileCoordinator, 'reconcile_startup', reconcile)
-    client = TestClient(create_app(state), raise_server_exceptions=True)
-    client.headers.update(_auth_headers())
+    app = create_app(state)
+    def request_route(method: str, path: str, **kwargs: object) -> httpx.Response:
+        # ASGI routes/factory/finally run on this owning test thread. Unlike a
+        # TestClient portal, this preserves MetricsStore's SQLite thread lifetime.
+        async def send() -> httpx.Response:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+                                         base_url='http://startup.test', headers=_auth_headers()) as client:
+                return await client.request(method, path, **kwargs)
+        return asyncio.run(send())
     try:
         if tail == 'active-reader':
             with state.capture_orgs(('alpha',), original=originals['alpha']):
-                response = client.post('/api/v1/runtime', json={'path': str(case.container)})
+                response = request_route('POST', '/api/v1/runtime', json={'path': str(case.container)})
                 assert response.status_code == 409 and 'attachment_readers_in_flight' in response.text
             assert closes == [] and candidates == []
             assert originals['alpha'].db._conn.execute('SELECT 1').fetchone()[0] == 1
             return
         if tail == 'successful-transfer':
-            response = client.post('/api/v1/runtime', json={'path': str(case.container)})
+            response = request_route('POST', '/api/v1/runtime', json={'path': str(case.container)})
         else:
             with pytest.raises(RuntimeError) as refusal:
-                client.post('/api/v1/runtime', json={'path': str(case.container)})
+                request_route('POST', '/api/v1/runtime', json={'path': str(case.container)})
             assert refusal.value is primary
             response = None
         _startup_record(case.request, 'runtime-route-after-finally', tail=tail, status=(response.status_code if response is not None else None),
@@ -1670,7 +1739,6 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
                 assert actual['alpha'] is transferred['alpha']
                 assert actual['beta'] is state.get_org('beta')
                 assert 'alpha' not in state.orgs_snapshot()
-            case.states.append(candidates[-1])
             return
         assert response is None, 'failure was observed as the original raised route exception'
         # Observe all otherwise-safe independent boundaries BEFORE the expected
@@ -1731,7 +1799,7 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
                 capture_error = exc
             response_error = None
             try:
-                response = client.get('/api/v1/orgs/' + slug + '/agents')
+                response = request_route('GET', '/api/v1/orgs/' + slug + '/agents')
             except Exception as exc:
                 response, response_error = None, exc
             returned = get_error = None
@@ -1838,7 +1906,9 @@ def test_startup_isolation_failure_custody(startup_case: _StartupCase, tail: str
             _startup_original_unchanged(producer_before[slug], producer_after[slug])
         assert len(closes) == (1 if tail == 'old-close' else 2)
     finally:
-        client.close()
+        # The route, candidate construction and positive resource return share
+        # this actual thread; fixture teardown only reads the same close records.
+        case.close()
 
 
 def test_startup_isolation_status_repeat(startup_case: _StartupCase) -> None:

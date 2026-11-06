@@ -489,6 +489,11 @@ Direct readiness and final SQL validation reject held membership with
 ready capture, without clearing its cache or rewriting its journal. The hold is
 latched for this attachment; no automatic unhold or new journal-recovery action
 is supplied. Independent orgs complete ordinary synchronous startup before serving.
+The unpublished whole-runtime owner synchronizes these dependencies before bound
+selector initialization, then renews classification before returning. Dynamic
+attachment likewise prepares dependencies before selectors and renews its full
+capture at final insertion; neither preparation grants admission or consumes an
+existing ordinary prepared journal.
 HTTP health, attachment/broken status and workflow authority readiness remain
 separate observations.
 

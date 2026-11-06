@@ -449,27 +449,6 @@ class DaemonState:
                     state.broken_orgs[slug] = str(exc)
                     logger.error("org %r failed consistency check: %s", slug, exc)
                     continue
-                # U2A: every whole-runtime construction path (normal startup and
-                # live register/switch) initializes eligible selectors before the
-                # resulting DaemonState is returned or published. Raw
-                # ``OrgState.load`` retains its generation-1 recovery seam; this
-                # containing lifecycle owner makes it launch-ready.
-                from runtime.orchestrator.active_authority_policy import (
-                    is_eligible_policy_manager,
-                )
-                if not org._startup_publication_held:
-                    for team in org.teams.teams():
-                        manager = org.teams.executable_manager_for_team(team)
-                        if manager is not None and is_eligible_policy_manager(
-                            root=org.root,
-                            agent_name=manager,
-                            team=team,
-                            teams=org.teams,
-                        ):
-                            org.workflow_authority.ensure_authority_selector(
-                                team=team,
-                                publisher="daemon-state-load:selector-initialization",
-                            )
                 # Attach the global queue + per-org sessions + daemon-wide host
                 # supervisor so the orchestrator can re-enqueue tasks (e.g. parent
                 # wake-up after a child resolves) and run task sessions through
@@ -496,6 +475,23 @@ class DaemonState:
             if state.broken_orgs:
                 # An unloaded root cannot certify its absent profile membership.
                 state.profile_coordinator._startup_unknown = True
+            # Classify/recover and synchronize the complete dependency closure
+            # BEFORE a bound selector writer captures its profile projection.
+            # The candidate is still unpublished; original holds retain custody.
+            state.profile_coordinator.reconcile_startup()
+            from runtime.orchestrator.active_authority_policy import is_eligible_policy_manager
+            for org in state.orgs_snapshot().values():
+                for team in org.teams.teams():
+                    manager = org.teams.executable_manager_for_team(team)
+                    if manager is not None and is_eligible_policy_manager(
+                        root=org.root, agent_name=manager, team=team, teams=org.teams,
+                    ):
+                        org.workflow_authority.ensure_authority_selector(
+                            team=team, publisher="daemon-state-load:selector-initialization",
+                        )
+            # Supported publication can retain a prepared journal/native UNKNOWN
+            # without raising. Renew complete classification after selectors so
+            # no such failure is exposed as a runnable attachment.
             state.profile_coordinator.reconcile_startup()
             return state
         except BaseException as primary:
@@ -667,6 +663,15 @@ class DaemonState:
         if org._startup_publication_held:
             from runtime.workflows.profile_coordinator import ProfileCoordinatorError
             raise ProfileCoordinatorError("profile_consumer_changed")
+        profiles = owner["profiles"]
+        org._profile_coordinator = profiles
+        org.workflow_authority._profile_coordinator = profiles
+        if profiles is not None:
+            # Prepare the unpublished dependency projection before the bound
+            # selector writer. Final attachment recaptures global/local inputs
+            # under its own leases before insertion; this is no serving grant.
+            with profiles.dynamic_org_attachment(org):
+                pass
         from runtime.orchestrator.active_authority_policy import is_eligible_policy_manager
         for team in org.teams.teams():
             manager = org.teams.executable_manager_for_team(team)
