@@ -514,6 +514,13 @@ class ThreadMoveAdmission:
             if (owner.abort_control.key != (inv.id, inv.agent_name, inv.thread_id,
                     state.session_id, state.preparation_id) or owner.abort_control.failure is not None):
                 raise DeferredTeamMove("thread_abort_control_unsettled")
+            if state.deferred:
+                # Strict replay already proved this producer settled cleanly.
+                # Recheck the actual blocker before republishing ownership;
+                # unchanged blocked polls must not toggle lifecycle evidence.
+                # Fresh owners still record initial evidence and first deferral,
+                # and before_fifo/commit keep their final racing-blocker check.
+                self._abort_predecessors_uncommitted(owner)
             # Publish before the fallible native COMMIT. A failed/uncertain write
             # keeps the exact original owner, and cannot permit effects/reentry.
             self.controls[inv.id] = owner.abort_control
