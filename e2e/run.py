@@ -5291,7 +5291,7 @@ class _EvidenceJSON:
                             relay_context=relay_context, relay_sanitize=relay_sanitize,
                             submission_identity=submission_identity)
                         if (type(child) not in (str, int, float, type(None))
-                                and not (row[3] in ('running_browser', 'browser') and key in ('review_required', 'persistent')
+                                and not (row[3] in ('running_browser', 'browser', 'action') and key in ('review_required', 'persistent')
                                          and type(child) is bool)):
                             raise ValueError('Case SQL scalar withheld')
                         self.ledger.charge(16 + _evidence_utf8_size(key, self.check)
