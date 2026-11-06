@@ -754,7 +754,9 @@ class ProfileCoordinator:
         for row in rows:
             profile_name = str(row["profile_name"])
             effective = (self._effective_profile(profile_name) if effective_profiles is None
-                         else effective_profiles[profile_name])
+                         else effective_profiles.get(profile_name))
+            if effective is None:
+                raise ProfileCoordinatorError("profile_consumer_changed")
             if not (
                 row["state"] == "active"
                 and row["store_state"] == "active"
