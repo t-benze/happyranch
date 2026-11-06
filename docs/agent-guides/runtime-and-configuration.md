@@ -2598,9 +2598,17 @@ Contract (founder-approved in THR-028, refined in THR-078):
    invocation with optional authenticated exclusion-only anchors. Both discovery
    and exact getters reuse scalar candidate catalogues only after
    stable outside autocommit connection/data_version/total_changes/schema_version
-   bookends enclose a pinned main-table coherent read under the RLock. Exact
-   getters each open a current closure; no speculative target/hit/absence escapes
-   before clean matching exit. Local writes (including rollback), other-connection
+   bookends enclose a pinned main-table coherent read under the RLock. Metadata
+   eligibility allows main alone or main plus positively empty local
+   TEMP with an empty filename, including TEMP initialized by workflow integrity
+   validation. Its actual integer temp.schema_version joins both bookends and
+   retained epochs; absent TEMP stays absent without probing it. Every attachment,
+   unknown database shape or nonempty TEMP bypasses sharing. Create/drop ending
+   empty moves the epoch. Default isolation, legacy autocommit and
+   read_uncommitted=0 remain required. The existing final startup_authority_counts
+   also records fixed scalar metadata-denial and TEMP-epoch movement reasons.
+   Exact getters each open a current closure; no speculative target/hit/absence
+   escapes before clean matching exit. Local writes (including rollback), other-connection
    commits (including results-only), schema/attachment/isolation/ownership drift
    or unavailable tokens clear all entries; only clean cleanup permits one
    fresh uncached fallback. Current identity/authority checks and shipping parsing
