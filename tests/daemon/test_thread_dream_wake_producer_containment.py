@@ -773,6 +773,150 @@ async def test_wake_daemon_drain_with_active_producer(org_state):
 # ── thread producer ───────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("blocker", ["unreturned", "failed_cleanup", "possible_launch", "control_failure"])
+async def test_thread_blocked_polls_preserve_lifecycle_and_original_control(org_state, monkeypatch, blocker):
+    from runtime.infrastructure.team_move_store import TeamMoveStore
+    from runtime.orchestrator.team_move import DeferredTeamMove, TeamMoveCoordinator
+    import runtime.daemon.thread_runner as runner_mod
+
+    _seed_agent(org_state)
+    predecessor_token = _seed_thread_invocation(org_state)
+    admission = TeamMoveCoordinator.for_org(TeamMoveStore(org_state.db, org_state.slug)).threads
+    predecessor = admission.reserve(predecessor_token)
+    if blocker == "failed_cleanup":
+        predecessor.failed_cleanup()
+    elif blocker == "possible_launch":
+        predecessor.retry_schedule("host", ())
+        predecessor.commit()
+    outcome = org_state.db.abort_thread_replies(
+        "THR-001", signal=admission.signal_aborted_uncommitted,
+    )
+    assert not outcome.errors and outcome.aborted_count == 1
+    await predecessor.abort_control.join_dispatch()
+    if blocker == "control_failure":
+        predecessor.abort_control.record_failure(RuntimeError("original stop failed"))
+    if blocker != "unreturned":
+        predecessor.finish(deferred=False, failed=False)
+
+    inv = org_state.db.mint_thread_invocation(
+        thread_id="THR-001", agent_name=_AGENT, triggering_seq=1,
+        purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
+    backend = _FakeBackend()
+    supervisor = _make_supervisor(backend)
+    executor = _RecordingExecutor(on_complete=lambda: org_state.db.consume_invocation(inv.invocation_token))
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider", lambda *args: executor)
+
+    def lifecycle_rows():
+        return [row for row in org_state.db.get_audit_logs("THR-001")
+            if row["action"] == "thread_move_lifecycle"]
+
+    before = lifecycle_rows()
+    with pytest.raises(DeferredTeamMove, match="thread_abort_predecessor_unsettled"):
+        await run_invocation_producer(org_state, inv.invocation_token, supervisor, settings=Settings())
+    first = lifecycle_rows()
+    assert first[:len(before)] == before
+    assert len(first) == len(before) + 2
+    initial, deferred = [row["payload"] for row in first[-2:]]
+    assert (initial["deferred"], initial["producer_settled"]) == (False, False)
+    assert (deferred["deferred"], deferred["producer_settled"]) == (True, True)
+    assert deferred["invocation_id"] == inv.id
+    assert deferred["retry_initialized"] is False
+    assert deferred["ordinal"] == 0 and deferred["schedule"] == [] and deferred["attempts"] == []
+    assert deferred["failed_cleanup"] is False
+    control = admission.controls[inv.id]
+    live = dict(admission.live)
+    controls = dict(admission.controls)
+    for _ in range(4):
+        with pytest.raises(DeferredTeamMove, match="thread_abort_predecessor_unsettled"):
+            await run_invocation_producer(org_state, inv.invocation_token, supervisor, settings=Settings())
+        assert lifecycle_rows() == first
+        assert admission.live == live and admission.controls == controls
+        assert admission.controls[inv.id] is control
+        assert org_state.db.get_invocation_any_status(inv.invocation_token) == inv
+    assert backend.calls["launch"] == 0 and executor.calls == []
+
+    if blocker == "unreturned":
+        # Positive original no-effect settlement, never terminal/map inference.
+        predecessor.finish(deferred=False, failed=False)
+        guard = runner_mod._invocation_lock(org_state, "THR-001", _AGENT)
+        await guard.acquire()
+        task = asyncio.create_task(run_invocation_producer(
+            org_state, inv.invocation_token, supervisor, settings=Settings(),
+        ))
+        try:
+            await asyncio.sleep(0)
+            assert admission.live[inv.id].abort_control is control
+            resumed = lifecycle_rows()
+            assert resumed[-1]["payload"]["producer_settled"] is False
+            assert resumed[-1]["payload"]["preparation_id"] == deferred["preparation_id"]
+            assert resumed[-1]["payload"]["session_id"] == deferred["session_id"]
+            assert len(resumed) == len(first) + 2  # predecessor finish + one reservation
+            with pytest.raises(DeferredTeamMove, match="team_move_thread_owner_live"):
+                await run_invocation_producer(org_state, inv.invocation_token, supervisor, settings=Settings())
+            assert lifecycle_rows() == resumed
+        finally:
+            guard.release()
+            await task
+        final = lifecycle_rows()[-1]["payload"]
+        assert len(final["attempts"]) == 1 and final["attempts"][0]["possible_launch"] is True
+        assert final["attempts"][0]["settled"] is True and final["attempts"][0]["quiescent"] is True
+        assert final["producer_settled"] is True and final["deferred"] is False
+        assert final["preparation_id"] == deferred["preparation_id"]
+        assert backend.calls["launch"] == 1 and len(executor.calls) == 1
+        assert org_state.db.get_invocation_any_status(inv.invocation_token).status == ThreadInvocationStatus.CONSUMED
+
+
+@pytest.mark.parametrize("race", ["predecessor", "abort"])
+async def test_thread_final_validation_refuses_race_after_deferred_preflight(org_state, race):
+    from runtime.infrastructure.team_move_store import TeamMoveStore
+    from runtime.orchestrator.team_move import DeferredTeamMove, TeamMoveCoordinator
+    import runtime.daemon.thread_runner as runner_mod
+
+    _seed_agent(org_state)
+    predecessor_token = _seed_thread_invocation(org_state)
+    admission = TeamMoveCoordinator.for_org(TeamMoveStore(org_state.db, org_state.slug)).threads
+    predecessor = admission.reserve(predecessor_token)
+    inv = org_state.db.mint_thread_invocation(
+        thread_id="THR-001", agent_name=_AGENT, triggering_seq=1,
+        purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
+    original = admission.reserve(inv.invocation_token)
+    original.finish(deferred=True, failed=False)
+    backend = _FakeBackend()
+    supervisor = _make_supervisor(backend)
+    guard = runner_mod._invocation_lock(org_state, "THR-001", _AGENT)
+    await guard.acquire()
+    task = asyncio.create_task(run_invocation_producer(
+        org_state, inv.invocation_token, supervisor, settings=Settings(),
+    ))
+    try:
+        await asyncio.sleep(0)
+        assert admission.live[inv.id].abort_control is original.abort_control
+        if race == "predecessor":
+            assert org_state.db.fail_invocation(predecessor_token,
+                status=ThreadInvocationStatus.FAILED, decline_reason="founder_aborted")
+        else:
+            outcome = org_state.db.abort_thread_replies(
+                "THR-001", signal=admission.signal_aborted_uncommitted,
+            )
+            assert not outcome.errors and outcome.aborted_count == 2
+    finally:
+        guard.release()
+        with pytest.raises(DeferredTeamMove, match=("thread_abort_predecessor_unsettled"
+                if race == "predecessor" else "thread_invocation_aborted")):
+            await task
+    rows = [row["payload"] for row in org_state.db.get_audit_logs("THR-001")
+        if row["action"] == "thread_move_lifecycle" and row["payload"]["invocation_id"] == inv.id]
+    assert len(rows) == 4
+    assert [(row["deferred"], row["producer_settled"]) for row in rows] == [
+        (False, False), (True, True), (False, False), (race == "predecessor", True),
+    ]
+    assert all(row["attempts"] == [] and row["retry_initialized"] is False for row in rows)
+    assert backend.calls["launch"] == 0
+    assert admission.live[predecessor.inv.id] is predecessor
+
+
 async def test_thread_no_callback_nudge_runs_second_contained_phase(org_state, monkeypatch):
     """Thread clean exit without the terminal callback: the THR-071 nudge
     re-invoke runs as a SECOND supervised phase (its own admission lease +

@@ -387,6 +387,11 @@ host terminal ordering. All purposes and actual host/direct429, eviction and
 bounded-nudge paths participate. The existing thread audit owner stores strict
 bounded append-only attempt/deferral evidence; no schema or task-Pause format
 changes. Unknown prior retries stay blockers after later clean outcomes.
+Strictly validated clean settled deferred producers recheck the actual aborted
+predecessor veto before republishing ownership. Unchanged blocked polls preserve
+the original control and lifecycle without new rows; fresh initial/deferral,
+genuine resumption and attempt evidence remain. Final admission validation still
+checks fresh predecessor, abort and team-move races.
 Captured actual running turns alone may settle under WAITING; no drain label
 admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
 notification ownership, and complete durable runnable discovery/redelivery keeps
