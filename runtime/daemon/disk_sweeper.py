@@ -52,6 +52,20 @@ class _MetadataFileError(Retain):
     """Failure at the leaf after opening every literal parent successfully."""
 
 
+def _signature_change(comparison: str, before: tuple | None, after: tuple | None) -> str:
+    """Describe only the already observed unequal signature fields."""
+    fields = ('device', 'inode', 'type', 'mode', 'size', 'mtime_ns', 'ctime_ns', 'nlink')
+    changes = {}
+    for index, field in enumerate(fields):
+        old = before[index] if before is not None else None
+        new = after[index] if after is not None else None
+        if old != new:
+            changes[field] = [old, new]
+    return ';signature_change=' + json.dumps(
+        {'comparison': comparison, 'changes': changes}, separators=(',', ':'),
+    )
+
+
 def git(repo: Path, deadline: float, *args: str) -> str:
     check(deadline)
     env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
@@ -262,7 +276,9 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
                 if observed is None or seen != signature(observed):
                     if relative in ('gitdir', 'commondir'):
                         raise Retain(f'metadata_changed:{target}')
-                    result.errors.setdefault(path, f'metadata_changed:{target}')
+                    result.errors.setdefault(path, f'metadata_changed:{target}' + _signature_change(
+                        'snapshot_to_read', signature(observed) if observed is not None else None, seen,
+                    ))
                 if relative == 'HEAD' and not (
                         re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\n', head)
                         or re.fullmatch(r'ref: refs/[^\s]+\n', head)):
@@ -289,7 +305,9 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None) 
         for target in sorted(left.keys() | right.keys()):
             check(deadline)
             if left.get(target) != right.get(target):
-                errors.setdefault(path, f'metadata_changed:{target}')
+                errors.setdefault(path, f'metadata_changed:{target}' + _signature_change(
+                    'pre_git_censuses', left.get(target), right.get(target),
+                ))
     if retained is not None:
         latched = retained.setdefault(str(repo), {})
         for path, (_, owner) in latched.items():
@@ -330,7 +348,9 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None) 
         for target in sorted(after.metadata[path].keys() | final.metadata[path].keys()):
             check(deadline)
             if after.metadata[path].get(target) != final.metadata[path].get(target):
-                errors.setdefault(path, f'metadata_changed:{target}')
+                errors.setdefault(path, f'metadata_changed:{target}' + _signature_change(
+                    'post_git_census', after.metadata[path].get(target), final.metadata[path].get(target),
+                ))
     if retained is not None:
         for path, error in errors.items():
             retained[str(repo)].setdefault(path, (error, after.owner(path)))

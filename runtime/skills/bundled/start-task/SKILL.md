@@ -112,6 +112,13 @@ containing trees at every final remove/repair/retry boundary. Retention is latch
 for the attempt, never clearance; own metadata and shared topology stay fresh.
 Reports keep local discovery partial, known-only counts and unknown allocation;
 any partial/unknown scope or remaining registration prohibits repository-wide prune.
+Local `metadata_changed:<exact native path>` reasons append bounded
+`;signature_change=` JSON for `snapshot_to_read`, `pre_git_censuses` or
+`post_git_census`, using only already compared differing old/new integer pairs
+(device, inode, type, mode, size, mtime_ns, ctime_ns, nlink; absent side null).
+Equal observations add no reason; earlier native causes, within-read/shared
+errors, prefix categories and report/audit keys stay unchanged. The audit carries
+the same updated org object. No new observation, writer attribution or clearance.
 This changes none of this skill's legacy gates or agent cleanup authority.
 Durable output and sibling task-scratch manifests/locks stay excluded. Put
 regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
