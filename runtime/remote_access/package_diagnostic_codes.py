@@ -1123,4 +1123,8 @@ SITE_CATEGORIES = {
 'P400040': 'managed_operational_error',
 'G500064': 'managed_lifecycle_refused',
 'P800035': 'managed_loaded_contract_mismatch',
+'P800036': 'managed_loaded_contract_mismatch',
+'P800037': 'managed_loaded_contract_mismatch',
+'P800038': 'managed_loaded_contract_mismatch',
+'P800039': 'managed_loaded_contract_mismatch',
 }

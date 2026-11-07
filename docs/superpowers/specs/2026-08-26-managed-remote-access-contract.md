@@ -1,3 +1,40 @@
+# Approved loaded dependency policy — Founder THR327seq115
+
+`render_composite_units` and `render_connector_unit` define exactly connector,
+sidecar and managed target. P000261 retains the original exact six-property
+peer graph and missing/extra checks. P000262 additionally examines the FULL
+observed Wants, Requires, BindsTo, PartOf, After, Before and Conflicts lists.
+HappyRanch names include the literal installed UNITS and the reserved literal
+`happyranch-`, `happyranch.` and `happyranch@` namespace boundaries, including
+self, additional units and templates regardless of suffix. This naming rule is
+not discovery of arbitrary differently named aliases. Unexpected HappyRanch
+relationships refuse even if a peer-only projection would discard them.
+
+Unrelated systemd housekeeping entries in Wants/Requires/After/Before/Conflicts
+are not refused merely because they fall outside a v255 fixed list. There is no
+replacement unrelated-housekeeping equality check. Both services must still
+explicitly Want and follow network-online.target. BindsTo remains empty for ALL
+targets; PartOf remains exactly the declared graph for ALL targets, including
+unrelated names. These binding checks acquire no authority from any other
+property. Each unit's OWN validated RequiresMountsFor still admits only its
+escaped ancestor mounts in Requires/After when a mount name falls within the
+HappyRanch namespace; no cross-unit union, wildcard, BindsTo or PartOf grant.
+Malformed/unsupported mount paths still refuse P800034. Exact disk rendering,
+owner/install, command/credential operands, security scalar/default/manual-stop
+flags, acquisition/deadline and once-only close/reap checks are unchanged.
+
+P000262/category and original P800001..033 unit/property identities remain.
+P800001..003 now identify unexpected HappyRanch Wants;004..006 Requires;
+007..009 any BindsTo;010..012 exact PartOf;013..015 unexpected HappyRanch After;
+016..018 Before;019..021 Conflicts.022..033 retain exact safety-flag meanings.
+Separate missing explicit network Wants use P800036(connector)/037(sidecar),
+and missing explicit network After use P800038/039. P000261 still precedes
+these supplemental checks. No failure count is renamed or reset: historical
+P800013.After=1 and P800004.Requires=1 remain; their old decisive values and
+systemd255 degraded cause remain UNKNOWN.
+
+---
+
 # Managed Remote Access — Normative Contract
 ## Current run-status evidence correction — THR327seq96 / ROOT14238
 

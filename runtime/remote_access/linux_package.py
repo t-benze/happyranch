@@ -3718,7 +3718,7 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                         raise diagnostic_error("P000256", "managed_lifecycle_incompatible", PackageError("managed_lifecycle_incompatible"))
         dropin_dir = Path("/etc/systemd/system") / _DROPIN_SERVICE_DIR
 
-        def dependency_mismatch(detail: PackageError) -> PackageError:
+        def dependency_mismatch(detail: PackageError, *, required: set[str] | None = None) -> PackageError:
             # Original aggregate and unit/property detail remain immutable.
             # Private bounded observations supplement them, never public errors.
             error = diagnostic_error("P000262", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch"))
@@ -3726,11 +3726,20 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             missing = unexpected = None
             if checking in edges:
                 permitted = set(allowed.split())  # These are fixed/derived unit names, not show quoting.
-                required = (permitted if relation == "equal" else
-                            {"network-online.target"} if relation == "after" and unit != UNITS[2] else set())
-                missing, unexpected = required - edges[checking], edges[checking] - permitted
+                observed_edges = (edges[checking] if relation == "equal" else
+                                  {name for name in edges[checking] if happyranch_unit(name)})
+                if required is None:
+                    required = permitted if relation == "equal" else set()
+                # Missing explicit network edges use their own equality check;
+                # unrelated housekeeping is never an unexpected-edge delta.
+                missing, unexpected = required - edges[checking], observed_edges - permitted
             return loaded_error(error, checking, allowed, base[checking], relation,
                                 missing=missing, unexpected=unexpected)
+
+        def happyranch_unit(name: str) -> bool:
+            # Installed names reserve this literal namespace, including self,
+            # additional units and templates; peers alone are insufficient.
+            return name in UNITS or name.startswith(("happyranch-", "happyranch.", "happyranch@"))
 
         for unit in UNITS:
             base = {}  # Never borrow another unit's paths/observations.
@@ -3786,33 +3795,29 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                 prop = next(k for k in expected if selected[k] != expected[k])
                 raise loaded_error(diagnostic_error("P000261", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), prop, " ".join(sorted(expected[prop])), base[prop], "peers",
                                    missing=expected[prop] - selected[prop], unexpected=selected[prop] - expected[prop])
-            # Account for the bounded v255 default graph as well as explicit
-            # edges; unknown unrelated dependencies cannot disappear through a
-            # peer-only projection.
-            # v255 unit_add_exec_dependencies adds Wants/After tmp.mount for
-            # PrivateTmp, and After remount-fs for State/Logs directories.
-            # v255/v259 unit_add_mount_dependencies walks each OWN path's
-            # component ancestors (including root), using unit_name_from_path.
-            # No suffix wildcard or cross-unit union grants an implicit edge.
-            wants = ({UNITS[0], UNITS[1]} if unit == UNITS[2]
-                     else {"network-online.target", "tmp.mount", UNITS[1]} if unit == UNITS[0]
-                     else {"network-online.target", "tmp.mount"})
+            # Founder THR327seq115: implicit housekeeping may vary with PID1.
+            # Check ALL observed names for unexpected HappyRanch relationships,
+            # while keeping binding relationships exact even for unrelated units.
+            # Each OWN RequiresMountsFor still admits its derived mounts only in
+            # Requires/After, never as BindsTo/PartOf authorization.
             try:
                 mounts = _requires_mount_units(base["RequiresMountsFor"])
             except ValueError as error:
                 raise loaded_error(diagnostic_error("P800034", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), "RequiresMountsFor", "absolute normalized paths", base["RequiresMountsFor"]) from error
-            implicit_requires = ({"sysinit.target", "system.slice", "tmp.mount", "var-tmp.mount"} if unit != UNITS[2] else set()) | mounts
-            implicit_after = implicit_requires | {"basic.target", "network-online.target", "systemd-journald.socket", "systemd-tmpfiles-setup.service"}
-            if unit != UNITS[2]:
-                implicit_after |= {"systemd-remount-fs.service"}
-            checking, allowed, relation = "Wants", " ".join(sorted(wants)), "equal"
-            if edges["Wants"] != wants:
+            checking, allowed, relation = "Wants", " ".join(sorted(expected["Wants"])), "subset"
+            if {name for name in edges["Wants"] if happyranch_unit(name)} - expected["Wants"]:
                 raise dependency_mismatch(
                     diagnostic_error("P800001", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800002", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800003", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
-            checking, allowed, relation = "Requires", " ".join(sorted(implicit_requires)), "subset"
-            if not edges["Requires"] <= implicit_requires:
+            if unit != UNITS[2] and "network-online.target" not in edges["Wants"]:
+                checking, allowed, relation = "Wants", " ".join(sorted(expected["Wants"] | {"network-online.target"})), "subset"
+                raise dependency_mismatch(
+                    diagnostic_error("P800036", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800037", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")),
+                    required={"network-online.target"})
+            checking, allowed, relation = "Requires", " ".join(sorted(mounts)), "subset"
+            if {name for name in edges["Requires"] if happyranch_unit(name)} - mounts:
                 raise dependency_mismatch(
                     diagnostic_error("P800004", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800005", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
@@ -3829,21 +3834,26 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                     diagnostic_error("P800010", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800011", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800012", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
-            checking, allowed, relation = "After", " ".join(sorted(expected["After"] | implicit_after)), "after"
-            if ((unit != UNITS[2] and "network-online.target" not in edges["After"])
-                    or not edges["After"] <= expected["After"] | implicit_after):
+            checking, allowed, relation = "After", " ".join(sorted(expected["After"] | mounts)), "subset"
+            if {name for name in edges["After"] if happyranch_unit(name)} - (expected["After"] | mounts):
                 raise dependency_mismatch(
                     diagnostic_error("P800013", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800014", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800015", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
-            checking, allowed, relation = "Before", " ".join(sorted(expected["Before"] | {"shutdown.target"})), "subset"
-            if not edges["Before"] <= expected["Before"] | {"shutdown.target"}:
+            if unit != UNITS[2] and "network-online.target" not in edges["After"]:
+                checking, allowed, relation = "After", " ".join(sorted(expected["After"] | mounts | {"network-online.target"})), "subset"
+                raise dependency_mismatch(
+                    diagnostic_error("P800038", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
+                    diagnostic_error("P800039", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")),
+                    required={"network-online.target"})
+            checking, allowed, relation = "Before", " ".join(sorted(expected["Before"])), "subset"
+            if {name for name in edges["Before"] if happyranch_unit(name)} - expected["Before"]:
                 raise dependency_mismatch(
                     diagnostic_error("P800016", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800017", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
                     diagnostic_error("P800018", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")))
-            checking, allowed, relation = "Conflicts", "shutdown.target", "equal"
-            if edges["Conflicts"] != {"shutdown.target"}:
+            checking, allowed, relation = "Conflicts", "", "subset"
+            if any(happyranch_unit(name) for name in edges["Conflicts"]):
                 raise dependency_mismatch(
                     diagnostic_error("P800019", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[0] else
                     diagnostic_error("P800020", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")) if unit == UNITS[1] else
