@@ -1008,19 +1008,32 @@ Startup and archived-thread resume cutover share a lazy, fully materialized
 release view and common lifecycle-family decoding only within one transaction's
 mutation-free segment. Unbuilt differs from proven-empty; every write invalidates
 both views and selected conclusions. Initialized pairs still pass evidence and
-permission checks before the no-op shortcut. Common sibling shape/size/duplicate/
-org/thread/audit-owner checks remain complete; selected initial/append/native
-agent/session histories replay on demand in caller order. Ordinary absent history
-remains None, distinct from bounded release missing/orphan/1024-row refusals.
-Permissions, live owners, holds, recovery, Pause, effects and raw census stay fresh.
-Terminal status alone is unsafe: callback consumption can precede cleanup, and
-settled=true/quiescent=false or sticky failed_cleanup retains unknown. Pending
-preservation still uses the stricter retry/deferral/live-owner predicate; nonpending
-history must be producer-settled and known before it stops preserving. Other
-callers reread normally. This is full common decoding with lazy selected replay,
-not unsettled-only pruning or lifecycle clearance. A legacy triggering_seq0 write
-followed by another participant's native_delivery_range refusal rolls back the
-whole cutover, without reusing the prewrite view or changing resume's prior commit.
+permission checks before the no-op shortcut. Recovery separately reuses common
+lifecycle decoding only within ONE public preserve_pair_uncommitted call. Its
+segment is lazy: held, denied, no-invocation and all-released exits build none.
+Reusable ownership is discarded on every return/exception, before any enclosing
+recovery write, including audit-only queued retention. Each next pair or catch-up
+call, even for the SAME pair, starts fresh; recovery never shares release views.
+Common sibling shape/size/duplicate/org/thread/audit-owner checks remain complete;
+selected initial/append/native agent/session histories replay on demand in caller
+order. Ordinary absent history remains None, distinct from bounded release
+missing/orphan/1024-row refusals. Permissions, live owners, holds, Pause, effects
+and raw census stay fresh. Terminal status alone is unsafe: callback consumption
+can precede cleanup, and settled=true/quiescent=false or sticky failed_cleanup
+retains unknown. Pending preservation still uses the stricter retry/deferral/live-
+owner predicate; nonpending history must be producer-settled and known before it
+stops preserving. Other readers keep their existing reads. This is full common
+decoding with lazy selected replay, not unsettled-only pruning or lifecycle
+clearance. Full-family raw/model/grouping retention can increase peak memory:
+there is no new total-family/RSS cap, and tracebacks may retain memory after return.
+If selected and common sibling evidence are both invalid, full common decoding
+may change the internal first cause within the same public refusal category.
+Original context and cleanup uncertainty remain; existing settings/rollback
+failures can still supersede the top-level error. No arbitrary I/O-fault trace,
+runtime work/memory/speed or startup improvement is verified. A legacy
+triggering_seq0 write followed by another participant's native_delivery_range
+refusal still rolls back the whole cutover, without reusing the prewrite view or
+changing resume's prior commit.
 
 The append-only version1 `thread_delivery_release` companion retains real thread
 scope/permanent agent meanings and literal lifecycle-v1/unknown/retry history.

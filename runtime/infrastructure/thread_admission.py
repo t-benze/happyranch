@@ -344,7 +344,7 @@ class ThreadAdmissionStore:
 
 
 class _ThreadLifecycleSegment:
-    """Private lazy conclusions for one cutover's mutation-free interval."""
+    """Private lazy conclusions for one caller-owned mutation-free interval."""
 
     def __init__(self, store: ThreadAdmissionStore, thread_id: str) -> None:
         self.store, self.thread_id = store, thread_id
