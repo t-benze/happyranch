@@ -174,6 +174,18 @@ class NativeWriterLifecycle(Closed):
         return self
 
 
+def historical_disk_sweep(writer_id, state, live_writers) -> bool:
+    """Founder THR320seq477: a stale nightly sweep record supplies no live owner.
+
+    True only for an UNKNOWN `disk_sweep` record with empty agents AND teams
+    whose key is absent from the CURRENTLY mounted owner's live reservations.
+    The record stays UNKNOWN; no settlement, cleanup or adoption is inferred.
+    """
+    return (state.state == 'unknown' and state.publisher == 'disk_sweep'
+            and not state.agents and not state.teams
+            and writer_id not in live_writers)
+
+
 class NativeWriterStore:
     def __init__(self, db, org_slug):
         self.db, self.org_slug = db, org_slug

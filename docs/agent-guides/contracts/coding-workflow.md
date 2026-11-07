@@ -62,8 +62,9 @@ After a durable reservation, those same proofs precede exact writer.validation
 marking INSIDE native_writer; warning follows only its genuine successful exit,
 settlement and original owner/registry disposition. Entry/no-yield, failed close,
 rollback/outer exit/settlement or same-primary cleanup notes never mean no effect.
-Active/unknown native owners defer, with one built-in registration-only exception
-(Founder THR320seq477): after complete strict native-state validation, an `unknown`
+Active/unknown native owners defer, with one exception for built-in registration
+and (since the startup hold) org startup classification (Founder THR320seq477;
+shared predicate `historical_disk_sweep` in `producer_admission.py`): after complete strict native-state validation, an `unknown`
 `disk_sweep` record with empty agents AND teams may pass the historical-state gate
 only when its writer key is absent from the SAME currently mounted
 `admission.writers`. A present key whose value is false or None still refuses.
