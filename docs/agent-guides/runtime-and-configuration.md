@@ -4157,6 +4157,19 @@ strictly before the org's first `thread_move_lifecycle` row ran under
 pre-lifecycle code and is settled for this veto only. A missing/unparseable or
 naive epoch, any lifecycle row (including `failed_cleanup`) or a later
 `consumed_at` keeps the veto; nothing is written or repaired.
+Founder abort-predecessor attestation (`happyranch threads attest-abort-predecessor
+--thread-id T --invocation-id N --reason ...`, founder CLI-only, never remote, same
+shared-bearer founder convention as `abort-replies`) is the only other settlement
+for this veto. It refuses unless the invocation is founder-aborted, terminal and
+consumed; has no in-process control/live owner or team-move hold; and its final
+lifecycle row is producer-settled with sticky `failed_cleanup` as the only
+uncertainty (every recorded attempt settled and quiescent). The route captures
+`team_move_census(org, (agent,))` without DB/move locks; any host attempt for that
+agent, residue or unhealthy measurement refuses. Success appends one strict
+`thread_abort_predecessor_attested` audit row binding the invocation, session,
+preparation and exact final lifecycle audit id. The veto accepts it only while
+that final row is unchanged; a malformed attestation fails closed. It never clears
+`failed_cleanup`, so cleanup/census/diagnostic readers still see uncertainty.
 Each offload owns its original callable/context and return acknowledgement before
 executor submission. A submission may throw after queueing; a missing, done or
 cancelled Future proves neither no effects nor original return. Unknown admission

@@ -76,6 +76,29 @@ class ThreadLifecycle(Closed):
         return self.failed_cleanup or any(a.possible_launch and not (a.settled and a.quiescent) for a in self.attempts)
 
 
+ATTESTATION_ACTION = "thread_abort_predecessor_attested"
+
+
+class AbortPredecessorAttestation(Closed):
+    """Founder attestation for ONE founder-aborted predecessor's veto only.
+
+    It never clears or rewrites lifecycle evidence: `failed_cleanup` stays
+    sticky for every other reader. It binds the exact final lifecycle row, so
+    any later lifecycle append for that invocation voids it.
+    """
+    version: Literal[1] = 1
+    org_slug: ID
+    thread_id: ID
+    invocation_id: Annotated[int, Field(gt=0)]
+    agent_id: ID
+    session_id: ID
+    preparation_id: ID
+    lifecycle_audit_id: Annotated[int, Field(gt=0)]
+    attested_by: Literal["founder"] = "founder"
+    host_census: Literal["clear"] = "clear"
+    reason: Annotated[str, Field(min_length=1, max_length=1000)]
+
+
 class ThreadAdmissionStore:
     def __init__(self, db: Any, org_slug: str) -> None:
         self.db, self.org_slug = db, org_slug
@@ -103,6 +126,61 @@ class ThreadAdmissionStore:
             return None
         self._lifecycle_epoch = epoch
         return epoch
+
+    def read_final_uncommitted(self, inv: Any) -> tuple[int, ThreadLifecycle] | None:
+        """Final selected lifecycle state with its audit row id (same replay)."""
+        rows = self.db._conn.execute(
+            "SELECT id,agent,payload FROM audit_log WHERE task_id=? "
+            "AND action='thread_move_lifecycle' ORDER BY id", (inv.thread_id,),
+        )
+        final = None
+        try:
+            for row, state in self._replay_states(inv, rows, check=lambda: None):
+                final = (int(row["id"]), state)
+        except (ValueError, TypeError, ValidationError) as exc:
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            raise DeferredTeamMove("team_move_thread_audit_unavailable") from exc
+        return final
+
+    def read_attestation_uncommitted(self, inv: Any) -> AbortPredecessorAttestation | None:
+        """Strict read; any malformed same-thread attestation fails closed."""
+        rows = self.db._conn.execute(
+            "SELECT agent,payload FROM audit_log WHERE task_id=? AND action=? ORDER BY id",
+            (inv.thread_id, ATTESTATION_ACTION),
+        )
+        found = None
+        try:
+            for row in rows:
+                raw = row["payload"]
+                if type(raw) is not str or len(raw.encode("utf8")) > 16384:
+                    raise ValueError("attestation bound")
+                record = AbortPredecessorAttestation.model_validate_json(raw, strict=True)
+                if (record.org_slug != self.org_slug or record.thread_id != inv.thread_id
+                        or record.agent_id != row["agent"]):
+                    raise ValueError("attestation owner")
+                if record.invocation_id != inv.id:
+                    continue
+                if found is not None or record.agent_id != inv.agent_name:
+                    raise ValueError("attestation duplicate or owner mismatch")
+                found = record
+        except (ValueError, TypeError, ValidationError) as exc:
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            raise DeferredTeamMove("thread_abort_attestation_unavailable") from exc
+        return found
+
+    def append_attestation_uncommitted(self, inv: Any, record: AbortPredecessorAttestation) -> int:
+        if (record.org_slug, record.thread_id, record.invocation_id, record.agent_id) != (
+                self.org_slug, inv.thread_id, inv.id, inv.agent_name):
+            raise ValueError("attestation owner mismatch")
+        if self.read_attestation_uncommitted(inv) is not None:
+            raise ValueError("attestation already recorded")
+        payload = json.loads(record.model_dump_json())
+        audit_raw = json.dumps(payload)
+        if (len(audit_raw.encode("utf8")) > 16384
+                or AbortPredecessorAttestation.model_validate_json(audit_raw, strict=True) != record):
+            raise ValueError("attestation audit writer representation bound")
+        return self.db.insert_audit_log_uncommitted(task_id=inv.thread_id, agent=inv.agent_name,
+            action=ATTESTATION_ACTION, payload=payload)
 
     def read_uncommitted(self, inv: Any) -> ThreadLifecycle | None:
         # Scope remains the real thread ID, not an overloaded task identity.

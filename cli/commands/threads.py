@@ -511,6 +511,22 @@ def cmd_threads_abort_replies(args: argparse.Namespace) -> None:
     print(_json.dumps(r.json(), indent=2))
 
 
+def cmd_threads_attest_abort_predecessor(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    r = client.post(
+        f"/api/v1/orgs/{slug}/threads/{args.thread_id}/abort-predecessors/"
+        f"{args.invocation_id}/attest",
+        json={"reason": args.reason},
+    )
+    if not _ok(r):
+        return
+    print(_json.dumps(r.json(), indent=2))
+
+
 def cmd_threads_attachments_list(args: argparse.Namespace) -> None:
     import json as _json
     import sys
@@ -811,6 +827,17 @@ def register(sub) -> None:
     p_threads_abort.add_argument("--org", default=None, help="Org slug")
     p_threads_abort.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_abort.set_defaults(func=cmd_threads_abort_replies)
+
+    p_threads_attest = threads_sub.add_parser(
+        "attest-abort-predecessor",
+        help=("Founder: attest one founder-aborted reply invocation settled so it stops "
+              "blocking that agent's new replies on the thread (failed_cleanup stays recorded)"),
+    )
+    p_threads_attest.add_argument("--org", default=None, help="Org slug")
+    p_threads_attest.add_argument("--thread-id", dest="thread_id", required=True)
+    p_threads_attest.add_argument("--invocation-id", dest="invocation_id", type=int, required=True)
+    p_threads_attest.add_argument("--reason", required=True, help="Why you judge it settled (recorded)")
+    p_threads_attest.set_defaults(func=cmd_threads_attest_abort_predecessor)
 
     p_threads_attachments = threads_sub.add_parser(
         "attachments", help="Thread-scoped attachment operations",

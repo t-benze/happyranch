@@ -14,12 +14,22 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any, Callable, Iterator
 
-from runtime.infrastructure.thread_admission import ThreadAdmissionStore, ThreadAttempt, ThreadLifecycle
+from runtime.infrastructure.thread_admission import (
+    AbortPredecessorAttestation, ThreadAdmissionStore, ThreadAttempt, ThreadLifecycle,
+)
 from runtime.infrastructure.team_move_store import MoveRequest, _decode
 from runtime.models import ThreadInvocationPurpose, ThreadInvocationStatus
 from runtime.orchestrator.team_move import DeferredTeamMove, PermanentAgentIdentity
 
 logger = logging.getLogger(__name__)
+
+
+class AbortPredecessorAttestationRefused(Exception):
+    """Founder attestation refused; nothing was written."""
+    def __init__(self, code: str, **detail: Any) -> None:
+        self.code, self.detail = code, detail
+        super().__init__(code)
+
 
 _current: ContextVar[ThreadPreparation | None] = ContextVar("team_move_thread_preparation", default=None)
 
@@ -561,6 +571,7 @@ class ThreadMoveAdmission:
             if (state is None and inv.started_at is not None
                     and not self._pre_lifecycle_settled_uncommitted(inv, control)
                     or state is not None and (state.unknown or not state.producer_settled)
+                    and not self._attested_settled_uncommitted(inv, control)
                     or control is not None and (control.failure is not None
                         or control.dispatch_future is None or not control.dispatch_future.done())):
                 raise DeferredTeamMove("thread_abort_predecessor_unsettled")
@@ -577,6 +588,83 @@ class ThreadMoveAdmission:
         if epoch is None or consumed.tzinfo is None:
             return False
         return consumed < epoch
+
+    @staticmethod
+    def _attestable(state: ThreadLifecycle) -> bool:
+        # The only uncertainty left is the sticky cleanup fact: the producer
+        # settled and every recorded attempt settled and went quiescent.
+        return bool(state.failed_cleanup and state.producer_settled and state.attempts
+            and all(a.settled and a.quiescent for a in state.attempts))
+
+    def _attested_settled_uncommitted(self, inv: Any, control: Any) -> bool:
+        # Founder attestation settles this veto only, bound to the exact final
+        # lifecycle row. failed_cleanup stays sticky for every other reader.
+        if control is not None or inv.status == ThreadInvocationStatus.PENDING or inv.consumed_at is None:
+            return False
+        final = self.store.read_final_uncommitted(inv)
+        if final is None:
+            return False
+        row_id, state = final
+        record = self.store.read_attestation_uncommitted(inv)
+        return bool(record is not None and self._attestable(state)
+            and (record.lifecycle_audit_id, record.session_id, record.preparation_id)
+                == (row_id, state.session_id, state.preparation_id))
+
+    def attest_abort_predecessor(
+        self, thread_id: str, invocation_id: int, *, agent_id: str, reason: str,
+        host_blockers: tuple[dict, ...],
+    ) -> dict:
+        """Founder: record that one founder-aborted predecessor is settled.
+
+        `host_blockers` comes from the host census, captured by the caller
+        without DB/move locks. Every other check runs here under both locks.
+        """
+        refuse = AbortPredecessorAttestationRefused
+        with self.move.gate, self.db._lock:
+            inv = next((i for i in self.db.list_thread_invocations(thread_id) if i.id == invocation_id), None)
+            if inv is None:
+                raise refuse("not_found")
+            if inv.agent_name != agent_id:
+                raise refuse("invocation_changed")
+            if inv.decline_reason != "founder_aborted":
+                raise refuse("not_founder_aborted")
+            if inv.status == ThreadInvocationStatus.PENDING or inv.consumed_at is None:
+                raise refuse("not_terminal")
+            if inv.id in self.controls or inv.id in self.live:
+                raise refuse("owner_live")
+            held = self.held_uncommitted(inv.agent_name)
+            if held is not None:
+                raise refuse("team_move_held", operation_id=held["operation_id"])
+            final = self.store.read_final_uncommitted(inv)
+            if final is None:
+                raise refuse("lifecycle_missing")
+            row_id, state = final
+            if not (state.unknown or not state.producer_settled):
+                raise refuse("already_settled")
+            if not self._attestable(state):
+                raise refuse("attempts_not_quiescent")
+            existing = self.store.read_attestation_uncommitted(inv)
+            if existing is not None:
+                if existing.lifecycle_audit_id != row_id:
+                    raise refuse("lifecycle_changed_after_attestation")
+                return {"thread_id": thread_id, "invocation_id": inv.id, "agent_name": inv.agent_name,
+                        "lifecycle_audit_id": row_id, "idempotent": True}
+            if host_blockers:
+                raise refuse("host_owner_or_residue_unknown", blockers=list(host_blockers))
+            record = AbortPredecessorAttestation(
+                org_slug=self.store.org_slug, thread_id=thread_id, invocation_id=inv.id,
+                agent_id=inv.agent_name, session_id=state.session_id,
+                preparation_id=state.preparation_id, lifecycle_audit_id=row_id, reason=reason,
+            )
+            self.db._conn.execute("BEGIN IMMEDIATE")
+            try:
+                audit_id = self.store.append_attestation_uncommitted(inv, record)
+                self.db._conn.commit()
+            except BaseException:
+                self.db._conn.rollback()
+                raise
+            return {"thread_id": thread_id, "invocation_id": inv.id, "agent_name": inv.agent_name,
+                    "lifecycle_audit_id": row_id, "attestation_audit_id": audit_id, "idempotent": False}
 
     def revalidate_uncommitted(self, owner: ThreadPreparation) -> None:
         if self.live.get(owner.inv.id) is not owner or not owner.owner_live:

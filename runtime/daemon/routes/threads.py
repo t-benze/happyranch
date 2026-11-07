@@ -2865,6 +2865,55 @@ async def abort_replies_endpoint(
         return {"thread_id": thread_id, "aborted_count": outcome.aborted_count}
 
 
+# POST /threads/{id}/abort-predecessors/{invocation_id}/attest — founder CLI only
+# ---------------------------------------------------------------------------
+
+
+class AbortPredecessorAttestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+@router.post("/threads/{thread_id}/abort-predecessors/{invocation_id}/attest")
+async def attest_abort_predecessor_endpoint(
+    slug: str, thread_id: str, invocation_id: int, body: AbortPredecessorAttestBody, org: OrgDep,
+) -> dict:
+    """Founder attests one founder-aborted predecessor settled for the reply veto.
+
+    Writes one append-only audit row; never clears lifecycle `failed_cleanup`.
+    """
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    from runtime.orchestrator.thread_move import AbortPredecessorAttestationRefused
+
+    with org._runner_lifetime() as admitted:
+        if not admitted:
+            raise HTTPException(status_code=503, detail={"code": "org_unavailable"})
+        move = getattr(org.db, "_team_move_coordinator", None)
+        if move is None:
+            raise HTTPException(status_code=503, detail={"code": "thread_admission_unavailable"})
+        async with org.db_lock:
+            inv = next((i for i in org.db.list_thread_invocations(thread_id) if i.id == invocation_id), None)
+        if inv is None:
+            raise HTTPException(status_code=404, detail={"code": "not_found"})
+        # Host census runs without DB/move locks; unattributed residue blocks.
+        host = getattr(org.orchestrator, "_host_supervisor", None)
+        if host is None:
+            blockers: tuple[dict, ...] = ({"kind": "host_owner_unavailable", "owner_id": org.slug},)
+        else:
+            blockers = tuple(await asyncio.to_thread(host.team_move_census, org.slug, (inv.agent_name,)))
+        async with org.db_lock:
+            try:
+                return await asyncio.to_thread(
+                    move.threads.attest_abort_predecessor, thread_id, invocation_id,
+                    agent_id=inv.agent_name, reason=body.reason, host_blockers=blockers,
+                )
+            except AbortPredecessorAttestationRefused as exc:
+                status_code = 404 if exc.code == "not_found" else 409
+                raise HTTPException(status_code=status_code, detail={"code": exc.code, **exc.detail}) from None
+            except DeferredTeamMove as exc:
+                raise HTTPException(status_code=409, detail={"code": exc.code}) from None
+
+
 # ---------------------------------------------------------------------------
 # Thread-scoped attachment routes (TASK-1616)
 # ---------------------------------------------------------------------------
