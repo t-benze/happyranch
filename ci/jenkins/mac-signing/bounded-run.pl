@@ -14,7 +14,7 @@ use Cwd qw(abs_path);
 
 my $JSON = JSON::PP->new->canonical->utf8;
 my $HERE = dirname(abs_path(__FILE__));
-my @FILES = qw(run-stage.sh mac-sign.sh code-inventory.tsv bounded-run.pl keychain-state.swift);
+my @FILES = qw(run-stage.sh mac-sign.sh code-inventory.tsv bounded-run.pl keychain-state.swift owner-session.sh);
 my $INPUT_SHA = '85b96655a1d072328872fa8797e16ad0087e0e05aa30b8dda2a8bc78b60ac243';
 my $INPUT_SIZE = 49089611;
 my $FINAL = 'HappyRanch-1.0.1-1.0.1-arm64-signed-notarized-stapled.zip';
@@ -193,15 +193,16 @@ sub command {
     setpgid($pid, $pid);
     my $select = IO::Select->new($ro, $re);
     my %sink = (fileno($ro)=>$out, fileno($re)=>$err);
-    my ($reason, $raw, $count, $teardown, $kill_sent) = ('', undef, 0, undef, 0);
+    my ($reason, $raw, $count, $teardown, $kill_sent, $owned) = ('', undef, 0, undef, 0, 1);
     local $SIG{TERM} = sub { $reason ||= 'signal'; };
     local $SIG{INT} = sub { $reason ||= 'signal'; };
     local $SIG{HUP} = sub { $reason ||= 'signal'; };
     while (1) {
-        if (!defined($raw)) {
+        if ($owned) {
             my $w = waitpid($pid, WNOHANG);
             $raw = $? if $w == $pid;
             $reason ||= 'wait_error' if $w == -1;
+            $owned = 0 if $w == $pid || $w == -1;
         }
         my $group = kill(0, -$pid);
         last if defined($raw) && !$group && !$select->count;
@@ -210,9 +211,11 @@ sub command {
         # A closed leader with inherited streams still needs settlement.
         $reason ||= 'inherited_stream' if defined($raw) && !$group && $select->count && mono() >= $end;
         if ($reason && !defined($teardown)) {
-            $teardown = mono(); kill('TERM', -$pid);
+            $teardown = mono(); kill('TERM', -$pid) if $owned;
         }
-        if (defined($teardown) && mono() >= $teardown + ($label eq 'stage' ? 8 : 2) && !$kill_sent) {
+        # Only the original unreaped child owns this numeric group. Reaping or
+        # losing it above ends authority, including between TERM and KILL.
+        if ($owned && defined($teardown) && mono() >= $teardown + ($label eq 'stage' ? 8 : 2) && !$kill_sent) {
             kill('KILL', -$pid); $kill_sent = 1;
         }
         last if defined($teardown) && mono() >= $teardown + 10;
@@ -261,17 +264,25 @@ sub gate {
     my ($action, $source) = @_;
     my $root = "$ENV{HOME}/Library/Application Support/HappyRanchSigning";
     private_dir($root);
+    # Every admission and native recheck obtains live controller/allocation
+    # observations through the SAME attended window, never an old scalar.
+    if ($^O eq 'darwin') {
+        need(!-e "$root/SESSION/CLOSING" && !-l "$root/SESSION/CLOSING",'attended window closing');
+        system('/bin/bash','-p',"$HERE/owner-session.sh",'refresh',$source,$ENV{REQUEST_ID});
+        need($? == 0, 'current owner/manager consent and controller observation');
+    }
     my $s = read_control("$root/owner-session.json");
-    closed($s, qw(version source host user uid home node agent_pid started expires isolation_checked isolation profile_checked));
-    need($s->{version} eq 'happyranch-signing-owner@1' && $s->{source} eq $source, 'setup source/version');
+    closed($s, qw(version source host user uid home node agent_pid supervisor_pid started expires isolation_checked isolation profile_checked root session));
+    need($s->{version} eq 'happyranch-signing-owner@2' && $s->{source} eq $source, 'setup source/version');
     need($s->{user} =~ /\A[a-zA-Z0-9_.-]{1,64}\z/ && $s->{host} =~ /\A[a-zA-Z0-9_.-]{1,253}\z/, 'nonsecret context names');
     need($s->{uid} == $< && $< != 0 && $s->{home} eq $ENV{HOME} && $s->{node} eq 'happyranch-mac-signing-owner', 'owner mapping');
     need($s->{started} <= time() && $s->{expires} > time() && $s->{expires} - $s->{started} <= 1800, 'attended session window');
     need($s->{isolation} eq 'exclusive-one-owner-workload' && $s->{isolation_checked} >= $s->{started} && $s->{isolation_checked} <= time(), 'external isolation observation');
     need($s->{agent_pid} =~ /\A[1-9][0-9]*\z/ && kill(0,$s->{agent_pid}), 'live attended agent');
     my $p = read_control("$root/permissions/$ENV{REQUEST_ID}.json");
-    closed($p, qw(version root task session source action request run job build queue issued expires log_review upload));
-    need($p->{version} eq 'happyranch-signing-permission@1' && $p->{root} eq 'TASK-14158', 'permission owner/version');
+    closed($p, qw(version delivery_root root task session source action request run job build queue issued expires log_review upload));
+    need($p->{version} eq 'happyranch-signing-permission@2' && $p->{delivery_root} eq 'TASK-14158' && $p->{root} eq $s->{root} && $p->{session} eq $s->{session}, 'permission owner/version');
+    need($p->{task} eq $p->{root} && $s->{root} =~ /\ATASK-[1-9][0-9]*\z/ && $s->{supervisor_pid} =~ /\A[1-9][0-9]*\z/ && kill(0,$s->{supervisor_pid}), 'current attended continuation');
     need($p->{task} =~ /\ATASK-[1-9][0-9]*\z/ && $p->{session} =~ /\Asess-[0-9a-f]{32}\z/, 'actual current task/session required');
     need($p->{source} eq $source && $p->{action} eq $action && $p->{request} eq $ENV{REQUEST_ID} && $p->{run} eq $ENV{RUN_ID}, 'permission selection');
     need($p->{queue} =~ /\A[1-9][0-9]*\z/,'observed numeric queue');
@@ -296,6 +307,7 @@ sub gate {
         need(JSON::PP::is_bool($r->{inspected_complete}) && $r->{inspected_complete} && JSON::PP::is_bool($r->{safe_to_publish}) && $r->{safe_to_publish}, 'root full-log inspection and nonsecret disposition');
         need($r->{warnings_disposition} eq 'none-present' || $r->{warnings_disposition} eq 'all-explicitly-accepted-by-root', 'root warning disposition');
     } else { need(!defined($p->{log_review}), 'unexpected review'); }
+    need(!-e "$root/SESSION/CLOSING" && !-l "$root/SESSION/CLOSING",'attended window closing');
     return ($s,$p);
 }
 
@@ -598,6 +610,7 @@ sub stage {
     return 0;
 }
 
+return 1 if caller; # Workload-local primitives shared with owner-session.sh.
 umask 0077;
 my $mode = shift(@ARGV) // '';
 if ($mode eq '--render' && @ARGV == 1) { render($ARGV[0]); exit 0; }
@@ -630,4 +643,4 @@ if ($mode eq '--review-log' && @ARGV == 2) {
     exit 0;
 }
 if ($mode eq '--stage') { exit stage(@ARGV); }
-die "Usage: bounded-run.pl --render MERGED_SHA | --stage SOURCE FIVE_FILE_HASHES | --command LABEL SECONDS CAP PRIVATE_BASE -- ABS_COMMAND ARGS | --gate | --save PRIVATE_FILE TEXT\n";
+die "Usage: bounded-run.pl --render MERGED_SHA | --stage SOURCE SIX_FILE_HASHES | --command LABEL SECONDS CAP PRIVATE_BASE -- ABS_COMMAND ARGS | --gate | --save PRIVATE_FILE TEXT\n";

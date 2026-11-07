@@ -1,11 +1,14 @@
-# Inert HappyRanch macOS signing source
+# Attended HappyRanch macOS signing source
 
-TASK-14158 owns this manual signing delivery under Founder THR-104 seq594.
+Original delivery TASK-14158 continues under sole current manager root TASK-14353
+and Founder THR-104 seq612 (seq609 retains the Jenkins choice).
+TASK-14346 is failed historical provenance.
 This source implements the accepted TASK-14160 design/cases (SHA256
 `d6886d89cc38cc55274964f071adddb26d72d71c7486952af9856af1ff0a4704` /
 `43dc973a9f12efb5b98568fa63df929b59de408191109ce5441d23d77ab573d4`),
 independently assessed DESIGN-ONLY PASS by TASK-14163 and accepted by the
-manager. It creates no job, node, credential, owner session or native result.
+manager. This source delivery creates no job, node, credential, owner session
+or native result.
 No owner action is due in this source leg.
 
 `config.xml.in` is a core Freestyle template, initially **disabled**, with no SCM,
@@ -13,8 +16,9 @@ automatic trigger, remote trigger token, downstream action or caller script/path
 It selects only `happyranch-mac-signing-owner`, disables concurrency and uses
 installed build-timeout **1.41**, absolute 20 minutes and AbortOperation only.
 Controller executors remain zero; the old `mac-mini` and unrelated jobs stay
-unchanged. Its dated offline/LaunchFailed/three-executor observation establishes
-no current UID, owner-M4 mapping, access right or repaired launch.
+unchanged. The7Nov2026 root observation has the general node online/idle with three
+executors; neither it nor the historical LaunchFailed evidence establishes
+current UID, owner-M4 mapping, Keychain access or isolation.
 
 ## Fixed provenance and release installation
 
@@ -36,7 +40,7 @@ parent-owned completion publication, association-before-recovery, reviewed-log
 binding and a fresh extraction during `test`. New independent full review and
 scoped QA must assess this PR's immutable final head.
 
-After guarded merge, root stages the five workload files from the **full actual
+After guarded merge, root stages the six workload files from the **full actual
 merged commit**, verifies each against that commit, and renders from those exact
 bytes with `perl bounded-run.pl --render FULL_MERGED_SHA > candidate.xml`.
 This offline renderer emits literal source/file pins and refuses an invalid SHA
@@ -51,88 +55,209 @@ reviewed pins; existing runs require their original exact script/inventory and
 source marker. Config readback must match all security-relevant fields and the
 literal shell, retaining the exact candidate/readback hashes.
 
-Root records create intent/config hash, verifies exact item404, performs one
-ordinary fixed-origin create and reads back the disabled config/inventory. An
-existing item refuses overwrite. A lost POST reply is uncertain: reconcile that
-exact item by GET; never repeat create. No Create/Configure/Build right follows
-from GET200. A401/403 holds; do not change credentials or CSRF policy.
+The existing installed job remains disabled at the accepted PR1268 bytes.
+This renderer produces an **offline replacement candidate only**. A later update
+needs its own exact live permission, preserved prior/current config hashes,
+readback and unrelated-state comparison. This source delivery never creates,
+updates, enables or runs that job. A lost write reply remains uncertain: read
+back the exact item and reconcile; never repeat the write blindly. A401/403
+holds without credential/CSRF changes. GET200 grants no Configure/Build rights.
 
-## Held owner operation and admission contract
+## Attended owner setup and current authority
 
-**DEV-I03 remains unchanged:** “You cannot modify authentication, daemon
-bearer-token flow, credential handling or custody.” The missing protected source
-is `owner-session.sh`: new Jenkins inbound-secret acquisition/pipe handoff and
-authenticated-agent provisioning. It is deliberately absent. Any Keychain ACL,
-unlock-policy/profile/custody change is also outside this PR. Founder594 and
-the manager's DEV-G03 approval do not supply that immutable exception. Root
-must resolve the exact authorized implementer/charter boundary before dependent
-protected source or live setup. This PR neither implements another credential
-mechanism nor writes owner/session/permission files to manufacture authority.
+Founder THR104seq612 approved the exact source-only DEV-I03 amendment from
+seq598/att443, SHA256 `fbf219a5c51dce31a4086c2c193b624639548f9ccfaa5ba4b46c2c957c110bfa`.
+The installed amendment covers this continuation and expressly delegated source
+corrections; current TASK14353's TASK14356 brief supplies the exact HIGH
+five-file correction radius on the retained TASK14349 source/PR1281.
+`owner-session.sh` is now source, subject to independent FULL review, separate
+scoped QA, normal hooks/static checks and manager guarded merge. **Source
+acceptance is not native acceptance.** No live operation below is authorized by
+that amendment. The existing installed disabled job remains unchanged until a
+separate exact live configuration permission.
 
-The later selected venue is an attended **existing active GUI owner** on native
-Darwin/arm64, with actual console UID, Directory Services home, user and pinned
-host. No historical username/UID is guessed. The separate node must be
-EXCLUSIVE, one executor and its unique self-label only, using Java21 and fixed
-remoteFS `<home>/Library/Application Support/HappyRanchSigning/agent`. Actual
-Java, Xcode/Swift/Security/tools, host/user/tunnel mapping, profile usability,
-permissions and isolation remain prerequisites, not claims. The proposed
-owner-controlled loopback encrypted forward, matching pinned remoting jar and
-secret-pipe launcher still require separately reviewed protected preparation.
-No secret is accepted by this runner. No new account, keychain, profile, key
-export, Always Allow/Trust, partition-list edit, service or unattended launch.
+The selected existing GUI owner remains unknown. No historical UID, username,
+M4 mapping, macOS26.5, Xcode or private-key access is asserted. The owner's
+reported selector is `C9C7371D6FBFDB86BB847CC1DE181EAF2E3A4BD9`, Team `LS2C558RKS`,
+Developer ID Application: Shenzhen Danze Internet Information Service Co., Ltd
+(LS2C558RKS), expiry2027-12-05. Existing login Keychain and `HappyRanch-notary`
+remain the proposed custody, with per-operation owner-controlled prompts.
 
-The held producer must create these private, closed nonsecret records under
-`<home>/Library/Application Support/HappyRanchSigning` only after establishing
-real current authority and observations. Control JSON uses sorted keys, compact
-UTF8 encoding and one trailing newline (stock JSON::PP canonical encoding);
-duplicates/alternate encodings refuse. They are **necessary local gates, not
-authentication, proof of human presence or authority from a hash/old SID**.
-Same-UID owners/administrators can change them; authentic production and the
-controlled attended window remain external protected prerequisites.
+After the merged package is supplied and **local nonsecret inspection alone is
+separately permitted**, this exact command in the active owner's Mac Terminal
+collects actual hostname, console user/UID/DirectoryServices HOME, Java21 path,
+OS/Xcode and named tool availability. It performs no SSH, Keychain operation,
+agent connection, app execution or Apple request:
 
-* `owner-session.json`: `version=happyranch-signing-owner@1`, merged `source`,
-  actual `host,user,uid,home,node,agent_pid`, Unix-second `started,expires`
-  (at most30minutes), `isolation_checked` (no older than120s at the actual
-  current gate/admission or recheck, never future; an old permission cannot
-  make an old isolation observation fresh),
-  `isolation=exclusive-one-owner-workload`, and `profile_checked`.
-  Apple stages require `profile_checked=actual-authorized-history-exit0`, from
-  the separately authorized bounded check of the **existing** profile. Public
-  preflight does not perform that Apple authentication or prove private-key use.
-* `permissions/<REQUEST_ID>.json`: `version=happyranch-signing-permission@1`,
-  `root=TASK-14158`, genuine **current** permanent `task,session`, pinned
-  `source,action,request,run,job,build,queue`, Unix-second `issued,expires`
-  bounded by this stage and owner session, plus `upload,log_review`.
-  `queue` comes from this numeric build's actual Jenkins API `queueId`; core
-  does not export it as a parameter. A caller cannot select the task/SID/queue.
-  The producer must verify current allocation/authority outside this source.
-* Preflight `upload` is the observed current build's
-  `{type: hudson.model.FileParameterValue, name: ORIGINAL_ZIP,
-  filename: original.zip, size: 49089611, sha256: <original hash>, build: N}`;
-  otherwise `upload` is null. Actual executor bytes are independently checked.
-* Finalize `log_review` contains exact `sha256,submission_id`, Boolean
-  `inspected_complete=true,safe_to_publish=true`, and `warnings_disposition`
-  equal to `none-present` or `all-explicitly-accepted-by-root` matching the
-  actual complete issues. Otherwise it is null. Root must actually inspect the
-  complete real log and explicitly disposition every warning before creating
-  this record. A supplied `REVIEWED_LOG_SHA256` alone cannot satisfy it.
+```bash
+/bin/bash -p ./owner-session.sh inspect
+```
 
-The producer must refresh all-job-label/queue/running-build and owner-UID process
-observations before each stage. The old general node stays offline unless its
-actual UID is independently proven distinct without owner-keychain access.
-Runner additionally observes the console owner/home/host and refuses another
-owner-UID Java process. This conservative check and EXCLUSIVE1/nonconcurrency
-are not an OS sandbox or an ACL against an administrator relabeling another job.
-An unrelated Java workload can therefore also cause refusal. Do not resolve it
-by killing someone else's process. No age-only unlock or auto-relaunch exists.
+Run it from the extracted reviewed source directory. Wrong/root/non-GUI owner,
+unsafe HOME or non-arm64 refuses; missing Java/Xcode/tools are reported as
+unavailable. Inspect requires the existing stock Perl/Bash tools. Returned paths
+are the selected paths, not a request to invent JSON. Keychain/profile usability,
+hardware-to-reported-M4 mapping, existing SSH login and host-key trust still need
+root disposition. Missing Java/native tools are dependencies, never auto-installed.
 
-The producer must prepare private `inputs`, `runs`, `permissions`, `receipts`,
-release and workspace directories on the checked volume. Minimum free space
-is1GiB on Mac and independently on controller upload storage. Each stage takes
-an exclusive kernel workload lock plus retained `ACTIVE` and per-run mkdir
-locks. Failure/interruption retains ownership and partial state. Root reconciles
-the exact processes/files/receipts before any explicit further action; no stale
-lock deletion, ambiguous submit retry or partial sign/finalization reuse.
+One concrete setup candidate after inspection and exact later permission:
+
+1. Root packages the **actual merged source** and all six literal file hashes,
+   and stages owner-private0700 release directories and0600 source files
+   (shell entries0700). On Mac the exact release is
+   `$HOME/Library/Application Support/HappyRanchSigning/release/$SOURCE`, with
+   pinned controller JAR at `$HOME/Library/Application Support/HappyRanchSigning/agent.jar`.
+   `SOURCE` is the full verified merged commit, never a caller-selected branch.
+   The JAR is not a repository dependency: 1,406,408 bytes, SHA256
+   `4ae5bbd00b0f79f4453d20fbb6b70dcac4d0a9a4d21d85b18b2c72dd9d117aae`,
+   Implementation-Version `3355.3357.v931d3c992987`, Main-Class
+   `hudson.remoting.Launcher`, observed7Nov2026. Any controller/JAR drift holds
+   for root reconciliation; no latest download or automatic pin update.
+   Before launching, attended setup prepares and validates both exact0700
+   owner-owned directories `agent/` and `agent/remoting/` under the private state
+   root, checking every parent. Missing normal directories may be created;
+   aliases, non-directories, wrong ownership or insecure permissions refuse.
+   Pinned remoting931d3c992987 `WorkDirManager.initializeWorkDir` checks the
+   work directory and default internal `remoting` directory before creating its
+   caches/log components. Both must exist for the retained
+   `-failIfWorkDirIsMissing`; that fence is never removed for first use.
+2. Root separately prepares the same verified six files plus `config.xml.in` on
+   the controller at `/home/benze/HappyRanchSigningController/$ROOT/release/$SOURCE`,
+   with private0700 parents and0600 files. This explicit private staging path
+   avoids shared-writable runtime ancestry. It creates no service. Existing
+   controller CLI path is `/home/benze/projects/happyranch/.venv/bin/happyranch`;
+   its matching Python supports the XML comparison. Root validates these existing
+   tools and real mapping before live setup; source tasks do not install them.
+3. Separately provision exactly inbound node `happyranch-mac-signing-owner`,
+   EXCLUSIVE/one executor/self-label only, remoteFS
+   `$HOME/Library/Application Support/HappyRanchSigning/agent` from inspected HOME.
+   Controller stays zero executors. Source performs no provisioning. General-node
+   distinct UID/no-owner-Keychain-access proof is still unavailable: this
+   candidate conservatively requires other executor nodes offline and no other
+   running/queued build. The controller reads the exported Jenkins2.568.3
+   `labelExpression` scalar. An enabled Freestyle job restricted to another
+   simple label is eligible under that
+   placement rule; owner-label, unrestricted/null, compound or missing/malformed
+   placement holds. Complete typed counts, Booleans, labels, job/node inventories
+   and executor/one-off arrays are required; missing/null facts never mean idle.
+   Root resolves held placement under separate exact authority. Idle or a
+   configured service path cannot satisfy isolation. No unrelated workload is
+   killed or reconfigured.
+4. Establish the actual mapping and **existing** SSH host/login trust for the
+   selected candidate `benze@192.168.18.174:22`. A different mapping is returned
+   to root, never guessed. The source uses only that destination, stock trust
+   checks and existing identities, no ssh config, forwarding of an agent, new
+   key/account, host-key bypass, SSH service change or LAN HTTP secret fallback.
+5. In its genuine current native manager task/SID, root explicitly authorizes
+   the session by invoking the shipped source command below. `$ROOT` and `$SID`
+   must be its **actual current** root and SID; a historical number does not
+   grant permission. The command verifies native allocation through supported
+   `happyranch details`, current status/owner/SID and Pause. It creates an
+   exclusive nonsecret grant under `.../$ROOT/grants/session.json`. **Only a
+   separately authorized live root may invoke it**; allocation/source approval
+   alone is not permission. No maker/session fixture is a production grant.
+
+   ```bash
+   /bin/bash -p "$CONTROLLER_RELEASE/owner-session.sh" controller-grant "$SOURCE" "$ROOT" "$SID" session - - - "$INSPECTED_MAC_HOME"
+   ```
+
+6. The owner runs this ONE attended setup, using the root's supplied exact
+   merged SOURCE/current root/current SID values:
+
+   ```bash
+   /bin/bash -p "$HOME/Library/Application Support/HappyRanchSigning/release/$SOURCE/owner-session.sh" attend "$SOURCE" "$ROOT" "$SID"
+   ```
+
+   It checks GUI owner, home/host, Java21, private paths, six release pins,
+   JAR digest/manifest, no other owner-UID Java process, fresh controller state
+   and native manager allocation. After explicit `ATTEND`, it starts only
+   SSH `127.0.0.1:18081 -> controller127.0.0.1:8081`, then prompts for the **new**
+   inbound secret through no-echo Terminal input. Obtain that secret only after
+   separate permission via normal Jenkins UI over the tunnel. Never copy the
+   default `-secret VALUE` command into a shell. Empty, invalid, EOF, interruption
+   or60s input timeout refuses without launching Java. The memory pipe supplies
+   Java21 `@/dev/stdin`; Java OS argv/environment/files/logs contain no supplied
+   secret. Launcher output is discarded, JUL disk logging/dumps/attach disabled,
+   core limit zero and JVM performance-data files disabled; no raw launcher diagnostic is retained. Same-UID/root memory
+   access, OS memory handling and uncatchable termination remain trust limits;
+   source clearing does not promise forensic memory erasure. The selected native
+   JVM/remoting combination must still be verified with synthetic data first.
+
+The attended window lasts at most30minutes, with no automatic reconnect/relaunch.
+`stop`, signals, input failure, timeout and child failure close admission and
+settle only original owned children. An unsettled group, partial stage, failed
+receipt or timeout remains FAILED_OR_UNKNOWN and retained.
+After a leader is reaped or original-child ownership is lost, no further TERM
+or KILL is sent to its numeric group, including between cleanup signals.
+Inherited streams or surviving descendants remain unresolved and cannot admit
+work; observing a group ID is not authority to signal it. SESSION, consent,
+permission and native ACTIVE/run/attempt records are not age-unlocked or deleted.
+A later window needs explicit root process/state reconciliation; do not manually
+edit a marker to obtain admission. Owner locks the existing login Keychain in UI
+after positive settlement; no automatic policy/ACL/unlock change.
+
+For each of the same six stages, root chooses one fresh REQUEST_ID, exact action,
+RUN_ID and intended numeric build (preflight RUN is `-` in this command). Before
+its ONE separately authorized upload/build, it creates a fresh stage grant:
+
+```bash
+/bin/bash -p "$CONTROLLER_RELEASE/owner-session.sh" controller-grant "$SOURCE" "$ROOT" "$SID" "$REQUEST_ID" "$ACTION" "$RUN_OR_DASH" "$BUILD" "$INSPECTED_MAC_HOME"
+```
+
+In the original attended Terminal the owner enters `consent REQUEST_UUID` for
+that one selected request. This is local consent, not manager authentication.
+At actual gate time `refresh` obtains fresh controller observations over the
+existing trusted SSH session, checks the genuine current native manager SID,
+all-job placement, node EXCLUSIVE1/self-label/remoteFS, queue/running workload,
+controller JAR and **actual running build** action/request/run/queue/node and
+FileParameterValue class/name. An intended build number is never sufficient.
+The exact uploaded filename comes from core's actual executor environment;
+original size/hash are expected policy pins, independently checked against real
+executor bytes before extraction/key use. JSON API does not export the original
+filename in every core version. No stale/root-written expected scalar substitutes
+for that current actual association. Controller readings are bounded and
+nonmutating; unknown/missing/oversized/changed facts refuse. Each native recheck
+repeats these observations; local records never make old isolation fresh.
+
+`owner-session.json` uses closed canonical `happyranch-signing-owner@2`, with
+actual `host,user,uid,home,node,agent_pid,supervisor_pid`, current `root,session`,
+`source,started,expires,isolation_checked,isolation,profile_checked`.
+`permissions/REQUEST.json` uses closed `happyranch-signing-permission@2` with
+`delivery_root=TASK-14158` as historical provenance, genuine current
+`root=task,session`, and existing `source,action,request,run,job,build,queue,
+issued,expires,upload,log_review`. Permissions expire within both stage budget
+and original attended window; isolation is at most120s old at each gate. Sorted
+compact UTF8 plus one newline is mandatory. @1 records remain history and do not
+admit a new current continuation. Records are **private nonsecret prerequisites,
+not authentication or proof of human presence**; same-UID/root interference
+remains a trust limit. No bearer/netrc is copied to Mac or embedded in a grant.
+
+The optional existing-profile check is a separately authorized native operation.
+Root uses the same grant command with action `profile-check`, RUN `-`, BUILD `-`
+and fresh request. In the attended Terminal owner enters `profile REQUEST_UUID`.
+Only then does the source perform bounded120s `xcrun notarytool history
+--keychain-profile HappyRanch-notary --keychain "$HOME/Library/Keychains/login.keychain-db"
+--output-format json`. Complete exit0/settlement produces the current local
+profile prerequisite; raw history stays private. No profile/password creation,
+secret extraction, signing or new submission occurs. Apple stages continue to
+refuse absent that real result. Public preflight is not that result.
+
+Finalize additionally needs root's actual complete-log inspection/warning
+resolution: current grant directory `REQUEST.review.json` is the existing closed
+`sha256,submission_id,inspected_complete,warnings_disposition,safe_to_publish`
+record. Root derives it from the real complete log, never asks an owner to
+fabricate it. `REVIEWED_LOG_SHA256` alone remains insufficient.
+
+The **exact later permission request**, after independent source gates and
+inspection, must name: actual inspected host/user/UID/HOME/Java/native tools;
+private merged release/JAR/controller-grant staging; the one dedicated inbound
+node and required isolation dispositions; verified existing SSH mapping/trust;
+the finite loopback tunnel; new inbound-secret acquisition and memory-pipe agent
+launch; owner-controlled per-operation login-Keychain prompts; and any separately
+selected profile check or exact one native stage/upload/build/config enablement.
+No source approval authorizes that request's execution. Keychain ACL/partition
+list/Always Allow/Trust/unlock-policy, new accounts/keys/profile, password storage,
+key export/import, app rebuild, public delivery and installation remain excluded.
 
 ## Whole-file input and final collection
 
@@ -142,6 +267,14 @@ prerequisites, manager uses the existing **fixed-origin netrc-reference** API at
 `http://127.0.0.1:8081`. Never read/copy/embed its credential contents, add an auth
 client, follow redirects or use an advertised URL as an authenticated target.
 No controller API operation runs from this source leg.
+
+Before the whole-file upload, independently establish at least **1GiB free on
+BOTH the Mac volume** holding private workspace/inputs/runs **and the
+controller upload storage** (including its temporary upload area). Unknown or
+insufficient free space on either volume means refusal/hold before POST. The
+runner's Mac free-space check does not establish controller capacity; root must
+obtain that separate observation under later exact live permission. This source
+leg performs no live disk check.
 
 Use the accepted ordinary whole-file multipart `/job/happyranch-mac-signing/buildWithParameters`
 plan: core file field `ORIGINAL_ZIP=@<exact retained absolute original>;filename=original.zip`
@@ -247,8 +380,8 @@ non-success and ACTIVE/run/attempt/hash holds.
 The existing TASK14166 output/PR case record maps actual portable commands to
 C1–C10. Synthetic command/JSON exercises establish only local bounds, refusal,
 persistence and association predicates. They do not establish macOS Swift/Security,
-key access, Apple status, native trust, controller admission or the existence of
-authentic owner/session producers. No repository test/seam is added.
+key access, Apple status, native trust, controller admission or native acceptance of
+the new owner/session producer. No repository test/seam is added.
 TASK14178 extends that same case record for C4 current-time freshness (including
 the old-permission/stale-isolation counterexample), and C5/C8/C9 failure journal,
 validated status/UNKNOWN, publisher and marker boundaries. Its task-only probes
@@ -259,8 +392,9 @@ Required automatic checks are exactly **Source Boundary Lint** and **Web Lint
 RETIRED; general integration including callback/lifespan/SessionTracker is
 SKIPPED THR243seq42. No Product E2E or app rebuild is allocated. Independent FULL
 code review, separate scoped QA and manager guarded merge remain required.
-Root then owns disabled-job setup/readback, whole-file transport, protected
-boundary resolution, ONE later attended owner setup and THR104 attachments.
+Root owns the merged-byte package, ONE later attended owner setup and THR104
+attachment. Exact job update/readback, whole-file transport and native operations
+remain separately authorized steps.
 Actual Mac/Jenkins/native/Apple execution, signed final bytes, Finder/install,
 independently downloaded quarantine behavior, macOS14 and public release remain
 NOT RUN/open. Source delivery grants no live enablement or native-stage authority.
