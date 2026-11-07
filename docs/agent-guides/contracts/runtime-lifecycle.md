@@ -341,8 +341,10 @@ or an ordinary publication journal is active. The single exception is the
 THR320seq477 historical sweep record (`historical_disk_sweep`): `unknown`,
 publisher `disk_sweep`, empty agents AND teams, and absent from the mounted
 native owner's live writers. The nightly sweep only changes workspace scratch and
-worktrees, never startup's publication inputs. An unavailable native owner keeps
-every record blocking; the record stays UNKNOWN and still blocks team move.
+worktrees, never startup's publication inputs. The org load check and the
+profile coordinator's `reconcile_startup` classification apply the same
+predicate. An unavailable native owner keeps every record blocking; the record
+stays UNKNOWN and still blocks team move.
 
 Whole-runtime construction records its actual candidate on the original caller's
 owner before later fallible work. Both normal startup and runtime replacement

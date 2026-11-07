@@ -13,6 +13,7 @@ remain outside this cooperative guarantee.
 """
 from __future__ import annotations
 
+from runtime.infrastructure.producer_admission import NativeWriterLifecycle, historical_disk_sweep
 from runtime.orchestrator.producer_move import native_writer
 
 import asyncio
@@ -1725,9 +1726,16 @@ class ProfileCoordinator:
                         first = first or capture.canonical_error
                     # Strict authenticated native ownership, independently of a
                     # PID, kernel lease or an ordinary journal's current phase.
-                    history = [json.loads(raw) for _, raw in capture.revision[7]]
-                    if (any(row["state"] != "settled" for row in history)
-                            or (capture.revision[8] and json.loads(capture.revision[8][1]))):
+                    # THR320seq477: a stale nightly sweep record supplies no
+                    # live owner (same predicate as the org startup hold). An
+                    # absent native owner keeps every record blocking.
+                    live = json.loads(capture.revision[8][1]) if capture.revision[8] else None
+                    history = [NativeWriterLifecycle.model_validate_json(raw, strict=True)
+                               for _, raw in capture.revision[7]]
+                    if (any(row.state != "settled"
+                            and (live is None or not historical_disk_sweep(row.writer_id, row, live))
+                            for row in history)
+                            or live):
                         reasons.setdefault(slug, "profile_consumer_changed")
                     try:
                         self._validate_capture(org, capture.revision)
