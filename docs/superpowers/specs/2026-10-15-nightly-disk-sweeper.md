@@ -108,9 +108,21 @@ whose remaining inventory is unknown. `known_candidate_count` and
 null unless discovery is complete. Other candidate/retention/allocation counts
 likewise describe the known set, never an uncertain total. Discovery checkpoints
 retain captured candidates and failed scopes without a cursor or budget reset.
-The existing supervisor conservatively retains `partial_mutation: unknown` for
-a nonzero worker exit, even when an incomplete report was fully written; this
-field is not evidence of deletion.
+The supervisor retains `partial_mutation: unknown` for an interrupted worker
+(deadline, shutdown, or a nonzero exit other than the orderly incomplete exit 3);
+this field is not evidence of deletion.
+The worker exits 0 for a complete sweep and 3 (`WORKER_INCOMPLETE_EXIT`) after
+publishing its final report with any other outcome; the summary records
+`worker_returncode`. Exit 3 is not an interruption. Any other nonzero exit,
+deadline or shutdown still records `interruption` and `partial_mutation: unknown`.
+Each org's `disk_sweep` native writer settles independently: only when its own
+sweep provably returned (a later org entry exists, or the worker was not
+interrupted), ran in `on` mode, has no `error`, and no candidate is
+`inspecting`, `mutation_in_flight` or `partial_or_unknown`. Partial discovery and
+retained candidates are known effects and settle. One org's failed, incomplete or
+interrupted sweep never leaves a finished peer's writer unknown (previously every
+incomplete nightly run left an `unknown` writer in every org, which startup
+holds on).
 
 Scheduled deletion is enabled for **every normally admitted org**. Missing config
 files, absent blocks, old off/dry_run/on and newly discovered/admitted orgs all
