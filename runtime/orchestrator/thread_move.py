@@ -917,15 +917,26 @@ class ThreadMoveAdmission:
 
     def preserve_pair_uncommitted(self, thread_id: str, agent_id: str) -> bool:
         from runtime.infrastructure.thread_delivery_release import delivery_view
-        return self._preserve_pair_uncommitted(thread_id, agent_id,
-            view=lambda: delivery_view(self.db, thread_id), read_state=self.store.read_uncommitted)
+        lifecycle = None
+
+        def read_state(inv: Any) -> ThreadLifecycle | None:
+            nonlocal lifecycle
+            if lifecycle is None:
+                lifecycle = self.store._read_segment(thread_id)
+            return lifecycle.read(inv)
+
+        try:
+            return self._preserve_pair_uncommitted(thread_id, agent_id,
+                view=lambda: delivery_view(self.db, thread_id), read_state=read_state)
+        finally:
+            lifecycle = None
 
     def _preserve_pair_uncommitted(
         self, thread_id: str, agent_id: str, *, view: Callable[[], Any],
         read_state: Callable[[Any], ThreadLifecycle | None],
     ) -> bool:
-        # Cutover supplies only local lazy readers, never permission/live/hold
-        # conclusions. Every other caller retains fresh ordinary reads.
+        # Cutover and recovery supply only local lazy readers, never cached
+        # permission/live/hold conclusions.
         if self.held_uncommitted(agent_id) is not None:
             return True
         from runtime.infrastructure.thread_delivery_release import pair_permission
