@@ -2595,7 +2595,8 @@ def correction_policy_reporting():
             deferred.org.rename(deferred_root)
             def org(root, conn):
                 return SimpleNamespace(root=root, db=SimpleNamespace(_conn=conn, _lock=threading.RLock()))
-            state = SimpleNamespace(orgs={f.org.name: org(f.org, f.db), 'zz-deferred': org(deferred_root, deferred.db)})
+            orgs = {f.org.name: org(f.org, f.db), 'zz-deferred': org(deferred_root, deferred.db)}
+            state = SimpleNamespace(orgs=orgs, orgs_snapshot=lambda: dict(orgs))
             dispositions = []
             actual_disposition = producer_move.NativeWriterDisposition
             def disposition():
@@ -2613,7 +2614,8 @@ def correction_policy_reporting():
             summary = f.base / 'scheduled-summary.json'
             with patch.object(producer_move, 'NativeWriterDisposition', disposition), patch.object(ds, 'run_worker', in_process):
                 report = asyncio.run(ds._run_scheduled_worker(state, summary, 'fixture-date'))
-            assert len(dispositions) == 2 and dispositions[0].uncertain is partial, dict(expected_uncertain=partial, observed=[v.uncertain for v in dispositions], report=report)
+            # Partial discovery with every candidate closed is a known effect.
+            assert len(dispositions) == 2 and dispositions[0].uncertain is False, dict(expected_uncertain=False, partial=partial, observed=[v.uncertain for v in dispositions], report=report)
             assert report['outcome'] == 'incomplete' and report['move_deferred_orgs'] == {'zz-deferred': 'team_move_native_owner_unavailable'}, report
             assert report['selected_org_roots'] == [str(f.org)] and report['unreached_orgs'] == []
             assert json.loads(summary.read_text()) == report
@@ -2666,8 +2668,8 @@ def scheduled_fixture():
             def __init__(self, g):
                 self._conn = g.db
                 self._lock = threading.RLock()
-        state = SimpleNamespace(runtime=True, broken_orgs={}, orgs={
-            name: SimpleNamespace(root=g.org, db=Audit(g)) for name, g in zip(('off', 'missing', 'new'), orgs)})
+        loaded = {name: SimpleNamespace(root=g.org, db=Audit(g)) for name, g in zip(('off', 'missing', 'new'), orgs)}
+        state = SimpleNamespace(runtime=True, broken_orgs={}, orgs=loaded, orgs_snapshot=lambda: dict(loaded))
         stop = f.base / 'daemon/disk-sweep/stop.json'
         summary = stop.with_name('scheduled.json')
         try:
@@ -3004,11 +3006,52 @@ def correction_stop_preview():
     return dict(variants=observations, clock='real subprocess clock retains fresh candidates; C5 owns eligible preview sentinels')
 
 
+def correction_per_org_settlement():
+    """One org's incomplete/failed/interrupted sweep never leaves a finished peer unknown."""
+    def item(org, **kw):
+        value = dict(org=org, mode='on', outcome='complete', candidates=[])
+        value.update(kw)
+        return value
+    stop = 'owned group signalled SIGKILL when present'
+    clean, partial = item('a'), item('b', outcome='error', candidates=[dict(state='partial_or_unknown')])
+    table = [
+        # (report, slug, expected)
+        (dict(orgs=[clean, partial], worker_group_stop=stop), 'a', True),
+        (dict(orgs=[clean, partial], worker_group_stop=stop), 'b', False),
+        (dict(orgs=[clean, item('b', outcome='incomplete', discovery='partial')], worker_group_stop=stop), 'b', True),
+        (dict(orgs=[clean, item('b', outcome='incomplete', error='total sweep deadline')], worker_group_stop=stop), 'b', False),
+        (dict(orgs=[clean, item('b', outcome='incomplete', candidates=[dict(state='inspecting')])], worker_group_stop=stop), 'b', False),
+        # A killed worker: earlier orgs provably returned, the last one did not.
+        (dict(orgs=[clean, item('b')], worker_group_stop=stop, interruption='deadline'), 'a', True),
+        (dict(orgs=[clean, item('b')], worker_group_stop=stop, interruption='deadline'), 'b', False),
+        (dict(orgs=[clean], worker_group_stop=stop, interruption='worker_exit:1'), 'a', False),
+        (dict(orgs=[item('a', mode='dry_run')], worker_group_stop=stop), 'a', False),
+        (dict(orgs=[clean, dict(clean)], worker_group_stop=stop), 'a', False),
+        (dict(orgs=[clean]), 'a', False),
+        (dict(orgs=[clean], worker_group_stop=stop), 'missing', False),
+    ]
+    for report, slug, expected in table:
+        observed = ds._org_effects_known(report, slug)
+        assert observed is expected, dict(report=report, slug=slug, expected=expected, observed=observed)
+    # Real worker process: an orderly incomplete sweep exits WORKER_INCOMPLETE_EXIT
+    # and the supervisor records it without an interruption.
+    with tempfile.TemporaryDirectory() as base:
+        missing = Path(base) / 'missing-org'
+        summary = Path(base) / 'summary.json'
+        report = asyncio.run(ds.run_worker([str(missing)], summary, dry_run=False, budget=30))
+        assert report['worker_returncode'] == ds.WORKER_INCOMPLETE_EXIT, report
+        assert 'interruption' not in report and 'partial_mutation' not in report, report
+        # Missing root: partial discovery, nothing touched, so its effect is known.
+        assert report['outcome'] == 'incomplete' and report['orgs'][0]['discovery'] == 'partial', report
+        assert ds._org_effects_known(report, 'missing-org') is True, report
+    return dict(table=len(table), worker_exit=report['worker_returncode'], limits='uncaught worker exception path (exit 1) not exercised; C12 owns deadline/shutdown supervision')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
-    selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7 and S1-S5 (8-12); no historical/isolation cases')
-    selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 13), help='select finite cases within the corrections lane')
+    selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
+    selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
     selection.add_argument('--cases',type=int,nargs='+',choices=range(1,23))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
@@ -3018,7 +3061,7 @@ if __name__=='__main__':
     status=0
     try:
         if args.corrections_only or args.correction_cases:
-            corrections = ((1, 'Finished jobs before lineage', correction_jobs), (2, 'Superseded owner and structural root', correction_superseded), (3, 'Ended trees without process inspection and truthful reporting', correction_processes), (4, 'All-org policy and obsolete config compatibility', correction_policy), (5, 'Explicit preview for every legacy policy', correction_preview), (6, 'Fresh admission and bounded retry independent of policy', correction_fresh_policy), (7, 'Actual reporting and native deferred/partial disposition', correction_policy_reporting), (8, 'S1 default-on scheduled control', correction_stop_default), (9, 'S2 global scheduled stop and audit', correction_stop_true), (10, 'S3 strict invalid control suspension', correction_stop_invalid), (11, 'S4 next-attempt recovery', correction_stop_recovery), (12, 'S5 manual preview with stop controls', correction_stop_preview))
+            corrections = ((1, 'Finished jobs before lineage', correction_jobs), (2, 'Superseded owner and structural root', correction_superseded), (3, 'Ended trees without process inspection and truthful reporting', correction_processes), (4, 'All-org policy and obsolete config compatibility', correction_policy), (5, 'Explicit preview for every legacy policy', correction_preview), (6, 'Fresh admission and bounded retry independent of policy', correction_fresh_policy), (7, 'Actual reporting and native deferred/partial disposition', correction_policy_reporting), (8, 'S1 default-on scheduled control', correction_stop_default), (9, 'S2 global scheduled stop and audit', correction_stop_true), (10, 'S3 strict invalid control suspension', correction_stop_invalid), (11, 'S4 next-attempt recovery', correction_stop_recovery), (12, 'S5 manual preview with stop controls', correction_stop_preview), (13, 'Per-org native writer settlement and orderly incomplete exit', correction_per_org_settlement))
             for number, purpose, fn in corrections:
                 if args.correction_cases is None or number in args.correction_cases:
                     case(number, purpose, fn)

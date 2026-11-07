@@ -40,6 +40,12 @@ from runtime.daemon._disk_sweep_fs import (
 LOG = logging.getLogger(__name__)
 BUDGET_SECONDS = 1800
 PROCESS_SCOPE = 'not checked under THR307 seq117; ended task and structural root required; no process absence or authentication claim'
+# Worker-only exit after its final report was published with a non-complete
+# outcome. Distinct from 1 (uncaught exception) and 2 (argument error), so the
+# supervisor can tell an orderly incomplete sweep from a crash.
+WORKER_INCOMPLETE_EXIT = 3
+# Candidate states whose filesystem effect is not known.
+_OPEN_MUTATION_STATES = ('inspecting', 'mutation_in_flight', 'partial_or_unknown')
 TERMINAL = {'completed', 'failed', 'cancelled', 'superseded'}
 TASK = re.compile(r'TASK-[0-9]+\Z')
 
@@ -991,7 +997,7 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     try:
         if not cancelled:
             await asyncio.wait_for(process.wait(), max(.001, deadline - time.monotonic()))
-        if process.returncode:
+        if process.returncode and process.returncode != WORKER_INCOMPLETE_EXIT:
             cause = f'worker_exit:{process.returncode}'
     except asyncio.TimeoutError:
         cause = 'deadline'
@@ -1011,7 +1017,7 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
             report = dict(format='disk-sweep@1', orgs=[], unreached_orgs=roots, revision=revision)
         for item in report.get('orgs', []):
             _summarize_org(item)
-        report.update(worker_pid=process.pid, worker_group_stop='owned group signalled SIGKILL when present; leader reaped; uninterruptible kernel I/O remains an OS limitation')
+        report.update(worker_pid=process.pid, worker_returncode=process.returncode, worker_group_stop='owned group signalled SIGKILL when present; leader reaped; uninterruptible kernel I/O remains an OS limitation')
         if cause:
             report.update(outcome='incomplete', interruption=cause, partial_mutation='unknown', finished_at=datetime.now().astimezone().isoformat())
         atomic_json(summary, report)
@@ -1130,16 +1136,32 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
             report.update(outcome='incomplete', move_deferred_orgs=deferred)
         await asyncio.to_thread(atomic_json, summary, report)
         for slug, disposition in dispositions.items():
-            items = [item for item in report.get('orgs', []) if item.get('org') == slug]
-            if (len(items) == 1
-                    and items[0].get('mode') == 'on'
-                    and items[0].get('outcome') == 'complete'
-                    and not report.get('interruption')
-                    and report.get('worker_group_stop')
-                    and not any(c.get('state') in ('mutation_in_flight', 'partial_or_unknown')
-                                for c in items[0].get('candidates', []))):
+            if _org_effects_known(report, slug):
                 disposition.uncertain = False
         return report
+
+
+def _org_effects_known(report: dict, slug: str) -> bool:
+    """Whether this org's own sweep returned with every filesystem effect known.
+
+    Orgs are swept sequentially in one worker, so a later org entry proves this
+    org's sweep returned; otherwise only an uninterrupted worker exit does. One
+    org's incomplete, failed or interrupted sweep never leaves another org's
+    finished sweep unknown. Partial discovery and retained candidates are known
+    effects; an unexpected error or any in-flight/partial mutation is not.
+    """
+    items = report.get('orgs', [])
+    matches = [index for index, item in enumerate(items) if item.get('org') == slug]
+    if len(matches) != 1 or not report.get('worker_group_stop'):
+        return False
+    index = matches[0]
+    item = items[index]
+    returned = index < len(items) - 1 or not report.get('interruption')
+    return (returned
+            and item.get('mode') == 'on'
+            and item.get('outcome') in ('complete', 'incomplete')
+            and 'error' not in item
+            and not any(c.get('state') in _OPEN_MUTATION_STATES for c in item.get('candidates', [])))
 
 
 def _revision() -> str:
@@ -1275,6 +1297,7 @@ def main() -> int:
             parser.error('worker requires deadline and summary')
         report = sweep(args.org_root, args.deadline, args.summary, dry_run=args.dry_run, scheduled_date=args.scheduled_date, revision=args.revision, started_monotonic=args.started_monotonic, runtime_root=args.runtime_root,
                        native_writers=dict(args.native_writer))
+        return 0 if report.get('outcome') == 'complete' else WORKER_INCOMPLETE_EXIT
     else:
         if not args.dry_run or args.runtime_root is None:
             parser.error('manual use requires --dry-run --runtime-root ABSOLUTE_RUNTIME')

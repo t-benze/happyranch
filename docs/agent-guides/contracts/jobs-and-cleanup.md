@@ -84,6 +84,19 @@ no same-night catchup/retry or marker reset. This is a run-admission boundary;
 writing stop does not cancel an already launched worker or promise a hard
 real-time stop. Existing deletion/ownership/age/containment gates still apply.
 
+**Per-org native writer settlement.** The worker exits 0 for a complete sweep and 3 (`WORKER_INCOMPLETE_EXIT`) after
+publishing its final report with any other outcome; the summary records
+`worker_returncode`. Exit 3 is not an interruption. Any other nonzero exit,
+deadline or shutdown still records `interruption` and `partial_mutation: unknown`.
+Each org's `disk_sweep` native writer settles independently: only when its own
+sweep provably returned (a later org entry exists, or the worker was not
+interrupted), ran in `on` mode, has no `error`, and no candidate is
+`inspecting`, `mutation_in_flight` or `partial_or_unknown`. Partial discovery and
+retained candidates are known effects and settle. One org's failed, incomplete or
+interrupted sweep never leaves a finished peer's writer unknown (previously every
+incomplete nightly run left an `unknown` writer in every org, which startup
+holds on).
+
 `runtime/daemon/disk_sweeper.py` runs machine-local03:00 deletion for every normally
 admitted org, sequentially under one1800s monotonic batch window, with an owned
 stoppable worker process group. Only actual terminal-owner/terminal-root scratch
