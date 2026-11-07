@@ -106,12 +106,18 @@ validation-only except for the retained org-owned installation of the complete
 canonical `workflow_owner_*` index set after full source validation. Complete
 unindexed and indexed layouts are both recognized; partial or noncanonical index
 sets refuse. The owning writer validates the complete target before COMMIT.
+On already-coding reopen, the installer reuses its first complete layout result
+before any own write, callback or transaction boundary. Coding/view/index writes
+and the fresh-only callback retain complete target validation; separate OrgState
+and public reads remain complete. This removes one duplicate traversal within
+the invocation; every invocation still performs a complete read.
 Before any workflow DDL, the entire reserved coding family is observed. Partial,
 extra, case-changed, wrong-kind or malformed objects and real shared dependency
 failures refuse without repair or adoption. Body/interruption
 and COMMIT failures preserve the primary cause and secondary cleanup errors;
 uncertain COMMIT is not success or proof of absence. Audit-watermark advances
-publish only after positive COMMIT under the same lock. Failed unpublished org
+publish only the originally validated file identity and boundary after positive
+COMMIT under the same lock. Failed unpublished org
 construction closes/refuses before attachment; later installers are separate.
 
 Coding validates its canonical inventory and actual shared columns, keys, FKs,
