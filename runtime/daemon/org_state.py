@@ -498,13 +498,29 @@ class OrgState:
             # Observe original native/ordinary ownership before any startup
             # writer. UNKNOWN survives a cold boot and cannot be republished or
             # adopted merely because its process/lease disappeared.
-            from runtime.infrastructure.producer_admission import NativeWriterStore
+            from runtime.infrastructure.producer_admission import (
+                NativeWriterStore,
+                historical_disk_sweep,
+                native_owner_uncommitted,
+            )
+            from runtime.orchestrator.team_move import DeferredTeamMove
             from runtime.workflows.authority import WorkflowAuthorityError
             try:
                 with db._lock:
                     history = NativeWriterStore(db, slug).history_uncommitted()
                     active = state.workflow_authority._active_journal(db._conn, state.workflow_authority.namespace)
-                    unsettled = any(row.state != "settled" for row in history.values())
+                    # THR320seq477 extended to startup: a stale nightly sweep
+                    # touches only workspaces, never what startup publishes. An
+                    # unavailable native owner keeps every record blocking.
+                    try:
+                        owner = native_owner_uncommitted(db)
+                    except DeferredTeamMove:
+                        owner = None
+                    unsettled = any(
+                        row.state != "settled"
+                        and (owner is None or not historical_disk_sweep(key, row, owner.writers))
+                        for key, row in history.items()
+                    )
                     ordinary = (active is not None and active["publisher"] != "org-startup"
                                 and not active["publisher_invocation"].startswith("profile-coordinator:"))
                 if unsettled or ordinary:

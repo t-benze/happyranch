@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from runtime.infrastructure.producer_admission import historical_disk_sweep
 from runtime.orchestrator.producer_move import native_writer, owner_for
 from runtime.orchestrator.team_move import DeferredTeamMove
 from runtime.workflows._coding_registered_release import (
@@ -282,9 +283,7 @@ class CodingBuiltinStore:
 
         for key, state in states.items():
             budget.step()
-            historical_sweep = (state.state == 'unknown' and state.publisher == 'disk_sweep'
-                                and not state.agents and not state.teams
-                                and key not in admission.writers)
+            historical_sweep = historical_disk_sweep(key, state, admission.writers)
             if (state.state != 'settled' and key != own and not competing_builtin(key)
                     and not historical_sweep):
                 raise _Deferred('native_writer_unsettled')

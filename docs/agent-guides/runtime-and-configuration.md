@@ -871,6 +871,13 @@ runnable attachments. Profile readers, identity/drain preflights and shutdown
 include both inventories. Dynamic add refuses a retained held slug and never
 constructs a replacement to clear it. An idle local DB close does not settle an
 external ordinary writer or its durable UNKNOWN evidence.
+Startup holds an org when its native writer history has any non-`settled` record
+or an ordinary publication journal is active. The single exception is the
+THR320seq477 historical sweep record (`historical_disk_sweep`): `unknown`,
+publisher `disk_sweep`, empty agents AND teams, and absent from the mounted
+native owner's live writers. The nightly sweep only changes workspace scratch and
+worktrees, never startup's publication inputs. An unavailable native owner keeps
+every record blocking; the record stays UNKNOWN and still blocks team move.
 
 Whole-runtime construction records its actual candidate on the original caller's
 owner before later fallible work. Both normal startup and runtime replacement
