@@ -4172,7 +4172,8 @@ shared-bearer founder convention as `abort-replies`) is the only other settlemen
 for this veto. It refuses unless the invocation is founder-aborted, terminal and
 consumed; has no in-process control/live owner or team-move hold; and its final
 lifecycle row is producer-settled with sticky `failed_cleanup` as the only
-uncertainty (every recorded attempt settled and quiescent). The route captures
+uncertainty (every recorded attempt settled and quiescent; zero recorded attempts
+qualifies, since an attempt is committed before any launch). The route captures
 `team_move_census(org, (agent,))` without DB/move locks; any host attempt for that
 agent, residue or unhealthy measurement refuses. Success appends one strict
 `thread_abort_predecessor_attested` audit row binding the invocation, session,

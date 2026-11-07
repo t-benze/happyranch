@@ -592,8 +592,10 @@ class ThreadMoveAdmission:
     @staticmethod
     def _attestable(state: ThreadLifecycle) -> bool:
         # The only uncertainty left is the sticky cleanup fact: the producer
-        # settled and every recorded attempt settled and went quiescent.
-        return bool(state.failed_cleanup and state.producer_settled and state.attempts
+        # settled and every recorded attempt settled and went quiescent. An
+        # attempt is committed (possible_launch) before any launch, so zero
+        # attempts means nothing could have launched.
+        return bool(state.failed_cleanup and state.producer_settled
             and all(a.settled and a.quiescent for a in state.attempts))
 
     def _attested_settled_uncommitted(self, inv: Any, control: Any) -> bool:
