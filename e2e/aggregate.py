@@ -119,19 +119,19 @@ def failure_result_controls() -> dict:
         failures=[dict(stage='controller-action',error='ValueError',at=1.),
                   dict(stage='controller-action',error='AssertionError',at=2.)],
         finalization=[dict(stage='browser-close',error_ref=2)])
-    safe = scenario_fields(original, lambda text:text.replace(secret,'[REDACTED]'))
+    safe = scenario_fields(original, lambda text:text.replace(secret,'[REDACTED]'), context=[secret])
     assert safe == expected and 'PRIVATE_SENTINEL' not in json.dumps(safe)
     original['groups']['E05']['state'] = 'reported_pass'
     original['failures'].clear()
     assert safe == expected  # Original producer mutations cannot rewrite retained state.
-    assert scenario_fields({'variants':{}},lambda text:text) == {'variants':{}}
+    assert scenario_fields({'variants':{}},lambda text:text, context=[secret]) == {'variants':{}}
     results = {'B09-B12-detached-failure-fields':'actual bounded redaction projection; native fallback NOT RUN'}
     for name,result in (('absent',None),('missing-variants',{}),('non-object',[]),
                          ('nonfinite',dict(variants={},failures=[float('nan')])),
                          ('unsupported',dict(variants={},groups=object())),('byte-cap',dict(variants={},groups='x'*(8*1024*1024+1))),
                          ('fact-cap',dict(variants={},groups=[None]*200001))):
         try:
-            scenario_fields(result,lambda text:text)
+            scenario_fields(result,lambda text:text, context=[secret])
         except ValueError:
             results['B09-B12-projection-'+name] = 'refused; no raw fallback'
         else:
@@ -140,7 +140,7 @@ def failure_result_controls() -> dict:
     for _ in range(65):
         nested = [nested]
     try:
-        scenario_fields(dict(variants={},groups=nested),lambda text:text)
+        scenario_fields(dict(variants={},groups=nested),lambda text:text, context=[secret])
     except ValueError as exc:
         assert 'capacity refused' in str(exc)
     else:
@@ -148,7 +148,7 @@ def failure_result_controls() -> dict:
     def unavailable(_text):
         raise ValueError('complete redaction context unavailable')
     try:
-        scenario_fields(dict(variants={},groups={'E05':{}}),unavailable)
+        scenario_fields(dict(variants={},groups={'E05':{}}),unavailable, context=[secret])
     except ValueError as exc:
         assert 'redaction context unavailable' in str(exc)
     else:
@@ -157,19 +157,60 @@ def failure_result_controls() -> dict:
     # native final failure actually reached failure_receipt or was published.
     assert safe == expected
     results['B09-B12-redaction-refused'] = 'projection refuses; previous detached bytes unchanged'
+    # SAME C1/C2/F3 object keeper: no file/parser guard can own this debit.
+    borrowed = {'variants':{}, 'groups':{'value':'a'*4194304}}
+    try:
+        scenario_fields(borrowed, lambda text:text, context=[secret])
+    except ValueError as exc:
+        assert str(exc) == 'evidence capacity refused'
+    else:
+        raise AssertionError('F3 borrowed original-plus-safe projection accepted')
+    assert safe == expected
+    results['F3-projection-original-plus-safe'] = '4194304-byte borrowed scalar refuses at safe debit; earlier full tree unchanged'
+
+    repeated = {'z':[True,False,None,7,1.5,'public\nline','中']}
+    borrowed = {'variants':{},'groups':{'b':repeated,'a':repeated}}
+    detached = scenario_fields(borrowed, lambda text:text, context=[secret])
+    literal = {'variants':{},'groups':{'b':{'z':[True,False,None,7,1.5,'public\nline','中']},
+                                     'a':{'z':[True,False,None,7,1.5,'public\nline','中']}}}
+
+    def exact(actual: object, wanted: object) -> None:
+        assert type(actual) is type(wanted), (type(actual),type(wanted))
+        if type(wanted) is dict:
+            assert list(actual) == list(wanted)
+            for key in wanted: exact(actual[key],wanted[key])
+        elif type(wanted) is list:
+            assert len(actual) == len(wanted)
+            for item,other in zip(actual,wanted): exact(item,other)
+        elif type(wanted) is float and math.isnan(wanted):
+            # New nonfinite action input is preserved as NaN, whose builtin
+            # equality is deliberately false. All old exact branches remain.
+            assert math.isnan(actual)
+        else:
+            assert actual == wanted
+
+    exact(detached,literal)
+    repeated['z'].clear()
+    exact(detached,literal)
+    assert detached['groups']['b'] is not detached['groups']['a']
+    results['F3-projection-alias-order-types'] = 'full independently literal detached tree/types/order and repeated copies retained'
+
     # Real writer -> literal files -> shipping collection/publication -> FAIL.
     # These incomplete synthetic claims are never native/browser receipts.
     import tempfile
     import time
     import shutil
+    import threading
+    import traceback as traceback_module
     from typing import Iterator
     from contextlib import contextmanager
     from controller import Controller
     from run import (collect_evidence, publish_evidence, failure_receipt, publish_failure,
-                     _collection_line, _ordinary_evidence_error, _failure_error)
+                     _result_json, _collection_line, _ordinary_evidence_error, _failure_error,
+                     _EvidenceCapacity)
 
     @contextmanager
-    def fixture() -> Iterator[tuple]:
+    def fixture(*, additional_secret: str | None = None) -> Iterator[tuple]:
         with tempfile.TemporaryDirectory(prefix="e2e-failure-result-") as temporary:
             base = Path(temporary)
             root, output = base / "source", base / "output"
@@ -178,12 +219,25 @@ def failure_result_controls() -> dict:
             for name in ("raw", "coord", "daemon"):
                 (root / name).mkdir(mode=0o700)
             token = 'SYNTHETIC_TOKEN'
-            context = [token, secret]
+            context = [token, secret] + ([additional_secret] if additional_secret is not None else [])
             (root / 'daemon/daemon.token').write_text(token)
             (root / 'coord/redaction-context.json').write_text(json.dumps(context))
             controller = Controller.__new__(Controller)
-            controller.root, controller.token, controller.secrets = root, token, {secret}
+            controller.root, controller.token, controller.secrets = root, token, set(context[1:])
             controller.threads_active = False
+            controller.deadline = time.monotonic() + 30
+            controller.local_bounds, controller.inherited_alarm = threading.local(), float('inf')
+            controller.secret_lock = threading.RLock()
+            controller._evidence_fatal, controller._evidence_context, controller._evidence_budget = None, None, None
+            controller._evidence_preparing, controller._evidence_root = False, None
+            controller._evidence_replacements = []
+            controller._failure_writer_owner = threading.get_ident()
+            controller._failure_raw, controller._failure_slots = {}, {}
+            controller._diagnostic_snapshot, controller._diagnostic_recorder_active = {}, False
+            controller._diagnostic_outer_end = controller.deadline
+            controller._diagnostic_alarm_code = None
+            controller._final_attempt = None
+            controller.failures, controller.primary_error, controller.primary_traceback = [], None, None
             controller.prepare_redaction()  # Never manually assert readiness.
             controller.results = {'E05.compose-race':dict(status='FAIL',error=secret)}
             controller.phases, controller.failures = [], copy.deepcopy(expected['failures'])
@@ -224,18 +278,2233 @@ def failure_result_controls() -> dict:
             yield (controller,root,output,state,staged,published,failed_members,failures,export_errors,
                    row,check,acquire,drain,commit)
 
+    # C1-C3/C6-C7: result shipping, separate from scenario/input predicates.
+    # Entire ordered envelope/bytes below are independent literal expectations.
+    for status in ('FAIL','PASS'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            acquire(); drain(); commit()
+            prior_tree = copy.deepcopy(state['safe_scenario'])
+            prior_member = (output/'failure.txt').read_bytes()
+            source_bytes = (root/'scenario.json').read_bytes()
+            repeated = {'b':2,'a':1}
+            envelope = {'schema':1,'status':status,'variants':{'one':{'status':'FAIL'}},
+                        'first':[True,False,None,7,1.5], 'sample':'public\nline','quote':'"','unicode':'中',
+                        'copies':[repeated,repeated], 'completed_cases':None,
+                        'failure_categories':{'schema':1,'controller':{'availability':'unavailable','snapshot':None}},
+                        'ownership_evidence':{'availability':'unavailable','reason':'not_frozen','data':None},
+                        'timing':{'export':{'ok':False}},'total_seconds':2.5,'target_exceeded':False}
+            wanted = {'schema':1,'status':status,'variants':{'one':{'status':'FAIL'}},
+                      'first':[True,False,None,7,1.5],'sample':'public\nline','quote':'"','unicode':'中',
+                      'copies':[{'b':2,'a':1},{'b':2,'a':1}], 'completed_cases':None,
+                      'failure_categories':{'schema':1,'controller':{'availability':'unavailable','snapshot':None}},
+                      'ownership_evidence':{'availability':'unavailable','reason':'not_frozen','data':None},
+                      'timing':{'export':{'ok':False}},'total_seconds':2.5,'target_exceeded':False}
+            literal_bytes = (b'{"schema":1,"status":"'+(b'FAIL' if status == 'FAIL' else b'PASS')+
+                b'","variants":{"one":{"status":"FAIL"}},"first":[true,false,null,7,1.5],"sample":"public\\nline","quote":"\\\"","unicode":"\xe4\xb8\xad","copies":[{"b":2,"a":1},{"b":2,"a":1}],"completed_cases":null,"failure_categories":{"schema":1,"controller":{"availability":"unavailable","snapshot":null}},"ownership_evidence":{"availability":"unavailable","reason":"not_frozen","data":null},"timing":{"export":{"ok":false}},"total_seconds":2.5,"target_exceeded":false}')
+            publish_failure(output,(output.stat().st_dev,output.stat().st_ino),envelope,check)
+            assert (output/'result.json').read_bytes() == literal_bytes, status
+            detailed = _result_json(envelope,check,token=state['token'],context=state['context'])
+            assert type(detailed) is bytearray and detailed == literal_bytes, status
+            exact(json.loads((output/'result.json').read_bytes()),wanted)
+            exact(envelope,wanted); exact(state['safe_scenario'],prior_tree)
+            assert (output/'failure.txt').read_bytes() == prior_member and (root/'scenario.json').read_bytes() == source_bytes
+            assert not (output/'result.tmp').exists()
+            results['C3-result-compact-'+status] = 'whole literal file and shared final encoder buffer; every type/order/metadata/repetition exact; whole-main NOT RUN'
+
+    class ResultString(str): pass
+    class ResultDict(dict): pass
+    cycle = []; cycle.append(cycle)
+    depth = None
+    for _ in range(65): depth = [depth]
+    result_refusals = {
+        'unsupported': (object(),'evidence value unavailable'),
+        'subclass-string': (ResultString('public'),'evidence value unavailable'),
+        'subclass-dict': (ResultDict(x=1),'evidence value unavailable'),
+        'nonfinite': (float('inf'),'evidence number refused'),
+        'nan': (float('nan'),'evidence number refused'),
+        'nonstring-key': ({1:'public'},'evidence key unavailable'),
+        'cycle': (cycle,'evidence cycle refused'),
+        'surrogate': ('\ud800','evidence surrogate refused'),
+        'backslash': ('public\\path','evidence representation withheld'),
+        'nested-json': ('{"script":"public\\nline"}','evidence representation withheld'),
+        'encoded-metadata': ('\0'*1500000,'evidence encoded capacity refused'),
+        'aggregate-metadata': ('a'*2800000,'evidence capacity refused'),
+        'facts': ([None]*18000,'evidence capacity refused'),
+        'depth': (depth,'evidence depth capacity refused'),
+    }
+    for case,(metadata,message) in result_refusals.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            acquire(); drain(); commit()
+            earlier = {path.name:path.read_bytes() for path in output.iterdir()}
+            prior_tree = copy.deepcopy(state['safe_scenario'])
+            source_bytes = (root/'scenario.json').read_bytes()
+            # Scenario is small and already admitted; only final metadata changes.
+            envelope = {'variants':state['safe_scenario']['variants'],'metadata':metadata}
+            try: publish_failure(output,(output.stat().st_dev,output.stat().st_ino),envelope,check)
+            except ValueError as exc: assert str(exc) == message, (case,str(exc))
+            else: raise AssertionError('new result accepted: '+case)
+            assert {path.name:path.read_bytes() for path in output.iterdir()} == earlier, case
+            assert not (output/'result.tmp').exists()
+            exact(state['safe_scenario'],prior_tree)
+            assert (root/'scenario.json').read_bytes() == source_bytes
+            results['C1-C2-C6-C7-result-'+case] = 'actual result refusal before pending; entire prior files/FAIL/tree/source exact; named guard distinct from scenario/input'
+
+    for case in ('empty-context','missing-token','marker-context','key-collision','authenticated-secret','longest-first','literal-secret','closed-unavailable'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            acquire(); drain(); commit()
+            earlier = {path.name:path.read_bytes() for path in output.iterdir()}
+            prior_tree = copy.deepcopy(state['safe_scenario'])
+            context,token = state['context'],state['token']
+            envelope = {'sample':'public'}
+            if case == 'empty-context': context = []
+            elif case == 'missing-token': token = 'OTHER_TOKEN'
+            elif case == 'marker-context': context = [token,'REDACTED']
+            elif case == 'key-collision': envelope = {secret:1,'[REDACTED]':2}
+            elif case == 'authenticated-secret': envelope = {'sample':secret,'byte_length':7}
+            elif case == 'longest-first': context = [token,'cat','xcat']; envelope = {'sample':'xcat'}
+            elif case == 'literal-secret': envelope = {'sample':secret}
+            if case == 'closed-unavailable':
+                # Real closed selection excludes raw failure/traceback/error.
+                row.update(failure=secret,traceback=secret)
+                row['cleanup']['error'] = secret
+                state.update(token='',context=[])
+                value = commit()
+                assert value['failure'] == 'incomplete detailed evidence' and 'traceback' not in value
+                assert 'error' not in value['cleanup'] and b'PRIVATE_SENTINEL' not in (output/'result.json').read_bytes()
+            else:
+                try: candidate = _result_json(envelope,check,token=token,context=context)
+                except ValueError as exc:
+                    assert case not in ('longest-first','literal-secret')
+                    assert str(exc) == ('evidence redacted key collision' if case == 'key-collision' else
+                                        'authenticated evidence requires original bytes' if case == 'authenticated-secret' else
+                                        'result original context unavailable'), (case,str(exc))
+                else:
+                    assert case in ('longest-first','literal-secret'), case
+                    assert candidate == b'{"sample":"[REDACTED]"}'
+                assert {path.name:path.read_bytes() for path in output.iterdir()} == earlier
+            exact(state['safe_scenario'],prior_tree)
+            assert not (output/'result.tmp').exists()
+            results['C3-C6-C7-result-'+case] = 'shared detailed original-context admission or real closed FAIL selection; no raw rescue; final-main chronology NOT RUN'
+
+    # Strict ORIGINAL scenario JSON through actual file/collector/detachment.
+    json_cases = {
+        'positive': b'{"variants":{},"groups":{"first":[true,false,null,7,1.5],"sample":"public\\nline","quote":"\\\"","unicode":"\xe4\xb8\xad","pair":"\\ud83d\\ude00","order":{"b":2,"a":1}}}',
+        'byte-bound-positive': b'{\r\n"variants":{},"groups":{"mixed":"'+b'a\xe4\xb8\xad\xf0\x9f\x98\x80\\u00e9'*140+b'","order":{"b":2,"a":1}}\r\n}',
+        'bounded-construction-positive': b'{"variants":{},"groups":{"value":"'+b'a'*16384+b'"}}',
+        'carry-capacity': b'{"variants":{},"groups":{"value":"'+b'\\u0061'*300000+b'"}}',
+        'numeric-positive': b'{"variants":{},"groups":[18446744073709551615,-18446744073709551615,-0.0,0.'+b'1'*126+b']}',
+        'duplicates': b'{"variants":{},"groups":{"x":1,"x":2}}',
+        'escaped-equal': b'{"variants":{},"groups":{"x":1,"\\u0078":2}}',
+        'bad-escape': b'{"variants":{},"groups":"\\q"}',
+        'trailing': b'{"variants":{}} null',
+        'trailing-comma': b'{"variants":{},}',
+        'unclosed': b'{"variants":{},"groups":[1}',
+        'nan': b'{"variants":{},"groups":NaN}',
+        'infinity': b'{"variants":{},"groups":Infinity}',
+        'nonfinite-float': b'{"variants":{},"groups":1e999}',
+        'high-surrogate': b'{"variants":{},"groups":"\\ud800"}',
+        'low-surrogate': b'{"variants":{},"groups":"\\udc00"}',
+        'bad-pair': b'{"variants":{},"groups":"\\ud800\\u0041"}',
+        'int-value': b'{"variants":{},"groups":18446744073709551616}',
+        'int-spelling': b'{"variants":{},"groups":-1234567890123456789012}',
+        'float-spelling': b'{"variants":{},"groups":0.'+b'1'*127+b'}',
+        'leading-zero': b'{"variants":{},"groups":01}',
+        'fraction': b'{"variants":{},"groups":1.}',
+        'exponent': b'{"variants":{},"groups":1e+}',
+        'decoded-backslash': b'{"variants":{},"groups":"public\\\\path"}',
+        'parser-storage': b'{"variants":{},"groups":{"value":"'+b'a'*4194304+b'"}}',
+    }
+    json_expected = {'variants':{},'groups':{'first':[True,False,None,7,1.5],
+                     'sample':'public\nline','quote':'"','unicode':'中','pair':'😀','order':{'b':2,'a':1}}}
+    for case,source_bytes in json_cases.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            (root/'scenario.json').write_bytes(source_bytes)
+            complete,error = acquire(); drain(); value = commit()
+            assert not complete and not state['fatal'] and not errors
+            assert (output/'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
+            assert not (output/'result.tmp').exists()
+            if case in ('positive','numeric-positive','byte-bound-positive','bounded-construction-positive'):
+                assert error is None
+                wanted = (json_expected if case == 'positive' else
+                          {'variants':{},'groups':{'mixed':'a中😀é'*140,'order':{'b':2,'a':1}}}
+                          if case == 'byte-bound-positive' else {'variants':{},'groups':{'value':'a'*16384}}
+                          if case == 'bounded-construction-positive' else {'variants':{},'groups':[
+                              18446744073709551615,-18446744073709551615,-0.0,0.1111111111111111]})
+                exact(state['safe_scenario'],wanted)
+                for key in wanted: exact(value[key],wanted[key])
+                assert (root/'scenario.json').read_bytes() == source_bytes
+                if case == 'byte-bound-positive':
+                    assert (state['chars'],state['utf8_bytes']) == (1323,2023)
+            else:
+                assert error is not None and failures[0][0] is error[0], case
+                assert state['safe_scenario'] == {'variants':{}}
+                assert value['variants'] == {} and 'groups' not in value
+                expected_op = ('SCENARIO_PROJECT' if case == 'decoded-backslash' else
+                               'SCENARIO_READ' if case == 'parser-storage' else 'SCENARIO_DECODE')
+                assert failures[0][4][0] == expected_op, (case,failures[0][4])
+                if case in ('parser-storage','carry-capacity','int-spelling','float-spelling'):
+                    assert failures[0][4][1] == 'CAPACITY', case
+                if case == 'parser-storage':
+                    assert failures[0][4][2:] == ('U','U')
+            results['F3-json-'+case] = 'actual full scenario file/tree/type/order or whole-claim refusal; eligible sibling exact'
+
+    # C1/C3/C5-C7/F3/R1: registered RAW scans, independently literal bytes.
+    # Scan positives preserve noncompact framing, unlike the separate C3 writer.
+    raw_object = b' { "first" : [true, false, null, 7, 1.5], "sample":"public\\nline", "quote":"\\\"", "slash":"a\\/b", "unicode":"\xe4\xb8\xad", "pair":"\\ud83d\\ude00", "copies":[{"b":2,"a":1},{"b":2,"a":1}] }\n'
+    raw_array = b' [ {"sample":"public\\nline", "quote":"\\\"", "slash":"a\\/b", "unicode":"\xe4\xb8\xad"}, [true, false, null, 7, 1.5], [true, false, null, 7, 1.5] ] \n'
+    raw_lines = b' {"index":1, "sample":"public\\nline", "slash":"a\\/b"} \n{"index":2,"unicode":"\xe4\xb8\xad","quote":"\\\""}\n'
+    object_value = {'first':[True,False,None,7,1.5],'sample':'public\nline','quote':'"',
+                    'slash':'a/b','unicode':'中','pair':'😀','copies':[{'b':2,'a':1},{'b':2,'a':1}]}
+    array_value = [{'sample':'public\nline','quote':'"','slash':'a/b','unicode':'中'},
+                   [True,False,None,7,1.5],[True,False,None,7,1.5]]
+    line_values = [{'index':1,'sample':'public\nline','slash':'a/b'}, {'index':2,'unicode':'中','quote':'"'}]
+    raw_positives = {
+        'observations.json': (raw_object,object_value),
+        'e07.json': (raw_object,object_value),
+        'e07-prefix.json': (raw_object,object_value),
+        'browser-events.json': (raw_array,array_value),
+        'e05-browser-events.json': (raw_array,array_value),
+        'launch-witnesses.jsonl': (raw_lines,line_values),
+    }
+    for name,(source_bytes,wanted) in raw_positives.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            (root/'raw'/name).write_bytes(source_bytes)
+            complete,error = acquire(); drain(); commit()
+            assert error is None and not state['fatal'] and not errors, (name,failures)
+            assert (root/'raw'/name).read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == source_bytes, name
+            assert published[name] is staged[name]  # Direct candidate ownership transfer.
+            assert hashlib.sha256((output/name).read_bytes()).digest() == hashlib.sha256(source_bytes).digest()
+            decoded = ([json.loads(part) for part in source_bytes.split(b'\n')[:-1]]
+                       if name.endswith('.jsonl') else json.loads((output/name).read_bytes()))
+            exact(decoded,wanted)
+            assert not (output/(name+'.tmp')).exists()
+            results['C3-C5-raw-positive-'+name] = 'entire literal original source/staged/published bytes, independent full type/key/list order; no raw tree'
+
+    # Review13872 F1: ordinary full-image matching, no selected captured edge.
+    # Literal originals/typed inputs precede execution; one table attributes ALL
+    # missed file boundaries on the pre-fix source, rather than stopping at one.
+    syntax_secret = '1,"b"'
+    conversion_secret = '中' * 1023 + '","b"'
+    conversion_image = (b'{"a":"' + ('中' * 1023).encode('utf8')
+                        + b'","c":"' + ('中' * 1023).encode('utf8') + b'","b":2}')
+    whole_images = [
+        (name, name, b'[{"a":1,"b":2}]' if name in ('browser-events.json','e05-browser-events.json')
+         else b'{"a":1,"b":2}\n' if name.endswith('.jsonl') else b'{"a":1,"b":2}', syntax_secret)
+        for name in raw_positives
+    ]
+    whole_images.extend([
+        ('jsonl-cross-LF','launch-witnesses.jsonl',b'{"a":1}\n{"b":2}\n','1}\n{"b"'),
+        ('raw-conversion','e07.json',conversion_image,conversion_secret),
+    ])
+    unsafe_admissions = []
+    for label,name,image,original_secret in whole_images:
+        with fixture(additional_secret=original_secret) as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            prior = b'{"prior":"safe"}\n' if name.endswith('.jsonl') else b'[]' if name in ('browser-events.json','e05-browser-events.json') else b'{"prior":"safe"}'
+            destination = root/'raw'/name
+            destination.write_bytes(prior)
+            acquire(); drain(); commit()
+            old_files = {p.name:p.read_bytes() for p in output.iterdir()}
+            old_tree, old_buffer, first = copy.deepcopy(state['safe_scenario']), staged[name], failures[0]
+            scenario_image = (root/'scenario.json').read_bytes()
+            destination.write_bytes(image)
+            (root/'raw/eligible.txt').write_bytes(b'eligible ordinary sibling\n')
+            complete,error = acquire(); drain()
+            if name not in state['refused_sources']:
+                unsafe_admissions.append('raw/'+label)
+                continue  # Aggregate the actual missed boundaries for ONE proof.
+            assert not complete and error is not None and not state['fatal'] and not errors, label
+            assert str(error[0]) == 'original evidence content withheld', (label,error[0])
+            refusal = next(f for f in failures if f[0] is error[0])
+            assert refusal[4][0:2] == ('REDACT','VALUE') and failures[0] is first, (label,refusal[4])
+            assert staged[name] is old_buffer and published[name] is old_buffer
+            assert {p.name:p.read_bytes() for p in output.iterdir()} == old_files | {'eligible.txt':b'eligible ordinary sibling\n'}
+            exact(state['safe_scenario'],old_tree)
+            assert destination.read_bytes() == image and (root/'scenario.json').read_bytes() == scenario_image
+            assert not list((root/'raw').glob('*.tmp')) and not list(output.glob('*.tmp'))
+            results['C5-F1-whole-raw-'+label] = 'ordinary complete original syntax/LF secret refused; entire prior files/tree/FAIL/first cause exact; eligible sibling retained'
+    for label,value,original_secret in (
+        ('syntax',{'a':1,'b':2},syntax_secret),
+        ('conversion',{'a':'中'*1023,'c':'中'*1023,'b':2},conversion_secret),
+    ):
+        with fixture(additional_secret=original_secret) as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            destination = root/'raw/e07.json'
+            writer._atomic_json(destination,{'prior':'safe'})
+            acquire(); drain(); commit()
+            old_files = {p.name:p.read_bytes() for p in output.iterdir()}
+            old_raw = {p.name:p.read_bytes() for p in (root/'raw').iterdir()}
+            old_tree, original_value = copy.deepcopy(state['safe_scenario']), copy.deepcopy(value)
+            scenario_image = (root/'scenario.json').read_bytes()
+            try:
+                writer._atomic_json(destination,value)
+            except ValueError as error:
+                assert str(error) == 'original literal content withheld', (label,error)
+            else:
+                unsafe_admissions.append('writer/'+label)
+                continue
+            assert writer._evidence_fatal is None
+            assert {p.name:p.read_bytes() for p in (root/'raw').iterdir()} == old_raw
+            assert {p.name:p.read_bytes() for p in output.iterdir()} == old_files
+            exact(state['safe_scenario'],old_tree); exact(value,original_value)
+            assert (root/'scenario.json').read_bytes() == scenario_image
+            assert not list((root/'raw').glob('*.tmp')) and not list(output.glob('*.tmp'))
+            results['C5-F1-whole-writer-'+label] = 'ordinary entire encoded candidate secret refused before pending; complete prior source/output/tree/FAIL and original ordered typed input exact'
+    # A prefix match alone grants no refusal: all original bytes must match.
+    with fixture(additional_secret=conversion_secret) as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        acquire(); drain(); commit()
+        old_files = {p.name:p.read_bytes() for p in output.iterdir()}
+        old_tree = copy.deepcopy(state['safe_scenario'])
+        value = {'a':'中'*1023,'c':2}
+        wanted = b'{"a":"' + ('中'*1023).encode('utf8') + b'","c":2}'
+        try:
+            writer._atomic_json(root/'raw/e07.json',value)
+        except ValueError as error:
+            raise AssertionError('ordinary encoded prefix-only wrongly refused') from error
+        assert (root/'raw/e07.json').read_bytes() == wanted
+        complete,error = acquire(); drain()
+        assert not complete and error is None and not state['fatal'] and not errors
+        assert {p.name:p.read_bytes() for p in output.iterdir()} == old_files | {'e07.json':wanted}
+        exact(json.loads((output/'e07.json').read_bytes()),{'a':'中'*1023,'c':2})
+        exact(state['safe_scenario'],old_tree)
+        assert not list((root/'raw').glob('*.tmp')) and not list(output.glob('*.tmp'))
+        results['C5-F1-whole-writer-prefix-only'] = 'partial encoded context prefix remains safe; entire independent literal bytes/types/order and prior files/tree/FAIL retained'
+    assert not unsafe_admissions, ('ordinary whole-image unsafe admissions',unsafe_admissions)
+
+    # SAME C5/C6/C7 table: full accepted E05 P/S/Q, canonical Relay edge only.
+    # S and Q are copied literal bytes from the accepted subject, not a writer
+    # roundtrip. P's entire ordered typed content is independently literal here.
+    relay_s = b'{\n  "thread_id": "THR-701",\n  "subject": "E05 compose race",\n  "status": "open",\n  "started_at": "2026-01-01T00:00:00+00:00",\n  "archived_at": null,\n  "forwarded_from_id": null,\n  "forwarded_from_kind": null,\n  "turn_cap": 500,\n  "turns_used": 2,\n  "summary": null,\n  "transcript_path": "threads/THR-701.md",\n  "composed_by": "founder",\n  "composed_from_task_id": null,\n  "composed_from_dream_id": null,\n  "last_speaker": "case_manager",\n  "pinned": false,\n  "pinned_at": null,\n  "last_activity_at": "2026-01-01T00:00:03+00:00",\n  "participants": [\n    "case_manager",\n    "case_worker"\n  ],\n  "messages": [\n    {\n      "seq": 1,\n      "speaker": "founder",\n      "kind": "message",\n      "body_markdown": "E05 opening\\nliteral beta",\n      "decline_reason": null,\n      "system_payload": null,\n      "attachments": [],\n      "created_at": "2026-01-01T00:00:00+00:00",\n      "responder_status": [\n        {\n          "agent_name": "case_manager",\n          "purpose": "reply",\n          "status": "replied",\n          "responded_at": "2026-01-01T00:00:02+00:00",\n          "started_at": "2026-01-01T00:00:01+00:00",\n          "decline_reason": null,\n          "category": null\n        },\n        {\n          "agent_name": "case_worker",\n          "purpose": "reply",\n          "status": "declined",\n          "responded_at": "2026-01-01T00:00:02+00:00",\n          "started_at": "2026-01-01T00:00:01+00:00",\n          "decline_reason": "E05 initial observed",\n          "category": "declined"\n        }\n      ]\n    },\n    {\n      "seq": 2,\n      "speaker": "case_manager",\n      "kind": "message",\n      "body_markdown": "E05 reply\\n@case_worker received",\n      "decline_reason": null,\n      "system_payload": null,\n      "attachments": [],\n      "created_at": "2026-01-01T00:00:02+00:00",\n      "responder_status": [\n        {\n          "agent_name": "case_worker",\n          "purpose": "reply",\n          "status": "declined",\n          "responded_at": "2026-01-01T00:00:03+00:00",\n          "started_at": "2026-01-01T00:00:02+00:00",\n          "decline_reason": "E05 reply observed",\n          "category": "declined"\n        }\n      ]\n    }\n  ],\n  "reply_delivery": []\n}\n'
+    relay_q = b'"{\\n  \\"thread_id\\": \\"THR-701\\",\\n  \\"subject\\": \\"E05 compose race\\",\\n  \\"status\\": \\"open\\",\\n  \\"started_at\\": \\"2026-01-01T00:00:00+00:00\\",\\n  \\"archived_at\\": null,\\n  \\"forwarded_from_id\\": null,\\n  \\"forwarded_from_kind\\": null,\\n  \\"turn_cap\\": 500,\\n  \\"turns_used\\": 2,\\n  \\"summary\\": null,\\n  \\"transcript_path\\": \\"threads/THR-701.md\\",\\n  \\"composed_by\\": \\"founder\\",\\n  \\"composed_from_task_id\\": null,\\n  \\"composed_from_dream_id\\": null,\\n  \\"last_speaker\\": \\"case_manager\\",\\n  \\"pinned\\": false,\\n  \\"pinned_at\\": null,\\n  \\"last_activity_at\\": \\"2026-01-01T00:00:03+00:00\\",\\n  \\"participants\\": [\\n    \\"case_manager\\",\\n    \\"case_worker\\"\\n  ],\\n  \\"messages\\": [\\n    {\\n      \\"seq\\": 1,\\n      \\"speaker\\": \\"founder\\",\\n      \\"kind\\": \\"message\\",\\n      \\"body_markdown\\": \\"E05 opening\\\\nliteral beta\\",\\n      \\"decline_reason\\": null,\\n      \\"system_payload\\": null,\\n      \\"attachments\\": [],\\n      \\"created_at\\": \\"2026-01-01T00:00:00+00:00\\",\\n      \\"responder_status\\": [\\n        {\\n          \\"agent_name\\": \\"case_manager\\",\\n          \\"purpose\\": \\"reply\\",\\n          \\"status\\": \\"replied\\",\\n          \\"responded_at\\": \\"2026-01-01T00:00:02+00:00\\",\\n          \\"started_at\\": \\"2026-01-01T00:00:01+00:00\\",\\n          \\"decline_reason\\": null,\\n          \\"category\\": null\\n        },\\n        {\\n          \\"agent_name\\": \\"case_worker\\",\\n          \\"purpose\\": \\"reply\\",\\n          \\"status\\": \\"declined\\",\\n          \\"responded_at\\": \\"2026-01-01T00:00:02+00:00\\",\\n          \\"started_at\\": \\"2026-01-01T00:00:01+00:00\\",\\n          \\"decline_reason\\": \\"E05 initial observed\\",\\n          \\"category\\": \\"declined\\"\\n        }\\n      ]\\n    },\\n    {\\n      \\"seq\\": 2,\\n      \\"speaker\\": \\"case_manager\\",\\n      \\"kind\\": \\"message\\",\\n      \\"body_markdown\\": \\"E05 reply\\\\n@case_worker received\\",\\n      \\"decline_reason\\": null,\\n      \\"system_payload\\": null,\\n      \\"attachments\\": [],\\n      \\"created_at\\": \\"2026-01-01T00:00:02+00:00\\",\\n      \\"responder_status\\": [\\n        {\\n          \\"agent_name\\": \\"case_worker\\",\\n          \\"purpose\\": \\"reply\\",\\n          \\"status\\": \\"declined\\",\\n          \\"responded_at\\": \\"2026-01-01T00:00:03+00:00\\",\\n          \\"started_at\\": \\"2026-01-01T00:00:02+00:00\\",\\n          \\"decline_reason\\": \\"E05 reply observed\\",\\n          \\"category\\": \\"declined\\"\\n        }\\n      ]\\n    }\\n  ],\\n  \\"reply_delivery\\": []\\n}\\n"\n'
+    relay_p_bytes = b'{"thread_id":"THR-701","subject":"E05 compose race","status":"open","started_at":"2026-01-01T00:00:00+00:00","archived_at":null,"forwarded_from_id":null,"forwarded_from_kind":null,"turn_cap":500,"turns_used":2,"summary":null,"transcript_path":"threads/THR-701.md","composed_by":"founder","composed_from_task_id":null,"composed_from_dream_id":null,"last_speaker":"case_manager","pinned":false,"pinned_at":null,"last_activity_at":"2026-01-01T00:00:03+00:00","participants":["case_manager","case_worker"],"messages":[{"seq":1,"speaker":"founder","kind":"message","body_markdown":"E05 opening\\nliteral beta","decline_reason":null,"system_payload":null,"attachments":[],"created_at":"2026-01-01T00:00:00+00:00","responder_status":[{"agent_name":"case_manager","purpose":"reply","status":"replied","responded_at":"2026-01-01T00:00:02+00:00","started_at":"2026-01-01T00:00:01+00:00","decline_reason":null,"category":null},{"agent_name":"case_worker","purpose":"reply","status":"declined","responded_at":"2026-01-01T00:00:02+00:00","started_at":"2026-01-01T00:00:01+00:00","decline_reason":"E05 initial observed","category":"declined"}]},{"seq":2,"speaker":"case_manager","kind":"message","body_markdown":"E05 reply\\n@case_worker received","decline_reason":null,"system_payload":null,"attachments":[],"created_at":"2026-01-01T00:00:02+00:00","responder_status":[{"agent_name":"case_worker","purpose":"reply","status":"declined","responded_at":"2026-01-01T00:00:03+00:00","started_at":"2026-01-01T00:00:02+00:00","decline_reason":"E05 reply observed","category":"declined"}]}],"reply_delivery":[]}'
+    relay_p = json.loads(relay_p_bytes)  # Independent literal oracle reader only.
+    assert len(relay_s) == 2174 and hashlib.sha256(relay_s).hexdigest() == '61e8793704c04efdcb865f6a3a91c3ab41fa0cd2d67839ba91d2e6b0f209c06c'
+    assert len(relay_q) == 2451 and hashlib.sha256(relay_q).hexdigest() == '903972eece33feb898150c343c17ced7144d22888087411db71d45c773d1f4f1'
+    exact(json.loads(relay_s),relay_p)
+    empty_body = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    for form in ('original','quote-LF-unicode'):
+        s, q, p_bytes, p = relay_s, relay_q[:-1], relay_p_bytes, copy.deepcopy(relay_p)
+        if form != 'original':
+            s = s.replace(b'"summary": null', '"summary": "public \\"quote\\"\\n中"'.encode())
+            q = q.replace(b'\\"summary\\": null', '\\"summary\\": \\"public \\\\\\"quote\\\\\\"\\\\n中\\"'.encode())
+            p_bytes = p_bytes.replace(b'"summary":null', '"summary":"public \\"quote\\"\\n中"'.encode())
+            p['summary'] = 'public "quote"\n中'
+        # Complete independent original and compact fragments, not candidate bytes.
+        exact(json.loads(s),p)
+        assert json.loads(q) == s.decode()
+        fields = {'path':b'"/api/v1/orgs/alpha/threads/THR-701"','method':b'"GET"',
+            'body_sha256':b'"'+empty_body.encode()+b'"','status':b'200', 'response':s,
+            'dropped':b'false','request':b'null','response_text':q,'entered':b'10.02'}
+        values = dict(path='/api/v1/orgs/alpha/threads/THR-701',method='GET',body_sha256=empty_body,
+            status=200,response=p,dropped=False,request=None,response_text=s.decode(),entered=10.02)
+        orders = (tuple(fields), ('response_text','response','entered','path','request','status','method','dropped','body_sha256'),
+                  ('response','response_text','request','body_sha256','method','path','status','entered','dropped'))
+        for order_index,order in enumerate(orders):
+            record = {key:values[key] for key in order}
+            original_image = b' { "relay" : [ {'+b', '.join(b'"'+key.encode()+b'":'+fields[key] for key in order)+b'} ] }\r\n'
+            compact_image = b'{"relay":[{'+b','.join(b'"'+key.encode()+b'":'+(p_bytes if key == 'response' else fields[key]) for key in order)+b'}]}'
+            wanted = {'relay':[copy.deepcopy(record)]}
+            for boundary in ('writer','raw','raw-prefix','prefix'):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name
+                    if boundary == 'writer':
+                        writer._atomic_json(destination,{'relay':[record]})
+                        assert destination.read_bytes() == compact_image, (form,order_index)
+                        expected_image = compact_image
+                    elif boundary == 'prefix':
+                        source = root/'raw/observations.json'; source.write_bytes(original_image)
+                        candidate,parsed = writer._prepare_original_evidence(destination,source)
+                        assert candidate == original_image and not destination.exists() and not destination.with_suffix('.json.tmp').exists()
+                        exact(parsed,wanted)
+                        writer._replace_evidence(destination,candidate)
+                        assert destination.read_bytes() == original_image and source.read_bytes() == original_image
+                        expected_image = original_image
+                    else:
+                        destination.write_bytes(original_image)
+                        expected_image = original_image
+                    complete,error = acquire(); drain(); commit()
+                    assert error is None and not complete and not state['fatal'] and not errors, (boundary,failures)
+                    assert staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                    exact(json.loads((output/name).read_bytes()),wanted)
+                    assert not destination.with_name(name+'.tmp').exists()
+                    results[f'C5-Relay-full-{form}-{order_index}-{boundary}'] = 'full independent P/S/Q/order/types/framing retained at shipping file boundary; native NOT RUN'
+
+    # Finite negative inputs; source construction is independent of admission.
+    base_record = dict(path='/api/v1/orgs/alpha/threads/THR-701',method='GET',body_sha256=empty_body,
+        status=200,response=relay_p,dropped=False,request=None,response_text=relay_s.decode(),entered=10.02)
+    relay_refusals = {}
+    for case,text in {
+        'duplicate':relay_s.replace(b'"thread_id": "THR-701",',b'"thread_id": "THR-701", "thread_id": "THR-701",',1),
+        'escaped-equal':relay_s.replace(b'"thread_id": "THR-701",',b'"thread_id": "THR-701", "\\u0074hread_id": "THR-701",',1),
+        'malformed':relay_s[:-2], 'trailing':relay_s+b'x', 'wrong-top':b'['+relay_s+b']',
+        'nonfinite':relay_s.replace(b'"summary": null',b'"summary": NaN'),
+        'surrogate':relay_s.replace(b'"summary": null',b'"summary": "\\ud800"'),
+        'escaped-secret':relay_s.replace(b'"summary": null',b'"summary": "\\u0053YNTHETIC_TOKEN"'),
+        'escaped-secret-key':relay_s.replace(b'"summary": null',b'"\\u0053YNTHETIC_TOKEN": null'),
+        'literal-secret':relay_s.replace(b'"summary": null',b'"summary": "SYNTHETIC_TOKEN"'),
+        'residual-backslash':relay_s.replace(b'"summary": null',b'"summary": "public\\\\nline"'),
+        'second-json':relay_s.replace(b'"summary": null',b'"summary": "{\\"x\\":\\"public\\\\nline\\"}"'),
+    }.items():
+        record = copy.deepcopy(base_record); record['response_text'] = text.decode(); relay_refusals[case] = {'relay':[record]}
+    for case in ('changed','missing','extra','reordered','coerced','repeat'):
+        record = copy.deepcopy(base_record)
+        if case == 'changed': record['response']['subject'] = 'changed'
+        elif case == 'missing': del record['response']['summary']
+        elif case == 'extra': record['response']['extra'] = None
+        elif case == 'reordered': record['response'] = dict(reversed(tuple(record['response'].items())))
+        elif case == 'coerced': record['response']['pinned'] = 0
+        else: record['response']['messages'].append(copy.deepcopy(record['response']['messages'][0]))
+        relay_refusals[case] = {'relay':[record]}
+    for key,value in (('path','/api/v1/orgs/alpha/jobs/JOB-701'),('method','PUT'),('status',True),
+                      ('status',403),('request',{}),('body_sha256','0'*64),('dropped',True),('entered',False)):
+        record = copy.deepcopy(base_record); record[key] = value
+        relay_refusals['identity-'+key+'-'+str(value)] = {'relay':[record]}
+    for key in ('response','entered','request','path'):
+        record = copy.deepcopy(base_record); del record[key]; relay_refusals['missing-'+key] = {'relay':[record]}
+    record = copy.deepcopy(base_record); record['unexpected'] = None; relay_refusals['extra-schema'] = {'relay':[record]}
+    relay_refusals['wrong-holder'] = {'holder':{'relay':[copy.deepcopy(base_record)]}}
+    relay_refusals['wrong-relay-type'] = {'relay':copy.deepcopy(base_record)}
+    record = copy.deepcopy(base_record); record['response']['summary'] = 'a'*550000
+    relay_refusals['shared-work'] = {'relay':[record]}
+    record = copy.deepcopy(base_record); record['response']['summary'] = [None]*70000
+    relay_refusals['shared-facts'] = {'relay':[record]}
+    depth = None
+    for _ in range(61): depth = [depth]
+    record = copy.deepcopy(base_record); record['response']['summary'] = depth
+    relay_refusals['shared-depth'] = {'relay':[record]}
+    for case,image in relay_refusals.items():
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name
+                prior = b'{"prior":"safe"}'
+                destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                earlier = {p.name:p.read_bytes() for p in output.iterdir()}
+                old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                if boundary in ('writer','prefix'):
+                    if boundary == 'prefix':
+                        source = root/'raw/observations.json'; source.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source)
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError('Relay unsafe member admitted: '+case+'/'+boundary)
+                    assert destination.read_bytes() == prior
+                    assert not destination.with_name(name+'.tmp').exists()
+                    assert staged[name] is old_buffer and not state['fatal']
+                else:
+                    destination.write_bytes(original_image)
+                    (root/'raw/eligible-relay.txt').write_bytes(b'eligible ordinary sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case,boundary,failures)
+                    assert staged[name] is old_buffer and published[name] is old_buffer
+                    assert (output/name).read_bytes() == prior and name in state['refused_sources']
+                    if case not in ('shared-work','shared-facts'):
+                        assert (output/'eligible-relay.txt').read_bytes() == b'eligible ordinary sibling\n'
+                exact(state['safe_scenario'],old_tree)
+                for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                results['C5-Relay-refusal-'+case+'-'+boundary] = 'whole prior final/member/FAIL/full safe tree preserved; no new member/pending; overlapping guards stated in case record'
+
+    # Real compose request encoding is HTTPX's compact UTF8 JSON, in source order.
+    post_request_bytes = b'{"subject":"E05 denial venue","recipients":["case_worker"],"body_markdown":"E05 denial anchor"}'
+    post_response_bytes = b'{"thread_id":"THR-701","started_at":"2026-01-01T00:00:00+00:00","pending_replies":["case_worker"]}'
+    post_text = b'{"thread_id":"\\u0054HR-701","started_at":"2026-01-01T00:00:00+00:00","pending_replies":["case_worker"]}\n'
+    post_token = b'"{\\"thread_id\\":\\"\\\\u0054HR-701\\",\\"started_at\\":\\"2026-01-01T00:00:00+00:00\\",\\"pending_replies\\":[\\"case_worker\\"]}\\n"'
+    post_hash = hashlib.sha256(post_request_bytes).hexdigest()
+    post_record = dict(path='/api/v1/orgs/alpha/threads',method='POST',body_sha256=post_hash,status=200,
+        response={'thread_id':'THR-701','started_at':'2026-01-01T00:00:00+00:00','pending_replies':['case_worker']},
+        dropped=False,request={'subject':'E05 denial venue','recipients':['case_worker'],'body_markdown':'E05 denial anchor'},
+        response_text=post_text.decode(),entered=10.02)
+    post_image = (b'{"relay":[{"path":"/api/v1/orgs/alpha/threads","method":"POST","body_sha256":"'+post_hash.encode()+
+        b'","status":200,"response":'+post_response_bytes+b',"dropped":false,"request":'+post_request_bytes+
+        b',"response_text":'+post_token+b',"entered":10.02}]}')
+    exact(json.loads(post_image),{'relay':[post_record]})
+    for case in ('post','post-hash','post-request','legacy'):
+        image = copy.deepcopy({'relay':[post_record]}); original_image = post_image
+        if case == 'post-hash': image['relay'][0]['body_sha256'] = '0'*64
+        elif case == 'post-request': image['relay'][0]['request']['subject'] = 'changed'
+        elif case == 'legacy':
+            image = {'relay':[dict(path='/api/v1/orgs/alpha/tasks/TASK-701/completion',method='POST',
+                body_sha256='5'*64,status=200,response={'ok':True},dropped=False)]}
+            original_image = b'{"relay":[{"path":"/api/v1/orgs/alpha/tasks/TASK-701/completion","method":"POST","body_sha256":"'+b'5'*64+b'","status":200,"response":{"ok":true},"dropped":false}]}'
+        if case in ('post-hash','post-request'): original_image = json.dumps(image,separators=(',',':')).encode()
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                wanted = case in ('post','legacy')
+                try:
+                    if boundary == 'writer': writer._atomic_json(destination,image)
+                    elif boundary == 'prefix':
+                        source = root/'raw/observations.json'; source.write_bytes(original_image)
+                        candidate,parsed = writer._prepare_original_evidence(destination,source)
+                        assert not destination.with_name(name+'.tmp').exists()
+                        exact(parsed,image)
+                        writer._replace_evidence(destination,candidate)
+                    else:
+                        destination.write_bytes(original_image)
+                        complete,error = acquire(); drain()
+                        if error is not None: raise error[0]
+                except ValueError:
+                    assert not wanted, (case,boundary)
+                    if boundary in ('writer','prefix'): assert destination.read_bytes() == prior
+                    assert staged[name] is old_buffer
+                    exact(state['safe_scenario'],old_tree)
+                    for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                else:
+                    assert wanted, 'Relay request hash not checked: '+case+'/'+boundary
+                    assert destination.read_bytes() == original_image
+                    if boundary in ('raw','raw-prefix'): assert staged[name] == published[name] == (output/name).read_bytes() == original_image
+                    exact(json.loads(destination.read_bytes()),image)
+                assert not destination.with_name(name+'.tmp').exists() and not (output/'result.tmp').exists()
+                results['C5-Relay-'+case+'-'+boundary] = 'complete POST body/digest/response or unchanged legacy record; whole prior file/tree/FAIL preserved on refusal; native NOT RUN'
+
+    # Literal cross-token original secret: no individual decoded scalar owns it.
+    for name in ('observations.json','e07-prefix.json'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            cross = '\"GET\",\"body_sha256\":'
+            (root/'coord/redaction-context.json').write_text(json.dumps(['SYNTHETIC_TOKEN',secret,cross]))
+            destination = root/'raw'/name; destination.write_bytes(b'{"prior":"safe"}')
+            acquire(); drain(); commit()
+            earlier = {p.name:p.read_bytes() for p in output.iterdir()}
+            old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+            original_image = json.dumps({'relay':[base_record]},separators=(',',':')).encode()
+            assert cross.encode() in original_image
+            destination.write_bytes(original_image)
+            (root/'raw/eligible-relay.txt').write_bytes(b'eligible ordinary sibling\n')
+            complete,error = acquire(); drain()
+            assert not complete and error is not None and str(error[0]) == 'original evidence content withheld' and not state['fatal']
+            assert staged[name] is old_buffer and published[name] is old_buffer
+            exact(state['safe_scenario'],old_tree)
+            for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+            assert (output/'eligible-relay.txt').read_bytes() == b'eligible ordinary sibling\n'
+            assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+            results['C5-Relay-cross-token-'+name] = 'whole literal original secret across syntax refuses after complete nested closure; prior entire files/tree/FAIL exact'
+
+    # No extension of canonical owner to the same spelling at other filenames.
+    for name in ('e07.json','browser-events.json'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root/'raw'/name; prior = b'[]' if name == 'browser-events.json' else b'{"prior":"safe"}'
+            path.write_bytes(prior); acquire(); drain(); commit()
+            earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario'])
+            image = {'relay':[base_record]}
+            if name == 'browser-events.json': image = [image]
+            try: writer._atomic_json(path,image)
+            except ValueError: pass
+            else: raise AssertionError('Relay grant escaped its owner: '+name)
+            assert path.read_bytes() == prior and not path.with_name(name+'.tmp').exists()
+            path.write_text(json.dumps(image))
+            complete,error = acquire(); drain()
+            assert not complete and error is not None and not state['fatal']
+            exact(state['safe_scenario'],old_tree)
+            for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+            results['C5-Relay-wrong-owner-'+name] = 'same spelling at unselected real writer/raw owner refuses wholly; earlier complete state exact'
+
+    # Canonical Store.snapshot final-org records ONLY. The complete literal SQL
+    # rows below are independent inputs/oracles, not product DB observations.
+    sql_rows = {
+        'tasks': [dict(id='TASK-701', status='completed', assigned_agent='case_manager', team='engineering',
+            brief='literal public task', task_type='task', revision_count=0, created_at='2026-01-01', updated_at='2026-01-02',
+            completed_at='2026-01-02', parent_task_id=None, final_output_summary='ordinary summary', final_output_dir=None,
+            executor_pid=101, block_kind=None, note='ordinary note', orchestration_step_count=1, cancelled_at=None,
+            revisit_of_task_id=None, last_heartbeat=None, session_timeout_seconds=None, blocked_on_job_ids='["JOB-701","quote\\\" LF\\n \\u4e2d"]',
+            dispatched_from_thread_id=None, active_chain='{"legs":[],"text":"quote\\\" LF\\n \\u4e2d"}',
+            active_fanout='{"children":[],"text":"quote\\\" LF\\n \\u4e2d"}', current_session_id='sess-sql', zombie_flagged_at=None,
+            future_scalar='public 中 extension', future_integer=0, future_real=1.5)],
+        'results': [dict(id=701, task_id='TASK-701', agent='case_manager', session_id='sess-sql', status='completed',
+            output_summary='ordinary result', decision_json='{"action":"done","text":"quote\\\" LF\\n \\u4e2d"}', confidence_score=90,
+            learnings=None, risks_flagged='["quote\\\" LF\\n \\u4e2d"]', duration_seconds=1, token_count=None, estimated_cost=0.5,
+            output_dir=None, created_at='2026-01-02', waiting_on_job_ids='["JOB-701","quote\\\" LF\\n \\u4e2d"]', verdict=None,
+            local_ci='{"exit_code":0,"text":"quote\\\" LF\\n \\u4e2d"}', future_scalar=None)],
+        'audit': [dict(id=702, task_id='TASK-701', agent='case_manager', action='completion_report',
+            payload=' {"ok":true,"empty":null,"n":7,"f":1.5,"text":"quote\\\" LF\\n \\u4e2d","literal":"中"} \n', timestamp='2026-01-02', future_scalar='ordinary')],
+    }
+    sql_columns = (('audit','payload','{'), ('results','decision_json','{'), ('results','local_ci','{'),
+        ('results','risks_flagged','['), ('results','waiting_on_job_ids','['), ('tasks','blocked_on_job_ids','['),
+        ('tasks','active_chain','{'), ('tasks','active_fanout','{'))
+
+    def sql_input(root: Path, tag: str = 'jobs', org: str = 'alpha', *, late: bool = False, null: bool = False) -> dict:
+        snapshot = copy.deepcopy(sql_rows)
+        if null:
+            for table,column,_ in sql_columns:
+                snapshot[table][0][column] = None
+        entry = {tag+'_final_org':org, 'snapshot':snapshot}
+        manifest = dict(root=str(root), source='/original/source-fixture', revision='1'*40,
+            python=str(root/'venv/bin/python'), callback=str(root/'bin/happyranch'), callback_sha256='a'*64,
+            stubs={p:dict(path=str(root/'bin'/p),sha256='b'*64) for p in ('claude','codex','opencode')})
+        if late:
+            for table,rows in snapshot.items():
+                snapshot[table] = [{key:r[key] for key in reversed(r)} for r in rows]
+            manifest = {key:manifest[key] for key in reversed(manifest)}
+            entry = {'snapshot':snapshot, tag+'_final_org':org}
+            return {'durable':[entry, {'executable_manifest':manifest}]}
+        return {'durable':[{'executable_manifest':manifest},entry]}
+
+    for tag in ('jobs','threads'):
+        for org in ('alpha','beta'):
+            for late in (False,True):
+                for null in (False,True):
+                    for boundary in ('writer','raw','raw-prefix','prefix'):
+                        label = f'C5-SQL-full-{tag}-{org}-'+('late' if late else 'early')+'-'+('null' if null else 'encoded')+'-'+boundary
+                        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                            writer.revision = row['source_sha']
+                            acquire(); drain(); commit()
+                            previous = {p.name:p.read_bytes() for p in output.iterdir()}
+                            tree = copy.deepcopy(state['safe_scenario']); scenario = (root/'scenario.json').read_bytes()
+                            image = sql_input(root,tag,org,late=late,null=null)
+                            wanted = copy.deepcopy(image)
+                            original_image = b' '+json.dumps(image,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                            compact = json.dumps(wanted,ensure_ascii=False,separators=(',',':')).encode()
+                            name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                            destination = root/'raw'/name
+                            try:
+                                if boundary == 'writer':
+                                    writer._atomic_json(destination,image); expected_image = compact
+                                elif boundary == 'prefix':
+                                    source = root/'raw/observations.json'; source.write_bytes(original_image)
+                                    content,parsed = writer._prepare_original_evidence(destination,source)
+                                    assert content == source.read_bytes() == original_image
+                                    exact(parsed,wanted)
+                                    assert not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                                    writer._replace_evidence(destination,content); expected_image = original_image
+                                else:
+                                    destination.write_bytes(original_image); expected_image = original_image
+                                complete,error = acquire(); drain()
+                                # SAME fixture omits real baseline artifacts; this
+                                # member must ship while baseline stays incomplete.
+                                assert not complete and error is None and not state['fatal'] and not errors
+                                assert len(failures) == 2 and all(cause is None and traceback is None
+                                    and category == 'other' and annotation[:2] == ('REQUIRED','MISSING')
+                                    for cause,traceback,category,window,annotation in failures)
+                            except (ValueError,AssertionError) as error:
+                                raise AssertionError('SQL canonical full member failed: '+label) from error
+                            assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                            exact(json.loads(expected_image),wanted); exact(image,wanted); exact(state['safe_scenario'],tree)
+                            assert (root/'scenario.json').read_bytes() == scenario
+                            for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
+                            assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists()
+                            results[label] = 'entire independent full SQL rows/nulls/column text/types/order and exact compact or original outer bytes; prior full files/tree/FAIL retained; SQL/native NOT RUN'
+    for boundary in ('writer','raw','raw-prefix','prefix'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            writer.revision = row['source_sha']; image = sql_input(root,late=True)
+            acquire(); drain(); commit()
+            previous = {p.name:p.read_bytes() for p in output.iterdir()}
+            tree = copy.deepcopy(state['safe_scenario']); scenario = (root/'scenario.json').read_bytes()
+            image['durable'].insert(1,image['durable'][0])  # Same object, TWO original occurrences.
+            wanted = copy.deepcopy(image)
+            original_image = json.dumps(wanted,ensure_ascii=False,separators=(',',':')).encode()
+            name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'; destination = root/'raw'/name
+            if boundary == 'writer': writer._atomic_json(destination,image)
+            elif boundary == 'prefix':
+                source = root/'raw/observations.json'; source.write_bytes(original_image)
+                content,parsed = writer._prepare_original_evidence(destination,source); exact(parsed,wanted)
+                assert content == original_image and not destination.exists()
+                writer._replace_evidence(destination,content)
+            else: destination.write_bytes(original_image)
+            complete,error = acquire(); drain()
+            assert not complete and error is None and not state['fatal'] and not errors
+            assert len(failures) == 2 and all(cause is None and traceback is None
+                and category == 'other' and annotation[:2] == ('REQUIRED','MISSING')
+                for cause,traceback,category,window,annotation in failures)
+            exact(image,wanted); exact(json.loads((output/name).read_bytes()),wanted)
+            assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == original_image
+            exact(state['safe_scenario'],tree)
+            assert (root/'scenario.json').read_bytes() == scenario
+            for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
+            assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists()
+            results['C5-SQL-full-shared-occurrences-'+boundary] = 'full repeated original occurrences/aliases preserved; each traversal/decode charged; isolated debit sensitivity NOT RUN'
+
+    sql_bad = {'malformed':'{"x":', 'duplicate':'{"x":0,"x":1}', 'escaped-equal':'{"x":0,"\\u0078":1}',
+        'trailing':'{} []', 'nonfinite':'{"x":1e999}', 'surrogate':'{"x":"\\ud800"}',
+        'second-layer':'{"x":"second\\\\nlayer"}', 'secret-value':'{"x":"SYNTHETIC_TOKEN"}',
+        'secret-key':'{"SYNTHETIC_TOKEN":0}', 'escaped-secret-value':'{"x":"\\u0053YNTHETIC_TOKEN"}',
+        'escaped-secret-key':'{"\\u0053YNTHETIC_TOKEN":0}', 'secret-original':'{"x":"'+secret.replace('"','\\"').replace('\n','\\n')+'"}',
+        'primitive':'7', 'null-text':'null', 'empty-text':''}
+    sql_refusals = [f'{table}.{column}-{form}' for table,column,_ in sql_columns
+        for form in ('wrong-top','sql-bool','sql-number','sql-container','missing-column')]
+    sql_refusals += list(sql_bad) + ['missing-tag','foreign-tag','contradictory-tag','foreign-org','boolean-org','extra-entry',
+        'missing-snapshot','snapshot-type','missing-table','foreign-table','table-type','row-type','row-id-bool','row-id-missing',
+        'row-id-text','result-owner-bool','audit-scope-bool','ordinary-nested','ordinary-bool','missing-manifest','duplicate-manifest',
+        'foreign-root','foreign-source','foreign-revision','foreign-python','foreign-callback','callback-hash','manifest-shape',
+        'lookalike-column','output-summary','final-output-summary','lookalike-root','case-snapshot','decoded-json-lookalike','wrong-owner',
+        'shared-work','shared-facts','shared-depth']
+    for case in sql_refusals:
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha']; image = sql_input(root,late=True)
+                entry = image['durable'][0]; snapshot = entry['snapshot']; manifest = image['durable'][1]['executable_manifest']
+                column_case = next(((t,c,top,case[len(t+'.'+c+'-'):]) for t,c,top in sql_columns if case.startswith(t+'.'+c+'-')),None)
+                if column_case:
+                    table,column,top,form = column_case
+                    if form == 'missing-column': del snapshot[table][0][column]
+                    else: snapshot[table][0][column] = {'wrong-top':'[]' if top == '{' else '{}', 'sql-bool':True, 'sql-number':0, 'sql-container':{}}[form]
+                elif case in sql_bad: snapshot['audit'][0]['payload'] = sql_bad[case]
+                elif case == 'missing-tag': del entry['jobs_final_org']
+                elif case == 'foreign-tag': entry['final_org'] = entry.pop('jobs_final_org')
+                elif case == 'contradictory-tag': entry['threads_final_org'] = 'beta'
+                elif case == 'foreign-org': entry['jobs_final_org'] = 'foreign'
+                elif case == 'boolean-org': entry['jobs_final_org'] = True
+                elif case == 'extra-entry': entry['extra'] = 'public'
+                elif case == 'missing-snapshot': del entry['snapshot']
+                elif case == 'snapshot-type': entry['snapshot'] = []
+                elif case == 'missing-table': del snapshot['tasks']
+                elif case == 'foreign-table': snapshot['other'] = snapshot.pop('tasks')
+                elif case == 'table-type': snapshot['audit'] = {}
+                elif case == 'row-type': snapshot['audit'] = [0]
+                elif case == 'row-id-bool': snapshot['audit'][0]['id'] = True
+                elif case == 'row-id-missing': del snapshot['audit'][0]['id']
+                elif case == 'row-id-text': snapshot['results'][0]['id'] = '701'
+                elif case == 'result-owner-bool': snapshot['results'][0]['task_id'] = True
+                elif case == 'audit-scope-bool': snapshot['audit'][0]['task_id'] = True
+                elif case == 'ordinary-nested': snapshot['audit'][0]['future_scalar'] = {'x':0}
+                elif case == 'ordinary-bool': snapshot['tasks'][0]['future_integer'] = True
+                elif case == 'missing-manifest': image['durable'].pop()
+                elif case == 'duplicate-manifest': image['durable'].append(copy.deepcopy(image['durable'][1]))
+                elif case == 'foreign-root': manifest['root'] += '/foreign'
+                elif case == 'foreign-source': manifest['source'] = '/original/../foreign'
+                elif case == 'foreign-revision': manifest['revision'] = '2'*40
+                elif case == 'foreign-python': manifest['python'] += '-foreign'
+                elif case == 'foreign-callback': manifest['callback'] += '-foreign'
+                elif case == 'callback-hash': manifest['callback_sha256'] = True
+                elif case == 'manifest-shape': del manifest['stubs']
+                elif case == 'lookalike-column': snapshot['audit'][0]['payload_lookalike'] = snapshot['audit'][0]['payload']
+                elif case == 'output-summary': snapshot['results'][0]['output_summary'] = snapshot['results'][0]['decision_json']
+                elif case == 'final-output-summary': snapshot['tasks'][0]['final_output_summary'] = snapshot['tasks'][0]['active_chain']
+                elif case == 'lookalike-root': image['lookalike'] = image.pop('durable')
+                elif case == 'case-snapshot': image['durable'][0] = {'case':{'final_snapshot':snapshot}}
+                elif case == 'decoded-json-lookalike': snapshot['audit'][0]['payload'] = json.dumps(
+                    {'snapshot':{'tasks':[{'active_chain':'{"x":"second\\nlayer"}'}]}})
+                elif case == 'wrong-owner': pass
+                elif case == 'shared-work': snapshot['audit'][0]['payload'] = '{"value":"'+'p'*2800000+'"}'
+                elif case == 'shared-facts': snapshot['audit'][0]['payload'] = '{"values":['+','.join('0' for _ in range(70000))+']}'
+                elif case == 'shared-depth': snapshot['audit'][0]['payload'] = '{"value":'+'['*60+'0'+']'*60+'}'
+                else: raise AssertionError('unhandled SQL case '+case)
+                wanted = copy.deepcopy(image)
+                original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                name = 'e07.json' if case == 'wrong-owner' else 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                previous = {p.name:p.read_bytes() for p in output.iterdir()}; tree = copy.deepcopy(state['safe_scenario'])
+                scenario = (root/'scenario.json').read_bytes(); old_buffer = staged[name]
+                if boundary in ('writer','prefix'):
+                    if boundary == 'prefix':
+                        source = root/'raw/observations.json'; source.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source)
+                    except (ValueError,AssertionError): pass
+                    else: raise AssertionError('SQL unsafe member admitted: '+case+'/'+boundary)
+                    assert destination.read_bytes() == prior and staged[name] is old_buffer and not state['fatal']
+                    if boundary == 'prefix': assert source.read_bytes() == original_image
+                else:
+                    destination.write_bytes(original_image)
+                    (root/'raw/eligible-sql.txt').write_bytes(b'eligible ordinary SQL sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case,boundary,failures)
+                    assert destination.read_bytes() == original_image and staged[name] is old_buffer and published[name] is old_buffer
+                    assert name in state['refused_sources'] and (output/name).read_bytes() == prior
+                    if case not in ('shared-work','shared-facts'): assert (output/'eligible-sql.txt').read_bytes() == b'eligible ordinary SQL sibling\n'
+                exact(image,wanted); exact(state['safe_scenario'],tree)
+                assert (root/'scenario.json').read_bytes() == scenario
+                for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
+                assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                results['C5-SQL-refusal-'+case+'-'+boundary] = 'whole original input/prior member/output/result/FAIL/tree exact; selected pending/staging withheld; overlapping guards and resource/venue limits in case record'
+
+    # SAME fixture/table, canonical submission edges. Original SOURCE strings
+    # are copied literally; their source/SID/token identity is never rebound.
+    submission_sources = {'exit0': 'import json, os, signal, socket, sys, time\nfrom pathlib import Path\nif False:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\nPath(\'/tmp/e04-show/coord/e08eba4596159ebe63677c14.started\').write_text(json.dumps(dict(token=\'e08eba4596159ebe63677c14\', pid=os.getpid())))\nsys.stdout.write(\'E04_OK_OUT\\n\'); sys.stdout.flush()\nsys.stderr.write(\'E04_OK_ERR\\n\'); sys.stderr.flush()\nend = 40.0\ndef remaining():\n    value = end - time.monotonic()\n    if value <= 0:\n        raise TimeoutError("E04 script absolute deadline")\n    return min(20, value)\nwith socket.socket(socket.AF_UNIX) as peer:\n    peer.settimeout(remaining())\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\n    peer.settimeout(remaining())\n    peer.sendall((json.dumps(dict(token=\'e08eba4596159ebe63677c14\', pid=os.getpid())) + "\\n").encode())\n    remaining()\n    if False:\n        while True:\n            signal.pause()\n    peer.settimeout(remaining())\n    released = peer.recv(1)\n    remaining()\n    if released != b"R":\n        raise RuntimeError("missing external release")\nraise SystemExit(0)\n', 'exit7': 'import json, os, signal, socket, sys, time\nfrom pathlib import Path\nif False:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\nPath(\'/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started\').write_text(json.dumps(dict(token=\'df5f1abd9fb56d8c669f17e2\', pid=os.getpid())))\nsys.stdout.write(\'E04_EXIT7_OUT\\n\'); sys.stdout.flush()\nsys.stderr.write(\'E04_EXIT7_ERR\\n\'); sys.stderr.flush()\nend = 40.0\ndef remaining():\n    value = end - time.monotonic()\n    if value <= 0:\n        raise TimeoutError("E04 script absolute deadline")\n    return min(20, value)\nwith socket.socket(socket.AF_UNIX) as peer:\n    peer.settimeout(remaining())\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\n    peer.settimeout(remaining())\n    peer.sendall((json.dumps(dict(token=\'df5f1abd9fb56d8c669f17e2\', pid=os.getpid())) + "\\n").encode())\n    remaining()\n    if False:\n        while True:\n            signal.pause()\n    peer.settimeout(remaining())\n    released = peer.recv(1)\n    remaining()\n    if released != b"R":\n        raise RuntimeError("missing external release")\nraise SystemExit(7)\n', 'timeout': 'import json, os, signal, socket, sys, time\nfrom pathlib import Path\nif True:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\nPath(\'/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started\').write_text(json.dumps(dict(token=\'effc58d0f834d9ba4fc7c83e\', pid=os.getpid())))\nsys.stdout.write(\'E04_TIMEOUT_OUT\\n\'); sys.stdout.flush()\nsys.stderr.write(\'E04_TIMEOUT_ERR\\n\'); sys.stderr.flush()\nend = 40.0\ndef remaining():\n    value = end - time.monotonic()\n    if value <= 0:\n        raise TimeoutError("E04 script absolute deadline")\n    return min(20, value)\nwith socket.socket(socket.AF_UNIX) as peer:\n    peer.settimeout(remaining())\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\n    peer.settimeout(remaining())\n    peer.sendall((json.dumps(dict(token=\'effc58d0f834d9ba4fc7c83e\', pid=os.getpid())) + "\\n").encode())\n    remaining()\n    if True:\n        while True:\n            signal.pause()\n    peer.settimeout(remaining())\n    released = peer.recv(1)\n    remaining()\n    if released != b"R":\n        raise RuntimeError("missing external release")\nraise SystemExit(-9)\n'}
+    submission_source_tokens = {'exit0': b'"import json, os, signal, socket, sys, time\\nfrom pathlib import Path\\nif False:\\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\\nPath(\'/tmp/e04-show/coord/e08eba4596159ebe63677c14.started\').write_text(json.dumps(dict(token=\'e08eba4596159ebe63677c14\', pid=os.getpid())))\\nsys.stdout.write(\'E04_OK_OUT\\\\n\'); sys.stdout.flush()\\nsys.stderr.write(\'E04_OK_ERR\\\\n\'); sys.stderr.flush()\\nend = 40.0\\ndef remaining():\\n    value = end - time.monotonic()\\n    if value <= 0:\\n        raise TimeoutError(\\"E04 script absolute deadline\\")\\n    return min(20, value)\\nwith socket.socket(socket.AF_UNIX) as peer:\\n    peer.settimeout(remaining())\\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\\n    peer.settimeout(remaining())\\n    peer.sendall((json.dumps(dict(token=\'e08eba4596159ebe63677c14\', pid=os.getpid())) + \\"\\\\n\\").encode())\\n    remaining()\\n    if False:\\n        while True:\\n            signal.pause()\\n    peer.settimeout(remaining())\\n    released = peer.recv(1)\\n    remaining()\\n    if released != b\\"R\\":\\n        raise RuntimeError(\\"missing external release\\")\\nraise SystemExit(0)\\n"', 'exit7': b'"import json, os, signal, socket, sys, time\\nfrom pathlib import Path\\nif False:\\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\\nPath(\'/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started\').write_text(json.dumps(dict(token=\'df5f1abd9fb56d8c669f17e2\', pid=os.getpid())))\\nsys.stdout.write(\'E04_EXIT7_OUT\\\\n\'); sys.stdout.flush()\\nsys.stderr.write(\'E04_EXIT7_ERR\\\\n\'); sys.stderr.flush()\\nend = 40.0\\ndef remaining():\\n    value = end - time.monotonic()\\n    if value <= 0:\\n        raise TimeoutError(\\"E04 script absolute deadline\\")\\n    return min(20, value)\\nwith socket.socket(socket.AF_UNIX) as peer:\\n    peer.settimeout(remaining())\\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\\n    peer.settimeout(remaining())\\n    peer.sendall((json.dumps(dict(token=\'df5f1abd9fb56d8c669f17e2\', pid=os.getpid())) + \\"\\\\n\\").encode())\\n    remaining()\\n    if False:\\n        while True:\\n            signal.pause()\\n    peer.settimeout(remaining())\\n    released = peer.recv(1)\\n    remaining()\\n    if released != b\\"R\\":\\n        raise RuntimeError(\\"missing external release\\")\\nraise SystemExit(7)\\n"', 'timeout': b'"import json, os, signal, socket, sys, time\\nfrom pathlib import Path\\nif True:\\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\\nPath(\'/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started\').write_text(json.dumps(dict(token=\'effc58d0f834d9ba4fc7c83e\', pid=os.getpid())))\\nsys.stdout.write(\'E04_TIMEOUT_OUT\\\\n\'); sys.stdout.flush()\\nsys.stderr.write(\'E04_TIMEOUT_ERR\\\\n\'); sys.stderr.flush()\\nend = 40.0\\ndef remaining():\\n    value = end - time.monotonic()\\n    if value <= 0:\\n        raise TimeoutError(\\"E04 script absolute deadline\\")\\n    return min(20, value)\\nwith socket.socket(socket.AF_UNIX) as peer:\\n    peer.settimeout(remaining())\\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\\n    peer.settimeout(remaining())\\n    peer.sendall((json.dumps(dict(token=\'effc58d0f834d9ba4fc7c83e\', pid=os.getpid())) + \\"\\\\n\\").encode())\\n    remaining()\\n    if True:\\n        while True:\\n            signal.pause()\\n    peer.settimeout(remaining())\\n    released = peer.recv(1)\\n    remaining()\\n    if released != b\\"R\\":\\n        raise RuntimeError(\\"missing external release\\")\\nraise SystemExit(-9)\\n"', 'F4-one-backslash': b'"print(\\"public\\\\nline\\")"', 'F4-two-backslash': b'"print(\\"public\\\\\\\\nline\\")"'}
+    old_source = 'd6a605d8a22610b0074d87c9523b9b87742513ae'
+    def submission_input(root: Path, source: str, *, refusal: bool = False, late: bool = False) -> dict:
+        # Independent source-shaped input. stdlib test-side JSON specifies the
+        # actual producer's inner sorted presentation and compact HTTPX body;
+        # no shipping parser/scanner/sanitizer/renderer constructs expectations.
+        provider = dict(task='TASK-701',session='sess-e04-first',agent='case_manager',org='alpha',pid=101)
+        payload = dict(title='E04 source fixture',rationale='Full original submission',script=source,interpreter='python3',
+            cwd_hint=None,review_required=refusal,persistent=False,max_runtime_seconds=30,
+            task_id=provider['task'],session_id=provider['session'])
+        text = json.dumps(payload,sort_keys=True)
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        file = dict(path=str(root/'coord'/(digest+'.json')),text=text,bytes=len(text.encode()),sha256=digest)
+        response = dict(id='JOB-701',status='running',created_at='2026-01-01T00:00:00+00:00',
+            started_at='2026-01-01T00:00:01+00:00',cwd_resolved=str(root/'runtime/orgs/alpha/workspaces/case_manager'),
+            timeout_seconds=30,events_url='/api/v1/orgs/alpha/jobs/JOB-701/events',
+            authentication=dict(task_id=provider['task'],session_id=provider['session']))
+        wire = dict(path='/api/v1/orgs/alpha/jobs/submit',method='POST',
+            body_sha256=hashlib.sha256(json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),
+            status=201,response=response,dropped=False)
+        record = dict(action='jobs-refuse-review' if refusal else 'jobs-submit',operation=None,
+            argv=[str(root/'bin/happyranch'),'jobs','submit','--org','alpha','--from-file',file['path'],'--json'],
+            exit=2 if refusal else 0,stdout='' if refusal else json.dumps(response,sort_keys=True)+'\n',
+            stderr=('Error reading scripts-submit file '+file['path']+': review_required_removed: obtain any required authorization in a thread before submitting; '
+                'upgrade old clients and omit review_required or set it to false. This request was not submitted.\n') if refusal else '',
+            payload=payload,payload_file=file,entered=10.,finished=10.5,timed_out=False,execution_deadline=19.,provider=provider,
+            child_pid=202,child_start='456',child_parent=101,child_stat='202 (python) S 101 '+'0 '*17+'456\n',
+            python=str(root/'venv/bin/python'),source_sha=old_source,callback_sha256='a'*64,wire=[] if refusal else [wire])
+        manifest = dict(root=str(root),source='/original/source-fixture',revision=old_source,
+            python=str(root/'venv/bin/python'),callback=str(root/'bin/happyranch'),callback_sha256='a'*64,
+            stubs={p:dict(path=str(root/'bin'/p),sha256='b'*64) for p in ('claude','codex','opencode')})
+        starts = [dict(provider,pid_start='123',pgid=101)]
+        if late:
+            record = {k:record[k] for k in ('stdout','payload_file','payload','wire','provider','argv','stderr','exit','child_stat',
+                'child_start','child_parent','child_pid','python','callback_sha256','source_sha','finished','entered','execution_deadline','timed_out','operation','action')}
+            return dict(provider_commands=[record],durable=[dict(executable_manifest=manifest)],starts=starts)
+        return dict(starts=starts,durable=[dict(executable_manifest=manifest)],provider_commands=[record])
+
+    def submission_reseal(image: dict) -> None:
+        # Finite negative-input construction only. Keeps every unrelated
+        # identity correct so JSON/lexical negatives reach their own layer.
+        record = image['provider_commands'][0]; file = record['payload_file']
+        data = file['text'].encode(); file['bytes'] = len(data); file['sha256'] = hashlib.sha256(data).hexdigest()
+        file['path'] = str(Path(file['path']).parent/(file['sha256']+'.json'))
+        record['argv'][-2] = file['path']
+        if record['wire']:
+            record['wire'][0]['body_sha256'] = hashlib.sha256(json.dumps(record['payload'],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+
+    source_forms = dict(submission_sources)
+    source_forms.update({
+        'F4-one-backslash': 'print("public\\nline")',
+        'quotes-unicode': "x = '中'; y = u'\\u03b2'; z = \\\"public\\\"\n".replace('\\"','"'),
+        'bytes-UTF8': 'x = b"\\xe4\\xb8\\xad"\n',
+        'raw-no-backslash': 'x=r"public"; y=BR"ASCII"; z=rb\'public\'\n',
+        'triple': 'x="""public\nline 中"""\n',
+        'triple-CRLF': 'x="""public\r\nline"""\r\n',
+        'continuation': 'x = (1 + \\\n 2); y="public\\\nline"\n',
+        'escaped-quote-controls': 'x="public\\"quote\\n\\t\\a\\b\\f\\r\\v\\101\\x42\\u03b2\\U0001f600"\n',
+        'cross-chunk-literal': 'x="'+('p'*1020)+'\\n'+('q'*1050)+'"\n',
+    })
+    for ending,cost in (('LF',1),('CRLF',2),('EOF',0)):
+        source_forms['physical-'+ending+'-inclusive'] = 'x=0'+' '*(65536-3-cost)+{'LF':'\n','CRLF':'\r\n','EOF':''}[ending]
+    for form,source in source_forms.items():
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            for late in (False,True) if form in ('exit0','exit7','timeout') else (False,):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    writer.revision = row['source_sha'] = old_source
+                    image = submission_input(root,source,late=late)
+                    if form in submission_source_tokens:
+                        literal_token = submission_source_tokens[form]
+                        assert json.loads(literal_token) == source
+                        assert b'\"script\": '+literal_token in image['provider_commands'][0]['payload_file']['text'].encode()
+                    # Independent exact expected full outer framing only.
+                    compact = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                    original_image = b' '+json.dumps(image,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name
+                    if boundary == 'writer':
+                        writer._atomic_json(destination,image)
+                        expected_image = compact
+                    elif boundary == 'prefix':
+                        source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                        data,parsed = writer._prepare_original_evidence(destination,source_file)
+                        assert data == original_image and not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                        exact(parsed,image); writer._replace_evidence(destination,data)
+                        expected_image = original_image
+                    else:
+                        destination.write_bytes(original_image); expected_image = original_image
+                    assert destination.read_bytes() == expected_image
+                    complete,error = acquire(); drain(); commit()
+                    assert not complete and error is None and not state['fatal'] and not errors, (form,boundary,failures)
+                    assert staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                    exact(json.loads(expected_image),image)
+                    for record in json.loads(expected_image)['provider_commands']:
+                        assert record['payload']['script'] == source
+                        decoded_file = json.loads(record['payload_file']['text'])
+                        assert set(decoded_file) == set(record['payload'])
+                        for key in decoded_file: exact(decoded_file[key],record['payload'][key])
+                        assert list(json.loads(record['payload_file']['text'])) == sorted(record['payload'])
+                        assert record['payload_file']['sha256'] == hashlib.sha256(record['payload_file']['text'].encode()).hexdigest()
+                    results[f'C5-Submit-full-{form}-{int(late)}-{boundary}'] = 'entire original SOURCE/file/public/wire/typed trees and independent compact or original framing; native NOT RUN'
+    for boundary in ('writer','raw','raw-prefix','prefix'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            writer.revision = row['source_sha'] = old_source
+            image = submission_input(root,submission_sources['exit0'],refusal=True,late=True)
+            name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+            destination = root/'raw'/name
+            expected_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+            if boundary == 'prefix':
+                source_file = root/'raw/observations.json'; source_file.write_bytes(expected_image)
+                data,parsed = writer._prepare_original_evidence(destination,source_file)
+                exact(parsed,image); writer._replace_evidence(destination,data)
+            elif boundary == 'writer': writer._atomic_json(destination,image)
+            else: destination.write_bytes(expected_image)
+            complete,error = acquire(); drain(); commit()
+            assert error is None and not complete and not state['fatal'] and not errors, failures
+            assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+            exact(json.loads(expected_image),image)
+            results['C5-Submit-refusal-original-'+boundary] = 'genuine local exit2/empty stdout/exact error/true review mode/no wire retained; no legacy pending success'
+
+    for form in ('deferred-retained','repeated-occurrences'):
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha'] = old_source
+                image = submission_input(root,submission_sources['exit0'],late=True)
+                record = image['provider_commands'][0]
+                if form == 'deferred-retained':
+                    r = record['wire'][0]['response']; r['status'] = 'pending'
+                    for key in ('started_at','cwd_resolved','timeout_seconds','events_url'): r[key] = None
+                    r.update(deferred=True,code='root_paused')
+                    record['stdout'] = json.dumps(r,sort_keys=True)+'\n'
+                else:
+                    second = copy.deepcopy(record)
+                    # Reuse the actual original payload/file scalar aliases;
+                    # every occurrence must still pay its own admission work.
+                    second['payload'],second['payload_file'] = record['payload'],record['payload_file']
+                    second['child_pid'] = 203; second['child_stat'] = second['child_stat'].replace('202 (','203 (',1)
+                    r = second['wire'][0]['response']; r['id'] = 'JOB-702'; r['events_url'] = '/api/v1/orgs/alpha/jobs/JOB-702/events'
+                    second['stdout'] = json.dumps(r,sort_keys=True)+'\n'
+                    image['provider_commands'].append(second)
+                name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name
+                expected_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                if boundary == 'writer': writer._atomic_json(destination,image)
+                elif boundary == 'prefix':
+                    source_file = root/'raw/observations.json'; source_file.write_bytes(expected_image)
+                    data,parsed = writer._prepare_original_evidence(destination,source_file)
+                    exact(parsed,image); writer._replace_evidence(destination,data)
+                else: destination.write_bytes(expected_image)
+                complete,error = acquire(); drain(); commit()
+                assert not complete and error is None and not state['fatal'] and not errors, failures
+                assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                exact(json.loads(expected_image),image)
+                results['C5-Submit-'+form+'-'+boundary] = 'whole original receipt retained with actual deferred null/code branch or independently charged copied occurrences; no legacy/native success claim'
+
+    lexical_refusals = {
+        'F4-two-backslash':'print("public\\\\nline")', 'f-prefix':'x=f"public"', 't-prefix':'x=t"public"',
+        'bad-prefix':'x=ur"public"', 'raw-layer':'x=r"public\\nline"', 'unknown-escape':'x="public\\q"',
+        'named-escape':'x="\\N{LATIN CAPITAL LETTER A}"', 'unfinished':'x="public',
+        'unfinished-delimiter':'x=(1', 'wrong-delimiter':'x=(1]', 'lone-CR':'x=0\r',
+        'nonUTF8-bytes':'x=b"\\xff"', 'bytes-unicode':'x=b"\\u0061"', 'bytes-nonASCII':'x=b"中"',
+        'surrogate-literal':'x="\\ud800"', 'beyond-unicode':'x="\\U00110000"', 'bad-hex':'x="\\x0z"',
+        'literal-secret':'x="SYNTHETIC_TOKEN"', 'decoded-secret':'x="\\x53YNTHETIC_TOKEN"',
+        'escape-boundary-secret':'x="SYNTHETIC_\\x54OKEN"',
+        'continuation-secret':'x="SYNTHETIC_\\\nTOKEN"',
+        'chunk-secret':'x="'+('p'*1020)+'SYNTHETIC_\\x54OKEN"',
+        'comment-backslash':'# public\\n\nx=0', 'unsupported-character':'x=$public',
+        'source-total-over': ('x=0\n'*131073),
+        'literal-spelling-over': 'x="'+('p\\\n'*90000)+'"',
+    }
+    for ending,cost in (('LF',1),('CRLF',2),('EOF',0)):
+        lexical_refusals['physical-'+ending+'-over'] = 'x=0'+' '*(65537-3-cost)+{'LF':'\n','CRLF':'\r\n','EOF':''}[ending]
+    for case in (list(lexical_refusals)+[
+            'file-duplicate','file-escaped-equal','file-malformed','file-trailing','file-nonfinite','file-surrogate','file-wrong-top',
+            'file-unsupported-layer','file-equality','file-sorted-order','file-hash','file-count','filename','source-copy',
+            'stdout-duplicate','stdout-escaped-equal','stdout-malformed','stdout-trailing','stdout-nonfinite','stdout-surrogate',
+            'stdout-wrong-top','stdout-unsupported-layer','stdout-equality','stdout-no-LF',
+            'missing-action','foreign-action','operation','provider','task','SID','org','source','callback','python','argv',
+            'exit-bool','timed-out','time-bool','child-parent','child-start','missing-payload','missing-file',
+            'wire-job','wire-auth','wire-status','wire-hash','wire-extra','wire-captured-unsupported',
+            'payload-interpreter','payload-review-bool','payload-persistent-bool','payload-extra','wrong-root','wrong-owner',
+            'missing-start','foreign-start','duplicate-start','missing-manifest','foreign-manifest','duplicate-record',
+            'plain-stdout','shared-work','shared-facts','shared-depth']):
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha'] = old_source
+                image = submission_input(root,lexical_refusals.get(case,submission_sources['exit0']),late=True)
+                record = image['provider_commands'][0]; file = record['payload_file']; response = record['wire'][0]['response']
+                if case.startswith('file-'):
+                    changes = {
+                        'duplicate':lambda x:x.replace('"title":','"title":"other", "title":',1),
+                        'escaped-equal':lambda x:x.replace('"title":','"\\u0074itle":"other", "title":',1),
+                        'malformed':lambda x:x[:-1]+',}', 'trailing':lambda x:x+' {}',
+                        'nonfinite':lambda x:x.replace('"cwd_hint": null','"cwd_hint": NaN'),
+                        'surrogate':lambda x:x.replace('"cwd_hint": null','"cwd_hint": "\\ud800"'),
+                        'wrong-top':lambda x:'['+x+']', 'unsupported-layer':lambda x:json.dumps(x),
+                        'equality':lambda x:x.replace('Full original submission','different original submission'),
+                        'sorted-order':lambda x:json.dumps(record['payload']),
+                    }
+                    suffix = case[5:]
+                    if suffix in changes: file['text'] = changes[suffix](file['text']); submission_reseal(image)
+                    elif suffix == 'hash': file['sha256'] = '0'*64
+                    elif suffix == 'count': file['bytes'] += 1
+                elif case.startswith('stdout-'):
+                    changes = {
+                        'duplicate':lambda x:x.replace('"id":','"id":"JOB-999", "id":',1),
+                        'escaped-equal':lambda x:x.replace('"id":','"\\u0069d":"JOB-999", "id":',1),
+                        'malformed':lambda x:x[:-2]+',}\n', 'trailing':lambda x:x+'{}',
+                        'nonfinite':lambda x:x.replace('"timeout_seconds": 30','"timeout_seconds": Infinity'),
+                        'surrogate':lambda x:x.replace('JOB-701','\\ud800'), 'wrong-top':lambda x:'['+x+']',
+                        'unsupported-layer':lambda x:json.dumps(x), 'equality':lambda x:x.replace('JOB-701','JOB-999'),
+                        'no-LF':lambda x:x[:-1],
+                    }
+                    record['stdout'] = changes[case[7:]](record['stdout'])
+                elif case == 'filename': file['path'] += '.json'; record['argv'][-2] = file['path']
+                elif case == 'source-copy': record['payload']['script'] += '# different\n'; submission_reseal(image)
+                elif case == 'missing-action': del record['action']
+                elif case == 'foreign-action': record['action'] = 'jobs-read'
+                elif case == 'operation': record['operation'] = 'receipt'
+                elif case == 'provider': record['provider']['agent'] = 'case_worker'
+                elif case == 'task': record['provider']['task'] = 'TASK-999'
+                elif case == 'SID': record['provider']['session'] = 'foreign-sid'
+                elif case == 'org': record['provider']['org'] = 'beta'
+                elif case == 'source': record['source_sha'] = 'f'*40
+                elif case == 'callback': record['callback_sha256'] = 'c'*64
+                elif case == 'python': record['python'] = '/foreign/python'
+                elif case == 'argv': record['argv'].append('--extra')
+                elif case == 'exit-bool': record['exit'] = False
+                elif case == 'timed-out': record['timed_out'] = True
+                elif case == 'time-bool': record['entered'] = True
+                elif case == 'child-parent': record['child_parent'] = 999
+                elif case == 'child-start': record['child_start'] = '999'
+                elif case == 'missing-payload': del record['payload']
+                elif case == 'missing-file': del record['payload_file']
+                elif case == 'wire-job': response['id'] = 'JOB-999'
+                elif case == 'wire-auth': response['authentication']['session_id'] = 'foreign-sid'
+                elif case == 'wire-status': record['wire'][0]['status'] = True
+                elif case == 'wire-hash': record['wire'][0]['body_sha256'] = '0'*64
+                elif case == 'wire-extra': record['wire'][0]['unexpected'] = None
+                elif case == 'wire-captured-unsupported':
+                    record['wire'][0].update(request=record['payload'],response_text=record['stdout'],entered=10.1)
+                elif case == 'payload-interpreter': record['payload']['interpreter'] = 'bash'; submission_reseal(image)
+                elif case == 'payload-review-bool': record['payload']['review_required'] = 0; submission_reseal(image)
+                elif case == 'payload-persistent-bool': record['payload']['persistent'] = 0; submission_reseal(image)
+                elif case == 'payload-extra': record['payload']['unexpected'] = None; submission_reseal(image)
+                elif case == 'wrong-root': image = {'holder':image}
+                elif case == 'wrong-owner': pass
+                elif case == 'missing-start': image['starts'] = []
+                elif case == 'foreign-start': image['starts'][0]['task'] = 'TASK-999'
+                elif case == 'duplicate-start': image['starts'] *= 2
+                elif case == 'missing-manifest': image['durable'] = []
+                elif case == 'foreign-manifest': image['durable'][0]['executable_manifest']['revision'] = 'f'*40
+                elif case == 'duplicate-record': image['provider_commands'] *= 2
+                elif case == 'plain-stdout': record['stdout'] = 'print("public\\nline")'
+                elif case == 'shared-work': record['payload']['title'] = 'p'*550000; submission_reseal(image)
+                elif case == 'shared-facts': image['starts'] = [copy.deepcopy(image['starts'][0]) for _ in range(10000)]
+                elif case == 'shared-depth':
+                    nested = None
+                    for _ in range(62): nested = [nested]
+                    record['payload']['extra'] = nested
+                name = ('e07.json' if case == 'wrong-owner' else 'e07-prefix.json'
+                        if boundary in ('raw-prefix','prefix') else 'observations.json')
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                if boundary in ('writer','prefix'):
+                    if boundary == 'prefix':
+                        source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source_file)
+                    except (ValueError,AssertionError):
+                        pass
+                    else:
+                        raise AssertionError('Submission unsafe member admitted: '+case+'/'+boundary)
+                    assert destination.read_bytes() == prior and not destination.with_name(name+'.tmp').exists()
+                    assert staged[name] is old_buffer and not state['fatal']
+                else:
+                    destination.write_bytes(original_image)
+                    (root/'raw/eligible-submit.txt').write_bytes(b'eligible ordinary sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case,boundary,failures)
+                    assert staged[name] is old_buffer and published[name] is old_buffer
+                    assert (output/name).read_bytes() == prior and name in state['refused_sources']
+                    if case not in ('shared-work','shared-facts'):
+                        assert (output/'eligible-submit.txt').read_bytes() == b'eligible ordinary sibling\n'
+                exact(state['safe_scenario'],old_tree)
+                for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                results['C5-Submit-refusal-'+case+'-'+boundary] = 'whole prior file/member/full safe tree/FAIL preserved; no selected pending/output; overlapping guards documented'
+
+    # SAME controls: complete closed receipt16/authentication/output6. These
+    # literal values come from the accepted independent three-form subjects;
+    # SOURCE remains the original submission_sources, never candidate output.
+    receipt_jobs = {'exit0': {'id': 'JOB-701', 'task_id': 'TASK-701', 'agent_name': 'case_manager', 'title': 'E04.approve-exit0/e08eba4596159ebe63677c14', 'rationale': 'Disposable owned deterministic job', 'script_text': None, 'interpreter': 'python3', 'cwd_hint': None, 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager', 'status': 'completed', 'exit_code': 0, 'reason': None, 'duration_ms': 100, 'created_at': '2026-01-01T00:00:00+00:00', 'started_at': '2026-01-01T00:00:01+00:00', 'finished_at': '2026-01-01T00:00:01.100000+00:00'}, 'exit7': {'id': 'JOB-703', 'task_id': 'TASK-703', 'agent_name': 'case_manager', 'title': 'E04.completed-exit7/df5f1abd9fb56d8c669f17e2', 'rationale': 'Disposable owned deterministic job', 'script_text': None, 'interpreter': 'python3', 'cwd_hint': None, 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager', 'status': 'completed', 'exit_code': 7, 'reason': None, 'duration_ms': 100, 'created_at': '2026-01-01T00:00:00+00:00', 'started_at': '2026-01-01T00:00:01+00:00', 'finished_at': '2026-01-01T00:00:01.100000+00:00'}, 'timeout': {'id': 'JOB-702', 'task_id': 'TASK-702', 'agent_name': 'case_manager', 'title': 'E04.failed-timeout/effc58d0f834d9ba4fc7c83e', 'rationale': 'Disposable owned deterministic job', 'script_text': None, 'interpreter': 'python3', 'cwd_hint': None, 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager', 'status': 'failed', 'exit_code': -9, 'reason': 'timeout', 'duration_ms': 5001, 'created_at': '2026-01-01T00:00:00+00:00', 'started_at': '2026-01-01T00:00:01+00:00', 'finished_at': '2026-01-01T00:00:06.001000+00:00'}}
+    receipt_streams = {'exit0': ('E04_OK_OUT\n', 'E04_OK_ERR\n'),
+                       'exit7': ('E04_EXIT7_OUT\n', 'E04_EXIT7_ERR\n'),
+                       'timeout': ('E04_TIMEOUT_OUT\n', 'E04_TIMEOUT_ERR\n')}
+    def receipt_input(root: Path, form: str = 'exit0', *, late: bool = False, source: str | None = None) -> dict:
+        image = submission_input(root,submission_sources[form],late=late)
+        template = image['provider_commands'][0]
+        job = dict(receipt_jobs[form]); job['script_text'] = submission_sources[form] if source is None else source
+        first = dict(task=job['task_id'],session='sess-e04-first',agent='case_manager',org='alpha',pid=101)
+        second = dict(task=job['task_id'],session='sess-e04-second',agent='case_manager',org='alpha',pid=303)
+        image['starts'] = [dict(first,pid_start='123',pgid=101),dict(second,pid_start='789',pgid=303)]
+        commands = []
+        for number,operation in enumerate(('receipt','output')):
+            out,err = receipt_streams[form]
+            response = dict(authentication=dict(task_id=job['task_id'],session_id=second['session']),job=dict(job),
+                output=dict(stdout=out,stderr=err,truncated_stdout=False,truncated_stderr=False,
+                            total_stdout_bytes=len(out.encode()),total_stderr_bytes=len(err.encode())))
+            query = 'task_id='+job['task_id']+'&session_id='+second['session']
+            if operation == 'output': query += '&stream=both&max_bytes=1048576'
+            discovery = dict(path='/api/v1/orgs',method='GET',body_sha256=hashlib.sha256(b'').hexdigest(),status=200,
+                response=dict(orgs=[dict(slug='alpha',root=str(root/'runtime/orgs/alpha')),
+                                    dict(slug='beta',root=str(root/'runtime/orgs/beta'))],broken=[]),dropped=False)
+            wire = dict(path='/api/v1/orgs/alpha/jobs/'+job['id']+'/receipt?'+query,method='GET',
+                body_sha256=hashlib.sha256(b'').hexdigest(),status=200,response=response,dropped=False)
+            command = dict(template)
+            child = 404+number
+            command.update(action='jobs-read',operation=operation,
+                argv=[str(root/'bin/happyranch'),'jobs','show' if operation == 'receipt' else 'output',job['id'],
+                      '--org','alpha','--json','--task-id',job['task_id'],'--session-id',second['session']],
+                payload=None,payload_file=None,stdout=json.dumps(response,sort_keys=True)+'\n',stderr='',provider=dict(second),
+                entered=32.+number,finished=32.5+number,execution_deadline=39.,child_pid=child,child_start=str(900+number),
+                child_parent=303,child_stat=str(child)+' (python) S 303 '+'0 '*17+str(900+number)+'\n',wire=[discovery,wire])
+            if late:
+                command['wire'][1] = {k:wire[k] for k in ('response','dropped','status','body_sha256','method','path')}
+            commands.append(command)
+        image['provider_commands'] = commands
+        return image
+
+    receipt_positive_forms = ('exit0','exit7','timeout','F4-one-backslash','quotes-output','JSON-output','rejected-null','failed-null','repeated-alias')
+    for form in receipt_positive_forms:
+        for late in (False,True) if form in ('exit0','exit7','timeout') else (False,):
+            for boundary in ('writer','raw','raw-prefix','prefix'):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    writer.revision = row['source_sha'] = old_source
+                    image = receipt_input(root,form if form in receipt_jobs else 'exit0',late=late,
+                        source=source_forms['F4-one-backslash'] if form == 'F4-one-backslash' else None)
+                    for command in image['provider_commands']:
+                        response = command['wire'][1]['response']
+                        if form in ('quotes-output','JSON-output'):
+                            response['output']['stdout'] = 'full "quote" 中\nlast\n' if form == 'quotes-output' else '{"plain":"JSON resembling output"}\n'
+                            response['output']['total_stdout_bytes'] = len(response['output']['stdout'].encode())
+                        if form in ('rejected-null','failed-null'):
+                            response['job'].update(status='rejected' if form == 'rejected-null' else 'failed',exit_code=None,
+                                duration_ms=None,started_at=None,finished_at=None,cwd_resolved=None,reason=None)
+                        command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                    if form == 'repeated-alias':
+                        duplicate = dict(image['provider_commands'][0]); duplicate.update(child_pid=406,child_start='902',child_stat='406 (python) S 303 '+'0 '*17+'902\n')
+                        image['provider_commands'].append(duplicate)
+                    compact = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                    original_image = b' '+json.dumps(image,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name
+                    if boundary == 'writer': writer._atomic_json(destination,image); expected_image = compact
+                    elif boundary == 'prefix':
+                        source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                        data,parsed = writer._prepare_original_evidence(destination,source_file)
+                        assert data == original_image and not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                        exact(parsed,image); writer._replace_evidence(destination,data); expected_image = original_image
+                    else: destination.write_bytes(original_image); expected_image = original_image
+                    assert destination.read_bytes() == expected_image
+                    complete,error = acquire(); drain(); commit()
+                    assert not complete and error is None and not state['fatal'] and not errors, (form,boundary,failures)
+                    assert staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                    exact(json.loads(expected_image),image)
+                    for command in image['provider_commands']:
+                        assert len(command['wire']) == 2 and command['wire'][0]['path'] == '/api/v1/orgs'
+                        response = command['wire'][1]['response']; decoded = json.loads(command['stdout'])
+                        assert list(decoded) == sorted(response) and command['stdout'].endswith('}\n')
+                        for holder in ('authentication','job','output'):
+                            assert list(decoded[holder]) == sorted(response[holder])
+                            for key in response[holder]: exact(decoded[holder][key],response[holder][key])
+                        assert list(response['job']) == list(receipt_jobs['exit0'])
+                    results[f'C5-Receipt-full-{form}-{int(late)}-{boundary}'] = 'entire independent closed16/auth/output6, discovery, full SOURCE/output and actual sorted stdout LF preserved; same-job distinct S2 reads; native NOT RUN'
+
+    receipt_refusals = (['stdout-'+holder+'-'+key for holder,keys in (
+        ('authentication',('task_id','session_id')),('job',tuple(receipt_jobs['exit0'])),
+        ('output',('stdout','stderr','truncated_stdout','truncated_stderr','total_stdout_bytes','total_stderr_bytes'))) for key in keys] + [
+        'duplicate','escaped-equal','malformed','trailing','nonfinite','surrogate','wrong-top','unsupported-layer','inner-order','no-LF','extra-LF','output-LF',
+        'F4-two-backslash','decoded-secret','chunk-secret','output-backslash','output-secret',
+        'missing-action','foreign-action','operation','provider','task','SID','S1-as-S2','org','source','callback','python','argv','payload','payload-file',
+        'exit-bool','timed-out','time-bool','child-parent','child-start','duplicate-child','missing-start','foreign-start','duplicate-start','missing-manifest','foreign-manifest',
+        'job-id','job-task','job-agent','job-interpreter','job-exit-bool','job-duration-bool','job-timeout','job-missing','job-extra','job-order',
+        'wire-missing','wire-extra','discovery-missing','discovery-masquerade','discovery-source','wire-status','wire-drop','wire-hash','wire-method','wire-query','wire-extra-query','wire-body','wire-response-text','wire-auth',
+        'output-bool','output-count','output-truncated','output-negative','wrong-root','wrong-owner','plain-stdout','shared-work','shared-facts','shared-depth'])
+    for case in receipt_refusals:
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha'] = old_source
+                image = receipt_input(root,late=True)
+                command = image['provider_commands'][0]; wire = command['wire'][1]; response = wire['response']
+                if case.startswith('stdout-'):
+                    _,holder,key = case.split('-',2)
+                    changed = copy.deepcopy(response); value = changed[holder][key]
+                    changed[holder][key] = value+' changed' if type(value) is str else not value if type(value) is bool else value+1 if type(value) is int else ''
+                    command['stdout'] = json.dumps(changed,sort_keys=True)+'\n'
+                elif case in ('duplicate','escaped-equal','malformed','trailing','nonfinite','surrogate','wrong-top','unsupported-layer','inner-order','no-LF','extra-LF','output-LF'):
+                    changes = {
+                        'duplicate':lambda x:x.replace('"title":','"title":"other","title":',1),
+                        'escaped-equal':lambda x:x.replace('"title":','"\\u0074itle":"other","title":',1),
+                        'malformed':lambda x:x[:-2]+',}\n','trailing':lambda x:x+'{}',
+                        'nonfinite':lambda x:x.replace('"duration_ms": 100','"duration_ms": NaN'),
+                        'surrogate':lambda x:x.replace('JOB-701','\\ud800'),'wrong-top':lambda x:'['+x+']',
+                        'unsupported-layer':lambda x:json.dumps(x),'inner-order':lambda x:json.dumps(response)+'\n',
+                        'no-LF':lambda x:x[:-1],'extra-LF':lambda x:x+'\n',
+                        'output-LF':lambda x:x.replace('E04_OK_OUT\\n','E04_OK_OUT'),
+                    }
+                    command['stdout'] = changes[case](command['stdout'])
+                elif case in ('F4-two-backslash','decoded-secret','chunk-secret'):
+                    response['job']['script_text'] = lexical_refusals[case]
+                    command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                elif case in ('output-backslash','output-secret'):
+                    response['output']['stdout'] = 'ordinary\\noutput' if case == 'output-backslash' else 'SYNTHETIC_TOKEN\n'
+                    response['output']['total_stdout_bytes'] = len(response['output']['stdout'].encode())
+                    command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                elif case == 'missing-action': del command['action']
+                elif case == 'foreign-action': command['action'] = 'jobs-final'
+                elif case == 'operation': command['operation'] = 'show'
+                elif case == 'provider': command['provider']['agent'] = 'case_worker'
+                elif case == 'task': command['provider']['task'] = 'TASK-999'
+                elif case == 'SID': command['provider']['session'] = 'foreign-sid'
+                elif case == 'S1-as-S2': command['provider']['session'] = 'sess-e04-first'
+                elif case == 'org': command['provider']['org'] = 'beta'
+                elif case == 'source': command['source_sha'] = 'f'*40
+                elif case == 'callback': command['callback_sha256'] = 'c'*64
+                elif case == 'python': command['python'] = '/foreign/python'
+                elif case == 'argv': command['argv'].append('--extra')
+                elif case == 'payload': command['payload'] = {}
+                elif case == 'payload-file': command['payload_file'] = {}
+                elif case == 'exit-bool': command['exit'] = False
+                elif case == 'timed-out': command['timed_out'] = True
+                elif case == 'time-bool': command['entered'] = True
+                elif case == 'child-parent': command['child_parent'] = 999
+                elif case == 'child-start': command['child_start'] = '999'
+                elif case == 'duplicate-child': image['provider_commands'][1]['child_pid'] = command['child_pid']
+                elif case == 'missing-start': image['starts'] = image['starts'][:1]
+                elif case == 'foreign-start': image['starts'][1]['task'] = 'TASK-999'
+                elif case == 'duplicate-start': image['starts'].append(dict(image['starts'][1]))
+                elif case == 'missing-manifest': image['durable'] = []
+                elif case == 'foreign-manifest': image['durable'][0]['executable_manifest']['revision'] = 'f'*40
+                elif case.startswith('job-'):
+                    key = case[4:]; job = response['job']
+                    if key == 'id': job['id'] = 'JOB-999'
+                    elif key == 'task': job['task_id'] = 'TASK-999'
+                    elif key == 'agent': job['agent_name'] = 'case_worker'
+                    elif key == 'interpreter': job['interpreter'] = 'bash'
+                    elif key == 'exit-bool': job['exit_code'] = False
+                    elif key == 'duration-bool': job['duration_ms'] = False
+                    elif key == 'timeout': job['reason'] = 'timeout'
+                    elif key == 'missing': del job['finished_at']
+                    elif key == 'extra': job['review_required'] = False
+                    elif key == 'order': response['job'] = dict(reversed(list(job.items())))
+                    command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                elif case == 'wire-missing': command['wire'].pop()
+                elif case == 'wire-extra': command['wire'].append(copy.deepcopy(wire))
+                elif case == 'discovery-missing': command['wire'].pop(0)
+                elif case == 'discovery-masquerade': command['wire'][0]['response'] = copy.deepcopy(response)
+                elif case == 'discovery-source': command['wire'][0]['response']['job'] = copy.deepcopy(response['job'])
+                elif case == 'wire-status': wire['status'] = True
+                elif case == 'wire-drop': wire['dropped'] = True
+                elif case == 'wire-hash': wire['body_sha256'] = '0'*64
+                elif case == 'wire-method': wire['method'] = 'POST'
+                elif case == 'wire-query': wire['path'] = wire['path'].replace('sess-e04-second','sess-e04-first')
+                elif case == 'wire-extra-query': wire['path'] += '&stream=both'
+                elif case == 'wire-body': wire['request'] = None
+                elif case == 'wire-response-text': wire['response_text'] = command['stdout']
+                elif case == 'wire-auth': response['authentication']['session_id'] = 'sess-e04-first'
+                elif case.startswith('output-'):
+                    out = response['output']
+                    if case == 'output-bool': out['truncated_stdout'] = 0
+                    elif case == 'output-count': out['total_stdout_bytes'] += 1
+                    elif case == 'output-truncated': out['truncated_stdout'] = True
+                    elif case == 'output-negative': out['total_stdout_bytes'] = -1
+                    command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                elif case == 'wrong-root': image = dict(holder=image)
+                elif case == 'wrong-owner': pass
+                elif case == 'plain-stdout': command['stdout'] = 'print("public\\nline")'
+                elif case == 'shared-work': response['job']['title'] = 'p'*700000; command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                elif case == 'shared-facts': image['starts'] *= 5000
+                elif case == 'shared-depth':
+                    nested = None
+                    for _ in range(62): nested = [nested]
+                    response['job']['extra'] = nested
+                name = ('e07.json' if case == 'wrong-owner' else 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json')
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                if boundary in ('writer','prefix'):
+                    if boundary == 'prefix': source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source_file)
+                    except (ValueError,AssertionError): pass
+                    else: raise AssertionError('Receipt unsafe member admitted: '+case+'/'+boundary)
+                    assert destination.read_bytes() == prior and not destination.with_name(name+'.tmp').exists()
+                    assert staged[name] is old_buffer and not state['fatal']
+                else:
+                    destination.write_bytes(original_image); (root/'raw/eligible-receipt.txt').write_bytes(b'eligible ordinary sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case,boundary,failures)
+                    assert staged[name] is old_buffer and published[name] is old_buffer
+                    assert (output/name).read_bytes() == prior and name in state['refused_sources']
+                    if case not in ('shared-work','shared-facts'):
+                        assert (output/'eligible-receipt.txt').read_bytes() == b'eligible ordinary sibling\n'
+                exact(state['safe_scenario'],old_tree)
+                for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                results['C5-Receipt-refusal-'+case+'-'+boundary] = 'whole prior file/member/full safe tree/FAIL preserved; no selected pending/output; no generic read grant; overlapping guards documented'
+
+    # SAME C5 fixture: the original source-bearing attempt is a separately
+    # owned occurrence, joined to its exact canonical command and full start.
+    def attempt_input(root: Path, form: str = 'exit0', *, late: bool = False, refusal: bool = False) -> dict:
+        image = submission_input(root,submission_sources[form],refusal=refusal,late=late)
+        command = image['provider_commands'][0]
+        payload = {k:v for k,v in command['payload'].items() if k not in ('task_id','session_id')}
+        instruction = dict(action=command['action'],deadline=20.,execution_deadline=19.,payload=payload)
+        attempt = dict(provider=dict(image['starts'][0]),instruction=instruction,entered=9.5,wire_begin=4,
+                       wire_end=4+len(command['wire']),finished=11.,command_index=0)
+        if late:
+            attempt['instruction'] = {k:instruction[k] for k in ('payload','execution_deadline','deadline','action')}
+            attempt = {k:attempt[k] for k in ('instruction','command_index','finished','wire_end','wire_begin','entered','provider')}
+            return dict(provider_attempts=[attempt],**image)
+        image['provider_attempts'] = [attempt]
+        return image
+
+    for form in ('exit0','exit7','timeout','refusal','repeated','ordinary-unfinished'):
+        for late in (False,True) if form in ('exit0','exit7','timeout') else (False,):
+            for boundary in ('writer','raw','raw-prefix','prefix'):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    writer.revision = row['source_sha'] = old_source
+                    image = attempt_input(root,form if form in submission_sources else 'exit0',late=late,refusal=form == 'refusal')
+                    if form == 'repeated':
+                        command = copy.deepcopy(image['provider_commands'][0])
+                        command.update(child_pid=203,child_stat=command['child_stat'].replace('202 (','203 (',1))
+                        command['wire'][0]['response'].update(id='JOB-702',events_url='/api/v1/orgs/alpha/jobs/JOB-702/events')
+                        command['stdout'] = json.dumps(command['wire'][0]['response'],sort_keys=True)+'\n'
+                        image['provider_commands'].append(command)
+                        attempt = copy.deepcopy(image['provider_attempts'][0])
+                        attempt.update(command_index=1,wire_begin=5,wire_end=6)
+                        image['provider_attempts'].append(attempt)
+                    if form == 'ordinary-unfinished':
+                        image['provider_attempts'].append(dict(provider=dict(image['starts'][0]),
+                            instruction=dict(action='jobs-final',deadline=20.,execution_deadline=19.,
+                                             payload=dict(status='completed',confidence=90,summary='ordinary unfinished')),
+                            entered=12.,wire_begin=5))
+                    compact = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                    original_image = b' '+json.dumps(image,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name
+                    if boundary == 'writer': writer._atomic_json(destination,image); expected_image = compact
+                    elif boundary == 'prefix':
+                        source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                        data,parsed = writer._prepare_original_evidence(destination,source_file)
+                        assert data == original_image and not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                        exact(parsed,image); writer._replace_evidence(destination,data); expected_image = original_image
+                    else: destination.write_bytes(original_image); expected_image = original_image
+                    complete,error = acquire(); drain(); commit()
+                    assert not complete and error is None and not state['fatal'] and not errors, (form,boundary,failures)
+                    assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                    exact(json.loads(expected_image),image)
+                    for attempt in image['provider_attempts']:
+                        if 'command_index' in attempt:
+                            command = image['provider_commands'][attempt['command_index']]
+                            assert attempt['provider'] == image['starts'][0]
+                            for key,value in attempt['instruction']['payload'].items(): exact(value,command['payload'][key])
+                            assert attempt['instruction']['payload']['script'] == submission_sources[form if form in submission_sources else 'exit0']
+                    results[f'C5-Attempt-full-{form}-{int(late)}-{boundary}'] = 'entire original plan/command/start/SOURCE/type/order and outer bytes; original unavailable ordinary attempt retained; native NOT RUN'
+
+    attempt_refusals = ('payload-title','payload-rationale','payload-script','payload-interpreter','payload-cwd_hint',
+        'payload-review_required','payload-persistent','payload-max_runtime_seconds','payload-extra','payload-missing',
+        'missing-command','wrong-index','index-bool','duplicate-index','foreign-action','unsupported-action','missing-action',
+        'provider-task','provider-session','provider-agent','provider-org','provider-pid','provider-start','provider-pgid','provider-extra',
+        'missing-start','missing-manifest','foreign-manifest','deadline','execution-deadline','deadline-bool','entered-bool','late-finished',
+        'wire-begin','wire-end','wire-bool','outer-extra','outer-missing','instruction-extra','wrong-root','wrong-owner',
+        'partial-source','decoded-secret','residual-layer','shared-work','shared-facts','shared-depth')
+    for case in attempt_refusals:
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha'] = old_source
+                image = attempt_input(root,late=True)
+                attempt = image['provider_attempts'][0]; instruction = attempt['instruction']; payload = instruction['payload']
+                if case.startswith('payload-') and case[8:] in payload:
+                    key = case[8:]; value = payload[key]
+                    payload[key] = (value+'changed' if type(value) is str else 0 if type(value) is bool else True
+                                    if type(value) is int else 'foreign-cwd')
+                elif case == 'payload-extra': payload['extra'] = None
+                elif case == 'payload-missing': del payload['title']
+                elif case == 'missing-command': image['provider_commands'] = []
+                elif case == 'wrong-index': attempt['command_index'] = 1
+                elif case == 'index-bool': attempt['command_index'] = False
+                elif case == 'duplicate-index': image['provider_attempts'] *= 2
+                elif case == 'foreign-action': instruction['action'] = 'jobs-refuse-review'
+                elif case == 'unsupported-action': instruction['action'] = 'other'
+                elif case == 'missing-action': del instruction['action']
+                elif case.startswith('provider-'):
+                    key = {'start':'pid_start'}.get(case[9:],case[9:])
+                    attempt['provider'][key] = 999 if key in ('pid','pgid') else 'foreign'
+                elif case == 'missing-start': image['starts'] = []
+                elif case == 'missing-manifest': image['durable'] = []
+                elif case == 'foreign-manifest': image['durable'][0]['executable_manifest']['revision'] = 'f'*40
+                elif case == 'deadline': instruction['deadline'] = 21.
+                elif case == 'execution-deadline': instruction['execution_deadline'] = 18.
+                elif case == 'deadline-bool': instruction['deadline'] = True
+                elif case == 'entered-bool': attempt['entered'] = True
+                elif case == 'late-finished': attempt['finished'] = 20.
+                elif case == 'wire-begin': attempt['wire_begin'] = -1
+                elif case == 'wire-end': attempt['wire_end'] = 6
+                elif case == 'wire-bool': attempt['wire_begin'] = True
+                elif case == 'outer-extra': attempt['extra'] = None
+                elif case == 'outer-missing': del attempt['wire_end']
+                elif case == 'instruction-extra': instruction['extra'] = None
+                elif case == 'wrong-root': image = {'holder':image}
+                elif case == 'wrong-owner': pass
+                elif case == 'partial-source':
+                    for key in ('finished','wire_end','command_index'): del attempt[key]
+                elif case == 'decoded-secret': payload['script'] = 'x="\\x53YNTHETIC_TOKEN"'
+                elif case == 'residual-layer': payload['script'] = 'print("public\\\\nline")'
+                elif case == 'shared-work': payload['title'] = 'p'*550000
+                elif case == 'shared-facts': image['provider_attempts'] = [copy.deepcopy(attempt) for _ in range(10000)]
+                elif case == 'shared-depth':
+                    nested = None
+                    for _ in range(62): nested = [nested]
+                    payload['extra'] = nested
+                name = 'e07.json' if case == 'wrong-owner' else 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                if boundary in ('writer','prefix'):
+                    if boundary == 'prefix':
+                        source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source_file)
+                    except ValueError: pass
+                    except AssertionError as exc:
+                        assert case == 'wrong-owner' and boundary == 'prefix'
+                        assert str(exc) == 'original evidence owner/path unavailable; observed=None'
+                    else: raise AssertionError('Attempt unsafe member admitted: '+case+'/'+boundary)
+                    assert destination.read_bytes() == prior and not destination.with_name(name+'.tmp').exists()
+                    assert staged[name] is old_buffer and not state['fatal']
+                else:
+                    destination.write_bytes(original_image); (root/'raw/eligible-attempt.txt').write_bytes(b'eligible ordinary sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case,boundary,failures)
+                    assert staged[name] is old_buffer and published[name] is old_buffer
+                    assert (output/name).read_bytes() == prior and name in state['refused_sources']
+                    if case not in ('shared-work','shared-facts'):
+                        assert (output/'eligible-attempt.txt').read_bytes() == b'eligible ordinary sibling\n'
+                exact(state['safe_scenario'],old_tree)
+                for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                results['C5-Attempt-refusal-'+case+'-'+boundary] = 'whole prior member/output/tree/FAIL exact; no selected pending/publication; identity/safety/capacity guards may overlap'
+
+    # C5 completion/wait/tail primitives. The independently authored payload
+    # and wire trees below extend this fixture, never execute a producer.
+    completion_summary = 'public "quote"\n中 repeated repeated'
+    completion_texts = {
+        'block': r'{"agent": "case_manager", "confidence": 90, "session_id": "sess-e04-first", "status": "blocked", "summary": "public \"quote\"\n\u4e2d repeated repeated", "task_id": "TASK-701", "waiting_on_job_ids": ["JOB-702", "JOB-701"]}',
+        'final': r'{"agent": "case_manager", "confidence": 90, "decision": {"action": "done", "summary": "public \"quote\"\n\u4e2d repeated repeated"}, "session_id": "sess-e04-first", "status": "completed", "summary": "public \"quote\"\n\u4e2d repeated repeated", "task_id": "TASK-701"}',
+    }
+
+    def finite_input(root: Path, family: str, form: str, *, late: bool) -> dict:
+        if family == 'completion':
+            image = submission_input(root, submission_sources['exit0'], late=late)
+            command = image['provider_commands'][0]
+            blocked = form.startswith('block')
+            plan = dict(status='blocked' if blocked else 'completed', confidence=90, summary=completion_summary)
+            if blocked: plan['waiting_on_job_ids'] = ['JOB-702','JOB-701']
+            else: plan['decision'] = dict(action='done', summary=completion_summary)
+            if form.endswith('nulls'):
+                plan['verdict'] = None
+                if blocked: plan['decision'] = None
+            payload = dict(plan, task_id='TASK-701', session_id='sess-e04-first', agent='case_manager')
+            text = json.dumps(payload, sort_keys=True) if form.endswith('nulls') else completion_texts['block' if blocked else 'final']
+            assert text == json.dumps(payload, sort_keys=True)  # Literal bytes independently own this producer spelling.
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            path = str(root/'coord'/(digest+'.json'))
+            body = dict(session_id='sess-e04-first',agent='case_manager',status='blocked' if blocked else 'completed',
+                confidence=90,output_summary=completion_summary,risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
+            if blocked: body['waiting_on_job_ids'] = ['JOB-702','JOB-701']
+            else: body['decision'] = dict(action='done',summary=completion_summary)
+            wire = dict(path='/api/v1/orgs/alpha/tasks/TASK-701/completion',method='POST',
+                body_sha256=hashlib.sha256(json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),
+                status=200,response=dict(ok=True),dropped=False)
+            command.update(action='jobs-block' if blocked else 'jobs-final',operation=None,
+                argv=[str(root/'bin/happyranch'),'report-completion','--org','alpha','--from-file',path],
+                payload=payload,payload_file=dict(path=path,text=text,bytes=len(text.encode()),sha256=digest),
+                stdout='',stderr='',wire=[wire])
+            instruction = dict(action=command['action'],deadline=20.,execution_deadline=19.,payload=copy.deepcopy(plan))
+            attempt = dict(provider=dict(image['starts'][0]),instruction=instruction,entered=9.5,wire_begin=4,wire_end=5,finished=11.,command_index=0)
+        else:
+            nonterminal = form in ('running','pending')
+            image = (submission_input(root, source_forms['F4-one-backslash'], late=late) if nonterminal
+                     else receipt_input(root, form if form in receipt_jobs else 'exit0', late=late,
+                         source=source_forms['F4-one-backslash']))
+            template = image['provider_commands'][-1]
+            provider = dict(template['provider'])
+            job = dict(receipt_jobs[form if form in receipt_jobs else 'exit0'])
+            job['script_text'] = source_forms['F4-one-backslash']
+            if form == 'rejected':
+                job.update(status='rejected',exit_code=None,duration_ms=None,started_at=None,cwd_resolved=None)
+                for prior in image['provider_commands']:
+                    prior['wire'][1]['response']['job'].update(job)
+                    prior['stdout'] = json.dumps(prior['wire'][1]['response'],sort_keys=True)+'\n'
+            if nonterminal:
+                job.update(title='E04 source fixture',rationale='Full original submission',status=form,exit_code=None,
+                    duration_ms=None,started_at=None if form == 'pending' else '2026-01-01T00:00:01+00:00',finished_at=None,
+                    cwd_resolved=None if form == 'pending' else str(root/'runtime/orgs/alpha/workspaces/case_manager'))
+            detail = dict(id=job['id'],task_id=job['task_id'],agent_name='case_manager',title=job['title'],rationale=job['rationale'],
+                script_text=job['script_text'],interpreter='python3',cwd_hint=None,status=job['status'],exit_code=job['exit_code'],
+                stdout_head=None,stderr_head=None,stdout_path=None,stderr_path=None,duration_ms=job['duration_ms'],
+                started_at=job['started_at'],finished_at=job['finished_at'],reviewed_at=None,reviewed_by=None,reject_reason=None,
+                cwd_resolved=job['cwd_resolved'],max_runtime_seconds=5 if form == 'timeout' else 30,max_output_bytes=52428800,
+                review_required=form == 'rejected',persistent=False,reason=job['reason'],created_at=job['created_at'],timed_out=nonterminal)
+            operation = 'tail' if family == 'tail' else 'wait'
+            response = dict(stream='stdout',lines=['public "quote"','中 repeated repeated']) if operation == 'tail' else detail
+            stdout = 'public "quote"\n中 repeated repeated\n' if operation == 'tail' else (
+                '{"status": "'+job['status']+'", "timed_out": '+('true' if nonterminal else 'false')+'}\n')
+            discovery = dict(path='/api/v1/orgs',method='GET',body_sha256=hashlib.sha256(b'').hexdigest(),status=200,
+                response=dict(orgs=[dict(slug='alpha',root=str(root/'runtime/orgs/alpha')),
+                                    dict(slug='beta',root=str(root/'runtime/orgs/beta'))],broken=[]),dropped=False)
+            query = ('stream=stdout&lines=50' if operation == 'tail' else 'timeout_seconds=1')+'&task_id='+provider['task']+'&session_id='+provider['session']
+            wire = dict(path='/api/v1/orgs/alpha/jobs/'+job['id']+'/'+operation+'?'+query,method='GET' if operation == 'tail' else 'POST',
+                body_sha256=hashlib.sha256(b'').hexdigest(),status=200,response=response,dropped=False)
+            argv = [str(root/'bin/happyranch'),'jobs',operation,job['id'],'--org','alpha']
+            if operation == 'wait': argv += ['--timeout-seconds','1']
+            argv += ['--task-id',provider['task'],'--session-id',provider['session']]
+            command = dict(template)
+            command.update(action='jobs-read',operation=operation,argv=argv,payload=None,payload_file=None,stdout=stdout,stderr='',
+                wire=[discovery,wire],entered=35.,finished=35.5,execution_deadline=39.,child_pid=406,
+                child_start='902',child_parent=provider['pid'],child_stat='406 (python) S '+str(provider['pid'])+' '+'0 '*17+'902\n')
+            index = len(image['provider_commands']); image['provider_commands'].append(command)
+            instruction = dict(action='jobs-read',deadline=40.,execution_deadline=39.,operation=operation,job=job['id'])
+            start = next(s for s in image['starts'] if s['session'] == provider['session'])
+            attempt = dict(provider=dict(start),instruction=instruction,entered=34.5,wire_begin=8,wire_end=10,finished=36.,command_index=index)
+        if late:
+            command_order = ('stdout','payload_file','payload','wire','provider','argv','stderr','exit','child_stat','child_start','child_parent',
+                'child_pid','python','callback_sha256','source_sha','finished','entered','execution_deadline','timed_out','operation','action')
+            image['provider_commands'][-1] = {k:command[k] for k in command_order}
+            attempt['instruction'] = dict(reversed(list(instruction.items())))
+            attempt = dict(reversed(list(attempt.items())))
+            image = dict(provider_attempts=[attempt],provider_commands=image['provider_commands'],durable=image['durable'],starts=image['starts'])
+        else: image['provider_attempts'] = [attempt]
+        if form == 'repeated':
+            # Same borrowed wire/line/argv references, independently owned CLI.
+            second = dict(image['provider_commands'][-1])
+            second.update(child_pid=407,child_start='903',child_stat='407 (python) S '+str(second['provider']['pid'])+' '+'0 '*17+'903\n',
+                entered=36.,finished=36.5)
+            another = dict(attempt,command_index=len(image['provider_commands']),entered=35.9,finished=37.,wire_begin=10,wire_end=12)
+            image['provider_commands'].append(second); image['provider_attempts'].append(another)
+        return image
+
+    finite_forms = [('completion',f) for f in ('block','final','block-nulls','final-nulls')]
+    finite_forms += [('wait',f) for f in ('exit0','exit7','timeout','rejected','running','pending')]
+    finite_forms += [('tail','exit0'),('tail','repeated')]
+    for family,form in finite_forms:
+        for late in (False,True):
+            for boundary in ('writer','raw','raw-prefix','prefix'):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    writer.revision = row['source_sha'] = old_source
+                    image = finite_input(root,family,form,late=late)
+                    wanted = copy.deepcopy(image)
+                    original_image = b' '+json.dumps(image,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                    compact = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image); expected_image = compact
+                        elif boundary == 'prefix':
+                            source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                            data,parsed = writer._prepare_original_evidence(destination,source_file)
+                            assert data == original_image and not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                            exact(parsed,wanted); writer._replace_evidence(destination,data); expected_image = original_image
+                        else: destination.write_bytes(original_image); expected_image = original_image
+                        complete,error = acquire(); drain(); commit()
+                        assert not complete and error is None and not state['fatal'] and not errors, (family,form,late,boundary,failures)
+                        assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                        exact(json.loads(expected_image),wanted); exact(image,wanted)
+                    except Exception as exc:
+                        raise AssertionError(f'C5-Finite-full-{family}-{form}-{int(late)}-{boundary}') from exc
+                    results[f'C5-Finite-full-{family}-{form}-{int(late)}-{boundary}'] = 'complete literal payload/wire/plan trees, bytes/types/order, original ownership and publication preserved; Case/native NOT RUN'
+
+    finite_refusals = ('action','operation','argv','argv-job','argv-task','argv-session','exit-bool','timed-out','child','child-start','child-parent',
+        'provider-task','provider-session','provider-agent','provider-org','provider-pid','source','python','callback','missing-start','duplicate-start',
+        'missing-manifest','foreign-manifest','wrong-root','wrong-owner','command-extra','command-missing','wire-status','wire-status-bool','wire-path',
+        'wire-method','wire-body','wire-dropped','wire-extra','wire-duplicate','wire-missing','response-extra','response-bool',
+        'attempt-index','attempt-index-bool','attempt-duplicate','attempt-provider','attempt-start','attempt-operation','attempt-job',
+        'attempt-deadline','attempt-wire','attempt-extra','attempt-missing','attempt-index-missing','stdout-layer','stderr-layer','literal-secret','escaped-secret',
+        'shared-work','shared-facts','shared-depth','unsupported-wire-script')
+    completion_refusals = ('file-bytes','file-hash','file-path','file-disagreement','file-duplicate','file-extra','file-missing','file-reordered',
+        'file-trailing','file-second-JSON','payload-type','payload-waits','payload-wait-order','payload-wait-bool','payload-decision','payload-extra',
+        'attempt-payload','attempt-payload-type','unsupported-script','done-action','done-summary','done-type','done-extra','done-missing')
+    read_refusals = ('missing-discovery','discovery-path','response-missing','response-reordered','job-identity','job-proof','job-script',
+        'job-bool','wait-stdout-disagreement','wait-stdout-duplicate','wait-stdout-reordered','wait-stdout-null','unknown-stdout-slot','tail-disagreement')
+    for family in ('completion','wait','tail'):
+        cases = finite_refusals
+        if family == 'completion':
+            # Completion carries org and payload-file argv values, not job/task/session slots.
+            cases = tuple('argv-org' if case == 'argv-job' else 'argv-payload-file' if case == 'argv-session' else case
+                          for case in cases if case != 'argv-task')
+        cases += completion_refusals if family == 'completion' else read_refusals
+        for case in cases:
+            for boundary in ('writer','raw','raw-prefix','prefix'):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    writer.revision = row['source_sha'] = old_source
+                    image = finite_input(root,family,('final' if case.startswith('done-') else 'block') if family == 'completion' else 'exit0',late=True)
+                    command = image['provider_commands'][-1]; payload = command['payload']; file = command['payload_file']
+                    attempt = image['provider_attempts'][0]; instruction = attempt['instruction']; wire = command['wire'][-1]; response = wire['response']
+                    if case == 'action': command['action'] = 'other'
+                    elif case == 'operation': command['operation'] = 'output'
+                    elif case.startswith('argv'):
+                        position = {'argv':0,'argv-org':3,'argv-payload-file':-1,'argv-job':3,'argv-task':-3,'argv-session':-1}[case]; command['argv'][position] = 'foreign'
+                    elif case == 'exit-bool': command['exit'] = False
+                    elif case == 'timed-out': command['timed_out'] = True
+                    elif case == 'child': command['child_pid'] = True
+                    elif case == 'child-start': command['child_start'] = 'wrong'
+                    elif case == 'child-parent': command['child_parent'] = 999
+                    elif case.startswith('provider-'): command['provider'][case[9:]] = 999 if case == 'provider-pid' else 'foreign'
+                    elif case == 'source': command['source_sha'] = 'f'*40
+                    elif case == 'python': command['python'] += 'foreign'
+                    elif case == 'callback': command['callback_sha256'] = 'f'*64
+                    elif case == 'missing-start': image['starts'] = []
+                    elif case == 'duplicate-start': image['starts'] *= 2
+                    elif case == 'missing-manifest': image['durable'] = []
+                    elif case == 'foreign-manifest': image['durable'][0]['executable_manifest']['revision'] = 'f'*40
+                    elif case == 'wrong-root': image = dict(holder=image)
+                    elif case == 'wrong-owner': pass
+                    elif case == 'command-extra': command['extra'] = None
+                    elif case == 'command-missing': del command['child_start']
+                    elif case == 'wire-status': wire['status'] = 201
+                    elif case == 'wire-status-bool': wire['status'] = True
+                    elif case == 'wire-path': wire['path'] += 'foreign'
+                    elif case == 'wire-method': wire['method'] = 'DELETE'
+                    elif case == 'wire-body': wire['body_sha256'] = 'f'*64
+                    elif case == 'wire-dropped': wire['dropped'] = True
+                    elif case == 'wire-extra': wire['extra'] = None
+                    elif case == 'wire-duplicate': command['wire'].append(copy.deepcopy(wire))
+                    elif case == 'wire-missing': command['wire'].pop()
+                    elif case == 'response-extra': response['extra'] = None
+                    elif case == 'response-bool': response['ok' if family == 'completion' else 'timed_out' if family == 'wait' else 'stream'] = 1
+                    elif case == 'attempt-index': attempt['command_index'] = 999
+                    elif case == 'attempt-index-bool': attempt['command_index'] = True
+                    elif case == 'attempt-duplicate': image['provider_attempts'] *= 2
+                    elif case == 'attempt-provider': attempt['provider']['session'] = 'foreign'
+                    elif case == 'attempt-start': attempt['provider']['pid_start'] = 'foreign'
+                    elif case == 'attempt-operation': instruction['operation'] = 'other'
+                    elif case == 'attempt-job': instruction['job'] = 'JOB-999'
+                    elif case == 'attempt-deadline': instruction['deadline'] = True
+                    elif case == 'attempt-wire': attempt['wire_end'] += 1
+                    elif case == 'attempt-extra': attempt['extra'] = None
+                    elif case == 'attempt-missing': del attempt['wire_end']
+                    elif case == 'attempt-index-missing': del attempt['command_index']
+                    elif case in ('stdout-layer','stderr-layer'): command[case.split('-')[0]] = r'{"public":"second\nlayer"}'
+                    elif case == 'literal-secret': command['stderr'] = 'SYNTHETIC_TOKEN'
+                    elif case == 'escaped-secret': command['stdout'] = r'{"status":"\u0053YNTHETIC_TOKEN","timed_out":false}'+'\n'
+                    elif case == 'shared-work': command['stderr'] = 'p'*3000000
+                    elif case == 'shared-facts': image['provider_attempts'] = [copy.deepcopy(attempt) for _ in range(10000)]
+                    elif case == 'shared-depth':
+                        nested = None
+                        for _ in range(65): nested = [nested]
+                        command['extra'] = nested
+                    elif case == 'unsupported-wire-script':
+                        command.update(action='other',operation=None,payload=None,payload_file=None,stdout='',stderr='')
+                        for entry in command['wire']: entry['response'] = dict(sample='public')
+                        while len(command['wire']) < 3:
+                            command['wire'].append(dict(path='/ordinary',method='GET',body_sha256=hashlib.sha256(b'').hexdigest(),
+                                status=200,response=dict(sample='public'),dropped=False))
+                        command['wire'][2]['response'] = dict(script_text=source_forms['F4-one-backslash'])
+                        image['provider_attempts'] = []
+                    elif case.startswith('file-'):
+                        if case == 'file-bytes': file['bytes'] += 1
+                        elif case == 'file-hash': file['sha256'] = 'f'*64
+                        elif case == 'file-path': file['path'] += 'foreign'
+                        elif case == 'file-disagreement': file['text'] = file['text'].replace('repeated repeated','changed changed')
+                        elif case == 'file-duplicate': file['text'] = file['text'][:-1]+',"confidence":90}'
+                        elif case == 'file-extra': file['text'] = file['text'][:-1]+',"extra":null}'
+                        elif case == 'file-missing': file['text'] = file['text'].replace('"confidence": 90, ','')
+                        elif case == 'file-reordered': file['text'] = json.dumps(dict(reversed(list(payload.items()))))
+                        elif case == 'file-trailing': file['text'] += '\n'
+                        elif case == 'file-second-JSON': file['text'] = json.dumps(file['text'])
+                        if case not in ('file-bytes','file-hash','file-path'):
+                            file['bytes'] = len(file['text'].encode()); file['sha256'] = hashlib.sha256(file['text'].encode()).hexdigest()
+                            file['path'] = str(root/'coord'/(file['sha256']+'.json')); command['argv'][-1] = file['path']
+                    elif case == 'payload-type': payload['confidence'] = True
+                    elif case == 'payload-waits': payload['waiting_on_job_ids'] = None
+                    elif case == 'payload-wait-order': payload['waiting_on_job_ids'].reverse()
+                    elif case == 'payload-wait-bool': payload['waiting_on_job_ids'][0] = True
+                    elif case == 'payload-decision': payload['decision'] = dict(action='done',summary=completion_summary)
+                    elif case == 'payload-extra': payload['extra'] = None
+                    elif case == 'attempt-payload': instruction['payload']['summary'] += 'foreign'
+                    elif case == 'attempt-payload-type': instruction['payload']['confidence'] = True
+                    elif case == 'unsupported-script': payload['script'] = source_forms['F4-one-backslash']
+                    elif case == 'done-action': payload['decision']['action'] = 'delegate'
+                    elif case == 'done-summary': payload['decision']['summary'] += 'foreign'
+                    elif case == 'done-type': payload['decision'] = []
+                    elif case == 'done-extra': payload['decision']['extra'] = None
+                    elif case == 'done-missing': del payload['decision']['action']
+                    elif case == 'missing-discovery': command['wire'].pop(0)
+                    elif case == 'discovery-path': command['wire'][0]['path'] = '/api/v1/orgs/foreign'
+                    elif case == 'response-missing': del response[next(iter(response))]
+                    elif case == 'response-reordered': wire['response'] = dict(reversed(list(response.items())))
+                    elif case == 'job-identity': response['id'] = 'JOB-999'
+                    elif case == 'job-proof': image['provider_commands'] = [command]; attempt['command_index'] = 0
+                    elif case == 'job-script': response['script_text'] = 'print("changed")'
+                    elif case == 'job-bool': response['exit_code'] = False
+                    elif case == 'wait-stdout-disagreement': command['stdout'] = '{"status":"failed","timed_out":false}\n'
+                    elif case == 'wait-stdout-duplicate': command['stdout'] = '{"status":"completed","status":"completed","timed_out":false}\n'
+                    elif case == 'wait-stdout-reordered': command['stdout'] = '{"timed_out":false,"status":"completed"}\n'
+                    elif case == 'wait-stdout-null': command['stdout'] = '{"status":null,"timed_out":false}\n'
+                    elif case == 'unknown-stdout-slot': command.update(action='jobs-read',operation='show',stdout=r'{"script_text":"print(\"public\\nline\")"}')
+                    elif case == 'tail-disagreement': command['stdout'] += 'foreign\n'
+                    else: raise AssertionError(case)
+                    name = 'e07.json' if case == 'wrong-owner' else 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                    acquire(); drain(); commit()
+                    earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                    original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                    if boundary in ('writer','prefix'):
+                        if boundary == 'prefix':
+                            source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                        try:
+                            if boundary == 'writer': writer._atomic_json(destination,image)
+                            else: writer._prepare_original_evidence(destination,source_file)
+                        except ValueError: pass
+                        except AssertionError as exc:
+                            assert case == 'wrong-owner' and boundary == 'prefix'
+                            assert str(exc) == 'original evidence owner/path unavailable; observed=None'
+                        else: raise AssertionError('finite unsafe member admitted: '+family+'/'+case+'/'+boundary)
+                        assert destination.read_bytes() == prior and not destination.with_name(name+'.tmp').exists()
+                        assert staged[name] is old_buffer and not state['fatal']
+                    else:
+                        destination.write_bytes(original_image); (root/'raw/eligible-finite.txt').write_bytes(b'eligible ordinary sibling\n')
+                        complete,error = acquire(); drain()
+                        assert not complete and error is not None and not state['fatal'] and not errors, (family,case,boundary,failures)
+                        assert staged[name] is old_buffer and published[name] is old_buffer and (output/name).read_bytes() == prior
+                        assert name in state['refused_sources']
+                        if case not in ('shared-work','shared-facts'):
+                            assert (output/'eligible-finite.txt').read_bytes() == b'eligible ordinary sibling\n'
+                    exact(state['safe_scenario'],old_tree)
+                    for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                    assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                    results[f'C5-Finite-refusal-{family}-{case}-{boundary}'] = 'entire original candidate withheld; all prior member/result/FAIL/tree bytes exact; ordinary sibling eligibility and shared accounting retained; overlapping guards limit proof'
+
+    # C5/C6: required original trees at the two shipping preparation/file
+    # boundaries. Full Controller.evidence / E07 admission are NOT RUN here.
+    originals = {
+        'witness': ('launch-witnesses.jsonl', 'witness/identities.jsonl', raw_lines, line_values,
+                    96, 'dda9febd81e71b7b1d4903835e0ef7d062087d856275692ce4d1193eab7ee060'),
+        'prefix': ('e07-prefix.json', 'raw/observations.json', raw_object, object_value,
+                   178, 'b61b97cce1e792f408ad6e40ea4b7310a6b20de88dcd899da2997c95bb975131'),
+    }
+    for kind,(name,relative,image,wanted,length,digest) in originals.items():
+        for framing in ('LF','CRLF'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                source, destination = root/relative, root/'raw'/name
+                source.parent.mkdir(exist_ok=True)
+                source_bytes = image if framing == 'LF' else image.replace(b'\n',b'\r\n')
+                source.write_bytes(source_bytes)
+                witness_rows = {}
+                candidate,parsed = writer._prepare_original_evidence(destination,source,witness_rows=witness_rows)
+                exact(parsed,wanted)
+                assert candidate == source_bytes and not destination.exists(), 'original preparation published before closure'
+                assert not destination.with_name(name+'.tmp').exists()
+                writer._replace_evidence(destination,candidate)
+                assert source.read_bytes() == destination.read_bytes() == source_bytes
+                if framing == 'LF':
+                    assert len(candidate) == length and hashlib.sha256(candidate).hexdigest() == digest
+                    if kind == 'witness':
+                        assert hashlib.sha256(candidate[:55]).hexdigest() == '97be040eeac0844d1e9a6de06299099667c925cb5897731a32ef085df6b30577'
+                assert witness_rows == ({'witness_incomplete_line':False} if kind == 'witness' else {})
+                acquire(); drain(); commit()
+                assert (output/name).read_bytes() == source_bytes and not errors
+                exact(parsed,wanted)
+                results['C5-C6-original-'+kind+'-'+framing] = 'one required full typed ordered tree and exact original source/prepared/file/collector bytes; original digest/framing'
+
+    raw_refusals = {
+        'wrong-object': ('observations.json',b'[]'),
+        'wrong-e07': ('e07.json',b'null'),
+        'wrong-prefix': ('e07-prefix.json',b'[]'),
+        'wrong-array': ('browser-events.json',b'{}'),
+        'wrong-e05-array': ('e05-browser-events.json',b'{}'),
+        'empty': ('observations.json',b''),
+        'truncated': ('observations.json',b'{"x":['),
+        'trailing': ('observations.json',b'{} null'),
+        'comma': ('observations.json',b'{"x":1,}'),
+        'duplicate': ('observations.json',b'{"x":1,"\\u0078":"SYNTHETIC_TOKEN"}'),
+        'escape': ('observations.json',b'{"x":"\\q"}'),
+        'surrogate-high': ('observations.json',b'{"x":"\\ud800"}'),
+        'surrogate-low': ('observations.json',b'{"x":"\\udc00"}'),
+        'surrogate-pair': ('observations.json',b'{"x":"\\ud800\\u0041"}'),
+        'utf8': ('observations.json',b'{"x":"\xff"}'),
+        'control': ('observations.json',b'{"x":"raw\nline"}'),
+        'nan': ('observations.json',b'{"x":NaN}'),
+        'infinity': ('observations.json',b'{"x":Infinity}'),
+        'nonfinite': ('observations.json',b'{"x":1e999}'),
+        'integer': ('observations.json',b'{"x":18446744073709551616}'),
+        'int-spelling': ('observations.json',b'{"x":-1234567890123456789012}'),
+        'float-spelling': ('observations.json',b'{"x":0.'+b'1'*127+b'}'),
+        'zero': ('observations.json',b'{"x":01}'),
+        'fraction': ('observations.json',b'{"x":1.}'),
+        'exponent': ('observations.json',b'{"x":1e+}'),
+        'depth': ('observations.json',b'{"x":'+b'['*65+b'null'+b']'*65+b'}'),
+        'facts': ('observations.json',b'{"x":['+b'null,'*100001+b'null]}'),
+        'secret-value': ('observations.json',b'{"x":"SYNTHETIC_TOKEN"}'),
+        'secret-key': ('observations.json',b'{"SYNTHETIC_TOKEN":1}'),
+        'escaped-secret-value': ('observations.json',b'{"x":"PRIVATE_SENTINEL\\\"\\n"}'),
+        'escaped-secret-key': ('observations.json',b'{"PRIVATE_SENTINEL\\\"\\n":1}'),
+        'backslash': ('observations.json',b'{"x":"public\\\\path"}'),
+        'nested-json': ('observations.json',b'{"payload_file":{"text":"{\\\"x\\\":\\\"public\\\\nline\\\"}"}}'),
+        'unregistered-json': ('familiar.json',raw_object),
+        'unregistered-jsonl': ('familiar.jsonl',raw_lines),
+        'line-incomplete': ('launch-witnesses.jsonl',b'{"index":1}\n{"index":2}'),
+        'line-malformed': ('launch-witnesses.jsonl',b'{"index":1}\n{"index":}\n'),
+        'line-duplicate': ('launch-witnesses.jsonl',b'{"index":1}\n{"x":1,"\\u0078":2}\n'),
+        'line-type': ('launch-witnesses.jsonl',b'{"index":1}\n[]\n'),
+        'line-secret': ('launch-witnesses.jsonl',b'{"index":1}\n{"x":"SYNTHETIC_TOKEN"}\n'),
+        'line-backslash': ('launch-witnesses.jsonl',b'{"index":1}\n{"x":"public\\\\path"}\n'),
+        'line-empty': ('launch-witnesses.jsonl',b''),
+        'line-blank': ('launch-witnesses.jsonl',b'{"index":1}\n\n'),
+        'line-facts': ('launch-witnesses.jsonl',(b'{"x":['+b'null,'*50001+b'null]}\n')*2),
+        'scalar-work': ('observations.json',b'{"x":"'+b'a'*1700000+b'"}'),
+        'candidate-work': ('observations.json',b'{}'+b' '*4200000),
+    }
+    for case,(name,source_bytes) in raw_refusals.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            # Establish real prior full file/tree/FAIL commits, then refuse a
+            # changed image at the second EXISTING collection opportunity.
+            prior = b'{"prior":"safe"}\n' if name.endswith('.jsonl') else (b'[]' if name in ('browser-events.json','e05-browser-events.json') else b'{"prior":"safe"}')
+            (root/'raw'/name).write_bytes(prior)
+            acquire(); drain(); commit()
+            old_tree, old_result = copy.deepcopy(state['safe_scenario']), (output/'result.json').read_bytes()
+            old_buffer, first = staged[name], failures[0]
+            (root/'raw'/name).write_bytes(source_bytes)
+            (root/'raw/eligible.txt').write_bytes(b'eligible ordinary sibling\n')
+            complete,error = acquire(); drain()
+            assert not complete and error is not None and not state['fatal'] and not errors, case
+            refusal = next(f for f in failures if f[0] is error[0])
+            assert refusal[4][0] == ('TEXT_READ' if case in ('utf8','candidate-work') else 'REDACT'), (case,refusal[4])
+            if case == 'candidate-work':
+                # Both original byte/decode images refuse before acquisition;
+                # annotations still describe the last returned scenario.
+                exact(list(refusal[4]),['TEXT_READ','CAPACITY',500,500])
+            if case in ('int-spelling','float-spelling','depth','facts','line-facts','scalar-work','candidate-work'):
+                assert refusal[4][1] == 'CAPACITY', (case,refusal[4])
+            if case == 'duplicate':
+                assert isinstance(error[0],json.JSONDecodeError), 'duplicate must refuse BEFORE its sensitive value'
+            assert name in state['refused_sources'] and failures[0] is first
+            assert staged[name] is old_buffer and published[name] is old_buffer
+            assert (output/name).read_bytes() == prior and not (output/(name+'.tmp')).exists(), case
+            exact(state['safe_scenario'],old_tree)
+            assert (output/'result.json').read_bytes() == old_result
+            assert (root/'raw'/name).read_bytes() == source_bytes
+            if case not in ('facts','line-facts','scalar-work','candidate-work'):
+                assert (output/'eligible.txt').read_bytes() == b'eligible ordinary sibling\n', case
+            # Guard exhaustion may also withhold the later sibling; no refund.
+            results['C1-C5-C7-raw-refusal-'+case] = 'whole new image withheld; prior full bytes/tree/FAIL and first cause retained; ordinary/fact/work boundary attributed'
+
+    # Reuse the SAME strict-format negatives at the required-tree owner. The
+    # existing scan rows above own a different collector boundary.
+    original_refusals = {case:image for case,(name,image) in raw_refusals.items()
+                         if name == 'observations.json' and case not in ('scalar-work','candidate-work')}
+    original_refusals['duplicate'] = b'{"x":1,"\\u0078":2}'
+    original_refusals['literal-across-tokens'] = b'{"a":1,"b":2}'
+    original_refusals['output-work'] = b'{"a":"'+b'a'*550000+b'","b":"'+b'b'*550000+b'"}'
+    for kind,(name,relative,prior,wanted,length,digest) in originals.items():
+        cases = dict(original_refusals)
+        if kind == 'witness':
+            cases = {case:b'{"index":1}\n'+image+b'\n' for case,image in cases.items()}
+            cases.update({case:image for case,(raw_name,image) in raw_refusals.items()
+                          if raw_name == name and case != 'line-facts'})
+            cases['output-work'] = (b'{"x":"'+b'a'*550000+b'"}\n')*2
+        for case,image in cases.items():
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                source, destination = root/relative, root/'raw'/name
+                source.parent.mkdir(exist_ok=True)
+                source.write_bytes(prior)
+                candidate,parsed = writer._prepare_original_evidence(destination,source)
+                writer._replace_evidence(destination,candidate)
+                acquire(); drain(); commit()
+                old_files = {p.name:p.read_bytes() for p in output.iterdir()}
+                old_tree = copy.deepcopy(state['safe_scenario'])
+                old_work,old_facts = writer._evidence_budget.work,writer._evidence_budget.facts
+                witness_rows = {}
+                if case == 'literal-across-tokens':
+                    # A literal original secret spans JSON syntax, not a decoded
+                    # key/value; the whole original image still must refuse.
+                    writer.secrets.add('1,"b"')
+                    writer.prepare_redaction()
+                source.write_bytes(image)
+                try:
+                    candidate,parsed = writer._prepare_original_evidence(destination,source,witness_rows=witness_rows)
+                    writer._replace_evidence(destination,candidate)
+                except (ValueError,UnicodeError) as error:
+                    assert writer._evidence_fatal is None, (kind,case,error)
+                    if case == 'utf8':
+                        assert isinstance(error,UnicodeDecodeError) and error.object == b''
+                    if case == 'duplicate':
+                        assert isinstance(error,json.JSONDecodeError), (kind,case,error)
+                    if case in ('output-work','facts','depth','int-spelling','float-spelling'):
+                        assert type(error).__name__ == '_EvidenceCapacity', (kind,case,error)
+                else:
+                    raise AssertionError('original image admitted: '+kind+'/'+case)
+                assert source.read_bytes() == image
+                assert destination.read_bytes() == prior, (kind,case,'prior original replaced')
+                assert len(prior) == length and hashlib.sha256(destination.read_bytes()).hexdigest() == digest
+                assert not destination.with_name(name+'.tmp').exists(), (kind,case)
+                assert {p.name:p.read_bytes() for p in output.iterdir()} == old_files
+                exact(state['safe_scenario'],old_tree)
+                assert writer._evidence_budget.work > old_work and writer._evidence_budget.facts > old_facts
+                if kind == 'witness' and case == 'line-incomplete':
+                    assert witness_rows == {'witness_incomplete_line':True}
+                if case not in ('output-work','facts','depth','int-spelling','float-spelling'):
+                    writer._atomic_text(root/'raw/ordinary-after.txt','eligible ordinary continuation\n')
+                    assert (root/'raw/ordinary-after.txt').read_bytes() == b'eligible ordinary continuation\n'
+                results['C5-C6-C7-original-refusal-'+kind+'-'+case] = 'whole required image refused before pending/assignment; complete prior original/hash/length/tree/member/FAIL retained; no work refund'
+
+    # A changed public image is NOT a checksum violation at these producers.
+    # Independent full readers retain their separate byte/hash equality duty.
+    for kind,(name,relative,image,wanted,length,digest) in originals.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            source = root/relative
+            source.parent.mkdir(exist_ok=True)
+            changed = image.replace(b'public',b'PUBLIC')
+            source.write_bytes(changed)
+            candidate,parsed = writer._prepare_original_evidence(root/'raw'/name,source)
+            writer._replace_evidence(root/'raw'/name,candidate)
+            changed_tree = copy.deepcopy(wanted)
+            (changed_tree[0] if kind == 'witness' else changed_tree)['sample'] = 'PUBLIC\nline'
+            exact(parsed,changed_tree)
+            assert source.read_bytes() == (root/'raw'/name).read_bytes() == changed
+            assert hashlib.sha256(candidate).hexdigest() != digest
+            results['C5-C6-original-changed-public-'+kind] = 'new safe original image retained exactly; producer has no external expected checksum assertion'
+
+    for kind,(name,relative,image,wanted,length,digest) in originals.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            source, destination = root/relative, root/'raw'/name
+            source.parent.mkdir(exist_ok=True)
+            source.write_bytes(image)
+            candidate,parsed = writer._prepare_original_evidence(destination,source)
+            writer._replace_evidence(destination,candidate)
+            acquire(); drain(); commit()
+            prior_files = {p.name:p.read_bytes() for p in output.iterdir()}
+            writer.token = 'CHANGED_ORIGINAL_TOKEN'
+            try:
+                writer._prepare_original_evidence(destination,source)
+            except AssertionError as error:
+                assert writer._evidence_fatal[0] is error
+            else:
+                raise AssertionError('original context drift admitted: '+kind)
+            original_fatal = writer._evidence_fatal
+            try:
+                writer._atomic_text(root/'raw/later.txt','later ordinary member')
+            except AssertionError as error:
+                # Existing readiness guard emits a fresh refusal, while the
+                # original fatal cause/traceback remains latched unchanged.
+                assert writer._evidence_fatal is original_fatal
+            else:
+                raise AssertionError('fatal original context allowed continuation: '+kind)
+            assert not (root/'raw/later.txt').exists()
+            assert not destination.with_name(name+'.tmp').exists() and destination.read_bytes() == image
+            assert {p.name:p.read_bytes() for p in output.iterdir()} == prior_files
+            results['C5-C6-original-fatal-context-'+kind] = 'original context drift stops detailed work; entire earlier file/FAIL and actual fatal cause retained'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        for name in ('launch-witnesses.jsonl','e07-prefix.json','ordinary.txt'):
+            try:
+                writer._atomic_text(root/'raw'/name,raw_object.decode('utf-8'))
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('ordinary text gained structured permission: '+name)
+            assert not (root/'raw'/name).exists() and not (root/'raw'/(name+'.tmp')).exists()
+        results['C5-C6-original-no-text-exemption'] = 'ordinary atomic text retains whole-backslash refusal at every filename'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        (root/'raw/observations.json').write_bytes(b'{"x":"public\\\\path"}')
+        acquire(); drain(); commit()
+        first,prior_result = failures[0],(output/'result.json').read_bytes()
+        assert 'observations.json' not in staged and not (output/'observations.json').exists()
+        (root/'raw/observations.json').write_bytes(raw_object)
+        (root/'raw/eligible.txt').write_bytes(b'eligible after refusal\n')
+        acquire(); drain()
+        assert 'observations.json' not in staged and not (output/'observations.json').exists()
+        assert not (output/'observations.json.tmp').exists() and failures[0] is first
+        assert (output/'result.json').read_bytes() == prior_result
+        assert (output/'eligible.txt').read_bytes() == b'eligible after refusal\n'
+        results['C6-C7-raw-no-retry'] = 'new refused member never staged, second opportunity never retries repaired source; first cause and eligible sibling preserved'
+
+    # SAME remaining scenario owner across registered raw siblings. Each 1M
+    # scalar costs byte read/decode2M + decoded/chunk/join2M + two safe
+    # passes2M + candidate1M plus positive facts/keys. Later sources cannot
+    # reserve their read/decode images after the first entire sibling stages.
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        acquire(); drain(); commit()
+        prior_result = (output/'result.json').read_bytes()
+        (root/'scenario.json').write_bytes(b'{"variants":{},"groups":"'+b'a'*100000+b'"}')
+        images = {'e07.json': b'{"x":"'+b'b'*1000000+b'"}',
+                  'e07-prefix.json': b'{"x":"'+b'c'*1000000+b'"}',
+                  'e05-browser-events.json': b'["'+b'd'*1000000+b'"]'}
+        for name,image in images.items(): (root/'raw'/name).write_bytes(image)
+        complete,error = acquire(); drain()
+        chosen = [name for name in images if name in staged]
+        assert len(chosen) == 1 and not complete and error is not None and not state['fatal'] and not errors, chosen
+        for name,image in images.items():
+            if name in chosen:
+                assert staged[name] == (output/name).read_bytes() == image
+            else:
+                assert not (output/name).exists() and not (output/(name+'.tmp')).exists()
+        exact([list(f[4]) for f in failures if f[4][1] == 'CAPACITY'],
+              [['TEXT_READ','CAPACITY',100027,100027],['TEXT_READ','CAPACITY',100027,100027]])
+        assert (output/'result.json').read_bytes() == prior_result
+        exact(state['safe_scenario'],{'variants':{},'groups':'a'*100000})
+        results['C1-C6-C7-raw-shared-owner'] = 'one exact full registered sibling, shared original scenario work and no refund; later parser capacity preserves prior FAIL'
+
+    # One owner's nonrefundable scenario work continues into the SAME raw
+    # enumeration. Each raw scalar fits alone; together only one can stage.
+    # Byte read plus strict decode is reserved before either later acquisition.
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        acquire(); drain(); commit()
+        prior_result = (output/'result.json').read_bytes()
+        (root/'scenario.json').write_bytes(b'{"variants":{},"groups":{"value":"'+b'a'*600000+b'"}}')
+        (root/'raw/large-a.txt').write_bytes(b'b'*700000)
+        (root/'raw/large-b.txt').write_bytes(b'c'*700000)
+        (root/'raw/large-c.txt').write_bytes(b'd'*700000)
+        complete,error = acquire(); drain()
+        assert not complete and error is not None and not state['fatal'] and not errors, 'F3 shared owner unexpectedly renewed'
+        chosen = [name for name in ('large-a.txt','large-b.txt','large-c.txt') if name in staged]
+        assert len(chosen) == 1, chosen
+        for name,content in (('large-a.txt',b'b'*700000),('large-b.txt',b'c'*700000),('large-c.txt',b'd'*700000)):
+            if name in chosen: assert (output/name).read_bytes() == content
+            else: assert not (output/name).exists() and not (output/(name+'.tmp')).exists()
+        exact(state['safe_scenario'],{'variants':{},'groups':{'value':'a'*600000}})
+        assert (output/'result.json').read_bytes() == prior_result
+        exact([list(f[4]) for f in failures if f[4][1] == 'CAPACITY'],
+              [['TEXT_READ','CAPACITY',600037,600037],['TEXT_READ','CAPACITY',600037,600037]])
+        results['F3-shared-nonrefundable-siblings'] = 'same scenario/raw owner exhausts; one full sibling and prior complete result retained'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        (root/'scenario.json').write_bytes(b'{"variants":{},"groups":"\\q"}')
+        (root/'raw/withheld.txt').write_bytes(b'public\\path')
+        complete,error = acquire(); drain(); commit()
+        first = failures[0]
+        before = (output/'result.json').read_bytes()
+        (root/'scenario.json').write_bytes(b'{"variants":{},"groups":{"fresh":"public"}}')
+        (root/'raw/withheld.txt').write_bytes(b'public repaired')
+        (root/'raw/fresh.txt').write_bytes(b'eligible safe sibling\n')
+        complete,error = acquire(); drain()
+        assert not complete and error is None and failures[0] is first
+        assert not state['fatal'] and not errors
+        assert state['safe_scenario'] == {'variants':{}}
+        assert (output/'result.json').read_bytes() == before
+        assert (output/'fresh.txt').read_bytes() == b'eligible safe sibling\n'
+        assert 'withheld.txt' not in staged and not (output/'withheld.txt').exists()
+        results['F3-no-failed-source-retry'] = 'second existing opportunity preserves first cause/prior result and admits only eligible sibling'
+
+    # SAME F2/C3/C6/C7 table: actual save and the existing bare-controller venue.
+    # The actual existing save now uses typed compact bytes, no final LF.
+    from e07 import save as e07_save
+    compact_input = {'first':[True,False,None,7,1.5], 'sample':'public\nline', 'quote':'"', 'unicode':'中'}
+    compact_bytes = b'{"first":[true,false,null,7,1.5],"sample":"public\\nline","quote":"\\\"","unicode":"\xe4\xb8\xad"}'
+    for case in ('save', 'capture', 'missing-token', 'changed-context', 'changed-token',
+                 'marker-overlap', 'admission', 'pending'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root / 'raw/e07.json'
+            prior = b'{"previous":"complete"}'
+            path.write_bytes(prior)
+            writer.e07 = copy.deepcopy(compact_input)
+            budget = writer._evidence_budget
+            spent = budget.work
+            prepared = writer._evidence_context
+            if case == 'capture':
+                # Actual capture -> remember -> context publication, no mocked capture.
+                writer.stores, writer.threads_active = {}, True
+                writer.secrets.add(writer.token)
+            elif case == 'missing-token': writer.token = ''
+            elif case == 'changed-context': writer.secrets.add('NEW_PRIVATE_SENTINEL')
+            elif case == 'changed-token': writer.token = 'CHANGED_TOKEN'
+            elif case == 'marker-overlap': writer.secrets.add('REDACTED')
+            elif case == 'admission': writer.e07 = {'unsupported':object()}
+            elif case == 'pending': path.with_name('e07.json.tmp').write_bytes(b'prior pending')
+            try:
+                if case in ('changed-context', 'changed-token'):
+                    # Same prepared opportunity: mutation cannot rescue its writer.
+                    writer._atomic_json(path, writer.e07)
+                else:
+                    e07_save(writer)
+            except (AssertionError, ValueError, FileExistsError) as exc:
+                assert case not in ('save', 'capture'), (case, type(exc).__name__)
+                assert path.read_bytes() == prior, case
+                pending = path.with_name('e07.json.tmp')
+                assert pending.read_bytes() == b'prior pending' if case == 'pending' else not pending.exists()
+                if case in ('missing-token', 'changed-context', 'changed-token', 'marker-overlap'):
+                    assert not writer.redaction_ready and writer._evidence_fatal is not None
+                    original = writer._evidence_fatal
+                    try: e07_save(writer)
+                    except BaseException: pass
+                    else: raise AssertionError('fatal finalizer wrote evidence')
+                    assert writer._evidence_fatal is original and path.read_bytes() == prior and not pending.exists()
+                if case in ('missing-token', 'marker-overlap', 'admission', 'pending'):
+                    assert writer.primary_error is exc and writer.primary_traceback is not None
+            else:
+                assert case in ('save', 'capture'), 'unsafe save admitted: '+case
+                assert path.read_bytes() == compact_bytes
+                exact(json.loads(path.read_bytes()), compact_input)
+                assert not path.with_name('e07.json.tmp').exists()
+                assert writer._evidence_replacements[-1]['path'] == path
+                assert writer._evidence_replacements[-1]['replaced'] is True
+                if case == 'capture':
+                    assert json.loads((root/'coord/redaction-context.json').read_text()) == sorted([writer.token,secret])
+            assert writer._evidence_budget is budget and budget.work >= spent
+            assert prepared[-2] == (secret,), 'later preparation mutated original snapshot'
+            results['F2-save-'+case] = 'actual save/prepared-writer whole bytes or refusal; prior bytes retained; native chronology NOT RUN'
+
+    # C3/C4/C5/F3 at the actual writer/file and selected-seven boundaries.
+    # No registered nested-format positive or collector roundtrip is implied.
+    class StringSubclass(str): pass
+    class IntegerSubclass(int): pass
+    class FloatSubclass(float): pass
+    class ListSubclass(list): pass
+    class DictSubclass(dict): pass
+    cycle = []; cycle.append(cycle)
+    alias = {'value':'a'*1400000}
+    deep = None
+    for _ in range(65): deep = [deep]
+    identity_digest = hashlib.sha256(secret.encode('utf8')).hexdigest()
+    invalid = {
+        'string-subclass': {'sample':StringSubclass('public')},
+        'integer-subclass': {'sample':IntegerSubclass(7)},
+        'float-subclass': {'sample':FloatSubclass(1.5)},
+        'list-subclass': ListSubclass([None]), 'dict-subclass': DictSubclass(sample='public'),
+        'key-subclass': {StringSubclass('sample'):'public'}, 'nonstring-key': {7:'public'},
+        'unsupported': {'sample':object()}, 'nan': {'sample':float('nan')},
+        'infinity': {'sample':float('inf')}, 'surrogate': {'sample':'\ud800'},
+        'key-surrogate': {'\udfff':'public'}, 'integer-overflow': {'sample':1<<64},
+        'cycle': cycle, 'depth': deep, 'facts': [None]*200001,
+        'backslash': {'sample':'public\\path'}, 'key-backslash': {'public\\key':'public'},
+        'collision': {secret:'first','[REDACTED]':'second'},
+        'identity-after': {'sample':secret,'byte_length':len(secret.encode())},
+        'identity-before': {'sha256':identity_digest,'sample':secret},
+        'identity-bytes': {'sample':secret,'bytes':len(secret.encode('utf8'))},
+        'identity-nested-after': {'sample':secret,'later':{'entity_copy':None}},
+        'identity-key-change': {secret:'public','original_byte_check':True},
+        'identity-suffix': {'sample':secret,'later':{'body_bytes':17}},
+        'identity-hash-suffix': {'sample':secret,'later':{'body_sha256':identity_digest}},
+        'encoded-size': {'sample':'\0'*1500000},
+        'candidate-reservation': {'sample':'a'*2200000},
+        'alias-work': {'a':alias,'b':alias},
+    }
+    for case,original in invalid.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root/'raw/diagnostic.json'
+            prior = b'{"previous":[true,null,7,"complete"]}'
+            path.write_bytes(prior)
+            acquire(); drain(); commit()
+            old_result = (output/'result.json').read_bytes()
+            old_tree = copy.deepcopy(state['safe_scenario'])
+            spent, owner, context = writer._evidence_budget.work, writer._evidence_budget, writer._evidence_context
+            original_identity = copy.deepcopy(original) if case.startswith('identity-') else None
+            try:
+                writer._atomic_json(path,original)
+            except ValueError as exc:
+                if case == 'encoded-size': assert str(exc) == 'evidence encoded capacity refused'
+                elif case == 'candidate-reservation': assert str(exc) == 'evidence capacity refused'
+                elif case == 'depth': assert str(exc) == 'evidence depth capacity refused'
+                elif case.startswith('identity-'): assert str(exc) == 'authenticated evidence requires original bytes'
+                elif case == 'collision': assert str(exc) == 'evidence redacted key collision'
+            else:
+                raise AssertionError('typed writer admitted '+case)
+            assert path.read_bytes() == prior and not path.with_name(path.name+'.tmp').exists(), case
+            assert writer._evidence_budget is owner and owner.work >= spent and owner.reserved == 0
+            assert writer._evidence_context is context and writer._evidence_fatal is None
+            exact(state['safe_scenario'],old_tree)
+            assert (output/'result.json').read_bytes() == old_result
+            assert (output/'safe.json').read_bytes() == b'{"sample":"public"}'
+            assert (output/'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
+            if case.startswith('identity-'):
+                assert original.get('sample') == secret or secret in original, 'negative lost ORIGINAL secret'
+                exact(original,original_identity)
+                writer._atomic_text(root/'raw/eligible-sibling.txt','eligible public sibling\n')
+                assert (root/'raw/eligible-sibling.txt').read_bytes() == b'eligible public sibling\n'
+            results['C4-C5-F3-writer-'+case] = 'whole original candidate refused before pending; prior complete file/tree/result/sibling exact; reached guard attributed where stated'
+
+    for case in ('cross-span-replacement','postcondition'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root/'raw/e07.json'
+            prior = b'{"previous":"complete"}'
+            path.write_bytes(prior)
+            # Long original context exercises multiple <=4096B matcher chunks;
+            # the independent full safe oracle is still literal, never rendered.
+            writer.secrets.update({'A'*700,'z'+'p'*600+'[RE'} if case == 'cross-span-replacement' else {'x[RE','cat'})
+            writer.e07 = {'sample':'z'+'p'*600+'A'*700 if case == 'cross-span-replacement' else 'xcat'}
+            if case == 'cross-span-replacement':
+                e07_save(writer)
+                assert path.read_bytes() == b'{"sample":"[REDACTED]DACTED]"}'
+            else:
+                previous_ref = writer.groups['E07']['first_error_ref']
+                try: e07_save(writer)
+                except ValueError as exc:
+                    assert str(exc) == 'unsafe evidence sanitation postcondition'
+                    assert writer.primary_error is exc and writer.primary_traceback is not None
+                    assert writer._evidence_fatal[0] is exc and not writer.redaction_ready
+                else: raise AssertionError('writer sanitation postcondition ignored')
+                fatal = writer._evidence_fatal
+                try: e07_save(writer)
+                except ValueError: pass
+                else: raise AssertionError('fatal save performed another publication')
+                assert writer._evidence_fatal is fatal and writer.groups['E07']['first_error_ref'] == previous_ref
+                assert path.read_bytes() == prior and not path.with_name(path.name+'.tmp').exists()
+            results['C4-C6-C7-writer-'+case] = 'actual full virtual-span sanitation or fatal original first-error/refusal facts; prior bytes retained'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        path = root/'raw/diagnostic.json'
+        writer._atomic_json(path,{'sample':secret})
+        assert path.read_bytes() == b'{"sample":"[REDACTED]"}'
+        writer._atomic_json(path,{secret:secret})
+        assert path.read_bytes() == b'{"[REDACTED]":"[REDACTED]"}'
+        repeated = {'z':[True,False,None,7,1.5,'public\nline','中']}
+        original = {'b':repeated,'a':repeated}
+        literal = {'b':{'z':[True,False,None,7,1.5,'public\nline','中']},
+                   'a':{'z':[True,False,None,7,1.5,'public\nline','中']}}
+        writer._atomic_json(path,original)
+        assert path.read_bytes() == b'{"b":{"z":[true,false,null,7,1.5,"public\\nline","\xe4\xb8\xad"]},"a":{"z":[true,false,null,7,1.5,"public\\nline","\xe4\xb8\xad"]}}'
+        exact(json.loads(path.read_bytes()),literal)
+        exact(original,literal)
+        writer._atomic_json(path,{'first':[18446744073709551615,-18446744073709551615,-0.0,1e308], 'byte_length':7})
+        assert path.read_bytes() == b'{"first":[18446744073709551615,-18446744073709551615,-0.0,1e+308],"byte_length":7}'
+        results['C3-C4-writer-literal-types-alias-key-redaction'] = 'independent complete compact bytes; exact original/repeated type/order; real original secret redacted before escaping; safe identity metadata unchanged'
+
+    for case in ('encoded-predicate','nonrefundable-writer','plain-text-backslash'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root/'raw/diagnostic.json'
+            acquire(); drain(); commit()
+            old_result = (output/'result.json').read_bytes()
+            old_tree = copy.deepcopy(state['safe_scenario'])
+            if case == 'encoded-predicate':
+                try:
+                    scenario_fields({'variants':{},'groups':{'value':'\0'*1500000}}, lambda text:text, context=[secret])
+                except ValueError as exc: assert str(exc) == 'evidence encoded capacity refused'
+                else: raise AssertionError('selected-seven encoded predicate admitted >C')
+            elif case == 'nonrefundable-writer':
+                original = {'sample':'a'*1060000}
+                writer._atomic_json(path,original)
+                prior = b'{"sample":"'+b'a'*1060000+b'"}'
+                assert path.read_bytes() == prior
+                owner, spent = writer._evidence_budget, writer._evidence_budget.work
+                try: writer._atomic_json(path,original)
+                except ValueError as exc: assert str(exc) == 'evidence capacity refused'
+                else: raise AssertionError('writer renewed original allowance')
+                assert writer._evidence_budget is owner and owner.work > spent and owner.reserved == 0
+                assert path.read_bytes() == prior and not path.with_name(path.name+'.tmp').exists()
+            else:
+                prior = b'complete previous text\n'
+                path.write_bytes(prior)
+                try: writer._atomic_text(path,'public\\path\n')
+                except ValueError as exc: assert str(exc) == 'evidence text representation withheld'
+                else: raise AssertionError('plain text got structured permission')
+                assert path.read_bytes() == prior and not path.with_name(path.name+'.tmp').exists()
+            exact(state['safe_scenario'],old_tree)
+            assert (output/'result.json').read_bytes() == old_result
+            results['C1-C2-C6-C7-'+case] = 'independent encoded/no-refund/literal-text guard; prior full detached tree and committed bytes survive'
+
     for case in ('R1a','R1b-missing','R1b-decode','R1c-txt','R1c-jsonl','R1c-malformed'):
         with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
             writer._atomic_json(root / 'raw/observations.json', {'sample':secret})
-            # Independent literal oracle precedes the claimed collector seam.
-            assert (root / 'raw/observations.json').read_bytes() == b'{\n  "sample": "PRIVATE_SENTINEL\\"\\n"\n}'
+            assert (root / 'raw/observations.json').read_bytes() == b'{"sample":"[REDACTED]"}'
+            # ORIGINAL escaped secret injection exercises the independent raw
+            # collector guard; the redacting writer is never its negative oracle.
+            (root / 'raw/observations.json').write_bytes(b'{"sample":"PRIVATE_SENTINEL\\"\\n"}')
             if case == 'R1b-missing':
                 (root / 'scenario.json').unlink()
             elif case == 'R1b-decode':
                 (root / 'scenario.json').write_text('{')
             if case.startswith('R1c'):
                 name = 'unsupported.jsonl' if case == 'R1c-jsonl' else 'unsupported.txt'
-                writer._atomic_text(root / 'raw' / name, '{\\' if case == 'R1c-malformed' else 'public\\path\n')
+                original = '{\\' if case == 'R1c-malformed' else 'public\\path\n'
+                try: writer._atomic_text(root / 'raw' / name, original)
+                except ValueError: pass
+                else: raise AssertionError('plain backslash writer admitted')
+                assert not (root/'raw'/name).exists() and not (root/'raw'/(name+'.tmp')).exists()
+                (root/'raw'/name).write_text(original)
             complete, error = acquire()
             drain()
             value = commit()
@@ -245,7 +2514,7 @@ def failure_result_controls() -> dict:
             assert (output / 'failure.txt').is_file(), 'ordinary refusal suppressed safe raw sibling'
             assert not complete and not state['fatal'] and error is not None
             assert (output / 'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
-            assert (output / 'safe.json').read_bytes() == b'{\n  "sample": "public"\n}'
+            assert (output / 'safe.json').read_bytes() == b'{"sample":"public"}'
             assert value['status'] == 'FAIL' and value['cleanup']['ok'] is False and value['timing']['cleanup']['ok'] is False
             if case.startswith('R1b'):
                 assert value['variants'] == {} and 'groups' not in value
@@ -269,26 +2538,28 @@ def failure_result_controls() -> dict:
         writer._atomic_json(root / 'raw/observations.json', {'sample':'public-v1'})
         acquire(); drain(); commit()
         earlier = (output / 'result.json').read_bytes()
-        assert (output / 'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        assert (output / 'observations.json').read_bytes() == b'{"sample":"public-v1"}'
         snapshot = copy.deepcopy(state['safe_scenario'])
         writer._atomic_json(root / 'raw/observations.json', {'sample':secret})
-        assert (root / 'raw/observations.json').read_bytes() == b'{\n  "sample": "PRIVATE_SENTINEL\\"\\n"\n}'
+        assert (root / 'raw/observations.json').read_bytes() == b'{"sample":"[REDACTED]"}'
+        (root / 'raw/observations.json').write_bytes(b'{"sample":"PRIVATE_SENTINEL\\"\\n"}')
         (root / 'scenario.json').write_text('{')
         writer._atomic_text(root / 'raw/new.txt','new safe sibling\n')
         complete, error = acquire()  # Only the second original opportunity.
         drain()
         assert not complete and error is not None and state['safe_scenario'] == snapshot
-        assert (output / 'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        assert (output / 'observations.json').read_bytes() == b'{"sample":"public-v1"}'
         assert not (output / 'observations.json.tmp').exists()
         assert (output / 'new.txt').read_bytes() == b'new safe sibling\n'
         # Genuine later serialization refusal leaves the initial actual result.
         try:
             publish_failure(output,(output.stat().st_dev,output.stat().st_ino),dict(bad=object()),check)
-        except TypeError:
-            pass
+        except ValueError as exc:
+            assert str(exc) == 'evidence value unavailable'  # Typed encoder taxonomy.
         else:
             raise AssertionError('unserializable later result accepted')
         assert (output / 'result.json').read_bytes() == earlier
+        assert not (output/'result.tmp').exists()
         results['B09-B12-R1d'] = 'old commit/snapshot exact; new safe sibling drained after later refusal; earlier FAIL exact'
 
     # Complete-safe presence positive and empty-required negatives are distinct
@@ -301,21 +2572,21 @@ def failure_result_controls() -> dict:
                 elif name.endswith('.jsonl'):
                     writer._atomic_text(root/'raw'/name,'{}\n')
                 elif name.endswith('.json'):
-                    writer._atomic_json(root/'raw'/name,{'sample':'public'})
+                    writer._atomic_json(root/'raw'/name,[] if name in ('browser-events.json','e05-browser-events.json') else {'sample':'public'})
                 else:
                     writer._atomic_text(root/'raw'/name,'safe log\n')
             if empty is not None:
                 (root/'raw'/empty).write_bytes(b'')
             complete, error = acquire(); drain(); value = commit()
-            assert complete is (empty is None) and error is None and not errors
-            assert failures == [] if empty is None else failures[0][3] == 'REQUIRED'
+            assert complete is (empty is None) and (error is not None if empty == 'observations.json' else error is None) and not errors
+            assert failures == [] if empty is None else failures[0][3] == ('REDACT' if empty == 'observations.json' else 'REQUIRED')
             assert value['variants'] == {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}}
             if empty != 'observations.json':
-                assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public"\n}'
+                assert (output/'observations.json').read_bytes() == b'{"sample":"public"}'
             assert value['status'] == 'FAIL'
             results['B09-B11-complete-safe-file' if empty is None else 'B09-B11-empty-required-'+empty] = 'actual safe presence/required emptiness and decoded FAIL publication; no native acceptance'
 
-    for case in ('valid-empty','zero-byte','absent','open-directory','invalid-utf8','missing-variants','non-object',
+    for case in ('valid-empty','zero-byte','absent','open-directory','invalid-utf8','truncated-utf8','missing-variants','non-object',
                  'nonfinite','key-collision','deep','exact-cap','over-cap','multibyte-cap','long-prefix','raw-directory'):
         with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
             path = root / 'scenario.json'
@@ -324,6 +2595,7 @@ def failure_result_controls() -> dict:
             elif case == 'absent': path.unlink()
             elif case == 'open-directory': path.unlink(); path.mkdir()
             elif case == 'invalid-utf8': path.write_bytes(b'\xff')
+            elif case == 'truncated-utf8': path.write_bytes(b'{"variants":{},"groups":"\xf0\x9f\x98')
             elif case == 'missing-variants': path.write_text('{}')
             elif case == 'non-object': path.write_text('[]')
             elif case == 'nonfinite': path.write_text('{"variants":{},"failures":[NaN]}')
@@ -337,17 +2609,20 @@ def failure_result_controls() -> dict:
             (root/'raw/empty.txt').write_bytes(b'')
             complete, error = acquire(); drain(); value = commit()
             assert not complete and not state['fatal'] and not errors
+            assert (output/'failure.txt').is_file(), case
             assert (output/'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
             assert (output/'empty.txt').read_bytes() == b''
             assert value['status'] == 'FAIL' and value['cleanup']['ok'] is False
             first = failures[0]
-            if case in ('valid-empty','exact-cap','raw-directory'):
+            if case in ('valid-empty','raw-directory'):
                 assert value['variants'] == ({} if case != 'raw-directory' else {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}})
                 assert first[3] == ('TEXT_READ' if case == 'raw-directory' else 'REQUIRED')
-            elif case in ('over-cap','multibyte-cap','long-prefix'):
-                assert first[4][:2] == ('SCENARIO_CAPACITY','CAPACITY')
-                assert first[4][2:] == ((4194305,8388610) if case == 'multibyte-cap' else (8388609,8388609))
-            elif case in ('open-directory','invalid-utf8'):
+            elif case in ('exact-cap','over-cap','multibyte-cap','long-prefix'):
+                # Original context already spent work: the input reservation
+                # refuses before read. This is NOT a C+1 returned-slice witness.
+                assert first[4] == ('SCENARIO_READ','CAPACITY','U','U')
+                assert value['variants'] == {}
+            elif case in ('open-directory','invalid-utf8','truncated-utf8'):
                 assert first[4] == (('SCENARIO_OPEN','IO','U','U') if case == 'open-directory' else ('SCENARIO_READ','UNICODE','U','U'))
             assert first[0] is error[0] if error is not None else first[0] is None
             results['B09-B12-file-'+case] = 'real ordinary refusal/presence with independent sibling output and sticky FAIL'
@@ -428,14 +2703,14 @@ def failure_result_controls() -> dict:
     with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
         writer._atomic_json(root/'raw/observations.json', {'sample':'public-v1'})
         acquire(); drain()
-        assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        assert (output/'observations.json').read_bytes() == b'{"sample":"public-v1"}'
         writer._atomic_json(root/'raw/observations.json', {'sample':'public-v2'})
         acquire()  # Original second acquisition, no extra source.
         (output/'observations.json.tmp').mkdir()
         drain()
         assert len(errors) == 1 and 'observations.json' in failed_members
-        assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
-        assert published['observations.json'] == b'{\n  "sample": "public-v1"\n}'
+        assert (output/'observations.json').read_bytes() == b'{"sample":"public-v1"}'
+        assert published['observations.json'] == b'{"sample":"public-v1"}'
         results['B10-B11-prior-member-precommit'] = 'actual pending-open refusal preserves old commit without a retry'
 
     with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
@@ -457,6 +2732,4025 @@ def failure_result_controls() -> dict:
     assert _collection_line('cleanup','UNKNOWN','F',('UNKNOWN','UNKNOWN','U','U')) == b'HRD1:C:CLEANUP:UNKNOWN:F:D1:UNKNOWN:UNKNOWN:U:U\n'
     assert _collection_line('cleanup','SCENARIO_READ','F',('SCENARIO_CAPACITY','CAPACITY',8388609,33554436)) == b'HRD1:C:CLEANUP:SCENARIO_READ:F:D1:SCENARIO_CAPACITY:CAPACITY:8388609:33554436\n'
     results['B10-B12-diagnostic-grammar'] = 'closed literal D1 and subclass precedence; native one-shot fd2 delivery NOT RUN'
+    # Complete accepted literal SQL/SOURCE subjects (TASK13807 D2-D5).
+    # These are independent INPUT/oracles, never candidate-generated rows.
+    case_literals = {'0': {'index': 0,
+           'variant': 'E04.approve-exit0',
+           'source_sha': 'd6a605d8a22610b0074d87c9523b9b87742513ae',
+           's1': 'sess-e04-first',
+           'jobs': [{'id': 'JOB-701',
+                     'code': 0,
+                     'label': 'OK',
+                     'token': 'e08eba4596159ebe63677c14',
+                     'script': 'import json, os, signal, socket, sys, time\n'
+                               'from pathlib import Path\n'
+                               'if False:\n'
+                               '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                               "Path('/tmp/e04-show/coord/e08eba4596159ebe63677c14.started').write_text(json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                               'pid=os.getpid())))\n'
+                               "sys.stdout.write('E04_OK_OUT\\n'); sys.stdout.flush()\n"
+                               "sys.stderr.write('E04_OK_ERR\\n'); sys.stderr.flush()\n"
+                               'end = 40.0\n'
+                               'def remaining():\n'
+                               '    value = end - time.monotonic()\n'
+                               '    if value <= 0:\n'
+                               '        raise TimeoutError("E04 script absolute deadline")\n'
+                               '    return min(20, value)\n'
+                               'with socket.socket(socket.AF_UNIX) as peer:\n'
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.sendall((json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                               'pid=os.getpid())) + "\\n").encode())\n'
+                               '    remaining()\n'
+                               '    if False:\n'
+                               '        while True:\n'
+                               '            signal.pause()\n'
+                               '    peer.settimeout(remaining())\n'
+                               '    released = peer.recv(1)\n'
+                               '    remaining()\n'
+                               '    if released != b"R":\n'
+                               '        raise RuntimeError("missing external release")\n'
+                               'raise SystemExit(0)\n',
+                     'script_sha256': '4a07fb8db4cd3501f9c80553cc89170cd1446e3e7d5839a282d9585b03ee62ef',
+                     'running': {'id': 'JOB-701',
+                                 'task_id': 'TASK-701',
+                                 'agent_name': 'case_manager',
+                                 'title': 'E04.approve-exit0/e08eba4596159ebe63677c14',
+                                 'rationale': 'Disposable owned deterministic job',
+                                 'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                'from pathlib import Path\n'
+                                                'if False:\n'
+                                                '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                "Path('/tmp/e04-show/coord/e08eba4596159ebe63677c14.started').write_text(json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                                                'pid=os.getpid())))\n'
+                                                "sys.stdout.write('E04_OK_OUT\\n'); sys.stdout.flush()\n"
+                                                "sys.stderr.write('E04_OK_ERR\\n'); sys.stderr.flush()\n"
+                                                'end = 40.0\n'
+                                                'def remaining():\n'
+                                                '    value = end - time.monotonic()\n'
+                                                '    if value <= 0:\n'
+                                                '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                '    return min(20, value)\n'
+                                                'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                '    peer.settimeout(remaining())\n'
+                                                '    '
+                                                "peer.sendall((json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                                                'pid=os.getpid())) + "\\n").encode())\n'
+                                                '    remaining()\n'
+                                                '    if False:\n'
+                                                '        while True:\n'
+                                                '            signal.pause()\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                '    released = peer.recv(1)\n'
+                                                '    remaining()\n'
+                                                '    if released != b"R":\n'
+                                                '        raise RuntimeError("missing external release")\n'
+                                                'raise SystemExit(0)\n',
+                                 'interpreter': 'python3',
+                                 'cwd_hint': None,
+                                 'status': 'running',
+                                 'exit_code': None,
+                                 'reason': None,
+                                 'stdout_head': None,
+                                 'stderr_head': None,
+                                 'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-701.out',
+                                 'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-701.err',
+                                 'duration_ms': None,
+                                 'started_at': '2026-01-01T00:00:01+00:00',
+                                 'finished_at': None,
+                                 'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                 'reviewed_by': 'case_manager',
+                                 'reject_reason': None,
+                                 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                 'max_runtime_seconds': 30,
+                                 'max_output_bytes': 52428800,
+                                 'review_required': 0,
+                                 'persistent': 0,
+                                 'created_at': '2026-01-01T00:00:00+00:00'},
+                     'terminal': {'id': 'JOB-701',
+                                  'task_id': 'TASK-701',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.approve-exit0/e08eba4596159ebe63677c14',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/e08eba4596159ebe63677c14.started').write_text(json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_OK_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_OK_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    '
+                                                 "peer.sendall((json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                                                 'pid=os.getpid())) + "\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(0)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'completed',
+                                  'exit_code': 0,
+                                  'reason': None,
+                                  'stdout_head': 'E04_OK_OUT\n',
+                                  'stderr_head': 'E04_OK_ERR\n',
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-701.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-701.err',
+                                  'duration_ms': 100,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': 0,
+                                  'persistent': 0,
+                                  'created_at': '2026-01-01T00:00:00+00:00'},
+                                 'running_browser': {'id': 'JOB-701',
+                                  'task_id': 'TASK-701',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.approve-exit0/e08eba4596159ebe63677c14',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/e08eba4596159ebe63677c14.started').write_text(json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_OK_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_OK_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.sendall((json.dumps(dict(token='e08eba4596159ebe63677c14', pid=os.getpid())) + "
+                                                 '"\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(0)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'running',
+                                  'exit_code': None,
+                                  'stdout_head': None,
+                                  'stderr_head': None,
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-701.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-701.err',
+                                  'duration_ms': None,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': None,
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': False,
+                                  'persistent': False,
+                                  'reason': None,
+                                  'created_at': '2026-01-01T00:00:00+00:00'}}]},
+     '2': {'index': 2,
+           'variant': 'E04.completed-exit7',
+           'source_sha': 'd6a605d8a22610b0074d87c9523b9b87742513ae',
+           's1': 'sess-e04-first',
+           'jobs': [{'id': 'JOB-703',
+                     'code': 7,
+                     'label': 'EXIT7',
+                     'token': 'df5f1abd9fb56d8c669f17e2',
+                     'script': 'import json, os, signal, socket, sys, time\n'
+                               'from pathlib import Path\n'
+                               'if False:\n'
+                               '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                               "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                               'pid=os.getpid())))\n'
+                               "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+                               "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+                               'end = 40.0\n'
+                               'def remaining():\n'
+                               '    value = end - time.monotonic()\n'
+                               '    if value <= 0:\n'
+                               '        raise TimeoutError("E04 script absolute deadline")\n'
+                               '    return min(20, value)\n'
+                               'with socket.socket(socket.AF_UNIX) as peer:\n'
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                               'pid=os.getpid())) + "\\n").encode())\n'
+                               '    remaining()\n'
+                               '    if False:\n'
+                               '        while True:\n'
+                               '            signal.pause()\n'
+                               '    peer.settimeout(remaining())\n'
+                               '    released = peer.recv(1)\n'
+                               '    remaining()\n'
+                               '    if released != b"R":\n'
+                               '        raise RuntimeError("missing external release")\n'
+                               'raise SystemExit(7)\n',
+                     'script_sha256': 'afb8c94d6ba24e17e17263e30dd4dc200948616e7fb82e50bac59e19e2f55a00',
+                     'running': {'id': 'JOB-703',
+                                 'task_id': 'TASK-703',
+                                 'agent_name': 'case_manager',
+                                 'title': 'E04.completed-exit7/df5f1abd9fb56d8c669f17e2',
+                                 'rationale': 'Disposable owned deterministic job',
+                                 'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                'from pathlib import Path\n'
+                                                'if False:\n'
+                                                '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                                                'pid=os.getpid())))\n'
+                                                "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+                                                "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+                                                'end = 40.0\n'
+                                                'def remaining():\n'
+                                                '    value = end - time.monotonic()\n'
+                                                '    if value <= 0:\n'
+                                                '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                '    return min(20, value)\n'
+                                                'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                '    peer.settimeout(remaining())\n'
+                                                '    '
+                                                "peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                                                'pid=os.getpid())) + "\\n").encode())\n'
+                                                '    remaining()\n'
+                                                '    if False:\n'
+                                                '        while True:\n'
+                                                '            signal.pause()\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                '    released = peer.recv(1)\n'
+                                                '    remaining()\n'
+                                                '    if released != b"R":\n'
+                                                '        raise RuntimeError("missing external release")\n'
+                                                'raise SystemExit(7)\n',
+                                 'interpreter': 'python3',
+                                 'cwd_hint': None,
+                                 'status': 'running',
+                                 'exit_code': None,
+                                 'reason': None,
+                                 'stdout_head': None,
+                                 'stderr_head': None,
+                                 'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.out',
+                                 'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.err',
+                                 'duration_ms': None,
+                                 'started_at': '2026-01-01T00:00:01+00:00',
+                                 'finished_at': None,
+                                 'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                 'reviewed_by': 'case_manager',
+                                 'reject_reason': None,
+                                 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                 'max_runtime_seconds': 30,
+                                 'max_output_bytes': 52428800,
+                                 'review_required': 0,
+                                 'persistent': 0,
+                                 'created_at': '2026-01-01T00:00:00+00:00'},
+                     'terminal': {'id': 'JOB-703',
+                                  'task_id': 'TASK-703',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.completed-exit7/df5f1abd9fb56d8c669f17e2',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    '
+                                                 "peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                                                 'pid=os.getpid())) + "\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(7)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'completed',
+                                  'exit_code': 7,
+                                  'reason': None,
+                                  'stdout_head': 'E04_EXIT7_OUT\n',
+                                  'stderr_head': 'E04_EXIT7_ERR\n',
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.err',
+                                  'duration_ms': 100,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': 0,
+                                  'persistent': 0,
+                                  'created_at': '2026-01-01T00:00:00+00:00'},
+                                 'running_browser': {'id': 'JOB-703',
+                                  'task_id': 'TASK-703',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.completed-exit7/df5f1abd9fb56d8c669f17e2',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', pid=os.getpid())) + "
+                                                 '"\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(7)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'running',
+                                  'exit_code': None,
+                                  'stdout_head': None,
+                                  'stderr_head': None,
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.err',
+                                  'duration_ms': None,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': None,
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': False,
+                                  'persistent': False,
+                                  'reason': None,
+                                  'created_at': '2026-01-01T00:00:00+00:00'}}]},
+     '3': {'index': 3,
+           'variant': 'E04.failed-timeout',
+           'source_sha': 'd6a605d8a22610b0074d87c9523b9b87742513ae',
+           's1': 'sess-e04-first',
+           'jobs': [{'id': 'JOB-702',
+                     'code': -9,
+                     'label': 'TIMEOUT',
+                     'token': 'effc58d0f834d9ba4fc7c83e',
+                     'script': 'import json, os, signal, socket, sys, time\n'
+                               'from pathlib import Path\n'
+                               'if True:\n'
+                               '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                               "Path('/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started').write_text(json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                               'pid=os.getpid())))\n'
+                               "sys.stdout.write('E04_TIMEOUT_OUT\\n'); sys.stdout.flush()\n"
+                               "sys.stderr.write('E04_TIMEOUT_ERR\\n'); sys.stderr.flush()\n"
+                               'end = 40.0\n'
+                               'def remaining():\n'
+                               '    value = end - time.monotonic()\n'
+                               '    if value <= 0:\n'
+                               '        raise TimeoutError("E04 script absolute deadline")\n'
+                               '    return min(20, value)\n'
+                               'with socket.socket(socket.AF_UNIX) as peer:\n'
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.sendall((json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                               'pid=os.getpid())) + "\\n").encode())\n'
+                               '    remaining()\n'
+                               '    if True:\n'
+                               '        while True:\n'
+                               '            signal.pause()\n'
+                               '    peer.settimeout(remaining())\n'
+                               '    released = peer.recv(1)\n'
+                               '    remaining()\n'
+                               '    if released != b"R":\n'
+                               '        raise RuntimeError("missing external release")\n'
+                               'raise SystemExit(-9)\n',
+                     'script_sha256': '5908fa08e1929087859fcdc38752efd0daa5d9e2b6a3582bf4e8fc818e0c6000',
+                     'running': {'id': 'JOB-702',
+                                 'task_id': 'TASK-702',
+                                 'agent_name': 'case_manager',
+                                 'title': 'E04.failed-timeout/effc58d0f834d9ba4fc7c83e',
+                                 'rationale': 'Disposable owned deterministic job',
+                                 'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                'from pathlib import Path\n'
+                                                'if True:\n'
+                                                '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                "Path('/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started').write_text(json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                                                'pid=os.getpid())))\n'
+                                                "sys.stdout.write('E04_TIMEOUT_OUT\\n'); sys.stdout.flush()\n"
+                                                "sys.stderr.write('E04_TIMEOUT_ERR\\n'); sys.stderr.flush()\n"
+                                                'end = 40.0\n'
+                                                'def remaining():\n'
+                                                '    value = end - time.monotonic()\n'
+                                                '    if value <= 0:\n'
+                                                '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                '    return min(20, value)\n'
+                                                'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                '    peer.settimeout(remaining())\n'
+                                                '    '
+                                                "peer.sendall((json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                                                'pid=os.getpid())) + "\\n").encode())\n'
+                                                '    remaining()\n'
+                                                '    if True:\n'
+                                                '        while True:\n'
+                                                '            signal.pause()\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                '    released = peer.recv(1)\n'
+                                                '    remaining()\n'
+                                                '    if released != b"R":\n'
+                                                '        raise RuntimeError("missing external release")\n'
+                                                'raise SystemExit(-9)\n',
+                                 'interpreter': 'python3',
+                                 'cwd_hint': None,
+                                 'status': 'running',
+                                 'exit_code': None,
+                                 'reason': None,
+                                 'stdout_head': None,
+                                 'stderr_head': None,
+                                 'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-702.out',
+                                 'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-702.err',
+                                 'duration_ms': None,
+                                 'started_at': '2026-01-01T00:00:01+00:00',
+                                 'finished_at': None,
+                                 'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                 'reviewed_by': 'case_manager',
+                                 'reject_reason': None,
+                                 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                 'max_runtime_seconds': 5,
+                                 'max_output_bytes': 52428800,
+                                 'review_required': 0,
+                                 'persistent': 0,
+                                 'created_at': '2026-01-01T00:00:00+00:00'},
+                     'terminal': {'id': 'JOB-702',
+                                  'task_id': 'TASK-702',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.failed-timeout/effc58d0f834d9ba4fc7c83e',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if True:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started').write_text(json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_TIMEOUT_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_TIMEOUT_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    '
+                                                 "peer.sendall((json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                                                 'pid=os.getpid())) + "\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if True:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(-9)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'failed',
+                                  'exit_code': -9,
+                                  'reason': 'timeout',
+                                  'stdout_head': 'E04_TIMEOUT_OUT\n',
+                                  'stderr_head': 'E04_TIMEOUT_ERR\n',
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-702.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-702.err',
+                                  'duration_ms': 5001,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': '2026-01-01T00:00:06.001000+00:00',
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 5,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': 0,
+                                  'persistent': 0,
+                                  'created_at': '2026-01-01T00:00:00+00:00'},
+                                 'running_browser': {'id': 'JOB-702',
+                                  'task_id': 'TASK-702',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.failed-timeout/effc58d0f834d9ba4fc7c83e',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if True:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started').write_text(json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_TIMEOUT_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_TIMEOUT_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.sendall((json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', pid=os.getpid())) + "
+                                                 '"\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if True:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(-9)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'running',
+                                  'exit_code': None,
+                                  'stdout_head': None,
+                                  'stderr_head': None,
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-702.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-702.err',
+                                  'duration_ms': None,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': None,
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 5,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': False,
+                                  'persistent': False,
+                                  'reason': None,
+                                  'created_at': '2026-01-01T00:00:00+00:00'}}]},
+     '4': {'index': 4,
+           'variant': 'E04.two-jobs-A-first',
+           'source_sha': 'd6a605d8a22610b0074d87c9523b9b87742513ae',
+           's1': 'sess-e04-pair-a-first',
+           'jobs': [{'id': 'JOB-704',
+                     'code': 0,
+                     'label': 'A',
+                     'token': 'b26259f837d25234ff4c6cf0',
+                     'script': 'import json, os, signal, socket, sys, time\n'
+                               'from pathlib import Path\n'
+                               'if False:\n'
+                               '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                               "Path('/tmp/e04-show/coord/b26259f837d25234ff4c6cf0.started').write_text(json.dumps(dict(token='b26259f837d25234ff4c6cf0', "
+                               'pid=os.getpid())))\n'
+                               "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                               "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                               'end = 40.0\n'
+                               'def remaining():\n'
+                               '    value = end - time.monotonic()\n'
+                               '    if value <= 0:\n'
+                               '        raise TimeoutError("E04 script absolute deadline")\n'
+                               '    return min(20, value)\n'
+                               'with socket.socket(socket.AF_UNIX) as peer:\n'
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.sendall((json.dumps(dict(token='b26259f837d25234ff4c6cf0', "
+                               'pid=os.getpid())) + "\\n").encode())\n'
+                               '    remaining()\n'
+                               '    if False:\n'
+                               '        while True:\n'
+                               '            signal.pause()\n'
+                               '    peer.settimeout(remaining())\n'
+                               '    released = peer.recv(1)\n'
+                               '    remaining()\n'
+                               '    if released != b"R":\n'
+                               '        raise RuntimeError("missing external release")\n'
+                               'raise SystemExit(0)\n',
+                     'script_sha256': 'ac55bfee40000f377ff898c30d5de7b10fb3da34970504f65fb4108a8177e159',
+                     'running': {'id': 'JOB-704',
+                                 'task_id': 'TASK-704',
+                                 'agent_name': 'case_manager',
+                                 'title': 'E04.two-jobs-A-first/b26259f837d25234ff4c6cf0',
+                                 'rationale': 'Disposable owned deterministic job',
+                                 'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                'from pathlib import Path\n'
+                                                'if False:\n'
+                                                '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                "Path('/tmp/e04-show/coord/b26259f837d25234ff4c6cf0.started').write_text(json.dumps(dict(token='b26259f837d25234ff4c6cf0', "
+                                                'pid=os.getpid())))\n'
+                                                "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                                                "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                                                'end = 40.0\n'
+                                                'def remaining():\n'
+                                                '    value = end - time.monotonic()\n'
+                                                '    if value <= 0:\n'
+                                                '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                '    return min(20, value)\n'
+                                                'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                '    peer.settimeout(remaining())\n'
+                                                '    '
+                                                "peer.sendall((json.dumps(dict(token='b26259f837d25234ff4c6cf0', "
+                                                'pid=os.getpid())) + "\\n").encode())\n'
+                                                '    remaining()\n'
+                                                '    if False:\n'
+                                                '        while True:\n'
+                                                '            signal.pause()\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                '    released = peer.recv(1)\n'
+                                                '    remaining()\n'
+                                                '    if released != b"R":\n'
+                                                '        raise RuntimeError("missing external release")\n'
+                                                'raise SystemExit(0)\n',
+                                 'interpreter': 'python3',
+                                 'cwd_hint': None,
+                                 'status': 'running',
+                                 'exit_code': None,
+                                 'reason': None,
+                                 'stdout_head': None,
+                                 'stderr_head': None,
+                                 'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-704.out',
+                                 'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-704.err',
+                                 'duration_ms': None,
+                                 'started_at': '2026-01-01T00:00:01+00:00',
+                                 'finished_at': None,
+                                 'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                 'reviewed_by': 'case_manager',
+                                 'reject_reason': None,
+                                 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                 'max_runtime_seconds': 30,
+                                 'max_output_bytes': 52428800,
+                                 'review_required': 0,
+                                 'persistent': 0,
+                                 'created_at': '2026-01-01T00:00:00+00:00'},
+                     'terminal': {'id': 'JOB-704',
+                                  'task_id': 'TASK-704',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.two-jobs-A-first/b26259f837d25234ff4c6cf0',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/b26259f837d25234ff4c6cf0.started').write_text(json.dumps(dict(token='b26259f837d25234ff4c6cf0', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    '
+                                                 "peer.sendall((json.dumps(dict(token='b26259f837d25234ff4c6cf0', "
+                                                 'pid=os.getpid())) + "\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(0)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'completed',
+                                  'exit_code': 0,
+                                  'reason': None,
+                                  'stdout_head': 'E04_A_OUT\n',
+                                  'stderr_head': 'E04_A_ERR\n',
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-704.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-704.err',
+                                  'duration_ms': 100,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': 0,
+                                  'persistent': 0,
+                                  'created_at': '2026-01-01T00:00:00+00:00'},
+                                 'running_browser': {'id': 'JOB-704',
+                                  'task_id': 'TASK-704',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.two-jobs-A-first/b26259f837d25234ff4c6cf0',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/b26259f837d25234ff4c6cf0.started').write_text(json.dumps(dict(token='b26259f837d25234ff4c6cf0', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.sendall((json.dumps(dict(token='b26259f837d25234ff4c6cf0', pid=os.getpid())) + "
+                                                 '"\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(0)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'running',
+                                  'exit_code': None,
+                                  'stdout_head': None,
+                                  'stderr_head': None,
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-704.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-704.err',
+                                  'duration_ms': None,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': None,
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': False,
+                                  'persistent': False,
+                                  'reason': None,
+                                  'created_at': '2026-01-01T00:00:00+00:00'}},
+                    {'id': 'JOB-705',
+                     'code': 7,
+                     'label': 'B',
+                     'token': '83824907c5866651a435cbd3',
+                     'script': 'import json, os, signal, socket, sys, time\n'
+                               'from pathlib import Path\n'
+                               'if False:\n'
+                               '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                               "Path('/tmp/e04-show/coord/83824907c5866651a435cbd3.started').write_text(json.dumps(dict(token='83824907c5866651a435cbd3', "
+                               'pid=os.getpid())))\n'
+                               "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                               "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                               'end = 40.0\n'
+                               'def remaining():\n'
+                               '    value = end - time.monotonic()\n'
+                               '    if value <= 0:\n'
+                               '        raise TimeoutError("E04 script absolute deadline")\n'
+                               '    return min(20, value)\n'
+                               'with socket.socket(socket.AF_UNIX) as peer:\n'
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.sendall((json.dumps(dict(token='83824907c5866651a435cbd3', "
+                               'pid=os.getpid())) + "\\n").encode())\n'
+                               '    remaining()\n'
+                               '    if False:\n'
+                               '        while True:\n'
+                               '            signal.pause()\n'
+                               '    peer.settimeout(remaining())\n'
+                               '    released = peer.recv(1)\n'
+                               '    remaining()\n'
+                               '    if released != b"R":\n'
+                               '        raise RuntimeError("missing external release")\n'
+                               'raise SystemExit(7)\n',
+                     'script_sha256': '6b2222933b51de091af76f609b2ab2aa4236e7364df5ea8b26809db58e3360ac',
+                     'running': {'id': 'JOB-705',
+                                 'task_id': 'TASK-704',
+                                 'agent_name': 'case_manager',
+                                 'title': 'E04.two-jobs-A-first/83824907c5866651a435cbd3',
+                                 'rationale': 'Disposable owned deterministic job',
+                                 'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                'from pathlib import Path\n'
+                                                'if False:\n'
+                                                '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                "Path('/tmp/e04-show/coord/83824907c5866651a435cbd3.started').write_text(json.dumps(dict(token='83824907c5866651a435cbd3', "
+                                                'pid=os.getpid())))\n'
+                                                "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                                                "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                                                'end = 40.0\n'
+                                                'def remaining():\n'
+                                                '    value = end - time.monotonic()\n'
+                                                '    if value <= 0:\n'
+                                                '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                '    return min(20, value)\n'
+                                                'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                '    peer.settimeout(remaining())\n'
+                                                '    '
+                                                "peer.sendall((json.dumps(dict(token='83824907c5866651a435cbd3', "
+                                                'pid=os.getpid())) + "\\n").encode())\n'
+                                                '    remaining()\n'
+                                                '    if False:\n'
+                                                '        while True:\n'
+                                                '            signal.pause()\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                '    released = peer.recv(1)\n'
+                                                '    remaining()\n'
+                                                '    if released != b"R":\n'
+                                                '        raise RuntimeError("missing external release")\n'
+                                                'raise SystemExit(7)\n',
+                                 'interpreter': 'python3',
+                                 'cwd_hint': None,
+                                 'status': 'running',
+                                 'exit_code': None,
+                                 'reason': None,
+                                 'stdout_head': None,
+                                 'stderr_head': None,
+                                 'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-705.out',
+                                 'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-705.err',
+                                 'duration_ms': None,
+                                 'started_at': '2026-01-01T00:00:01+00:00',
+                                 'finished_at': None,
+                                 'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                 'reviewed_by': 'case_manager',
+                                 'reject_reason': None,
+                                 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                 'max_runtime_seconds': 30,
+                                 'max_output_bytes': 52428800,
+                                 'review_required': 0,
+                                 'persistent': 0,
+                                 'created_at': '2026-01-01T00:00:00+00:00'},
+                     'terminal': {'id': 'JOB-705',
+                                  'task_id': 'TASK-704',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.two-jobs-A-first/83824907c5866651a435cbd3',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/83824907c5866651a435cbd3.started').write_text(json.dumps(dict(token='83824907c5866651a435cbd3', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    '
+                                                 "peer.sendall((json.dumps(dict(token='83824907c5866651a435cbd3', "
+                                                 'pid=os.getpid())) + "\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(7)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'completed',
+                                  'exit_code': 7,
+                                  'reason': None,
+                                  'stdout_head': 'E04_B_OUT\n',
+                                  'stderr_head': 'E04_B_ERR\n',
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-705.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-705.err',
+                                  'duration_ms': 100,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': 0,
+                                  'persistent': 0,
+                                  'created_at': '2026-01-01T00:00:00+00:00'},
+                                 'running_browser': {'id': 'JOB-705',
+                                  'task_id': 'TASK-704',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.two-jobs-A-first/83824907c5866651a435cbd3',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/83824907c5866651a435cbd3.started').write_text(json.dumps(dict(token='83824907c5866651a435cbd3', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.sendall((json.dumps(dict(token='83824907c5866651a435cbd3', pid=os.getpid())) + "
+                                                 '"\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(7)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'running',
+                                  'exit_code': None,
+                                  'stdout_head': None,
+                                  'stderr_head': None,
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-705.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-705.err',
+                                  'duration_ms': None,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': None,
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': False,
+                                  'persistent': False,
+                                  'reason': None,
+                                  'created_at': '2026-01-01T00:00:00+00:00'}}]},
+     '5': {'index': 5,
+           'variant': 'E04.two-jobs-B-first',
+           'source_sha': 'd6a605d8a22610b0074d87c9523b9b87742513ae',
+           's1': 'sess-e04-pair-b-first',
+           'jobs': [{'id': 'JOB-706',
+                     'code': 7,
+                     'label': 'B',
+                     'token': '9a6ba7e1faf88fee22699b24',
+                     'script': 'import json, os, signal, socket, sys, time\n'
+                               'from pathlib import Path\n'
+                               'if False:\n'
+                               '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                               "Path('/tmp/e04-show/coord/9a6ba7e1faf88fee22699b24.started').write_text(json.dumps(dict(token='9a6ba7e1faf88fee22699b24', "
+                               'pid=os.getpid())))\n'
+                               "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                               "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                               'end = 40.0\n'
+                               'def remaining():\n'
+                               '    value = end - time.monotonic()\n'
+                               '    if value <= 0:\n'
+                               '        raise TimeoutError("E04 script absolute deadline")\n'
+                               '    return min(20, value)\n'
+                               'with socket.socket(socket.AF_UNIX) as peer:\n'
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.sendall((json.dumps(dict(token='9a6ba7e1faf88fee22699b24', "
+                               'pid=os.getpid())) + "\\n").encode())\n'
+                               '    remaining()\n'
+                               '    if False:\n'
+                               '        while True:\n'
+                               '            signal.pause()\n'
+                               '    peer.settimeout(remaining())\n'
+                               '    released = peer.recv(1)\n'
+                               '    remaining()\n'
+                               '    if released != b"R":\n'
+                               '        raise RuntimeError("missing external release")\n'
+                               'raise SystemExit(7)\n',
+                     'script_sha256': 'a184e754d29ed4893542d5e3ec4b64a94ea867cb293ccd99d4b282c2056542da',
+                     'running': {'id': 'JOB-706',
+                                 'task_id': 'TASK-705',
+                                 'agent_name': 'case_manager',
+                                 'title': 'E04.two-jobs-B-first/9a6ba7e1faf88fee22699b24',
+                                 'rationale': 'Disposable owned deterministic job',
+                                 'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                'from pathlib import Path\n'
+                                                'if False:\n'
+                                                '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                "Path('/tmp/e04-show/coord/9a6ba7e1faf88fee22699b24.started').write_text(json.dumps(dict(token='9a6ba7e1faf88fee22699b24', "
+                                                'pid=os.getpid())))\n'
+                                                "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                                                "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                                                'end = 40.0\n'
+                                                'def remaining():\n'
+                                                '    value = end - time.monotonic()\n'
+                                                '    if value <= 0:\n'
+                                                '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                '    return min(20, value)\n'
+                                                'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                '    peer.settimeout(remaining())\n'
+                                                '    '
+                                                "peer.sendall((json.dumps(dict(token='9a6ba7e1faf88fee22699b24', "
+                                                'pid=os.getpid())) + "\\n").encode())\n'
+                                                '    remaining()\n'
+                                                '    if False:\n'
+                                                '        while True:\n'
+                                                '            signal.pause()\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                '    released = peer.recv(1)\n'
+                                                '    remaining()\n'
+                                                '    if released != b"R":\n'
+                                                '        raise RuntimeError("missing external release")\n'
+                                                'raise SystemExit(7)\n',
+                                 'interpreter': 'python3',
+                                 'cwd_hint': None,
+                                 'status': 'running',
+                                 'exit_code': None,
+                                 'reason': None,
+                                 'stdout_head': None,
+                                 'stderr_head': None,
+                                 'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-706.out',
+                                 'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-706.err',
+                                 'duration_ms': None,
+                                 'started_at': '2026-01-01T00:00:01+00:00',
+                                 'finished_at': None,
+                                 'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                 'reviewed_by': 'case_manager',
+                                 'reject_reason': None,
+                                 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                 'max_runtime_seconds': 30,
+                                 'max_output_bytes': 52428800,
+                                 'review_required': 0,
+                                 'persistent': 0,
+                                 'created_at': '2026-01-01T00:00:00+00:00'},
+                     'terminal': {'id': 'JOB-706',
+                                  'task_id': 'TASK-705',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.two-jobs-B-first/9a6ba7e1faf88fee22699b24',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/9a6ba7e1faf88fee22699b24.started').write_text(json.dumps(dict(token='9a6ba7e1faf88fee22699b24', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    '
+                                                 "peer.sendall((json.dumps(dict(token='9a6ba7e1faf88fee22699b24', "
+                                                 'pid=os.getpid())) + "\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(7)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'completed',
+                                  'exit_code': 7,
+                                  'reason': None,
+                                  'stdout_head': 'E04_B_OUT\n',
+                                  'stderr_head': 'E04_B_ERR\n',
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-706.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-706.err',
+                                  'duration_ms': 100,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': 0,
+                                  'persistent': 0,
+                                  'created_at': '2026-01-01T00:00:00+00:00'},
+                                 'running_browser': {'id': 'JOB-706',
+                                  'task_id': 'TASK-705',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.two-jobs-B-first/9a6ba7e1faf88fee22699b24',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/9a6ba7e1faf88fee22699b24.started').write_text(json.dumps(dict(token='9a6ba7e1faf88fee22699b24', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.sendall((json.dumps(dict(token='9a6ba7e1faf88fee22699b24', pid=os.getpid())) + "
+                                                 '"\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(7)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'running',
+                                  'exit_code': None,
+                                  'stdout_head': None,
+                                  'stderr_head': None,
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-706.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-706.err',
+                                  'duration_ms': None,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': None,
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': False,
+                                  'persistent': False,
+                                  'reason': None,
+                                  'created_at': '2026-01-01T00:00:00+00:00'}},
+                    {'id': 'JOB-707',
+                     'code': 0,
+                     'label': 'A',
+                     'token': 'e277b0b6fb69e2ebce3101a0',
+                     'script': 'import json, os, signal, socket, sys, time\n'
+                               'from pathlib import Path\n'
+                               'if False:\n'
+                               '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                               "Path('/tmp/e04-show/coord/e277b0b6fb69e2ebce3101a0.started').write_text(json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', "
+                               'pid=os.getpid())))\n'
+                               "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                               "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                               'end = 40.0\n'
+                               'def remaining():\n'
+                               '    value = end - time.monotonic()\n'
+                               '    if value <= 0:\n'
+                               '        raise TimeoutError("E04 script absolute deadline")\n'
+                               '    return min(20, value)\n'
+                               'with socket.socket(socket.AF_UNIX) as peer:\n'
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                               '    peer.settimeout(remaining())\n'
+                               "    peer.sendall((json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', "
+                               'pid=os.getpid())) + "\\n").encode())\n'
+                               '    remaining()\n'
+                               '    if False:\n'
+                               '        while True:\n'
+                               '            signal.pause()\n'
+                               '    peer.settimeout(remaining())\n'
+                               '    released = peer.recv(1)\n'
+                               '    remaining()\n'
+                               '    if released != b"R":\n'
+                               '        raise RuntimeError("missing external release")\n'
+                               'raise SystemExit(0)\n',
+                     'script_sha256': 'a17f57d02fba1a39bf2883db8df7f2858eca8a1a24c881f10373d77af87fed5b',
+                     'running': {'id': 'JOB-707',
+                                 'task_id': 'TASK-705',
+                                 'agent_name': 'case_manager',
+                                 'title': 'E04.two-jobs-B-first/e277b0b6fb69e2ebce3101a0',
+                                 'rationale': 'Disposable owned deterministic job',
+                                 'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                'from pathlib import Path\n'
+                                                'if False:\n'
+                                                '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                "Path('/tmp/e04-show/coord/e277b0b6fb69e2ebce3101a0.started').write_text(json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', "
+                                                'pid=os.getpid())))\n'
+                                                "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                                                "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                                                'end = 40.0\n'
+                                                'def remaining():\n'
+                                                '    value = end - time.monotonic()\n'
+                                                '    if value <= 0:\n'
+                                                '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                '    return min(20, value)\n'
+                                                'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                '    peer.settimeout(remaining())\n'
+                                                '    '
+                                                "peer.sendall((json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', "
+                                                'pid=os.getpid())) + "\\n").encode())\n'
+                                                '    remaining()\n'
+                                                '    if False:\n'
+                                                '        while True:\n'
+                                                '            signal.pause()\n'
+                                                '    peer.settimeout(remaining())\n'
+                                                '    released = peer.recv(1)\n'
+                                                '    remaining()\n'
+                                                '    if released != b"R":\n'
+                                                '        raise RuntimeError("missing external release")\n'
+                                                'raise SystemExit(0)\n',
+                                 'interpreter': 'python3',
+                                 'cwd_hint': None,
+                                 'status': 'running',
+                                 'exit_code': None,
+                                 'reason': None,
+                                 'stdout_head': None,
+                                 'stderr_head': None,
+                                 'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-707.out',
+                                 'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-707.err',
+                                 'duration_ms': None,
+                                 'started_at': '2026-01-01T00:00:01+00:00',
+                                 'finished_at': None,
+                                 'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                 'reviewed_by': 'case_manager',
+                                 'reject_reason': None,
+                                 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                 'max_runtime_seconds': 30,
+                                 'max_output_bytes': 52428800,
+                                 'review_required': 0,
+                                 'persistent': 0,
+                                 'created_at': '2026-01-01T00:00:00+00:00'},
+                     'terminal': {'id': 'JOB-707',
+                                  'task_id': 'TASK-705',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.two-jobs-B-first/e277b0b6fb69e2ebce3101a0',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/e277b0b6fb69e2ebce3101a0.started').write_text(json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    '
+                                                 "peer.sendall((json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', "
+                                                 'pid=os.getpid())) + "\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(0)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'completed',
+                                  'exit_code': 0,
+                                  'reason': None,
+                                  'stdout_head': 'E04_A_OUT\n',
+                                  'stderr_head': 'E04_A_ERR\n',
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-707.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-707.err',
+                                  'duration_ms': 100,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': 0,
+                                  'persistent': 0,
+                                  'created_at': '2026-01-01T00:00:00+00:00'},
+                                 'running_browser': {'id': 'JOB-707',
+                                  'task_id': 'TASK-705',
+                                  'agent_name': 'case_manager',
+                                  'title': 'E04.two-jobs-B-first/e277b0b6fb69e2ebce3101a0',
+                                  'rationale': 'Disposable owned deterministic job',
+                                  'script_text': 'import json, os, signal, socket, sys, time\n'
+                                                 'from pathlib import Path\n'
+                                                 'if False:\n'
+                                                 '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                                 "Path('/tmp/e04-show/coord/e277b0b6fb69e2ebce3101a0.started').write_text(json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', "
+                                                 'pid=os.getpid())))\n'
+                                                 "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                                                 "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                                                 'end = 40.0\n'
+                                                 'def remaining():\n'
+                                                 '    value = end - time.monotonic()\n'
+                                                 '    if value <= 0:\n'
+                                                 '        raise TimeoutError("E04 script absolute deadline")\n'
+                                                 '    return min(20, value)\n'
+                                                 'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                                 '    peer.settimeout(remaining())\n'
+                                                 "    peer.sendall((json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', pid=os.getpid())) + "
+                                                 '"\\n").encode())\n'
+                                                 '    remaining()\n'
+                                                 '    if False:\n'
+                                                 '        while True:\n'
+                                                 '            signal.pause()\n'
+                                                 '    peer.settimeout(remaining())\n'
+                                                 '    released = peer.recv(1)\n'
+                                                 '    remaining()\n'
+                                                 '    if released != b"R":\n'
+                                                 '        raise RuntimeError("missing external release")\n'
+                                                 'raise SystemExit(0)\n',
+                                  'interpreter': 'python3',
+                                  'cwd_hint': None,
+                                  'status': 'running',
+                                  'exit_code': None,
+                                  'stdout_head': None,
+                                  'stderr_head': None,
+                                  'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-707.out',
+                                  'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-707.err',
+                                  'duration_ms': None,
+                                  'started_at': '2026-01-01T00:00:01+00:00',
+                                  'finished_at': None,
+                                  'reviewed_at': '2026-01-01T00:00:01+00:00',
+                                  'reviewed_by': 'case_manager',
+                                  'reject_reason': None,
+                                  'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                                  'max_runtime_seconds': 30,
+                                  'max_output_bytes': 52428800,
+                                  'review_required': False,
+                                  'persistent': False,
+                                  'reason': None,
+                                  'created_at': '2026-01-01T00:00:00+00:00'}}]}}
+
+    # Accepted D1-D5 full independent public/body/text images. The entire
+    # text-first negative stays literal and is never reordered into a positive.
+    case_terminal_literals = {'0': {'body': {'id': 'JOB-701',
+                    'task_id': 'TASK-701',
+                    'agent_name': 'case_manager',
+                    'title': 'E04.approve-exit0/e08eba4596159ebe63677c14',
+                    'rationale': 'Disposable owned deterministic job',
+                    'script_text': 'import json, os, signal, socket, sys, time\n'
+                                   'from pathlib import Path\n'
+                                   'if False:\n'
+                                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                   "Path('/tmp/e04-show/coord/e08eba4596159ebe63677c14.started').write_text(json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                                   'pid=os.getpid())))\n'
+                                   "sys.stdout.write('E04_OK_OUT\\n'); sys.stdout.flush()\n"
+                                   "sys.stderr.write('E04_OK_ERR\\n'); sys.stderr.flush()\n"
+                                   'end = 40.0\n'
+                                   'def remaining():\n'
+                                   '    value = end - time.monotonic()\n'
+                                   '    if value <= 0:\n'
+                                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                                   '    return min(20, value)\n'
+                                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.sendall((json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                                   'pid=os.getpid())) + "\\n").encode())\n'
+                                   '    remaining()\n'
+                                   '    if False:\n'
+                                   '        while True:\n'
+                                   '            signal.pause()\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   '    released = peer.recv(1)\n'
+                                   '    remaining()\n'
+                                   '    if released != b"R":\n'
+                                   '        raise RuntimeError("missing external release")\n'
+                                   'raise SystemExit(0)\n',
+                    'interpreter': 'python3',
+                    'cwd_hint': None,
+                    'status': 'completed',
+                    'exit_code': 0,
+                    'stdout_head': 'E04_OK_OUT\n',
+                    'stderr_head': 'E04_OK_ERR\n',
+                    'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-701.out',
+                    'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-701.err',
+                    'duration_ms': 100,
+                    'started_at': '2026-01-01T00:00:01+00:00',
+                    'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                    'reviewed_at': '2026-01-01T00:00:01+00:00',
+                    'reviewed_by': 'case_manager',
+                    'reject_reason': None,
+                    'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                    'max_runtime_seconds': 30,
+                    'max_output_bytes': 52428800,
+                    'review_required': False,
+                    'persistent': False,
+                    'reason': None,
+                    'created_at': '2026-01-01T00:00:00+00:00'},
+           'text': '← Back to TASK-701\n'
+                   'JOB-701\n'
+                   'completed\n'
+                   'E04.approve-exit0/e08eba4596159ebe63677c14\n'
+                   '\n'
+                   'Disposable owned deterministic job\n'
+                   '\n'
+                   'STORED COMMAND · VERBATIM\n'
+                   '›_\n'
+                   'COMMAND\n'
+                   '$ import json, os, signal, socket, sys, time\n'
+                   'from pathlib import Path\n'
+                   'if False:\n'
+                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                   "Path('/tmp/e04-show/coord/e08eba4596159ebe63677c14.started').write_text(json.dumps(dict(token='e08eba4596159ebe63677c14', "
+                   'pid=os.getpid())))\n'
+                   "sys.stdout.write('E04_OK_OUT\\n'); sys.stdout.flush()\n"
+                   "sys.stderr.write('E04_OK_ERR\\n'); sys.stderr.flush()\n"
+                   'end = 40.0\n'
+                   'def remaining():\n'
+                   '    value = end - time.monotonic()\n'
+                   '    if value <= 0:\n'
+                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                   '    return min(20, value)\n'
+                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.sendall((json.dumps(dict(token='e08eba4596159ebe63677c14', pid=os.getpid())) + "
+                   '"\\n").encode())\n'
+                   '    remaining()\n'
+                   '    if False:\n'
+                   '        while True:\n'
+                   '            signal.pause()\n'
+                   '    peer.settimeout(remaining())\n'
+                   '    released = peer.recv(1)\n'
+                   '    remaining()\n'
+                   '    if released != b"R":\n'
+                   '        raise RuntimeError("missing external release")\n'
+                   'raise SystemExit(0)\n'
+                   '\n'
+                   'python3\n'
+                   '\n'
+                   'Stored submission bytes are preserved. Admission and terminal disposition do not establish script '
+                   'success; inspect the actual exit code and output.\n'
+                   '\n'
+                   'OUTPUT\n'
+                   'STDOUT\n'
+                   'E04_OK_OUT\n'
+                   '\n'
+                   'STDERR\n'
+                   'E04_OK_ERR\n'
+                   '\n'
+                   'Requested by\n'
+                   'case_manager\n'
+                   'Reviewed by\n'
+                   'case_manager\n'
+                   'Task\n'
+                   'TASK-701\n'
+                   'Created\n'
+                   '1/1/2026, 12:00:00\u202fAM\n'
+                   'EXECUTION\n'
+                   'Interpreter\n'
+                   'python3\n'
+                   'CWD resolved\n'
+                   '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+                   'Started\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Finished\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Reviewed at\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Exit code\n'
+                   '0\n'
+                   'Duration\n'
+                   '0.1s\n'
+                   'Max runtime\n'
+                   '30s\n'
+                   'Persistent\n'
+                   'no\n'
+                   'Historical review flag\n'
+                   'no',
+           'screenshot': 'e04-JOB-701.png',
+           'at': 15.0},
+     '2': {'body': {'id': 'JOB-703',
+                    'task_id': 'TASK-703',
+                    'agent_name': 'case_manager',
+                    'title': 'E04.completed-exit7/df5f1abd9fb56d8c669f17e2',
+                    'rationale': 'Disposable owned deterministic job',
+                    'script_text': 'import json, os, signal, socket, sys, time\n'
+                                   'from pathlib import Path\n'
+                                   'if False:\n'
+                                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                   "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                                   'pid=os.getpid())))\n'
+                                   "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+                                   "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+                                   'end = 40.0\n'
+                                   'def remaining():\n'
+                                   '    value = end - time.monotonic()\n'
+                                   '    if value <= 0:\n'
+                                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                                   '    return min(20, value)\n'
+                                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                                   'pid=os.getpid())) + "\\n").encode())\n'
+                                   '    remaining()\n'
+                                   '    if False:\n'
+                                   '        while True:\n'
+                                   '            signal.pause()\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   '    released = peer.recv(1)\n'
+                                   '    remaining()\n'
+                                   '    if released != b"R":\n'
+                                   '        raise RuntimeError("missing external release")\n'
+                                   'raise SystemExit(7)\n',
+                    'interpreter': 'python3',
+                    'cwd_hint': None,
+                    'status': 'completed',
+                    'exit_code': 7,
+                    'stdout_head': 'E04_EXIT7_OUT\n',
+                    'stderr_head': 'E04_EXIT7_ERR\n',
+                    'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.out',
+                    'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.err',
+                    'duration_ms': 100,
+                    'started_at': '2026-01-01T00:00:01+00:00',
+                    'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                    'reviewed_at': '2026-01-01T00:00:01+00:00',
+                    'reviewed_by': 'case_manager',
+                    'reject_reason': None,
+                    'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                    'max_runtime_seconds': 30,
+                    'max_output_bytes': 52428800,
+                    'review_required': False,
+                    'persistent': False,
+                    'reason': None,
+                    'created_at': '2026-01-01T00:00:00+00:00'},
+           'text': '← Back to TASK-703\n'
+                   'JOB-703\n'
+                   'completed\n'
+                   'E04.completed-exit7/df5f1abd9fb56d8c669f17e2\n'
+                   '\n'
+                   'Disposable owned deterministic job\n'
+                   '\n'
+                   'STORED COMMAND · VERBATIM\n'
+                   '›_\n'
+                   'COMMAND\n'
+                   '$ import json, os, signal, socket, sys, time\n'
+                   'from pathlib import Path\n'
+                   'if False:\n'
+                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                   "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                   'pid=os.getpid())))\n'
+                   "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+                   "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+                   'end = 40.0\n'
+                   'def remaining():\n'
+                   '    value = end - time.monotonic()\n'
+                   '    if value <= 0:\n'
+                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                   '    return min(20, value)\n'
+                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', pid=os.getpid())) + "
+                   '"\\n").encode())\n'
+                   '    remaining()\n'
+                   '    if False:\n'
+                   '        while True:\n'
+                   '            signal.pause()\n'
+                   '    peer.settimeout(remaining())\n'
+                   '    released = peer.recv(1)\n'
+                   '    remaining()\n'
+                   '    if released != b"R":\n'
+                   '        raise RuntimeError("missing external release")\n'
+                   'raise SystemExit(7)\n'
+                   '\n'
+                   'python3\n'
+                   '\n'
+                   'Stored submission bytes are preserved. Admission and terminal disposition do not establish script '
+                   'success; inspect the actual exit code and output.\n'
+                   '\n'
+                   'OUTPUT\n'
+                   'STDOUT\n'
+                   'E04_EXIT7_OUT\n'
+                   '\n'
+                   'STDERR\n'
+                   'E04_EXIT7_ERR\n'
+                   '\n'
+                   'Requested by\n'
+                   'case_manager\n'
+                   'Reviewed by\n'
+                   'case_manager\n'
+                   'Task\n'
+                   'TASK-703\n'
+                   'Created\n'
+                   '1/1/2026, 12:00:00\u202fAM\n'
+                   'EXECUTION\n'
+                   'Interpreter\n'
+                   'python3\n'
+                   'CWD resolved\n'
+                   '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+                   'Started\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Finished\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Reviewed at\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Exit code\n'
+                   '7\n'
+                   'Duration\n'
+                   '0.1s\n'
+                   'Max runtime\n'
+                   '30s\n'
+                   'Persistent\n'
+                   'no\n'
+                   'Historical review flag\n'
+                   'no',
+           'screenshot': 'e04-JOB-703.png',
+           'at': 15.0},
+     '3': {'body': {'id': 'JOB-702',
+                    'task_id': 'TASK-702',
+                    'agent_name': 'case_manager',
+                    'title': 'E04.failed-timeout/effc58d0f834d9ba4fc7c83e',
+                    'rationale': 'Disposable owned deterministic job',
+                    'script_text': 'import json, os, signal, socket, sys, time\n'
+                                   'from pathlib import Path\n'
+                                   'if True:\n'
+                                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                   "Path('/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started').write_text(json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                                   'pid=os.getpid())))\n'
+                                   "sys.stdout.write('E04_TIMEOUT_OUT\\n'); sys.stdout.flush()\n"
+                                   "sys.stderr.write('E04_TIMEOUT_ERR\\n'); sys.stderr.flush()\n"
+                                   'end = 40.0\n'
+                                   'def remaining():\n'
+                                   '    value = end - time.monotonic()\n'
+                                   '    if value <= 0:\n'
+                                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                                   '    return min(20, value)\n'
+                                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                   '    peer.settimeout(remaining())\n'
+                                   "    peer.sendall((json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                                   'pid=os.getpid())) + "\\n").encode())\n'
+                                   '    remaining()\n'
+                                   '    if True:\n'
+                                   '        while True:\n'
+                                   '            signal.pause()\n'
+                                   '    peer.settimeout(remaining())\n'
+                                   '    released = peer.recv(1)\n'
+                                   '    remaining()\n'
+                                   '    if released != b"R":\n'
+                                   '        raise RuntimeError("missing external release")\n'
+                                   'raise SystemExit(-9)\n',
+                    'interpreter': 'python3',
+                    'cwd_hint': None,
+                    'status': 'failed',
+                    'exit_code': -9,
+                    'stdout_head': 'E04_TIMEOUT_OUT\n',
+                    'stderr_head': 'E04_TIMEOUT_ERR\n',
+                    'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-702.out',
+                    'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-702.err',
+                    'duration_ms': 5001,
+                    'started_at': '2026-01-01T00:00:01+00:00',
+                    'finished_at': '2026-01-01T00:00:06.001000+00:00',
+                    'reviewed_at': '2026-01-01T00:00:01+00:00',
+                    'reviewed_by': 'case_manager',
+                    'reject_reason': None,
+                    'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                    'max_runtime_seconds': 5,
+                    'max_output_bytes': 52428800,
+                    'review_required': False,
+                    'persistent': False,
+                    'reason': 'timeout',
+                    'created_at': '2026-01-01T00:00:00+00:00'},
+           'text': '← Back to TASK-702\n'
+                   'JOB-702\n'
+                   'failed\n'
+                   'E04.failed-timeout/effc58d0f834d9ba4fc7c83e\n'
+                   '\n'
+                   'Disposable owned deterministic job\n'
+                   '\n'
+                   'STORED COMMAND · VERBATIM\n'
+                   '›_\n'
+                   'COMMAND\n'
+                   '$ import json, os, signal, socket, sys, time\n'
+                   'from pathlib import Path\n'
+                   'if True:\n'
+                   '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                   "Path('/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started').write_text(json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', "
+                   'pid=os.getpid())))\n'
+                   "sys.stdout.write('E04_TIMEOUT_OUT\\n'); sys.stdout.flush()\n"
+                   "sys.stderr.write('E04_TIMEOUT_ERR\\n'); sys.stderr.flush()\n"
+                   'end = 40.0\n'
+                   'def remaining():\n'
+                   '    value = end - time.monotonic()\n'
+                   '    if value <= 0:\n'
+                   '        raise TimeoutError("E04 script absolute deadline")\n'
+                   '    return min(20, value)\n'
+                   'with socket.socket(socket.AF_UNIX) as peer:\n'
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                   '    peer.settimeout(remaining())\n'
+                   "    peer.sendall((json.dumps(dict(token='effc58d0f834d9ba4fc7c83e', pid=os.getpid())) + "
+                   '"\\n").encode())\n'
+                   '    remaining()\n'
+                   '    if True:\n'
+                   '        while True:\n'
+                   '            signal.pause()\n'
+                   '    peer.settimeout(remaining())\n'
+                   '    released = peer.recv(1)\n'
+                   '    remaining()\n'
+                   '    if released != b"R":\n'
+                   '        raise RuntimeError("missing external release")\n'
+                   'raise SystemExit(-9)\n'
+                   '\n'
+                   'python3\n'
+                   '\n'
+                   'Stored submission bytes are preserved. Admission and terminal disposition do not establish script '
+                   'success; inspect the actual exit code and output.\n'
+                   '\n'
+                   'FAILURE REASON\n'
+                   'timeout\n'
+                   '\n'
+                   'OUTPUT\n'
+                   'STDOUT\n'
+                   'E04_TIMEOUT_OUT\n'
+                   '\n'
+                   'STDERR\n'
+                   'E04_TIMEOUT_ERR\n'
+                   '\n'
+                   'Requested by\n'
+                   'case_manager\n'
+                   'Reviewed by\n'
+                   'case_manager\n'
+                   'Task\n'
+                   'TASK-702\n'
+                   'Created\n'
+                   '1/1/2026, 12:00:00\u202fAM\n'
+                   'EXECUTION\n'
+                   'Interpreter\n'
+                   'python3\n'
+                   'CWD resolved\n'
+                   '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+                   'Started\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Finished\n'
+                   '1/1/2026, 12:00:06\u202fAM\n'
+                   'Reviewed at\n'
+                   '1/1/2026, 12:00:01\u202fAM\n'
+                   'Exit code\n'
+                   '-9\n'
+                   'Duration\n'
+                   '5.0s\n'
+                   'Max runtime\n'
+                   '5s\n'
+                   'Persistent\n'
+                   'no\n'
+                   'Historical review flag\n'
+                   'no',
+           'screenshot': 'e04-JOB-702.png',
+           'at': 18.0}}
+    case_text_first_negative = {'text': '← Back to TASK-703\n'
+             'JOB-703\n'
+             'completed\n'
+             'E04.completed-exit7/df5f1abd9fb56d8c669f17e2\n'
+             '\n'
+             'Disposable owned deterministic job\n'
+             '\n'
+             'STORED COMMAND · VERBATIM\n'
+             '›_\n'
+             'COMMAND\n'
+             '$ import json, os, signal, socket, sys, time\n'
+             'from pathlib import Path\n'
+             'if False:\n'
+             '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+             "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+             'pid=os.getpid())))\n'
+             "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+             "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+             'end = 40.0\n'
+             'def remaining():\n'
+             '    value = end - time.monotonic()\n'
+             '    if value <= 0:\n'
+             '        raise TimeoutError("E04 script absolute deadline")\n'
+             '    return min(20, value)\n'
+             'with socket.socket(socket.AF_UNIX) as peer:\n'
+             '    peer.settimeout(remaining())\n'
+             "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+             '    peer.settimeout(remaining())\n'
+             "    peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', pid=os.getpid())) + "
+             '"\\n").encode())\n'
+             '    remaining()\n'
+             '    if False:\n'
+             '        while True:\n'
+             '            signal.pause()\n'
+             '    peer.settimeout(remaining())\n'
+             '    released = peer.recv(1)\n'
+             '    remaining()\n'
+             '    if released != b"R":\n'
+             '        raise RuntimeError("missing external release")\n'
+             'raise SystemExit(7)\n'
+             '\n'
+             'python3\n'
+             '\n'
+             'Stored submission bytes are preserved. Admission and terminal disposition do not establish script '
+             'success; inspect the actual exit code and output.\n'
+             '\n'
+             'OUTPUT\n'
+             'STDOUT\n'
+             'E04_EXIT7_OUT\n'
+             '\n'
+             'STDERR\n'
+             'E04_EXIT7_ERR\n'
+             '\n'
+             'Requested by\n'
+             'case_manager\n'
+             'Reviewed by\n'
+             'case_manager\n'
+             'Task\n'
+             'TASK-703\n'
+             'Created\n'
+             '1/1/2026, 12:00:00\u202fAM\n'
+             'EXECUTION\n'
+             'Interpreter\n'
+             'python3\n'
+             'CWD resolved\n'
+             '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+             'Started\n'
+             '1/1/2026, 12:00:01\u202fAM\n'
+             'Finished\n'
+             '1/1/2026, 12:00:01\u202fAM\n'
+             'Reviewed at\n'
+             '1/1/2026, 12:00:01\u202fAM\n'
+             'Exit code\n'
+             '7\n'
+             'Duration\n'
+             '0.1s\n'
+             'Max runtime\n'
+             '30s\n'
+             'Persistent\n'
+             'no\n'
+             'Historical review flag\n'
+             'no',
+     'body': {'id': 'JOB-703',
+              'task_id': 'TASK-703',
+              'agent_name': 'case_manager',
+              'title': 'E04.completed-exit7/df5f1abd9fb56d8c669f17e2',
+              'rationale': 'Disposable owned deterministic job',
+              'script_text': 'import json, os, signal, socket, sys, time\n'
+                             'from pathlib import Path\n'
+                             'if False:\n'
+                             '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                             "Path('/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started').write_text(json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', "
+                             'pid=os.getpid())))\n'
+                             "sys.stdout.write('E04_EXIT7_OUT\\n'); sys.stdout.flush()\n"
+                             "sys.stderr.write('E04_EXIT7_ERR\\n'); sys.stderr.flush()\n"
+                             'end = 40.0\n'
+                             'def remaining():\n'
+                             '    value = end - time.monotonic()\n'
+                             '    if value <= 0:\n'
+                             '        raise TimeoutError("E04 script absolute deadline")\n'
+                             '    return min(20, value)\n'
+                             'with socket.socket(socket.AF_UNIX) as peer:\n'
+                             '    peer.settimeout(remaining())\n'
+                             "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                             '    peer.settimeout(remaining())\n'
+                             "    peer.sendall((json.dumps(dict(token='df5f1abd9fb56d8c669f17e2', pid=os.getpid())) + "
+                             '"\\n").encode())\n'
+                             '    remaining()\n'
+                             '    if False:\n'
+                             '        while True:\n'
+                             '            signal.pause()\n'
+                             '    peer.settimeout(remaining())\n'
+                             '    released = peer.recv(1)\n'
+                             '    remaining()\n'
+                             '    if released != b"R":\n'
+                             '        raise RuntimeError("missing external release")\n'
+                             'raise SystemExit(7)\n',
+              'interpreter': 'python3',
+              'cwd_hint': None,
+              'status': 'completed',
+              'exit_code': 7,
+              'stdout_head': 'E04_EXIT7_OUT\n',
+              'stderr_head': 'E04_EXIT7_ERR\n',
+              'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.out',
+              'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-703.err',
+              'duration_ms': 100,
+              'started_at': '2026-01-01T00:00:01+00:00',
+              'finished_at': '2026-01-01T00:00:01.100000+00:00',
+              'reviewed_at': '2026-01-01T00:00:01+00:00',
+              'reviewed_by': 'case_manager',
+              'reject_reason': None,
+              'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+              'max_runtime_seconds': 30,
+              'max_output_bytes': 52428800,
+              'review_required': False,
+              'persistent': False,
+              'reason': None,
+              'created_at': '2026-01-01T00:00:00+00:00'},
+     'screenshot': 'e04-JOB-703.png',
+     'at': 15.0}
+    case_small_span_literals = {'dropped_final_lf_text': 'A\n$ print("public\\nline")B',
+     'duplicate_text': 'A\n$ print("public\\nline")\n$ print("public\\nline")\nB',
+     'no_space_anchor_text': 'A\n$print("public\\nline")\nB',
+     'one_backslash_source': 'print("public\\nline")\n',
+     'outside_backslash_text': 'A\\n\n$ print("public\\nline")\nB',
+     'positive_text': 'A\n$ print("public\\nline")\nB',
+     'residual_negative_text': 'A\n$ print("public\\\\nline")\nB',
+     'two_backslash_source': 'print("public\\\\nline")\n'}
+
+    # Full pair terminal operands materialized from accepted13807 full0/7
+    # browser forms plus their independently declared pair identity/SOURCE/
+    # output substitutions. They are NOT projected from SQL or candidate data.
+    case_pair_terminal_literals = {'4': [{'body': {'id': 'JOB-704',
+                     'task_id': 'TASK-704',
+                     'agent_name': 'case_manager',
+                     'title': 'E04.two-jobs-A-first/b26259f837d25234ff4c6cf0',
+                     'rationale': 'Disposable owned deterministic job',
+                     'script_text': 'import json, os, signal, socket, sys, time\n'
+                                    'from pathlib import Path\n'
+                                    'if False:\n'
+                                    '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                    "Path('/tmp/e04-show/coord/b26259f837d25234ff4c6cf0.started').write_text(json.dumps(dict(token='b26259f837d25234ff4c6cf0', "
+                                    'pid=os.getpid())))\n'
+                                    "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                                    "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                                    'end = 40.0\n'
+                                    'def remaining():\n'
+                                    '    value = end - time.monotonic()\n'
+                                    '    if value <= 0:\n'
+                                    '        raise TimeoutError("E04 script absolute deadline")\n'
+                                    '    return min(20, value)\n'
+                                    'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                    '    peer.settimeout(remaining())\n'
+                                    "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                    '    peer.settimeout(remaining())\n'
+                                    "    peer.sendall((json.dumps(dict(token='b26259f837d25234ff4c6cf0', "
+                                    'pid=os.getpid())) + "\\n").encode())\n'
+                                    '    remaining()\n'
+                                    '    if False:\n'
+                                    '        while True:\n'
+                                    '            signal.pause()\n'
+                                    '    peer.settimeout(remaining())\n'
+                                    '    released = peer.recv(1)\n'
+                                    '    remaining()\n'
+                                    '    if released != b"R":\n'
+                                    '        raise RuntimeError("missing external release")\n'
+                                    'raise SystemExit(0)\n',
+                     'interpreter': 'python3',
+                     'cwd_hint': None,
+                     'status': 'completed',
+                     'exit_code': 0,
+                     'stdout_head': 'E04_A_OUT\n',
+                     'stderr_head': 'E04_A_ERR\n',
+                     'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-704.out',
+                     'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-704.err',
+                     'duration_ms': 100,
+                     'started_at': '2026-01-01T00:00:01+00:00',
+                     'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                     'reviewed_at': '2026-01-01T00:00:01+00:00',
+                     'reviewed_by': 'case_manager',
+                     'reject_reason': None,
+                     'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                     'max_runtime_seconds': 30,
+                     'max_output_bytes': 52428800,
+                     'review_required': False,
+                     'persistent': False,
+                     'reason': None,
+                     'created_at': '2026-01-01T00:00:00+00:00'},
+            'text': '← Back to TASK-704\n'
+                    'JOB-704\n'
+                    'completed\n'
+                    'E04.two-jobs-A-first/b26259f837d25234ff4c6cf0\n'
+                    '\n'
+                    'Disposable owned deterministic job\n'
+                    '\n'
+                    'STORED COMMAND · VERBATIM\n'
+                    '›_\n'
+                    'COMMAND\n'
+                    '$ import json, os, signal, socket, sys, time\n'
+                    'from pathlib import Path\n'
+                    'if False:\n'
+                    '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                    "Path('/tmp/e04-show/coord/b26259f837d25234ff4c6cf0.started').write_text(json.dumps(dict(token='b26259f837d25234ff4c6cf0', "
+                    'pid=os.getpid())))\n'
+                    "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                    "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                    'end = 40.0\n'
+                    'def remaining():\n'
+                    '    value = end - time.monotonic()\n'
+                    '    if value <= 0:\n'
+                    '        raise TimeoutError("E04 script absolute deadline")\n'
+                    '    return min(20, value)\n'
+                    'with socket.socket(socket.AF_UNIX) as peer:\n'
+                    '    peer.settimeout(remaining())\n'
+                    "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                    '    peer.settimeout(remaining())\n'
+                    "    peer.sendall((json.dumps(dict(token='b26259f837d25234ff4c6cf0', pid=os.getpid())) + "
+                    '"\\n").encode())\n'
+                    '    remaining()\n'
+                    '    if False:\n'
+                    '        while True:\n'
+                    '            signal.pause()\n'
+                    '    peer.settimeout(remaining())\n'
+                    '    released = peer.recv(1)\n'
+                    '    remaining()\n'
+                    '    if released != b"R":\n'
+                    '        raise RuntimeError("missing external release")\n'
+                    'raise SystemExit(0)\n'
+                    '\n'
+                    'python3\n'
+                    '\n'
+                    'Stored submission bytes are preserved. Admission and terminal disposition do not establish '
+                    'script success; inspect the actual exit code and output.\n'
+                    '\n'
+                    'OUTPUT\n'
+                    'STDOUT\n'
+                    'E04_A_OUT\n'
+                    '\n'
+                    'STDERR\n'
+                    'E04_A_ERR\n'
+                    '\n'
+                    'Requested by\n'
+                    'case_manager\n'
+                    'Reviewed by\n'
+                    'case_manager\n'
+                    'Task\n'
+                    'TASK-704\n'
+                    'Created\n'
+                    '1/1/2026, 12:00:00\u202fAM\n'
+                    'EXECUTION\n'
+                    'Interpreter\n'
+                    'python3\n'
+                    'CWD resolved\n'
+                    '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+                    'Started\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Finished\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Reviewed at\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Exit code\n'
+                    '0\n'
+                    'Duration\n'
+                    '0.1s\n'
+                    'Max runtime\n'
+                    '30s\n'
+                    'Persistent\n'
+                    'no\n'
+                    'Historical review flag\n'
+                    'no',
+            'screenshot': 'e04-JOB-704.png',
+            'at': 15.0},
+           {'body': {'id': 'JOB-705',
+                     'task_id': 'TASK-704',
+                     'agent_name': 'case_manager',
+                     'title': 'E04.two-jobs-A-first/83824907c5866651a435cbd3',
+                     'rationale': 'Disposable owned deterministic job',
+                     'script_text': 'import json, os, signal, socket, sys, time\n'
+                                    'from pathlib import Path\n'
+                                    'if False:\n'
+                                    '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                    "Path('/tmp/e04-show/coord/83824907c5866651a435cbd3.started').write_text(json.dumps(dict(token='83824907c5866651a435cbd3', "
+                                    'pid=os.getpid())))\n'
+                                    "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                                    "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                                    'end = 40.0\n'
+                                    'def remaining():\n'
+                                    '    value = end - time.monotonic()\n'
+                                    '    if value <= 0:\n'
+                                    '        raise TimeoutError("E04 script absolute deadline")\n'
+                                    '    return min(20, value)\n'
+                                    'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                    '    peer.settimeout(remaining())\n'
+                                    "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                    '    peer.settimeout(remaining())\n'
+                                    "    peer.sendall((json.dumps(dict(token='83824907c5866651a435cbd3', "
+                                    'pid=os.getpid())) + "\\n").encode())\n'
+                                    '    remaining()\n'
+                                    '    if False:\n'
+                                    '        while True:\n'
+                                    '            signal.pause()\n'
+                                    '    peer.settimeout(remaining())\n'
+                                    '    released = peer.recv(1)\n'
+                                    '    remaining()\n'
+                                    '    if released != b"R":\n'
+                                    '        raise RuntimeError("missing external release")\n'
+                                    'raise SystemExit(7)\n',
+                     'interpreter': 'python3',
+                     'cwd_hint': None,
+                     'status': 'completed',
+                     'exit_code': 7,
+                     'stdout_head': 'E04_B_OUT\n',
+                     'stderr_head': 'E04_B_ERR\n',
+                     'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-705.out',
+                     'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-705.err',
+                     'duration_ms': 100,
+                     'started_at': '2026-01-01T00:00:01+00:00',
+                     'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                     'reviewed_at': '2026-01-01T00:00:01+00:00',
+                     'reviewed_by': 'case_manager',
+                     'reject_reason': None,
+                     'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                     'max_runtime_seconds': 30,
+                     'max_output_bytes': 52428800,
+                     'review_required': False,
+                     'persistent': False,
+                     'reason': None,
+                     'created_at': '2026-01-01T00:00:00+00:00'},
+            'text': '← Back to TASK-704\n'
+                    'JOB-705\n'
+                    'completed\n'
+                    'E04.two-jobs-A-first/83824907c5866651a435cbd3\n'
+                    '\n'
+                    'Disposable owned deterministic job\n'
+                    '\n'
+                    'STORED COMMAND · VERBATIM\n'
+                    '›_\n'
+                    'COMMAND\n'
+                    '$ import json, os, signal, socket, sys, time\n'
+                    'from pathlib import Path\n'
+                    'if False:\n'
+                    '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                    "Path('/tmp/e04-show/coord/83824907c5866651a435cbd3.started').write_text(json.dumps(dict(token='83824907c5866651a435cbd3', "
+                    'pid=os.getpid())))\n'
+                    "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                    "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                    'end = 40.0\n'
+                    'def remaining():\n'
+                    '    value = end - time.monotonic()\n'
+                    '    if value <= 0:\n'
+                    '        raise TimeoutError("E04 script absolute deadline")\n'
+                    '    return min(20, value)\n'
+                    'with socket.socket(socket.AF_UNIX) as peer:\n'
+                    '    peer.settimeout(remaining())\n'
+                    "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                    '    peer.settimeout(remaining())\n'
+                    "    peer.sendall((json.dumps(dict(token='83824907c5866651a435cbd3', pid=os.getpid())) + "
+                    '"\\n").encode())\n'
+                    '    remaining()\n'
+                    '    if False:\n'
+                    '        while True:\n'
+                    '            signal.pause()\n'
+                    '    peer.settimeout(remaining())\n'
+                    '    released = peer.recv(1)\n'
+                    '    remaining()\n'
+                    '    if released != b"R":\n'
+                    '        raise RuntimeError("missing external release")\n'
+                    'raise SystemExit(7)\n'
+                    '\n'
+                    'python3\n'
+                    '\n'
+                    'Stored submission bytes are preserved. Admission and terminal disposition do not establish '
+                    'script success; inspect the actual exit code and output.\n'
+                    '\n'
+                    'OUTPUT\n'
+                    'STDOUT\n'
+                    'E04_B_OUT\n'
+                    '\n'
+                    'STDERR\n'
+                    'E04_B_ERR\n'
+                    '\n'
+                    'Requested by\n'
+                    'case_manager\n'
+                    'Reviewed by\n'
+                    'case_manager\n'
+                    'Task\n'
+                    'TASK-704\n'
+                    'Created\n'
+                    '1/1/2026, 12:00:00\u202fAM\n'
+                    'EXECUTION\n'
+                    'Interpreter\n'
+                    'python3\n'
+                    'CWD resolved\n'
+                    '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+                    'Started\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Finished\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Reviewed at\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Exit code\n'
+                    '7\n'
+                    'Duration\n'
+                    '0.1s\n'
+                    'Max runtime\n'
+                    '30s\n'
+                    'Persistent\n'
+                    'no\n'
+                    'Historical review flag\n'
+                    'no',
+            'screenshot': 'e04-JOB-705.png',
+            'at': 15.0}],
+     '5': [{'body': {'id': 'JOB-706',
+                     'task_id': 'TASK-705',
+                     'agent_name': 'case_manager',
+                     'title': 'E04.two-jobs-B-first/9a6ba7e1faf88fee22699b24',
+                     'rationale': 'Disposable owned deterministic job',
+                     'script_text': 'import json, os, signal, socket, sys, time\n'
+                                    'from pathlib import Path\n'
+                                    'if False:\n'
+                                    '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                    "Path('/tmp/e04-show/coord/9a6ba7e1faf88fee22699b24.started').write_text(json.dumps(dict(token='9a6ba7e1faf88fee22699b24', "
+                                    'pid=os.getpid())))\n'
+                                    "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                                    "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                                    'end = 40.0\n'
+                                    'def remaining():\n'
+                                    '    value = end - time.monotonic()\n'
+                                    '    if value <= 0:\n'
+                                    '        raise TimeoutError("E04 script absolute deadline")\n'
+                                    '    return min(20, value)\n'
+                                    'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                    '    peer.settimeout(remaining())\n'
+                                    "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                    '    peer.settimeout(remaining())\n'
+                                    "    peer.sendall((json.dumps(dict(token='9a6ba7e1faf88fee22699b24', "
+                                    'pid=os.getpid())) + "\\n").encode())\n'
+                                    '    remaining()\n'
+                                    '    if False:\n'
+                                    '        while True:\n'
+                                    '            signal.pause()\n'
+                                    '    peer.settimeout(remaining())\n'
+                                    '    released = peer.recv(1)\n'
+                                    '    remaining()\n'
+                                    '    if released != b"R":\n'
+                                    '        raise RuntimeError("missing external release")\n'
+                                    'raise SystemExit(7)\n',
+                     'interpreter': 'python3',
+                     'cwd_hint': None,
+                     'status': 'completed',
+                     'exit_code': 7,
+                     'stdout_head': 'E04_B_OUT\n',
+                     'stderr_head': 'E04_B_ERR\n',
+                     'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-706.out',
+                     'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-706.err',
+                     'duration_ms': 100,
+                     'started_at': '2026-01-01T00:00:01+00:00',
+                     'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                     'reviewed_at': '2026-01-01T00:00:01+00:00',
+                     'reviewed_by': 'case_manager',
+                     'reject_reason': None,
+                     'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                     'max_runtime_seconds': 30,
+                     'max_output_bytes': 52428800,
+                     'review_required': False,
+                     'persistent': False,
+                     'reason': None,
+                     'created_at': '2026-01-01T00:00:00+00:00'},
+            'text': '← Back to TASK-705\n'
+                    'JOB-706\n'
+                    'completed\n'
+                    'E04.two-jobs-B-first/9a6ba7e1faf88fee22699b24\n'
+                    '\n'
+                    'Disposable owned deterministic job\n'
+                    '\n'
+                    'STORED COMMAND · VERBATIM\n'
+                    '›_\n'
+                    'COMMAND\n'
+                    '$ import json, os, signal, socket, sys, time\n'
+                    'from pathlib import Path\n'
+                    'if False:\n'
+                    '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                    "Path('/tmp/e04-show/coord/9a6ba7e1faf88fee22699b24.started').write_text(json.dumps(dict(token='9a6ba7e1faf88fee22699b24', "
+                    'pid=os.getpid())))\n'
+                    "sys.stdout.write('E04_B_OUT\\n'); sys.stdout.flush()\n"
+                    "sys.stderr.write('E04_B_ERR\\n'); sys.stderr.flush()\n"
+                    'end = 40.0\n'
+                    'def remaining():\n'
+                    '    value = end - time.monotonic()\n'
+                    '    if value <= 0:\n'
+                    '        raise TimeoutError("E04 script absolute deadline")\n'
+                    '    return min(20, value)\n'
+                    'with socket.socket(socket.AF_UNIX) as peer:\n'
+                    '    peer.settimeout(remaining())\n'
+                    "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                    '    peer.settimeout(remaining())\n'
+                    "    peer.sendall((json.dumps(dict(token='9a6ba7e1faf88fee22699b24', pid=os.getpid())) + "
+                    '"\\n").encode())\n'
+                    '    remaining()\n'
+                    '    if False:\n'
+                    '        while True:\n'
+                    '            signal.pause()\n'
+                    '    peer.settimeout(remaining())\n'
+                    '    released = peer.recv(1)\n'
+                    '    remaining()\n'
+                    '    if released != b"R":\n'
+                    '        raise RuntimeError("missing external release")\n'
+                    'raise SystemExit(7)\n'
+                    '\n'
+                    'python3\n'
+                    '\n'
+                    'Stored submission bytes are preserved. Admission and terminal disposition do not establish '
+                    'script success; inspect the actual exit code and output.\n'
+                    '\n'
+                    'OUTPUT\n'
+                    'STDOUT\n'
+                    'E04_B_OUT\n'
+                    '\n'
+                    'STDERR\n'
+                    'E04_B_ERR\n'
+                    '\n'
+                    'Requested by\n'
+                    'case_manager\n'
+                    'Reviewed by\n'
+                    'case_manager\n'
+                    'Task\n'
+                    'TASK-705\n'
+                    'Created\n'
+                    '1/1/2026, 12:00:00\u202fAM\n'
+                    'EXECUTION\n'
+                    'Interpreter\n'
+                    'python3\n'
+                    'CWD resolved\n'
+                    '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+                    'Started\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Finished\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Reviewed at\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Exit code\n'
+                    '7\n'
+                    'Duration\n'
+                    '0.1s\n'
+                    'Max runtime\n'
+                    '30s\n'
+                    'Persistent\n'
+                    'no\n'
+                    'Historical review flag\n'
+                    'no',
+            'screenshot': 'e04-JOB-706.png',
+            'at': 15.0},
+           {'body': {'id': 'JOB-707',
+                     'task_id': 'TASK-705',
+                     'agent_name': 'case_manager',
+                     'title': 'E04.two-jobs-B-first/e277b0b6fb69e2ebce3101a0',
+                     'rationale': 'Disposable owned deterministic job',
+                     'script_text': 'import json, os, signal, socket, sys, time\n'
+                                    'from pathlib import Path\n'
+                                    'if False:\n'
+                                    '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                    "Path('/tmp/e04-show/coord/e277b0b6fb69e2ebce3101a0.started').write_text(json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', "
+                                    'pid=os.getpid())))\n'
+                                    "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                                    "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                                    'end = 40.0\n'
+                                    'def remaining():\n'
+                                    '    value = end - time.monotonic()\n'
+                                    '    if value <= 0:\n'
+                                    '        raise TimeoutError("E04 script absolute deadline")\n'
+                                    '    return min(20, value)\n'
+                                    'with socket.socket(socket.AF_UNIX) as peer:\n'
+                                    '    peer.settimeout(remaining())\n'
+                                    "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                                    '    peer.settimeout(remaining())\n'
+                                    "    peer.sendall((json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', "
+                                    'pid=os.getpid())) + "\\n").encode())\n'
+                                    '    remaining()\n'
+                                    '    if False:\n'
+                                    '        while True:\n'
+                                    '            signal.pause()\n'
+                                    '    peer.settimeout(remaining())\n'
+                                    '    released = peer.recv(1)\n'
+                                    '    remaining()\n'
+                                    '    if released != b"R":\n'
+                                    '        raise RuntimeError("missing external release")\n'
+                                    'raise SystemExit(0)\n',
+                     'interpreter': 'python3',
+                     'cwd_hint': None,
+                     'status': 'completed',
+                     'exit_code': 0,
+                     'stdout_head': 'E04_A_OUT\n',
+                     'stderr_head': 'E04_A_ERR\n',
+                     'stdout_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-707.out',
+                     'stderr_path': '/tmp/e04-show/runtime/orgs/alpha/jobs/JOB-707.err',
+                     'duration_ms': 100,
+                     'started_at': '2026-01-01T00:00:01+00:00',
+                     'finished_at': '2026-01-01T00:00:01.100000+00:00',
+                     'reviewed_at': '2026-01-01T00:00:01+00:00',
+                     'reviewed_by': 'case_manager',
+                     'reject_reason': None,
+                     'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager',
+                     'max_runtime_seconds': 30,
+                     'max_output_bytes': 52428800,
+                     'review_required': False,
+                     'persistent': False,
+                     'reason': None,
+                     'created_at': '2026-01-01T00:00:00+00:00'},
+            'text': '← Back to TASK-705\n'
+                    'JOB-707\n'
+                    'completed\n'
+                    'E04.two-jobs-B-first/e277b0b6fb69e2ebce3101a0\n'
+                    '\n'
+                    'Disposable owned deterministic job\n'
+                    '\n'
+                    'STORED COMMAND · VERBATIM\n'
+                    '›_\n'
+                    'COMMAND\n'
+                    '$ import json, os, signal, socket, sys, time\n'
+                    'from pathlib import Path\n'
+                    'if False:\n'
+                    '    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                    "Path('/tmp/e04-show/coord/e277b0b6fb69e2ebce3101a0.started').write_text(json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', "
+                    'pid=os.getpid())))\n'
+                    "sys.stdout.write('E04_A_OUT\\n'); sys.stdout.flush()\n"
+                    "sys.stderr.write('E04_A_ERR\\n'); sys.stderr.flush()\n"
+                    'end = 40.0\n'
+                    'def remaining():\n'
+                    '    value = end - time.monotonic()\n'
+                    '    if value <= 0:\n'
+                    '        raise TimeoutError("E04 script absolute deadline")\n'
+                    '    return min(20, value)\n'
+                    'with socket.socket(socket.AF_UNIX) as peer:\n'
+                    '    peer.settimeout(remaining())\n'
+                    "    peer.connect('/tmp/e04-show/coord/jobs.sock')\n"
+                    '    peer.settimeout(remaining())\n'
+                    "    peer.sendall((json.dumps(dict(token='e277b0b6fb69e2ebce3101a0', pid=os.getpid())) + "
+                    '"\\n").encode())\n'
+                    '    remaining()\n'
+                    '    if False:\n'
+                    '        while True:\n'
+                    '            signal.pause()\n'
+                    '    peer.settimeout(remaining())\n'
+                    '    released = peer.recv(1)\n'
+                    '    remaining()\n'
+                    '    if released != b"R":\n'
+                    '        raise RuntimeError("missing external release")\n'
+                    'raise SystemExit(0)\n'
+                    '\n'
+                    'python3\n'
+                    '\n'
+                    'Stored submission bytes are preserved. Admission and terminal disposition do not establish '
+                    'script success; inspect the actual exit code and output.\n'
+                    '\n'
+                    'OUTPUT\n'
+                    'STDOUT\n'
+                    'E04_A_OUT\n'
+                    '\n'
+                    'STDERR\n'
+                    'E04_A_ERR\n'
+                    '\n'
+                    'Requested by\n'
+                    'case_manager\n'
+                    'Reviewed by\n'
+                    'case_manager\n'
+                    'Task\n'
+                    'TASK-705\n'
+                    'Created\n'
+                    '1/1/2026, 12:00:00\u202fAM\n'
+                    'EXECUTION\n'
+                    'Interpreter\n'
+                    'python3\n'
+                    'CWD resolved\n'
+                    '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager\n'
+                    'Started\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Finished\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Reviewed at\n'
+                    '1/1/2026, 12:00:01\u202fAM\n'
+                    'Exit code\n'
+                    '0\n'
+                    'Duration\n'
+                    '0.1s\n'
+                    'Max runtime\n'
+                    '30s\n'
+                    'Persistent\n'
+                    'no\n'
+                    'Historical review flag\n'
+                    'no',
+            'screenshot': 'e04-JOB-707.png',
+            'at': 15.0}]}
+
+    def case_action_holder(root: Path, index: int, number: int) -> dict:
+        # Independent accepted running-public literal, not a SQL projection or
+        # admission/serializer result. Preserve all27 fields/types/key order.
+        public = copy.deepcopy(case_literals[str(index)]['jobs'][number]['running_browser'])
+        public['cwd_resolved'] = str(root/'runtime/orgs/alpha/workspaces/case_manager')
+        public['stdout_path'] = str(root/'runtime/orgs/alpha/jobs'/(public['id']+'.out'))
+        public['stderr_path'] = str(root/'runtime/orgs/alpha/jobs'/(public['id']+'.err'))
+        return dict(path='/api/v1/orgs/alpha/jobs/'+public['id'],method='GET',request=None,
+                    status=200,response=public,no_run_controls=True,at=15.0)
+
+    def case_terminal_holder(root: Path, index: int, number: int, browser_source: str | None = None) -> dict:
+        browser = copy.deepcopy(case_pair_terminal_literals[str(index)][number] if index >= 4
+                                else case_terminal_literals[str(index)])
+        public = browser['body']
+        public['cwd_resolved'] = str(root/'runtime/orgs/alpha/workspaces/case_manager')
+        public['stdout_path'] = str(root/'runtime/orgs/alpha/jobs'/(public['id']+'.out'))
+        public['stderr_path'] = str(root/'runtime/orgs/alpha/jobs'/(public['id']+'.err'))
+        if browser_source is not None:
+            public['script_text'] = browser_source
+            browser['text'] = 'A\n$ ' + browser_source + 'B'
+        return browser
+
+    def case_complete_terminal(image: dict, root: Path, index: int, numbers: tuple,
+                               browser_source: str | None = None) -> None:
+        # Fixture-only completion AFTER retaining the old constructor. Supply
+        # absent holders only, to every original Case copy, retaining all old
+        # contradictions and PRESENT malformed holders without repair.
+        for entry in image['durable']:
+            for case in entry.get('jobs_cases', []):
+                for number in numbers:
+                    jobs = case.get('jobs', [])
+                    if type(jobs) is list and number < len(jobs) and type(jobs[number]) is dict and 'browser' not in jobs[number]:
+                        jobs[number]['browser'] = case_terminal_holder(root,index,number,browser_source)
+
+    def case_input(root: Path, index: int = 0, *, late: bool = False, mode: str = 'encoded',
+                   store_image: str = 'accepted', direct_public: bool = False,
+                   terminal_public: bool = False, browser_source: str | None = None) -> dict:
+        subject = copy.deepcopy(case_literals[str(0 if index == 1 else index)])
+        if browser_source is not None:
+            # Test input substitution for the independently authored tiny/span
+            # oracles. Every real source occurrence is rebuilt from this INPUT,
+            # never from admission output; all original literals remain intact.
+            for literal in subject['jobs']:
+                literal['script'] = browser_source
+                literal['script_sha256'] = hashlib.sha256(browser_source.encode()).hexdigest()
+                for holder in ('running', 'terminal', 'running_browser'):
+                    literal[holder]['script_text'] = browser_source
+        variant = 'E04.review-required-refused' if index == 1 else subject['variant']
+        image = submission_input(root, subject['jobs'][0]['script'])
+        commands, jobs = [], []
+        first = dict(image['starts'][0], task=subject['jobs'][0]['terminal']['task_id'], session=subject['s1'])
+        starts = [first] if index == 1 else [first, dict(first,session='sess-case-second',pid=303,pid_start='789',pgid=303)]
+        for number,literal in enumerate([] if index == 1 else subject['jobs']):
+            running,terminal = literal['running'],literal['terminal']
+            # Explicit fixture-only path substitution: original SOURCE stays
+            # byte-exact; selected SQL output/cwd paths match THIS fixture root.
+            for row_image in (running,terminal):
+                row_image['cwd_resolved'] = str(root/'runtime/orgs/alpha/workspaces/case_manager')
+                row_image['stdout_path'] = str(root/'runtime/orgs/alpha/jobs'/(literal['id']+'.out'))
+                row_image['stderr_path'] = str(root/'runtime/orgs/alpha/jobs'/(literal['id']+'.err'))
+                # Keep the entire historical31-field input as a refusal
+                # subject. Positive Store rows use accepted13807 D2/D3's
+                # complete independently ordered27-field literals.
+                if store_image in ('original31', 'original31-permuted'):
+                    row_image['unknown_sql_null'] = None
+                    row_image['unknown_sql_integer'] = 0
+                    row_image['unknown_sql_real'] = 1.5
+                    row_image['unknown_sql_text'] = 'full public 中 extension'
+            command = copy.deepcopy(image['provider_commands'][0])
+            command['provider'] = {k:first[k] for k in ('task','session','agent','org','pid')}
+            command.update(child_pid=202+number,child_start=str(456+number),
+                child_stat=str(202+number)+' (python) S 101 '+'0 '*17+str(456+number)+'\n')
+            payload = command['payload']
+            payload.update(title=terminal['title'],rationale=terminal['rationale'],script=literal['script'],
+                task_id=first['task'],session_id=first['session'],max_runtime_seconds=terminal['max_runtime_seconds'])
+            command['payload_file']['text'] = json.dumps(payload,sort_keys=True)
+            response = command['wire'][0]['response']
+            response.update(id=literal['id'],created_at=terminal['created_at'],started_at=terminal['started_at'],
+                cwd_resolved=terminal['cwd_resolved'],timeout_seconds=terminal['max_runtime_seconds'],
+                events_url='/api/v1/orgs/alpha/jobs/'+literal['id']+'/events',
+                authentication=dict(task_id=first['task'],session_id=first['session']))
+            command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+            commands.append(command)
+            image['provider_commands'] = [command]; submission_reseal(image)
+            audit = copy.deepcopy(sql_rows['audit'][0])
+            audit.update(task_id=first['task'],agent='case_manager',action='job_submitted',
+                payload=json.dumps(dict(script_request_id=literal['id'],text='quote" LF\n 中') if mode == 'encoded'
+                                   else dict(script_request_id=literal['id'])))
+            if mode == 'null': audit['payload'] = None
+            outputs = [dict(path=terminal[k+'_path'],exists=True,text=terminal[k+'_head'],bytes=len(terminal[k+'_head'].encode()))
+                       for k in ('stdout','stderr')]
+            job = {k:literal[k] for k in ('id','script','script_sha256','token','label','code')}
+            job.update(cap=terminal['max_runtime_seconds'],running=running)
+            if direct_public:
+                # Complete independently supplied public27, never a projection
+                # of the SQL/candidate row. Only the existing fixture root's
+                # three path substitutions differ from accepted literal bytes.
+                public = literal['running_browser']
+                public['cwd_resolved'] = str(root/'runtime/orgs/alpha/workspaces/case_manager')
+                public['stdout_path'] = str(root/'runtime/orgs/alpha/jobs'/(literal['id']+'.out'))
+                public['stderr_path'] = str(root/'runtime/orgs/alpha/jobs'/(literal['id']+'.err'))
+                job['running_browser'] = public
+            job.update(pending=[dict(row=copy.deepcopy(running),audit=[audit])],
+                oracle=dict(row=terminal,audits=[copy.deepcopy(audit)],outputs=outputs),
+                rejection_drain=dict(row=copy.deepcopy(terminal),audits=[copy.deepcopy(audit)],outputs=copy.deepcopy(outputs)),
+                out=terminal['stdout_head'],err=terminal['stderr_head'])
+            job['terminal'] = copy.deepcopy(terminal)
+            if terminal_public:
+                job['browser'] = case_terminal_holder(root,index,number,browser_source)
+            job['submit'] = copy.deepcopy(command)
+            jobs.append(job)
+        # These are independently specified fixture commands at the actual
+        # jobs.py assignments. They are copies, not extra executions/attempts.
+        # The former complete SQL subjects omitted these reached assignments.
+        def completion(start: dict, blocked: bool, child: int) -> dict:
+            command = copy.deepcopy(finite_input(root,'completion','block' if blocked else 'final',late=False)['provider_commands'][0])
+            summary = ('waiting for genuine IDs' if blocked else (
+                'E04_OK completed exit0','E04_REVIEW_REQUIRED_REFUSED no job submitted',
+                'E04_EXIT7 completed exit7; operation nonzero','E04_TIMEOUT failed timeout exit-9',
+                'E04_PAIR A completed exit0; B completed exit7','E04_PAIR A completed exit0; B completed exit7')[index])
+            payload = dict(status='blocked' if blocked else 'completed',confidence=90,summary=summary)
+            if blocked: payload['waiting_on_job_ids'] = [j['id'] for j in jobs]
+            else: payload['decision'] = dict(action='done',summary=summary)
+            payload.update(task_id=start['task'],session_id=start['session'],agent=start['agent'])
+            text = json.dumps(payload,sort_keys=True); data = text.encode(); digest = hashlib.sha256(data).hexdigest()
+            path = str(root/'coord'/(digest+'.json'))
+            body = dict(session_id=start['session'],agent=start['agent'],status=payload['status'],confidence=90,
+                output_summary=summary,risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
+            if blocked: body['waiting_on_job_ids'] = list(payload['waiting_on_job_ids'])
+            else: body['decision'] = dict(payload['decision'])
+            command.update(provider={k:start[k] for k in ('task','session','agent','org','pid')},payload=payload,
+                payload_file=dict(path=path,text=text,bytes=len(data),sha256=digest),
+                argv=[str(root/'bin/happyranch'),'report-completion','--org','alpha','--from-file',path],
+                child_pid=child,child_start=str(child+500),child_parent=start['pid'],
+                child_stat=str(child)+' (python) S '+str(start['pid'])+' '+'0 '*17+str(child+500)+'\n',
+                entered=20. if blocked else 30.,finished=20.5 if blocked else 30.5,execution_deadline=29. if blocked else 39.)
+            command['wire'] = [dict(path='/api/v1/orgs/alpha/tasks/'+start['task']+'/completion',method='POST',
+                body_sha256=hashlib.sha256(json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),
+                status=200,response=dict(ok=True),dropped=False)]
+            return command
+        def snapshot(terminal: bool, session: str) -> dict:
+            value = copy.deepcopy(sql_rows)
+            value['tasks'][0].update(id=first['task'],brief=variant,current_session_id=session,
+                blocked_on_job_ids=json.dumps([j['id'] for j in jobs]))
+            value['results'][0].update(task_id=first['task'],session_id=first['session'])
+            value['audit'][0].update(task_id=first['task'])
+            if mode != 'encoded':
+                for table,column,top in sql_columns:
+                    value[table][0][column] = None if mode == 'null' else ('{}' if top == '{' else '[]')
+            value['jobs'] = [copy.deepcopy(j['oracle']['row'] if terminal else j['running']) for j in jobs]
+            return value
+        case = dict(method='serial-public-metrics-window-causal-v1',variant=variant,index=index,
+            source_sha=old_source,task=first['task'],starts=copy.deepcopy(starts),jobs=jobs)
+        if index != 1:
+            case['parked'] = snapshot(False,first['session'])
+            case['live_s2'] = dict(snapshot=snapshot(True,starts[1]['session']))
+        if index >= 4:
+            parked = case['parked']
+            parked['tasks'][0].update(status='in_progress',completed_at=None,block_kind='blocked_on_job',
+                blocked_on_job_ids=json.dumps(sorted(j['id'] for j in jobs)))
+            parked['results'][0].update(status='blocked',decision_json=None,
+                waiting_on_job_ids=json.dumps([j['id'] for j in jobs]))
+            case['first_terminal'] = copy.deepcopy(parked)
+            case['first_terminal']['jobs'] = [copy.deepcopy(jobs[0]['oracle']['row']),copy.deepcopy(jobs[1]['pending'][-1]['row'])]
+        case['final_snapshot'] = snapshot(True,starts[-1]['session'])
+        if index != 1:
+            block = completion(first,True,410)
+            commands.append(block); case['block'] = copy.deepcopy(block)
+        final = completion(starts[-1],False,411)
+        commands.append(final); case['final_callback'] = copy.deepcopy(final)
+        image['starts'],image['provider_commands'] = starts,commands
+        image['durable'].append(dict(jobs_cases=[case]))
+        if late:
+            # Selected full rows can precede all selectors, with each original
+            # order retained; no normalization of nested objects is expected.
+            case = {k:case[k] for k in reversed(case)}
+            rows = [r for holder in (case.get('parked'),case.get('first_terminal'),case.get('live_s2',{}).get('snapshot'),case['final_snapshot'])
+                    if holder is not None for table_name,table in holder.items()
+                    if table_name != 'jobs' or store_image in ('permuted27', 'original31-permuted') for r in table]
+            for job in jobs:
+                rows += [job['pending'][0]['audit'][0],job['oracle']['audits'][0],job['rejection_drain']['audits'][0]]
+                if store_image in ('permuted27', 'original31-permuted'):
+                    rows += [job['running'],job['terminal'],job['pending'][0]['row'],
+                        job['oracle']['row'],job['rejection_drain']['row']]
+                job_items = list(job.items()); job.clear(); job.update(reversed(job_items))
+            for row_image in rows:
+                items = list(row_image.items()); row_image.clear(); row_image.update(reversed(items))
+            image['durable'][-1]['jobs_cases'] = [case]
+            image = dict(durable=list(reversed(image['durable'])),provider_commands=commands,starts=starts)
+        return image
+
+    case_full = [(i,late,mode) for i in range(6) for late in (False,True) for mode in ('ordinary','null','encoded')]
+    case_partials = ('script-only','running-only','empty','refusal-no-job')
+    case_stages = {f'terminal-index{i}-{order}': (i,order) for i in (0,2,3) for order in ('early','late')}
+    case_stages.update({f'pair-index{i}-{order}': (i,order) for i in (4,5)
+                       for order in ('early','late','jobs-last','store-id-order','audit-append')})
+    case_oracle_partials = {f'{stage}-index{i}-{order}': (i,order)
+        for i,stage in ((0,'terminal-before-oracle'),(4,'first-terminal-partial'),(5,'first-terminal-partial'))
+        for order in ('early','late')}
+    case_oracle_partials.update({f'oracle-before-browser-index{i}-{order}': (i,'oracle-before-browser')
+                                 for i in (0,2,3) for order in ('early','late')})
+    case_stages.update(case_oracle_partials)
+    case_copy_positive = {f'copy-index{i}-{order}': (i,order)
+                          for i in range(6) for order in ('early','late','jobs-last','repeated','command-order','attempts-after-copies')}
+    case_copy_positive.update({f'copy-partial-{stage}': (0,stage) for stage in
+        ('pre-submit','submit-before-id','submit-only','block-before-parked','final-before-snapshot')})
+    case_pair_partials = {f'copy-partial-pair-index{i}-{stage}': (i,stage)
+                          for i in (4,5) for stage in ('pre-block','submit-before-id')}
+    case_copy_positive.update(case_pair_partials)
+    case_direct_positive = {f'direct-public-index{i}-{order}': (i,order)
+                            for i in (0,2,3,4,5) for order in ('early','jobs-last')}
+    case_direct_positive['direct-public-lookalike-scalar'] = (0,'lookalike-scalar')
+    case_terminal_positive = {f'terminal-browser-index{i}-{order}': (i,order)
+                              for i in (0,2,3) for order in ('early','jobs-last')}
+    case_terminal_positive.update({f'terminal-browser-{name}': (0,name) for name in
+        ('ordinary-prefix-suffix','header-looking-prefix','zero-anchor-ordinary','small-one-backslash',
+         'true-absence','unselected-task-clean')})
+    case_running_partials = {f'running-public-partial-{stage}-index{i}': (i,stage)
+        for i in (0,2,3,4,5) for stage in ('running-before-block','pending-before-block',
+            'block-before-parked','parked-before-run','action-before-open','public-before-terminal')}
+    case_running_partials.update({f'running-public-partial-{stage}-index{i}': (i,stage)
+        for i in (4,5) for stage in ('action-second-before-open','second-public-before-terminal')})
+    case_action_positive = {f'action-index{i}-{order}': (i,order)
+        for i in (0,2,3,4,5) for order in ('early','jobs-last','before-open')}
+    case_action_positive.update({'action-at-int':(0,'at-int'),'action-at-negative':(0,'at-negative')})
+    # Every original later-stage positive remains an entire named refusal.
+    # Earlier partials and previously complete direct-public subjects keep
+    # their original images. No production selector distinguishes the inputs.
+    case_positive_specs = (list(case_action_positive) + case_full + list(case_partials) + ['repeated'] + list(case_stages)
+        + list(case_copy_positive) + list(case_direct_positive) + list(case_terminal_positive)
+        + list(case_running_partials))
+    case_original_omitted = [spec for spec in case_positive_specs if
+        (type(spec) is tuple and spec[0] != 1
+         or type(spec) is str and (spec == 'repeated' or spec in case_stages
+             or spec in case_terminal_positive
+             or spec in case_copy_positive and case_copy_positive[spec][0] != 1
+                 and (not spec.startswith('copy-partial-') or spec == 'copy-partial-final-before-snapshot')))]
+    # Independent fixture-stage inventory, taken from jobs.exercise assignments.
+    # Terminal/oracle partials stop before job_terminal. FIRST barriers reach
+    # only job0; every other completed positive reaches its whole plan.
+    case_terminal_numbers = {spec:tuple(range(2 if spec[0] >= 4 else 1))
+                             for spec in case_full if spec[0] != 1}
+    case_terminal_numbers['repeated'] = (0,)
+    case_terminal_numbers.update({spec:((0,) if spec in case_oracle_partials else tuple(range(2 if i >= 4 else 1)))
+        for spec,(i,stage) in case_stages.items() if not spec.startswith(('terminal-before-oracle-', 'oracle-before-browser-'))})
+    case_terminal_numbers.update({spec:tuple(range(2 if i >= 4 else 1))
+        for spec,(i,stage) in case_copy_positive.items() if i != 1
+        and (not spec.startswith('copy-partial-') or stage == 'final-before-snapshot')})
+    case_terminal_numbers.update({spec:tuple(range(2 if i >= 4 else 1)) for spec,(i,stage) in case_direct_positive.items()})
+    case_terminal_numbers.update({spec:(0,) for spec in case_terminal_positive})
+    case_terminal_numbers.update({spec:(0,) for spec,(i,stage) in case_running_partials.items()
+                                 if stage in ('action-second-before-open','second-public-before-terminal')})
+    case_terminal_omitted = [spec for spec in case_terminal_numbers
+        if spec not in case_terminal_positive or spec == 'terminal-browser-true-absence']
+    for spec, original_omitted, original_terminal in [(spec,omitted,terminal) for spec in case_positive_specs
+            for omitted in ((False,True) if spec in case_original_omitted else (False,))
+            for terminal in ((False,True) if not omitted and spec in case_terminal_omitted else (False,))]:
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha'] = old_source
+                if type(spec) is str and spec in case_action_positive:
+                    index,order = case_action_positive[spec]
+                    image = case_input(root,index,direct_public=True,terminal_public=True)
+                    case = image['durable'][-1]['jobs_cases'][0]
+                    for number,selected_job in enumerate(case['jobs']):
+                        # Only insert the new holder before the original
+                        # job_open response. Every pre-existing field stays in
+                        # its own order and keeps its entire literal value.
+                        if order != 'before-open' or number == 0:
+                            pairs = list(selected_job.items()); selected_job.clear()
+                            for key,item in pairs:
+                                if key == 'running_browser': selected_job['action'] = case_action_holder(root,index,number)
+                                selected_job[key] = item
+                            if order in ('at-int','at-negative'):
+                                selected_job['action']['at'] = 15 if order == 'at-int' else -1.5
+                        if order == 'before-open':
+                            for key in ('running_browser','terminal','oracle','rejection_drain','browser'):
+                                selected_job.pop(key)
+                    if order == 'before-open':
+                        for key in ('first_terminal','live_s2','final_snapshot','final_callback'): case.pop(key,None)
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                    if order == 'jobs-last': case['jobs'] = case.pop('jobs')
+                    label = 'C5-Case-'+spec+'-'+boundary
+                elif type(spec) is tuple:
+                    index,late,mode = spec
+                    image = case_input(root,index,late=late,mode=mode,direct_public=not original_omitted)
+                    label = f'C5-Case-full-index{index}-'+('late' if late else 'early')+'-'+mode+'-'+boundary
+                elif spec in case_running_partials:
+                    index,stage = case_running_partials[spec]
+                    # These retained original partials keep their plain SOURCE.
+                    # The new PRESENT-action controls above own escaped SOURCE.
+                    image = case_input(root,index,direct_public=True,
+                        browser_source='print("public")\n' if stage in ('action-before-open','action-second-before-open') else None)
+                    case = image['durable'][-1]['jobs_cases'][0]
+                    for key in ('live_s2','final_snapshot','final_callback'): case.pop(key,None)
+                    if stage not in ('action-second-before-open','second-public-before-terminal'): case.pop('first_terminal',None)
+                    case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                    image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                    for number,partial_job in enumerate(case['jobs']):
+                        if number == 0 and stage in ('action-second-before-open','second-public-before-terminal'):
+                            partial_job.pop('rejection_drain')
+                            continue
+                        for key in ('terminal','oracle','rejection_drain'): partial_job.pop(key)
+                        public = partial_job.pop('running_browser')
+                        if stage == 'public-before-terminal' and number == 0 or stage == 'second-public-before-terminal' and number == 1:
+                            partial_job['running_browser'] = public
+                        if stage == 'action-before-open' and number == 0 or stage == 'action-second-before-open' and number == 1:
+                            partial_job['action'] = dict(path='/api/v1/orgs/alpha/jobs/'+partial_job['id'],
+                                method='GET',request=None,status=200,response=public,no_run_controls=True,at=15.0)
+                    if stage in ('running-before-block','pending-before-block','block-before-parked'):
+                        case.pop('parked')
+                    if stage in ('running-before-block','pending-before-block'):
+                        case.pop('block')
+                        image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] == 'jobs-submit']
+                    if stage == 'running-before-block':
+                        case['jobs'] = case['jobs'][:1]; image['provider_commands'] = image['provider_commands'][:1]
+                        case['jobs'][0]['pending'] = []
+                    label = 'C5-Case-'+spec+'-'+boundary
+                elif spec in case_terminal_positive:
+                    index,order = case_terminal_positive[spec]
+                    image = case_input(root,index,direct_public=not original_omitted,terminal_public=order != 'true-absence',
+                        browser_source=case_small_span_literals['one_backslash_source'] if order == 'small-one-backslash' else None)
+                    case = image['durable'][-1]['jobs_cases'][0]
+                    job = case['jobs'][0]
+                    if order == 'jobs-last': case['jobs'] = case.pop('jobs')
+                    elif order == 'ordinary-prefix-suffix':
+                        job['browser']['text'] = 'unchanged public 中 prefix\n' + job['browser']['text'] + '\nunchanged suffix'
+                    elif order == 'header-looking-prefix':
+                        job['browser']['text'] = 'COMMAND\nScript: $ ordinary\n' + job['browser']['text']
+                    elif order == 'zero-anchor-ordinary': job['browser']['text'] = 'ordinary public text without a SOURCE presentation'
+                    elif order == 'small-one-backslash':
+                        job['browser']['text'] = case_small_span_literals['positive_text']
+                    elif order == 'unselected-task-clean': case['task_browser'] = dict(text='ordinary public task page',screenshot='task.png',at=1.0)
+                    label = 'C5-Case-'+spec+'-'+boundary
+                elif spec in case_direct_positive:
+                    index,order = case_direct_positive[spec]
+                    image = case_input(root,index,direct_public=True)
+                    case = image['durable'][-1]['jobs_cases'][0]
+                    if order == 'jobs-last': case['jobs'] = case.pop('jobs')
+                    if order == 'lookalike-scalar': case['lookalike'] = dict(running_browser=7)
+                    label = 'C5-Case-'+spec+'-'+boundary
+                elif spec in case_copy_positive:
+                    index,order = case_copy_positive[spec]
+                    image = case_input(root,index,late=order != 'early',direct_public=not original_omitted)
+                    holder = image['durable'][0 if order != 'early' else -1]
+                    case = holder['jobs_cases'][0]
+                    if order == 'jobs-last': case['jobs'] = case.pop('jobs')
+                    if order == 'repeated': holder['jobs_cases'].append(copy.deepcopy(case))
+                    if order == 'command-order':
+                        for command in image['provider_commands']:
+                            items = list(command.items()); command.clear(); command.update(reversed(items))
+                        for number,job in enumerate(case['jobs']): job['submit'] = copy.deepcopy(image['provider_commands'][number])
+                        if index != 1: case['block'] = copy.deepcopy(image['provider_commands'][-2])
+                        case['final_callback'] = copy.deepcopy(image['provider_commands'][-1])
+                    if order == 'attempts-after-copies':
+                        attempts,offset = [],0
+                        for number,command in enumerate(image['provider_commands']):
+                            provider = next(s for s in image['starts'] if s['session'] == command['provider']['session'])
+                            payload = {k:copy.deepcopy(v) for k,v in command['payload'].items() if k not in ('task_id','session_id','agent')}
+                            attempts.append(dict(provider=copy.deepcopy(provider),instruction=dict(action=command['action'],
+                                deadline=command['execution_deadline']+1,execution_deadline=command['execution_deadline'],payload=payload),
+                                entered=command['entered']-.25,wire_begin=offset,wire_end=offset+len(command['wire']),
+                                finished=command['finished']+.25,command_index=number))
+                            offset += len(command['wire'])
+                        image['provider_attempts'] = attempts
+                    if spec.startswith('copy-partial-') and order != 'final-before-snapshot':
+                        for partial_job in case['jobs']: partial_job.pop('running_browser',None)
+                    if spec in case_pair_partials:
+                        for key in ('parked','first_terminal','live_s2','final_snapshot','block','final_callback'):
+                            case.pop(key)
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        case['jobs'] = case['jobs'][:1]
+                        image['provider_commands'] = image['provider_commands'][:1]
+                        job = case['jobs'][0]
+                        for key in ('terminal','oracle','rejection_drain'): job.pop(key)
+                        if order == 'submit-before-id':
+                            job.pop('id'); job.pop('running'); job['pending'] = []
+                        label = f'C5-Case-copy-partial-pair-index{index}-{order}-{boundary}'
+                    elif spec.startswith('copy-partial-'):
+                        case.pop('final_snapshot')
+                        if order != 'final-before-snapshot':
+                            case.pop('final_callback'); case.pop('live_s2')
+                            image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                            case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        if order in ('pre-submit','submit-before-id','submit-only','block-before-parked'):
+                            case.pop('parked')
+                        if order in ('pre-submit','submit-before-id','submit-only','block-before-parked'):
+                            job = case['jobs'][0]
+                            for field in ('terminal','oracle','rejection_drain'): job.pop(field)
+                        if order in ('pre-submit','submit-before-id','submit-only'):
+                            case.pop('block')
+                            image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-block']
+                            job = case['jobs'][0]
+                            job.pop('running')
+                            job['pending'] = []
+                            if order in ('pre-submit','submit-before-id'): job.pop('id')
+                            if order == 'pre-submit': job.pop('submit'); image['provider_commands'] = []
+                        label = f'C5-Case-copy-partial-{order}-{boundary}'
+                    else: label = f'C5-Case-copy-positive-index{index}-{order}-{boundary}'
+                elif spec in case_stages:
+                    index,order = case_stages[spec]
+                    late_stage = order == 'late' or spec.endswith('-late')
+                    image = case_input(root,index,late=late_stage,direct_public=not original_omitted)
+                    case = image['durable'][0 if late_stage else -1]['jobs_cases'][0]
+                    if order == 'jobs-last': case['jobs'] = case.pop('jobs')
+                    elif order == 'audit-append':
+                        audit = copy.deepcopy(case['jobs'][0]['oracle']['audits'][0])
+                        audit.update(id=703,action='job_completed')
+                        case['first_terminal']['audit'].append(audit)
+                    elif order == 'store-id-order':
+                        # Actual IDs can sort opposite to submission order.
+                        # Change only the finite fixture IDs and their direct
+                        # copies, retaining original SOURCE/token/title facts.
+                        first_id,second_id = [j['id'] for j in case['jobs']]
+                        replacements = {first_id:second_id,second_id:first_id}
+                        def exchange(value: object) -> object:
+                            if type(value) is dict:
+                                return {k:exchange(v) for k,v in value.items()}
+                            if type(value) is list: return [exchange(v) for v in value]
+                            if type(value) is str:
+                                return value.replace(first_id,'JOB-TEMP').replace(second_id,first_id).replace('JOB-TEMP',second_id)
+                            return value
+                        image = exchange(image)
+                        case = image['durable'][-1]['jobs_cases'][0]
+                        # Explicit fixture ID exchange also changes encoded
+                        # command occurrences. Reseal their independent fields;
+                        # never derive expectations from shipping admission.
+                        for command in image['provider_commands']:
+                            payload = command['payload']; text = json.dumps(payload,sort_keys=True)
+                            file = command['payload_file']; digest = hashlib.sha256(text.encode()).hexdigest()
+                            file.update(text=text,bytes=len(text.encode()),sha256=digest,path=str(root/'coord'/(digest+'.json')))
+                            command['argv'][-2 if command['action'] == 'jobs-submit' else -1] = file['path']
+                            if command['action'] == 'jobs-submit':
+                                body = payload
+                                command['stdout'] = json.dumps(command['wire'][0]['response'],sort_keys=True)+'\n'
+                            else:
+                                body = dict(session_id=payload['session_id'],agent=payload['agent'],status=payload['status'],confidence=90,
+                                    output_summary=payload['summary'],risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
+                                if command['action'] == 'jobs-block': body['waiting_on_job_ids'] = list(payload['waiting_on_job_ids'])
+                                else: body['decision'] = dict(payload['decision'])
+                            command['wire'][0]['body_sha256'] = hashlib.sha256(json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+                        for number,job in enumerate(case['jobs']): job['submit'] = copy.deepcopy(image['provider_commands'][number])
+                        case['block'] = copy.deepcopy(image['provider_commands'][-2])
+                        case['final_callback'] = copy.deepcopy(image['provider_commands'][-1])
+                        for holder in (case['parked'],case['first_terminal'],case['live_s2']['snapshot'],case['final_snapshot']):
+                            holder['jobs'].reverse()
+                        for holder in (case['parked'],case['first_terminal']):
+                            holder['tasks'][0]['blocked_on_job_ids'] = json.dumps(sorted(replacements))
+                    if spec in case_oracle_partials:
+                        # Separate genuine jobs.py stages: terminal precedes
+                        # terminal_oracle; first-terminal precedes SECOND job
+                        # execution. Complete refusal subjects below stay full.
+                        for key in ('live_s2','final_snapshot','final_callback'): case.pop(key)
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                        case['jobs'][0].pop('rejection_drain')
+                        if index < 4:
+                            if order != 'oracle-before-browser': case['jobs'][0].pop('oracle')
+                        else:
+                            for key in ('terminal','oracle','rejection_drain'): case['jobs'][1].pop(key)
+                            case['jobs'][1].pop('running_browser',None)
+                    label = 'C5-Case-stage-positive-'+spec+'-'+boundary
+                else:
+                    image = case_input(root,1 if spec == 'refusal-no-job' else 0,late=True,
+                        direct_public=spec == 'repeated' and not original_omitted)
+                    case = image['durable'][0]['jobs_cases'][0]
+                    if spec == 'repeated': image['durable'][0]['jobs_cases'].append(case)
+                    else:
+                        case.pop('parked',None); case.pop('live_s2',None); case.pop('final_snapshot',None)
+                        case.pop('block',None); case.pop('final_callback',None)
+                        image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] == 'jobs-submit']
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        if spec in ('empty','refusal-no-job'): case['jobs'] = []; image['provider_commands'] = []
+                        else:
+                            job = case['jobs'][0]
+                            for field in ('pending','oracle','rejection_drain','out','err','terminal'): job.pop(field)
+                            if spec == 'script-only': job.pop('running')
+                    label = 'C5-Case-'+('repeated' if spec == 'repeated' else 'partial-'+spec)+'-'+boundary
+                if not original_omitted and not original_terminal and spec in case_terminal_numbers:
+                    fixture_index = spec[0] if type(spec) is tuple else (0 if spec == 'repeated' else
+                        case_stages[spec][0] if spec in case_stages else
+                        case_copy_positive[spec][0] if spec in case_copy_positive else
+                        case_direct_positive[spec][0] if spec in case_direct_positive else
+                        case_terminal_positive[spec][0] if spec in case_terminal_positive else case_running_partials[spec][0])
+                    case_complete_terminal(image,root,fixture_index,case_terminal_numbers[spec],
+                        'print("public")\n' if spec in case_running_partials
+                        and case_running_partials[spec][1] == 'action-second-before-open' else None)
+                    if spec in case_stages and case_stages[spec][1] == 'store-id-order':
+                        for completed_job in case['jobs']: completed_job['browser'] = exchange(completed_job['browser'])
+                if original_omitted or original_terminal:
+                    original_label = label
+                    label = label.replace('C5-Case-', 'C5-Case-refusal-original-omitted-public-' if original_omitted
+                                          else 'C5-Case-refusal-original-omitted-terminal-browser-',1)
+                    expected_refusal = ('Case required direct running public row unavailable' if original_omitted
+                                        else 'Case required terminal browser holder unavailable')
+                    wanted = copy.deepcopy(image)
+                    original_image = b' '+json.dumps(wanted,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name; prior = b'{"prior":"safe"}'
+                    destination.write_bytes(prior)
+                    acquire(); drain(); commit()
+                    previous = {p.name:p.read_bytes() for p in output.iterdir()}
+                    tree = copy.deepcopy(state['safe_scenario']); scenario = (root/'scenario.json').read_bytes()
+                    old_buffer = staged[name]
+                    prior_staged,prior_published = copy.deepcopy(staged),copy.deepcopy(published)
+                    raw_names = {p.name for p in (root/'raw').iterdir()}
+                    if boundary in ('writer','prefix'):
+                        if boundary == 'prefix':
+                            source = root/'raw/observations.json'; source.write_bytes(original_image)
+                        try:
+                            if boundary == 'writer': writer._atomic_json(destination,image)
+                            else: writer._prepare_original_evidence(destination,source)
+                        except ValueError as exc:
+                            assert str(exc) == expected_refusal, (label,str(exc))
+                            assert writer.redaction_ready and writer._evidence_fatal is None
+                        else: raise AssertionError(('Case missing running public admitted: ' if original_omitted
+                            else 'Case missing terminal browser admitted: ')+original_label)
+                        assert destination.read_bytes() == prior and staged[name] is old_buffer and published[name] is old_buffer
+                        if boundary == 'prefix': assert source.read_bytes() == original_image
+                        writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                    else:
+                        destination.write_bytes(original_image)
+                        (root/'raw/eligible-case.txt').write_bytes(b'eligible ordinary Case sibling\n')
+                        complete,error = acquire(); drain()
+                        assert not complete and error is not None and str(error[0]) == expected_refusal, label
+                        assert not state['fatal'] and not errors
+                        assert destination.read_bytes() == original_image and staged[name] is old_buffer and published[name] is old_buffer
+                        assert name in state['refused_sources']
+                        assert (output/'eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
+                    exact(image,wanted); exact(state['safe_scenario'],tree)
+                    assert (root/'scenario.json').read_bytes() == scenario
+                    for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
+                    extra = {'eligible-case.txt'} if boundary in ('raw','raw-prefix') else set()
+                    assert {p.name for p in output.iterdir()} == set(previous) | extra
+                    assert {p.name for p in (root/'raw').iterdir()} == raw_names | {'eligible-case.txt'} | ({'observations.json'} if boundary == 'prefix' else set())
+                    assert set(staged) == set(prior_staged) | extra and set(published) == set(prior_published) | extra
+                    for prior_name,prior_bytes in prior_staged.items(): assert staged[prior_name] == prior_bytes
+                    for prior_name,prior_bytes in prior_published.items(): assert published[prior_name] == prior_bytes
+                    assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                    results[label] = ('entire original omitted-running-public input refused; prior files/tree/result/FAIL/types/order exact; no selected pending/publication; native NOT RUN'
+                        if original_omitted else 'entire original omitted-terminal-browser input refused; prior files/tree/result/FAIL/types/order exact; no selected pending/publication; native NOT RUN')
+                    continue
+                acquire(); drain(); commit()
+                previous = {p.name:p.read_bytes() for p in output.iterdir()}
+                tree = copy.deepcopy(state['safe_scenario']); scenario = (root/'scenario.json').read_bytes()
+                wanted = copy.deepcopy(image)
+                original_image = b' '+json.dumps(wanted,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                compact = json.dumps(wanted,ensure_ascii=False,separators=(',',':')).encode()
+                name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name
+                if type(spec) is str and (spec in case_oracle_partials or spec in case_direct_positive or spec in case_terminal_positive or spec in case_action_positive):
+                    raw_names = {p.name for p in (root/'raw').iterdir()}
+                    prior_staged,prior_published = copy.deepcopy(staged),copy.deepcopy(published)
+                try:
+                    if boundary == 'writer': writer._atomic_json(destination,image); expected_image = compact
+                    elif boundary == 'prefix':
+                        source = root/'raw/observations.json'; source.write_bytes(original_image)
+                        content,parsed = writer._prepare_original_evidence(destination,source)
+                        assert content == source.read_bytes() == original_image
+                        exact(parsed,wanted)
+                        assert not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                        writer._replace_evidence(destination,content); expected_image = original_image
+                    else: destination.write_bytes(original_image); expected_image = original_image
+                    complete,error = acquire(); drain()
+                    assert not complete and error is None and not state['fatal'] and not errors, (
+                        label, complete, error, state['fatal'], errors, failures,
+                        [(frame.f_code.co_name, line,
+                          {'requested':{key:frame.f_locals[key] for key in ('size','facts')},
+                           'ledger':{key:getattr(frame.f_locals['self'],key) for key in ('work','reserved','facts')}}
+                          if frame.f_code.co_name == 'reserve' else None)
+                         for frame,line in traceback_module.walk_tb(error[1])] if error is not None else None)
+                    assert len(failures) == 2 and all(cause is None and traceback is None and category == 'other'
+                        and annotation[:2] == ('REQUIRED','MISSING') for cause,traceback,category,window,annotation in failures)
+                except (ValueError,AssertionError) as error:
+                    raise AssertionError('Case canonical full member failed: '+label) from error
+                assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                exact(image,wanted); exact(json.loads(expected_image),wanted); exact(state['safe_scenario'],tree)
+                assert (root/'scenario.json').read_bytes() == scenario
+                for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
+                assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists()
+                if type(spec) is str and (spec in case_oracle_partials or spec in case_direct_positive or spec in case_terminal_positive or spec in case_action_positive):
+                    actual = destination.read_bytes()
+                    assert len(actual) == len(expected_image) and hashlib.sha256(actual).digest() == hashlib.sha256(expected_image).digest()
+                    # Required-prefix keeps BOTH its original observations
+                    # source and the prepared prefix for the real collector.
+                    new_names = {name} | ({'observations.json'} if boundary == 'prefix' else set())
+                    assert {p.name for p in output.iterdir()} == set(previous) | new_names, label
+                    assert {p.name for p in (root/'raw').iterdir()} == raw_names | new_names, label
+                    assert set(staged) == set(prior_staged) | new_names and set(published) == set(prior_published) | new_names, label
+                    if boundary == 'prefix':
+                        assert (root/'raw/observations.json').read_bytes() == staged['observations.json'] == published['observations.json'] == (output/'observations.json').read_bytes() == original_image
+                        assert len(staged['observations.json']) == len(original_image)
+                        assert hashlib.sha256(staged['observations.json']).digest() == hashlib.sha256(original_image).digest()
+                        assert not (root/'raw/observations.json.tmp').exists() and not (output/'observations.json.tmp').exists()
+                    for prior_name,prior_bytes in prior_staged.items(): assert staged[prior_name] == prior_bytes
+                    for prior_name,prior_bytes in prior_published.items(): assert published[prior_name] == prior_bytes
+                    assert not (output/'result.tmp').exists()
+                results[label] = 'entire independent selected Case SOURCE/full SQL rows/types/order/nulls/original framing retained; prior files/tree/result/FAIL exact; incomplete baseline remains TWO REQUIRED-MISSING; native NOT RUN'
+
+    case_holders = ('parked','live_s2','final_snapshot','running','pending','oracle','rejection_drain')
+    case_missing_jobs = {f'{holder}-missing-job-index{index}': (holder,index)
+                         for holder in ('parked','live_s2','final_snapshot') for index in (0,4,5)}
+    # Omitted membership reaches R1 first on the original predicate; after R1
+    # alone is repaired, omitted per-job audit identity reaches R2 independently.
+    case_refusals = list(case_missing_jobs) + [holder+'-audit-missing-job'
+                        for holder in ('pending','oracle','rejection_drain')]
+    case_refusals += ['missing-'+k for k in ('method','index','variant','source_sha','task','starts','jobs','manifest','submit','script','script_sha256','job-id')]
+    case_refusals += ['wrong-'+k for k in ('method','index','variant','source_sha','task','start','job-id','root','script','script_sha256')]
+    case_refusals += ['index-bool','index1-job','start-copy','start-missing-fact','source-hash-only','row-script-content',
+        'script-type','script-second-layer','script-secret','script-hash-type','row-flag-bool','row-review-bool','row-max-bytes-bool','row-exit-bool','row-missing-field',
+        'row-interpreter','row-start','row-created','row-type','row-nested',
+        'snapshot-type','snapshot-missing-table','snapshot-table-type','snapshot-empty-task','snapshot-duplicate-job',
+        'snapshot-row-field','running-row-copy','pending-audit-type','oracle-audit-type','drain-audit-type','row-null-source','unknown-encoded','output-json-lookalike',
+        'output-second-layer','job-out-second-layer','output-text-type','job-out-type','wrong-owner','lookalike-root','lookalike-column','first-terminal','terminal','refusal-script',
+        'shared-work','shared-facts','shared-depth']
+    case_refusals += [holder+'-owner' for holder in case_holders]
+    case_refusals += [f'{table}.{column}-{form}' for table,column,_ in sql_columns
+                     for form in ('bool','number','container','wrong-top','missing')]
+    case_refusals += ['sql-'+k for k in sql_bad]
+    case_refusals += ['task-owner','result-owner','audit-owner','result-session','audit-job','pending-audit-job','oracle-audit-job','drain-audit-job']
+    case_stage_terminal = ('owner','source','hash-only','flag-bool','exit-bool','state','reason','head','path','time',
+                          'unknown-content','unknown-type','unknown-missing','unknown-extra','missing')
+    case_stage_pair = ('missing-job','extra-job','duplicate-job','foreign-job','reverse-order','first-running',
+        'second-terminal','second-last-pending','job-source','job-flag-bool','missing-task','extra-task',
+        'task-owner','task-session','task-cleared','task-status','task-step-bool','task-step','task-block-ids',
+        'task-full-content','task-full-type','missing-result','extra-result','result-content','result-s2',
+        'result-state','result-full-type','resumed-audit','missing-stage','missing-parked','missing-pending')
+    case_stage_refusals = {f'stage-terminal-{key}-index{i}': (i,'terminal',key)
+                           for key in case_stage_terminal for i in (0,2,3)}
+    case_stage_refusals.update({f'stage-pair-{key}-index{i}': (i,'pair',key)
+                               for key in case_stage_pair for i in (4,5)})
+    case_refusals += list(case_stage_refusals)
+    copy_shared = ('outer-order','payload-order','provider-order','wire-order','entered','stdout','stderr',
+        'file-text','wire-body','response','argv-org','argv-payload-file',
+        'canonical-missing','canonical-foreign','canonical-ambiguous','required-copy','early-contradiction')
+    case_copy_refusals = {f'copy-{family}-{key}-index{index}': (index,family,key)
+        for index,family in ((0,'submit'),(0,'block'),(0,'final'),(1,'final')) for key in copy_shared}
+    case_copy_refusals.update({f'copy-submit-{key}-index{i}': (i,'submit',key)
+        for i in (0,4,5) for key in ('script-hash-only','job-swap','task-swap','sid-swap','child-swap',
+            'action','operation','missing-field','field-type','python','source','file-count')})
+    case_copy_refusals.update({f'copy-{family}-{key}-index{i}': (i,family,key)
+        for i in (4,5) for family,key in (('block','waiting-order'),('block','waiting-foreign'),
+            ('final','done-summary'),('final','sid-swap'),('block','canonical-waiting-order'),
+            ('block','canonical-waiting-foreign'),('final','canonical-done-summary'))})
+    case_refusals += list(case_copy_refusals)
+    case_shape_refusals = {name:0 for name in (
+        'top-starts-object','top-starts-trailing-array','top-starts-trailing-scalar','stubs-true',
+        'case-starts-trailing-array','case-starts-trailing-scalar','peer-row-key-order',
+        'store27-coordinated-order','store27-coordinated-extra','store27-coordinated-missing',
+        'store-original31','store-original31-permuted')}
+    case_shape_refusals.update({f'parked-{table}-peer-key-order-index{i}':i
+                                for table in ('tasks','results') for i in (4,5)})
+    case_shape_refusals.update({f'pair-one-submit-block-index{i}':i for i in (4,5)})
+    case_shape_refusals.update({f'reached-running-missing-index{i}-job{j}':i
+                                for i in (0,2,3,4,5) for j in range(2 if i >= 4 else 1)})
+    case_shape_refusals.update({f'case-start-field-array-start{s}':0 for s in (0,1)})
+    case_shape_refusals['case-start-field-nested-array-start0'] = 0
+    case_shape_refusals.update({f'oracle-missing-peer-contradiction-index{i}-job{j}':i
+                                for i,j in ((0,0),(4,1),(5,1))})
+    case_shape_refusals.update({f'oracle-{missing}-missing-index{i}-job{j}':i
+                                for missing in ('row','holder') for i in (0,2,3,4,5)
+                                for j in range(2 if i >= 4 else 1)})
+    case_direct_refusals = {'direct-public-wrapper-index0-job0': (0, 0, 'wrapper'),
+     'direct-public-store-flags-index0-job0': (0, 0, 'store-flags'),
+     'direct-public-id-index0-job0': (0, 0, 'id'),
+     'direct-public-task-index0-job0': (0, 0, 'task'),
+     'direct-public-agent-index0-job0': (0, 0, 'agent'),
+     'direct-public-interpreter-index0-job0': (0, 0, 'interpreter'),
+     'direct-public-script-byte-index0-job0': (0, 0, 'script-byte'),
+     'direct-public-script-secret-index0-job0': (0, 0, 'script-secret'),
+     'direct-public-script-second-layer-index0-job0': (0, 0, 'script-second-layer'),
+     'direct-public-script-residual-index0-job0': (0, 0, 'script-residual'),
+     'direct-public-script-type-index0-job0': (0, 0, 'script-type'),
+     'direct-public-script-null-index0-job0': (0, 0, 'script-null'),
+     'direct-public-status-completed-index0-job0': (0, 0, 'status-completed'),
+     'direct-public-status-pending-index0-job0': (0, 0, 'status-pending'),
+     'direct-public-exit-bool-index0-job0': (0, 0, 'exit-bool'),
+     'direct-public-exit-int-index0-job0': (0, 0, 'exit-int'),
+     'direct-public-reason-index0-job0': (0, 0, 'reason'),
+     'direct-public-stdout-head-index0-job0': (0, 0, 'stdout-head'),
+     'direct-public-stderr-head-index0-job0': (0, 0, 'stderr-head'),
+     'direct-public-duration-int-index0-job0': (0, 0, 'duration-int'),
+     'direct-public-duration-bool-index0-job0': (0, 0, 'duration-bool'),
+     'direct-public-finished-index0-job0': (0, 0, 'finished'),
+     'direct-public-flag-review-int-index0-job0': (0, 0, 'flag-review-int'),
+     'direct-public-flag-persistent-int-index0-job0': (0, 0, 'flag-persistent-int'),
+     'direct-public-flag-review-null-index0-job0': (0, 0, 'flag-review-null'),
+     'direct-public-flag-persistent-null-index0-job0': (0, 0, 'flag-persistent-null'),
+     'direct-public-max-bytes-bool-index0-job0': (0, 0, 'max-bytes-bool'),
+     'direct-public-max-runtime-bool-index0-job0': (0, 0, 'max-runtime-bool'),
+     'direct-public-cwd-int-index0-job0': (0, 0, 'cwd-int'),
+     'direct-public-created-null-index0-job0': (0, 0, 'created-null'),
+     'direct-public-missing-index0-job0': (0, 0, 'missing'),
+     'direct-public-extra-index0-job0': (0, 0, 'extra'),
+     'direct-public-reordered-index0-job0': (0, 0, 'reordered'),
+     'direct-public-missing-running-index0-job0': (0, 0, 'missing-running'),
+     'direct-public-unselected-source-index0-job0': (0, 0, 'unselected-source'),
+     'direct-public-id-index4-job0': (4, 0, 'id'),
+     'direct-public-script-byte-index4-job0': (4, 0, 'script-byte'),
+     'direct-public-missing-running-index4-job0': (4, 0, 'missing-running'),
+     'direct-public-id-index4-job1': (4, 1, 'id'),
+     'direct-public-script-byte-index4-job1': (4, 1, 'script-byte'),
+     'direct-public-missing-running-index4-job1': (4, 1, 'missing-running'),
+     'direct-public-id-index5-job0': (5, 0, 'id'),
+     'direct-public-script-byte-index5-job0': (5, 0, 'script-byte'),
+     'direct-public-missing-running-index5-job0': (5, 0, 'missing-running'),
+     'direct-public-id-index5-job1': (5, 1, 'id'),
+     'direct-public-script-byte-index5-job1': (5, 1, 'script-byte'),
+     'direct-public-missing-running-index5-job1': (5, 1, 'missing-running')}
+    case_terminal_refusals = {f'terminal-browser-{change}-index0': (0,change) for change in
+        ('holder-text-first', 'holder-missing', 'holder-extra', 'holder-array', 'holder-null', 'body-array',
+         'body-missing', 'body-extra', 'body-order', 'body-bool-flags', 'body-null-flag', 'body-id',
+         'body-task', 'body-agent', 'body-interpreter', 'body-script-byte', 'body-script-secret',
+         'body-script-decoded-secret', 'body-script-residual', 'body-script-second-layer',
+         'body-script-type', 'body-status', 'body-exit-bool', 'body-reason', 'body-head', 'body-path',
+         'body-duration-bool', 'body-time', 'body-cap-bool', 'body-output-cap', 'body-created',
+         'missing-oracle', 'screenshot', 'screenshot-type', 'at-bool', 'at-string', 'text-type',
+         'anchor-none', 'anchor-no-space', 'anchor-tab', 'anchor-duplicate', 'anchor-overlap',
+         'text-dropped-LF', 'text-CRLF', 'source-dropped-LF', 'source-CRLF', 'source-tab',
+         'source-nonascii', 'outside-prefix-backslash', 'outside-suffix-backslash', 'header-only',
+         'original-secret', 'prefix-span-secret', 'span-suffix-secret', 'chunk-secret',
+         'small-two-backslash', 'small-no-space', 'small-dropped-LF', 'small-outside-backslash',
+         'unselected-task-source')}
+    case_terminal_refusals.update({f'terminal-browser-{change}-index{i}': (i,change) for i in (2,3)
+                                  for change in ('holder-text-first','body-id','body-exit-bool','body-script-byte','anchor-duplicate')})
+    case_shape_refusals.update({name:spec[0] for name,spec in case_terminal_refusals.items()})
+    case_shape_refusals.update({name:spec[0] for name,spec in case_direct_refusals.items()})
+    case_running_missing = {f'running-public-missing-{stage}-index{i}-job{j}': (i,j,stage)
+        for i in (0,2,3,4,5) for j in range(2 if i >= 4 else 1)
+        for stage in ('full','terminal-before-oracle','oracle','browser','reads','released','closure')
+        if not (i >= 4 and stage == 'browser' or i == 3 and stage == 'released')}
+    case_running_missing.update({f'running-public-missing-first-terminal-index{i}-job0': (i,0,'first-terminal') for i in (4,5)})
+    case_shape_refusals.update({name:spec[0] for name,spec in case_running_missing.items()})
+    case_terminal_missing = {f'terminal-browser-missing-{stage}-index{i}-job{j}':(i,j,stage)
+        for i in (0,2,3,4,5) for j in range(2 if i >= 4 else 1)
+        for stage in ('full','starts','live_s2','reads','final_callback','final_snapshot','finished','commands_end','task_browser')}
+    case_terminal_missing.update({f'terminal-browser-missing-{stage}-index{i}-job0':(i,0,stage)
+        for i in (4,5) for stage in ('first_terminal','first_terminal_cli','first_terminal_browser')})
+    case_shape_refusals.update({name:spec[0] for name,spec in case_terminal_missing.items()})
+    # A1-A5 PRESENT action only: no old input gains an action-presence rule.
+    # The tables are independent fixture literals, before candidate execution.
+    case_action_fields = ('path','method','request','status','response','no_run_controls','at')
+    case_action_public_fields = tuple(case_literals['0']['jobs'][0]['running_browser'])
+    case_action_values = {
+        'path-foreign':('path','/api/v1/orgs/alpha/jobs/JOB-foreign'),
+        'path-org':('path','/api/v1/orgs/beta/jobs/JOB-701'),
+        'path-suffix':('path','/api/v1/orgs/alpha/jobs/JOB-701/'),
+        'method-post':('method','POST'), 'method-null':('method',None),
+        'request-object':('request',{}), 'request-array':('request',[]), 'request-string':('request',''),
+        'status-float':('status',200.0), 'status-bool':('status',True),
+        'status-other':('status',201), 'status-string':('status','200'),
+        'controls-int':('no_run_controls',1), 'controls-false':('no_run_controls',False),
+        'controls-null':('no_run_controls',None),
+        'at-bool':('at',True), 'at-string':('at','15.0'), 'at-null':('at',None),
+        'at-nan':('at',float('nan')), 'at-inf':('at',float('inf')), 'at-neginf':('at',float('-inf')),
+        'response-null':('response',None), 'response-array':('response',[]),
+        'response-string':('response','public'), 'response-empty':('response',{})}
+    case_action_response_values = {
+        'id':('id','JOB-foreign'), 'task':('task_id','TASK-foreign'),
+        'agent':('agent_name','foreign'), 'interpreter':('interpreter','bash'),
+        'script-byte':('script_text',case_literals['0']['jobs'][0]['script']+'# changed full SOURCE\n'),
+        'script-secret':('script_text','print("SYNTHETIC_TOKEN")\n'),
+        'script-decoded-secret':('script_text','print("\\x53YNTHETIC_TOKEN")\n'),
+        'script-residual':('script_text','value = "\\q"\n'),
+        'script-second-layer':('script_text','print("second\\\\nlayer")\n'),
+        'script-null':('script_text',None), 'script-type':('script_text',7),
+        'status-completed':('status','completed'), 'status-pending':('status','pending'),
+        'exit-bool':('exit_code',False), 'exit-int':('exit_code',0),
+        'reason':('reason','timeout'), 'stdout-head':('stdout_head','early output'),
+        'stderr-head':('stderr_head','early error'), 'duration-int':('duration_ms',1),
+        'duration-bool':('duration_ms',False), 'finished':('finished_at','2026-01-01T00:00:02+00:00'),
+        'flag-review-int':('review_required',0), 'flag-persistent-int':('persistent',0),
+        'flag-review-true':('review_required',True), 'flag-persistent-null':('persistent',None),
+        'cwd-int':('cwd_hint',0), 'created-null':('created_at',None),
+        'started-null':('started_at',None), 'reviewed-by-int':('reviewed_by',1),
+        'reject-reason-int':('reject_reason',0), 'stdout-path-int':('stdout_path',0),
+        'max-bytes-bool':('max_output_bytes',True), 'max-runtime-bool':('max_runtime_seconds',True)}
+    case_action_changes = (['holder-empty','holder-null','holder-array','holder-scalar','response-terminal',
+        'public-disagreement','sql-disagreement','source-without-public','sql-without-public',
+        'early-conflict-later-correct','early-correct-later-conflict']
+        + ['missing-'+key for key in case_action_fields]
+        + ['order-'+str(n) for n in range(len(case_action_fields)-1)]
+        + ['extra-'+key for key in ('body','event','group_id','document','wire')]
+        + list(case_action_values) + ['value-'+key for key in case_action_response_values]
+        + ['response-missing-'+key for key in case_action_public_fields]
+        + ['response-order-'+str(n) for n in range(len(case_action_public_fields)-1)]
+        + ['response-extra-'+key for key in ('body','event','group_id','document')])
+    case_action_refusals = {f'action-{change}-index0-job0':(0,0,change) for change in case_action_changes}
+    case_action_refusals.update({f'action-{change}-index{i}-job{n}':(i,n,change)
+        for i in (2,3) for n in (0,) for change in ('response-terminal','value-script-byte','value-flag-review-int')})
+    # Every target role in BOTH pair plans is selected by its submitted ID.
+    # All six other literal responses include same-role and cross-role swaps.
+    case_action_refusals.update({f'action-swap-{other}-{other_n}-index{i}-job{n}':(i,n,f'swap-{other}-{other_n}')
+        for i in (4,5) for n in (0,1) for other in (0,2,3,4,5)
+        for other_n in range(2 if other >= 4 else 1) if (i,n) != (other,other_n)})
+    case_action_refusals.update({f'action-{change}-index{i}-job{n}':(i,n,change)
+        for i in (4,5) for n in (0,1)
+        for change in ('value-script-byte','value-flag-review-int','response-terminal','wrapper-swap',
+                       'early-conflict-later-correct','early-correct-later-conflict')})
+    case_shape_refusals.update({name:spec[0] for name,spec in case_action_refusals.items()})
+    case_refusals += list(case_shape_refusals)
+    # Original negative subjects keep their full old images AND old result names.
+    # The additional completed variants isolate their existing corruption after
+    # the direct-public prerequisite; direct-public originals already have it.
+    for case_name, complete_public, complete_terminal in [(name,complete,terminal) for name in case_refusals
+            for complete,terminal in ([(True,not case_action_refusals[name][2].endswith('without-public'))]
+                if name in case_action_refusals else [(True,True)] if name in case_terminal_missing else
+                [(complete,False) for complete in ((True,) if name in case_running_missing else
+                    (False,) if name in case_direct_refusals or name.endswith('index1') else (False,True))]
+                + ([(True,True)] if not name.endswith('index1')
+                    and name not in case_terminal_refusals
+                    and not (name in case_running_missing and (case_running_missing[name][2] == 'browser'
+                        or case_running_missing[name][1] == 0 and case_running_missing[name][2] not in ('full','reads','first-terminal'))) else []))]:
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            terminal_change = case_terminal_refusals[case_name][1] if case_name in case_terminal_refusals else None
+            extra_secret = ('prefix-marker$ import' if terminal_change == 'prefix-span-secret' else
+                            '\nSUFFIX_MARKER' if terminal_change == 'span-suffix-secret' else
+                            'boundary-marker' if terminal_change == 'chunk-secret' else None)
+            with fixture(additional_secret=extra_secret) as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha'] = old_source
+                browser_source = (case_small_span_literals['two_backslash_source'] if terminal_change == 'small-two-backslash' else
+                    case_small_span_literals['one_backslash_source'] if terminal_change in ('small-no-space','small-dropped-LF','small-outside-backslash') else
+                    '$ $ \n' if terminal_change == 'anchor-overlap' else
+                    case_literals['0']['jobs'][0]['script'].rstrip('\n') if terminal_change == 'source-dropped-LF' else
+                    case_literals['0']['jobs'][0]['script'].replace('\n','\r\n') if terminal_change == 'source-CRLF' else
+                    case_literals['0']['jobs'][0]['script'] + '# \t\n' if terminal_change == 'source-tab' else
+                    case_literals['0']['jobs'][0]['script'] + '# 中\n' if terminal_change == 'source-nonascii' else None)
+                fixture_index = (case_stage_refusals[case_name][0] if case_name in case_stage_refusals else
+                                   case_copy_refusals[case_name][0] if case_name in case_copy_refusals else
+                                   case_missing_jobs[case_name][1] if case_name in case_missing_jobs else
+                                   case_shape_refusals.get(case_name,0))
+                image = case_input(root,fixture_index,late=case_name != 'store-original31',
+                                   store_image='original31' if case_name == 'store-original31' else
+                                   'original31-permuted' if case_name == 'store-original31-permuted'
+                                       or case_name.startswith('stage-terminal-unknown-') else
+                                   'permuted27' if case_name == 'store27-coordinated-order' else 'accepted',
+                                   direct_public=complete_public or case_name in case_direct_refusals,
+                                   terminal_public=case_name in case_terminal_refusals or case_name in case_running_missing
+                                       and case_running_missing[case_name][2] == 'browser',browser_source=browser_source)
+                case = image['durable'][-1 if case_name == 'store-original31' else 0]['jobs_cases'][0]
+                job = case['jobs'][0] if case['jobs'] else None
+                snapshot = case['final_snapshot']; sql_job = job['oracle']['row'] if job is not None else None
+                column_case = next(((t,c,top,case_name[len(t+'.'+c+'-'):]) for t,c,top in sql_columns if case_name.startswith(t+'.'+c+'-')),None)
+                if case_name in case_action_refusals:
+                    _,number,change = case_action_refusals[case_name]
+                    for position,selected_job in enumerate(case['jobs']):
+                        selected_job['action'] = case_action_holder(root,fixture_index,position)
+                    selected_job = case['jobs'][number]
+                    action = selected_job['action']; public = action['response']
+                    if change.startswith('holder-'):
+                        selected_job['action'] = {'holder-empty':{},'holder-null':None,'holder-array':[],
+                            'holder-scalar':'public'}[change]
+                    elif change.startswith('response-missing-'): del public[change.removeprefix('response-missing-')]
+                    elif change.startswith('response-order-'):
+                        pairs = list(public.items()); n = int(change.removeprefix('response-order-'))
+                        pairs[n],pairs[n+1] = pairs[n+1],pairs[n]; public.clear(); public.update(pairs)
+                    elif change.startswith('response-extra-'): public[change.removeprefix('response-extra-')] = None
+                    elif change.startswith('missing-'): del action[change.removeprefix('missing-')]
+                    elif change.startswith('order-'):
+                        pairs = list(action.items()); n = int(change.removeprefix('order-'))
+                        pairs[n],pairs[n+1] = pairs[n+1],pairs[n]; action.clear(); action.update(pairs)
+                    elif change.startswith('extra-'): action[change.removeprefix('extra-')] = None
+                    elif change in case_action_values:
+                        key,value = case_action_values[change]; action[key] = copy.deepcopy(value)
+                    elif change.startswith('value-'):
+                        key,value = case_action_response_values[change.removeprefix('value-')]
+                        public[key] = copy.deepcopy(value)
+                    elif change.startswith('swap-'):
+                        _,other,other_n = change.split('-')
+                        action['response'] = case_action_holder(root,int(other),int(other_n))['response']
+                    elif change == 'wrapper-swap': selected_job['action'] = copy.deepcopy(case['jobs'][1-number]['action'])
+                    elif change == 'response-terminal': action['response'] = case_terminal_holder(root,fixture_index,number)['body']
+                    elif change == 'public-disagreement': selected_job['running_browser']['cwd_hint'] = 'different direct public original'
+                    elif change in ('sql-disagreement','sql-without-public'): selected_job['running']['cwd_hint'] = 'different SQL original'
+                    elif change == 'source-without-public': public['script_text'] += '# different action SOURCE\n'
+                    elif change in ('early-conflict-later-correct','early-correct-later-conflict'):
+                        later = copy.deepcopy(case)
+                        image['durable'][0]['jobs_cases'].append(later)
+                        (case if change == 'early-conflict-later-correct' else later)['jobs'][number]['action']['response']['cwd_hint'] = 'changed original occurrence'
+                    else: raise AssertionError(change)
+                    if change in ('source-without-public','sql-without-public'):
+                        for key in ('first_terminal','live_s2','final_snapshot','final_callback'): case.pop(key,None)
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                        for partial in case['jobs']:
+                            for key in ('running_browser','terminal','oracle','rejection_drain'): partial.pop(key)
+                elif case_name in case_shape_refusals:
+                    if case_name in case_terminal_missing:
+                        _,number,stage = case_terminal_missing[case_name]
+                        case_complete_terminal(image,root,fixture_index,tuple(range(2 if fixture_index >= 4 else 1)))
+                        del case['jobs'][number]['browser']
+                        if stage == 'reads':
+                            case['jobs'][number]['reads'] = {}
+                            for key in ('final_snapshot','final_callback'): case.pop(key)
+                            image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                        elif stage == 'final_callback': case.pop('final_snapshot')
+                        elif stage == 'final_snapshot': case['final_snapshot_validation'] = 'partial/unvalidated'
+                        elif stage in ('starts','live_s2') or stage.startswith('first_terminal'):
+                            for key in ('live_s2','final_snapshot','final_callback'): case.pop(key)
+                            image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                            if stage.startswith('first_terminal'):
+                                case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                                for key in ('browser','terminal','oracle','rejection_drain','running_browser'): case['jobs'][1].pop(key,None)
+                                case['jobs'][0].pop('rejection_drain')
+                                if stage != 'first_terminal': case[stage] = {} if stage == 'first_terminal_cli' else dict(text='ordinary waiting page',at=15.0)
+                            elif stage == 'live_s2': case['live_s2'] = {}
+                        elif stage in ('finished','commands_end'): case[stage] = 16.0 if stage == 'finished' else len(image['provider_commands'])
+                        elif stage == 'task_browser': case['task_browser'] = dict(text='ordinary public task page',screenshot='task.png',at=16.0)
+                    elif case_name in case_running_missing:
+                        _,number,stage = case_running_missing[case_name]
+                        selected_job = case['jobs'][number]
+                        del selected_job['running_browser']
+                        if stage == 'reads':
+                            # Actual reads is assigned empty after live S2; keep
+                            # that original reached Case and its complete peers.
+                            selected_job['reads'] = {}
+                        elif stage != 'full':
+                            for key in ('live_s2','final_snapshot','final_callback'): case.pop(key)
+                            case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                            image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                            if stage != 'first-terminal' and number == 0:
+                                case.pop('first_terminal',None)
+                            for position,partial_job in enumerate(case['jobs']):
+                                if position < number or stage == 'first-terminal' and position == 0: continue
+                                if position != number:
+                                    for key in ('running_browser','terminal','oracle','rejection_drain'): partial_job.pop(key,None)
+                                    continue
+                                if stage in ('released','closure'):
+                                    partial_job[stage] = 15.0 if stage == 'released' else dict(pid=901,start='123',observed_start=None,pgid=901,members=[],eof=True,at=15.0)
+                                if stage in ('terminal-before-oracle','released','closure','first-terminal'):
+                                    partial_job.pop('oracle')
+                                partial_job.pop('rejection_drain')
+                                if stage == 'released': partial_job.pop('terminal')
+                    elif case_name in case_terminal_refusals:
+                        _,change = case_terminal_refusals[case_name]
+                        browser = job['browser']; body = browser['body']; source_script = body['script_text']
+                        if change == 'holder-text-first':
+                            if case_terminal_refusals[case_name][0] == 2:
+                                # ENTIRE accepted negative, including all original
+                                # body paths, SOURCE and text, without normalization.
+                                job['browser'] = copy.deepcopy(case_text_first_negative)
+                            else: job['browser'] = {k:browser[k] for k in ('text','body','screenshot','at')}
+                        elif change == 'holder-missing': del browser['at']
+                        elif change == 'holder-extra': browser['wire'] = None
+                        elif change == 'holder-array': job['browser'] = []
+                        elif change == 'holder-null': job['browser'] = None
+                        elif change == 'body-array': browser['body'] = []
+                        elif change == 'body-missing': del body['reviewed_at']
+                        elif change == 'body-extra': body['unknown'] = None
+                        elif change == 'body-order':
+                            items = list(body.items()); items[0],items[1] = items[1],items[0]
+                            body.clear(); body.update(items)
+                        elif change == 'body-bool-flags': body.update(review_required=0,persistent=0)
+                        elif change == 'body-null-flag': body['persistent'] = None
+                        elif change == 'body-id': body['id'] = 'JOB-foreign'
+                        elif change == 'body-task': body['task_id'] = 'TASK-foreign'
+                        elif change == 'body-agent': body['agent_name'] = 'foreign_agent'
+                        elif change == 'body-interpreter': body['interpreter'] = 'bash'
+                        elif change == 'body-script-byte': body['script_text'] += '# changed original SOURCE\n'
+                        elif change == 'body-script-secret': body['script_text'] += '# '+secret+'\n'
+                        elif change == 'body-script-decoded-secret': body['script_text'] += "x='"+chr(92)+"x50RIVATE_SENTINEL"+chr(92)+"x22"+chr(92)+"n'\n"
+                        elif change == 'body-script-residual': body['script_text'] += "x='"+chr(92)+"x5cn'\n"
+                        elif change == 'body-script-second-layer': body['script_text'] += "x='"+chr(92)+chr(92)+"n'\n"
+                        elif change == 'body-script-type': body['script_text'] = 7
+                        elif change == 'body-status': body['status'] = 'running'
+                        elif change == 'body-exit-bool': body['exit_code'] = False
+                        elif change == 'body-reason': body['reason'] = 'foreign reason'
+                        elif change == 'body-head': body['stdout_head'] = 'changed full output\n'
+                        elif change == 'body-path': body['stdout_path'] += '.foreign'
+                        elif change == 'body-duration-bool': body['duration_ms'] = False
+                        elif change == 'body-time': body['finished_at'] = None
+                        elif change == 'body-cap-bool': body['max_runtime_seconds'] = True
+                        elif change == 'body-output-cap': body['max_output_bytes'] = 0
+                        elif change == 'body-created': body['created_at'] = None
+                        elif change == 'missing-oracle': del job['oracle']
+                        elif change == 'screenshot': browser['screenshot'] = 'e04-JOB-foreign.png'
+                        elif change == 'screenshot-type': browser['screenshot'] = 7
+                        elif change == 'at-bool': browser['at'] = True
+                        elif change == 'at-string': browser['at'] = '15.0'
+                        elif change == 'text-type': browser['text'] = []
+                        elif change == 'anchor-none': browser['text'] = browser['text'].replace('$ ','',1)
+                        elif change == 'anchor-no-space': browser['text'] = browser['text'].replace('$ ','$',1)
+                        elif change == 'anchor-tab': browser['text'] = browser['text'].replace('$ ','$\t',1)
+                        elif change == 'anchor-duplicate': browser['text'] += '\n$ '+source_script
+                        elif change == 'anchor-overlap': browser['text'] = '$ $ $ \n'
+                        elif change == 'text-dropped-LF':
+                            # The original suffix starts LF. Deleting only the
+                            # SOURCE's final LF leaves an exact span using that
+                            # suffix byte, which the accepted contract permits.
+                            # Keep the whole prefix/suffix; mark the missing LF
+                            # boundary so this input actually has no full SOURCE.
+                            browser['text'] = browser['text'].replace(
+                                source_script, source_script[:-1] + '[SOURCE final LF absent]', 1)
+                            assert source_script not in browser['text'] and chr(92) in browser['text']
+                        elif change == 'text-CRLF': browser['text'] = browser['text'].replace(source_script,source_script.replace('\n','\r\n'),1)
+                        elif change in ('source-dropped-LF','source-CRLF','source-tab','source-nonascii'): pass
+                        elif change == 'outside-prefix-backslash': browser['text'] = chr(92)+'n'+browser['text']
+                        elif change == 'outside-suffix-backslash': browser['text'] += chr(92)+'n'
+                        elif change == 'header-only': browser['text'] = 'COMMAND\n$ header\n'+source_script
+                        elif change == 'original-secret': browser['text'] += secret
+                        elif change == 'prefix-span-secret': browser['text'] = 'prefix-marker$ '+source_script
+                        elif change == 'span-suffix-secret': browser['text'] = '$ '+source_script+'SUFFIX_MARKER'
+                        elif change == 'chunk-secret': browser['text'] = 'x'*1020+'boundary-marker\n$ '+source_script
+                        elif change == 'small-two-backslash': browser['text'] = case_small_span_literals['residual_negative_text']
+                        elif change == 'small-no-space': browser['text'] = case_small_span_literals['no_space_anchor_text']
+                        elif change == 'small-dropped-LF': browser['text'] = case_small_span_literals['dropped_final_lf_text']
+                        elif change == 'small-outside-backslash': browser['text'] = case_small_span_literals['outside_backslash_text']
+                        elif change == 'unselected-task-source': case['waiting_browser'] = dict(text=browser['text'],body={},at=1.0)
+                        else: raise AssertionError('unhandled terminal browser refusal '+change)
+                    elif case_name in case_direct_refusals:
+                        _,number,change = case_direct_refusals[case_name]
+                        selected_job = case['jobs'][number]
+                        public = selected_job['running_browser']
+                        if change == 'wrapper': selected_job['running_browser'] = dict(body=public)
+                        elif change == 'store-flags': public.update(review_required=0,persistent=0)
+                        elif change == 'id': public['id'] = 'JOB-foreign'
+                        elif change == 'task': public['task_id'] = 'TASK-foreign'
+                        elif change == 'agent': public['agent_name'] = 'foreign_agent'
+                        elif change == 'interpreter': public['interpreter'] = 'bash'
+                        elif change == 'script-byte': public['script_text'] = public['script_text'].replace('import json,','import jsom,',1)
+                        elif change == 'script-secret': public['script_text'] += '# '+secret+'\n'
+                        elif change == 'script-second-layer': public['script_text'] += "x='"+chr(92)+chr(92)+"n'\n"
+                        elif change == 'script-residual': public['script_text'] += "x='"+chr(92)+"x5cn'\n"
+                        elif change == 'script-type': public['script_text'] = 7
+                        elif change == 'script-null': public['script_text'] = None
+                        elif change == 'status-completed': public['status'] = 'completed'
+                        elif change == 'status-pending': public['status'] = 'pending'
+                        elif change == 'exit-bool': public['exit_code'] = True
+                        elif change == 'exit-int': public['exit_code'] = 0
+                        elif change == 'reason': public['reason'] = 'timeout'
+                        elif change == 'stdout-head': public['stdout_head'] = 'finished\n'
+                        elif change == 'stderr-head': public['stderr_head'] = ''
+                        elif change == 'duration-int': public['duration_ms'] = 0
+                        elif change == 'duration-bool': public['duration_ms'] = False
+                        elif change == 'finished': public['finished_at'] = public['started_at']
+                        elif change == 'flag-review-int': public['review_required'] = 0
+                        elif change == 'flag-persistent-int': public['persistent'] = 0
+                        elif change == 'flag-review-null': public['review_required'] = None
+                        elif change == 'flag-persistent-null': public['persistent'] = None
+                        elif change == 'max-bytes-bool': public['max_output_bytes'] = True
+                        elif change == 'max-runtime-bool': public['max_runtime_seconds'] = True
+                        elif change == 'cwd-int': public['cwd_hint'] = 0
+                        elif change == 'created-null': public['created_at'] = None
+                        elif change == 'missing': del public['reviewed_at']
+                        elif change == 'extra': public['unknown_public'] = None
+                        elif change == 'reordered':
+                            items = list(public.items()); items[0],items[1] = items[1],items[0]
+                            public.clear(); public.update(items)
+                        elif change == 'missing-running': del selected_job['running']
+                        elif change == 'unselected-source':
+                            del selected_job['running_browser']
+                            case['lookalike'] = dict(running_browser=public)
+                        else: raise AssertionError('unhandled direct public refusal '+change)
+                    elif case_name == 'top-starts-object': image['starts'] = {'only':image['starts'][0], 'second':image['starts'][1]}
+                    elif case_name == 'top-starts-trailing-array': image['starts'].append([])
+                    elif case_name == 'top-starts-trailing-scalar': image['starts'].append(7)
+                    elif case_name == 'stubs-true': image['durable'][1]['executable_manifest']['stubs'] = True
+                    elif case_name == 'case-starts-trailing-array': case['starts'].append([])
+                    elif case_name == 'case-starts-trailing-scalar': case['starts'].append(7)
+                    elif case_name == 'peer-row-key-order':
+                        selected = job['terminal']; items = list(selected.items())
+                        items[0],items[1] = items[1],items[0]; selected.clear(); selected.update(items)
+                    elif case_name.startswith('parked-'):
+                        table = 'tasks' if case_name.startswith('parked-tasks-') else 'results'
+                        selected = case['first_terminal'][table][0]; items = list(selected.items())
+                        items[0],items[1] = items[1],items[0]; selected.clear(); selected.update(items)
+                    elif case_name in ('store27-coordinated-extra','store27-coordinated-missing'):
+                        selected_rows = [r for holder in (case['parked'],case['live_s2']['snapshot'],case['final_snapshot']) for r in holder['jobs']]
+                        for selected_job in case['jobs']:
+                            selected_rows += [selected_job['running'],selected_job['terminal'],selected_job['pending'][0]['row'],
+                                selected_job['oracle']['row'],selected_job['rejection_drain']['row']]
+                        for selected in selected_rows:
+                            if case_name == 'store27-coordinated-extra': selected['extra_original_scalar'] = None
+                            else: del selected['created_at']
+                    elif case_name.startswith('pair-one-submit-block-'):
+                        for key in ('parked','first_terminal','live_s2','final_snapshot','final_callback'): case.pop(key)
+                        case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        case['jobs'] = case['jobs'][:1]
+                        for key in ('terminal','oracle','rejection_drain'): job.pop(key)
+                        image['provider_commands'] = [image['provider_commands'][0],image['provider_commands'][-2]]
+                        command = image['provider_commands'][-1]
+                        command['payload']['waiting_on_job_ids'] = [job['id']]
+                        payload = command['payload']; text = json.dumps(payload,sort_keys=True)
+                        digest = hashlib.sha256(text.encode()).hexdigest()
+                        command['payload_file'].update(text=text,bytes=len(text.encode()),sha256=digest,path=str(root/'coord'/(digest+'.json')))
+                        command['argv'][-1] = command['payload_file']['path']
+                        body = dict(session_id=payload['session_id'],agent=payload['agent'],status=payload['status'],confidence=90,
+                            output_summary=payload['summary'],risks_flagged=[],dependencies=[],suggested_reviewer_focus=[],
+                            waiting_on_job_ids=[job['id']])
+                        command['wire'][0]['body_sha256'] = hashlib.sha256(json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+                        case['block'] = copy.deepcopy(command)
+                    elif case_name.startswith('reached-running-missing-'):
+                        case['jobs'][int(case_name[-1])].pop('running')
+                    elif case_name.startswith('case-start-field-'):
+                        case['starts'][int(case_name[-1])]['extra_original_fact'] = ([[]]
+                            if case_name == 'case-start-field-nested-array-start0' else [])
+                    elif case_name.startswith('oracle-'):
+                        selected = case['jobs'][int(case_name[-1])]
+                        if case_name.startswith('oracle-holder-missing-'): selected.pop('oracle')
+                        else: selected['oracle'].pop('row')
+                        if case_name.startswith('oracle-missing-peer-contradiction-'):
+                            selected['terminal']['finished_at'] += '-changed'
+                    elif case_name not in ('store-original31','store-original31-permuted','store27-coordinated-order'):
+                        raise AssertionError(case_name)
+                elif case_name in case_copy_refusals:
+                    _,family,key = case_copy_refusals[case_name]
+                    command = job['submit'] if family == 'submit' else case['block' if family == 'block' else 'final_callback']
+                    action = 'jobs-'+family; position = next(n for n,c in enumerate(image['provider_commands']) if c['action'] == action)
+                    reseal = False
+                    if key == 'outer-order':
+                        items = list(command.items()); command.clear(); command.update(reversed(items))
+                    elif key == 'payload-order': command['payload'] = dict(reversed(list(command['payload'].items()))); reseal = True
+                    elif key == 'provider-order': command['provider'] = dict(reversed(list(command['provider'].items())))
+                    elif key == 'wire-order': command['wire'][0] = dict(reversed(list(command['wire'][0].items())))
+                    elif key == 'entered': command['entered'] += .125
+                    elif key in ('stdout','stderr'): command[key] += 'different full original output\n'
+                    elif key == 'file-text': command['payload_file']['text'] += ' '
+                    elif key == 'file-count': command['payload_file']['bytes'] += 1
+                    elif key == 'wire-body': command['wire'][0]['body_sha256'] = '0'*64
+                    elif key == 'response': command['wire'][0]['response']['id' if family == 'submit' else 'ok'] = 'JOB-999' if family == 'submit' else False
+                    elif key == 'argv-org': command['argv'][4 if family == 'submit' else 3] = 'beta'
+                    elif key == 'argv-payload-file': command['argv'][-2 if family == 'submit' else -1] += '.foreign'
+                    elif key == 'canonical-missing': image['provider_commands'].pop(position)
+                    elif key == 'canonical-foreign': image['provider_commands'][position]['provider']['task'] = 'TASK-999'
+                    elif key == 'canonical-ambiguous': image['provider_commands'].insert(position,copy.deepcopy(image['provider_commands'][position]))
+                    elif key == 'required-copy':
+                        if family == 'submit': del job['submit']
+                        else: del case['block' if family == 'block' else 'final_callback']
+                    elif key == 'early-contradiction':
+                        image['durable'][0]['jobs_cases'].append(copy.deepcopy(case))
+                        command['entered'] += .125
+                    elif key == 'script-hash-only': command['payload']['script'] += '# changed full copy with unchanged claimed job SOURCE hash\n'; reseal = True
+                    elif key == 'job-swap':
+                        if len(case['jobs']) == 2: job['submit'] = copy.deepcopy(case['jobs'][1]['submit'])
+                        else:
+                            command['wire'][0]['response']['id'] = 'JOB-999'
+                            command['wire'][0]['response']['events_url'] = '/api/v1/orgs/alpha/jobs/JOB-999/events'
+                            command['stdout'] = json.dumps(command['wire'][0]['response'],sort_keys=True)+'\n'
+                    elif key == 'task-swap': command['provider']['task'] = 'TASK-999'
+                    elif key == 'sid-swap': command['provider']['session'] = case['starts'][0]['session'] if family == 'final' else 'sess-foreign'
+                    elif key == 'child-swap': command['child_pid'] = 999
+                    elif key == 'action': command['action'] = 'jobs-read'
+                    elif key == 'operation': command['operation'] = 'receipt'
+                    elif key == 'missing-field': del command['execution_deadline']
+                    elif key == 'field-type': command['exit'] = False
+                    elif key == 'python': command['python'] += '.foreign'
+                    elif key == 'source': command['source_sha'] = '0'*40
+                    elif key in ('waiting-order','canonical-waiting-order'): command['payload']['waiting_on_job_ids'].reverse(); reseal = True
+                    elif key in ('waiting-foreign','canonical-waiting-foreign'): command['payload']['waiting_on_job_ids'][-1] = 'JOB-999'; reseal = True
+                    elif key in ('done-summary','canonical-done-summary'):
+                        command['payload']['summary'] += ' altered'
+                        command['payload']['decision']['summary'] = command['payload']['summary']; reseal = True
+                    else: raise AssertionError(key)
+                    if reseal:
+                        payload = command['payload']; text = json.dumps(payload,sort_keys=True); digest = hashlib.sha256(text.encode()).hexdigest()
+                        file = command['payload_file']; file.update(text=text,bytes=len(text.encode()),sha256=digest,path=str(root/'coord'/(digest+'.json')))
+                        command['argv'][-2 if family == 'submit' else -1] = file['path']
+                        if family == 'submit': body = payload
+                        else:
+                            body = dict(session_id=payload['session_id'],agent=payload['agent'],status=payload['status'],confidence=90,
+                                output_summary=payload['summary'],risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
+                            if family == 'block': body['waiting_on_job_ids'] = list(payload['waiting_on_job_ids'])
+                            else: body['decision'] = dict(payload['decision'])
+                        command['wire'][0]['body_sha256'] = hashlib.sha256(json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+                        if key.startswith('canonical-'): image['provider_commands'][position] = copy.deepcopy(command)
+                elif case_name in case_stage_refusals:
+                    _,family,key = case_stage_refusals[case_name]
+                    if family == 'terminal':
+                        selected = job['terminal']
+                        if key == 'owner': selected['task_id'] = 'TASK-foreign'
+                        elif key in ('source','hash-only'):
+                            selected['script_text'] += '# contradictory full terminal SOURCE\n'
+                            if key == 'hash-only': job['script_sha256'] = hashlib.sha256(selected['script_text'].encode()).hexdigest()
+                        elif key == 'flag-bool': selected['persistent'] = False
+                        elif key == 'exit-bool': selected['exit_code'] = False
+                        elif key == 'state': selected['status'] = 'running'
+                        elif key == 'reason': selected['reason'] = None if job['code'] == -9 else 'timeout'
+                        elif key == 'head': selected['stdout_head'] += 'changed'
+                        elif key == 'path': selected['stdout_path'] += '.changed'
+                        elif key == 'time': selected['finished_at'] += '-changed'
+                        elif key == 'unknown-content': selected['unknown_sql_text'] = 'changed full original scalar'
+                        elif key == 'unknown-type': selected['unknown_sql_integer'] = 0.0
+                        elif key == 'unknown-missing': del selected['unknown_sql_null']
+                        elif key == 'unknown-extra': selected['another_original_column'] = None
+                        elif key == 'missing': del job['terminal']
+                        else: raise AssertionError(key)
+                    else:
+                        early = case['first_terminal']; task_row = early['tasks'][0]; result_row = early['results'][0]
+                        if key == 'missing-job': early['jobs'].pop()
+                        elif key == 'extra-job': early['jobs'].append(copy.deepcopy(early['jobs'][1]))
+                        elif key == 'duplicate-job': early['jobs'][1] = copy.deepcopy(early['jobs'][0])
+                        elif key == 'foreign-job': early['jobs'][1]['id'] = 'JOB-foreign'
+                        elif key == 'reverse-order': early['jobs'].reverse()
+                        elif key == 'first-running': early['jobs'][0] = copy.deepcopy(job['running'])
+                        elif key == 'second-terminal': early['jobs'][1] = copy.deepcopy(case['jobs'][1]['oracle']['row'])
+                        elif key == 'second-last-pending':
+                            later = copy.deepcopy(case['jobs'][1]['pending'][-1])
+                            later['row']['unknown_sql_text'] = 'different actual last pending row'
+                            case['jobs'][1]['pending'].append(later)
+                        elif key == 'job-source': early['jobs'][1]['script_text'] += '# contradictory pair source\n'
+                        elif key == 'job-flag-bool': early['jobs'][1]['review_required'] = False
+                        elif key == 'missing-task': early['tasks'] = []
+                        elif key == 'extra-task': early['tasks'].append(copy.deepcopy(task_row))
+                        elif key == 'task-owner': task_row['id'] = 'TASK-foreign'
+                        elif key == 'task-session': task_row['current_session_id'] = case['starts'][1]['session']
+                        elif key == 'task-cleared': task_row['block_kind'] = None
+                        elif key == 'task-status': task_row['status'] = 'completed'
+                        elif key == 'task-step-bool': task_row['orchestration_step_count'] = True
+                        elif key == 'task-step': task_row['orchestration_step_count'] = 2
+                        elif key == 'task-block-ids': task_row['blocked_on_job_ids'] = json.dumps([job['id']])
+                        elif key == 'task-full-content': task_row['note'] = 'changed original parked field'
+                        elif key == 'task-full-type': task_row['future_integer'] = 0.0
+                        elif key == 'missing-result': early['results'] = []
+                        elif key == 'extra-result': early['results'].append(copy.deepcopy(result_row))
+                        elif key == 'result-content': result_row['output_summary'] = 'changed full parked result'
+                        elif key == 'result-s2': result_row['session_id'] = case['starts'][1]['session']
+                        elif key == 'result-state': result_row['status'] = 'completed'
+                        elif key == 'result-full-type': result_row['duration_seconds'] = 1.0
+                        elif key == 'resumed-audit': early['audit'][0]['action'] = 'task_resumed_from_jobs'
+                        elif key == 'missing-stage': del case['first_terminal']
+                        elif key == 'missing-parked': del case['parked']
+                        elif key == 'missing-pending': case['jobs'][1]['pending'][-1].pop('row')
+                        else: raise AssertionError(key)
+                elif case_name in case_missing_jobs:
+                    holder,_ = case_missing_jobs[case_name]
+                    selected = case['live_s2']['snapshot'] if holder == 'live_s2' else case[holder]
+                    selected['jobs'].pop()
+                elif case_name in ('pending-audit-missing-job','oracle-audit-missing-job','rejection_drain-audit-missing-job'):
+                    holder = case_name.removesuffix('-audit-missing-job')
+                    audit = job['pending'][0]['audit'][0] if holder == 'pending' else job[holder]['audits'][0]
+                    audit['payload'] = json.dumps(dict(message='quote" LF\n 中'))
+                elif column_case:
+                    table,column,top,form = column_case
+                    if form == 'missing': del snapshot[table][0][column]
+                    else: snapshot[table][0][column] = {'bool':True,'number':0,'container':{},'wrong-top':'[]' if top == '{' else '{}'}[form]
+                elif case_name.startswith('sql-'): snapshot['audit'][0]['payload'] = sql_bad[case_name[4:]]
+                elif case_name.startswith('missing-'):
+                    key = case_name[8:]
+                    if key == 'manifest': image['durable'].pop()
+                    elif key == 'submit': image['provider_commands'] = []
+                    elif key in ('script','script_sha256'): del job[key]
+                    elif key == 'job-id': del job['id']
+                    else: del case[key]
+                elif case_name.startswith('wrong-') and case_name != 'wrong-owner':
+                    key = case_name[6:]
+                    if key == 'root': image['durable'][1]['executable_manifest']['root'] += '/foreign'
+                    elif key == 'start': case['starts'][0]['session'] = 'foreign-start'
+                    elif key == 'job-id': job['id'] = 'JOB-999'
+                    elif key == 'index': case[key] = 6
+                    elif key == 'script': job['script'] += '# changed complete SOURCE\n'
+                    elif key == 'script_sha256': job[key] = '0'*64
+                    else: case[key] = 'foreign'
+                elif case_name == 'index-bool': case['index'] = True
+                elif case_name == 'index1-job': case.update(index=1,variant='E04.review-required-refused')
+                elif case_name == 'start-copy': case['starts'][0]['pid'] = 999
+                elif case_name == 'start-missing-fact': del case['starts'][0]['pid_start']
+                elif case_name == 'source-hash-only':
+                    job['script'] += '# altered full source\n'; job['script_sha256'] = hashlib.sha256(job['script'].encode()).hexdigest()
+                elif case_name == 'row-script-content': sql_job['script_text'] += '# changed row source\n'
+                elif case_name == 'script-type': job['script'] = {}
+                elif case_name == 'script-second-layer': job['script'] = 'x="second\\\\nlayer"\n'
+                elif case_name == 'script-secret': job['script'] = 'print("SYNTHETIC_TOKEN")\n'
+                elif case_name == 'script-hash-type': job['script_sha256'] = True
+                elif case_name == 'row-flag-bool': sql_job['persistent'] = False
+                elif case_name == 'row-review-bool': sql_job['review_required'] = False
+                elif case_name == 'row-max-bytes-bool': sql_job['max_output_bytes'] = True
+                elif case_name == 'row-exit-bool': sql_job['exit_code'] = False
+                elif case_name == 'row-missing-field': del sql_job['created_at']
+                elif case_name == 'row-interpreter': sql_job['interpreter'] = 'bash'
+                elif case_name == 'row-start': sql_job['started_at'] += '-foreign'
+                elif case_name == 'row-created': sql_job['created_at'] += '-foreign'
+                elif case_name == 'row-type': job['oracle']['row'] = []
+                elif case_name == 'row-nested': sql_job['unknown_nested'] = {}
+                elif case_name == 'snapshot-type': case['final_snapshot'] = []
+                elif case_name == 'snapshot-missing-table': del snapshot['jobs']
+                elif case_name == 'snapshot-table-type': snapshot['jobs'] = {}
+                elif case_name == 'snapshot-empty-task': snapshot['tasks'] = []
+                elif case_name == 'snapshot-duplicate-job': snapshot['jobs'].append(copy.deepcopy(snapshot['jobs'][0]))
+                elif case_name == 'snapshot-row-field': snapshot['jobs'][0]['unknown_sql_text'] = 'changed full original scalar'
+                elif case_name == 'running-row-copy': job['pending'][0]['row']['unknown_sql_text'] = 'changed full original scalar'
+                elif case_name == 'pending-audit-type': job['pending'][0]['audit'] = {}
+                elif case_name == 'oracle-audit-type': job['oracle']['audits'] = {}
+                elif case_name == 'drain-audit-type': job['rejection_drain']['audits'] = {}
+                elif case_name == 'row-null-source': sql_job['script_text'] = None
+                elif case_name == 'unknown-encoded': sql_job['unknown_sql_text'] = 'public\\nvalue'
+                elif case_name == 'lookalike-column': sql_job['script_text_copy'] = job['script']
+                elif case_name == 'output-json-lookalike': job['oracle']['outputs'][0]['text'] = '{"value":"second\\nlayer"}'
+                elif case_name == 'output-second-layer': job['oracle']['outputs'][0]['text'] = 'second\\nlayer'
+                elif case_name == 'job-out-second-layer': job['out'] = 'second\\nlayer'
+                elif case_name == 'output-text-type': job['oracle']['outputs'][0]['text'] = 7
+                elif case_name == 'job-out-type': job['out'] = 7
+                elif case_name in (holder+'-owner' for holder in case_holders):
+                    holder = case_name[:-6]
+                    changed = (case[holder]['jobs'][0] if holder in ('parked','final_snapshot') else
+                        case['live_s2']['snapshot']['jobs'][0] if holder == 'live_s2' else job['running'] if holder == 'running' else
+                        job['pending'][0]['row'] if holder == 'pending' else job[holder]['row'])
+                    changed['task_id'] = 'TASK-foreign'
+                elif case_name == 'lookalike-root': image['durable'][0] = dict(cases=[case])
+                elif case_name == 'first-terminal': case['first_terminal'] = copy.deepcopy(case['parked'])
+                elif case_name == 'terminal': job['terminal']['script_text'] += '# contradictory earlier terminal copy\n'
+                elif case_name == 'refusal-script': case['refusal'] = dict(script=job['script'])
+                elif case_name == 'task-owner': snapshot['tasks'][0]['id'] = 'TASK-foreign'
+                elif case_name == 'result-owner': snapshot['results'][0]['task_id'] = 'TASK-foreign'
+                elif case_name == 'audit-owner': snapshot['audit'][0]['task_id'] = 'TASK-foreign'
+                elif case_name == 'result-session': snapshot['results'][0]['session_id'] = 'foreign-start'
+                elif case_name in ('audit-job','pending-audit-job','oracle-audit-job','drain-audit-job'):
+                    audit = (snapshot['audit'][0] if case_name == 'audit-job' else job['pending'][0]['audit'][0]
+                        if case_name == 'pending-audit-job' else job['oracle']['audits'][0] if case_name == 'oracle-audit-job' else job['rejection_drain']['audits'][0])
+                    audit['payload'] = '{"script_request_id":"JOB-foreign"}'
+                elif case_name == 'shared-work': snapshot['audit'][0]['payload'] = '{"value":"'+'p'*2800000+'"}'
+                elif case_name == 'shared-facts': snapshot['audit'][0]['payload'] = '{"values":['+','.join('0' for _ in range(70000))+']}'
+                elif case_name == 'shared-depth': snapshot['audit'][0]['payload'] = '{"value":'+'['*60+'0'+']'*60+'}'
+                elif case_name == 'wrong-owner': pass
+                else: raise AssertionError('unhandled Case refusal '+case_name)
+                if complete_terminal and case_name not in case_terminal_missing:
+                    terminal_numbers = ((0,) if case_name in case_running_missing
+                        and case_running_missing[case_name][2] not in ('full','reads')
+                        else tuple(range(2 if fixture_index >= 4 else 1)))
+                    case_complete_terminal(image,root,fixture_index,terminal_numbers,browser_source)
+                wanted = copy.deepcopy(image); original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                name = 'e07.json' if case_name == 'wrong-owner' else 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                previous = {p.name:p.read_bytes() for p in output.iterdir()}; tree = copy.deepcopy(state['safe_scenario'])
+                scenario = (root/'scenario.json').read_bytes(); old_buffer = staged[name]
+                if case_name in case_shape_refusals:
+                    prior_staged,prior_published = copy.deepcopy(staged),copy.deepcopy(published)
+                    raw_names = {p.name for p in (root/'raw').iterdir()}
+                if boundary in ('writer','prefix'):
+                    fatal_owner_loss = case_name == 'wrong-owner' and boundary == 'prefix'
+                    exhausted_budget = case_name == 'shared-facts'
+                    original_fatal = None
+                    initial_capacity_error = initial_capacity_tb = None
+                    if fatal_owner_loss or exhausted_budget:
+                        assert writer.redaction_ready and writer._evidence_fatal is None
+                        writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                        assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
+                    if boundary == 'prefix': source = root/'raw/observations.json'; source.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source)
+                    except (ValueError,AssertionError) as exc:
+                        if case_name in case_terminal_missing:
+                            assert type(exc) is ValueError and str(exc) == 'Case required terminal browser holder unavailable', (case_name,boundary,str(exc))
+                            assert writer.redaction_ready and writer._evidence_fatal is None
+                        if writer._evidence_fatal is not None:
+                            error, tb = writer._evidence_fatal
+                            if (not fatal_owner_loss or type(exc) is not AssertionError
+                                    or str(exc) != 'original evidence owner/path unavailable; observed=None'):
+                                # Unexpected fatal causes must remain visible.
+                                error.add_note('Case refusal: '+case_name+'/'+boundary)
+                                raise error.with_traceback(tb)
+                            original_fatal = writer._evidence_fatal
+                            assert error is exc and tb is not None and not writer.redaction_ready
+                        elif exhausted_budget:
+                            if (type(exc) is not _EvidenceCapacity
+                                    or str(exc) != 'evidence capacity refused'
+                                    or not _ordinary_evidence_error(exc)):
+                                exc.add_note('Case refusal: '+case_name+'/'+boundary)
+                                raise
+                            initial_capacity_error, initial_capacity_tb = exc, exc.__traceback__
+                            assert initial_capacity_tb is not None and writer.redaction_ready
+                            assert writer._evidence_fatal is None
+                        elif fatal_owner_loss:
+                            raise
+                    else: raise AssertionError('Case unsafe member admitted: '+case_name+'/'+boundary)
+                    assert destination.read_bytes() == prior and staged[name] is old_buffer and not state['fatal']
+                    if boundary == 'prefix': assert source.read_bytes() == original_image
+                    if fatal_owner_loss:
+                        assert original_fatal is not None
+                        try: writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                        except AssertionError as later:
+                            assert str(later) == 'unsafe evidence withheld without full redaction context; observed=None'
+                            assert writer._evidence_fatal is original_fatal
+                            assert original_fatal[0] is error and original_fatal[1] is tb and not writer.redaction_ready
+                        else: raise AssertionError('fatal Case owner/path allowed continuation: '+case_name+'/'+boundary)
+                        assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
+                        assert not (root/'raw/eligible-case.txt.tmp').exists()
+                    elif exhausted_budget:
+                        assert initial_capacity_error is not None and initial_capacity_tb is not None
+                        try: writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                        except _EvidenceCapacity as later:
+                            assert type(later) is _EvidenceCapacity and str(later) == 'evidence capacity refused'
+                            assert _ordinary_evidence_error(later) and later.__traceback__ is not None
+                            assert writer.redaction_ready and writer._evidence_fatal is None
+                            assert initial_capacity_error.__traceback__ is initial_capacity_tb
+                        else: raise AssertionError('exhausted Case budget allowed continuation: '+case_name+'/'+boundary)
+                        assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
+                        assert not (root/'raw/eligible-case.txt.tmp').exists()
+                        assert destination.read_bytes() == prior and staged[name] is old_buffer and not state['fatal']
+                        if boundary == 'prefix': assert source.read_bytes() == original_image
+                    else:
+                        writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                        assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
+                else:
+                    destination.write_bytes(original_image); (root/'raw/eligible-case.txt').write_bytes(b'eligible ordinary Case sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case_name,boundary,failures)
+                    if case_name in case_terminal_missing:
+                        assert type(error[0]) is ValueError and str(error[0]) == 'Case required terminal browser holder unavailable', (case_name,boundary,str(error[0]))
+                    assert destination.read_bytes() == original_image and staged[name] is old_buffer and published[name] is old_buffer
+                    assert name in state['refused_sources'] and (output/name).read_bytes() == prior
+                    if case_name not in ('shared-work','shared-facts'): assert (output/'eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
+                exact(image,wanted); exact(state['safe_scenario'],tree)
+                assert (root/'scenario.json').read_bytes() == scenario
+                for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
+                assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                if case_name in case_shape_refusals:
+                    assert {p.name for p in output.iterdir()} == set(previous) | ({'eligible-case.txt'} if boundary in ('raw','raw-prefix') else set())
+                    assert {p.name for p in (root/'raw').iterdir()} == raw_names | {'eligible-case.txt'} | ({'observations.json'} if boundary == 'prefix' else set())
+                    for prior_name,prior_bytes in prior_staged.items(): assert staged[prior_name] == prior_bytes
+                    for prior_name,prior_bytes in prior_published.items(): assert published[prior_name] == prior_bytes
+                    assert set(staged) == set(prior_staged) | ({'eligible-case.txt'} if boundary in ('raw','raw-prefix') else set())
+                    assert set(published) == set(prior_published) | ({'eligible-case.txt'} if boundary in ('raw','raw-prefix') else set())
+                result_name = ('C5-Case-stage-refusal-'+case_name.removeprefix('stage-') if case_name in case_stage_refusals
+                               else 'C5-Case-refusal-'+case_name)
+                if complete_public and case_name not in case_running_missing and case_name not in case_terminal_missing and case_name not in case_action_refusals:
+                    result_name += '-with-running-public'
+                if complete_terminal and case_name not in case_terminal_missing and case_name not in case_action_refusals:
+                    result_name += '-with-terminal-browser'
+                results[result_name+'-'+boundary] = 'whole original input/prior member/output/result/FAIL/tree exact; no selected pending/publication; overlapping owner/strict/R1/capacity guards; specific sensitivity PROOF NOT RUN'
+
     return results
 
 

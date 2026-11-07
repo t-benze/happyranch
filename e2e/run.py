@@ -19,7 +19,7 @@ import time
 import traceback
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from owned import Owned, identity
 import completed
@@ -70,26 +70,36 @@ class _ScenarioDiagnostic:
         self.ready = False
         self.sample_claimed = self.probe_claimed = self.output_claimed = False
         self.descriptor = None
+        setup_failure = None
         try:
-            if time.monotonic() >= end:
-                return
-            if not all(hasattr(socket, name) for name in ("SOCK_NONBLOCK", "SOCK_CLOEXEC", "MSG_DONTWAIT", "MSG_PEEK")):
-                return
-            self.receiver, self.sender = socket.socketpair(
-                socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
-            self.receiver.shutdown(socket.SHUT_WR)
-            self.sender.shutdown(socket.SHUT_RD)
-            self.descriptor = self.sender.fileno()
-            self.ready = (self.descriptor > 2 and not self.receiver.getblocking() and not self.sender.getblocking()
-                          and not self.receiver.get_inheritable() and not self.sender.get_inheritable()
-                          and time.monotonic() < end)
-        except TimeoutError:
+            try:
+                if time.monotonic() >= end:
+                    return
+                if not all(hasattr(socket, name) for name in ("SOCK_NONBLOCK", "SOCK_CLOEXEC", "MSG_DONTWAIT", "MSG_PEEK")):
+                    return
+                self.receiver, self.sender = socket.socketpair(
+                    socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
+                self.receiver.shutdown(socket.SHUT_WR)
+                self.sender.shutdown(socket.SHUT_RD)
+                self.descriptor = self.sender.fileno()
+                self.ready = (self.descriptor > 2 and not self.receiver.getblocking() and not self.sender.getblocking()
+                              and not self.receiver.get_inheritable() and not self.sender.get_inheritable()
+                              and time.monotonic() < end)
+            except TimeoutError:
+                raise
+            except OSError:
+                self.ready = False  # Ordinary setup decline precedes ONE launch choice.
+        except BaseException as exc:
+            setup_failure = (exc, exc.__traceback__)  # Before not-ready release.
             raise
-        except OSError:
-            self.ready = False  # Ordinary setup decline precedes ONE launch choice.
         finally:
-            if not self.ready:
-                self.release()
+            try:
+                if not self.ready:
+                    self.release()
+            finally:
+                if setup_failure is not None:
+                    error, tb = setup_failure
+                    raise error.with_traceback(tb)
 
     def release_endpoint(self, name: str) -> bool:
         if getattr(self, name + "_close_started"):
@@ -109,10 +119,19 @@ class _ScenarioDiagnostic:
         return True
 
     def release(self) -> None:
+        sender_failure = None
         try:
             self.release_endpoint("sender")
+        except BaseException as exc:
+            sender_failure = (exc, exc.__traceback__)  # Before receiver finalization.
+            raise
         finally:
-            self.release_endpoint("receiver")
+            try:
+                self.release_endpoint("receiver")
+            finally:
+                if sender_failure is not None:
+                    error, tb = sender_failure
+                    raise error.with_traceback(tb)
 
     def receive(self) -> None:
         # Called ONLY after the original loop's direct exit and original phase
@@ -489,74 +508,4973 @@ def _read_failure_categories(root: Path | None, source: object, check: Callable[
         return unavailable, _failure_error(exc), "refused"
 
 
-def scenario_fields(result: dict, sanitize: Callable[[str], str]) -> dict:
-    """Detach only existing scenario fields through the established redactor.
+def scenario_fields(result: dict, sanitize: Callable[[str], str], *, context: list[str],
+                    ledger: _EvidenceLedger | None = None,
+                    check: Callable[[], None] = lambda: None) -> dict:
+    """Privately detach the seven claims using the collection's actual owner.
 
-    These are producer claims, not accepted cases or cleanup/export proof.
-    Call only after acquiring the complete original redaction context. A failed
-    projection cannot replace a previously retained safe snapshot.
+    Borrowed objects still owe original PLUS safe bytes, including aliases.
+    Parsing does not grant a zero-cost original projection obligation.
     """
-    if type(result) is not dict or type(result.get('variants')) is not dict:
-        raise ValueError('scenario state unavailable')
-    # This is a bounded publication projection, not a case/content validator.
-    # Redact individual strings BEFORE JSON escaping, including nested keys.
-    remaining = 8 * 1024 * 1024
-    facts = 200000
+    if type(result) is not dict or type(result.get("variants")) is not dict:
+        raise ValueError("scenario state unavailable")
+    if ledger is None:
+        ledger = _EvidenceLedger()  # The existing borrowed-object opportunity.
+    ledger.charge(8, 1, check)
+    ancestors = set()
 
-    def detach(value: object, depth: int = 0):
-        nonlocal remaining, facts
-        facts -= 1
-        if facts < 0 or depth > 64:
-            raise ValueError('scenario projection capacity refused')
+    def detach(value: object, depth: int = 0) -> Any:
+        if depth > 64:
+            raise _EvidenceCapacity("scenario projection capacity refused")
+        ledger.charge(0, 1, check)
         if type(value) is str:
-            if len(value) > remaining:
-                raise ValueError('scenario projection capacity refused')
-            remaining -= len(value.encode('utf8'))
-            safe = sanitize(value)
-            if type(safe) is not str or len(safe) > remaining:
-                raise ValueError('scenario projection capacity refused')
-            remaining -= len(safe.encode('utf8'))
-            if remaining < 0:
-                raise ValueError('scenario projection capacity refused')
-            return safe
-        if type(value) is dict:
-            if len(value) > facts:
-                raise ValueError('scenario projection capacity refused')
-            output = {}
-            for key, item in value.items():
-                if type(key) is not str:
-                    raise ValueError('scenario key unavailable')
-                safe_key = detach(key, depth + 1)
-                if safe_key in output:
-                    raise ValueError('scenario redacted key collision')
-                output[safe_key] = detach(item, depth + 1)
-            return output
-        if type(value) is list:
-            if len(value) > facts:
-                raise ValueError('scenario projection capacity refused')
-            return [detach(item, depth + 1) for item in value]
+            size = _evidence_utf8_size(value, check)
+            ledger.charge(size, 0, check)
+            if "\\" in value:
+                raise ValueError("scenario representation withheld")
+            return _evidence_safe(value, size, sanitize, context, ledger, check)
+        if type(value) in (dict, list):
+            if id(value) in ancestors:
+                raise ValueError("scenario cycle refused")
+            ledger.charge(8, 1, check)  # Active ancestor and private container.
+            ancestors.add(id(value))
+            try:
+                if type(value) is dict:
+                    output = {}
+                    for key, item in value.items():
+                        if type(key) is not str:
+                            raise ValueError("scenario key unavailable")
+                        safe_key = detach(key, depth + 1)
+                        if safe_key in output:
+                            raise ValueError("scenario redacted key collision")
+                        ledger.charge(16, 1, check)
+                        output[safe_key] = detach(item, depth + 1)
+                    return output
+                output = []
+                for item in value:
+                    ledger.charge(8, 1, check)
+                    output.append(detach(item, depth + 1))
+                return output
+            finally:
+                ancestors.remove(id(value))
         if (value is None or type(value) is bool or type(value) is int and value.bit_length() <= 64
                 or type(value) is float and math.isfinite(value)):
             return value
-        raise ValueError('scenario value unavailable')
+        raise ValueError("scenario value unavailable")
 
-    selected = {k: result[k] for k in ("variants", "scenario_phases", "e07", "groups", "e07_admission", "failures", "finalization") if k in result}
-    detached = detach(selected)
-    detached.setdefault('variants', {})
-    # Bound the eventual JSON representation too; escaping may expand strings.
-    size = 0
-    for chunk in json.JSONEncoder(allow_nan=False, indent=2).iterencode(detached):
-        size += len(chunk.encode('utf8'))
-        if size > 8 * 1024 * 1024:
-            raise ValueError('scenario projection capacity refused')
+    ledger.charge(8, 1, check)
+    detached = {}
+    for key in ("variants", "scenario_phases", "e07", "groups", "e07_admission", "failures", "finalization"):
+        if key in result:
+            safe_key = detach(key, 1)
+            if safe_key in detached:
+                raise ValueError("scenario redacted key collision")
+            ledger.charge(16, 1, check)
+            detached[safe_key] = detach(result[key], 1)
+    if type(detached.get("variants")) is not dict:
+        raise _EvidenceUnsafe("scenario required-key sanitation postcondition")
+    # Independent encoded predicate, SAME collection owner, no second buffer.
+    _evidence_encoded_size(detached, ledger, check)
+    check()
     return detached
+
+
+class _EvidenceCapacity(ValueError):
+    """An ordinary reached work/storage guard, never an input-size witness."""
+
+
+class _EvidenceUnsafe(ValueError):
+    """A broken sanitation postcondition stops the original opportunity."""
+
+
+class _EvidenceLedger:
+    """Nonrefundable logical work shared by evidence preparation and writers.
+
+    This bounds charged transformations, not Python object headers or syscalls.
+    """
+    def __init__(self) -> None:
+        self.work = self.reserved = self.facts = 0
+
+    def reserve(self, size: int, facts: int, check: Callable[[], None]) -> None:
+        check()
+        if (type(size) is not int or type(facts) is not int or min(size, facts) < 0
+                or self.work + self.reserved + size > 8388608 or self.facts + facts > 200000):
+            raise _EvidenceCapacity("evidence capacity refused")
+        self.reserved += size
+        self.facts += facts
+
+    def charge(self, size: int, facts: int, check: Callable[[], None]) -> None:
+        self.reserve(size, facts, check)
+        self.settle(size, size)
+
+    def settle(self, reserved: int, actual: int) -> None:
+        if not 0 <= actual <= reserved <= self.reserved:
+            raise ValueError("invalid evidence reservation")
+        self.reserved -= reserved
+        self.work += actual  # Unused capacity releases; actual work never refunds.
+
+
+def _evidence_utf8_size(text: str, check: Callable[[], None], limit: int = 8388608) -> int:
+    if type(text) is not str:
+        raise ValueError("evidence string unavailable")
+    size = 0
+    for index, char in enumerate(text):
+        if index % 4096 == 0:
+            check()
+        code = ord(char)
+        if 0xD800 <= code <= 0xDFFF:
+            raise ValueError("evidence surrogate refused")
+        size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+        if size > limit:
+            raise _EvidenceCapacity("evidence capacity refused")
+    check()
+    return size
+
+
+def _evidence_safe(text: str, size: int, sanitize: Callable[[str], str], context: list[str],
+                   ledger: _EvidenceLedger, check: Callable[[], None]) -> str:
+    # Original scalar is already charged by the real caller. Plan EVERY pass,
+    # including no-match aliases, before the known literal sanitizer allocates.
+    spans, expected, peak, changed = _evidence_literal_plan(text, size, context, ledger, check)
+    scratch = peak if changed else 0
+    ledger.reserve(scratch, 1, check)
+    try:
+        safe = sanitize(text)
+        try:
+            actual = _evidence_utf8_size(safe, check, expected)
+        except ValueError as exc:
+            raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+        # A complete scalar needs no temporary begin/end span slots. The
+        # existing direct iterator checks every original character at any
+        # length; retain its reference and all comparison/dispatch work.
+        ledger.charge(64, 0, check)  # Selection/comparator plus both chars dispatches.
+        ledger.charge(8, 1, check)
+        if (actual != expected or not _evidence_span_equal(
+                safe, spans, check)
+                or any(secret in safe for secret in context)):
+            raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+        check()
+    finally:
+        # All actual pass work was spent before the call; scratch release
+        # cannot erase it, including when sanitation raises.
+        ledger.settle(scratch, 0)
+    return safe
+
+
+def _evidence_chars(spans: str | list[tuple[str, int, int]], check: Callable[[], None]) -> Iterator[str]:
+    # Every caller prepays this dispatch. A complete scalar needs no retained
+    # endpoint slots, but still traverses every original character and check.
+    if type(spans) is str:
+        for index in range(len(spans)):
+            if index % 4096 == 0:
+                check()
+            yield spans[index]
+        check()
+        return
+    count = 0
+    for text, begin, end in spans:
+        for index in range(begin, end):
+            if count % 4096 == 0:
+                check()
+            count += 1
+            yield text[index]
+    check()
+
+
+def _evidence_span_equal(left: str | list, right: str | list, check: Callable[[], None]) -> bool:
+    # Both callers prepay this dispatch. The complete scalar traversal keeps
+    # the left generator's check cadence and final check without span slots.
+    if type(left) is str:
+        b = _evidence_chars(right, check)
+        for index in range(len(left)):
+            if index % 4096 == 0:
+                check()
+            if left[index] != next(b, None):
+                return False
+        check()
+        return next(b, None) is None
+    a, b = _evidence_chars(left, check), _evidence_chars(right, check)
+    while True:
+        x, y = next(a, None), next(b, None)
+        if x != y:
+            return False
+        if x is None:
+            return True
+
+
+def _evidence_matches(spans: str | list, secret: str, ledger: _EvidenceLedger,
+                      check: Callable[[], None], *, first: bool = False) -> list[int]:
+    """Nonoverlapping indexed matches; no whole token or matching carry copy."""
+    matches = []
+    # Pay the new representation selection and temporary endpoint setup.
+    ledger.charge(32, 0, check)
+    if type(spans) is str or len(spans) == 1:
+        if type(spans) is str:
+            text = spans
+            begin = 0
+            end = len(spans)
+        else:
+            text, begin, end = spans[0]
+        position = begin
+        while True:
+            check()
+            position = text.find(secret, position, end)
+            if position < 0:
+                return matches
+            ledger.charge(16, 2, check)
+            matches.append(position - begin)
+            if first:
+                return matches
+            position += len(secret)
+    # Only the current original secret has a matcher table, never a dictionary
+    # of transformed secrets. Reserve its slots/facts BEFORE allocation.
+    chunks = (len(secret) + 511) // 512
+    ledger.charge(8 * len(secret) + 8 * chunks, len(secret) + chunks, check)
+    prefix = []  # F also bounds the outer reference array to <4096 logical B.
+    for begin in range(0, len(secret), 512):
+        check()
+        prefix.append([0] * min(512, len(secret) - begin))
+    matched = 0
+    for index in range(1, len(secret)):
+        if index % 4096 == 0:
+            check()
+        while matched and secret[index] != secret[matched]:
+            matched = prefix[(matched - 1) // 512][(matched - 1) % 512]
+        if secret[index] == secret[matched]:
+            matched += 1
+        prefix[index // 512][index % 512] = matched
+    matched = 0
+    ledger.charge(16, 0, check)  # Character iterator's representation dispatch.
+    for position, char in enumerate(_evidence_chars(spans, check)):
+        while matched and char != secret[matched]:
+            matched = prefix[(matched - 1) // 512][(matched - 1) % 512]
+        if char == secret[matched]:
+            matched += 1
+        if matched == len(secret):
+            ledger.charge(16, 2, check)
+            matches.append(position + 1 - matched)
+            if first:
+                return matches
+            matched = 0
+    return matches
+
+
+def _evidence_literal_plan(text: str, size: int, context: list[str] | tuple[str, ...],
+                           ledger: _EvidenceLedger, check: Callable[[], None]) -> tuple:
+    """Literal replacement as charged ORIGINAL spans, without a safe scalar copy.
+
+    The caller owns the original debit. Retained spans refer to that SAME
+    original or the fixed marker. No second decode/sanitation recovers content.
+    """
+    ledger.charge(16, 0, check)  # Original complete-scalar selection remains paid.
+    ledger.charge(8, 1, check)
+    spans = text  # No initial full-span triple, independently of scalar length.
+    peak, changed = size, False
+    for secret in context:
+        if type(secret) is not str or not secret:
+            raise _EvidenceUnsafe("evidence context unavailable")
+        matches = _evidence_matches(spans, secret, ledger, check)
+        secret_size = _evidence_utf8_size(secret, check)
+        safe_size = size + len(matches) * (10 - secret_size)
+        # EVERY replacement pass pays its complete safe scalar, even aliasing.
+        ledger.charge(safe_size, 1, check)
+        if matches:
+            changed = True
+            ledger.charge(16, 0, check)
+            if type(spans) is str:
+                # Actual replacement needs the original indexed span. Pay
+                # its full construction before allocating, without refunding
+                # the earlier complete-scalar reference or any safety pass.
+                ledger.charge(24, 3, check)
+                spans = [(spans, 0, len(spans))]
+            output = []
+            def retain(source: str, begin: int, end: int) -> None:
+                if begin < end:
+                    ledger.charge(24, 3, check)
+                    output.append((source, begin, end))
+            match_index, offset, cursor = 0, 0, 0
+            for source, begin, end in spans:
+                length = end - begin
+                while match_index < len(matches) and matches[match_index] < offset + length:
+                    start = matches[match_index]
+                    retain(source, begin + max(cursor - offset, 0), begin + max(start - offset, 0))
+                    retain("[REDACTED]", 0, 10)
+                    cursor = start + len(secret)
+                    match_index += 1
+                retain(source, begin + max(cursor - offset, 0), end)
+                offset += length
+                cursor = max(cursor, offset)
+            spans = output
+        size = safe_size
+        peak = max(peak, size)
+    # Check the complete virtual result, including matches across span joins.
+    for secret in context:
+        if _evidence_matches(spans, secret, ledger, check, first=True):
+            raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+    check()
+    return spans, size, peak, changed
+
+
+def _evidence_string_size(spans: str | list, check: Callable[[], None]) -> int:
+    size = 2
+    for char in _evidence_chars(spans, check):
+        code = ord(char)
+        if 0xD800 <= code <= 0xDFFF:
+            raise ValueError("evidence surrogate refused")
+        size += (2 if char in '\"\\\b\f\n\r\t' else 6 if code < 32 else
+                 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4)
+        if size > 8388608:
+            raise _EvidenceCapacity("evidence encoded capacity refused")
+    return size
+
+
+def _evidence_number(value: int | float, ledger: _EvidenceLedger, check: Callable[[], None]) -> str:
+    if not (type(value) is int and value.bit_length() <= 64
+            or type(value) is float and math.isfinite(value)):
+        raise ValueError("evidence number refused")
+    ledger.reserve(128, 1, check)
+    try:
+        text = repr(value)  # Only a checked builtin 64-bit int or finite float.
+        if len(text) > 128:
+            raise _EvidenceCapacity("evidence number capacity refused")
+    except BaseException:
+        ledger.settle(128, 128)
+        raise
+    ledger.settle(128, len(text))
+    return text
+
+
+def _evidence_encoded_size(value: object, ledger: _EvidenceLedger, check: Callable[[], None]) -> int:
+    """Independent compact predicate only; no complete encoded image."""
+    size, ancestors = 0, set()
+    def add(count: int) -> None:
+        nonlocal size
+        if size + count > 8388608:
+            raise _EvidenceCapacity("evidence encoded capacity refused")
+        size += count
+    def visit(item: object, depth: int) -> None:
+        if depth > 64:
+            raise _EvidenceCapacity("evidence depth capacity refused")
+        ledger.charge(0, 1, check)
+        if type(item) is str:
+            ledger.charge(40, 3, check)  # Original triple plus chars dispatch.
+            add(_evidence_string_size([(item, 0, len(item))], check))
+        elif type(item) in (dict, list):
+            if id(item) in ancestors:
+                raise ValueError("evidence cycle refused")
+            ledger.charge(8, 1, check)
+            ancestors.add(id(item))
+            try:
+                add(2)
+                for index, member in enumerate(item.items() if type(item) is dict else item):
+                    if index:
+                        add(1)
+                    if type(item) is dict:
+                        key, child = member
+                        if type(key) is not str:
+                            raise ValueError("evidence key unavailable")
+                        visit(key, depth + 1)
+                        add(1)
+                        visit(child, depth + 1)
+                    else:
+                        visit(member, depth + 1)
+            finally:
+                ancestors.remove(id(item))
+        elif item is None or type(item) is bool:
+            add(4 if item is None or item is True else 5)
+        elif type(item) in (int, float):
+            add(len(_evidence_number(item, ledger, check)))
+        else:
+            raise ValueError("evidence value unavailable")
+    visit(value, 0)
+    check()
+    return size
+
+
+def _evidence_buffer(tokens: list, size: int, ledger: _EvidenceLedger,
+                      check: Callable[[], None]) -> bytearray:
+    """One complete candidate, exact reservation; emission operations <=6B."""
+    ledger.charge(size, 1, check)
+    ledger.charge(8, 2, check)  # Fixed codepoint/escape scratch, before allocation.
+    candidate = bytearray(size)
+    position, checkpoint = 0, 0
+    def put(code: int) -> None:
+        nonlocal position, checkpoint
+        if position >= size:
+            raise _EvidenceUnsafe("evidence encoding postcondition")
+        if position >= checkpoint:
+            check()
+            checkpoint = position + 4096
+        candidate[position] = code
+        position += 1
+    for kind, content in tokens:
+        if kind == "string":
+            put(34)
+        ledger.charge(16, 0, check)  # Character iterator's representation dispatch.
+        for char in _evidence_chars(content, check):
+            code = ord(char)
+            if kind == "string" and (code < 32 or char in '\"\\'):
+                put(92)
+                escape = '\"\\\b\f\n\r\t'.find(char)
+                if escape < 0:
+                    for digit in (117, 48, 48, ord("0123456789abcdef"[code >> 4]), ord("0123456789abcdef"[code & 15])):
+                        put(digit)
+                else:
+                    put((34, 92, 98, 102, 110, 114, 116)[escape])
+            elif code < 128:
+                put(code)
+            elif code < 2048:
+                put(192 | code >> 6)
+                put(128 | code & 63)
+            elif code < 65536:
+                put(224 | code >> 12)
+                put(128 | code >> 6 & 63)
+                put(128 | code & 63)
+            else:
+                put(240 | code >> 18)
+                put(128 | code >> 12 & 63)
+                put(128 | code >> 6 & 63)
+                put(128 | code & 63)
+        if kind == "string":
+            put(34)
+    check()
+    if position != size:
+        raise _EvidenceUnsafe("evidence encoding postcondition")
+    return candidate
+
+
+def _evidence_original(text: str, context: tuple | list, ledger: _EvidenceLedger,
+                       check: Callable[[], None], sanitize: Callable[[str], str],
+                       *, original: _EvidenceJSON | None = None) -> None:
+    """Unchanged-safe original JSON spelling, never a decoded-text grant."""
+    try:
+        if original is None:
+            size = _evidence_utf8_size(text, check)
+            ledger.charge(size, 1, check)
+        else:
+            # The completing grammar counted THIS original spelling while
+            # visiting its characters. No second full sizing walk or caller-
+            # supplied size is needed. Keep the guarded handoff and original
+            # reference paid; every sanitizer pass and full comparison below
+            # still runs on the complete image, including JSONL punctuation.
+            ledger.charge(32, 4, check)
+            if (type(original) is not _EvidenceJSON or original.text is not text
+                    or original.ledger is not ledger or original.check is not check
+                    or original.index != len(text)):
+                raise _EvidenceUnsafe('original evidence sizing owner withheld')
+            ledger.charge(8, 1, check)
+            size = original.original_size
+            if type(size) is not int or not len(text) <= size <= 8388608:
+                raise _EvidenceCapacity('evidence capacity refused')
+        for secret in context:
+            ledger.charge(8, 1, check)
+            if secret in text:
+                raise ValueError("original evidence content withheld")
+        # THIS occurrence has no original secret. Its expected literal
+        # replacement result is therefore the complete original itself: no
+        # virtual span plan or comparison-span holder needs construction.
+        # Keep every actual sanitizer pass's scalar work, including aliases.
+        ledger.charge(16, 0, check)
+        for secret in context:
+            ledger.charge(size, 1, check)
+        ledger.reserve(0, 1, check)  # Original output-reference admission stays.
+        try:
+            safe = sanitize(text)
+            try:
+                actual = _evidence_utf8_size(safe, check, size)
+            except ValueError as exc:
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+            ledger.charge(64, 0, check)  # Full comparison and local setup stay paid.
+            if actual != size or safe != text or any(secret in safe for secret in context):
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+            check()
+        finally:
+            ledger.settle(0, 0)
+            safe = None
+    finally:
+        text = None
+
+
+def _evidence_digest(text: str, ledger: _EvidenceLedger, check: Callable[[], None]) -> tuple[int, str]:
+    """Hash the entire original UTF8 image through one paid bounded buffer."""
+    size = _evidence_utf8_size(text, check)
+    ledger.charge(size + 96, 12, check)
+    digest = hashlib.sha256()
+    # No Unicode chunk slice or whole-chunk encode is constructed. As in the
+    # existing final encoder, prepay EVERY byte write, then reserve bounded
+    # output scratch. Hash traversal and fixed digest admission above stay.
+    ledger.charge(size, 1, check)
+    ledger.charge(64, 8, check)  # Buffer/view, cursor/code/width and dispatch slots.
+    scratch = min(4096, size)
+    ledger.reserve(scratch, 1, check)
+    try:
+        buffer = bytearray(scratch)
+        view = memoryview(buffer)
+        used = 0
+        for index, char in enumerate(text):
+            if index % 1024 == 0:
+                check()
+            code = ord(char)
+            width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+            if used + width > scratch:
+                ledger.charge(16, 2, check)  # Original view reference plus its bounded slice.
+                digest.update(view[:used])
+                used = 0
+            if width == 1:
+                buffer[used] = code
+            elif width == 2:
+                buffer[used] = 192 | code >> 6
+                buffer[used + 1] = 128 | code & 63
+            elif width == 3:
+                buffer[used] = 224 | code >> 12
+                buffer[used + 1] = 128 | code >> 6 & 63
+                buffer[used + 2] = 128 | code & 63
+            else:
+                buffer[used] = 240 | code >> 18
+                buffer[used + 1] = 128 | code >> 12 & 63
+                buffer[used + 2] = 128 | code >> 6 & 63
+                buffer[used + 3] = 128 | code & 63
+            used += width
+        if used:
+            ledger.charge(16, 2, check)
+            digest.update(view[:used])
+        check()
+    finally:
+        ledger.settle(scratch, 0)  # Byte writes/facts above are never refunded.
+        buffer = view = None
+    ledger.charge(64, 1, check)
+    return size, digest.hexdigest()
+
+
+def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Callable[[], None]) -> str:
+    """Actual HTTPX compact UTF8 request, preserving producer insertion order."""
+    ledger.charge(128, 16, check)
+    digest = hashlib.sha256()
+    # One bounded encoding buffer replaces put()'s per-character bytes and
+    # escaped-spelling temporaries. Full hash traversal and byte writes remain
+    # prepaid. Reserve this owner's scratch before constructing the buffer.
+    ledger.charge(64, 8, check)
+    ledger.reserve(4096, 1, check)
+    buffer = view = None
+    used = 0
+    def put(text: str, string: bool = False) -> None:
+        nonlocal used
+        if not string and text in ('{', '}', '[', ']', ',', ':'):
+            # Keep the original punctuation admission. It now joins the SAME
+            # ordered buffer instead of forcing every preceding field to hash
+            # a separate used-view slice. Only actual buffer flushes retain
+            # those two view references, prepaid before construction.
+            ledger.charge(35, 1, check)
+            if used == 4096:
+                ledger.charge(16, 2, check)
+                digest.update(view[:used])
+                used = 0
+            buffer[used] = ord(text)
+            used += 1
+            return
+        ledger.charge(32, 0, check)  # Size selection plus possible chars dispatch.
+        if string:
+            # Size this same complete scalar without constructing span endpoints.
+            # Its original reference and all encoding work remain charged.
+            ledger.charge(8, 1, check)
+            size = _evidence_string_size(text, check)
+        else:
+            ledger.charge(24, 3, check)  # Conservative original nonstring setup.
+            size = len(text)
+        ledger.charge(2 * size, 1, check)  # All encoded writes and full hashing.
+        # Include the two literal delimiters in the existing encoding loop.
+        # No extra iterator, string spelling or field-sized byte image exists.
+        # string_size already includes BOTH quotes in the prepaid byte work.
+        index = -1 if string else 0
+        while index < len(text) + (1 if string else 0):
+            if index % 1024 == 0:
+                check()
+            char = '"' if string and (index == -1 or index == len(text)) else text[index]
+            code = ord(char)
+            escaped = string and 0 <= index < len(text) and (code < 32 or char in '"\\')
+            pos = '"\\\b\f\n\r\t'.find(char) if escaped else -1
+            width = (2 if pos >= 0 else 6) if escaped else (
+                1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4)
+            if used + width > 4096:
+                ledger.charge(16, 2, check)  # Original view and bounded slice.
+                digest.update(view[:used])
+                used = 0
+            if escaped:
+                buffer[used] = 92
+                if pos >= 0:
+                    buffer[used + 1] = ord('"\\bfnrt'[pos])
+                else:
+                    buffer[used + 1] = 117
+                    buffer[used + 2] = 48
+                    buffer[used + 3] = 48
+                    buffer[used + 4] = ord('0123456789abcdef'[code >> 4])
+                    buffer[used + 5] = ord('0123456789abcdef'[code & 15])
+            elif code < 128:
+                buffer[used] = code
+            elif code < 2048:
+                buffer[used] = 192 | code >> 6
+                buffer[used + 1] = 128 | code & 63
+            elif code < 65536:
+                buffer[used] = 224 | code >> 12
+                buffer[used + 1] = 128 | code >> 6 & 63
+                buffer[used + 2] = 128 | code & 63
+            else:
+                buffer[used] = 240 | code >> 18
+                buffer[used + 1] = 128 | code >> 12 & 63
+                buffer[used + 2] = 128 | code >> 6 & 63
+                buffer[used + 3] = 128 | code & 63
+            used += width
+            index += 1
+    def visit(value: object, depth: int = 0) -> None:
+        # Only closed submit/completion facts reach this request digest. Keep
+        # the actual CLI insertion order, including done and waiting arrays.
+        if depth > 64:
+            raise _EvidenceCapacity('request depth capacity refused')
+        ledger.charge(16, 2, check)
+        if type(value) is dict:
+            put('{')
+            for index, (key, child) in enumerate(value.items()):
+                if index:
+                    put(',')
+                put(key, True)
+                put(':')
+                visit(child, depth + 1)
+            put('}')
+        elif type(value) is list:
+            put('[')
+            for index, child in enumerate(value):
+                if index:
+                    put(',')
+                visit(child, depth + 1)
+            put(']')
+        elif type(value) is str:
+            put(value, True)
+        else:
+            put('null' if value is None else 'true' if value is True else 'false' if value is False
+                else _evidence_number(value, ledger, check))
+    try:
+        buffer = bytearray(4096)
+        view = memoryview(buffer)
+        visit(payload)
+        if used:
+            ledger.charge(16, 2, check)
+            digest.update(view[:used])
+    finally:
+        ledger.settle(4096, 0)  # Scratch only; reached output/hash work stays.
+        buffer = view = None
+    ledger.charge(64, 1, check)
+    return digest.hexdigest()
+
+
+def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger,
+                     check: Callable[[], None], sanitize: Callable[[str], str], depth: int) -> None:
+    """Finite SOURCE lexical admission only; no Python parser or execution.
+
+    Preflight uses indices, never physical-line/token copies. Each selected
+    occurrence owns its scan and original/decoded-literal unchanged checks.
+    """
+    try:
+        if depth + 2 > 64:
+            raise _EvidenceCapacity('Python depth capacity refused')
+        size = _evidence_utf8_size(source, check, 524288)
+        ledger.charge(size + 64, 8, check)
+        line = 0
+        for index, char in enumerate(source):
+            if index % 4096 == 0:
+                check()
+            code = ord(char)
+            line += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+            if line > 65536:
+                raise _EvidenceCapacity('Python physical line capacity refused')
+            if char == '\r' and (index + 1 == len(source) or source[index + 1] != '\n'):
+                raise ValueError('Python lone CR withheld')
+            if char == '\n':
+                line = 0
+        # This SAME SOURCE frame already measured its complete immutable input.
+        # Remove only the duplicate sizing walk/size admission, keeping all
+        # original-secret, actual sanitizer, output-reference and full checks.
+        ledger.charge(16, 0, check)
+        for secret in context:
+            ledger.charge(8, 1, check)
+            if secret in source:
+                raise ValueError("original evidence content withheld")
+        ledger.charge(16, 0, check)
+        for secret in context:
+            ledger.charge(size, 1, check)
+        ledger.reserve(0, 1, check)
+        try:
+            safe = sanitize(source)
+            try:
+                actual = _evidence_utf8_size(safe, check, size)
+            except ValueError as exc:
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+            ledger.charge(64, 0, check)
+            if actual != size or safe != source or any(secret in safe for secret in context):
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+            check()
+        finally:
+            ledger.settle(0, 0)
+            safe = None
+        end, index, stack = len(source), 0, []
+
+        def fail() -> None:
+            raise ValueError('Python lexical representation withheld')
+
+        # The numeric grammar belongs to this one original SOURCE image.
+        # Pay its closure once before creation, rather than constructing it
+        # anew for every numeric token. Each invocation still uses that token's
+        # original begin index and performs the complete underscore/size scan.
+        ledger.charge(8, 1, check)
+        def digits(cursor: int) -> int:
+            count, underscore = 0, False
+            while cursor < end and source[cursor] in '0123456789_':
+                if cursor - begin >= 65536:
+                    raise _EvidenceCapacity('Python token capacity refused')
+                if cursor % 4096 == 0:
+                    check()
+                if source[cursor] == '_':
+                    if not count or underscore:
+                        fail()
+                    underscore = True
+                else:
+                    count += 1; underscore = False
+                cursor += 1
+            if underscore:
+                fail()
+            return cursor
+
+        def literal(begin: int, quote_at: int) -> int:
+            # Validate the complete prefix without constructing decoder flags.
+            # The direct unescaped path needs neither raw nor binary state.
+            # Keep the quote/opening slots (16B/2facts), and prepay16B for
+            # replacement delimiter selection before selecting constants.
+            ledger.charge(32, 2, check)
+            if begin == quote_at:
+                pass
+            elif quote_at == begin + 1:
+                if not source.startswith(('u', 'U', 'b', 'B', 'r', 'R'), begin):
+                    fail()
+            elif quote_at == begin + 2 and (
+                    source.startswith(('b', 'B'), begin) and source.startswith(('r', 'R'), begin + 1)
+                    or source.startswith(('r', 'R'), begin) and source.startswith(('b', 'B'), begin + 1)):
+                pass
+            else:
+                fail()
+            # One immutable delimiter replaces the quote glyph, triple flag
+            # and repeated quote*3 construction. No copied prefix/delimiter.
+            quote = ('"""' if source.startswith('"""', quote_at) else
+                     "'''" if source.startswith("'''", quote_at) else
+                     '"' if source.startswith('"', quote_at) else "'")
+            opening = quote_at + len(quote)
+
+            # Locate the closing spelling without slices, including escaped quote
+            # and raw termination rules. Grammar/decoded length preflight follows.
+            # This SAME traversal records escapes; short-literal selection no
+            # longer searches the original spelling a second time. Prepay the
+            # new state before traversing, including on eventual refusal.
+            ledger.charge(8, 1, check)
+            escaped_spelling = False
+            cursor = opening
+            while cursor < end:
+                if cursor % 1024 == 0:
+                    check()
+                if source.startswith(quote, cursor):
+                    finish = cursor + len(quote)
+                    break
+                if source[cursor] == '\\':
+                    escaped_spelling = True
+                    cursor += 1
+                    if cursor == end:
+                        fail()
+                    if source[cursor] == '\r' and cursor + 1 < end and source[cursor + 1] == '\n':
+                        cursor += 1
+                cursor += 1
+            else:
+                fail()
+            spelling_size = 0
+            for n in range(begin, finish):
+                if n % 1024 == 0:
+                    check()
+                code = ord(source[n])
+                spelling_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                if spelling_size > 262144:
+                    raise _EvidenceCapacity('Python literal spelling capacity refused')
+            if not escaped_spelling:
+                # SAME original grammar/decoded-size preflight, without either
+                # decoder closure or generator. No decoded scalar exists yet.
+                decoded_size, cursor = 0, opening
+                while cursor < finish - len(quote):
+                    if cursor % 1024 == 0:
+                        check()
+                    code = ord(source[cursor])
+                    cursor += 1
+                    if code in (10, 13) and len(quote) == 1:
+                        fail()
+                    if code >= 128:
+                        # This branch alone needs a binary-prefix decision.
+                        # Prepay its indexed selection; retain no flag slot.
+                        ledger.charge(16, 0, check)
+                        if (source.startswith(('b', 'B'), begin, quote_at)
+                                or quote_at == begin + 2 and source.startswith(('b', 'B'), begin + 1, quote_at)):
+                            fail()
+                    if code == 13:
+                        if cursor == end or source[cursor] != '\n':
+                            fail()
+                        cursor += 1
+                        code = 10
+                    decoded_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                    if decoded_size > 262144:
+                        raise _EvidenceCapacity('Python literal output capacity refused')
+                ledger.charge(24, 0, check)  # Original selection slots remain.
+                if (decoded_size <= 4096
+                        and spelling_size - (opening - begin) - len(quote) == decoded_size):
+                    # The entire literal is one bounded original slice. No
+                    # decoder closures, decoded chunks or final join exist.
+                    ledger.charge(decoded_size + 32, 4, check)
+                    value = source[opening:finish - len(quote)]
+                    try:
+                        if '\\' in value:
+                            fail()
+                        # The full literal preflight already measured THIS
+                        # decoded occurrence. Sanitize in its existing slot,
+                        # then compare against both own original endpoints.
+                        # No second sizing walk or safe-reference holder exists.
+                        for secret in context:
+                            ledger.charge(8, 1, check)
+                            if secret in value:
+                                raise ValueError("original evidence content withheld")
+                        ledger.charge(16, 0, check)
+                        for secret in context:
+                            ledger.charge(decoded_size, 1, check)
+                        check()
+                        try:
+                            value = sanitize(value)
+                            try:
+                                actual = _evidence_utf8_size(value, check, decoded_size)
+                            except ValueError as exc:
+                                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+                            ledger.charge(80, 0, check)
+                            if (actual != decoded_size or len(value) != finish - len(quote) - opening
+                                    or not source.startswith(value, opening, finish - len(quote))
+                                    or any(secret in value for secret in context)):
+                                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                            check()
+                        finally:
+                            ledger.settle(0, 0)
+                    finally:
+                        value = None
+                    return finish
+            # Only an actual decoder fallback constructs these two flags.
+            # Prepay both original slots and the new delayed selection work.
+            ledger.charge(32, 2, check)
+            raw = (quote_at != begin and (quote_at == begin + 2
+                   or source.startswith(('r', 'R'), begin)))
+            binary = (quote_at != begin and (quote_at == begin + 2
+                      or source.startswith(('b', 'B'), begin)))
+            ledger.charge(16, 2, check)  # Two fallback closures, before creation.
+            def codes() -> Iterator[int]:
+                cursor = opening
+                while cursor < end:
+                    if cursor % 1024 == 0:
+                        check()
+                    char = source[cursor]
+                    if source.startswith(quote, cursor):
+                        return
+                    if char in '\r\n' and len(quote) == 1:
+                        fail()
+                    code = ord(char)
+                    cursor += 1
+                    if char == '\r' and len(quote) == 3:
+                        if cursor == end or source[cursor] != '\n':
+                            fail()
+                        cursor += 1
+                        code = 10
+                    if binary and code >= 128:
+                        fail()
+                    if char == '\\':
+                        if cursor == end:
+                            fail()
+                        char = source[cursor]
+                        cursor += 1
+                        if raw:
+                            # Backslash protects a quote for termination, but remains
+                            # literal content and therefore owes residual safety.
+                            yield 92
+                            if char == '\r':
+                                if cursor == end or source[cursor] != '\n':
+                                    fail()
+                                cursor += 1
+                                yield 13
+                                yield 10
+                            else:
+                                yield ord(char)
+                            continue
+                        if char == '\n':
+                            continue
+                        if char == '\r':
+                            if cursor == end or source[cursor] != '\n':
+                                fail()
+                            cursor += 1
+                            continue
+                        escapes = "\\\"'abfnrtv"
+                        if char in escapes:
+                            code = (92, 34, 39, 7, 8, 12, 10, 13, 9, 11)[escapes.index(char)]
+                        elif char in '01234567':
+                            code, count = int(char), 1
+                            while count < 3 and cursor < end and source[cursor] in '01234567':
+                                code = code * 8 + int(source[cursor]); cursor += 1; count += 1
+                            if binary and code > 255:
+                                fail()
+                        elif char in 'xuU' and (char == 'x' or not binary):
+                            digits = 2 if char == 'x' else 4 if char == 'u' else 8
+                            code = 0
+                            for _ in range(digits):
+                                if cursor == end or source[cursor] not in '0123456789abcdefABCDEF':
+                                    fail()
+                                code = code * 16 + int(source[cursor], 16); cursor += 1
+                        else:
+                            fail()
+                    if code > 0x10ffff or 0xd800 <= code <= 0xdfff:
+                        fail()
+                    yield code
+                fail()
+
+            def decoded() -> Iterator[int]:
+                needed = value = minimum = 0
+                for code in codes():
+                    if not binary:
+                        yield code
+                    elif needed:
+                        if not 128 <= code <= 191:
+                            fail()
+                        value = (value << 6) | (code & 63)
+                        needed -= 1
+                        if not needed:
+                            if value < minimum or value > 0x10ffff or 0xd800 <= value <= 0xdfff:
+                                fail()
+                            yield value
+                    elif code < 128:
+                        yield code
+                    elif 194 <= code <= 244:
+                        needed, value, minimum = ((1, code & 31, 128) if code < 224 else
+                                                  (2, code & 15, 2048) if code < 240 else
+                                                  (3, code & 7, 65536))
+                    else:
+                        fail()
+                if needed:
+                    fail()
+
+            if escaped_spelling:
+                decoded_size = 0
+                for code in decoded():
+                    decoded_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                    if decoded_size > 262144:
+                        raise _EvidenceCapacity('Python literal output capacity refused')
+                ledger.charge(24, 0, check)
+            ledger.charge(8, 0, check)  # Replacement construction selection.
+            if decoded_size <= 1:
+                # Full preflight emitted either no codepoint or exactly one
+                # ASCII codepoint. Its existing final code slot is sufficient:
+                # no buffer, chunk list, concatenation or join is constructed.
+                ledger.charge(decoded_size + 32, 4, check)
+                value = chr(code) if decoded_size else ''
+                try:
+                    if '\\' in value:
+                        fail()
+                    _evidence_original(value, context, ledger, check, sanitize)
+                finally:
+                    value = None
+                return finish
+            if decoded_size <= 4096:
+                # Replace every chr/concatenation, chunk reference and join
+                # with one bounded UTF8 buffer and its strict decoded scalar.
+                # Keep the original32B/4fact scalar admission, both complete
+                # writes, the new buffer owner and replacement local setup.
+                ledger.charge(2 * decoded_size + 40, 5, check)
+                ledger.charge(64, 0, check)
+                ledger.reserve(decoded_size, 1, check)
+                buffer = value = None
+                try:
+                    buffer = bytearray(decoded_size)
+                    position = 0
+                    for code in decoded():
+                        if position % 1024 == 0:
+                            check()
+                        width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                        if position + width > decoded_size:
+                            raise _EvidenceUnsafe('Python literal decoding postcondition')
+                        if width == 1:
+                            buffer[position] = code
+                        elif width == 2:
+                            buffer[position] = 192 | code >> 6
+                            buffer[position + 1] = 128 | code & 63
+                        elif width == 3:
+                            buffer[position] = 224 | code >> 12
+                            buffer[position + 1] = 128 | code >> 6 & 63
+                            buffer[position + 2] = 128 | code & 63
+                        else:
+                            buffer[position] = 240 | code >> 18
+                            buffer[position + 1] = 128 | code >> 12 & 63
+                            buffer[position + 2] = 128 | code >> 6 & 63
+                            buffer[position + 3] = 128 | code & 63
+                        position += width
+                    if position != decoded_size:
+                        raise _EvidenceUnsafe('Python literal decoding postcondition')
+                    value = buffer.decode('utf-8', errors='strict')
+                    if '\\' in value:
+                        fail()
+                    _evidence_original(value, context, ledger, check, sanitize)
+                finally:
+                    ledger.settle(decoded_size, 0)  # Scratch only; no work refund.
+                    buffer = value = None
+                return finish
+            chunks = (decoded_size + 1020) // 1021
+            ledger.charge(2 * decoded_size + 8 * chunks + 32, chunks + 4, check)
+            ledger.reserve(min(4096, 4 * decoded_size), 1, check)
+            try:
+                parts, chunk, width = [], '', 0
+                for code in decoded():
+                    count = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                    if width + count > 1024:
+                        parts.append(chunk); chunk, width = '', 0
+                        check()
+                    ledger.charge(width + 2 * count, 0, check)
+                    chunk += chr(code); width += count
+                if chunk:
+                    parts.append(chunk)
+                value = ''.join(parts)
+                if '\\' in value:
+                    fail()
+                _evidence_original(value, context, ledger, check, sanitize)
+            finally:
+                ledger.settle(min(4096, 4 * decoded_size), 0)
+                parts = chunk = value = None
+            return finish
+
+        # ONE loop owns each token and punctuation glyph. The former suffix
+        # loop selected whitespace and next-token glyphs before returning them
+        # to this loop for another selection. Those constructions and its
+        # state are absent; every actual glyph/dispatch stays prepaid below.
+        while index < end:
+            if index % 1024 == 0:
+                check()
+            if source[index] in ' \t\f\r\n':
+                index += 1
+                continue
+            # Select ONE original glyph for the whole token classifier.
+            # The former repeated startswith dispatch is absent. Prepay the
+            # indexed glyph and direct classification before constructing it;
+            # retain every original token fact, including punctuation.
+            ledger.charge(16, 1, check)
+            char = source[index]
+            if char == '#':
+                while index < end and source[index] not in '\r\n':
+                    if index % 4096 == 0:
+                        check()
+                    if source[index] == '\\':
+                        fail()
+                    index += 1
+                continue
+            if char in "\"'":
+                index = literal(index, index)
+                continue
+            elif char.isascii() and (char.isalpha() or char == '_'):
+                # The prepaid glyph classifier already chose this branch;
+                # only the original token-start slot remains to construct.
+                ledger.charge(8, 1, check)
+                begin = index
+                index += 1
+                while index < end and source[index].isascii() and (source[index].isalnum() or source[index] == '_'):
+                    if index - begin >= 65536:
+                        raise _EvidenceCapacity('Python token capacity refused')
+                    if index % 4096 == 0:
+                        check()
+                    index += 1
+                if index < end and source[index] in "\"'":
+                    if index - begin > 2:
+                        fail()
+                    index = literal(begin, index)
+                continue
+            elif (char in '0123456789'
+                    or char == '.' and index + 1 < end
+                        and source.startswith(('0','1','2','3','4','5','6','7','8','9'), index + 1)):
+                # Keep the original begin fact; classification already used
+                # the SAME prepaid glyph, without another prefix dispatch.
+                ledger.charge(8, 1, check)
+                begin = index
+                index = digits(index)
+                if index < end and source[index] == '.':
+                    index = digits(index + 1)
+                if index < end and source[index] in 'eE':
+                    index += 1
+                    if index < end and source[index] in '+-':
+                        index += 1
+                    start = index; index = digits(index)
+                    if start == index:
+                        fail()
+                if index < end and (source[index].isascii() and (source[index].isalpha() or source[index] == '_')):
+                    fail()
+                continue
+            # A dot followed by a digit already took the numeric branch.
+            # Keep every punctuation predicate and the SAME paid glyph, with
+            # no extra suffix traversal, dispatch state or duplicate selection.
+            if char not in '([{)]}\\:.,;+-*/%&|^~<>=!@':
+                fail()
+            if char in '([{':
+                if depth + len(stack) + 3 > 64:
+                    raise _EvidenceCapacity('Python depth capacity refused')
+                ledger.charge(8, 1, check)
+                stack.append(char)  # The prepaid selected glyph itself.
+                ledger.charge(16, 0, check)
+                index += 1
+                continue
+            if char in ')]}':
+                if not stack or '([{'.index(stack.pop()) != ')]}'.index(char):
+                    fail()
+                ledger.charge(16, 0, check)
+                index += 1
+                continue
+            if char == '\\':
+                index += 1
+                if index < end and source[index] == '\r':
+                    index += 1
+                if index == end or source[index] != '\n':
+                    fail()
+                ledger.charge(16, 0, check)
+                index += 1
+                continue
+            if char == '!' and (index + 1 == end or not source.startswith('=', index + 1)):
+                fail()
+            index += 1
+        if stack:
+            fail()
+        check()
+    finally:
+        source = None
+
+
+def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLedger,
+                    check: Callable[[], None], *, observations: bool = False,
+                    submission_identity: tuple | None = None) -> bytearray:
+    """Typed original admission -> flat charged spans -> ONE compact candidate.
+
+    No second writer tree. Original references and syntax slots close metadata
+    first; no sanitation/emission chooses a policy before a later identity key.
+    """
+    tokens, ancestors = [], set()
+    authenticated = changed = False
+    def retain(kind: str, content: object) -> None:
+        ledger.charge(24, 3, check)
+        tokens.append((kind, content))
+    def sanitize(text: str) -> str:
+        for secret in context:
+            text = text.replace(secret, "[REDACTED]")
+        return text
+    def visit(item: object, depth: int = 0, *, key: bool = False, route: int = 0,
+              event: Callable | None = None, encoded: bool = False,
+              selected: Callable | None = None, selected_path: tuple = (),
+              selected_field: str | int | None = None) -> None:
+        nonlocal authenticated, changed
+        if depth > 64:
+            raise _EvidenceCapacity("evidence depth capacity refused")
+        ledger.charge(0, 1, check)
+        selected_children = True
+        selected_owner = getattr(selected, '__self__', None)
+        row_field = (selected_field is not None and type(item) not in (dict, list)
+            and isinstance(selected_owner, _EvidenceObservations)
+            and selected.__func__ is _EvidenceObservations.case_row_event)
+        primitive_field = (selected_field is not None and type(item) not in (dict, list)
+            and isinstance(selected_owner, _EvidenceSubmission)
+            and (not selected_path or selected_path[0] != 'wire' or selected_owner.copy
+                 or selected_owner.metadata.get('action') in ('jobs-submit', 'jobs-block', 'jobs-final')))
+        case_field = (selected_field is not None and type(item) not in (dict, list)
+            and isinstance(selected_owner, _EvidenceObservations)
+            and selected.__func__ is _EvidenceObservations.case_event
+            and (not selected_path and selected_field in ('method', 'variant', 'index', 'source_sha', 'task')
+                 or len(selected_path) == 2 and type(selected_path[1]) is int
+                    and (selected_path[0] == 'starts' or selected_path[0] == 'jobs'
+                         and selected_field in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap', 'out', 'err'))))
+        if selected is not None:
+            if row_field:
+                # The row event pays for this original field reference. No
+                # one-element selector tuple is constructed by this caller.
+                selected(selected_path, 'scalar', item, field=selected_field)
+            elif case_field:
+                # This visitor frame already owns the original item, parent
+                # and field. Keep its field reference and complete stored
+                # pair, without forwarding field/item to a second frame.
+                ledger.charge(8, 1, check)
+                ledger.charge(16 + _evidence_utf8_size(selected_field, check)
+                    + (_evidence_utf8_size(item, check) if type(item) is str else 8), 2, check)
+                if not selected_path:
+                    selected_owner.case['meta'][selected_field] = item
+                elif selected_path[0] == 'starts':
+                    if selected_path[1] >= len(selected_owner.case['starts']):
+                        raise ValueError('Case start fact withheld')
+                    selected_owner.case['starts'][selected_path[1]][selected_field] = item
+                else:
+                    if selected_path[1] >= len(selected_owner.case['jobs']):
+                        raise ValueError('Case job selector withheld')
+                    selected_owner.case['jobs'][selected_path[1]][selected_field] = item
+                    if selected_field in ('out', 'err') and type(item) is not str:
+                        raise ValueError('Case literal output type withheld')
+                    if selected_field == 'script':
+                        selected_owner.case['used'] = True
+                        if type(item) is not str:
+                            raise ValueError('Case SOURCE type withheld')
+                        _evidence_python(item, selected_owner.context, ledger, check, selected_owner.sanitize,
+                                         selected_owner.depth + 4 + len(selected_path) + 2)
+            elif primitive_field:
+                ledger.charge(8, 1, check)  # Existing field reference, no ancestor-path copy.
+                selected(selected_path, 'scalar', item, field=selected_field)
+            else:
+                if selected_field is not None:
+                    selected_path = selected_path + (selected_field,)
+                ledger.charge(8 * len(selected_path), len(selected_path), check)
+                selected_children = selected(selected_path, 'object' if type(item) is dict else 'array' if type(item) is list else 'scalar', item if type(item) not in (dict, list) else None) is not False
+            if isinstance(selected_owner, _EvidenceSubmission):
+                if primitive_field:
+                    encoded = encoded or (selected_path == () and selected_field == 'stdout'
+                        or selected_path == ('payload',) and selected_field == 'script'
+                        or selected_path == ('payload_file',) and selected_field == 'text')
+                else:
+                    encoded = encoded or (selected_path in (('stdout',), ('payload', 'script'), ('payload_file', 'text'))
+                        or not selected_owner.copy and len(selected_path) in (4, 5)
+                            and selected_path[0] == 'wire' and selected_path[2] == 'response'
+                            and selected_path[-1] == 'script_text'
+                            and (len(selected_path) == 4 or selected_path[3] == 'job'))
+            elif isinstance(selected_owner, _EvidenceObservations) and selected.__func__ is _EvidenceObservations.case_event:
+                if case_field:
+                    encoded = encoded or (bool(selected_path) and selected_path[0] == 'jobs' and selected_field == 'script')
+                else:
+                    encoded = encoded or selected_owner.case_encoded(selected_path)
+            elif isinstance(selected_owner, _EvidenceObservations) and selected.__func__ is _EvidenceObservations.case_row_event:
+                row = selected_owner.case['rows'][-1]
+                column = selected_field if row_field else selected_path[0] if len(selected_path) == 1 else None
+                encoded = encoded or (column is not None and (row[1] == 'jobs' and column == 'script_text'
+                    or any(column == name for name, _ in selected_owner.sql_columns.get(row[1], ()))))
+            else:
+                encoded = encoded or _EvidenceObservations.encoded(selected_path)
+        descendants = None
+        selected_end = not (isinstance(selected_owner, _EvidenceSubmission)
+            and (selected_owner.copy or selected_owner.metadata.get('action') in
+                 ('jobs-submit', 'jobs-block', 'jobs-final')))
+        if type(item) is dict and isinstance(selected_owner, _EvidenceObservations):
+            if selected.__func__ is _EvidenceObservations.case_event:
+                if selected_owner.case_command_slot(selected_path) == selected_path:
+                    ledger.charge(32, 4, check)
+                    descendants = selected_owner.case_command.event
+                elif selected_owner.case is not None and selected_owner.case['rows']:
+                    ledger.charge(32, 4, check)
+                    if selected_owner.case['rows'][-1][0] == selected_path:
+                        descendants = selected_owner.case_row_event
+            elif len(selected_path) == 2 and selected_path[0] == 'provider_commands':
+                ledger.charge(32, 4, check)
+                descendants = selected_owner.current.event
+            elif (len(selected_path) == 4 and selected_path[0] == 'durable'
+                    and selected_path[2] == 'jobs_cases'):
+                ledger.charge(32, 4, check)
+                descendants = selected_owner.case_event
+        # A finite command's existing scalar map owns its order as well as its
+        # values. Scalar insertion below registers the key once; only a
+        # container needs a placeholder before descending into its children.
+        command_keys = None
+        if type(item) is dict:
+            command_owner = getattr(descendants, '__self__', None) if descendants is not None else selected_owner
+            if isinstance(command_owner, _EvidenceSubmission) and (
+                    descendants is not None or not selected_path or command_owner.copy
+                    or command_owner.metadata.get('action') in ('jobs-submit', 'jobs-block', 'jobs-final')):
+                ledger.charge(16, 2, check)
+                shape = command_owner.shapes.get(() if descendants is not None else selected_path)
+                if shape is not None and type(shape[1]) is dict:
+                    command_keys = shape[1]
+        if route == 2 and type(item) is not list or route == 3 and type(item) is not dict:
+            raise ValueError("Relay entry shape withheld")
+        if type(item) is str:
+            size = _evidence_utf8_size(item, check)
+            ledger.charge(size, 0, check)
+            if "\\" in item and not encoded:
+                raise ValueError("evidence representation withheld")
+            if event is not None:
+                event("key" if key else "scalar", item)
+            changed = changed or any(secret in item for secret in context)
+            if key:
+                authenticated = authenticated or item in ("bytes", "byte_length", "sha256", "original_byte_check", "entity_copy") or item.endswith(("_bytes", "_sha256"))
+            retain("key" if key else "original", (item, size))
+        elif type(item) in (dict, list):
+            if id(item) in ancestors:
+                raise ValueError("evidence cycle refused")
+            ledger.charge(8, 1, check)
+            ancestors.add(id(item))
+            proof = _EvidenceRelay(context, ledger, check, sanitize, depth) if route == 3 else None
+            selection = None
+            try:
+                if event is not None:
+                    event("object" if type(item) is dict else "array", None)
+                retain("syntax", "{" if type(item) is dict else "[")
+                for index, member in enumerate(item.items() if type(item) is dict else item):
+                    if index:
+                        retain("syntax", ",")
+                    if type(item) is dict:
+                        name, child = member
+                        if type(name) is not str:
+                            raise ValueError("evidence key unavailable")
+                        visit(name, depth + 1, key=True)
+                        if command_keys is None or type(child) in (dict, list):
+                            if descendants is not None:
+                                descendants((), 'key', name)
+                            elif selected is not None:
+                                selected(selected_path, 'key', name)
+                        if route == 1 and name in ('starts', 'durable', 'provider_commands', 'provider_attempts') and selection is None:
+                            selection = _EvidenceObservations(context, ledger, check, sanitize, depth, submission_identity)
+                        if event is not None:
+                            event("key", name)
+                        retain("syntax", ":")
+                        if proof is not None:
+                            proof.field(name, child)
+                        visit(child, depth + 1, route=2 if route == 1 and name == "relay" else 0,
+                              event=(proof.response_event if name == "response" else proof.request_event
+                                     if name == "request" else None) if proof is not None else event,
+                              encoded=proof is not None and name == "response_text",
+                              selected=selection.event if route == 1 and name in ('starts', 'durable', 'provider_commands', 'provider_attempts') else descendants if descendants is not None else selected if selected_children else None,
+                              selected_path=() if route == 1 or descendants is not None else selected_path,
+                              selected_field=name)
+                    else:
+                        visit(member, depth + 1, route=3 if route == 2 else 0, event=event,
+                              selected=selected if selected_children else None, selected_path=selected_path, selected_field=index)
+                retain("syntax", "}" if type(item) is dict else "]")
+                if event is not None:
+                    event("end-object" if type(item) is dict else "end-array", None)
+                if selected is not None and selected_end:
+                    selected(selected_path, 'end-object' if type(item) is dict else 'end-array', None)
+                if selection is not None:
+                    capture = selection.close()
+                    authenticated = authenticated or capture
+                if proof is not None:
+                    capture = proof.close()
+                    authenticated = authenticated or capture
+            finally:
+                if selection is not None:
+                    selection.release()
+                if proof is not None:
+                    proof.release()
+                ancestors.remove(id(item))
+        elif item is None or type(item) is bool:
+            if event is not None:
+                event("scalar", item)
+            retain("syntax", "null" if item is None else "true" if item else "false")
+        elif type(item) in (int, float):
+            if event is not None:
+                event("scalar", item)
+            retain("syntax", _evidence_number(item, ledger, check))
+        else:
+            raise ValueError("evidence value unavailable")
+    visit(value, route=1 if observations else 0)
+    if authenticated and changed:
+        raise ValueError("authenticated evidence requires original bytes")
+    size, keys = 0, []
+    for index, (kind, content) in enumerate(tokens):
+        check()
+        if kind == "syntax":
+            if content == "{":
+                ledger.charge(8, 1, check)
+                keys.append([])
+            elif content == "}":
+                keys.pop()
+            ledger.charge(24, 3, check)
+            spans = [(content, 0, len(content))]
+            tokens[index] = ("literal", spans)
+            count = len(content)
+        else:
+            text, original_size = content
+            if not context:
+                # Closed result fields are already selected safe values. Even
+                # an unchanged alias owes its independent safe-string debit.
+                ledger.charge(original_size, 1, check)
+            spans, safe_size, _, _ = _evidence_literal_plan(text, original_size, context, ledger, check)
+            if kind == "key":
+                for previous, previous_size in keys[-1]:
+                    if safe_size == previous_size:
+                        ledger.charge(safe_size + previous_size, 1, check)
+                        ledger.charge(48, 0, check)  # Comparator plus both chars dispatches.
+                        if _evidence_span_equal(spans, previous, check):
+                            raise ValueError("evidence redacted key collision")
+                ledger.charge(safe_size + 16, 1, check)
+                keys[-1].append((spans, safe_size))
+            tokens[index] = ("string", spans)
+            ledger.charge(16, 0, check)  # String-size character dispatch.
+            count = _evidence_string_size(spans, check)
+        if size + count > 8388608:
+            raise _EvidenceCapacity("evidence encoded capacity refused")
+        size += count
+    check()
+    candidate = _evidence_buffer(tokens, size, ledger, check)
+    # Scalar sanitation cannot see a secret spanning the encoded punctuation.
+    # Match EVERY detailed candidate, without a whole encoded-secret temporary.
+    for secret in context:
+        count = _evidence_utf8_size(secret, check)
+        ledger.charge(count + len(candidate) + 64, 8, check)
+        stop = min(1024, len(secret))
+        ledger.charge(8 * stop, 2, check)  # Slice and <=4096-byte conversion.
+        prefix = secret[:stop].encode("utf8")
+        position = candidate.find(prefix)
+        while position >= 0:
+            check()
+            cursor = position + len(prefix)
+            for begin in range(stop, len(secret), 1024):
+                end = min(begin + 1024, len(secret))
+                ledger.charge(8 * (end - begin), 2, check)
+                chunk = secret[begin:end].encode("utf8")
+                ledger.charge(len(chunk), 1, check)
+                if not candidate.startswith(chunk, cursor):
+                    break
+                cursor += len(chunk)
+            else:
+                raise ValueError("original literal content withheld")
+            # Each additional prefix search spends work; no failed work refund.
+            ledger.charge(len(candidate) - position, 1, check)
+            position = candidate.find(prefix, position + 1)
+    check()
+    return candidate
+
+
+def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], None],
+                    returned: Callable[[Any], None], measured: Callable[[int], None],
+                    *, binary: bool = False) -> str | bytes:
+    """The original single read; metadata never supplies a content image."""
+    check()
+    before = os.fstat(stream.fileno())
+    named = os.stat(stream.name, follow_symlinks=False)
+    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+    signature = tuple(getattr(before, key) for key in fields)
+    if not stat.S_ISREG(before.st_mode) or tuple(getattr(named, k) for k in fields) != signature:
+        raise ValueError("evidence input identity refused")
+    bound = min(8388608, before.st_size)
+    # All callers supply a binary stream. Text needs both the returned byte
+    # image and its strict decode, including the rejection-only sentinel.
+    ledger.charge(1 if binary else 2, 1, check)
+    reserved = bound if binary else 2 * bound
+    ledger.reserve(reserved, 0, check)  # Refuse BEFORE acquiring either image.
+    try:
+        data = stream.read(bound + 1)  # BYTES, including rejection-only sentinel.
+        text = data if binary else data.decode("utf8", errors="strict")
+        returned(text)  # Original returned-slice annotation precedes later checks.
+        check()
+        size = len(data)  # Strict UTF8 preserves the complete original byte count.
+        measured(size)
+        check()
+        after = os.fstat(stream.fileno())
+        named = os.stat(stream.name, follow_symlinks=False)
+        if (tuple(getattr(after, k) for k in fields) != signature
+                or tuple(getattr(named, k) for k in fields) != signature):
+            raise ValueError("evidence input changed")
+        if size > bound or len(text) > bound:
+            raise _EvidenceCapacity("evidence input capacity refused")
+        if size != before.st_size:
+            raise ValueError("short evidence input refused")
+    except BaseException:
+        # A failed read/returned prefix cannot refund its reserved work.
+        ledger.settle(reserved, reserved)
+        if binary:
+            data = text = None  # Never retain a refused original image in this frame.
+        raise
+    ledger.settle(reserved, size if binary else 2 * size)
+    return text
+
+
+class _EvidenceRelay:
+    """Only observations.relay[*]: one capture record and its response edge.
+
+    The response tape is indispensable ordered equality state, not a raw tree
+    or a general token index. Request content streams into its original HTTPX
+    compact-JSON digest. Nothing outside this record is retained.
+    """
+    fields = ("path", "method", "body_sha256", "status", "response", "dropped",
+              "request", "response_text", "entered")
+
+    def __init__(self, context: tuple | list, ledger: _EvidenceLedger,
+                 check: Callable[[], None], sanitize: Callable[[str], str], depth: int) -> None:
+        ledger.charge(96, 12, check)
+        self.context, self.ledger, self.check, self.sanitize, self.depth = context, ledger, check, sanitize, depth
+        self.metadata, self.response, self.request_stack = {}, [], []
+        self.request_hash = hashlib.sha256()
+        self.request_top = None
+
+    def field(self, name: str, value: object) -> None:
+        self.ledger.charge(16 + _evidence_utf8_size(name, self.check), 2, self.check)
+        # response/request are represented by their stream, never another tree.
+        if name in self.fields and name not in ("request", "response"):
+            if type(value) not in (str, int, float, bool, type(None)):
+                raise ValueError("Relay metadata shape withheld")
+            size = _evidence_utf8_size(value, self.check) if type(value) is str else 8
+            self.ledger.charge(size, 1, self.check)
+            self.metadata[name] = value
+        else:
+            self.metadata[name] = None
+
+    def response_event(self, kind: str, value: object) -> None:
+        size = _evidence_utf8_size(value, self.check) if type(value) is str else 8
+        self.ledger.charge(24 + size, 4, self.check)
+        self.response.append((kind, value))
+
+    def request_event(self, kind: str, value: object) -> None:
+        self.ledger.charge(24, 3, self.check)
+        if self.request_top is None:
+            self.request_top = kind if kind != "scalar" else type(value)
+        def put(text: str, string: bool = False) -> None:
+            self.ledger.charge(48, 5, self.check)
+            spans = [(text, 0, len(text))]
+            self.ledger.charge(32, 0, self.check)  # Size selection plus possible chars dispatch.
+            size = _evidence_string_size(spans, self.check) if string else len(text)
+            data = _evidence_buffer([("string" if string else "literal", spans)], size,
+                                    self.ledger, self.check)
+            self.request_hash.update(data)
+        if kind in ("object", "array", "scalar") and self.request_stack and self.request_stack[-1][0] == "array":
+            if self.request_stack[-1][1]:
+                put(",")
+            self.request_stack[-1][1] += 1
+        if kind in ("object", "array"):
+            self.ledger.charge(16, 2, self.check)
+            self.request_stack.append([kind, 0])
+            put("{" if kind == "object" else "[")
+        elif kind.startswith("end-"):
+            self.request_stack.pop()
+            put("}" if kind == "end-object" else "]")
+        elif kind == "key":
+            if self.request_stack[-1][1]:
+                put(",")
+            self.request_stack[-1][1] += 1
+            put(value, True)
+            put(":")
+        elif type(value) is str:
+            put(value, True)
+        else:
+            put("null" if value is None else "true" if value is True else "false" if value is False
+                else _evidence_number(value, self.ledger, self.check))
+
+    def original(self, text: str) -> None:
+        _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
+
+    def scalar(self, text: str) -> None:
+        if "\\" in text:
+            raise ValueError("Relay decoded representation withheld")
+        self.original(text)
+
+    def close(self) -> bool:
+        m = self.metadata
+        if "response_text" not in m:
+            return False  # Ordinary legacy records have no invented nested edge.
+        self.ledger.charge(24 * len(m) + 72, 3 * len(m) + 9, self.check)
+        if (set(m) != set(self.fields) or type(m["path"]) is not str
+                or type(m["method"]) is not str or type(m["body_sha256"]) is not str
+                or type(m["status"]) is not int or m["status"] not in (200, 403, 404, 409, 422)
+                or m["dropped"] is not False or type(m["response_text"]) is not str
+                or type(m["entered"]) not in (int, float) or not math.isfinite(m["entered"]) or m["entered"] < 0
+                or not self.response or self.response[0] != ("object", None)):
+            raise ValueError("Relay capture identity withheld")
+        path, method, digest = m["path"], m["method"], m["body_sha256"]
+        pieces = path.count("/") + 1
+        self.ledger.charge(2 * len(path) + 32 * pieces + 64, 6 * pieces + 8, self.check)
+        parts = path.split("/")
+        # These are the actual E05 CLI Relay endpoints, not a URL/suffix grant.
+        selected = method == "GET" and path == "/api/v1/orgs"
+        thread_detail = None
+        if parts[:5] == ["", "api", "v1", "orgs", "alpha"]:
+            tail = parts[5:]
+            thread = len(tail) >= 2 and tail[0] == "threads" and tail[1].startswith("THR-") and tail[1][4:].isascii() and tail[1][4:].isdigit()
+            task = len(tail) >= 2 and tail[0] == "tasks" and tail[1].startswith("TASK-") and tail[1][5:].isascii() and tail[1][5:].isdigit()
+            if method == "GET" and thread and len(tail) == 2:
+                thread_detail = tail[1]
+            selected = selected or (method == "GET" and (tail == ["identities"] or (len(tail) == 2 and (thread or task))))
+            selected = selected or (method == "POST" and (tail in (["threads"], ["identities", "resolve"])
+                or thread and len(tail) == 3 and tail[2] in ("reply", "decline", "dispatch", "send")
+                or task and len(tail) == 3 and tail[2] == "completion"))
+        if (not selected or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+                or method == "GET" and (self.request_top is not type(None)
+                    or digest != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+                or method == "POST" and (self.request_top != "object" or digest != self.request_hash.hexdigest())
+                or m["status"] == 200 and thread_detail is not None
+                    and (len(self.response) < 3 or self.response[1] != ("key", "thread_id")
+                         or self.response[2] != ("scalar", thread_detail))
+                or m["status"] != 200 and (len(self.response) < 2 or self.response[1] != ("key", "detail"))):
+            raise ValueError("Relay request/status identity withheld")
+        text = m["response_text"]
+        position = 0
+        def compare(kind: str, value: object) -> None:
+            nonlocal position
+            other = None
+            try:
+                size = _evidence_utf8_size(value, self.check) if type(value) is str else 8
+                self.ledger.charge(24 + 2 * size, 4, self.check)
+                if position >= len(self.response):
+                    raise ValueError("Relay response equality withheld")
+                other_kind, other = self.response[position]
+                if (kind != other_kind or type(value) is not type(other) or value != other
+                        or type(value) is float and math.copysign(1, value) != math.copysign(1, other)):
+                    raise ValueError("Relay response equality withheld")
+                position += 1
+            finally:
+                value = other = None
+        try:
+            self.original(text)  # Whole original nested image, before its single parse.
+            self.ledger.charge(32, 4, self.check)
+            _EvidenceJSON(text, self.ledger, self.check).scan("{", self.scalar, depth=self.depth + 1, event=compare)
+            if position != len(self.response):
+                raise ValueError("Relay response equality withheld")
+            return True
+        finally:
+            text = None
+
+    def release(self) -> None:
+        self.metadata.clear()
+        self.response.clear()
+        self.request_stack.clear()
+
+
+class _EvidenceSubmission:
+    """Finite proof facts for ONE canonical provider command, never a raw tree."""
+    fields = ('action', 'operation', 'argv', 'exit', 'stdout', 'stderr', 'payload', 'payload_file',
+              'entered', 'finished', 'timed_out', 'execution_deadline', 'provider', 'child_pid',
+              'child_start', 'child_parent', 'child_stat', 'python', 'source_sha', 'callback_sha256', 'wire')
+    payload_fields = ('title', 'rationale', 'script', 'interpreter', 'cwd_hint', 'review_required',
+                      'persistent', 'max_runtime_seconds', 'task_id', 'session_id')
+    plan_fields = payload_fields[:-2]
+    completion_fields = ('status', 'confidence', 'summary', 'task_id', 'session_id', 'agent',
+                         'decision', 'waiting_on_job_ids', 'verdict')
+    result_fields = ('id', 'status', 'created_at', 'started_at', 'cwd_resolved', 'timeout_seconds',
+                     'events_url', 'authentication')
+
+    def __init__(self, owner: _EvidenceObservations, depth: int, *, copy: bool = False) -> None:
+        owner.ledger.charge(128, 16, owner.check)
+        self.owner, self.depth = owner, depth
+        self.metadata, self.payload, self.provider, self.file = {}, {}, {}, {}
+        self.response, self.authentication, self.wire, self.argv = {}, {}, {}, []
+        self.shapes, self.deferred = {}, False
+        self.receipts, self.read_invalid = [], False
+        self.decision, self.waits = {}, []
+        self.copy, self.facts = copy, None
+
+    def retain_command(self) -> None:
+        """Transfer only the closed command's finite original facts, not a tree.
+
+        Shapes retain every original container/key order; the named scalar maps
+        retain every field and builtin type, including full encoded occurrences.
+        Nothing is decoded again. Scratch release never refunds the shared work.
+        """
+        if self.metadata.get('action') not in ('jobs-submit', 'jobs-block', 'jobs-final'):
+            return
+        o = self.owner
+        o.ledger.charge(128, 16, o.check)
+        self.facts = (self.metadata, self.provider, self.payload, self.file, self.response,
+                      self.authentication, self.wire, self.argv, self.shapes, self.decision, self.waits)
+        if not self.copy:
+            o.ledger.charge(16, 2, o.check)
+            o.commands.append(self.facts)
+        # Ownership moves to the late join. release() must not clear these
+        # original maps/lists; it still releases duplicate wire-reader scratch.
+        self.metadata, self.provider, self.payload, self.file = {}, {}, {}, {}
+        self.response, self.authentication, self.wire, self.argv = {}, {}, {}, []
+        self.shapes, self.decision, self.waits = {}, {}, []
+
+    def event(self, path: tuple, kind: str, value: object, *, field: str | int | None = None) -> None:
+        ledger, check = self.owner.ledger, self.owner.check
+        # The root metadata map also owns root-key order before a late action.
+        # Nested finite command keys use their existing ordered holder. Legacy
+        # wire discovery remains on the general route below.
+        if field is None and kind == 'key' and (not path or self.copy or self.metadata.get('action') in
+                              ('jobs-submit', 'jobs-block', 'jobs-final')):
+            if path in self.shapes:
+                ledger.charge(16 + _evidence_utf8_size(value, check), 2, check)
+                keys = self.shapes[path][1]
+                if type(keys) is dict:
+                    # This key announces a container, not an original null.
+                    # Scalar insertion replaces its own slot with the actual
+                    # builtin value. Keep containers distinct when a legacy
+                    # receipt requires literal null payload/payload_file.
+                    keys[value] = _EvidenceUnsafe
+                else:
+                    keys.append(value)
+            return
+        # Case copies can only select submit/block/final. Their complete wire
+        # checks below consume the command facts, never the receipt-reader
+        # envelope. A canonical action not yet seen keeps legacy discovery.
+        # A direct primitive caller already supplies its parent and original
+        # field. Outside wire this is also safe before the action arrives:
+        # general routing could not discover a legacy wire reader there.
+        # It does not classify a syntax event or split another path. Only that absent
+        # general dispatch loses its debit; all scalar/reference retention below
+        # and the caller's direct-field debit remain unchanged.
+        if field is None:
+            ledger.charge(16, 2, check)
+            if (path and path[0] == 'wire' and not self.copy
+                    and self.metadata.get('action') not in ('jobs-submit', 'jobs-block', 'jobs-final')):
+                self.read_event(path[1:], kind, value)
+            # Only named source-owned holders can retain facts. Unsupported
+            # holders cannot create an arbitrary subtree/index.
+            if kind in ('object', 'array'):
+                if path in ((), ('provider',), ('payload',), ('payload_file',), ('wire',), ('argv',),
+                            ('wire', 0), ('wire', 0, 'response'), ('wire', 0, 'response', 'authentication'),
+                            ('payload', 'decision'), ('payload', 'waiting_on_job_ids')):
+                    ledger.charge(16, 2, check)
+                    # A finite command already owns these insertion-ordered
+                    # scalar maps. Their original keys also supply its shape,
+                    # including container/unknown keys before value parsing.
+                    keys = (self.metadata if not path else self.payload if path == ('payload',)
+                        else self.provider if path == ('provider',)
+                        else self.file if path == ('payload_file',)
+                        else self.wire if path == ('wire', 0)
+                        else self.response if path == ('wire', 0, 'response')
+                        else self.authentication if path == ('wire', 0, 'response', 'authentication')
+                        else self.decision if path == ('payload', 'decision') else None) if kind == 'object' and (
+                            not path or self.copy or self.metadata.get('action') in ('jobs-submit', 'jobs-block', 'jobs-final')) else None
+                    self.shapes[path] = [kind, keys if keys is not None else []]
+                else:
+                    self.deferred = True
+                return
+            if kind == 'key':
+                if path in self.shapes:
+                    ledger.charge(16 + _evidence_utf8_size(value, check), 2, check)
+                    self.shapes[path][1].append(value)
+                return
+            if kind.startswith('end-'):
+                return
+        if type(value) is str:
+            ledger.charge(_evidence_utf8_size(value, check), 1, check)
+        if field is None:
+            # Nonlocal/legacy callers retain their complete path. Account for
+            # the new parent slice before making it; finite primitive callers
+            # need neither this slice nor a rebuilt full path.
+            ledger.charge(8 * max(0, len(path) - 1), max(0, len(path) - 1), check)
+            parent, field = path[:-1], path[-1] if path else None
+        else:
+            parent = path
+        if not parent and field in self.fields:
+            self.metadata[field] = value
+        elif parent == ('provider',) and field in ('task','session','agent','org','pid'):
+            self.provider[field] = value
+        elif parent == ('payload',) and field in self.payload_fields + self.completion_fields:
+            self.payload[field] = value
+        elif parent == ('payload', 'decision') and field in ('action', 'summary'):
+            self.decision[field] = value
+        elif parent == ('payload', 'waiting_on_job_ids') and field == len(self.waits):
+            ledger.charge(8, 1, check)
+            self.waits.append(value)
+        elif parent == ('payload_file',) and field in ('path','text','bytes','sha256'):
+            self.file[field] = value
+        elif parent == ('argv',) and field == len(self.argv):
+            ledger.charge(8, 1, check)
+            self.argv.append(value)
+        elif parent == ('wire', 0) and field in ('path','method','body_sha256','status','dropped'):
+            self.wire[field] = value
+        elif parent == ('wire', 0, 'response') and field in self.result_fields + ('deferred','code','ok'):
+            self.response[field] = value
+        elif parent == ('wire', 0, 'response', 'authentication') and field in ('task_id','session_id'):
+            self.authentication[field] = value
+        else:
+            # Unknown scalar keys must still enter the same ordered map: a
+            # later decoded duplicate refuses before parsing its value even
+            # when this first unknown field already makes the command invalid.
+            if not parent or self.copy or self.metadata.get('action') in ('jobs-submit', 'jobs-block', 'jobs-final'):
+                ledger.charge(16, 2, check)  # New owner/shape selection on this refusal path.
+                shape = self.shapes.get(parent)
+                if shape is not None and type(shape[1]) is dict and field not in shape[1]:
+                    ledger.charge(16 + _evidence_utf8_size(field, check), 2, check)
+                    shape[1][field] = value
+            self.deferred = True
+
+    def ordinary(self, text: str) -> None:
+        if '\\' in text:
+            raise ValueError('submission ordinary representation withheld')
+        _evidence_original(text, self.owner.context, self.owner.ledger, self.owner.check, self.owner.sanitize)
+
+    def object(self, text: str, expected: dict, *, script: bool, stdout: bool = False,
+               receipt: bool = False, completion: bool = False, ordered: bool = False) -> None:
+        """One strict nested parse, complete keyed equality, original ordering."""
+        try:
+            o = self.owner
+            _evidence_original(text, o.context, o.ledger, o.check, o.sanitize)
+            if not text.startswith('{') or not text.endswith('}\n' if stdout else '}'):
+                raise ValueError('submission original framing withheld')
+            # The existing parser's recursion carries each expected holder.
+            # Strict sorted/original key order and complete cardinality own
+            # duplicate rejection, so no second key set or event-frame stack
+            # is retained for this comparison. Each decoded occurrence still
+            # receives its own ordinary/SOURCE admission below.
+            o.ledger.charge(128, 16, o.check)
+            root_depth = self.depth + (2 if stdout else 3)
+            # The parser already holds kind/expected/field/depth. Its existing
+            # member loop now performs the comparison directly, without a
+            # callback forwarding those same references for every node. Keep
+            # the full root setup debit for the once-per-scan owner and flags.
+            _EvidenceJSON(text, o.ledger, o.check).scan('{', self.ordinary,
+                depth=root_depth, expected=expected, ordered=ordered,
+                submission=self, script=script, receipt=receipt, completion=completion)
+        finally:
+            text = None
+
+    def close(self) -> bool:
+        o, m, p, f, provider = self.owner, self.metadata, self.payload, self.file, self.provider
+        if m.get('action') in ('jobs-block', 'jobs-final'):
+            return self.completion_close()
+        if m.get('action') == 'jobs-read' and m.get('operation') in ('receipt', 'output', 'wait', 'tail'):
+            return self.read_close()
+        selected = m.get('action') in ('jobs-submit', 'jobs-refuse-review')
+        if not selected:
+            # Deferred locations are ordinary unless this complete family wins.
+            for r in self.receipts:
+                if type(r['job'].get('script_text')) is str:
+                    self.ordinary(r['job']['script_text'])
+                if type(r['detail'].get('script_text')) is str:
+                    self.ordinary(r['detail']['script_text'])
+            for value in (m.get('stdout'), p.get('script'), f.get('text')):
+                if type(value) is str:
+                    self.ordinary(value)
+            return False
+        o.ledger.charge(1024, 128, o.check)
+        def shape(path: tuple, kind: str, keys: tuple | None = None) -> bool:
+            got = self.shapes.get(path)
+            return (got is not None and got[0] == kind and
+                    (keys is None or len(got[1]) == len(keys) and set(got[1]) == set(keys)))
+        refusal = m['action'] == 'jobs-refuse-review'
+        if (self.deferred or not shape((), 'object', self.fields)
+                or not shape(('provider',), 'object', ('task', 'session', 'agent', 'org', 'pid'))
+                or not shape(('payload',), 'object', self.payload_fields)
+                or not shape(('payload_file',), 'object', ('path', 'text', 'bytes', 'sha256'))
+                or not shape(('argv',), 'array') or not shape(('wire',), 'array')
+                or m.get('operation', False) is not None or type(m.get('exit')) is not int
+                or m['exit'] != (2 if refusal else 0) or m.get('timed_out') is not False
+                or any(type(m.get(k)) is not str for k in ('stdout', 'stderr', 'python', 'source_sha', 'callback_sha256', 'child_stat', 'child_start'))
+                or any(type(m.get(k)) not in (int, float) or not math.isfinite(m[k]) or m[k] < 0
+                       for k in ('entered', 'finished', 'execution_deadline'))
+                or not m['entered'] <= m['finished'] < m['execution_deadline']
+                or any(type(m.get(k)) is not int or m[k] <= 0 for k in ('child_pid', 'child_parent'))
+                or type(provider.get('pid')) is not int or provider['pid'] <= 0
+                or m['child_parent'] != provider['pid']
+                or any(type(provider.get(k)) is not str or not provider[k] for k in ('task', 'session', 'agent', 'org'))
+                or provider['org'] != 'alpha' or provider['agent'] != 'case_manager'
+                or not provider['task'].startswith('TASK-') or not provider['task'][5:].isascii() or not provider['task'][5:].isdigit()
+                or any(type(p.get(k)) is not str or not p[k] for k in ('title', 'rationale', 'script', 'interpreter', 'task_id', 'session_id'))
+                or p['interpreter'] != 'python3' or p.get('cwd_hint', False) is not None
+                or p.get('review_required') is not refusal or p.get('persistent') is not False
+                or type(p.get('max_runtime_seconds')) is not int or p['max_runtime_seconds'] not in (5, 30)
+                or p['task_id'] != provider['task'] or p['session_id'] != provider['session']
+                or type(f.get('path')) is not str or type(f.get('text')) is not str
+                or type(f.get('bytes')) is not int or type(f.get('sha256')) is not str
+                or not _failure_source(m['source_sha']) or len(m['callback_sha256']) != 64
+                or any(c not in '0123456789abcdef' for c in m['callback_sha256'])):
+            raise ValueError('submission producer identity withheld')
+        # Original /proc spelling is retained. Only indispensable child identity
+        # fields are inspected; this is no liveness/process lookup.
+        stat_text = m['child_stat']
+        # Only parent/start tokens are retained. Scan all twenty original
+        # positions, without eighteen unused substring/list-entry pairs.
+        # Keep the original byte admission and24 fixed facts; two retained
+        # pairs cost4 facts, and the new position counter costs one.
+        o.ledger.charge(3 * _evidence_utf8_size(stat_text, o.check) + 80, 29, o.check)
+        close = stat_text.rfind(')')
+        fields, cursor, count = [], close + 2, 0
+        while close >= 0 and cursor < len(stat_text) and count < 20:
+            while cursor < len(stat_text) and stat_text[cursor].isspace():
+                cursor += 1
+            begin = cursor
+            while cursor < len(stat_text) and not stat_text[cursor].isspace():
+                cursor += 1
+                if cursor % 1024 == 0:
+                    o.check()
+            if cursor > begin:
+                if count in (1, 19):
+                    fields.append(stat_text[begin:cursor])
+                count += 1
+        if (not stat_text.startswith(str(m['child_pid']) + ' (') or count < 20
+                or fields[0] != str(provider['pid']) or fields[1] != m['child_start']
+                or not m['child_start'].isascii() or not m['child_start'].isdigit()):
+            raise ValueError('submission child identity withheld')
+        # Each occurrence pays its own source scan; the file occurrence is not
+        # decoded until its complete sorted JSON stage below.
+        _evidence_python(p['script'], o.context, o.ledger, o.check, o.sanitize, self.depth + 2)
+        count, digest = _evidence_digest(f['text'], o.ledger, o.check)
+        if count != f['bytes'] or digest != f['sha256']:
+            raise ValueError('submission original file identity withheld')
+        self.object(f['text'], p, script=True)
+        if refusal:
+            o.ledger.charge(2 * _evidence_utf8_size(f['path'], o.check) + 512, 1, o.check)
+            expected_error = ('Error reading scripts-submit file ' + f['path'] +
+                ': review_required_removed: obtain any required authorization in a thread before submitting; '
+                'upgrade old clients and omit review_required or set it to false. This request was not submitted.\n')
+            if m['stdout'] != '' or m['stderr'] != expected_error or ('wire', 0) in self.shapes:
+                raise ValueError('submission local refusal withheld')
+        else:
+            response_keys = self.result_fields + (('deferred', 'code') if 'deferred' in self.response else ())
+            if (m['stderr'] != '' or not shape(('wire', 0), 'object', ('path', 'method', 'body_sha256', 'status', 'response', 'dropped'))
+                    or not shape(('wire', 0, 'response'), 'object', response_keys)
+                    or not shape(('wire', 0, 'response', 'authentication'), 'object', ('task_id', 'session_id'))
+                    or self.wire.get('path') != '/api/v1/orgs/alpha/jobs/submit' or self.wire.get('method') != 'POST'
+                    or type(self.wire.get('status')) is not int or self.wire['status'] != 201 or self.wire.get('dropped') is not False
+                    or type(self.wire.get('body_sha256')) is not str or len(self.wire['body_sha256']) != 64
+                    or self.wire['body_sha256'] != _evidence_submit_digest(p, o.ledger, o.check)
+                    or self.authentication != {'task_id': provider['task'], 'session_id': provider['session']}
+                    or any(type(self.authentication.get(k)) is not str for k in ('task_id', 'session_id'))):
+                raise ValueError('submission wire identity withheld')
+            r = self.response
+            if (type(r.get('id')) is not str or not r['id'].startswith('JOB-')
+                    or not r['id'][4:].isascii() or not r['id'][4:].isdigit()
+                    or type(r.get('created_at')) is not str or not r['created_at']
+                    or ('deferred' in r and (r['deferred'] is not True or type(r.get('code')) is not str or not r['code'] or r.get('status') != 'pending'))
+                    or ('deferred' not in r and r.get('status') != 'running')
+                    or any(type(r.get(k)) not in (str, type(None)) for k in ('started_at', 'cwd_resolved', 'events_url'))
+                    or type(r.get('timeout_seconds')) not in (int, type(None))
+                    or r.get('timeout_seconds') not in (None, p['max_runtime_seconds'])
+                    or r.get('events_url') not in (None, '/api/v1/orgs/alpha/jobs/' + r['id'] + '/events')
+                    or 'deferred' in r and any(r.get(k) is not None for k in ('started_at','cwd_resolved','timeout_seconds','events_url'))
+                    or 'deferred' not in r and (not r.get('started_at') or not r.get('cwd_resolved')
+                        or r.get('timeout_seconds') != p['max_runtime_seconds'] or not r.get('events_url'))):
+                raise ValueError('submission public result withheld')
+            r['authentication'] = self.authentication
+            self.object(m['stdout'], r, script=False, stdout=True)
+        if self.copy:
+            self.retain_command()
+            return True
+        o.ledger.charge(128, 16, o.check)
+        o.pending.append((provider, m['source_sha'], m['python'], m['callback_sha256'],
+                          self.argv, f['path'], f['sha256'], m['child_pid'], self.response.get('id'), None))
+        # An actual attempt may precede or follow its command. Retain only the
+        # closed submit facts needed for that join, never another command tree.
+        self.remember(p, 0 if refusal else 1)
+        if not refusal:
+            # The closed original command already retains every proof scalar
+            # and response field. Keep that SAME owner for read/Case joins;
+            # do not construct duplicate proof/response dictionaries or a
+            # second Case submit carrier. Each consumer still compares all
+            # original fields, with its own comparison/traversal admission.
+            o.ledger.charge(32, 4, o.check)
+            self.retain_command()
+            o.job_proofs.append((provider['task'], self.facts[4]['id'], self.facts))
+        else:
+            self.retain_command()
+        self.payload = {}
+        # Only owner identities and closed submit-payload references remain
+        # until root/attempt closure; other command scratch is released now.
+        self.provider, self.argv = {}, []
+        self.release()
+        return True
+
+    def remember(self, payload: dict | None, wire_count: int, *, job: str | None = None) -> None:
+        o, m = self.owner, self.metadata
+        o.ledger.charge(160 + (16 * len(payload) if payload is not None else 0),
+                        20 + (2 * len(payload) if payload is not None else 0), o.check)
+        o.submitted[o.command_index] = (self.provider, payload, m['action'], m['entered'], m['finished'],
+                                        m['execution_deadline'], wire_count, m['operation'], job,
+                                        self.shapes.get(('payload',), [None, []])[1])
+
+    def completion_close(self) -> bool:
+        o, m, p, f, provider = self.owner, self.metadata, self.payload, self.file, self.provider
+        self.command_identity()
+        o.ledger.charge(2048, 256, o.check)
+        def shape(path: tuple, kind: str, keys: tuple | None = None) -> bool:
+            got = self.shapes.get(path)
+            return got is not None and got[0] == kind and (keys is None or len(got[1]) == len(keys) and set(got[1]) == set(keys))
+        blocked = m['action'] == 'jobs-block'
+        required = ('status', 'confidence', 'summary', 'task_id', 'session_id', 'agent') + (('waiting_on_job_ids',) if blocked else ('decision',))
+        got = self.shapes.get(('payload',), ['', []])[1]
+        if (self.deferred
+                or m.get('operation', False) is not None or not shape(('payload',), 'object')
+                or any(k not in got for k in required)
+                or any(k not in required + ('verdict',) + (('decision',) if blocked else ()) for k in got)
+                or not shape(('payload_file',), 'object', ('path', 'text', 'bytes', 'sha256'))
+                or type(p.get('confidence')) is not int or p['confidence'] != 90
+                or p.get('status') != ('blocked' if blocked else 'completed')
+                or any(type(p.get(k)) is not str or not p[k] for k in ('summary','task_id','session_id','agent'))
+                or p['task_id'] != provider['task'] or p['session_id'] != provider['session'] or p['agent'] != provider['agent']
+                or 'verdict' in got and p.get('verdict', False) is not None
+                or blocked and 'decision' in got and p.get('decision', False) is not None
+                or type(f.get('path')) is not str or type(f.get('text')) is not str
+                or type(f.get('bytes')) is not int or type(f.get('sha256')) is not str):
+            raise ValueError('completion producer identity withheld')
+        if blocked:
+            o.ledger.charge(32 * len(self.waits), 2 * len(self.waits), o.check)
+            if (not shape(('payload', 'waiting_on_job_ids'), 'array') or not self.waits
+                    or any(type(v) is not str or not v.startswith('JOB-') or not v[4:].isascii() or not v[4:].isdigit() for v in self.waits)
+                    or len(set(self.waits)) != len(self.waits)):
+                raise ValueError('completion waiting identity withheld')
+            p['waiting_on_job_ids'] = self.waits
+        else:
+            if (not shape(('payload', 'decision'), 'object', ('action', 'summary'))
+                    or self.decision.get('action') != 'done' or type(self.decision.get('summary')) is not str
+                    or self.decision['summary'] != p['summary']):
+                raise ValueError('completion done identity withheld')
+            p['decision'] = self.decision
+        count, digest = _evidence_digest(f['text'], o.ledger, o.check)
+        if (count != f['bytes'] or digest != f['sha256']):
+            raise ValueError('completion original file identity withheld')
+        self.object(f['text'], p, script=False, completion=True)
+        # tasks.cmd_report_completion sends no discovery GET. The wire is the
+        # complete actual callback, unlike jobs-read's discovery+owned request.
+        o.ledger.charge(512 + 4 * _evidence_utf8_size(provider['task'], o.check), 64, o.check)
+        body = dict(session_id=p['session_id'], agent=p['agent'], status=p['status'], confidence=p['confidence'],
+                    output_summary=p['summary'], risks_flagged=[], dependencies=[], suggested_reviewer_focus=[])
+        if not blocked:
+            body['decision'] = p['decision']
+        if blocked:
+            body['waiting_on_job_ids'] = p['waiting_on_job_ids']
+        if (not shape(('wire', 0), 'object', ('path', 'method', 'body_sha256', 'status', 'response', 'dropped'))
+                or not shape(('wire', 0, 'response'), 'object', ('ok',))
+                or self.response != {'ok': True} or self.response.get('ok') is not True
+                or self.wire.get('path') != '/api/v1/orgs/alpha/tasks/' + provider['task'] + '/completion'
+                or self.wire.get('method') != 'POST' or type(self.wire.get('status')) is not int or self.wire['status'] != 200
+                or self.wire.get('dropped') is not False
+                or self.wire.get('body_sha256') != _evidence_submit_digest(body, o.ledger, o.check)):
+            raise ValueError('completion complete wire identity withheld')
+        self.ordinary(m['stdout']); self.ordinary(m['stderr'])
+        if self.copy:
+            self.retain_command()
+            return True
+        o.ledger.charge(128, 16, o.check)
+        o.pending.append((provider, m['source_sha'], m['python'], m['callback_sha256'],
+                          self.argv, f['path'], f['sha256'], m['child_pid'], None, m['action']))
+        self.remember(p, 1)
+        self.retain_command()
+        self.provider, self.argv, self.payload, self.decision, self.waits = {}, [], {}, {}, []
+        return True
+
+    receipt_fields = ('authentication', 'job', 'output')
+    job_fields = ('id', 'task_id', 'agent_name', 'title', 'rationale', 'script_text', 'interpreter',
+                  'cwd_hint', 'cwd_resolved', 'status', 'exit_code', 'reason', 'duration_ms',
+                  'created_at', 'started_at', 'finished_at')
+    output_fields = ('stdout', 'stderr', 'truncated_stdout', 'truncated_stderr',
+                     'total_stdout_bytes', 'total_stderr_bytes')
+    detail_fields = ('id', 'task_id', 'agent_name', 'title', 'rationale', 'script_text', 'interpreter',
+                     'cwd_hint', 'status', 'exit_code', 'stdout_head', 'stderr_head', 'stdout_path',
+                     'stderr_path', 'duration_ms', 'started_at', 'finished_at', 'reviewed_at',
+                     'reviewed_by', 'reject_reason', 'cwd_resolved', 'max_runtime_seconds',
+                     'max_output_bytes', 'review_required', 'persistent', 'reason', 'created_at')
+
+    def read_event(self, path: tuple, kind: str, value: object) -> None:
+        """Only two legacy wire envelopes and closed receipt scalar facts.
+
+        Discovery stays ordinary scan-only evidence. No general response tree
+        or value index is retained, even when its path arrives after response.
+        """
+        if not path:
+            return
+        o = self.owner
+        index = path[0]
+        if type(index) is not int or index not in (0, 1):
+            self.read_invalid = True
+            if (kind == 'scalar' and path[1:] in (('response', 'job', 'script_text'), ('response', 'script_text'))
+                    and type(value) is str):
+                self.ordinary(value)
+            return
+        if len(path) == 1 and kind == 'object':
+            if index != len(self.receipts):
+                self.read_invalid = True
+                return
+            o.ledger.charge(192, 24, o.check)
+            self.receipts.append(dict(meta={}, authentication={}, job={}, output={}, detail={}, lines=[], shapes={}, invalid=False))
+        if index >= len(self.receipts):
+            self.read_invalid = True
+            return
+        r, local = self.receipts[index], path[1:]
+        named = ((), ('response',), ('response', 'authentication'), ('response', 'job'), ('response', 'output'), ('response', 'lines'))
+        if kind in ('object', 'array'):
+            if local in named:
+                o.ledger.charge(24, 3, o.check)
+                r['shapes'][local] = [kind, []]
+            elif local[:2] not in (('response', 'orgs'), ('response', 'broken')):
+                r['invalid'] = True
+        elif kind == 'key' and local in r['shapes']:
+            o.ledger.charge(16 + _evidence_utf8_size(value, o.check), 2, o.check)
+            r['shapes'][local][1].append(value)
+        elif kind == 'scalar':
+            target = None
+            if len(local) == 1 and local[0] in ('path', 'method', 'body_sha256', 'status', 'dropped'):
+                target = r['meta']
+            elif len(local) == 2 and local[0] == 'response' and local[1] in self.detail_fields + ('timed_out', 'stream', 'ok'):
+                target = r['detail']
+            elif len(local) == 3 and local[:2] == ('response', 'lines') and local[2] == len(r['lines']):
+                o.ledger.charge(16 + (_evidence_utf8_size(value, o.check) if type(value) is str else 8), 2, o.check)
+                r['lines'].append(value)
+            elif len(local) == 3 and local[0] == 'response' and local[1] in self.receipt_fields:
+                allowed = ('task_id', 'session_id') if local[1] == 'authentication' else self.job_fields if local[1] == 'job' else self.output_fields
+                if local[2] in allowed:
+                    target = r[local[1]]
+            if target is not None:
+                o.ledger.charge(16 + (_evidence_utf8_size(value, o.check) if type(value) is str else 8), 2, o.check)
+                target[local[-1]] = value
+
+    def command_identity(self) -> None:
+        o, m, p = self.owner, self.metadata, self.provider
+        o.ledger.charge(2048, 256, o.check)
+        def shape(shapes: dict, path: tuple, kind: str, keys: tuple | None = None) -> bool:
+            got = shapes.get(path)
+            return got is not None and got[0] == kind and (keys is None or
+                len(got[1]) == len(keys) and all(a == b for a, b in zip(got[1], keys)))
+        if (not shape(self.shapes, (), 'object')
+                or len(self.shapes[()][1]) != len(self.fields) or set(self.shapes[()][1]) != set(self.fields)
+                or not shape(self.shapes, ('provider',), 'object', ('task', 'session', 'agent', 'org', 'pid'))
+                or not shape(self.shapes, ('argv',), 'array') or not shape(self.shapes, ('wire',), 'array')
+                or type(m.get('exit')) is not int or m['exit'] != 0 or m.get('timed_out') is not False
+                or any(type(m.get(k)) is not str for k in ('stdout', 'stderr', 'python', 'source_sha', 'callback_sha256', 'child_stat', 'child_start'))
+                or any(type(m.get(k)) not in (int, float) or not math.isfinite(m[k]) or m[k] < 0
+                       for k in ('entered', 'finished', 'execution_deadline'))
+                or not m['entered'] <= m['finished'] < m['execution_deadline']
+                or any(type(m.get(k)) is not int or m[k] <= 0 for k in ('child_pid', 'child_parent'))
+                or type(p.get('pid')) is not int or p['pid'] <= 0 or m['child_parent'] != p['pid']
+                or any(type(p.get(k)) is not str or not p[k] for k in ('task', 'session', 'agent', 'org'))
+                or p['org'] != 'alpha' or p['agent'] != 'case_manager'
+                or not p['task'].startswith('TASK-') or not p['task'][5:].isascii() or not p['task'][5:].isdigit()
+                or not _failure_source(m['source_sha']) or len(m['callback_sha256']) != 64
+                or any(c not in '0123456789abcdef' for c in m['callback_sha256'])):
+            raise ValueError('receipt command identity withheld')
+        stat_text = m['child_stat']
+        # Only parent/start tokens are retained. Scan all twenty original
+        # positions, without eighteen unused substring/list-entry pairs.
+        # Keep the original byte admission and24 fixed facts; two retained
+        # pairs cost4 facts, and the new position counter costs one.
+        o.ledger.charge(3 * _evidence_utf8_size(stat_text, o.check) + 80, 29, o.check)
+        close = stat_text.rfind(')')
+        fields, cursor, count = [], close + 2, 0
+        while close >= 0 and cursor < len(stat_text) and count < 20:
+            while cursor < len(stat_text) and stat_text[cursor].isspace():
+                cursor += 1
+            begin = cursor
+            while cursor < len(stat_text) and not stat_text[cursor].isspace():
+                cursor += 1
+                if cursor % 1024 == 0:
+                    o.check()
+            if cursor > begin:
+                if count in (1, 19):
+                    fields.append(stat_text[begin:cursor])
+                count += 1
+        if (not stat_text.startswith(str(m['child_pid']) + ' (') or count < 20
+                or fields[0] != str(p['pid']) or fields[1] != m['child_start']
+                or not m['child_start'].isascii() or not m['child_start'].isdigit()):
+            raise ValueError('receipt child identity withheld')
+
+    def read_close(self) -> bool:
+        o, m, p = self.owner, self.metadata, self.provider
+        o.ledger.charge(2048, 256, o.check)
+        def shape(shapes: dict, path: tuple, kind: str, keys: tuple | None = None) -> bool:
+            got = shapes.get(path)
+            # This finite set comparison is reserved above, before allocation.
+            return got is not None and got[0] == kind and (keys is None or got[1] == list(keys))
+        self.command_identity()
+        if (self.read_invalid or len(self.receipts) != 2
+                or m.get('payload', False) is not None or m.get('payload_file', False) is not None
+                or m['operation'] in ('receipt', 'output') and m['stderr'] != ''):
+            raise ValueError('receipt command identity withheld')
+        discovery, actual = self.receipts
+        wire_fields = ('path', 'method', 'body_sha256', 'status', 'response', 'dropped')
+        for r in self.receipts:
+            w = r['meta']
+            if (r['invalid'] or not shape(r['shapes'], (), 'object')
+                    or len(r['shapes'][()][1]) != len(wire_fields) or set(r['shapes'][()][1]) != set(wire_fields)
+                    or w.get('method') != ('POST' if r is actual and m['operation'] == 'wait' else 'GET')
+                    or type(w.get('status')) is not int or w['status'] != 200
+                    or w.get('dropped') is not False or w.get('body_sha256') != hashlib.sha256(b'').hexdigest()):
+                raise ValueError('receipt wire envelope withheld')
+        if (discovery['meta'].get('path') != '/api/v1/orgs'
+                or not shape(discovery['shapes'], ('response',), 'object', ('orgs', 'broken'))
+                or any(discovery[k] for k in self.receipt_fields)):
+            raise ValueError('receipt discovery cannot authenticate job')
+        if m['operation'] in ('wait', 'tail'):
+            return self.other_read_close(actual)
+        j, output, authentication = actual['job'], actual['output'], actual['authentication']
+        if (not shape(actual['shapes'], ('response',), 'object', self.receipt_fields)
+                or not shape(actual['shapes'], ('response', 'authentication'), 'object', ('task_id', 'session_id'))
+                or not shape(actual['shapes'], ('response', 'job'), 'object', self.job_fields)
+                or not shape(actual['shapes'], ('response', 'output'), 'object', self.output_fields)
+                or set(j) != set(self.job_fields) or set(output) != set(self.output_fields)
+                or authentication != dict(task_id=p['task'], session_id=p['session'])
+                or any(type(authentication.get(k)) is not str for k in ('task_id', 'session_id'))
+                or any(type(j.get(k)) is not str for k in ('id', 'task_id', 'agent_name', 'title', 'rationale', 'script_text', 'interpreter', 'status', 'created_at'))
+                or not j['id'].startswith('JOB-') or not j['id'][4:].isascii() or not j['id'][4:].isdigit()
+                or j['task_id'] != p['task'] or j['agent_name'] != p['agent'] or j['interpreter'] != 'python3'
+                or j['status'] not in ('completed', 'failed', 'rejected') or not j['created_at']
+                or any(type(j.get(k)) not in (str, type(None)) for k in ('cwd_hint', 'cwd_resolved', 'reason', 'started_at', 'finished_at'))
+                or type(j.get('exit_code')) not in (int, type(None))
+                or type(j.get('duration_ms')) not in (int, type(None))
+                or j['duration_ms'] is not None and j['duration_ms'] < 0
+                or j['status'] == 'completed' and (type(j['exit_code']) is not int or type(j['duration_ms']) is not int
+                    or not j['started_at'] or not j['finished_at'] or not j['cwd_resolved'] or j['reason'] is not None)
+                or j['status'] == 'rejected' and (j['exit_code'] is not None or j['duration_ms'] is not None)
+                or j['reason'] == 'timeout' and (j['status'] != 'failed' or j['exit_code'] != -9)):
+            raise ValueError('receipt closed identity withheld')
+        # HTTPX preserves these actual CLI parameter insertion orders. Runtime
+        # task/session identifiers use unreserved ASCII, so no URL rewrite is
+        # performed. Unsupported spellings refuse rather than normalize.
+        for value in (p['task'], p['session']):
+            o.ledger.charge(2 * _evidence_utf8_size(value, o.check), 1, o.check)
+            if not value.isascii() or any(not (c.isalnum() or c in '-._~') for c in value):
+                raise ValueError('receipt query spelling withheld')
+        o.ledger.charge(512 + 4 * sum(_evidence_utf8_size(v, o.check) for v in (p['task'], p['session'], j['id'])), 8, o.check)
+        path = '/api/v1/orgs/alpha/jobs/' + j['id'] + '/receipt?task_id=' + p['task'] + '&session_id=' + p['session']
+        if m['operation'] == 'output':
+            path += '&stream=both&max_bytes=1048576'
+        if actual['meta'].get('path') != path:
+            raise ValueError('receipt exact operation query withheld')
+        for stream in ('stdout', 'stderr'):
+            text, truncated, total = output.get(stream), output.get('truncated_' + stream), output.get('total_' + stream + '_bytes')
+            if type(text) is not str or type(truncated) is not bool or type(total) is not int or total < 0 or truncated != (total > 1048576):
+                raise ValueError('receipt output types withheld')
+            size = _evidence_utf8_size(text, o.check)
+            o.ledger.charge(size, 1, o.check)
+            read_bytes = min(total, 1048576)
+            # The producer decodes with errors=replace. Without a replacement
+            # scalar UTF8 counts are exact; with one, only this truthful bound
+            # is observable without acquiring the original output file again.
+            if size < read_bytes or size > 3 * read_bytes or '\ufffd' not in text and size != read_bytes:
+                raise ValueError('receipt output byte relationship withheld')
+            self.ordinary(text)
+        _evidence_python(j['script_text'], o.context, o.ledger, o.check, o.sanitize, self.depth + 4)
+        expected = dict(authentication=authentication, job=j, output=output)
+        self.object(m['stdout'], expected, script=False, stdout=True, receipt=True)
+        o.ledger.charge(128, 16, o.check)
+        o.pending.append((p, m['source_sha'], m['python'], m['callback_sha256'],
+                          self.argv, None, None, m['child_pid'], j['id'], m['operation']))
+        o.ledger.charge(128, 16, o.check)
+        o.job_proofs.append((p['task'], j['id'], j))
+        actual['job'] = {}  # Transfer these closed facts, never a raw response tree.
+        self.remember(None, len(self.receipts), job=j['id'])
+        self.provider, self.argv = {}, []
+        return True
+
+    def other_read_close(self, actual: dict) -> bool:
+        """Only the actual wait JobRecord and tail line response; show deferred."""
+        o, m, p, operation = self.owner, self.metadata, self.provider, self.metadata['operation']
+        o.ledger.charge(2048, 256, o.check)
+        def shape(path: tuple, kind: str, keys: tuple | None = None) -> bool:
+            got = actual['shapes'].get(path)
+            return got is not None and got[0] == kind and (keys is None or got[1] == list(keys))
+        if (len(self.argv) < 4 or type(self.argv[3]) is not str or not self.argv[3].startswith('JOB-')
+                or not self.argv[3][4:].isascii() or not self.argv[3][4:].isdigit()
+                or any(actual[k] for k in self.receipt_fields)):
+            raise ValueError('read actual job identity withheld')
+        job_id = self.argv[3]
+        for value in (p['task'], p['session']):
+            o.ledger.charge(2 * _evidence_utf8_size(value, o.check), 1, o.check)
+            if not value.isascii() or any(not (c.isalnum() or c in '-._~') for c in value):
+                raise ValueError('read query spelling withheld')
+        o.ledger.charge(512 + 4 * sum(_evidence_utf8_size(v, o.check) for v in (job_id, p['task'], p['session'])), 8, o.check)
+        query = ('timeout_seconds=1' if operation == 'wait' else 'stream=stdout&lines=50')
+        path = '/api/v1/orgs/alpha/jobs/' + job_id + '/' + operation + '?' + query + '&task_id=' + p['task'] + '&session_id=' + p['session']
+        if actual['meta'].get('path') != path:
+            raise ValueError('read exact operation query withheld')
+        j = actual['detail']
+        if operation == 'wait':
+            if (not shape(('response',), 'object', self.detail_fields + ('timed_out',))
+                    or set(j) != set(self.detail_fields + ('timed_out',))
+                    or any(type(j.get(k)) is not str for k in ('id','task_id','agent_name','title','rationale','script_text','interpreter','status','created_at'))
+                    or j['id'] != job_id or j['task_id'] != p['task'] or j['agent_name'] != p['agent']
+                    or j['interpreter'] != 'python3' or j['status'] not in ('pending','running','completed','failed','rejected')
+                    or any(type(j.get(k)) not in (str, type(None)) for k in ('cwd_hint','stdout_head','stderr_head','stdout_path','stderr_path',
+                        'started_at','finished_at','reviewed_at','reviewed_by','reject_reason','cwd_resolved','reason'))
+                    or any(type(j.get(k)) not in (int, type(None)) for k in ('exit_code','duration_ms','max_runtime_seconds','max_output_bytes'))
+                    or type(j.get('review_required')) is not bool or type(j.get('persistent')) is not bool
+                    or type(j.get('timed_out')) is not bool
+                    or j['timed_out'] != (j['status'] not in ('completed','failed','rejected'))
+                    or j['duration_ms'] is not None and j['duration_ms'] < 0):
+                raise ValueError('wait full JobRecord identity withheld')
+            _evidence_python(j['script_text'], o.context, o.ledger, o.check, o.sanitize, self.depth + 3)
+            expected = dict(status=j['status'], timed_out=j['timed_out'])
+            self.object(m['stdout'], expected, script=False, stdout=True, ordered=True)
+            o.ledger.charge(32, 4, o.check)
+            o.read_jobs.append((p['task'], job_id, j))
+            actual['detail'] = {}
+        else:
+            if (not shape(('response',), 'object', ('stream', 'lines')) or not shape(('response','lines'), 'array')
+                    or j != {'stream': 'stdout'} or any(type(line) is not str for line in actual['lines'])):
+                raise ValueError('tail complete response withheld')
+            size = sum(_evidence_utf8_size(line, o.check) + 1 for line in actual['lines'])
+            o.ledger.charge(2 * size + 16 * len(actual['lines']), 2 * len(actual['lines']), o.check)
+            if m['stdout'] != ''.join(line + '\n' for line in actual['lines']):
+                raise ValueError('tail full literal equality withheld')
+            self.ordinary(m['stdout'])
+            o.ledger.charge(32, 4, o.check)
+            o.read_jobs.append((p['task'], job_id, None))
+        self.ordinary(m['stderr'])
+        o.ledger.charge(160, 20, o.check)
+        o.pending.append((p, m['source_sha'], m['python'], m['callback_sha256'],
+                          self.argv, None, None, m['child_pid'], job_id, operation))
+        self.remember(None, 2, job=job_id)
+        self.provider, self.argv = {}, []
+        return True
+
+    def release(self) -> None:
+        for r in self.receipts:
+            for value in r.values():
+                if type(value) is dict:
+                    value.clear()
+            r.clear()
+        self.receipts.clear()
+        for value in (self.metadata, self.payload, self.provider, self.file, self.response,
+                      self.authentication, self.wire, self.argv, self.shapes, self.decision, self.waits):
+            value.clear()
+
+
+class _EvidenceObservations:
+    """Selected canonical ledger + existing start/executable identity facts.
+
+    Raw input remains scan-only. These finite joins are indispensable to the
+    selected record and can arrive in either order; there is no full raw tree.
+    """
+    def __init__(self, context: tuple | list, ledger: _EvidenceLedger,
+                 check: Callable[[], None], sanitize: Callable[[str], str], depth: int,
+                 identity: tuple | None) -> None:
+        ledger.charge(128, 16, check)
+        self.context, self.ledger, self.check, self.sanitize, self.depth = context, ledger, check, sanitize, depth
+        self.identity = identity
+        self.starts, self.manifests, self.pending = [], [], []
+        self.attempts, self.submitted = [], {}
+        self.job_proofs, self.read_jobs = [], []
+        self.cases = []
+        self.commands, self.case_command = [], None
+        self.case = None
+        self.attempt = None
+        self.command_index = None
+        self.current = self.start = self.manifest = None
+        self.snapshot_entry = self.snapshot_row = None
+        self.snapshots = False
+        self.captured = False
+
+    # Complete Store.snapshot arrays in the named original holders only.
+    # These are parser policies, not product schema definitions or row rewrites.
+    sql_columns = {
+        'audit': (('payload', '{'),),
+        'results': (('decision_json', '{'), ('local_ci', '{'),
+                    ('risks_flagged', '['), ('waiting_on_job_ids', '[')),
+        'tasks': (('blocked_on_job_ids', '['), ('active_chain', '{'), ('active_fanout', '{')),
+    }
+    sql_identity = {
+        'audit': (('id', int), ('task_id', str), ('agent', str), ('action', str), ('timestamp', str)),
+        'results': (('id', int), ('task_id', str), ('agent', str), ('session_id', str),
+                    ('status', str), ('created_at', str)),
+        'tasks': (('id', str), ('status', str), ('team', str), ('brief', str),
+                  ('task_type', str), ('revision_count', int), ('created_at', str), ('updated_at', str)),
+    }
+
+    case_variants = ('E04.approve-exit0', 'E04.review-required-refused', 'E04.completed-exit7',
+                     'E04.failed-timeout', 'E04.two-jobs-A-first', 'E04.two-jobs-B-first')
+    job_columns = ('id', 'task_id', 'agent_name', 'title', 'rationale', 'script_text', 'interpreter',
+                   'cwd_hint', 'status', 'exit_code', 'reason', 'stdout_head', 'stderr_head',
+                   'stdout_path', 'stderr_path', 'duration_ms', 'started_at', 'finished_at',
+                   'reviewed_at', 'reviewed_by', 'reject_reason', 'cwd_resolved',
+                   'max_runtime_seconds', 'max_output_bytes', 'review_required', 'persistent', 'created_at')
+
+    @staticmethod
+    def case_row(local: tuple) -> tuple | None:
+        """Finite source paths, including the owning job slot; no key search."""
+        base = None
+        if local[:1] in (('parked',), ('first_terminal',), ('final_snapshot',)):
+            base = local[:1]
+        elif local[:2] == ('live_s2', 'snapshot'):
+            base = local[:2]
+        if base is not None and len(local) >= len(base) + 2:
+            table, index = local[len(base):len(base) + 2]
+            if table in ('tasks', 'results', 'audit', 'jobs') and type(index) is int:
+                return base + (table, index), table, None, base[0]
+        if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int:
+            if local[2] in ('running', 'terminal', 'running_browser'):
+                return local[:3], 'jobs', local[1], local[2]
+            if len(local) >= 4 and local[2] == 'browser' and local[3] == 'body':
+                return local[:4], 'jobs', local[1], 'browser'
+            if len(local) >= 4 and local[2] == 'action' and local[3] == 'response':
+                return local[:4], 'jobs', local[1], 'action'
+            if len(local) >= 5 and local[2] == 'pending' and type(local[3]) is int:
+                if local[4] == 'row':
+                    return local[:5], 'jobs', local[1], 'pending'
+                if len(local) >= 6 and local[4] == 'audit' and type(local[5]) is int:
+                    return local[:6], 'audit', local[1], 'pending'
+            if local[2] in ('oracle', 'rejection_drain') and len(local) >= 4:
+                if local[3] == 'row':
+                    return local[:4], 'jobs', local[1], local[2]
+                if len(local) >= 5 and local[3] == 'audits' and type(local[4]) is int:
+                    return local[:5], 'audit', local[1], local[2]
+        return None
+
+    @staticmethod
+    def case_command_slot(local: tuple) -> tuple | None:
+        if local[:1] in (('block',), ('final_callback',)):
+            return local[:1]
+        if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'submit':
+            return local[:3]
+        return None
+
+    @staticmethod
+    def case_encoded(local: tuple) -> bool:
+        command = _EvidenceObservations.case_command_slot(local)
+        if command is not None:
+            tail = local[len(command):]
+            return tail in (('stdout',), ('payload', 'script'), ('payload_file', 'text'))
+        if len(local) == 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'script':
+            return True
+        if len(local) == 4 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'browser' and local[3] == 'text':
+            return True
+        slot = _EvidenceObservations.case_row(local)
+        return (slot is not None and len(local) == len(slot[0]) + 1
+                and (slot[1] == 'jobs' and local[-1] == 'script_text'
+                     or any(local[-1] == column for column, _ in _EvidenceObservations.sql_columns.get(slot[1], ()))))
+
+    @staticmethod
+    def encoded(path: tuple) -> bool:
+        return (len(path) >= 4 and path[0] == 'durable' and type(path[1]) is int
+                    and path[2] == 'jobs_cases' and type(path[3]) is int
+                    and _EvidenceObservations.case_encoded(path[4:])
+                or len(path) == 6 and path[0] == 'durable' and type(path[1]) is int
+                    and path[2] == 'snapshot' and path[3] in _EvidenceObservations.sql_columns
+                    and type(path[4]) is int
+                    and any(path[5] == column for column, _ in _EvidenceObservations.sql_columns[path[3]])
+                or len(path) == 3 and path[0] == 'provider_commands' and path[2] == 'stdout'
+                or len(path) == 4 and path[0] == 'provider_commands'
+                    and path[2:] in (('payload', 'script'), ('payload_file', 'text'))
+                or len(path) == 7 and path[0] == 'provider_commands' and path[2] == 'wire'
+                    and path[4:] == ('response', 'job', 'script_text')
+                or len(path) == 6 and path[0] == 'provider_commands' and path[2] == 'wire'
+                    and path[4:] == ('response', 'script_text')
+                or len(path) == 5 and path[0] == 'provider_attempts'
+                    and path[2:] == ('instruction', 'payload', 'script'))
+
+    def case_event(self, local: tuple, kind: str, value: object, *, field: str | None = None) -> bool | None:
+        if not local and kind == 'object':
+            self.ledger.charge(256, 32, self.check)
+            self.ledger.charge(64, 8, self.check)
+            self.ledger.charge(8, 1, self.check)
+            self.ledger.charge(8, 1, self.check)
+            self.case = dict(meta={}, starts=[], jobs=[], rows=[], snapshots={}, used=False,
+                             entry=self.snapshot_entry, jobs_shape=False, copies=[], final_reached=False,
+                             block_reached=False, submitted_stages=set(), first_oracle_reached=False,
+                             terminal_browsers_reached=False,
+                             running_first=None, oracle_first=None, pending_first=None,
+                             running_second=None, oracle_second=None, pending_second=None)
+        c = self.case
+        if c is None:
+            raise ValueError('Case record shape withheld')
+        if field is not None:
+            # The typed/raw primitive caller selected this named scalar from
+            # its parent. Retain the same field without rebuilding an ancestor
+            # path or running command/snapshot/row selector discovery.
+            self.ledger.charge(32 + _evidence_utf8_size(field, self.check)
+                + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 4, self.check)
+            if not local:
+                c['meta'][field] = value
+            elif local[0] == 'starts':
+                if local[1] >= len(c['starts']):
+                    raise ValueError('Case start fact withheld')
+                c['starts'][local[1]][field] = value
+            else:
+                if local[1] >= len(c['jobs']):
+                    raise ValueError('Case job selector withheld')
+                c['jobs'][local[1]][field] = value
+                if field in ('out', 'err') and type(value) is not str:
+                    raise ValueError('Case literal output type withheld')
+                if field == 'script':
+                    c['used'] = True
+                    if type(value) is not str:
+                        raise ValueError('Case SOURCE type withheld')
+                    _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
+                                     self.depth + 4 + len(local) + 2)
+            return
+        if not local and kind == 'key' and value in ('live_s2', 'final_callback', 'final_snapshot', 'finished', 'commands_end', 'task_browser'):
+            c['final_reached'] = True
+        if not local and kind == 'key' and value in ('first_terminal', 'first_terminal_cli', 'first_terminal_browser'):
+            self.ledger.charge(8, 1, self.check)
+            c['first_oracle_reached'] = True
+        if not local and kind == 'key' and value in ('parked','waiting_browser','first_terminal',
+                'first_terminal_cli','first_terminal_browser','live_s2'):
+            c['block_reached'] = True
+        if (len(local) == 2 and local[0] == 'jobs' and kind == 'key'
+                and value in ('id','running','running_browser','terminal','action','oracle','browser','reads','rejection_drain')):
+            self.ledger.charge(16, 2, self.check)
+            c['submitted_stages'].add(local[1])
+        if (len(local) == 2 and local[0] == 'jobs' and kind == 'key'
+                and value in ('oracle', 'browser', 'reads', 'rejection_drain')):
+            # These assignments follow terminal_oracle. A terminal row alone
+            # is earlier: run_script still has closure work before the oracle.
+            self.ledger.charge(16, 2, self.check)
+            c['jobs'][local[1]]['oracle_reached'] = True
+        if len(local) == 2 and local[0] == 'jobs' and kind == 'key':
+            # terminal_oracle returns BEFORE job_terminal is assigned. Its
+            # oracle/terminal/closure alone therefore requires no browser.
+            # Reads and the final rejection drain follow every planned browser;
+            # FIRST's separate Case barrier below still reaches FIRST only.
+            self.ledger.charge(32, 4, self.check)
+            if value in ('reads', 'rejection_drain'):
+                self.ledger.charge(8, 1, self.check)
+                c['terminal_browsers_reached'] = True
+            # Actual run_script assigns action BEFORE job_open returns. Only
+            # its later assignments reach this job's direct running public row.
+            # Retain charged stage facts independently of original key order.
+            self.ledger.charge(32, 4, self.check)
+            if value == 'running_browser':
+                self.ledger.charge(64, 8, self.check)
+                c['jobs'][local[1]]['running_public_present'] = True
+            elif value in ('released', 'terminal', 'closure', 'oracle', 'browser', 'reads', 'rejection_drain'):
+                self.ledger.charge(64, 8, self.check)
+                c['jobs'][local[1]]['running_public_reached'] = True
+        command = self.case_command_slot(local)
+        if command is not None:
+            c['used'] = True
+            if local == command and kind == 'object':
+                if self.case_command is not None:
+                    raise ValueError('Case command overlapping owner withheld')
+                self.case_command = _EvidenceSubmission(self, self.depth + 4 + len(local), copy=True)
+            if self.case_command is None:
+                raise ValueError('Case command shape withheld')
+            selected = self.case_command
+            closing = local == command and kind == 'end-object'
+            if not closing:
+                selected.event(local[len(command):], kind, value)
+            if closing:
+                try:
+                    action = 'jobs-submit' if len(command) == 3 else 'jobs-block' if command[0] == 'block' else 'jobs-final'
+                    if selected.metadata.get('action') != action or not selected.close() or selected.facts is None:
+                        raise ValueError('Case assigned command family withheld')
+                    self.ledger.charge(32, 4, self.check)
+                    c['copies'].append((command, selected.facts))
+                finally:
+                    selected.release()
+                    self.case_command = None
+            return
+        def retain(target: dict, key: str, item: object) -> None:
+            self.ledger.charge(32 + _evidence_utf8_size(key, self.check)
+                + (_evidence_utf8_size(item, self.check) if type(item) is str else 8), 4, self.check)
+            target[key] = item
+        if len(local) == 1 and local[0] in ('method', 'variant', 'index', 'source_sha', 'task'):
+            if kind != 'scalar':
+                raise ValueError('Case selector type withheld')
+            retain(c['meta'], local[0], value)
+        if local[:1] == ('starts',):
+            if len(local) == 1 and kind not in ('array', 'end-array'):
+                raise ValueError('Case starts shape withheld')
+            if len(local) == 2 and (type(local[1]) is not int or kind not in ('object', 'key', 'end-object')):
+                raise ValueError('Case start member shape withheld')
+            if len(local) == 2 and kind == 'object':
+                self.ledger.charge(64, 8, self.check)
+                c['starts'].append({})
+            elif len(local) == 3:
+                # Every original field participates, including an empty
+                # container whose descendants would otherwise retain nothing.
+                # The typed/raw primitive shortcuts already retain scalars.
+                if kind != 'scalar' or type(local[1]) is not int or local[1] >= len(c['starts']):
+                    raise ValueError('Case start fact withheld')
+                retain(c['starts'][local[1]], local[2], value)
+            elif kind not in ('key', 'end-object', 'end-array', 'array'):
+                raise ValueError('Case start fact withheld')
+        if local[:1] == ('jobs',):
+            if len(local) == 1:
+                if kind not in ('array', 'end-array'):
+                    raise ValueError('Case jobs shape withheld')
+                c['jobs_shape'] = True
+            if len(local) == 2:
+                if kind == 'object':
+                    self.ledger.charge(64, 8, self.check)
+                    c['jobs'].append({})
+                elif kind not in ('key', 'end-object'):
+                    raise ValueError('Case job shape withheld')
+            if len(local) == 3 and local[2] in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap', 'out', 'err'):
+                if kind != 'scalar' or type(local[1]) is not int or local[1] >= len(c['jobs']):
+                    raise ValueError('Case job selector withheld')
+                retain(c['jobs'][local[1]], local[2], value)
+                if local[2] in ('out','err') and type(value) is not str:
+                    raise ValueError('Case literal output type withheld')
+                if local[2] == 'script':
+                    c['used'] = True
+                    if type(value) is not str:
+                        raise ValueError('Case SOURCE type withheld')
+                    _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
+                                     self.depth + 4 + len(local) + 1)
+            if ((len(local) == 3 and local[2] == 'pending'
+                 or len(local) == 5 and local[2] == 'pending' and local[4] == 'audit'
+                 or len(local) == 4 and local[2] in ('oracle','rejection_drain') and local[3] == 'audits')
+                    and kind not in ('array','end-array')):
+                raise ValueError('Case row collection shape withheld')
+            if len(local) == 4 and local[2] == 'pending' and kind == 'object':
+                retain(c['jobs'][local[1]], 'last_pending', local[3])
+            if (len(local) == 6 and local[2] in ('oracle','rejection_drain') and local[3] == 'outputs'
+                    and type(local[4]) is int and local[5] == 'text' and (kind != 'scalar' or type(value) is not str)):
+                raise ValueError('Case literal stream type withheld')
+        if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'action':
+            # PRESENT action only. These original seven fields belong to the
+            # nonreject job_action producer, not a generic response wrapper.
+            self.ledger.charge(24, 3, self.check)
+            job = c['jobs'][local[1]]
+            c['used'] = True
+            if len(local) == 3:
+                if kind == 'object':
+                    self.ledger.charge(64, 8, self.check)
+                    job['action'] = {}
+                elif kind == 'key':
+                    action = job['action']
+                    self.ledger.charge(32, 4, self.check)
+                    if len(action) >= 7 or value != ('path', 'method', 'request', 'status', 'response', 'no_run_controls', 'at')[len(action)]:
+                        raise ValueError('Case action holder order withheld')
+                    action[value] = None
+                elif kind == 'end-object':
+                    if len(job['action']) != 7:
+                        raise ValueError('Case action holder schema withheld')
+                else:
+                    raise ValueError('Case action holder type withheld')
+            elif len(local) == 4:
+                if local[3] == 'response':
+                    if kind not in ('object', 'key', 'end-object'):
+                        raise ValueError('Case action response type withheld')
+                else:
+                    key = local[3]
+                    if (kind != 'scalar' or key not in ('path', 'method', 'request', 'status', 'no_run_controls', 'at')
+                            or key in ('path', 'method') and type(value) is not str
+                            or key == 'request' and value is not None
+                            or key == 'status' and (type(value) is not int or value != 200)
+                            or key == 'no_run_controls' and value is not True
+                            or key == 'at' and (type(value) not in (int, float) or type(value) is float and not math.isfinite(value))):
+                        raise ValueError('Case action scalar withheld')
+                    retain(job['action'], key, value)
+        if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'browser':
+            self.ledger.charge(24, 3, self.check)
+            job = c['jobs'][local[1]]
+            if len(local) == 3:
+                if kind == 'object':
+                    self.ledger.charge(64, 8, self.check)
+                    job['browser'] = {}
+                elif kind == 'key':
+                    browser = job['browser']
+                    self.ledger.charge(32, 4, self.check)
+                    if len(browser) >= 4 or value != ('body', 'text', 'screenshot', 'at')[len(browser)]:
+                        raise ValueError('Case terminal browser holder order withheld')
+                    browser[value] = None
+                elif kind == 'end-object':
+                    if len(job['browser']) != 4:
+                        raise ValueError('Case terminal browser holder schema withheld')
+                else:
+                    raise ValueError('Case terminal browser holder type withheld')
+            elif len(local) == 4 and local[3] != 'body':
+                key = local[3]
+                if (kind != 'scalar' or key not in ('text', 'screenshot', 'at')
+                        or key in ('text', 'screenshot') and type(value) is not str
+                        or key == 'at' and (type(value) not in (int, float) or type(value) is float and not math.isfinite(value))):
+                    raise ValueError('Case terminal browser scalar withheld')
+                retain(job['browser'], key, value)
+        base = (local[:1] if local[:1] in (('parked',), ('first_terminal',), ('final_snapshot',)) else
+                local[:2] if local[:2] == ('live_s2', 'snapshot') else None)
+        if base is not None:
+            c['used'] = True
+            if local == base and kind == 'object':
+                self.ledger.charge(64, 8, self.check)
+                c['snapshots'][base] = []
+            elif local == base and kind == 'key':
+                self.ledger.charge(24, 3, self.check)
+                c['snapshots'][base].append(value)
+            elif len(local) == len(base) + 1:
+                if local[-1] not in ('tasks', 'results', 'audit', 'jobs') or kind not in ('array', 'end-array'):
+                    raise ValueError('Case snapshot table withheld')
+            elif local == base and kind not in ('end-object',):
+                raise ValueError('Case snapshot shape withheld')
+        slot = self.case_row(local)
+        if slot is not None:
+            row_path, table, job_index, holder = slot
+            c['used'] = True
+            if local == row_path and kind == 'object':
+                self.ledger.charge(80, 10, self.check)
+                c['rows'].append((row_path, table, job_index, holder, {}, {}))
+                if table == 'jobs' and holder == 'action':
+                    # Retain THIS original occurrence, not another row's proof.
+                    # Both full public rows are independently checked at close.
+                    self.ledger.charge(16, 2, self.check)
+                    c['jobs'][job_index]['action']['response'] = c['rows'][-1][4]
+                # Keep the same six canonical row references at their original
+                # opening events. Every field and own safety check still runs;
+                # closure validates these rows before accepting any comparison.
+                # This moves selection/retention, without another row index or
+                # a new pass. The former reference-retention debit is unchanged.
+                if table == 'jobs' and job_index in (0, 1) and holder in ('running', 'oracle', 'pending'):
+                    self.ledger.charge(80, 10, self.check)
+                    if job_index == 0:
+                        if holder == 'running':
+                            c['running_first'] = c['rows'][-1]
+                        elif holder == 'oracle':
+                            c['oracle_first'] = c['rows'][-1]
+                        else:
+                            c['pending_first'] = c['rows'][-1]
+                    elif holder == 'running':
+                        c['running_second'] = c['rows'][-1]
+                    elif holder == 'oracle':
+                        c['oracle_second'] = c['rows'][-1]
+                    else:
+                        c['pending_second'] = c['rows'][-1]
+            elif local == row_path and kind not in ('key', 'end-object'):
+                raise ValueError('Case SQL row shape withheld')
+            elif len(local) > len(row_path):
+                if (len(local) != len(row_path) + 1 or kind != 'scalar'
+                        or type(value) not in (str, int, float, type(None))
+                            and not (holder in ('running_browser', 'browser', 'action') and local[-1] in ('review_required', 'persistent')
+                                     and type(value) is bool)):
+                    raise ValueError('Case SQL scalar withheld')
+                if not c['rows'] or c['rows'][-1][0] != row_path:
+                    raise ValueError('Case SQL row owner withheld')
+                self.case_row_event((), kind, value, field=local[-1])
+        if not local and kind == 'end-object':
+            self.ledger.charge(8, 1, self.check)
+            self.cases.append(c)
+            self.case = None
+
+        # These ordinary containers have no selected Case descendants. Their
+        # opening event and reached-stage keys above still run. Returning False
+        # removes descendant selector paths/callbacks only; the original typed
+        # visitor or raw parser still owns every syntax/depth/scalar safety check.
+        # Keep pending/output and live-snapshot prefixes: they have late leaves.
+        if kind in ('object', 'array') and (
+                len(local) == 1 and local[0] not in
+                    ('starts', 'jobs', 'parked', 'first_terminal', 'final_snapshot', 'live_s2')
+                or len(local) == 2 and local[0] == 'live_s2' and local[1] != 'snapshot'
+                or len(local) == 3 and local[0] == 'jobs' and type(local[1]) is int
+                    and local[2] not in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap',
+                                        'out', 'err', 'running', 'terminal', 'running_browser', 'action', 'browser', 'pending', 'oracle', 'rejection_drain')
+                or len(local) == 5 and local[0] == 'jobs' and type(local[1]) is int
+                    and local[2] == 'pending' and type(local[3]) is int and local[4] not in ('row', 'audit')
+                or len(local) == 4 and local[0] == 'jobs' and type(local[1]) is int
+                    and local[2] in ('oracle', 'rejection_drain') and local[3] not in ('row', 'audits', 'outputs')):
+            return False
+
+    def _case_browser_text(self, text: str, source: str) -> None:
+        """The one selected terminal holder; no renderer or general text grant."""
+        try:
+            if type(text) is not str:
+                raise ValueError('Case terminal browser text type withheld')
+            ledger, check = self.ledger, self.check
+            size = _evidence_utf8_size(text, check)
+            source_size = _evidence_utf8_size(source, check)
+            ledger.charge(128 + size + source_size, 16, check)
+            # This complete immutable original is already present. Search it
+            # directly, retaining continuous matching across every region and
+            # former chunk boundary without allocating slices, joins or carry.
+            # Prepay EACH full native search and its context/reference slots.
+            for secret in self.context:
+                ledger.charge(size + 16, 2, check)
+                if secret in text:
+                    raise ValueError('original evidence content withheld')
+                check()
+            # The existing literal sanitizer must leave the entire text unchanged.
+            # All actual replacement passes, the output reference and full comparison
+            # remain paid, including aliases. No text normalization is performed.
+            ledger.charge(16 + size * len(self.context) + 64, len(self.context) + 1, check)
+            safe = self.sanitize(text)
+            try:
+                if type(safe) is not str or _evidence_utf8_size(safe, check, size) != size or safe != text:
+                    raise _EvidenceUnsafe('unsafe evidence sanitation postcondition')
+            except ValueError as exc:
+                raise _EvidenceUnsafe('unsafe evidence sanitation postcondition') from exc
+            finally:
+                safe = None
+            # Native stripping tests the SAME complete finite alphabet without
+            # a generator or a Python character/ord reference at every offset.
+            # Pay BOTH scan directions, the worst-case full residual copy and
+            # alphabet/result/call setup before invoking it, including aliases.
+            ledger.charge(3 * source_size + 256, 8, check)
+            eligible = bool(source) and source.endswith('\n') and not source.strip(
+                '\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                '[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~')
+            candidate, count, cursor = None, 0, 0
+            if eligible:
+                while cursor < len(text):
+                    ledger.charge(4 * (len(text) - cursor) + 32, 4, check)
+                    anchor = text.find('$ ', cursor)
+                    if anchor < 0:
+                        break
+                    ledger.charge(source_size + 32, 4, check)
+                    if text.startswith(source, anchor + 2):
+                        ledger.charge(24, 3, check)
+                        candidate, count = anchor + 2, count + 1
+                        if count > 1:
+                            raise ValueError('Case terminal browser ambiguous SOURCE span withheld')
+                    cursor = anchor + 1  # Include overlapping candidates.
+            ledger.charge(size + 32, 4, check)
+            if count == 0:
+                if '\\' in text:
+                    raise ValueError('Case terminal browser ordinary text withheld')
+                return
+            stop = candidate + len(source)
+            if text.find('\\', 0, candidate) >= 0 or text.find('\\', stop) >= 0:
+                raise ValueError('Case terminal browser outside SOURCE span withheld')
+            # Independently compare the entire mapped occurrence after its own
+            # body's proof and terminal/oracle/submit equality. BOTH native
+            # operand traversals and call/bounds slots remain prepaid; only the
+            # absent per-character Python index/reference constructions disappear.
+            # Anchor selection above retains its separate full comparison.
+            ledger.charge(2 * source_size + 64, 8, check)
+            if not text.startswith(source, candidate, stop):
+                raise ValueError('Case terminal browser mapped SOURCE withheld')
+            check()
+        finally:
+            text = source = safe = None
+
+    def case_row_event(self, local: tuple, kind: str, value: object, *, field: str | None = None) -> None:
+        """Descendants of the already opened original row; no ancestor replay."""
+        if kind == 'key' and not local:
+            return
+        self.ledger.charge(8, 1, self.check)
+        c = self.case
+        row_path, table, job_index, holder, row, links = c['rows'][-1]
+        if ((len(local) != 1 if field is None else bool(local)) or kind != 'scalar'):
+            raise ValueError('Case SQL scalar withheld')
+        if field is None:
+            field = local[0]
+        if (type(value) not in (str, int, float, type(None))
+                and not (holder in ('running_browser', 'browser', 'action') and field in ('review_required', 'persistent')
+                         and type(value) is bool)):
+            raise ValueError('Case SQL scalar withheld')
+        # Pair task/results compare the complete original parked
+        # rows, including unknown scalar columns, after late closure.
+        if table == 'jobs' or table in ('tasks', 'results') and holder in ('parked', 'first_terminal'):
+            # Store this occurrence directly. The former per-scalar retain()
+            # closure forwarded field/value into two additional argument
+            # slots. Keep the stored key/value pair and ALL original bytes;
+            # only those absent forwarding references lose 16B/2facts.
+            self.ledger.charge(16 + _evidence_utf8_size(field, self.check)
+                + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+            row[field] = value
+        else:
+            required = tuple(k for k, _ in self.sql_identity[table]) + (
+                ('assigned_agent', 'current_session_id') if table == 'tasks' else ())
+            if field in required or any(field == k for k, _ in self.sql_columns.get(table, ())):
+                self.ledger.charge(16 + _evidence_utf8_size(field, self.check)
+                    + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+                row[field] = value
+        if table == 'jobs' and field == 'script_text':
+            if type(value) is not str:
+                raise ValueError('Case row SOURCE type withheld')
+            _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
+                             self.depth + 4 + len(row_path) + 2)
+            if holder == 'browser':
+                # Only this occurrence's completed lexical/secret proof can
+                # authorize its display span. Hash the same original UTF8 once;
+                # the full source/oracle/submit comparisons still run at close.
+                self.ledger.charge(32, 4, self.check)
+                links['source_digest'] = _evidence_digest(value, self.ledger, self.check)[1]
+        for column, top in self.sql_columns.get(table, ()):
+            if field != column or value is None:
+                continue
+            if type(value) is not str:
+                raise ValueError('Case SQL column type withheld')
+            def scalar(text: str) -> None:
+                if '\\' in text:
+                    raise ValueError('Case decoded representation withheld')
+                _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
+            # Only these original columns consume semantic events. Other
+            # columns still receive the complete syntax/ordinal/safety scan,
+            # without allocating an unused depth/key state or callback.
+            event = None
+            if table == 'audit' or (table == 'tasks' and holder in ('parked', 'first_terminal')
+                                   and column == 'blocked_on_job_ids'):
+                self.ledger.charge(32, 4, self.check)
+                audit_state = [0, None]
+                if table == 'tasks' and holder in ('parked', 'first_terminal') and column == 'blocked_on_job_ids':
+                    self.ledger.charge(32, 4, self.check)
+                    links['blocked'] = []
+                def event(event_kind: str, item: object) -> None:
+                    # The existing scan callback is syntax-only. Retain
+                    # direct job discriminators/blocked IDs, never a JSON tree.
+                    if event_kind == 'key' and audit_state[0] == 1:
+                        audit_state[1] = item
+                    elif (table == 'audit' and audit_state[0] == 1 and audit_state[1] == 'script_request_id'
+                          and event_kind not in ('key', 'end-object', 'end-array')):
+                        self.ledger.charge(16 + _evidence_utf8_size('job', self.check)
+                            + (_evidence_utf8_size(item, self.check)
+                               if event_kind == 'scalar' and type(item) is str else 8), 2, self.check)
+                        links['job'] = item if event_kind == 'scalar' else None
+                    if (table == 'tasks' and holder in ('parked', 'first_terminal')
+                            and column == 'blocked_on_job_ids' and audit_state[0] == 1):
+                        if event_kind == 'scalar':
+                            if type(item) is not str:
+                                raise ValueError('Case blocked job type withheld')
+                            self.ledger.charge(16 + _evidence_utf8_size(item, self.check), 2, self.check)
+                            links['blocked'].append(item)
+                        elif event_kind in ('object', 'array'):
+                            raise ValueError('Case blocked job shape withheld')
+                    if event_kind in ('object', 'array'):
+                        audit_state[0] += 1
+                    elif event_kind in ('end-object', 'end-array'):
+                        audit_state[0] -= 1
+            _evidence_original(value, self.context, self.ledger, self.check, self.sanitize)
+            _EvidenceJSON(value, self.ledger, self.check).scan(top, scalar, event=event,
+                depth=self.depth + 4 + len(row_path) + 2, context=self.context, sanitize=self.sanitize)
+
+    def close_cases(self, manifest: dict) -> None:
+        def command_sequence(left: object, right: object) -> bool:
+            # Closed argv/wait holders contain only primitive members. Keep
+            # the original sequence/type/cardinality and member traversal
+            # debits, then use the existing direct full-scalar comparator.
+            # No recursive dict/sequence classification runs for each leaf.
+            self.ledger.charge(32, 4, self.check)
+            if type(left) is not type(right) or type(left) is not list:
+                return False
+            if len(left) != len(right):
+                self.ledger.charge(16 * (len(left) + len(right)), 2 * (len(left) + len(right)), self.check)
+                return False
+            # No zip pair is constructed. Keep both operand traversal slots;
+            # remove only its two temporary references, and pay the explicit
+            # right iterator before allocation. Every full comparison still runs.
+            self.ledger.charge(16 * len(left) + 8, 2 * len(left) + 1, self.check)
+            remaining = iter(right)
+            for value in left:
+                # This loop already owns its left operand. Retain and pay the
+                # actual right lookup/reference; omit only same()'s additional
+                # left forwarding slot. Every full operand comparison remains.
+                self.ledger.charge(8, 1, self.check)
+                other_value = next(remaining)
+                self.ledger.charge((_evidence_utf8_size(value, self.check) if type(value) is str else 8)
+                    + (_evidence_utf8_size(other_value, self.check) if type(other_value) is str else 8), 0, self.check)
+                if type(value) is not type(other_value) or value != other_value:
+                    return False
+            return True
+        def command_equal(left: tuple, right: tuple) -> bool:
+            # One traversal of the original ordered shapes owns BOTH key and
+            # scalar equality. The former second traversal zipped eleven fact
+            # holders and then every scalar map, rebuilding reference pairs for
+            # fields already visited in the shape traversal. Direct lookups
+            # below pay for their two references; all original full primitive
+            # comparisons retain both operands' complete byte costs.
+            shapes, other_shapes = left[8], right[8]
+            if len(shapes) != len(other_shapes):
+                self.ledger.charge(32 * (len(shapes) + len(other_shapes)),
+                                   4 * (len(shapes) + len(other_shapes)), self.check)
+                return False
+            # As in full_row, original-key iteration removes the left
+            # items() pair (16B/2facts); its new lookup pays 8B/1fact.
+            # Right lookup/traversal and every full comparison stay paid.
+            self.ledger.charge(24 * len(shapes) + 32 * len(other_shapes),
+                               3 * len(shapes) + 4 * len(other_shapes), self.check)
+            for path in shapes:
+                kind, keys = shapes[path]
+                # Paths are synthesized selectors, not another original value.
+                # Each original container's ordered keys already determine its
+                # position; lookup replaces recursive selector/order replay.
+                self.ledger.charge(16 * len(path) + 32, 2 * len(path) + 4, self.check)
+                other = other_shapes.get(path)
+                if other is None or not same(kind, other[0]) or len(keys) != len(other[1]):
+                    return False
+                if kind == 'array':
+                    # Only argv/waits carry primitive array members. Wire's
+                    # original member shape is compared at its own path.
+                    if path == ('argv',):
+                        if not command_sequence(left[7], right[7]):
+                            return False
+                    elif path == ('payload', 'waiting_on_job_ids'):
+                        if not command_sequence(left[10], right[10]):
+                            return False
+                    continue
+                number = (0 if not path else 1 if path == ('provider',) else
+                    2 if path == ('payload',) else 3 if path == ('payload_file',) else
+                    6 if path == ('wire', 0) else 4 if path == ('wire', 0, 'response') else
+                    5 if path == ('wire', 0, 'response', 'authentication') else
+                    9 if path == ('payload', 'decision') else None)
+                if number is None:
+                    return False
+                a, b = left[number], right[number]
+                # Retain the original ordered-list traversal and per-key full
+                # comparison charges. Only the separate scalar-map traversal
+                # and its reference-pair construction have disappeared.
+                self.ledger.charge(32, 4, self.check)
+                # Cardinality is already equal. Direct original key iteration
+                # needs no zip pair; keep operand traversal and independently
+                # charge the explicit other-key iterator before allocation.
+                self.ledger.charge(16 * len(keys) + 8, 2 * len(keys) + 1, self.check)
+                other_keys = iter(other[1])
+                for key in keys:
+                    other_key = next(other_keys)
+                    # The paid original iterators already own both keys.
+                    # Compare here without forwarding them into same()'s two
+                    # extra argument slots. Full original bytes/types remain.
+                    self.ledger.charge((_evidence_utf8_size(key, self.check) if type(key) is str else 8)
+                        + (_evidence_utf8_size(other_key, self.check) if type(other_key) is str else 8), 0, self.check)
+                    if type(key) is not type(other_key) or key != other_key:
+                        return False
+                    if (number == 0 and key in ('provider', 'payload', 'payload_file', 'argv', 'wire')
+                            or number == 2 and key in ('decision', 'waiting_on_job_ids')
+                            or number == 6 and key == 'response'
+                            or number == 4 and key == 'authentication'):
+                        continue
+                    self.ledger.charge(16, 2, self.check)
+                    left_value, right_value = a[key], b[other_key]
+                    self.ledger.charge((_evidence_utf8_size(left_value, self.check) if type(left_value) is str else 8)
+                        + (_evidence_utf8_size(right_value, self.check) if type(right_value) is str else 8), 0, self.check)
+                    if type(left_value) is not type(right_value) or left_value != right_value:
+                        return False
+            return True
+        def same(left: object, right: object) -> bool:
+            # Size both original operands directly. Keep this callee's two
+            # operand argument slots (16B/2facts) and ALL full scalar bytes,
+            # type and value comparison work. No temporary operand tuple or
+            # generator traversal is constructed.
+            self.ledger.charge(16 + (_evidence_utf8_size(left, self.check) if type(left) is str else 8)
+                + (_evidence_utf8_size(right, self.check) if type(right) is str else 8), 2, self.check)
+            return type(left) is type(right) and left == right
+        def full_row(left: dict, right: dict) -> bool:
+            if len(left) != len(right):
+                self.ledger.charge(32 * (len(left) + len(right)), 4 * (len(left) + len(right)), self.check)
+                return False
+            # Key iteration removes items()'s temporary (key, value) pair
+            # (16B/2facts per left entry). Pay the new left lookup (8B/1fact),
+            # retaining every other traversal and full scalar comparison cost.
+            # Compare both original key sequences in this same traversal.
+            # Pay the right iterator before construction and each complete
+            # key comparison, as well as the retained value lookup work.
+            self.ledger.charge(24 * len(left) + 24 * len(right) + 8,
+                               3 * len(left) + 3 * len(right) + 1, self.check)
+            right_keys = iter(right)
+            for key in left:
+                other_key = next(right_keys)
+                # Iterator and lookup references were paid above; only the
+                # two forwarding slots per removed same() call disappear.
+                self.ledger.charge((_evidence_utf8_size(key, self.check) if type(key) is str else 8)
+                    + (_evidence_utf8_size(other_key, self.check) if type(other_key) is str else 8), 0, self.check)
+                if type(key) is not type(other_key) or key != other_key:
+                    return False
+                left_value, right_value = left[key], right[other_key]
+                self.ledger.charge((_evidence_utf8_size(left_value, self.check) if type(left_value) is str else 8)
+                    + (_evidence_utf8_size(right_value, self.check) if type(right_value) is str else 8), 0, self.check)
+                if type(left_value) is not type(right_value) or left_value != right_value:
+                    return False
+            return True
+        for c in self.cases:
+            self.ledger.charge(8, 1, self.check)
+            if not c['used']:
+                continue  # An authentic partial Case gains no absent edges.
+            self.ledger.charge(256, 32, self.check)
+            m, starts, jobs = c['meta'], c['starts'], c['jobs']
+            index = m.get('index')
+            if (c['entry'] is None or c['entry']['keys'] != ['jobs_cases'] or not c['jobs_shape']
+                    or m.get('method') != 'serial-public-metrics-window-causal-v1'
+                    or type(index) is not int or not 0 <= index < 6 or m.get('variant') != self.case_variants[index]
+                    or not same(m.get('source_sha'), manifest['revision'])
+                    or type(m.get('task')) is not str or not m['task'] or not 1 <= len(starts) <= 2):
+                raise ValueError('Case complete original owner withheld')
+            sessions = set()
+            for start in starts:
+                self.ledger.charge(160 + 16 * len(self.starts), 20 + 2 * len(self.starts), self.check)
+                match, match_count = None, 0
+                for original_start in self.starts:
+                    if same(original_start.get('session'), start.get('session')):
+                        self.ledger.charge(8, 1, self.check)
+                        match, match_count = original_start, match_count + 1
+                if (set(start) != {'task','session','agent','org','pid','pid_start','pgid'}
+                        or match_count != 1 or any(not same(start[k], match.get(k)) for k in start)
+                        or not same(start['task'], m['task']) or start['agent'] != 'case_manager' or start['org'] != 'alpha'
+                        or type(start['session']) is not str or not start['session'] or start['session'] in sessions
+                        or type(start['pid']) is not int or start['pid'] <= 0 or type(start['pgid']) is not int
+                        or start['pgid'] != start['pid'] or type(start['pid_start']) is not str or not start['pid_start'].isdigit()):
+                    raise ValueError('Case original start join withheld')
+                self.ledger.charge(16, 2, self.check)
+                sessions.add(start['session'])
+            plan = ((('OK',0),), (), (('EXIT7',7),), (('TIMEOUT',-9),), (('A',0),('B',7)), (('B',7),('A',0)))[index]
+            if len(jobs) > len(plan):
+                raise ValueError('Case submitted job count withheld')
+            owners, ids, assigned_ids = [], set(), []
+            first_owner = second_owner = None
+            self.ledger.charge(16, 2, self.check)
+            first_command = second_command = None
+            for number, job in enumerate(jobs):
+                # Unique selection retains a count/reference, never a second
+                # population of matches. Keep every original predicate and
+                # candidate traversal; pay both counted-selection states.
+                self.ledger.charge(192 + 16 * (len(self.commands) + len(c['copies'])),
+                                    24 + 2 * (len(self.commands) + len(c['copies'])), self.check)
+                copy, copy_count = None, 0
+                for slot, facts in c['copies']:
+                    if slot == ('jobs', number, 'submit'):
+                        self.ledger.charge(8, 1, self.check)
+                        copy, copy_count = facts, copy_count + 1
+                actual_id = job.get('id') if 'id' in job else copy[4].get('id') if copy_count == 1 else None
+                candidate, candidate_count = None, 0
+                for facts in self.commands:
+                    if facts[0]['action'] == 'jobs-submit' and same(facts[4].get('id'), actual_id):
+                        self.ledger.charge(8, 1, self.check)
+                        candidate, candidate_count = facts, candidate_count + 1
+                if (type(job.get('script')) is not str or type(job.get('script_sha256')) is not str
+                        or type(job.get('code')) is not int or job['code'] != plan[number][1]
+                        or job.get('label') != plan[number][0] or type(job.get('cap')) is not int
+                        or job['cap'] != (5 if job['code'] == -9 else 30) or actual_id is not None and actual_id in ids):
+                    raise ValueError('Case actual submit identity withheld')
+                _, digest = _evidence_digest(job['script'], self.ledger, self.check)
+                self.ledger.charge(256 + 3 * sum(_evidence_utf8_size(v, self.check)
+                    for v in (m['source_sha'], starts[0]['session'], job['label'])), 12, self.check)
+                token = hashlib.sha256((m['source_sha'] + starts[0]['session'] + job['label']).encode()).hexdigest()[:24]
+                if not same(digest, job['script_sha256']) or not same(job.get('token'), token):
+                    raise ValueError('Case full original SOURCE identity withheld')
+                # Only an absent-ID partial can still scan the original row
+                # population here. Complete jobs no longer perform that scan.
+                if 'id' not in job:
+                    self.ledger.charge(32 * len(c['rows']), 4 * len(c['rows']), self.check)
+                if 'id' not in job and (number != len(jobs) - 1 or len(starts) != 1 or c['snapshots']
+                        or c['final_reached'] or c['block_reached'] or number in c['submitted_stages']
+                        or any(n == number for _,_,n,_,_,_ in c['rows'])
+                        or any(slot[0] in ('block','final_callback') for slot,_ in c['copies'])):
+                    raise ValueError('Case unreached submit stage withheld')
+                self.ledger.charge(16, 2, self.check)
+                assigned_ids.append(actual_id)
+                if actual_id is None and 'id' not in job and not copy_count:
+                    continue  # Original job exists before provider_cli returns.
+                if candidate_count != 1:
+                    raise ValueError('Case actual submit identity withheld')
+                self.ledger.charge(32, 4, self.check)
+                original_command = candidate
+                provider, proof, submitted = original_command[1], original_command[2], original_command[4]
+                jid = submitted['id']
+                if (any(not same(provider.get(k), starts[0].get(k)) for k in provider)
+                        or not same(proof['script'], job['script']) or proof['task_id'] != m['task']
+                        or provider['agent'] != 'case_manager' or proof['interpreter'] != 'python3'
+                        or not same(proof['title'], m['variant'] + '/' + token)
+                        or proof['review_required'] is not False or proof['persistent'] is not False
+                        or not same(proof['max_runtime_seconds'], job['cap'])):
+                    raise ValueError('Case full submitted SOURCE join withheld')
+                self.ledger.charge(16, 2, self.check)
+                owners.append((jid, original_command)); ids.add(jid)
+                # Require reached peers before any Store row can skip full
+                # equality. First-terminal reaches only the FIRST job's
+                # oracle; its SECOND job still compares to running/pending.
+                self.ledger.charge(16, 2, self.check)
+                if (job.get('oracle_reached') or c['final_reached'] or len(starts) == 2
+                        or number == 0 and c['first_oracle_reached']) and (
+                        c['oracle_first'] if number == 0 else c['oracle_second']) is None:
+                    raise ValueError('Case required oracle row unavailable')
+                if 'action' in job:
+                    self.ledger.charge(128 + 4 * _evidence_utf8_size(jid, self.check), 16, self.check)
+                    action = job['action']
+                    if (len(action) != 7 or not same(action.get('path'), '/api/v1/orgs/alpha/jobs/' + jid)
+                            or not same(action.get('method'), 'GET') or action.get('request') is not None
+                            or type(action.get('status')) is not int or action['status'] != 200
+                            or action.get('no_run_controls') is not True
+                            or type(action.get('at')) not in (int, float)
+                            or type(action['at']) is float and not math.isfinite(action['at'])
+                            or type(action.get('response')) is not dict):
+                        raise ValueError('Case action original holder withheld')
+                # S2/final reaches both jobs; first-terminal reaches only job0.
+                # Pending/parked/block/action-only partials remain before this
+                # assignment. Presence still undergoes every full row check below.
+                self.ledger.charge(64, 8, self.check)
+                if (job.get('running_public_reached') or c['final_reached'] or len(starts) == 2
+                        or number == 0 and c['first_oracle_reached']) and not job.get('running_public_present'):
+                    raise ValueError('Case required direct running public row unavailable')
+                # Own PRESENT browser still receives its complete holder/body/
+                # text validation below. No later copy supplies a missing peer.
+                # Stage facts are retained independently of input key order.
+                self.ledger.charge(64, 8, self.check)
+                if (c['terminal_browsers_reached'] or c['final_reached'] or len(starts) == 2
+                        or number == 0 and c['first_oracle_reached']) and 'browser' not in job:
+                    raise ValueError('Case required terminal browser holder unavailable')
+                self.ledger.charge(16, 2, self.check)
+                self.ledger.charge(8, 1, self.check)
+                if number == 0:
+                    first_owner, first_command = owners[-1], original_command
+                else:
+                    second_owner, second_command = owners[-1], original_command
+            self.ledger.charge(128 + 32 * (len(c['copies']) + len(jobs)), 16 + 4 * (len(c['copies']) + len(jobs)), self.check)
+            slots = set()
+            for slot, facts in c['copies']:
+                meta, provider, payload, _, response = facts[:5]
+                submit, block = len(slot) == 3, slot[0] == 'block'
+                if (slot in slots or submit and slot[1] >= len(jobs) or block and index == 1
+                        or not submit and not block and len(starts) != (1 if index == 1 else 2)):
+                    raise ValueError('Case assigned command stage withheld')
+                self.ledger.charge(128, 16, self.check)
+                original_start = starts[0] if submit or block else starts[-1]
+                if any(not same(provider.get(k), original_start.get(k)) for k in provider):
+                    raise ValueError('Case command original start withheld')
+                if submit:
+                    # The unique actual-ID submit join above already selected
+                    # this complete original command. Reuse only that join,
+                    # never another occurrence's safety or comparison result.
+                    self.ledger.charge(8, 1, self.check)
+                    original = first_command if slot[1] == 0 else second_command
+                else:
+                    self.ledger.charge(32 + 16 * len(self.commands), 4 + 2 * len(self.commands), self.check)
+                    original, match_count = None, 0
+                    for candidate in self.commands:
+                        if (same(candidate[0]['action'], meta['action'])
+                                and same(candidate[1]['task'], provider['task'])
+                                and same(candidate[1]['session'], provider['session'])):
+                            self.ledger.charge(8, 1, self.check)
+                            original, match_count = candidate, match_count + 1
+                    if match_count != 1:
+                        original = None
+                if original is None or not command_equal(facts, original):
+                    raise ValueError('Case full original command equality withheld')
+                if submit:
+                    job = jobs[slot[1]]
+                    if not same(response.get('id'), assigned_ids[slot[1]]) or not same(payload.get('script'), job.get('script')):
+                        raise ValueError('Case command full submitted SOURCE withheld')
+                elif block:
+                    self.ledger.charge(32 * len(jobs), 4 * len(jobs), self.check)
+                    if not command_sequence(payload.get('waiting_on_job_ids'), [j.get('id') for j in jobs]) or not jobs:
+                        raise ValueError('Case command actual waiting order withheld')
+                else:
+                    self.ledger.charge(512, 64, self.check)
+                    summary = ('E04_OK completed exit0', 'E04_REVIEW_REQUIRED_REFUSED no job submitted',
+                        'E04_EXIT7 completed exit7; operation nonzero', 'E04_TIMEOUT failed timeout exit-9',
+                        'E04_PAIR A completed exit0; B completed exit7', 'E04_PAIR A completed exit0; B completed exit7')[index]
+                    if not same(payload.get('summary'), summary):
+                        raise ValueError('Case command actual done summary withheld')
+                self.ledger.charge(16, 2, self.check)
+                slots.add(slot)
+            for number, job in enumerate(jobs):
+                self.ledger.charge(32, 4, self.check)
+                if assigned_ids[number] is not None and ('jobs', number, 'submit') not in slots:
+                    raise ValueError('Case required submit copy unavailable')
+            if (('block',) in slots or c['block_reached'] or c['snapshots']
+                    or len(starts) == 2 or c['final_reached']) and (len(jobs) != len(plan) or len(owners) != len(plan)):
+                raise ValueError('Case reached complete submit plan unavailable')
+            if (index != 1 and (c['block_reached'] or c['snapshots'] or len(starts) == 2 or c['final_reached']) and ('block',) not in slots
+                    or c['final_reached'] and ('final_callback',) not in slots):
+                raise ValueError('Case required completion copy unavailable')
+            # A genuine partial keeps absent stages absent. An oracle is
+            # recorded only after run_script's terminal row; S2 follows the
+            # pair first-terminal barrier. Missing those direct edges is not
+            # an earlier partial input.
+            early = ('first_terminal',) in c['snapshots']
+            if index >= 4 and (('live_s2', 'snapshot') in c['snapshots'] or ('final_snapshot',) in c['snapshots']
+                    or any(t == 'jobs' and n == 1 and h == 'oracle' for _,t,n,h,_,_ in c['rows'])) and not early:
+                raise ValueError('Case required first-terminal holder unavailable')
+            # The row-validation traversal below also selects the four pair
+            # holders and closes contiguous snapshot membership/order. No
+            # per-holder R-wide selection lists or snapshot rescans remain.
+            # These are current local references, never an index or a proof
+            # shared across occurrences. Keep the fixed admissions and every
+            # distinct full comparison after selection.
+            parked_task = current_task = parked_result = current_result = None
+            parked_tasks = current_tasks = parked_results = current_results = 0
+            if early:
+                self.ledger.charge(128, 16, self.check)
+                if index < 4 or len(jobs) != 2 or ('parked',) not in c['snapshots']:
+                    raise ValueError('Case first-terminal pair owner withheld')
+                self.ledger.charge(64 + 4 * sum(_evidence_utf8_size(jid, self.check) for jid in ids), 8, self.check)
+                ordered_ids = sorted(ids)
+            self.ledger.charge(64, 8, self.check)
+            terminals_first = terminals_second = 0
+            active_snapshot, snapshot_count = None, 0
+            task_count = job_count = 0
+            previous = None
+            for fact in c['rows']:
+                path, table, number, holder, row, links = fact
+                # Rows of each original snapshot are contiguous in the strict
+                # original traversal, regardless of its table/key order.
+                # Direct job facts have an INTEGER slot; snapshot rows do not.
+                self.ledger.charge(16, 2, self.check)
+                base = (('parked',) if holder == 'parked' else
+                        ('first_terminal',) if holder == 'first_terminal' else
+                        ('final_snapshot',) if holder == 'final_snapshot' else
+                        ('live_s2', 'snapshot')) if number is None else None
+                if base != active_snapshot:
+                    if active_snapshot is not None:
+                        if task_count != 1:
+                            raise ValueError('Case snapshot original task unavailable')
+                        if job_count != len(owners):
+                            raise ValueError('Case complete Store.jobs membership withheld')
+                    active_snapshot = base
+                    task_count = job_count = 0
+                    previous = None
+                    if base is not None:
+                        self.ledger.charge(64, 8, self.check)
+                        keys = c['snapshots'].get(base)
+                        if keys is None or len(keys) != 4 or set(keys) != {'tasks','results','audit','jobs'}:
+                            raise ValueError('Case complete Store.jobs holder withheld')
+                        self.ledger.charge(8, 1, self.check)
+                        snapshot_count += 1
+                if base is not None:
+                    if table == 'tasks':
+                        task_count += 1
+                    elif table == 'jobs':
+                        self.ledger.charge(8, 1, self.check)
+                        job_count += 1
+                        jid = row.get('id')
+                        if type(jid) is not str or previous is not None and jid <= previous:
+                            raise ValueError('Case original Store.jobs order withheld')
+                        previous = jid
+                if early:
+                    if table in ('tasks', 'results') and holder in ('parked', 'first_terminal'):
+                        self.ledger.charge(16, 2, self.check)
+                        if table == 'tasks' and holder == 'parked':
+                            parked_task, parked_tasks = fact, parked_tasks + 1
+                        elif table == 'tasks':
+                            current_task, current_tasks = fact, current_tasks + 1
+                        elif holder == 'parked':
+                            parked_result, parked_results = fact, parked_results + 1
+                        else:
+                            current_result, current_results = fact, current_results + 1
+                    elif table == 'audit' and holder == 'first_terminal' and row.get('action') == 'task_resumed_from_jobs':
+                        raise ValueError('Case first-terminal premature resume withheld')
+                # Preserve the former non-job precharge. Only the explicit
+                # match-list work actually removed for job rows loses its term.
+                self.ledger.charge(128 + (32 * len(owners) if table != 'jobs' else 0),
+                                   16 + (4 * len(owners) if table != 'jobs' else 0), self.check)
+                if table != 'jobs':
+                    required = self.sql_identity[table]
+                    if (any(type(row.get(k)) is not typ or typ is str and not row[k]
+                            or k == 'id' and typ is int and row[k] <= 0 for k,typ in required)
+                            or any(k not in row for k,_ in self.sql_columns[table])
+                            or not same(row['id'] if table == 'tasks' else row['task_id'], m['task'])
+                            or table == 'tasks' and (row.get('assigned_agent') != 'case_manager'
+                                or row.get('current_session_id') not in sessions)
+                            or table == 'results' and (row['agent'] != 'case_manager' or row['session_id'] not in sessions)
+                            or table == 'audit' and number is not None and row['payload'] is not None
+                                and 'job' not in links
+                            or 'job' in links and (type(links['job']) is not str or links['job'] not in ids
+                                or number is not None and not same(links['job'], jobs[number].get('id')))):
+                        raise ValueError('Case SQL complete owner join withheld')
+                    continue
+                # Existing submitted-id membership rejects foreign rows here.
+                # Full own validation occurs in the existing per-job traversal
+                # below, without constructing one owners match-list per row.
+                if (type(row.get('id')) is not str or row['id'] not in ids
+                        or number is not None and not same(row['id'], jobs[number].get('id'))):
+                    raise ValueError('Case SQL actual job withheld')
+                # Select each original job's owner in this sole row traversal.
+                # The six existing canonical references are already selected by
+                # original row events, including late/jobs-last input order.
+                self.ledger.charge(16, 2, self.check)
+                job_number = number if number is not None else (
+                    0 if first_owner is not None and same(row['id'], first_owner[0]) else 1)
+                owner = first_owner if job_number == 0 else second_owner
+                if owner is None or number is None and job_number == 1 and not same(row['id'], owner[0]):
+                    raise ValueError('Case SQL actual job withheld')
+                self.ledger.charge(32, 4, self.check)
+                jid, original_command = owner
+                proof, submitted, provider = original_command[2], original_command[4], original_command[1]
+                job = jobs[job_number]
+                if holder in ('running_browser', 'browser', 'action'):
+                    # Direct running, PRESENT action response and terminal body
+                    # have their own ordered public schema, different from each
+                    # independently validated Store.jobs peer.
+                    self.ledger.charge(64, 8, self.check)
+                    self.ledger.charge(16, 2, self.check)
+                    public_running = holder in ('running_browser', 'action')
+                    # Both occurrences are independently admitted below. Compare
+                    # their complete original rows once where both exist, with
+                    # no new reference/cache for action-absent historical Cases.
+                    if holder == 'running_browser' and 'action' in job:
+                        self.ledger.charge(32, 4, self.check)
+                        if not full_row(row, job['action']['response']):
+                            raise ValueError('Case action full running public equality withheld')
+                    public_original = ((c['running_first'] if job_number == 0 else c['running_second']) if public_running
+                                       else (c['oracle_first'] if job_number == 0 else c['oracle_second']))
+                    if public_original is None:
+                        raise ValueError('Case direct public running SQL unavailable')
+                    peer = public_original[4]
+                    if len(row) != len(_EvidenceSubmission.detail_fields) or len(peer) != len(self.job_columns):
+                        raise ValueError('Case direct public schema withheld')
+                    # Pay both original operand traversals, lookups and the
+                    # schema iterator before construction. Every scalar/key
+                    # comparison still uses the full builtin-type comparator.
+                    self.ledger.charge(32 * len(row) + 32 * len(peer) + 8,
+                                       4 * len(row) + 4 * len(peer) + 1, self.check)
+                    columns = iter(_EvidenceSubmission.detail_fields)
+                    for column in row:
+                        # Both iterators/lookups above already own these
+                        # references. Omit only same()'s forwarding slots;
+                        # keep complete original key/type/value byte costs.
+                        schema_column = next(columns)
+                        self.ledger.charge((_evidence_utf8_size(column, self.check) if type(column) is str else 8)
+                            + (_evidence_utf8_size(schema_column, self.check) if type(schema_column) is str else 8), 0, self.check)
+                        if type(column) is not type(schema_column) or column != schema_column or column not in peer:
+                            raise ValueError('Case direct public order withheld')
+                        left_value = row[column]
+                        if column in ('review_required', 'persistent'):
+                            if (type(left_value) is not bool or left_value is not False
+                                    or type(peer[column]) is not int or peer[column] != 0):
+                                raise ValueError('Case direct public declared flags withheld')
+                            right_value = proof[column]
+                        else:
+                            right_value = peer[column]
+                        self.ledger.charge((_evidence_utf8_size(left_value, self.check) if type(left_value) is str else 8)
+                            + (_evidence_utf8_size(right_value, self.check) if type(right_value) is str else 8), 0, self.check)
+                        if type(left_value) is not type(right_value) or left_value != right_value:
+                            if column in ('review_required', 'persistent'):
+                                raise ValueError('Case direct public declared flags withheld')
+                            raise ValueError('Case direct public full running equality withheld')
+                    if (any(type(row[k]) is not str or not row[k] for k in
+                            ('id','task_id','agent_name','title','rationale','script_text','interpreter','status','created_at'))
+                            or any(type(row[k]) not in (str,type(None)) for k in
+                                ('cwd_hint','reason','stdout_head','stderr_head','stdout_path','stderr_path','started_at',
+                                 'finished_at','reviewed_at','reviewed_by','reject_reason','cwd_resolved'))
+                            or any(type(row[k]) not in (int,type(None)) for k in ('exit_code','duration_ms','max_runtime_seconds'))
+                            or type(row['max_output_bytes']) is not int or row['max_output_bytes'] <= 0
+                            or public_running and (row['status'] != 'running' or any(row[k] is not None for k in
+                                ('exit_code','reason','stdout_head','stderr_head','duration_ms','finished_at')))
+                            or not public_running and (row['status'] != ('failed' if job['code'] == -9 else 'completed')
+                                or not same(row['exit_code'], job['code'])
+                                or row['reason'] != ('timeout' if job['code'] == -9 else None))
+                            or not same(row['script_text'], job['script'])
+                            or not same(row['agent_name'], provider['agent'])
+                            or any(not same(row['script_text' if k == 'script' else k], proof[k])
+                                   for k in _EvidenceSubmission.payload_fields if k != 'session_id')
+                            or any(not same(row[k], submitted[k]) for k in ('created_at','started_at','cwd_resolved'))):
+                        raise ValueError('Case direct public full submitted running row withheld')
+                    if not public_running:
+                        self.ledger.charge(128 + 4 * _evidence_utf8_size(jid, self.check), 16, self.check)
+                        browser = job.get('browser')
+                        if (browser is None or len(browser) != 4
+                                or not same(browser.get('screenshot'), 'e04-' + jid + '.png')
+                                or type(browser.get('at')) not in (int, float) or type(browser['at']) is float and not math.isfinite(browser['at'])
+                                or not same(links.get('source_digest'), job['script_sha256'])):
+                            raise ValueError('Case terminal browser original holder withheld')
+                        self._case_browser_text(browser['text'], row['script_text'])
+                    # The same SQL occurrence independently validates owner,
+                    # state, paths and all Store27 keys in this close traversal,
+                    # even when it follows this public occurrence in the input.
+                    continue
+                # Select the same original peer before the column traversal.
+                # The independent Store27 and peer order/value comparisons
+                # now share this row's ONE original-key traversal.
+                original = None
+                if holder not in ('running', 'oracle'):
+                    self.ledger.charge(24, 3, self.check)
+                    if job_number == 0:
+                        running_original, oracle_original, pending_original = c['running_first'], c['oracle_first'], c['pending_first']
+                    else:
+                        running_original, oracle_original, pending_original = c['running_second'], c['oracle_second'], c['pending_second']
+                    comparing_running = holder in ('pending', 'parked') or holder == 'first_terminal' and job_number == 1
+                    original = running_original if comparing_running else oracle_original
+                    if comparing_running and running_original is None:
+                        raise ValueError('Case required running row unavailable')
+                    if holder == 'first_terminal':
+                        original = pending_original if comparing_running else oracle_original
+                        if original is None:
+                            raise ValueError('Case first-terminal original row unavailable')
+                        if comparing_running and original[0][3] != job.get('last_pending'):
+                            raise ValueError('Case first-terminal last pending row unavailable')
+                # Every selected row independently compares its actual original
+                # keys with the accepted SELECT schema, even without a peer.
+                if len(row) != len(self.job_columns):
+                    raise ValueError('Case original Store.jobs schema withheld')
+                self.ledger.charge(16 * len(row) + 8, 2 * len(row) + 1, self.check)
+                columns = iter(self.job_columns)
+                if original is not None:
+                    self.ledger.charge(8, 1, self.check)
+                    peer = original[4]
+                    if len(row) != len(peer):
+                        self.ledger.charge(32 * (len(row) + len(peer)), 4 * (len(row) + len(peer)), self.check)
+                        raise ValueError('Case complete original row equality withheld')
+                    # The separate full_row left traversal has disappeared
+                    # (16B/2facts per entry). Keep BOTH value lookups, the
+                    # complete right traversal/iterator, and every original
+                    # key/type/value/byte comparison. No comparison is inferred
+                    # from agreement with the independently checked schema.
+                    self.ledger.charge(16 + 8 * len(row) + 24 * len(peer),
+                                       2 + len(row) + 3 * len(peer), self.check)
+                    peer_keys = iter(peer)
+                for column in row:
+                    schema_column = next(columns)
+                    # All three original iterators/lookups keep their debits.
+                    # Inline comparison removes forwarding frames only, with
+                    # independent complete schema/peer key and value checks.
+                    self.ledger.charge((_evidence_utf8_size(column, self.check) if type(column) is str else 8)
+                        + (_evidence_utf8_size(schema_column, self.check) if type(schema_column) is str else 8), 0, self.check)
+                    if type(column) is not type(schema_column) or column != schema_column:
+                        raise ValueError('Case original Store.jobs order withheld')
+                    if original is not None:
+                        other_column = next(peer_keys)
+                        self.ledger.charge((_evidence_utf8_size(column, self.check) if type(column) is str else 8)
+                            + (_evidence_utf8_size(other_column, self.check) if type(other_column) is str else 8), 0, self.check)
+                        if type(column) is not type(other_column) or column != other_column:
+                            raise ValueError('Case complete original row equality withheld')
+                        left_value, right_value = row[column], peer[other_column]
+                        self.ledger.charge((_evidence_utf8_size(left_value, self.check) if type(left_value) is str else 8)
+                            + (_evidence_utf8_size(right_value, self.check) if type(right_value) is str else 8), 0, self.check)
+                        if type(left_value) is not type(right_value) or left_value != right_value:
+                            raise ValueError('Case complete original row equality withheld')
+                if (any(k not in row for k in self.job_columns)
+                        or any(type(row.get(k)) is not str or not row[k] for k in
+                               ('id','task_id','agent_name','title','rationale','script_text','interpreter','status','created_at'))
+                        or any(type(row.get(k)) not in (str,type(None)) for k in
+                               ('cwd_hint','reason','stdout_head','stderr_head','stdout_path','stderr_path','started_at','finished_at',
+                                'reviewed_at','reviewed_by','reject_reason','cwd_resolved'))
+                        or any(type(row.get(k)) not in (int,type(None)) for k in ('exit_code','duration_ms','max_runtime_seconds'))
+                        or any(type(row.get(k)) is not int for k in ('review_required','persistent','max_output_bytes'))
+                        or row['max_output_bytes'] <= 0
+                        or not same(row.get('agent_name'), provider['agent'])
+                        or any(not same(row.get('script_text' if k == 'script' else k),
+                                        int(proof[k]) if k in ('review_required','persistent') else proof[k])
+                               for k in _EvidenceSubmission.payload_fields if k != 'session_id')
+                        or any(not same(row.get(k), submitted[k]) for k in ('created_at','started_at','cwd_resolved'))):
+                    raise ValueError('Case SQL full submitted row withheld')
+                self.ledger.charge(256 + 4 * (_evidence_utf8_size(manifest['root'], self.check)
+                    + _evidence_utf8_size(jid, self.check)), 8, self.check)
+                if (row['reviewed_by'] != 'case_manager' or not row['reviewed_at'] or not row['cwd_resolved']
+                        or any(not same(row[k + '_path'], manifest['root'] + '/runtime/orgs/alpha/jobs/' + jid + suffix)
+                               for k,suffix in (('stdout','.out'),('stderr','.err')))):
+                    raise ValueError('Case SQL original execution owner withheld')
+                running = holder in ('running','pending','parked') or holder == 'first_terminal' and same(jid, jobs[1].get('id'))
+                code = job['code']
+                if running:
+                    if row['status'] != 'running' or any(row[k] is not None for k in
+                            ('exit_code','reason','stdout_head','stderr_head','duration_ms','finished_at')):
+                        raise ValueError('Case SQL original running state withheld')
+                elif (row['status'] != ('failed' if code == -9 else 'completed') or not same(row['exit_code'], code)
+                        or row['reason'] != ('timeout' if code == -9 else None)
+                        or not row['finished_at'] or type(row['duration_ms']) is not int or row['duration_ms'] < 0
+                        or any(k in job and not same(row[stream + '_head'], job[k]) for k,stream in (('out','stdout'),('err','stderr')))):
+                    raise ValueError('Case SQL original terminal state withheld')
+                if number is not None:
+                    if holder == 'terminal':
+                        self.ledger.charge(8, 1, self.check)
+                        if job_number == 0:
+                            terminals_first += 1
+                        else:
+                            terminals_second += 1
+            if active_snapshot is not None:
+                if task_count != 1:
+                    raise ValueError('Case snapshot original task unavailable')
+                if job_count != len(owners):
+                    raise ValueError('Case complete Store.jobs membership withheld')
+            # An empty snapshot has no row event and still must refuse. Strict
+            # original keys prevent a holder from reappearing after closure.
+            if snapshot_count != len(c['snapshots']):
+                raise ValueError('Case snapshot original task unavailable')
+            if early:
+                for table in ('tasks', 'results'):
+                    parked, current, parked_count, current_count = (
+                        (parked_task, current_task, parked_tasks, current_tasks) if table == 'tasks' else
+                        (parked_result, current_result, parked_results, current_results))
+                    if parked_count != 1 or current_count != 1 or not full_row(parked[4], current[4]):
+                        raise ValueError('Case complete parked row equality withheld')
+                    row, links = current[4:]
+                    if table == 'tasks':
+                        if (row.get('status') != 'in_progress' or row.get('current_session_id') != starts[0]['session']
+                                or row.get('block_kind') != 'blocked_on_job'
+                                or not same(row.get('orchestration_step_count'), 1)
+                                or links.get('blocked') != ordered_ids):
+                            raise ValueError('Case original parked task withheld')
+                    elif row.get('status') != 'blocked' or row.get('session_id') != starts[0]['session']:
+                        raise ValueError('Case original parked S1 result withheld')
+            # Canonical references were retained at original row opening.
+            # A genuine pre-submit partial still has no owner/rows.
+            self.ledger.charge(64, 8, self.check)
+            for number, owner in ((0, first_owner), (1, second_owner)):
+                self.ledger.charge(16, 2, self.check)
+                if owner is None:
+                    continue
+                self.ledger.charge(16, 2, self.check)
+                if number == 0:
+                    terminal_count, oracle_original = terminals_first, c['oracle_first']
+                else:
+                    terminal_count, oracle_original = terminals_second, c['oracle_second']
+                self.ledger.charge(16, 2, self.check)
+                running_original = c['running_first'] if number == 0 else c['running_second']
+                pending_original = c['pending_first'] if number == 0 else c['pending_second']
+                if (terminal_count or oracle_original is not None or pending_original is not None
+                        or c['snapshots'] or ('block',) in slots or len(starts) == 2 or c['final_reached']) and running_original is None:
+                    raise ValueError('Case required running row unavailable')
+                if (('live_s2', 'snapshot') in c['snapshots'] or ('final_snapshot',) in c['snapshots']
+                        or oracle_original is not None) and terminal_count != 1:
+                    raise ValueError('Case required terminal row unavailable')
+
+    def snapshot_event(self, path: tuple, kind: str, value: object) -> None:
+        """Active entry/row facts only; late selectors close before publication.
+
+        Each selected scalar is decoded once in scan mode on the original
+        allowance. No decoded tree, row index, cross-member cache or new read.
+        """
+        if len(path) == 1:
+            return
+        if len(path) == 2 and kind == 'object':
+            self.ledger.charge(64, 8, self.check)
+            self.snapshot_entry = dict(keys=[], tags=[], tables=[], used=False, shaped=False)
+        entry = self.snapshot_entry
+        if entry is None:
+            return  # Ordinary non-record durable values gain no selected edge.
+        if len(path) == 2 and kind == 'key':
+            self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
+            entry['keys'].append(value)
+        if len(path) == 3 and path[2] in ('jobs_final_org', 'threads_final_org') and kind not in ('key', 'end-object', 'end-array'):
+            if kind != 'scalar' or type(value) is not str or value not in ('alpha', 'beta'):
+                raise ValueError('snapshot org selector withheld')
+            self.ledger.charge(24, 3, self.check)
+            entry['tags'].append(path[2])
+        if len(path) >= 3 and path[2] == 'snapshot':
+            if len(path) == 3:
+                if kind == 'object':
+                    entry['shaped'] = True
+                elif kind == 'key':
+                    self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
+                    entry['tables'].append(value)
+            elif path[3] in self.sql_columns:
+                entry['used'] = True
+                if len(path) == 4:
+                    if kind not in ('array', 'end-array'):
+                        raise ValueError('snapshot table shape withheld')
+                elif len(path) == 5:
+                    if kind == 'object':
+                        self.ledger.charge(32, 4, self.check)
+                        self.snapshot_row = 0  # Fixed required-field bitset, no row value map.
+                    elif kind == 'end-object':
+                        count = len(self.sql_identity[path[3]]) + len(self.sql_columns[path[3]])
+                        if self.snapshot_row != (1 << count) - 1:
+                            raise ValueError('snapshot complete row identity withheld')
+                        self.snapshot_row = None
+                    elif kind != 'key':
+                        raise ValueError('snapshot row shape withheld')
+                elif len(path) == 6:
+                    if kind != 'scalar' or type(value) not in (str, int, float, type(None)):
+                        raise ValueError('snapshot SQL scalar withheld')
+                    if self.snapshot_row is None:
+                        raise ValueError('snapshot row owner withheld')
+                    comparisons = len(self.sql_identity[path[3]]) + len(self.sql_columns[path[3]])
+                    self.ledger.charge(16 * comparisons, comparisons, self.check)
+                    for index, (name, expected) in enumerate(self.sql_identity[path[3]]):
+                        if path[5] == name:
+                            if type(value) is not expected or expected is str and not value or name == 'id' and expected is int and value <= 0:
+                                raise ValueError('snapshot SQL identity type withheld')
+                            self.snapshot_row |= 1 << index
+                    for index, (name, top) in enumerate(self.sql_columns[path[3]], len(self.sql_identity[path[3]])):
+                        if path[5] != name:
+                            continue
+                        self.snapshot_row |= 1 << index
+                        if value is not None:
+                            if type(value) is not str:
+                                raise ValueError('snapshot SQL column type withheld')
+                            def scalar(text: str) -> None:
+                                if '\\' in text:
+                                    raise ValueError('snapshot decoded representation withheld')
+                                _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
+                            _evidence_original(value, self.context, self.ledger, self.check, self.sanitize)
+                            _EvidenceJSON(value, self.ledger, self.check).scan(
+                                top, scalar, depth=self.depth + len(path) + 1,
+                                context=self.context, sanitize=self.sanitize)
+                else:
+                    raise ValueError('snapshot nested SQL row withheld')
+        if len(path) == 2 and kind == 'end-object':
+            if entry['used'] or entry['tags']:
+                self.ledger.charge(32 * (len(entry['keys']) + len(entry['tables'])),
+                                   2 * (len(entry['keys']) + len(entry['tables'])), self.check)
+                if (type(path[1]) is not int or len(entry['tags']) != 1 or len(entry['keys']) != 2
+                        or set(entry['keys']) != {entry['tags'][0], 'snapshot'}
+                        or not entry['shaped'] or len(entry['tables']) != 3
+                        or set(entry['tables']) != set(self.sql_columns)):
+                    raise ValueError('snapshot enclosing owner withheld')
+                self.snapshots = True
+            self.snapshot_entry = self.snapshot_row = None
+
+    def attempt_event(self, path: tuple, kind: str, value: object) -> None:
+        """Only source-owned submit-plan facts; no raw attempt value tree."""
+        if len(path) == 1:
+            if kind not in ('array', 'end-array'):
+                raise ValueError('attempt ledger shape withheld')
+            return
+        if len(path) == 2 and kind == 'object':
+            if self.attempt is not None:
+                raise ValueError('attempt overlapping owner withheld')
+            self.ledger.charge(192, 24, self.check)
+            self.attempt = dict(metadata={}, provider={}, instruction={}, payload={}, decision={}, waits=[], shapes={}, invalid=False)
+        if self.attempt is None:
+            raise ValueError('attempt record shape withheld')
+        a, local = self.attempt, path[2:]
+        if kind in ('object', 'array'):
+            if local in ((), ('provider',), ('instruction',), ('instruction', 'payload'),
+                         ('instruction','payload','decision'), ('instruction','payload','waiting_on_job_ids')):
+                self.ledger.charge(24, 3, self.check)
+                a['shapes'][local] = [kind, []]
+            else:
+                a['invalid'] = True
+        elif kind == 'key' and local in a['shapes']:
+            self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
+            a['shapes'][local][1].append(value)
+        elif kind == 'scalar':
+            target = None
+            if len(local) == 1 and local[0] in ('entered', 'wire_begin', 'wire_end', 'finished', 'command_index'):
+                target = a['metadata']
+            elif len(local) == 2 and local[0] == 'provider' and local[1] in ('task','session','agent','org','pid','pid_start','pgid'):
+                target = a['provider']
+            elif len(local) == 2 and local[0] == 'instruction' and local[1] in ('action','deadline','execution_deadline','operation','job'):
+                target = a['instruction']
+            elif len(local) == 3 and local[:2] == ('instruction', 'payload') and local[2] in _EvidenceSubmission.plan_fields + _EvidenceSubmission.completion_fields:
+                target = a['payload']
+            elif len(local) == 4 and local[:3] == ('instruction','payload','decision') and local[3] in ('action','summary'):
+                target = a['decision']
+            elif len(local) == 4 and local[:3] == ('instruction','payload','waiting_on_job_ids') and local[3] == len(a['waits']):
+                self.ledger.charge(16 + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+                a['waits'].append(value)
+            if target is not None:
+                self.ledger.charge(16 + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+                target[local[-1]] = value
+        if len(path) == 2 and kind == 'end-object':
+            if (a['instruction'].get('action') in ('jobs-submit', 'jobs-refuse-review')
+                    or any(k in a['metadata'] for k in ('command_index','wire_end','finished'))):
+                self.ledger.charge(8, 1, self.check)
+                self.attempts.append(a)
+            elif type(a['payload'].get('script')) is str:
+                # No familiar script key or unsupported action grants a stage.
+                text = a['payload']['script']
+                if '\\' in text:
+                    raise ValueError('attempt ordinary representation withheld')
+                _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
+            self.attempt = None
+
+    def close_attempts(self) -> bool:
+        """Resolve every retained attempt once before root publication."""
+        self.ledger.charge(16, 1, self.check)
+        seen = set()
+        for a in self.attempts:
+            self.ledger.charge(2048, 256, self.check)
+            def shape(path: tuple, keys: tuple) -> bool:
+                got = a['shapes'].get(path)
+                return got is not None and got[0] == 'object' and len(got[1]) == len(keys) and set(got[1]) == set(keys)
+            m, p, instruction, payload = (a[k] for k in ('metadata','provider','instruction','payload'))
+            if (a['invalid'] or not shape((), ('provider','instruction','entered','wire_begin','wire_end','finished','command_index'))
+                    or not shape(('provider',), ('task','session','agent','org','pid','pid_start','pgid'))
+                    or type(m.get('command_index')) is not int or m['command_index'] < 0 or m['command_index'] in seen
+                    or m['command_index'] not in self.submitted
+                    or any(type(m.get(k)) is not int or m[k] < 0 for k in ('wire_begin','wire_end'))
+                    or m['wire_end'] < m['wire_begin']
+                    or any(type(m.get(k)) not in (int,float) or not math.isfinite(m[k]) or m[k] < 0 for k in ('entered','finished'))
+                    or any(type(instruction.get(k)) not in (int,float) or not math.isfinite(instruction[k]) or instruction[k] < 0
+                           for k in ('deadline','execution_deadline'))):
+                raise ValueError('attempt producer identity withheld')
+            provider, submitted, action, entered, finished, end, wire_count, operation, job, order = self.submitted[m['command_index']]
+            reading = action == 'jobs-read'
+            instruction_fields = ('action','deadline','execution_deadline') + (('operation','job') if reading else ('payload',))
+            if not shape(('instruction',), instruction_fields):
+                raise ValueError('attempt closed instruction withheld')
+            self.ledger.charge(128 + 32 * len(self.starts), 16 + 4 * len(self.starts), self.check)
+            def same(left: object, right: object) -> bool:
+                self.ledger.charge(32 + sum(_evidence_utf8_size(v, self.check) if type(v) is str else 8
+                                          for v in (left,right)), 2, self.check)
+                return type(left) is type(right) and left == right
+            starts = [s for s in self.starts if same(s.get('session'), p.get('session'))]
+            if (len(starts) != 1 or set(p) != set(starts[0])
+                    or any(not same(p[k], starts[0][k]) for k in p)
+                    or any(not same(p.get(k), v) for k,v in provider.items())
+                    or instruction['action'] != action or type(instruction['execution_deadline']) is not type(end)
+                    or instruction['execution_deadline'] != end
+                    or instruction['deadline'] != end + 1
+                    or not m['entered'] <= entered <= finished <= m['finished'] < instruction['deadline']
+                    or m['wire_end'] - m['wire_begin'] != wire_count):
+                raise ValueError('attempt complete owner join withheld')
+            if reading:
+                if not same(instruction.get('operation'), operation) or not same(instruction.get('job'), job):
+                    raise ValueError('attempt exact read plan withheld')
+            elif action in ('jobs-submit','jobs-refuse-review'):
+                if not shape(('instruction','payload'), _EvidenceSubmission.plan_fields):
+                    raise ValueError('attempt closed submit plan withheld')
+            else:
+                keys = [k for k in order if k not in ('task_id','session_id','agent')]
+                if not shape(('instruction','payload'), tuple(keys)):
+                    raise ValueError('attempt closed completion plan withheld')
+                if 'decision' in keys and submitted.get('decision') is not None:
+                    if not shape(('instruction','payload','decision'), ('action','summary')):
+                        raise ValueError('attempt closed done shape withheld')
+                    payload['decision'] = a['decision']
+                if 'waiting_on_job_ids' in keys:
+                    got = a['shapes'].get(('instruction','payload','waiting_on_job_ids'))
+                    if got is None or got[0] != 'array':
+                        raise ValueError('attempt closed waiting shape withheld')
+                    payload['waiting_on_job_ids'] = a['waits']
+            for key in (() if reading else _EvidenceSubmission.plan_fields if action in ('jobs-submit','jobs-refuse-review') else keys):
+                expected, actual = submitted[key], payload.get(key)
+                def equal(left: object, right: object) -> bool:
+                    self.ledger.charge(32, 4, self.check)
+                    if type(left) is not type(right):
+                        return False
+                    if type(right) is dict:
+                        return list(left) == list(right) and all(equal(left[k], right[k]) for k in right)
+                    if type(right) is list:
+                        return len(left) == len(right) and all(equal(x, y) for x, y in zip(left, right))
+                    return same(left, right)
+                if not equal(actual, expected):
+                    raise ValueError('attempt complete payload equality withheld')
+            if action in ('jobs-submit','jobs-refuse-review'):
+                _evidence_python(payload['script'], self.context, self.ledger, self.check, self.sanitize, self.depth + 5)
+            self.ledger.charge(16, 1, self.check)
+            seen.add(m['command_index'])
+        return bool(self.attempts)
+
+    def event(self, path: tuple, kind: str, value: object) -> None:
+        self.ledger.charge(8, 1, self.check)
+        if path[0] == 'durable':
+            self.snapshot_event(path, kind, value)
+            if len(path) >= 3 and path[2] == 'jobs_cases':
+                if len(path) == 3:
+                    if kind not in ('array', 'end-array'):
+                        raise ValueError('Case ledger shape withheld')
+                else:
+                    self.case_event(path[4:], kind, value)
+        if path[0] == 'provider_attempts':
+            self.attempt_event(path, kind, value)
+        elif path[0] == 'provider_commands':
+            if len(path) == 1:
+                if kind not in ('array', 'end-array'):
+                    raise ValueError('submission ledger shape withheld')
+                return
+            if len(path) == 2 and kind == 'object':
+                if self.current is not None:
+                    raise ValueError('submission overlapping owner withheld')
+                self.command_index = path[1]
+                self.current = _EvidenceSubmission(self, self.depth + 2)
+            if self.current is None:
+                raise ValueError('submission command shape withheld')
+            closing = len(path) == 2 and kind == 'end-object'
+            if not closing:
+                self.current.event(path[2:], kind, value)
+            if closing:
+                try:
+                    selected = self.current.close()
+                    self.captured = selected or self.captured
+                finally:
+                    self.current.release()
+                    self.current = None
+        elif path[0] == 'starts':
+            if len(path) == 1 and kind not in ('array', 'end-array'):
+                raise ValueError('original starts array withheld')
+            if len(path) == 2 and (type(path[1]) is not int or kind not in ('object', 'key', 'end-object')):
+                raise ValueError('original start member shape withheld')
+            if len(path) == 2 and kind == 'object':
+                self.ledger.charge(64, 8, self.check)
+                self.start = {}
+            elif len(path) == 2 and kind == 'key' and self.start is not None:
+                self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
+                self.start[value] = None
+            elif len(path) == 3 and kind == 'scalar' and self.start is not None:
+                self.ledger.charge(16 + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+                self.start[path[2]] = value
+            elif len(path) == 2 and kind == 'end-object' and self.start is not None:
+                self.ledger.charge(8, 1, self.check)
+                self.starts.append(self.start); self.start = None
+        elif path[0] == 'durable' and len(path) >= 3 and path[2] == 'executable_manifest':
+            if len(path) == 3 and kind == 'object':
+                self.ledger.charge(64, 8, self.check)
+                self.manifest = {}
+            elif len(path) == 3 and kind == 'key' and self.manifest is not None:
+                self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
+                self.manifest[value] = None
+            elif len(path) == 4 and path[3] == 'stubs' and self.manifest is not None:
+                if kind == 'object':
+                    self.manifest['stubs'] = True
+                elif kind not in ('key', 'end-object'):
+                    raise ValueError('submission manifest stubs object withheld')
+            elif len(path) == 4 and kind == 'scalar' and self.manifest is not None:
+                self.ledger.charge(16 + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+                self.manifest[path[3]] = value
+            elif len(path) == 3 and kind == 'end-object' and self.manifest is not None:
+                self.ledger.charge(8, 1, self.check)
+                self.manifests.append(self.manifest); self.manifest = None
+
+    def close(self) -> bool:
+        try:
+            attempts = self.close_attempts()
+            self.ledger.charge(8 * len(self.cases), len(self.cases), self.check)
+            case_used = any(c['used'] for c in self.cases)
+            if not self.captured and not attempts and not self.snapshots and not case_used:
+                return False
+            if len(self.manifests) != 1:
+                raise ValueError('submission executable owner withheld')
+            manifest = self.manifests[0]
+            if (set(manifest) != {'root', 'source', 'revision', 'python', 'callback', 'callback_sha256', 'stubs'}
+                    or manifest['stubs'] is not True):
+                raise ValueError('submission manifest identity withheld')
+            if self.identity is None or self.identity != (manifest['root'], manifest['revision']):
+                raise ValueError('submission original caller identity withheld')
+            root = manifest['root']
+            self.ledger.charge(1024 + 4 * _evidence_utf8_size(root, self.check), 128, self.check)
+            if (type(root) is not str or not root.startswith('/') or root.endswith(('/', '/.', '/..')) or '//' in root or '/./' in root or '/../' in root
+                    or '\\' in root or '\x00' in root or manifest['python'] != root + '/venv/bin/python'
+                    or manifest['callback'] != root + '/bin/happyranch'
+                    or type(manifest['source']) is not str or not manifest['source'].startswith('/')
+                    or not _failure_source(manifest['revision'])):
+                raise ValueError('submission executable identity withheld')
+            if (self.snapshots or case_used) and (type(manifest['callback_sha256']) is not str
+                    or len(manifest['callback_sha256']) != 64
+                    or any(c not in '0123456789abcdef' for c in manifest['callback_sha256'])
+                    or manifest['source'].endswith(('/', '/.', '/..'))
+                    or any(part in manifest['source'] for part in ('//', '/./', '/../'))
+                    or '\\' in manifest['source'] or '\x00' in manifest['source']):
+                raise ValueError('snapshot executable source withheld')
+            children, jobs, closed = set(), set(), set()
+            for p, source_sha, python, callback_sha256, argv, path, sha256, child_pid, job_id, read in self.pending:
+                self.ledger.charge(32, 4, self.check)
+                if child_pid in children or read is None and job_id is not None and job_id in jobs or p['session'] in closed:
+                    raise ValueError('submission duplicate identity withheld')
+                children.add(child_pid)
+                if read is None and job_id is not None:
+                    jobs.add(job_id)
+                self.ledger.charge(160 + 16 * len(self.starts), 20 + 2 * len(self.starts), self.check)
+                self.ledger.charge(128 + 2 * sum(_evidence_utf8_size(v, self.check) for v in argv if type(v) is str),
+                                   16 + len(argv), self.check)
+                if read is None or read in ('jobs-block', 'jobs-final'):
+                    expected_argv = ([manifest['callback'], 'jobs', 'submit'] if read is None else [manifest['callback'], 'report-completion'])
+                    expected_argv += ['--org', p['org'], '--from-file', path]
+                    if read is None:
+                        expected_argv += ['--json']
+                    else:
+                        self.ledger.charge(16, 1, self.check)
+                        closed.add(p['session'])
+                    if path != root + '/coord/' + sha256 + '.json':
+                        raise ValueError('submission original path withheld')
+                else:
+                    expected_argv = [manifest['callback'], 'jobs', 'show' if read == 'receipt' else read, job_id, '--org', p['org']]
+                    if read in ('receipt', 'output'):
+                        expected_argv += ['--json']
+                    if read == 'wait':
+                        expected_argv += ['--timeout-seconds', '1']
+                    expected_argv += ['--task-id', p['task'], '--session-id', p['session']]
+                matching, match_count = None, 0
+                for start in self.starts:
+                    if start.get('session') == p['session']:
+                        self.ledger.charge(8, 1, self.check)
+                        matching, match_count = start, match_count + 1
+                if (match_count != 1 or set(matching) != {'task', 'session', 'agent', 'org', 'pid', 'pid_start', 'pgid'}
+                        or any(type(matching[k]) is not type(v) or matching[k] != v for k, v in p.items())
+                        or type(matching['pid_start']) is not str or not matching['pid_start'].isdigit()
+                        or type(matching['pgid']) is not int or matching['pgid'] != p['pid']
+                        or source_sha != manifest['revision'] or python != manifest['python']
+                        or callback_sha256 != manifest['callback_sha256']
+                        or argv != expected_argv
+                        or any(type(v) is not str for v in argv)):
+                    raise ValueError('submission complete owner join withheld')
+            self.close_cases(manifest)
+            for task, job_id, detail in self.read_jobs:
+                found = False
+                for proof_task, proof_job, proof in self.job_proofs:
+                    self.ledger.charge(32, 4, self.check)
+                    if proof_task != task or proof_job != job_id:
+                        continue
+                    found = True
+                    if detail is not None:
+                        # Submit proofs are the existing closed command owner;
+                        # receipt proofs already own their original scalar map.
+                        self.ledger.charge(32, 4, self.check)
+                        submitted = type(proof) is tuple
+                        source = proof[2] if submitted else proof
+                        for key in source:
+                            if submitted and key == 'session_id':
+                                continue
+                            value = source[key]
+                            column = 'script_text' if submitted and key == 'script' else key
+                            other = detail.get(column)
+                            self.ledger.charge(32 + (_evidence_utf8_size(value, self.check) + _evidence_utf8_size(other, self.check)
+                                if type(value) is str and type(other) is str else 16), 2, self.check)
+                            if type(other) is not type(value) or other != value:
+                                raise ValueError('read original job proof equality withheld')
+                        if submitted:
+                            value = proof[1]['agent']
+                            other = detail.get('agent_name')
+                            self.ledger.charge(32 + (_evidence_utf8_size(value, self.check) + _evidence_utf8_size(other, self.check)
+                                if type(value) is str and type(other) is str else 16), 2, self.check)
+                            if type(other) is not type(value) or other != value:
+                                raise ValueError('read original job proof equality withheld')
+                if not found:
+                    raise ValueError('read original job proof unavailable')
+            return True
+        finally:
+            self.release()
+
+    def release(self) -> None:
+        if self.current is not None:
+            self.current.release(); self.current = None
+        self.pending.clear(); self.starts.clear(); self.manifests.clear()
+        self.attempts.clear(); self.submitted.clear(); self.attempt = None
+        self.job_proofs.clear(); self.read_jobs.clear()
+        self.cases.clear(); self.case = None
+        self.commands.clear()
+        if self.case_command is not None:
+            self.case_command.release(); self.case_command = None
+        self.start = self.manifest = None
+        self.snapshot_entry = self.snapshot_row = None
+
+
+class _EvidenceJSON:
+    """Indexed strict grammar for required trees AND registered raw scans.
+
+    Scan mode retains only active key/syntax state and the current scalar.
+    Scalar preflight/decode is shared; no raw tree, full token plan or reparse.
+    """
+    def __init__(self, text: str, ledger: _EvidenceLedger, check: Callable[[], None]) -> None:
+        self.text, self.ledger, self.check, self.index = text, ledger, check, 0
+        self.end = len(text)
+        self.relay_captured = False
+        ledger.charge(8, 1, check)
+        self.original_size = len(text)
+
+    def error(self) -> None:
+        # Do not retain the whole refused image in a JSONDecodeError diagnostic.
+        raise json.JSONDecodeError("invalid evidence JSON", "", 0)
+
+    def whitespace(self) -> None:
+        while self.index < self.end and self.text[self.index] in " \t\r\n":
+            if self.index % 4096 == 0:
+                self.check()
+            self.index += 1
+
+    def codepoint(self, index: int) -> tuple[int, int]:
+        if index >= self.end:
+            self.error()
+        code = ord(self.text[index])
+        index += 1
+        if code == 92:
+            if index >= self.end:
+                self.error()
+            escape = self.text[index]
+            index += 1
+            if escape in '"\\/bfnrt':
+                return ord('"\\/\b\f\n\r\t'['"\\/bfnrt'.index(escape)]), index
+            if escape != "u":
+                self.error()
+            code, index = self.hex4(index)
+            if 0xD800 <= code <= 0xDBFF:
+                if index + 2 > self.end or self.text[index] != "\\" or self.text[index + 1] != "u":
+                    self.error()
+                low, index = self.hex4(index + 2)
+                if not 0xDC00 <= low <= 0xDFFF:
+                    self.error()
+                code = 0x10000 + ((code - 0xD800) << 10) + low - 0xDC00
+            elif 0xDC00 <= code <= 0xDFFF:
+                self.error()
+        elif code < 32 or 0xD800 <= code <= 0xDFFF:
+            self.error()
+        return code, index
+
+    def hex4(self, index: int) -> tuple[int, int]:
+        code = 0
+        for _ in range(4):
+            if index >= self.end or self.text[index] not in "0123456789abcdefABCDEF":
+                self.error()
+            code = code * 16 + int(self.text[index], 16)
+            index += 1
+        return code, index
+
+    def raw_scalar(self, value: str) -> None:
+        self.check()
+        if "\\" in value:
+            raise ValueError("raw decoded representation withheld")
+        # Required replacement is an ordinary WHOLE-member
+        # refusal, before the independent promised safe pass.
+        for secret in self.raw_context:
+            self.ledger.charge(8, 1, self.check)
+            if secret in value:
+                raise ValueError("raw decoded content withheld")
+        size = _evidence_utf8_size(value, self.check)
+        # THIS decoded occurrence already rejected every
+        # original secret. Its expected safe value is
+        # the complete original, without a virtual plan
+        # or either comparison-span holder. Keep every
+        # actual pass, output reference and comparison.
+        self.ledger.charge(16, 0, self.check)
+        for secret in self.raw_context:
+            self.ledger.charge(size, 1, self.check)
+        self.ledger.reserve(0, 1, self.check)
+        try:
+            safe = self.raw_sanitize(value)
+            try:
+                actual = _evidence_utf8_size(safe, self.check, size)
+            except ValueError as exc:
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+            self.ledger.charge(64, 0, self.check)
+            if actual != size or safe != value or any(secret in safe for secret in self.raw_context):
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+            self.check()
+        finally:
+            self.ledger.settle(0, 0)
+        self.check()  # Keep the former final debit's eligibility boundary.
+
+    def string(self) -> str:
+        if self.index >= self.end or self.text[self.index] != '"':
+            self.error()
+        start = self.index + 1
+        cursor, size = start, 0
+        chunk_size = slots = pieces = 0
+        literal = False
+        while cursor < self.end and self.text[cursor] != '"':
+            if cursor % 4096 == 0:
+                self.check()
+            escaped = self.text[cursor] == "\\"
+            if escaped:
+                code, cursor = self.codepoint(cursor)
+            else:
+                # The current loop already owns this original character and
+                # cursor. Avoid a method call and returned pair per ordinary
+                # glyph; keep exactly codepoint()'s strict original checks.
+                code = ord(self.text[cursor])
+                cursor += 1
+                if code < 32 or 0xD800 <= code <= 0xDFFF:
+                    self.error()
+            width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+            if not escaped and width > 1:
+                # Outside strings accepted JSON syntax is ASCII. Original
+                # codepoint length plus these raw width deltas therefore
+                # counts the full image in this existing preflight. Escaped
+                # Unicode contributes only its original ASCII spelling here.
+                self.ledger.charge(8, 1, self.check)
+                self.original_size += width - 1
+            if size <= 1021 < size + width:
+                # Before the first chunk reset, its original fragment state
+                # identifies whether the whole prefix was unescaped. Admit
+                # this extra long-scalar state BEFORE assigning it. Short
+                # scalars create no new flag/fact. No other occurrence helps.
+                self.ledger.charge(8, 1, self.check)
+                unescaped = pieces == 1 and literal and not escaped
+            elif size > 1021:
+                unescaped = unescaped and not escaped
+            if chunk_size + width > 1024:
+                slots = max(slots, pieces)
+                chunk_size = pieces = 0
+                literal = False
+            if escaped or not literal:
+                pieces += 1
+            literal = not escaped
+            chunk_size += width
+            size += width
+            if size > 8388608:
+                raise _EvidenceCapacity("JSON scalar capacity refused")
+        if cursor >= self.end:
+            self.error()
+        slots = max(slots, pieces)
+        # Pay the original construction selection. Short scalars use their
+        # existing fragment state; longer ones use their own paid escape flag.
+        self.ledger.charge(16, 0, self.check)
+        if size <= 4096 and ((not size or pieces == 1 and literal) if size <= 1021 else unescaped):
+            # One bounded complete literal needs only its retained slice.
+            # No byte buffer/decode, arrays, chunk references or join exist.
+            # Keep the original retained-scalar storage and fact admission.
+            self.ledger.charge(8 + size, 1, self.check)
+            value = self.text[start:cursor]
+            self.index = cursor + 1
+            self.check()
+            return value
+        if size <= 4096:
+            # Decode this SAME scalar into one bounded UTF8 buffer. The old
+            # fragment slices/chr strings, two reference lists and their
+            # intermediate/final joins do not exist in this branch. Keep
+            # BOTH complete byte writes (buffer and retained decoded scalar),
+            # the two live owners and fixed replacement dispatch/setup paid
+            # BEFORE allocation. Scratch never exceeds the original4096B.
+            self.ledger.charge(8 + 2 * size, 2, self.check)
+            self.ledger.charge(64, 0, self.check)
+            self.ledger.reserve(size, 0, self.check)
+            buffer = None
+            try:
+                buffer = bytearray(size)
+                index, position = start, 0
+                while index < cursor:
+                    if position % 1024 == 0:
+                        self.check()
+                    if self.text[index] == "\\":
+                        code, index = self.codepoint(index)
+                    else:
+                        code = ord(self.text[index])
+                        index += 1
+                        if code < 32 or 0xD800 <= code <= 0xDFFF:
+                            self.error()
+                    width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                    if position + width > size:
+                        raise _EvidenceUnsafe('JSON scalar decoding postcondition')
+                    if width == 1:
+                        buffer[position] = code
+                    elif width == 2:
+                        buffer[position] = 192 | code >> 6
+                        buffer[position + 1] = 128 | code & 63
+                    elif width == 3:
+                        buffer[position] = 224 | code >> 12
+                        buffer[position + 1] = 128 | code >> 6 & 63
+                        buffer[position + 2] = 128 | code & 63
+                    else:
+                        buffer[position] = 240 | code >> 18
+                        buffer[position + 1] = 128 | code >> 12 & 63
+                        buffer[position + 2] = 128 | code >> 6 & 63
+                        buffer[position + 3] = 128 | code & 63
+                    position += width
+                if position != size:
+                    raise _EvidenceUnsafe('JSON scalar decoding postcondition')
+                value = buffer.decode('utf-8', errors='strict')
+                self.index = cursor + 1
+            finally:
+                self.ledger.settle(size, 0)  # Scratch only; both copies stay spent.
+                buffer = None
+            self.check()
+            return value
+        # Charge decoded storage, chunk references, and join BEFORE decoding.
+        chunks = (size + 1020) // 1021
+        self.ledger.charge(8 + 2 * size + 8 * chunks, 1 + chunks, self.check)
+        # Fixed local slots avoid growing string/list reconstruction. Pay the
+        # reference storage and initialization independently of retained output.
+        self.ledger.charge(16 * slots + 16 * chunks, 0, self.check)
+        scratch = min(4096, 2 * size) + 8 * slots
+        self.ledger.reserve(scratch, 0, self.check)
+        try:
+            parts, fragments = [""] * chunks, [""] * slots
+            count = previous = chunk_size = span_size = part_count = 0
+            span_start = start
+
+            def finish(end: int) -> None:
+                nonlocal count, previous, span_size, part_count
+                if not count:
+                    # One literal slice IS the retained chunk, already paid
+                    # with its final join. No intermediate fragment or join.
+                    self.ledger.charge(8, 0, self.check)
+                    parts[part_count] = self.text[span_start:end]
+                else:
+                    if span_size:
+                        self.ledger.charge(span_size + 8, 0, self.check)
+                        fragments[count] = self.text[span_start:end]
+                        count += 1
+                    # Shorter chunks must not carry previous mixed fragments.
+                    self.ledger.charge(8 * max(0, previous - count), 0, self.check)
+                    for position in range(count, previous):
+                        fragments[position] = ""
+                    self.ledger.charge(8 * slots + 8, 0, self.check)
+                    parts[part_count] = "".join(fragments)
+                    previous = count
+                part_count += 1
+                count = span_size = 0
+                self.check()
+
+            index = start
+            while index < cursor:
+                original = index
+                if self.text[index] == "\\":
+                    code, index = self.codepoint(index)
+                else:
+                    code = ord(self.text[index])
+                    index += 1
+                    if code < 32 or 0xD800 <= code <= 0xDFFF:
+                        self.error()
+                width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                if chunk_size + width > 1024:
+                    finish(original)
+                    chunk_size = 0
+                    span_start = original
+                if self.text[original] == "\\":
+                    if span_size:
+                        self.ledger.charge(span_size + 8, 0, self.check)
+                        fragments[count] = self.text[span_start:original]
+                        count += 1
+                        span_size = 0
+                    self.ledger.charge(width + 8, 0, self.check)
+                    fragments[count] = chr(code)
+                    count += 1
+                    span_start = index
+                else:
+                    span_size += width
+                chunk_size += width
+            if chunk_size:
+                finish(cursor)
+            value = "".join(parts)
+            self.index = cursor + 1
+        finally:
+            self.ledger.settle(scratch, 0)  # Only scratch, never decoded work/facts.
+        self.check()
+        return value
+
+    def number(self) -> int | float:
+        start = self.index
+        if self.text[self.index] == "-":
+            self.index += 1
+        if self.index >= self.end:
+            self.error()
+        if self.text[self.index] == "0":
+            self.index += 1
+        elif self.text[self.index] in "123456789":
+            while self.index < self.end and self.text[self.index] in "0123456789":
+                self.index += 1
+                if self.index - start > 128:
+                    raise _EvidenceCapacity("JSON number spelling refused")
+        else:
+            self.error()
+        floating = False
+        for delimiter, signs in ((".", False), ("eE", True)):
+            if self.index < self.end and self.text[self.index] in delimiter:
+                floating = True
+                self.index += 1
+                if signs and self.index < self.end and self.text[self.index] in "+-":
+                    self.index += 1
+                digits = self.index
+                while self.index < self.end and self.text[self.index] in "0123456789":
+                    self.index += 1
+                    if self.index - start > 128:
+                        raise _EvidenceCapacity("JSON number spelling refused")
+                if self.index == digits:
+                    self.error()
+        length = self.index - start
+        if length > (128 if floating else 21):
+            raise _EvidenceCapacity("JSON number spelling refused")
+        self.ledger.charge(length + 8, 1, self.check)
+        spelling = self.text[start:self.index]
+        value = float(spelling) if floating else int(spelling)
+        if (floating and not math.isfinite(value)) or (not floating and value.bit_length() > 64):
+            self.error()
+        return value
+
+    def value(self, depth: int = 0, scalar: Callable[[str], None] | None = None,
+              *, tree: bool = True, route: int = 0, event: Callable | None = None,
+              relay_context: tuple | list = (), relay_sanitize: Callable | None = None,
+              selected: Callable | None = None, selected_path: tuple = (),
+              selected_field: str | int | None = None,
+              submission_identity: tuple | None = None,
+              expected: object = _EvidenceUnsafe, ordered: bool = False) -> Any:
+        self.check()
+        if depth > 64:
+            raise _EvidenceCapacity("JSON depth capacity refused")
+        self.whitespace()
+        if self.index >= self.end:
+            self.error()
+        self.ledger.charge(0, 1, self.check)
+        char = self.text[self.index]
+        matching = expected is not _EvidenceUnsafe
+        if matching:
+            # SAME parser frame, original expected value and field. No nested
+            # comparison event or its 24B/3facts forwarding setup is created.
+            # The scalar comparison and each occurrence's own safety remain.
+            if char not in '[{':
+                value = None
+                try:
+                    if char == '"':
+                        value = self.string()
+                    elif char in '-0123456789':
+                        value = self.number()
+                    else:
+                        for spelling, primitive in (("true", True), ("false", False), ("null", None)):
+                            if self.text.startswith(spelling, self.index, self.end):
+                                self.index += len(spelling)
+                                value = primitive
+                                break
+                        else:
+                            self.error()
+                    if type(value) is str:
+                        # Reuse the consumed token-kind slot for THIS decoded
+                        # occurrence's size. The later ordinary admission needs
+                        # no second complete original sizing traversal.
+                        self.ledger.charge(16, 0, self.check)
+                        char = _evidence_utf8_size(value, self.check)
+                        self.ledger.charge(char +
+                            (_evidence_utf8_size(expected, self.check) if type(expected) is str else 0), 1, self.check)
+                    if type(value) is not type(expected) or value != expected:
+                        raise ValueError('completion ordered waiting equality withheld' if type(selected_field) is int
+                                         else 'submission complete equality withheld')
+                    if type(value) is str:
+                        if self.comparison_script and selected_field == 'script' or self.comparison_receipt and selected_field == 'script_text':
+                            _evidence_python(value, self.comparison_submission.owner.context, self.ledger,
+                                self.check, self.comparison_submission.owner.sanitize,
+                                self.comparison_submission.depth + 4)
+                        else:
+                            if '\\' in value:
+                                raise ValueError('submission ordinary representation withheld')
+                            for secret in self.comparison_submission.owner.context:
+                                self.ledger.charge(8, 1, self.check)
+                                if secret in value:
+                                    raise ValueError("original evidence content withheld")
+                            self.ledger.charge(16, 0, self.check)
+                            for secret in self.comparison_submission.owner.context:
+                                self.ledger.charge(char, 1, self.check)
+                            self.ledger.reserve(0, 1, self.check)
+                            try:
+                                safe = self.comparison_submission.owner.sanitize(value)
+                                try:
+                                    actual = _evidence_utf8_size(safe, self.check, char)
+                                except ValueError as exc:
+                                    raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+                                self.ledger.charge(64, 0, self.check)
+                                if (actual != char or safe != value
+                                        or any(secret in safe for secret in self.comparison_submission.owner.context)):
+                                    raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                                self.check()
+                            finally:
+                                self.ledger.settle(0, 0)
+                                safe = None
+                    return value
+                except BaseException:
+                    value = None
+                    raise
+        selected_children = True
+        selected_owner = getattr(selected, '__self__', None)
+        row_field = (selected_field is not None and char not in '[{'
+            and isinstance(selected_owner, _EvidenceObservations)
+            and selected.__func__ is _EvidenceObservations.case_row_event)
+        primitive_field = (selected_field is not None and char not in '[{'
+            and isinstance(selected_owner, _EvidenceSubmission)
+            and (not selected_path or selected_path[0] != 'wire' or selected_owner.copy
+                 or selected_owner.metadata.get('action') in ('jobs-submit', 'jobs-block', 'jobs-final')))
+        case_field = (selected_field is not None and char not in '[{'
+            and isinstance(selected_owner, _EvidenceObservations)
+            and selected.__func__ is _EvidenceObservations.case_event
+            and (not selected_path and selected_field in ('method', 'variant', 'index', 'source_sha', 'task')
+                 or len(selected_path) == 2 and type(selected_path[1]) is int
+                    and (selected_path[0] == 'starts' or selected_path[0] == 'jobs'
+                         and selected_field in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap', 'out', 'err'))))
+        # case_row_event pays for a direct field reference; it needs no path copy.
+        if selected is not None and not row_field:
+            if primitive_field or case_field:
+                self.ledger.charge(8, 1, self.check)  # Existing field reference only.
+            else:
+                if selected_field is not None:
+                    selected_path = selected_path + (selected_field,)
+                self.ledger.charge(8 * len(selected_path), len(selected_path), self.check)
+            if char in '[{':
+                selected_children = selected(selected_path, 'object' if char == '{' else 'array', None) is not False
+        descendants = None
+        # For these finite commands the selected end notification has no
+        # consumer: event() returns without retaining or closing anything.
+        # Syntax events and enclosing Observations/Case close remain separate.
+        # An unknown canonical action retains legacy wire discovery unchanged.
+        selected_end = not (isinstance(selected_owner, _EvidenceSubmission)
+            and (selected_owner.copy or selected_owner.metadata.get('action') in
+                 ('jobs-submit', 'jobs-block', 'jobs-final')))
+        if char == '{' and isinstance(selected_owner, _EvidenceObservations):
+            # The root has already opened its original owner. Route only its
+            # descendants locally: no enclosing Case path is copied/reselected
+            # for each command field. Root close still performs the late join.
+            if selected.__func__ is _EvidenceObservations.case_event:
+                if selected_owner.case_command_slot(selected_path) == selected_path:
+                    self.ledger.charge(32, 4, self.check)
+                    descendants = selected_owner.case_command.event
+                elif selected_owner.case is not None and selected_owner.case['rows']:
+                    self.ledger.charge(32, 4, self.check)
+                    if selected_owner.case['rows'][-1][0] == selected_path:
+                        descendants = selected_owner.case_row_event
+            elif len(selected_path) == 2 and selected_path[0] == 'provider_commands':
+                self.ledger.charge(32, 4, self.check)
+                descendants = selected_owner.current.event
+            elif (len(selected_path) == 4 and selected_path[0] == 'durable'
+                    and selected_path[2] == 'jobs_cases'):
+                self.ledger.charge(32, 4, self.check)
+                descendants = selected_owner.case_event
+        if isinstance(selected_owner, _EvidenceSubmission):
+            if primitive_field:
+                deferred = (selected_path == () and selected_field == 'stdout'
+                    or selected_path == ('payload',) and selected_field == 'script'
+                    or selected_path == ('payload_file',) and selected_field == 'text')
+            else:
+                deferred = (selected_path in (('stdout',), ('payload', 'script'), ('payload_file', 'text'))
+                    or not selected_owner.copy and (
+                        len(selected_path) == 5 and selected_path[0] == 'wire'
+                            and selected_path[2:] == ('response', 'job', 'script_text')
+                        or len(selected_path) == 4 and selected_path[0] == 'wire'
+                            and selected_path[2:] == ('response', 'script_text')))
+        elif (isinstance(selected_owner, _EvidenceObservations)
+                and selected.__func__ is _EvidenceObservations.case_event):
+            if case_field:
+                deferred = bool(selected_path) and selected_path[0] == 'jobs' and selected_field == 'script'
+            else:
+                deferred = selected_owner.case_encoded(selected_path)
+        elif (isinstance(selected_owner, _EvidenceObservations)
+                and selected.__func__ is _EvidenceObservations.case_row_event):
+            deferred = False
+            if char == '"':
+                self.ledger.charge(8, 1, self.check)
+                row = selected_owner.case['rows'][-1]
+                column = selected_field if row_field else selected_path[0] if len(selected_path) == 1 else None
+                deferred = (column is not None and (row[1] == 'jobs' and column == 'script_text'
+                    or any(column == name for name, _ in selected_owner.sql_columns.get(row[1], ()))))
+        else:
+            deferred = selected is not None and _EvidenceObservations.encoded(selected_path)
+        if route == 2 and char != "[" or route == 3 and char != "{":
+            raise ValueError("Relay entry shape withheld")
+        if char == '"':
+            value = self.string()
+            try:
+                if scalar is not None and not deferred and not matching:
+                    if (getattr(scalar, '__self__', None) is self
+                            and scalar.__func__ is _EvidenceJSON.raw_scalar):
+                        # Keep THIS decoded original in its existing value
+                        # slot. Put the sanitizer result directly in the
+                        # consumed token-kind slot below, eliminating the
+                        # separate original-preservation assignment/setup.
+                        # Every pass, result setup and full check stays paid.
+                        self.check()
+                        if "\\" in value:
+                            raise ValueError("raw decoded representation withheld")
+                        for secret in self.raw_context:
+                            self.ledger.charge(8, 1, self.check)
+                            if secret in value:
+                                raise ValueError("raw decoded content withheld")
+                        size = _evidence_utf8_size(value, self.check)
+                        self.ledger.charge(16, 0, self.check)
+                        for secret in self.raw_context:
+                            self.ledger.charge(size, 1, self.check)
+                        self.check()
+                        try:
+                            char = self.raw_sanitize(value)
+                            # Compare the strict measurement directly: no
+                            # separate actual-size assignment/holder exists.
+                            # Retain and prepay all remaining comparison setup.
+                            self.ledger.charge(48, 0, self.check)
+                            try:
+                                if _evidence_utf8_size(char, self.check, size) != size:
+                                    raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                            except _EvidenceUnsafe:
+                                raise
+                            except ValueError as exc:
+                                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+                            if (value != char
+                                    or any(secret in char for secret in self.raw_context)):
+                                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                            self.check()
+                        finally:
+                            self.ledger.settle(0, 0)  # Original invariant/cleanup check remains.
+                        self.check()  # Original final eligibility boundary.
+                        char = None
+                    else:
+                        scalar(value)
+                if selected is not None:
+                    if primitive_field or row_field or case_field:
+                        selected(selected_path, 'scalar', value, field=selected_field)
+                    else:
+                        selected(selected_path, 'scalar', value)
+                if event is not None:
+                    event("scalar", value)
+                return value
+            except BaseException:
+                value = char = None
+                raise
+        if char in "-0123456789":
+            value = self.number()
+            if selected is not None:
+                if primitive_field or row_field or case_field:
+                    selected(selected_path, 'scalar', value, field=selected_field)
+                else:
+                    selected(selected_path, 'scalar', value)
+            if event is not None:
+                event("scalar", value)
+            return value
+        for spelling, primitive in (("true", True), ("false", False), ("null", None)):
+            if self.text.startswith(spelling, self.index, self.end):
+                self.index += len(spelling)
+                if selected is not None:
+                    if primitive_field or row_field or case_field:
+                        selected(selected_path, 'scalar', primitive, field=selected_field)
+                    else:
+                        selected(selected_path, 'scalar', primitive)
+                if event is not None:
+                    event("scalar", primitive)
+                return primitive
+        if char not in "[{":
+            self.error()
+        self.ledger.charge(8, 1, self.check)
+        # The SAME Case row owns duplicate-key membership. Full rows already
+        # retain every scalar; projected scans keep charged key-only placeholders
+        # for the other columns. A complete row can also supply the required
+        # parsed dictionary itself: no second dictionary/key-value insertion.
+        # Projected required rows and unrelated syntax keep their own storage.
+        borrowed_keys = False
+        command_keys = None
+        if (char == '{' and isinstance(selected_owner, _EvidenceObservations)
+                and descendants is not None and descendants.__func__ is _EvidenceObservations.case_row_event):
+            row = selected_owner.case['rows'][-1]
+            borrowed_keys = (not tree or row[1] == 'jobs'
+                or row[1] in ('tasks', 'results') and row[3] in ('parked', 'first_terminal'))
+        if char == '{':
+            command_owner = getattr(descendants, '__self__', None) if descendants is not None else selected_owner
+            if isinstance(command_owner, _EvidenceSubmission) and (
+                    descendants is not None or not selected_path or command_owner.copy
+                    or command_owner.metadata.get('action') in ('jobs-submit', 'jobs-block', 'jobs-final')):
+                self.ledger.charge(16, 2, self.check)  # Same owner/shape references.
+                shape = command_owner.shapes.get(() if descendants is not None else selected_path)
+                if shape is not None and type(shape[1]) is dict:
+                    command_keys = shape[1]
+                    # A Case copy must retain its closed finite command facts.
+                    # In required-tree mode those SAME maps can supply the
+                    # parsed objects, without a second scalar-key insertion.
+                    # Unknown/legacy canonical actions keep independent trees:
+                    # their normal release may clear their scratch maps.
+                    borrowed_keys = not tree or command_owner.copy
+        if char == '{':
+            if tree:
+                output = (command_keys if command_keys is not None else row[4]) if borrowed_keys else {}
+            else:
+                output = command_keys if command_keys is not None else row[4] if borrowed_keys else None if matching else set()
+        else:
+            output = [] if tree else None
+        case_fields = None
+        case_kind = 0
+        if char == '{' and isinstance(selected_owner, _EvidenceObservations):
+            if descendants is not None and descendants.__func__ is _EvidenceObservations.case_event:
+                self.ledger.charge(16, 2, self.check)
+                case_fields = selected_owner.case['meta']
+            elif selected.__func__ is _EvidenceObservations.case_event and selected_children:
+                if not selected_path:
+                    self.ledger.charge(16, 2, self.check)
+                    case_fields = selected_owner.case['meta']
+                elif len(selected_path) == 2 and type(selected_path[1]) is int and selected_path[0] in ('starts', 'jobs'):
+                    self.ledger.charge(16, 2, self.check)
+                    case_kind = 1 if selected_path[0] == 'starts' else 2
+                    if selected_path[1] >= len(selected_owner.case[selected_path[0]]):
+                        raise ValueError('Case start fact withheld' if case_kind == 1 else 'Case job selector withheld')
+                    case_fields = selected_owner.case[selected_path[0]][selected_path[1]]
+        proof = _EvidenceRelay(relay_context, self.ledger, self.check, relay_sanitize, depth) if route == 3 else None
+        selection = None
+        close = "}" if char == "{" else "]"
+        if matching:
+            if char == '{':
+                if type(expected) is not dict or not (depth == self.comparison_depth or
+                      (depth == self.comparison_depth + 1 and not self.comparison_script and
+                      (selected_field == 'authentication' or self.comparison_receipt and selected_field in ('job', 'output')
+                       or self.comparison_completion and selected_field == 'decision'))):
+                    raise ValueError('submission nested shape withheld')
+            elif (not self.comparison_completion or depth != self.comparison_depth + 1
+                    or selected_field != 'waiting_on_job_ids' or type(expected) is not list):
+                raise ValueError('completion waiting shape withheld')
+        if event is not None:
+            event("object" if char == "{" else "array", None)
+        self.index += 1
+        self.whitespace()
+        member_index = 0
+        previous_key = None
+        expected_keys = None
+        if matching and char == '{' and ordered:
+            self.ledger.charge(8, 1, self.check)
+            expected_keys = iter(expected)
+        try:
+            if self.index < self.end and self.text[self.index] == close:
+                self.index += 1
+                if matching:
+                    self.ledger.charge(8, 1, self.check)
+                    if len(expected):
+                        raise ValueError('completion complete waiting equality withheld' if char == '['
+                                         else 'submission complete equality withheld')
+                elif event is not None:
+                    event("end-object" if char == "{" else "end-array", None)
+                if selected is not None and selected_end:
+                    selected(selected_path, 'end-object' if char == '{' else 'end-array', None)
+                if selection is not None:
+                    self.relay_captured = selection.close() or self.relay_captured
+                if proof is not None:
+                    self.relay_captured = proof.close() or self.relay_captured
+                return output if tree else None
+            while True:
+                if char == "{":
+                    key = self.string()
+                    if matching:
+                        # Strict expected membership/order replaces BOTH the
+                        # syntax set and the old key-event frame update. Pay
+                        # the two live references before lookup/advancement.
+                        self.ledger.charge(16, 2, self.check)
+                        if (key not in expected or expected_keys is not None and key != next(expected_keys, None)
+                                or expected_keys is None and previous_key is not None and key <= previous_key):
+                            raise ValueError('submission sorted fields withheld')
+                        previous_key = key
+                        member_index += 1
+                    elif key in output:
+                        self.error()  # Decoded escaped-equal keys, before their value.
+                    if scalar is not None:
+                        if (not matching and getattr(scalar, '__self__', None) is self
+                                and scalar.__func__ is _EvidenceJSON.raw_scalar):
+                            # Duplicate admission above sees the original key.
+                            # Nonmatching scans need no expected-order state.
+                            # Keep THIS decoded original in key. The unused
+                            # ordering slot takes the sanitizer result directly;
+                            # no original-preservation assignment/setup exists.
+                            # Result setup and every full safety check remain.
+                            self.check()
+                            if "\\" in key:
+                                raise ValueError("raw decoded representation withheld")
+                            for secret in self.raw_context:
+                                self.ledger.charge(8, 1, self.check)
+                                if secret in key:
+                                    raise ValueError("raw decoded content withheld")
+                            size = _evidence_utf8_size(key, self.check)
+                            self.ledger.charge(16, 0, self.check)
+                            for secret in self.raw_context:
+                                self.ledger.charge(size, 1, self.check)
+                            self.check()
+                            try:
+                                previous_key = self.raw_sanitize(key)
+                                # The same strict result check needs no retained
+                                # actual-size temporary. Full comparison stays.
+                                self.ledger.charge(48, 0, self.check)
+                                try:
+                                    if _evidence_utf8_size(previous_key, self.check, size) != size:
+                                        raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                                except _EvidenceUnsafe:
+                                    raise
+                                except ValueError as exc:
+                                    raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+                                if (key != previous_key
+                                        or any(secret in previous_key for secret in self.raw_context)):
+                                    raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                                self.check()
+                            finally:
+                                self.ledger.settle(0, 0)
+                            self.check()
+                            previous_key = None
+                        else:
+                            scalar(key)
+                    if command_keys is None:
+                        if descendants is not None:
+                            descendants((), 'key', key)
+                        elif selected is not None:
+                            selected(selected_path, 'key', key)
+                    if route == 1 and key in ('starts', 'durable', 'provider_commands', 'provider_attempts') and selection is None:
+                        selection = _EvidenceObservations(relay_context, self.ledger, self.check, relay_sanitize, depth, submission_identity)
+                    if event is not None and not matching:
+                        event("key", key)
+                    self.whitespace()
+                    if self.index >= self.end or self.text[self.index] != ":":
+                        self.error()
+                    self.index += 1
+                    if command_keys is not None:
+                        self.whitespace()
+                        if self.index < self.end and self.text[self.index] in '[{':
+                            if descendants is not None:
+                                descendants((), 'key', key)
+                            else:
+                                selected(selected_path, 'key', key)
+                    if not matching and not borrowed_keys:
+                        self.ledger.charge(16, 1, self.check)
+                    if not tree and not matching and not borrowed_keys:
+                        output.add(key)  # Same decoded key, no additional string copy.
+                    if proof is not None and key == "response_text":
+                        self.whitespace()
+                        if self.index >= self.end or self.text[self.index] != '"':
+                            raise ValueError("Relay response text withheld")
+                    self.whitespace()
+                    # Keep the existing row preselection admission, including
+                    # SOURCE/encoded SQL columns and container refusals.
+                    if (borrowed_keys and command_keys is None
+                            and (row[1] == 'jobs' or row[1] in ('tasks', 'results')
+                                 and row[3] in ('parked', 'first_terminal'))):
+                        self.ledger.charge(16, 0, self.check)
+                    if (command_keys is not None and self.index < self.end and self.text[self.index] not in '[{'
+                            and (command_keys is command_owner.metadata and key in command_owner.fields
+                                or command_keys is command_owner.provider and key in ('task', 'session', 'agent', 'org', 'pid')
+                                or command_keys is command_owner.payload and key in command_owner.payload_fields + command_owner.completion_fields
+                                or command_keys is command_owner.file and key in ('path', 'text', 'bytes', 'sha256')
+                                or command_keys is command_owner.wire and key in ('path', 'method', 'body_sha256', 'status', 'dropped')
+                                or command_keys is command_owner.response and key in command_owner.result_fields + ('deferred', 'code', 'ok')
+                                or command_keys is command_owner.authentication and key in ('task_id', 'session_id')
+                                or command_keys is command_owner.decision and key in ('action', 'summary'))):
+                        # The parent already owns the original key and map.
+                        # Keep its leaf grammar/safety/string-retention debits;
+                        # remove only the extra selected-field forwarding slot.
+                        # Unsupported fields and containers retain event routing.
+                        self.ledger.charge(16, 0, self.check)
+                        child = self.value(depth + 1,
+                            None if (command_keys is command_owner.metadata and key == 'stdout'
+                                     or command_keys is command_owner.payload and key == 'script'
+                                     or command_keys is command_owner.file and key == 'text') else scalar,
+                            tree=tree, event=event, relay_context=relay_context, relay_sanitize=relay_sanitize,
+                            submission_identity=submission_identity)
+                        if type(child) is str:
+                            self.ledger.charge(_evidence_utf8_size(child, self.check), 1, self.check)
+                        command_keys[key] = child
+                        if tree and not borrowed_keys:
+                            output[key] = child
+                    elif (case_fields is not None and self.index < self.end and self.text[self.index] not in '[{'
+                            and (case_kind == 1 or case_kind == 0 and key in ('method', 'variant', 'index', 'source_sha', 'task')
+                                 or case_kind == 2 and key in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap', 'out', 'err'))):
+                        # Parse this occurrence with its own scalar grammar and
+                        # safety, then retain directly in the already selected
+                        # original holder. No field/event forwarding survives.
+                        child = self.value(depth + 1, None if case_kind == 2 and key == 'script' else scalar,
+                            tree=tree, event=event, relay_context=relay_context, relay_sanitize=relay_sanitize,
+                            submission_identity=submission_identity)
+                        self.ledger.charge(16 + _evidence_utf8_size(key, self.check)
+                            + (_evidence_utf8_size(child, self.check) if type(child) is str else 8), 2, self.check)
+                        case_fields[key] = child
+                        if case_kind == 2:
+                            if key in ('out', 'err') and type(child) is not str:
+                                raise ValueError('Case literal output type withheld')
+                            if key == 'script':
+                                selected_owner.case['used'] = True
+                                if type(child) is not str:
+                                    raise ValueError('Case SOURCE type withheld')
+                                _evidence_python(child, relay_context, self.ledger, self.check, relay_sanitize,
+                                                 selected_owner.depth + 4 + len(selected_path) + 2)
+                        if tree:
+                            output[key] = child
+                    elif (borrowed_keys and command_keys is None
+                            and (row[1] == 'jobs' or row[1] in ('tasks', 'results')
+                                 and row[3] in ('parked', 'first_terminal'))
+                            and not (row[1] == 'jobs' and key == 'script_text')
+                            and (row[1] == 'jobs' or not any(key == column for column, _ in selected_owner.sql_columns[row[1]]))
+                            and self.index < self.end and self.text[self.index] not in '[{'):
+                        # Replacement branch/validation work is prepaid before
+                        # descent. Retain the original scalar node admission
+                        # and the SAME full key/value pair below. This replaces
+                        # the absent row8B/1fact and, for strings, deferred
+                        # current-row8B/1fact selections. Scan-only rows also
+                        # lose the post-event16B/0fact lookup. Selection above
+                        # keeps its debit even on the original event route.
+                        self.ledger.charge(16, 0, self.check)
+                        child = self.value(depth + 1, scalar, tree=tree, event=event,
+                            relay_context=relay_context, relay_sanitize=relay_sanitize,
+                            submission_identity=submission_identity)
+                        if (type(child) not in (str, int, float, type(None))
+                                and not (row[3] in ('running_browser', 'browser', 'action') and key in ('review_required', 'persistent')
+                                         and type(child) is bool)):
+                            raise ValueError('Case SQL scalar withheld')
+                        self.ledger.charge(16 + _evidence_utf8_size(key, self.check)
+                            + (_evidence_utf8_size(child, self.check) if type(child) is str else 8), 2, self.check)
+                        output[key] = child
+                    else:
+                        child = self.value(depth + 1, None if proof is not None and key == "response_text" else scalar,
+                            tree=tree, route=2 if route == 1 and key == "relay" else 0,
+                            event=(proof.response_event if key == "response" else proof.request_event
+                                   if key == "request" else None) if proof is not None else event,
+                            relay_context=relay_context, relay_sanitize=relay_sanitize,
+                            selected=selection.event if route == 1 and key in ('starts', 'durable', 'provider_commands', 'provider_attempts') else descendants if descendants is not None else selected if selected_children else None,
+                            selected_path=() if route == 1 or descendants is not None else selected_path,
+                            selected_field=key, submission_identity=submission_identity,
+                            expected=expected[key] if matching else _EvidenceUnsafe)
+                        if proof is not None:
+                            proof.field(key, child)
+                        if tree and (not borrowed_keys or command_keys is not None and type(child) in (dict, list)):
+                            # A borrowed command map already owns every scalar.
+                            # Replace only a container's existing unsafe placeholder
+                            # with the complete parsed child for the required tree.
+                            # Keep its original insertion debit for that reference.
+                            if borrowed_keys:
+                                self.ledger.charge(16, 1, self.check)
+                            output[key] = child
+                        elif not tree and borrowed_keys and command_keys is None:
+                            # Known projected fields were retained by the row event.
+                            # Only an otherwise unretained scalar needs a key slot;
+                            # preserve its original syntax-set admission before the
+                            # SAME row takes ownership for decoded duplicates.
+                            self.ledger.charge(16, 0, self.check)
+                            if key not in output:
+                                self.ledger.charge(16, 1, self.check)
+                                output[key] = None
+                    child = None
+                else:
+                    self.ledger.charge(8, 1, self.check)
+                    if matching and member_index >= len(expected):
+                        raise ValueError('completion complete waiting equality withheld')
+                    child = self.value(depth + 1, scalar, tree=tree, route=3 if route == 2 else 0,
+                                       event=event, relay_context=relay_context, relay_sanitize=relay_sanitize,
+                                       selected=selected if selected_children else None, selected_path=selected_path,
+                                       selected_field=member_index, submission_identity=submission_identity,
+                                       expected=expected[member_index] if matching else _EvidenceUnsafe)
+                    member_index += 1
+                    if tree:
+                        output.append(child)
+                    child = None
+                self.whitespace()
+                if self.index >= self.end:
+                    self.error()
+                delimiter = self.text[self.index]
+                self.index += 1
+                if delimiter == close:
+                    if matching:
+                        self.ledger.charge(8, 1, self.check)
+                        if member_index != len(expected):
+                            raise ValueError('completion complete waiting equality withheld' if char == '['
+                                             else 'submission complete equality withheld')
+                    elif event is not None:
+                        event("end-object" if char == "{" else "end-array", None)
+                    if selected is not None and selected_end:
+                        selected(selected_path, 'end-object' if char == '{' else 'end-array', None)
+                    if selection is not None:
+                        self.relay_captured = selection.close() or self.relay_captured
+                    if proof is not None:
+                        self.relay_captured = proof.close() or self.relay_captured
+                    return output if tree else None
+                if delimiter != ",":
+                    self.error()
+                self.whitespace()
+        except BaseException:
+            if output is not None and not borrowed_keys:
+                output.clear()
+            raise
+        finally:
+            if selection is not None:
+                selection.release()
+            if proof is not None:
+                proof.release()
+            if not tree and not borrowed_keys:
+                if output is not None:
+                    output.clear()
+            key = previous_key = None
+
+    def read(self, *, top: str | None = None, scalar: Callable[[str], None] | None = None,
+             jsonl: bool = False, observations: bool = False, context: tuple | list = (),
+             sanitize: Callable | None = None, submission_identity: tuple | None = None) -> Any:
+        if top is not None:
+            return self.scan(top, scalar, jsonl=jsonl, tree=True, observations=observations,
+                             context=context, sanitize=sanitize, submission_identity=submission_identity)
+        result = self.value()
+        self.whitespace()
+        if self.index != self.end:
+            self.error()
+        self.check()
+        return result
+
+    def scan(self, top: str, scalar: Callable[[str], None] | None, *, jsonl: bool = False,
+             tree: bool = False, observations: bool = False, context: tuple | list = (),
+             sanitize: Callable | None = None, depth: int = 0, event: Callable | None = None,
+             submission_identity: tuple | None = None,
+             expected: object = _EvidenceUnsafe, ordered: bool = False,
+             submission: _EvidenceSubmission | None = None, script: bool = False,
+             receipt: bool = False, completion: bool = False) -> Any:
+        """Validate the SAME image; JSONL bounds are indices, never line copies."""
+        records = result = None
+        try:
+            if (getattr(scalar, '__self__', None) is self
+                    and scalar.__func__ is _EvidenceJSON.raw_scalar):
+                self.ledger.charge(16, 2, self.check)  # Original scan bindings, before retention.
+                self.raw_context, self.raw_sanitize = context, sanitize
+            if expected is not _EvidenceUnsafe and (
+                    type(expected) is not dict or tree or jsonl or observations
+                    or submission is None or event is not None or top != '{' or submission_identity is not None):
+                raise ValueError('submission comparison shape withheld')
+            if expected is not _EvidenceUnsafe:
+                # Paid by Submission.object's original128B/16facts setup.
+                self.comparison_submission, self.comparison_depth = submission, depth
+                self.comparison_script, self.comparison_receipt, self.comparison_completion = script, receipt, completion
+            if tree and jsonl:
+                self.ledger.charge(8, 1, self.check)
+                records = []
+            if jsonl and not self.text:
+                self.error()  # Empty evidence is never a launch witness.
+            while True:
+                if jsonl:
+                    self.end = self.text.find("\n", self.index)
+                    if self.end < 0:
+                        self.error()  # Even a valid unfinished last object refuses.
+                self.whitespace()
+                if self.index >= self.end or self.text[self.index] != top:
+                    self.error()
+                self.ledger.charge(8, 1, self.check)  # Record's root syntax frame, before entry.
+                result = self.value(depth, scalar=scalar, tree=tree, route=1 if observations else 0,
+                                    event=event, relay_context=context, relay_sanitize=sanitize, submission_identity=submission_identity,
+                                    expected=expected, ordered=ordered)
+                self.whitespace()
+                if self.index != self.end:
+                    self.error()
+                self.check()
+                if not jsonl:
+                    break
+                if tree:
+                    self.ledger.charge(8, 1, self.check)
+                    records.append(result)
+                self.index = self.end + 1  # Preserve the original full LF image.
+                if self.index == len(self.text):
+                    break
+            if self.relay_captured:
+                _evidence_original(self.text, context, self.ledger, self.check, sanitize, original=self)
+            else:
+                # All decoded scalars have closed. Also check the SAME complete
+                # original, including punctuation and every JSONL record/LF join.
+                # No context is required by the unrelated syntax-only callers.
+                for secret in context:
+                    self.ledger.charge(8, 1, self.check)
+                    if secret in self.text:
+                        raise ValueError("original evidence content withheld")
+            self.check()
+            return records if jsonl else result
+        except BaseException:
+            if records is not None:
+                records.clear()
+            if type(result) in (dict, list):
+                result.clear()
+            raise
+        finally:
+            result = records = None
+            if (getattr(scalar, '__self__', None) is self
+                    and scalar.__func__ is _EvidenceJSON.raw_scalar):
+                self.raw_context = self.raw_sanitize = None
+            if expected is not _EvidenceUnsafe:
+                self.comparison_submission = None
+            self.text = ""  # Refused-image traceback keeps syntax facts, not input.
 
 
 def redact(text: str, token: str, context: list[str]) -> str:
     """Use only the complete original literal redaction context."""
     if not token or not context or token not in context:
         raise ValueError("redaction context unavailable")
-    for secret in [token, *context]:
+    text = text.replace(token, "[REDACTED]")
+    for secret in context:
         text = text.replace(secret, "[REDACTED]")
     return text
 
@@ -593,11 +5511,12 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                      failed: Callable[..., None]) -> tuple[bool, tuple | None]:
     """Scenario first, then the SAME raw enumeration after ordinary refusal.
 
-    State retains only complete original context/snapshots and a fatal latch.
+    State retains complete original context/snapshots, refused sources and a fatal latch.
     Failed operations reserve their real cause before diagnostics/continuation.
     """
     first_error = None
     incomplete = False
+    ledger = _EvidenceLedger()  # SAME original collection opportunity, through raw siblings.
     state.update(operation="ROOT", window="ROOT", chars="U", utf8_bytes="U")
 
     def refuse(error: BaseException | None, *, reason: str | None = None) -> None:
@@ -655,59 +5574,86 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
             context_path = root / "coord/redaction-context.json"
             if not step("CONTEXT_PRESENT", context_path.exists):
                 raise ValueError("retained redaction context unavailable")
-            context_text = step("CONTEXT_READ", context_path.read_text)
-            context = step("CONTEXT_DECODE", lambda: json.loads(context_text))
+            def read_context() -> str:
+                with context_path.open("rb") as stream:
+                    return _evidence_input(stream, ledger, eligible, lambda text: None, lambda size: None)
+
+            context_text = step("CONTEXT_READ", read_context)
+            context = step("CONTEXT_DECODE", lambda: _EvidenceJSON(context_text, ledger, eligible).read())
+            del context_text
             mark("CONTEXT_VALIDATE")
             if (type(context) is not list or not context or any(type(s) is not str or not s for s in context)
-                    or candidate_token not in context or state.get("context") and context != state["context"]):
+                    or candidate_token not in context or state.get("context") and context != state["context"]
+                    or any("[REDACTED]" in secret or secret in "[REDACTED]" for secret in context)):
                 raise ValueError("invalid or changed retained redaction context")
             eligible()
             state.update(token=candidate_token, context=context)
+            ledger.charge(8, 1, eligible)
+            refused_sources = state.setdefault("refused_sources", set())
+
+            def remember_refusal(name: str) -> None:
+                if name not in refused_sources:
+                    refused_sources.add(name)  # Slot charged before its acquisition.
+
+            # A derived view, charged once under this SAME opportunity. Original
+            # list/order still owns identity comparisons across acquisitions.
+            ledger.charge(sum(_evidence_utf8_size(s, eligible) for s in context) + 8 * len(context),
+                          len(context), eligible)
+            ordered = tuple(sorted(context, key=lambda s: (-len(s), s)))
 
             def sanitize(text: str) -> str:
                 try:
-                    return redact(text, state["token"], state["context"])
+                    for secret in ordered:
+                        eligible()
+                        text = text.replace(secret, "[REDACTED]")
+                    return text
                 except BaseException:
                     state["fatal"] = True
                     raise
 
             scenario_present = False
+            scenario_slot = False
             try:
+                ledger.charge(32, 1, eligible)
+                scenario_slot = True
                 scenario_path = root / "scenario.json"
                 scenario_present = step("SCENARIO_PRESENT", scenario_path.exists)
                 if not scenario_present:
                     refuse(None, reason="MISSING")
                 else:
-                    scenario_file = step("SCENARIO_OPEN", lambda: scenario_path.open(encoding="utf8"))
-                    with scenario_file:
-                        # Facts are set only when each original operation returns.
-                        mark("SCENARIO_READ")
-                        eligible()
-                        scenario_text = scenario_file.read(8 * 1024 * 1024 + 1)
-                        state["chars"] = len(scenario_text)
-                        eligible()
-                    mark("SCENARIO_UTF8")
-                    eligible()
-                    encoded = scenario_text.encode("utf8")
-                    state["utf8_bytes"] = len(encoded)
-                    eligible()
-                    mark("SCENARIO_CAPACITY")
-                    if len(encoded) > 8 * 1024 * 1024:
-                        raise ValueError("scenario input capacity refused")
-                    result = step("SCENARIO_DECODE", lambda: json.loads(scenario_text))
-                    detached = step("SCENARIO_PROJECT", lambda: scenario_fields(result, sanitize))
-                    state["safe_scenario"] = detached  # Complete assignment only.
-                    receipt.update(detached)
+                    if "scenario.json" in refused_sources:
+                        refuse(None, reason="VALUE")  # No new cause or content attempt.
+                    else:
+                        scenario_file = step("SCENARIO_OPEN", lambda: scenario_path.open("rb"))
+                        with scenario_file:
+                            def returned(text: str) -> None:
+                                state["chars"] = len(text)
+                                mark("SCENARIO_UTF8")
+
+                            def measured(size: int) -> None:
+                                state["utf8_bytes"] = size
+                                mark("SCENARIO_CAPACITY")
+
+                            mark("SCENARIO_READ")
+                            scenario_text = _evidence_input(scenario_file, ledger, eligible, returned, measured)
+                        result = step("SCENARIO_DECODE", lambda: _EvidenceJSON(scenario_text, ledger, eligible).read())
+                        detached = step("SCENARIO_PROJECT", lambda: scenario_fields(
+                            result, sanitize, context=ordered, ledger=ledger, check=eligible))
+                        del scenario_text, result
+                        state["safe_scenario"] = detached  # Complete assignment only.
+                        receipt.update(detached)
             except BaseException as exc:
-                fatal = state.get("fatal") or not _ordinary_evidence_error(exc)
+                fatal = state.get("fatal") or isinstance(exc, _EvidenceUnsafe) or not _ordinary_evidence_error(exc)
                 if fatal:
                     state["fatal"] = True
-                reason = ("CAPACITY" if state["operation"] == "SCENARIO_CAPACITY" and type(exc) is ValueError
+                reason = ("CAPACITY" if isinstance(exc, _EvidenceCapacity)
                           else "DECODE" if state["operation"] == "SCENARIO_DECODE" and isinstance(exc, json.JSONDecodeError)
                           else None)
                 refuse(exc, reason=reason)
                 if fatal:
                     raise
+                if scenario_slot:
+                    remember_refusal("scenario.json")
             eligible()  # Slow ordinary errors cannot borrow another allowance.
             paths = iter(step("RAW_ENUM", lambda: (root / "raw").glob("*")))
             while True:
@@ -725,28 +5671,68 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                     eligible()
                     break  # No re-enumeration after unavailable membership.
                 try:
+                    ledger.charge(_evidence_utf8_size(path.name, eligible) + 16, 1, eligible)
+                except _EvidenceCapacity as exc:
+                    refuse(exc, reason="CAPACITY")
+                    break
+                try:
+                    if path.name in refused_sources:
+                        refuse(None, reason="VALUE")
+                        continue
                     if path.suffix in {".txt", ".json", ".jsonl"}:
-                        text = step("TEXT_READ", lambda: path.read_text(errors="replace"))
+                        def read_raw() -> str:
+                            with path.open("rb") as stream:
+                                return _evidence_input(stream, ledger, eligible, lambda text: None, lambda size: None)
+                        text = step("TEXT_READ", read_raw)
                         mark("REDACT")
                         eligible()
-                        if "\\" in text:
-                            raise ValueError("raw text representation withheld")
-                        safe = sanitize(text)
-                        if "\\" in safe or any(secret in safe for secret in state["context"]):
-                            state["fatal"] = True
-                            raise ValueError("unsafe raw sanitation")
-                        eligible()
-                        content = step("TEXT_UTF8", lambda: safe.encode("utf8"))
+                        if path.name in {"observations.json", "e07.json", "e07-prefix.json",
+                                         "browser-events.json", "e05-browser-events.json", "launch-witnesses.jsonl"}:
+                            ledger.charge(32, 4, eligible)  # Scanner/callback/bounds before allocation.
+                            top = "[" if path.name in {"browser-events.json", "e05-browser-events.json"} else "{"
+                            scanner = _EvidenceJSON(text, ledger, eligible)
+                            scanner.scan(
+                                top, scanner.raw_scalar, jsonl=path.name == "launch-witnesses.jsonl",
+                                observations=path.name in {"observations.json", "e07-prefix.json"},
+                                context=ordered, sanitize=sanitize, submission_identity=(str(root), receipt.get("source_sha")))
+                            safe = text  # ONE original image, only after full closure.
+                            eligible()
+                            size = _evidence_utf8_size(safe, eligible)
+                            # This registered original needs no begin/end slots.
+                            # Keep token/holder admissions and prepay the existing
+                            # whole-string dispatch; final buffer/scratch stay paid.
+                            ledger.charge(32, 3, eligible)
+                            ledger.charge(16, 0, eligible)
+                            content = step("TEXT_UTF8", lambda: _evidence_buffer(
+                                [("literal", safe)], size, ledger, eligible))
+                        else:
+                            if "\\" in text:
+                                raise ValueError("raw text representation withheld")
+                            size = _evidence_utf8_size(text, eligible)
+                            safe = _evidence_safe(text, size, sanitize, ordered, ledger, eligible)
+                            if "\\" in safe or any(secret in safe for secret in state["context"]):
+                                state["fatal"] = True
+                                raise ValueError("unsafe raw sanitation")
+                            eligible()
+                            size = _evidence_utf8_size(safe, eligible)
+                            # Unregistered raw text retains its original span path.
+                            ledger.charge(48, 5, eligible)
+                            content = step("TEXT_UTF8", lambda: _evidence_buffer(
+                                [("literal", [(safe, 0, len(safe))])], size, ledger, eligible))
                         staged[path.name] = content
                     elif path.suffix == ".png":
                         staged[path.name] = step("IMAGE_READ", path.read_bytes)
                 except BaseException as exc:
-                    fatal = state.get("fatal") or not _ordinary_evidence_error(exc)
+                    fatal = state.get("fatal") or isinstance(exc, _EvidenceUnsafe) or not _ordinary_evidence_error(exc)
                     if fatal:
                         state["fatal"] = True
-                    refuse(exc, reason="UNSAFE" if state.get("fatal") and _ordinary_evidence_error(exc) else None)
+                    refuse(exc, reason="UNSAFE" if fatal and _ordinary_evidence_error(exc)
+                           else "CAPACITY" if isinstance(exc, _EvidenceCapacity) else None)
                     if fatal:
                         raise
+                    remember_refusal(path.name)
+                finally:
+                    text = safe = content = None
                 eligible()
             mark("REQUIRED")
             eligible()
@@ -825,11 +5811,37 @@ def publish_evidence(output: Path, output_identity: tuple, staged: dict[str, byt
             check()
 
 
+def _result_json(row: dict, check: Callable[[], None], *, token: str = "",
+                 context: list[str] | None = None) -> bytearray:
+    """Encode the selected closed FAIL or original-context detailed envelope.
+
+    None denotes only the existing closed-field contract, never raw detail.
+    Explicit unavailable/invalid detailed context cannot select that contract.
+    """
+    ledger = _EvidenceLedger()  # This original result attempt, never collection work.
+    ledger.charge(32, 4, check)
+    ordered = ()
+    if context is not None:
+        if (type(token) is not str or not token or type(context) is not list or not context
+                or any(type(secret) is not str or not secret for secret in context)
+                or token not in context
+                or any("[REDACTED]" in secret or secret in "[REDACTED]" for secret in context)):
+            raise _EvidenceUnsafe("result original context unavailable")
+        size = sum(_evidence_utf8_size(secret, check) for secret in context)
+        # Original references, ordering keys/sort scratch and frozen view, before
+        # allocation. No context acquisition, transformed dictionary or reset.
+        ledger.charge(size * 2 + 40 * len(context), 4 * len(context), check)
+        ordered = tuple(sorted(context, key=lambda secret: (-len(secret), secret)))
+    return _evidence_json(row, ordered, ledger, check)
+
+
 def publish_failure(output: Path, output_identity: tuple, row: dict, check: Callable[[], None]) -> None:
     """The original nonfinal FAIL opportunity; no postcommit success inference."""
     _publication_destination(output, output_identity, "result.json", check)
+    candidate = _result_json(row, check)
     temporary = output / "result.tmp"
-    temporary.write_text(json.dumps(row, indent=2))
+    with temporary.open("wb") as stream:
+        stream.write(candidate)
     _publication_destination(output, output_identity, "result.json", check)
     temporary.replace(output / "result.json")
 
@@ -1050,6 +6062,7 @@ def main() -> int:
             log = root / "raw" / (name + ".txt")
             logs.append(log)
             diagnostic = None
+            command_failure = None
             launch_argv, launch_options = argv, {}  # Disabled fallback chosen BEFORE optional setup.
             try:
                 if name == "scenarios":
@@ -1058,93 +6071,115 @@ def main() -> int:
                         launch_argv = [*argv, "--_diagnostic-fd", str(diagnostic.descriptor)]
                         launch_options = {"pass_fds": (diagnostic.descriptor,)}
                 with log.open("w") as stream:
-                    arm_deadline(end)
                     try:
-                        process = owner.popen(launch_argv, cwd=cwd, env=env, stdout=stream,
-                                                   stderr=subprocess.STDOUT, **launch_options)
-                    finally:
-                        if diagnostic is not None:
-                            diagnostic.release_endpoint("sender")  # Before wait, also on Popen failure.
-                    active_phase = dict(name=name, argv=launch_argv, pid=process.pid, exit=None,
-                                        entered=begin, deadline=end, cap_seconds=cap, allowance_seconds=end - begin)
-                    receipt["phases"].append(active_phase)
-                    try:
-                        if name == "scenarios" and args.exercise == "baseline":
-                            # Numeric exclusion is recorded even if generation binding
-                            # fails. Unknown numeric identity can never enable probes.
-                            owner.evidence_phase_pid = process.pid if type(process.pid) is int and 0 < process.pid < 2**64 else None
-                            owner.evidence_original_phase = active_phase
-                            phase_reads = []
-                            for bracket in (0, 1):
+                        arm_deadline(end)
+                        try:
+                            process = owner.popen(launch_argv, cwd=cwd, env=env, stdout=stream,
+                                                       stderr=subprocess.STDOUT, **launch_options)
+                        except BaseException as exc:
+                            command_failure = (exc, exc.__traceback__)  # Before sender release.
+                            raise
+                        finally:
+                            if diagnostic is not None:
+                                diagnostic.release_endpoint("sender")  # Before wait, also on Popen failure.
+                        active_phase = dict(name=name, argv=launch_argv, pid=process.pid, exit=None,
+                                            entered=begin, deadline=end, cap_seconds=cap, allowance_seconds=end - begin)
+                        receipt["phases"].append(active_phase)
+                        try:
+                            if name == "scenarios" and args.exercise == "baseline":
+                                # Numeric exclusion is recorded even if generation binding
+                                # fails. Unknown numeric identity can never enable probes.
+                                owner.evidence_phase_pid = process.pid if type(process.pid) is int and 0 < process.pid < 2**64 else None
+                                owner.evidence_original_phase = active_phase
+                                phase_reads = []
+                                for bracket in (0, 1):
+                                    ownership_budget["clocks"] += 1
+                                    at = time.monotonic()
+                                    observation = None
+                                    if at < end and owner.evidence_phase_pid is not None:
+                                        ownership_budget["stats"] += 1
+                                        try:
+                                            with open(f"/proc/{process.pid}/stat", "rb", buffering=0) as stream:
+                                                raw = stream.read(4097)
+                                        except TimeoutError:
+                                            raise
+                                        except OSError:
+                                            pass
+                                        else:
+                                            if (0 < len(raw) <= 4096 and raw.endswith(b"\n")
+                                                    and raw.startswith(str(process.pid).encode("ascii") + b" (") and b") " in raw):
+                                                tail = raw.rsplit(b") ", 1)[1].split()
+                                                if (len(tail) >= 20 and tail[0] in (b"R", b"S", b"D", b"Z", b"T", b"t", b"W", b"X", b"x", b"K", b"P", b"I")
+                                                        and 1 <= len(tail[1]) <= 20 and all(48 <= c <= 57 for c in tail[1]) and int(tail[1]) < 2**64
+                                                        and 1 <= len(tail[19]) <= 20 and 49 <= tail[19][0] <= 57
+                                                        and all(48 <= c <= 57 for c in tail[19]) and int(tail[19]) < 2**64):
+                                                    observation = (tail[19].decode("ascii"), int(tail[1]))
+                                    phase_reads.append(observation)
                                 ownership_budget["clocks"] += 1
-                                at = time.monotonic()
-                                observation = None
-                                if at < end and owner.evidence_phase_pid is not None:
-                                    ownership_budget["stats"] += 1
-                                    try:
-                                        with open(f"/proc/{process.pid}/stat", "rb", buffering=0) as stream:
-                                            raw = stream.read(4097)
-                                    except TimeoutError:
-                                        raise
-                                    except OSError:
-                                        pass
-                                    else:
-                                        if (0 < len(raw) <= 4096 and raw.endswith(b"\n")
-                                                and raw.startswith(str(process.pid).encode("ascii") + b" (") and b") " in raw):
-                                            tail = raw.rsplit(b") ", 1)[1].split()
-                                            if (len(tail) >= 20 and tail[0] in (b"R", b"S", b"D", b"Z", b"T", b"t", b"W", b"X", b"x", b"K", b"P", b"I")
-                                                    and 1 <= len(tail[1]) <= 20 and all(48 <= c <= 57 for c in tail[1]) and int(tail[1]) < 2**64
-                                                    and 1 <= len(tail[19]) <= 20 and 49 <= tail[19][0] <= 57
-                                                    and all(48 <= c <= 57 for c in tail[19]) and int(tail[19]) < 2**64):
-                                                observation = (tail[19].decode("ascii"), int(tail[1]))
-                                phase_reads.append(observation)
-                            ownership_budget["clocks"] += 1
-                            binding_at = time.monotonic()
-                            if (owner.evidence_binding is not None and phase_reads[0] is not None
-                                    and phase_reads[0] == phase_reads[1]
-                                    and phase_reads[0] == (owner.pids.get(process.pid), owner.evidence_binding["launcher"]["pid"])
-                                    and type(begin) in (int, float) and type(end) in (int, float)
-                                    and 0 <= begin <= binding_at < end <= 9007199254740991
-                                    and cap == 480 and end == min(begin + 480, action_end)):
-                                owner.evidence_phase = dict(
-                                    name="scenarios", allocation_state="bound", reason="none",
-                                    controller=dict(pid=process.pid, start=phase_reads[0][0]), entered=begin, deadline=end,
-                                    outcome="partial", exit=None, finished=None, seconds=None, interrupted=None)
-                                owner.evidence_active_open = True  # Immutable allocation complete LAST.
-                        while process.poll() is None:
-                            if time.monotonic() >= end:
-                                raise TimeoutError(f"{name} action deadline")
-                            ready = root / "cancellation-ready.json"
-                            if args.exercise == "cancellation" and ready.exists() and not (output / "active.json").exists():
-                                witness = json.loads(ready.read_text())
-                                owner.sample()
-                                with owner.lock:
-                                    if (owner.pids.get(witness["provider"]["pid"]) == witness["provider"]["pid_start"]
-                                            and owner.units and owner.groups):
-                                        active = dict(witness, launcher=dict(pid=os.getpid(), start=identity(os.getpid())),
-                                                      owned=dict(identities=dict(owner.pids), units=sorted(owner.units),
-                                                                 groups=sorted(owner.groups)), source_sha=receipt["source_sha"])
-                                        temporary = output / "active.tmp"
-                                        temporary.write_text(json.dumps(active, indent=2))
-                                        temporary.replace(output / "active.json")
-                            time.sleep(0.02)
-                        code = process.returncode
-                        active_phase["exit"] = code
-                    finally:
-                        if name == "scenarios" and args.exercise == "baseline":
-                            owner.evidence_active_open = False
-                        active_phase["finished"] = time.monotonic()
-                        active_phase["seconds"] = active_phase["finished"] - begin
-                        active_phase["interrupted"] = process.poll() is None
-                        if name == "scenarios" and args.exercise == "baseline":
-                            # This marker is reached only after ALL original phase
-                            # assignments. No extra poll, decode or status transfer.
-                            owner.evidence_terminal = True
+                                binding_at = time.monotonic()
+                                if (owner.evidence_binding is not None and phase_reads[0] is not None
+                                        and phase_reads[0] == phase_reads[1]
+                                        and phase_reads[0] == (owner.pids.get(process.pid), owner.evidence_binding["launcher"]["pid"])
+                                        and type(begin) in (int, float) and type(end) in (int, float)
+                                        and 0 <= begin <= binding_at < end <= 9007199254740991
+                                        and cap == 480 and end == min(begin + 480, action_end)):
+                                    owner.evidence_phase = dict(
+                                        name="scenarios", allocation_state="bound", reason="none",
+                                        controller=dict(pid=process.pid, start=phase_reads[0][0]), entered=begin, deadline=end,
+                                        outcome="partial", exit=None, finished=None, seconds=None, interrupted=None)
+                                    owner.evidence_active_open = True  # Immutable allocation complete LAST.
+                            while process.poll() is None:
+                                if time.monotonic() >= end:
+                                    raise TimeoutError(f"{name} action deadline")
+                                ready = root / "cancellation-ready.json"
+                                if args.exercise == "cancellation" and ready.exists() and not (output / "active.json").exists():
+                                    witness = json.loads(ready.read_text())
+                                    owner.sample()
+                                    with owner.lock:
+                                        if (owner.pids.get(witness["provider"]["pid"]) == witness["provider"]["pid_start"]
+                                                and owner.units and owner.groups):
+                                            active = dict(witness, launcher=dict(pid=os.getpid(), start=identity(os.getpid())),
+                                                          owned=dict(identities=dict(owner.pids), units=sorted(owner.units),
+                                                                     groups=sorted(owner.groups)), source_sha=receipt["source_sha"])
+                                            temporary = output / "active.tmp"
+                                            temporary.write_text(json.dumps(active, indent=2))
+                                            temporary.replace(output / "active.json")
+                                time.sleep(0.02)
+                            code = process.returncode
+                            active_phase["exit"] = code
+                        except BaseException as exc:
+                            command_failure = (exc, exc.__traceback__)  # Before phase finalization/poll.
+                            raise
+                        finally:
+                            if name == "scenarios" and args.exercise == "baseline":
+                                owner.evidence_active_open = False
+                            active_phase["finished"] = time.monotonic()
+                            active_phase["seconds"] = active_phase["finished"] - begin
+                            active_phase["interrupted"] = process.poll() is None
+                            if name == "scenarios" and args.exercise == "baseline":
+                                # This marker is reached only after ALL original phase
+                                # assignments. No extra poll, decode or status transfer.
+                                owner.evidence_terminal = True
+                    except BaseException as exc:
+                        if command_failure is None:
+                            command_failure = (exc, exc.__traceback__)  # Before log __exit__.
+                        raise
                 if diagnostic is not None:
                     diagnostic.receive()  # SAME command end/alarm, after actual exit/finalization.
+            except BaseException as exc:
+                if command_failure is None:
+                    command_failure = (exc, exc.__traceback__)  # Before outer diagnostic release.
+                raise
             finally:
-                if diagnostic is not None:
-                    diagnostic.release()
+                try:
+                    if diagnostic is not None:
+                        diagnostic.release()
+                finally:
+                    if command_failure is not None:
+                        # Select from the saved tuple, never from a later context
+                        # chain. Native context retains secondary finalizer errors.
+                        error, tb = command_failure
+                        raise error.with_traceback(tb)
             arm_deadline(action_end)
             if code:
                 raise RuntimeError(f"{name} exited {code}")
@@ -1172,8 +6207,7 @@ def main() -> int:
                               "--root", str(root), "--source", str(source),
                               "--sha", receipt["source_sha"],
                               "--exercise", args.exercise])
-        result = json.loads((root / "scenario.json").read_text())
-        receipt.update(result)
+        # Only the existing collector admits detached scenario claims.
         receipt["status"] = "PASS"
     except BaseException as exc:
         action_failure = (exc, exc.__traceback__)  # Before formatting or diagnostic work.
@@ -1193,9 +6227,6 @@ def main() -> int:
         collection_diagnostic: dict[str, tuple] = {}
         published_members: dict[str, bytes] = {}
         failed_members: set[str] = set()
-
-        def sanitize_evidence(text: str) -> str:
-            return redact(text, collection_state["token"], collection_state["context"])
 
         def reserve(name: str, cap: float, outer: float) -> dict:
             entered = time.monotonic()
@@ -1273,7 +6304,8 @@ def main() -> int:
                 except FileNotFoundError:
                     pass  # No accepted ledger; cases remain UNKNOWN.
                 except (OSError, ValueError, KeyError, TypeError, UnicodeError) as exc:
-                    incomplete("collection", exc)
+                    claim = incomplete("collection", exc)
+                    observe_collection(claim)
             operations["owner"]["attempted"] = True
             try:
                 if owner is not None and args.exercise == "baseline":
@@ -1746,9 +6778,10 @@ def main() -> int:
                     receipt["cleanup"].setdefault("observed_groups", sorted(owner.groups.copy()))
 
         export = reserve("export", 120, hard_end)
+        final_encoding_refused = False
 
         def publish(row: dict, *, final: bool = False) -> None:
-            nonlocal final_result_committed
+            nonlocal final_result_committed, final_encoding_refused
             temporary = output / "result.tmp"
             destination = output / "result.json"
             if not final:
@@ -1758,7 +6791,15 @@ def main() -> int:
                 publish_failure(output, output_identity, row, failure_time)
                 return
             _publication_destination(output, output_identity, "result.json", export_time)
-            temporary.write_text(json.dumps(row, indent=2))
+            try:
+                candidate = _result_json(row, export_time, token=collection_state["token"],
+                                         context=collection_state["context"])
+            except BaseException:
+                final_encoding_refused = True
+                raise
+            with temporary.open("wb") as stream:
+                stream.write(candidate)
+            _publication_destination(output, output_identity, "result.json", export_time)
             # Finish all fallible preparation before the final admission check.
             # Retire SIGALRM process-wide, including any queued alarm. A thread
             # mask alone cannot cover an alarm delivered to a surviving watcher.
@@ -1866,11 +6907,13 @@ def main() -> int:
             receipt.update(failure_categories())
             receipt["completed_cases"] = completed_exported
             export_time()
-            detailed = json.loads(sanitize_evidence(json.dumps(receipt)))
-            detailed["completed_cases"] = completed_exported
+            # Only the collector's complete detached claims enter this envelope.
+            # Metadata shares the bounded typed original-context admission; no
+            # raw serialization/reparse or traceback fallback can rescue it.
+            receipt.update(collection_state["safe_scenario"])
             if ownership_evidence is not None:
-                detailed["ownership_evidence"] = ownership_evidence
-            publish(detailed, final=True)
+                receipt["ownership_evidence"] = ownership_evidence
+            publish(receipt, final=True)
         except BaseException as exc:
             if not final_result_committed:
                 receipt["status"] = "FAIL"
@@ -1885,7 +6928,11 @@ def main() -> int:
                 try:
                     signal.signal(signal.SIGALRM, interrupted)
                     arm_deadline(export["deadline"])
-                    publish(failure_row())
+                    # A refused new envelope cannot rewrite an ENTIRE earlier
+                    # FAIL. Retain the original closed fallback when initial
+                    # persistence was unavailable, and for other export errors.
+                    if not (initial_fail_published and final_encoding_refused):
+                        publish(failure_row())
                 except BaseException:
                     # A successful initial FAIL remains if replacement never commits.
                     # False means persistence was unavailable, never a claimed receipt.
