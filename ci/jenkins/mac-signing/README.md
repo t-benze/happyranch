@@ -1,7 +1,8 @@
 # Attended HappyRanch macOS signing source
 
-Original delivery TASK-14158 continues under sole current manager root TASK-14346,
-Founder THR-104 seq612 (seq609 retains the Jenkins choice).
+Original delivery TASK-14158 continues under sole current manager root TASK-14353
+and Founder THR-104 seq612 (seq609 retains the Jenkins choice).
+TASK-14346 is failed historical provenance.
 This source implements the accepted TASK-14160 design/cases (SHA256
 `d6886d89cc38cc55274964f071adddb26d72d71c7486952af9856af1ff0a4704` /
 `43dc973a9f12efb5b98568fa63df929b59de408191109ce5441d23d77ab573d4`),
@@ -67,7 +68,8 @@ holds without credential/CSRF changes. GET200 grants no Configure/Build rights.
 Founder THR104seq612 approved the exact source-only DEV-I03 amendment from
 seq598/att443, SHA256 `fbf219a5c51dce31a4086c2c193b624639548f9ccfaa5ba4b46c2c957c110bfa`.
 The installed amendment covers this continuation and expressly delegated source
-corrections; TASK14349's manager brief supplies the exact HIGH source radius.
+corrections; current TASK14353's TASK14356 brief supplies the exact HIGH
+five-file correction radius on the retained TASK14349 source/PR1281.
 `owner-session.sh` is now source, subject to independent FULL review, separate
 scoped QA, normal hooks/static checks and manager guarded merge. **Source
 acceptance is not native acceptance.** No live operation below is authorized by
@@ -111,6 +113,14 @@ One concrete setup candidate after inspection and exact later permission:
    Implementation-Version `3355.3357.v931d3c992987`, Main-Class
    `hudson.remoting.Launcher`, observed7Nov2026. Any controller/JAR drift holds
    for root reconciliation; no latest download or automatic pin update.
+   Before launching, attended setup prepares and validates both exact0700
+   owner-owned directories `agent/` and `agent/remoting/` under the private state
+   root, checking every parent. Missing normal directories may be created;
+   aliases, non-directories, wrong ownership or insecure permissions refuse.
+   Pinned remoting931d3c992987 `WorkDirManager.initializeWorkDir` checks the
+   work directory and default internal `remoting` directory before creating its
+   caches/log components. Both must exist for the retained
+   `-failIfWorkDirIsMissing`; that fence is never removed for first use.
 2. Root separately prepares the same verified six files plus `config.xml.in` on
    the controller at `/home/benze/HappyRanchSigningController/$ROOT/release/$SOURCE`,
    with private0700 parents and0600 files. This explicit private staging path
@@ -124,9 +134,15 @@ One concrete setup candidate after inspection and exact later permission:
    Controller stays zero executors. Source performs no provisioning. General-node
    distinct UID/no-owner-Keychain-access proof is still unavailable: this
    candidate conservatively requires other executor nodes offline and no other
-   running/queued build. Enabled dynamic/unknown job placement also holds; root
-   resolves it under separate exact authority. Idle or a configured service path
-   cannot satisfy isolation. No unrelated workload is killed or reconfigured.
+   running/queued build. The controller reads the exported Jenkins2.568.3
+   `labelExpression` scalar. An enabled Freestyle job restricted to another
+   simple label is eligible under that
+   placement rule; owner-label, unrestricted/null, compound or missing/malformed
+   placement holds. Complete typed counts, Booleans, labels, job/node inventories
+   and executor/one-off arrays are required; missing/null facts never mean idle.
+   Root resolves held placement under separate exact authority. Idle or a
+   configured service path cannot satisfy isolation. No unrelated workload is
+   killed or reconfigured.
 4. Establish the actual mapping and **existing** SSH host/login trust for the
    selected candidate `benze@192.168.18.174:22`. A different mapping is returned
    to root, never guessed. The source uses only that destination, stock trust
@@ -170,7 +186,11 @@ One concrete setup candidate after inspection and exact later permission:
 The attended window lasts at most30minutes, with no automatic reconnect/relaunch.
 `stop`, signals, input failure, timeout and child failure close admission and
 settle only original owned children. An unsettled group, partial stage, failed
-receipt or timeout remains FAILED_OR_UNKNOWN and retained. SESSION, consent,
+receipt or timeout remains FAILED_OR_UNKNOWN and retained.
+After a leader is reaped or original-child ownership is lost, no further TERM
+or KILL is sent to its numeric group, including between cleanup signals.
+Inherited streams or surviving descendants remain unresolved and cannot admit
+work; observing a group ID is not authority to signal it. SESSION, consent,
 permission and native ACTIVE/run/attempt records are not age-unlocked or deleted.
 A later window needs explicit root process/state reconciliation; do not manually
 edit a marker to obtain admission. Owner locks the existing login Keychain in UI
@@ -247,6 +267,14 @@ prerequisites, manager uses the existing **fixed-origin netrc-reference** API at
 `http://127.0.0.1:8081`. Never read/copy/embed its credential contents, add an auth
 client, follow redirects or use an advertised URL as an authenticated target.
 No controller API operation runs from this source leg.
+
+Before the whole-file upload, independently establish at least **1GiB free on
+BOTH the Mac volume** holding private workspace/inputs/runs **and the
+controller upload storage** (including its temporary upload area). Unknown or
+insufficient free space on either volume means refusal/hold before POST. The
+runner's Mac free-space check does not establish controller capacity; root must
+obtain that separate observation under later exact live permission. This source
+leg performs no live disk check.
 
 Use the accepted ordinary whole-file multipart `/job/happyranch-mac-signing/buildWithParameters`
 plan: core file field `ORIGINAL_ZIP=@<exact retained absolute original>;filename=original.zip`

@@ -193,15 +193,16 @@ sub command {
     setpgid($pid, $pid);
     my $select = IO::Select->new($ro, $re);
     my %sink = (fileno($ro)=>$out, fileno($re)=>$err);
-    my ($reason, $raw, $count, $teardown, $kill_sent) = ('', undef, 0, undef, 0);
+    my ($reason, $raw, $count, $teardown, $kill_sent, $owned) = ('', undef, 0, undef, 0, 1);
     local $SIG{TERM} = sub { $reason ||= 'signal'; };
     local $SIG{INT} = sub { $reason ||= 'signal'; };
     local $SIG{HUP} = sub { $reason ||= 'signal'; };
     while (1) {
-        if (!defined($raw)) {
+        if ($owned) {
             my $w = waitpid($pid, WNOHANG);
             $raw = $? if $w == $pid;
             $reason ||= 'wait_error' if $w == -1;
+            $owned = 0 if $w == $pid || $w == -1;
         }
         my $group = kill(0, -$pid);
         last if defined($raw) && !$group && !$select->count;
@@ -210,9 +211,11 @@ sub command {
         # A closed leader with inherited streams still needs settlement.
         $reason ||= 'inherited_stream' if defined($raw) && !$group && $select->count && mono() >= $end;
         if ($reason && !defined($teardown)) {
-            $teardown = mono(); kill('TERM', -$pid);
+            $teardown = mono(); kill('TERM', -$pid) if $owned;
         }
-        if (defined($teardown) && mono() >= $teardown + ($label eq 'stage' ? 8 : 2) && !$kill_sent) {
+        # Only the original unreaped child owns this numeric group. Reaping or
+        # losing it above ends authority, including between TERM and KILL.
+        if ($owned && defined($teardown) && mono() >= $teardown + ($label eq 'stage' ? 8 : 2) && !$kill_sent) {
             kill('KILL', -$pid); $kill_sent = 1;
         }
         last if defined($teardown) && mono() >= $teardown + 10;

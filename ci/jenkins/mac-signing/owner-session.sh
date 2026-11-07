@@ -55,7 +55,10 @@ sub observe {
     my $sel=IO::Select->new($r); my ($out,$raw,$eof)=('',undef,0);
     my $end=mono()+$seconds; $end=$window_end if defined($window_end)&&$window_end<$end; my $bad=0;
     while (mono()<$end && !$cancel) {
-        my $n=waitpid($pid,WNOHANG); $raw=$? if $n==$pid;
+        unless (defined($raw)) {
+            my $n=waitpid($pid,WNOHANG); $raw=$? if $n==$pid;
+            if ($n==-1) {$bad=1;last} # Lost original-child ownership, never signal.
+        }
         last if defined($raw) && $eof && !kill(0,-$pid);
         if (!$eof && $sel->can_read(0.05)) {
             my $got=sysread($r,my $chunk,8192);
@@ -65,12 +68,11 @@ sub observe {
         } else { sleep 0.02; }
     }
     if (!defined($raw) || !$eof || kill(0,-$pid) || $cancel || $bad) {
-        kill('TERM',-$pid); my $stop=mono()+2;
-        while (mono()<$stop) { my $n=waitpid($pid,WNOHANG); $raw=$? if $n==$pid; last if defined($raw)&&!kill(0,-$pid); sleep 0.05; }
-        kill('KILL',-$pid) if kill(0,-$pid);
-        my $reap=mono()+2;
-        while (!defined($raw)&&mono()<$reap) {my $n=waitpid($pid,WNOHANG);$raw=$? if $n==$pid;sleep 0.05 unless defined($raw)}
+        # A reaped leader no longer owns its numeric group. Even an inherited
+        # stream or a currently existing group cannot renew signaling authority.
+        my $settled=defined($raw)?!kill(0,-$pid):reap($pid);
         close($r) unless $eof;
+        die "REFUSED: observation FAILED_OR_UNKNOWN; group/stream unresolved; no admission\n" unless $settled&&$eof;
         die "REFUSED: observation failed/timeout/cancelled; no admission\n";
     }
     need(WIFEXITED($raw)&&WEXITSTATUS($raw)==0,'observation exit');
@@ -107,21 +109,28 @@ sub api {
     need($path=~m{\A/(?:api/json\?|computer/|queue/|job/|jnlpJars/)} && $path!~/[\r\n]/,'fixed controller read');
     return observe(12,$binary?1406409:262144,'/usr/bin/curl','--disable','--globoff','--silent','--fail','--noproxy','*','--proxy','','--proto','=http','--max-redirs','0','--connect-timeout','3','--max-time','10','--max-filesize',$binary?'1406408':'262144','--netrc-file','/home/benze/.config/jenkins/netrc','http://127.0.0.1:8081'.$path);
 }
+# Inspect JSON types before any comparison can coerce a missing/string fact.
+# JSON::PP preserves strings when encoding, so "0" cannot stand in for count 0.
+sub json_count {return defined($_[0])&&!ref($_[0])&&$json->encode($_[0])=~/\A(?:0|[1-9][0-9]*)\z/}
+sub json_string {return defined($_[0])&&!ref($_[0])&&$json->encode($_[0])=~/\A"/}
 sub fresh_controller {
     my ($source,$root,$sid,$grant)=@_;
     native_manager($root,$sid);
     need($here eq remote_release($source,$root),'pinned controller release location'); private_dir($here);
-    my $c=$json->decode(api('/api/json?tree=numExecutors,quietingDown,jobs[name,_class,buildable,disabled,assignedLabel[name]]'));
-    need($c->{numExecutors}==0&&!$c->{quietingDown}&&ref($c->{jobs}) eq 'ARRAY'&&@{$c->{jobs}}<=16,'complete bounded controller inventory');
+    my $c=$json->decode(api('/api/json?tree=numExecutors,quietingDown,jobs[name,_class,buildable,disabled,labelExpression]'));
+    need(ref($c) eq 'HASH'&&json_count($c->{numExecutors})&&JSON::PP::is_bool($c->{quietingDown})&&ref($c->{jobs}) eq 'ARRAY'&&@{$c->{jobs}}<=16,'complete typed bounded controller inventory');
+    need($c->{numExecutors}==0&&!$c->{quietingDown},'controller zero executors and not quieting');
     my $seen=0;
     for my $j (@{$c->{jobs}}) {
-        need(ref($j) eq 'HASH'&&($j->{name}//'')=~/\A[a-zA-Z0-9_-]+\z/,'closed top-level job inventory; folders/unknown hold');
+        need(ref($j) eq 'HASH'&&json_string($j->{name})&&$j->{name}=~/\A[a-zA-Z0-9_-]+\z/&&json_string($j->{_class})&&JSON::PP::is_bool($j->{buildable})&&JSON::PP::is_bool($j->{disabled}),'complete typed top-level job inventory; folders/unknown hold');
         if ($j->{name} eq $job) { $seen++; next; }
         # Dynamic Pipeline/folder/unknown placement is not inferred from idle.
         need(($j->{_class}//'') eq 'hudson.model.FreeStyleProject','dynamic/unknown other-job placement');
-        next if JSON::PP::is_bool($j->{disabled})&&$j->{disabled};
-        my $label=$j->{assignedLabel}{name}//'';
-        need($label=~/\A[a-zA-Z0-9_-]+\z/&&$label ne $node,'other-job placement may reach owner');
+        next if $j->{disabled};
+        # Jenkins2.568.3 AbstractProject exports getAssignedLabelString under
+        # labelExpression. Null means unrestricted/unknown, never a safe label.
+        my $label=$j->{labelExpression};
+        need(json_string($label)&&$label=~/\A[a-zA-Z0-9_-]+\z/&&$label ne $node,'other-job placement may reach owner');
     }
     need($seen==1,'exact signing job inventory');
     my $xml=api("/job/$job/config.xml");
@@ -134,19 +143,28 @@ sub fresh_controller {
     $compare =~ s/\\n/\n/g;
     observe(5,128,'/home/benze/projects/happyranch/.venv/bin/python3','-c',$compare,$xml,$rendered);
     my $nodes=$json->decode(api('/computer/api/json?tree=computer[displayName,offline,numExecutors,assignedLabels[name],executors[currentExecutable[number,url]],oneOffExecutors[currentExecutable[number,url]]]'));
-    need(ref($nodes->{computer}) eq 'ARRAY'&&@{$nodes->{computer}}<=8,'complete bounded node inventory');
+    need(ref($nodes) eq 'HASH'&&ref($nodes->{computer}) eq 'ARRAY'&&@{$nodes->{computer}}<=8,'complete bounded node inventory');
     my $owner=0;
     for my $n (@{$nodes->{computer}}) {
+        need(ref($n) eq 'HASH'&&json_string($n->{displayName})&&length($n->{displayName})&&json_count($n->{numExecutors})&&JSON::PP::is_bool($n->{offline})&&ref($n->{assignedLabels}) eq 'ARRAY'&&ref($n->{executors}) eq 'ARRAY'&&ref($n->{oneOffExecutors}) eq 'ARRAY','complete typed node facts');
+        for my $label (@{$n->{assignedLabels}}) {need(ref($label) eq 'HASH'&&json_string($label->{name})&&length($label->{name}),'complete typed node labels')}
+        need(@{$n->{executors}}==$n->{numExecutors},'complete node executor inventory');
+        for my $e (@{$n->{executors}},@{$n->{oneOffExecutors}}) {
+            need(ref($e) eq 'HASH'&&exists($e->{currentExecutable}),'complete executor observation');
+            next unless defined($e->{currentExecutable});
+            my $b=$e->{currentExecutable};
+            need(ref($b) eq 'HASH'&&json_count($b->{number})&&$b->{number}>0&&json_string($b->{url})&&length($b->{url}),'complete typed running build');
+        }
         if ($n->{displayName} eq $node) {
             $owner++; need($n->{numExecutors}==1&&(!defined($grant->{build})||!$n->{offline}),'one-executor owner node; stages require online');
-            my @labels=map {$_->{name}} @{$n->{assignedLabels}//[]};
+            my @labels=map {$_->{name}} @{$n->{assignedLabels}};
             need(@labels==1&&$labels[0] eq $node,'self-label only');
             my $nc=api("/computer/$node/config.xml");
             need($nc=~m{<mode>EXCLUSIVE</mode>}&&$nc=~m{<numExecutors>1</numExecutors>}&&$nc=~m{<launcher\s+class="hudson.slaves.JNLPLauncher"}&&$nc!~m{<label>[^<]+</label>},'exclusive inbound node config');
             my $expected=$grant->{home}."/Library/Application Support/HappyRanchSigning/agent";
             need($expected!~/[<>&]/&&index($nc,"<remoteFS>$expected</remoteFS>")>=0,'actual owner remoteFS');
-            need(!@{$n->{oneOffExecutors}//[]},'no owner one-off workload');
-            for my $e (@{$n->{executors}//[]}) {
+            need(!@{$n->{oneOffExecutors}},'no owner one-off workload');
+            for my $e (@{$n->{executors}}) {
                 next unless defined($e->{currentExecutable});
                 my $b=$e->{currentExecutable};
                 need(defined($grant->{build})&&$b->{number}==$grant->{build}&&($b->{url}//'')=~m{/job/\Q$job\E/\Q$grant->{build}\E/\z},'only selected owner build');
@@ -155,7 +173,7 @@ sub fresh_controller {
             # No positive no-Keychain-access proof exists for the general node.
             # Require it offline; no node is changed here and idle is insufficient.
             need($n->{numExecutors}==0||$n->{offline},'other executors online: actual distinct UID/no-key-access unresolved');
-            for my $e (@{$n->{executors}//[]},@{$n->{oneOffExecutors}//[]}) {need(!defined($e->{currentExecutable}),'other running build holds isolation')}
+            for my $e (@{$n->{executors}},@{$n->{oneOffExecutors}}) {need(!defined($e->{currentExecutable}),'other running build holds isolation')}
         }
     }
     need($owner==1,'exact dedicated owner node');
@@ -273,19 +291,23 @@ sub launch {
 }
 sub reap {
     my ($pid)=@_;return 1 unless defined($pid);
-    my $got=waitpid($pid,WNOHANG);my $raw=$got==$pid?$?:undef;
     # The retained process handle is a direct unreaped child; never kill a PID
-    # from a record. A previously reaped child cannot authorize another signal.
-    return !kill(0,-$pid) if $got==-1;
-    return !kill(0,-$pid) if defined($raw); # Never signal after leader was reaped.
-    kill('TERM',-$pid) unless defined($raw);
-    my $end=mono()+4;
-    while (!defined($raw)&&mono()<$end) {my $n=waitpid($pid,WNOHANG);$raw=$? if $n==$pid;sleep 0.05 unless defined($raw)}
-    return 0 if defined($raw)&&kill(0,-$pid); # Reaped leader + descendants is uncertainty.
-    kill('KILL',-$pid) unless defined($raw);
-    $end=mono()+4;
-    while (!defined($raw)&&mono()<$end) {my $n=waitpid($pid,WNOHANG);$raw=$? if $n==$pid;sleep 0.05 unless defined($raw)}
-    return defined($raw)&&!kill(0,-$pid);
+    # from a record. Recheck before EACH signal, including TERM-to-KILL. Reaping
+    # or ECHILD ends authority permanently; kill(0) is observation, not ownership.
+    for my $signal (qw(TERM KILL)) {
+        my $got=waitpid($pid,WNOHANG);
+        return 0 if $got==-1;
+        return !kill(0,-$pid) if $got==$pid;
+        kill($signal,-$pid); # waitpid==0: original direct child remains unreaped.
+        my $end=mono()+2;
+        while (mono()<$end) {
+            my $n=waitpid($pid,WNOHANG);
+            return 0 if $n==-1;
+            return !kill(0,-$pid) if $n==$pid;
+            sleep 0.05;
+        }
+    }
+    return 0; # No positive reap within the finite budget; retain uncertainty.
 }
 sub session_record_lock {
     my ($root)=@_;my $path="$root/SESSION/record.lock";
@@ -334,7 +356,13 @@ if (($mode//'') eq 'inspect'&&@args==0) {
     plain(dirname($base));
     mkdir($base,0700) or need(-d $base,'owner state root');private_dir($base);
     need(!-e "$base/owner-session.json"&&!-l "$base/owner-session.json"&&!-e "$base/SESSION"&&!-l "$base/SESSION"&&!-e "$base/ACTIVE"&&!-l "$base/ACTIVE",'retained session/partial stage; root reconciliation required');
-    for my $dir (qw(inputs runs permissions receipts consents agent)) {mkdir("$base/$dir",0700) or need(-d "$base/$dir",'private selected directory');private_dir("$base/$dir")}
+    # Pinned WorkDirManager validates workDir AND default internalDir before
+    # creating caches/log directories when -failIfWorkDirIsMissing is selected.
+    for my $dir (qw(inputs runs permissions receipts consents agent agent/remoting)) {
+        private_dir(dirname("$base/$dir"));
+        mkdir("$base/$dir",0700) or need(-d "$base/$dir",'private selected directory');
+        private_dir("$base/$dir");
+    }
     owned_java(undef);
     my $obs=remote($source,$root,$sid,'session');closed($obs,qw(version observed permission pins home));
     need($obs->{version} eq 'happyranch-signing-observation@1'&&!defined($obs->{permission})&&$obs->{home} eq $home&&$obs->{observed}<=time()&&$obs->{observed}>=time()-15,'fresh manager session observation');release($source,$obs->{pins});
