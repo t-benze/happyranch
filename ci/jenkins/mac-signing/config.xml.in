@@ -2,7 +2,7 @@
 <!-- Inert source. Render only AFTER guarded merge; never upload this template. -->
 <project>
   <actions/>
-  <description>HappyRanch accepted app signing; manual attended stages only. Source @@SOURCE@@. Owner setup remains separately held.</description>
+  <description>HappyRanch accepted app signing; manual attended stages only. Source @@SOURCE@@. Attended owner-session source; live setup and every stage require separate current permission.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <jenkins.model.BuildDiscarderProperty>
@@ -49,7 +49,7 @@ RELEASE="$HOME/Library/Application Support/HappyRanchSigning/release/$SOURCE"
 # These literal hashes are configuration pins, never caller parameters.
 test "$(/usr/bin/shasum -a 256 "$RELEASE/run-stage.sh" | /usr/bin/awk '{print $1}')" = '@@FILE0@@'
 test "$(/usr/bin/shasum -a 256 "$RELEASE/bounded-run.pl" | /usr/bin/awk '{print $1}')" = '@@FILE3@@'
-exec /bin/bash -p "$RELEASE/run-stage.sh" "$SOURCE" '@@FILE0@@' '@@FILE1@@' '@@FILE2@@' '@@FILE3@@' '@@FILE4@@'
+exec /bin/bash -p "$RELEASE/run-stage.sh" "$SOURCE" '@@FILE0@@' '@@FILE1@@' '@@FILE2@@' '@@FILE3@@' '@@FILE4@@' '@@FILE5@@'
 ]]></command>
     </hudson.tasks.Shell>
   </builders>

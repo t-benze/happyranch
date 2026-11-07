@@ -1,8 +1,13 @@
 # Ordinary Jenkins job helper
 
-The separately held, manual HappyRanch signing workload is documented in
-[`ci/jenkins/mac-signing/README.md`](../ci/jenkins/mac-signing/README.md), including
-its disabled source template, immutable app pins and native/protected prerequisites.
+The manual HappyRanch signing workload and its attended owner-session source are
+in [`ci/jenkins/mac-signing/README.md`](../ci/jenkins/mac-signing/README.md).
+Founder THR104seq612 permits source preparation only. The guide gives the exact
+nonsecret local `owner-session.sh inspect` command, the later bounded attended
+setup, current manager grant/build binding and separate live permission request.
+The installed job remains disabled; native owner/tools/isolation, Keychain/Apple
+operations and final signed bytes remain unverified. Source acceptance grants
+no live setup, enablement, upload or signing permission.
 
 This standalone Python helper operates an already-authorized **existing** Freestyle or Pipeline job on Unix (Linux/macOS). It requires standard-library Python 3.12–3.14 and an owner-controlled receipt/output directory. The same ordinary Jenkins APIs work for either job type; no Jenkinsfile, custom parameters, three-hook template, runtime adapter, node setup or plugin installation is needed.
 
