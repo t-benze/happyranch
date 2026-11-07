@@ -988,8 +988,8 @@ class WorkflowCompatibilityStore:
                                                existing=source_indexes)
                     _validate_installed(conn, expected_org_slug=expected_org_slug,
                                         advances=advances)
-                layout = _read_workflow_schema(conn, expected_org_slug=expected_org_slug,
-                                               advances=advances)[0]
+                    layout = _read_workflow_schema(conn, expected_org_slug=expected_org_slug,
+                                                   advances=advances)[0]
                 indexes = _owner_indexes_present(conn)
                 required = _owner_index_statements(layout, coding_extension=True)
                 if any(statement.split()[2] not in indexes for statement in required):
