@@ -800,7 +800,8 @@ class Controller:
             yield
         except Exception as exc:
             self.report.record("product", variant, exc)
-            if isinstance(exc, TimeoutError) or self.interrupted or (self.browser and self.browser.poisoned):
+            if (not isinstance(exc, (AssertionError, ValueError)) or self.interrupted
+                    or (self.browser and self.browser.poisoned)):
                 raise
             safe()  # Failure here stops dependent mutations; no reset or retry.
             self.results[variant] = dict(status="FAIL", evidence={}, at=time.monotonic())

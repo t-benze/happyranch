@@ -33,7 +33,8 @@ An E05 failure remains red even if E07 passes. Unsafe dependent work produces
 errors without reset, replay, replacement runtime, extra allowance or retries.
 Safe identity/bearer denials and Pause child/idempotent/stale/terminal/overview
 cases continue only after the complete protected-state comparison
-succeeds; failures stay attached to their own names. Stateful baseline, Pause
+succeeds; assertion/value failures stay attached to their own names. Unexpected
+runtime/transport errors stop dependent effects and become prerequisite errors. Stateful baseline, Pause
 and E04 groups keep their exact count prerequisites. A failed group gives
 unreached dependent cases explicit prerequisite ERRORs, while owned cleanup
 and independent local readers still run. E05 captures failure diagnostics in
