@@ -10,7 +10,7 @@ OpenAPI snapshot still own runtime rules.
 
 | File | Covers |
 | --- | --- |
-| [reusable-workflows.md](reusable-workflows.md) | Sequential U1a source contracts: immutable definitions, closed records, bounded graph validation and ABI; reducer, execution and admission pending |
+| [reusable-workflows.md](reusable-workflows.md) | Sequential U1 source contracts: immutable definitions, bounded graph validation, common pure reducer and data-driven briefs; execution and admission pending |
 | [coding-workflow.md](coding-workflow.md) | Ordered coding workflow: built-in definition, storage/setup, start, development → review → QA → final manager, revisions, successor, cancellation, Founder settings, guided host setup, K0–K3 history |
 | [document-workflows.md](document-workflows.md) | Workflow schema F–I, cutover, activation/draft ownership, authority publication (U2A/U2B), document-review templates, handoff (H), reviewer staging, revision C1, owner review UI |
 | [authority-policy.md](authority-policy.md) | THR-181 escalation policy/hook, THR-229 v2 dual-text policy checkpoints, THR-277/279 refusal routing and display, THR-299/291 continuation receipts |

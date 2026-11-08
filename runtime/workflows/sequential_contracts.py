@@ -70,7 +70,7 @@ def effective_limits(definition: Limits, original: Limits, requested: Limits) ->
     """Intersect original allowances; a new key/visit cannot replenish them.
 
     Epoch and return bounds are independent ceilings, so lower either safely
-    constrains the other. U1b owns actual counter consumption/exhaustion.
+    constrains the other. The pure reducer owns counter consumption/exhaustion.
     """
     epochs = min(x.max_content_epochs for x in (definition, original, requested))
     returns = min(epochs - 1, *(x.content_returns for x in (definition, original, requested)))
@@ -275,7 +275,7 @@ class ResultEnvelope(Closed):
     visit_id: Token
     definition_digest: Digest
     input_selection_digest: Digest
-    outcome: OutcomeName
+    outcome: Token
     outputs: Annotated[tuple[OutputRef, ...], BeforeValidator(_array), Field(max_length=32)]
     findings: Annotated[tuple[Finding, ...], BeforeValidator(_array), Field(max_length=32)]
     capability_receipts: Annotated[tuple[CapabilityRef, ...], BeforeValidator(_array), Field(max_length=8)]
@@ -312,7 +312,7 @@ class SuccessorRef(Closed):
 
 
 class TransitionRecord(Closed):
-    """Persistable transition syntax; U1b must verify it by deterministic reduction.
+    """Persistable transition syntax; compare it with the pure reducer decision.
 
     These identifiers are allocated by a future owning writer, never by a
     definition. Parsing does not prove CAS, settlement, uniqueness or history.
