@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,11 @@ class ProviderThrottle:
         self._semaphores: dict[str, threading.BoundedSemaphore] = {}
         self._spacing_locks: dict[str, threading.Lock] = {}
         self._last_launch: dict[str, float] = {}
+        # Same synchronous attempt only; concurrent workers and other providers
+        # still acquire their own slots. Reset on every exit, including vetoes.
+        self._contained_provider: ContextVar[str | None] = ContextVar(
+            "contained_throttle_provider", default=None,
+        )
 
     def ceiling_for(self, provider: str) -> int:
         return self._ceiling_overrides.get(provider, self._ceiling_default)
@@ -112,6 +118,27 @@ class ProviderThrottle:
                     now = self._monotonic()
             self._last_launch[provider] = now
 
+    def run_contained(
+        self,
+        provider: str,
+        launch: Launch,
+        on_event: OnThrottleEvent | None = None,
+    ) -> Any:
+        """Admit one supervisor attempt BEFORE final validation and spawn.
+
+        Reuse the ordinary slot/spacing/abort gates, but hold the slot through
+        backend finish. The contained executor reuses this admission instead
+        of waiting/revalidating after spawn. Only the supervisor retries 429s.
+        """
+        def admitted() -> Any:
+            token = self._contained_provider.set(provider)
+            try:
+                return launch()
+            finally:
+                self._contained_provider.reset(token)
+
+        return self.run(provider, admitted, on_event, backoff_seconds=())
+
     def run(
         self,
         provider: str,
@@ -142,6 +169,10 @@ class ProviderThrottle:
         released and re-acquired — a backing-off session must not keep a slot
         (that would effectively lower the ceiling, which the founder forbade).
         """
+        if self._contained_provider.get() == provider:
+            # The enclosing contained attempt already owns the slot. In
+            # particular, do not put before_fifo or spacing before stdin here.
+            return launch()
         from runtime.orchestrator.thread_move import current_thread_preparation
         abort_owner = current_thread_preparation()
         sem = self._semaphore_for(provider)
@@ -167,14 +198,13 @@ class ProviderThrottle:
             t0 = self._monotonic()
             acquire_slot()
             wait_seconds = self._monotonic() - t0
-        if wait_seconds > 0 and on_event is not None:
-            self._emit(
-                on_event,
-                SLOT_WAIT_ACTION,
-                {"provider": provider, "wait_seconds": wait_seconds, "ceiling": ceiling},
-            )
-
         try:
+            if wait_seconds > 0 and on_event is not None:
+                self._emit(
+                    on_event,
+                    SLOT_WAIT_ACTION,
+                    {"provider": provider, "wait_seconds": wait_seconds, "ceiling": ceiling},
+                )
             schedule = (
                 self._backoff_seconds if backoff_seconds is None else tuple(backoff_seconds)
             )

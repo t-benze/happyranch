@@ -1796,6 +1796,19 @@ Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_
 
 A process-wide, **per-provider** throttle (`runtime/orchestrator/throttle.py`, issue #85) gates every agent-subprocess launch through both built-in `executors._run_command` and the independent `CustomAdapterExecutor.run`, reached by task and thread workers on OS threads. Claude delegates to the common helper; custom adapters own separate selflaunch, communication/parser and throttle bodies, so common-helper evidence does not cover the custom body. It caps concurrency, de-bursts launches, and absorbs transient 429s — without resizing either pool (they stay as producers; the semaphore is the consumer-side cap). Decision record: [`docs/adr/0001-per-provider-executor-throttle.md`](../adr/0001-per-provider-executor-throttle.md).
 
+Contained thread invocations acquire their provider slot and honor spacing and
+`before_fifo()` revalidation after backend preparation/cancel-control registration,
+BEFORE final thread-move validation/commitment and `backend.launch`. The executor
+reuses that same attempt-scoped admission: no throttle wait or thread-move
+revalidation runs between spawn and its stdin communication. The slot stays held
+through backend cleanup and releases on every return, failure or typed deferral,
+before supervisor-owned 429 backoff/re-admission with a fresh handle. Terminal
+winners during admission are rechecked before final validation and launch;
+`on_started` remains after bind. This does not make filesystem/audit I/O or OS
+scheduling a hard stdin timing guarantee. Honest passthrough and direct self-launch
+retain their executor-owned throttle and existing retry semantics. Other contained
+producers retain their existing wiring.
+
 Keyed by provider string (`claude | codex | opencode | pi | ...`), so saturating one provider never blocks another:
 
 | Setting | Default | Meaning |

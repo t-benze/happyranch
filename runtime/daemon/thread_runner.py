@@ -43,6 +43,7 @@ from runtime.orchestrator.host_supervisor import (
     AdmissionRequest,
     HostSessionSupervisor,
     LaunchResult,
+    SessionOutcome,
     TerminalReason,
 )
 from runtime.orchestrator.org_config import (
@@ -1713,8 +1714,8 @@ async def _run_invocation_owned(
             # the daemon-wide HostSessionSupervisor (admission lease, atomic
             # ownership at grant, real backend launch into containment, opaque
             # cancellation, containment cleanup before exactly-once lease
-            # release). The executor and its per-provider throttle stay inside
-            # the launch body unchanged.
+            # release). Real containment acquires the provider throttle before
+            # final validation/commitment/spawn; the body reuses that slot.
             spec_builder = getattr(executor, "build_launch_spec", None)
             if spec_builder is None:
                 # Fail closed: no contained-launch seam — mirror the task
@@ -1789,6 +1790,10 @@ async def _run_invocation_owned(
                     payload=res,
                 )
 
+            def _prelaunch_wrapper(launch: Callable[[], SessionOutcome]) -> SessionOutcome:
+                from runtime.orchestrator.throttle import get_throttle
+                return get_throttle().run_contained(executor_name, launch, _on_throttle_event)
+
             move_owner.last_spec = launch_spec
             outcome = host_supervisor.run(
                 AdmissionRequest(
@@ -1806,6 +1811,9 @@ async def _run_invocation_owned(
                 launch_body=_launch_body,
                 pre_launch_validator=_pre_launch_validator,
                 final_prelaunch_validator=move_owner,
+                prelaunch_wrapper=(
+                    _prelaunch_wrapper if host_supervisor.probe().backend != "passthrough" else None
+                ),
             )
             launch = outcome.payload
             if launch is None:

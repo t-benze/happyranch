@@ -1445,6 +1445,7 @@ class HostSessionSupervisor:
         timeout: float | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
         final_prelaunch_validator: Callable[[], None] | None = None,
+        prelaunch_wrapper: Callable[[Callable[[], SessionOutcome]], SessionOutcome] | None = None,
         on_terminal: "Callable[[SessionOutcome | None], None] | None" = None,
         allow_retries: bool = True,
     ) -> SessionOutcome:
@@ -1470,6 +1471,12 @@ class HostSessionSupervisor:
         ownership/deadline boundary opt in, so ordinary validation timing and
         count remain unchanged. A failure abandons the prepared handle and
         follows normal finalization/release without calling ``backend.launch``.
+
+        ``prelaunch_wrapper`` optionally acquires provider capacity/spacing
+        after the post-registration ownership gate, before final validation
+        and launch commitment. It holds capacity through attempt cleanup and
+        releases before the supervisor's 429 backoff/re-admission. Admission
+        exceptions abandon the pending handle and escape unchanged.
 
         ``allow_retries`` is a per-invocation override for the configured
         retry schedule.  It defaults to ``True`` so ordinary callers retain
@@ -1544,6 +1551,7 @@ class HostSessionSupervisor:
                     attempt=attempt,
                     pre_launch_validator=pre_launch_validator,
                     final_prelaunch_validator=final_prelaunch_validator,
+                    prelaunch_wrapper=prelaunch_wrapper,
                 )
             except BaseException as exc:
                 if request.move_reservation is not None:
@@ -1642,6 +1650,7 @@ class HostSessionSupervisor:
         attempt: int,
         pre_launch_validator: Callable[[], None] | None = None,
         final_prelaunch_validator: Callable[[], None] | None = None,
+        prelaunch_wrapper: Callable[[Callable[[], SessionOutcome]], SessionOutcome] | None = None,
     ) -> SessionOutcome:
         """Run one granted attempt to a terminal outcome under its ownership
         record.
@@ -1694,6 +1703,47 @@ class HostSessionSupervisor:
         if ctx.terminal_reason() is not None:
             self._abandon_pre_launch(ctx, pending, attempt, request.move_reservation)
             return self._outcome(request, ctx, attempt)
+        # The optional provider admission runs after cancel-control registration
+        # and before final validation/commitment. Its slot spans this attempt's
+        # entire launch/body/cleanup, including every abandon and exception.
+        entered = False
+
+        def launch_prepared() -> SessionOutcome:
+            nonlocal entered
+            entered = True
+            # Shutdown/cancellation may have won during provider admission.
+            if ctx.terminal_reason() is not None:
+                self._abandon_pre_launch(ctx, pending, attempt, request.move_reservation)
+                return self._outcome(request, ctx, attempt)
+            return self._execute_prepared_attempt(
+                request, ctx=ctx, pending=pending, launch_spec=launch_spec,
+                launch_body=launch_body, grace_seconds=grace_seconds,
+                attempt=attempt, final_prelaunch_validator=final_prelaunch_validator,
+            )
+
+        if prelaunch_wrapper is None:
+            return launch_prepared()
+        try:
+            return prelaunch_wrapper(launch_prepared)
+        except BaseException:
+            if not entered:
+                # Slot/spacing admission can veto before final validation owns
+                # cleanup. Preserve typed deferrals and abandon exactly once.
+                self._safe_abandon(self._backend, pending, request.move_reservation)
+            raise
+
+    def _execute_prepared_attempt(
+        self,
+        request: AdmissionRequest,
+        *,
+        ctx: _AttemptContext,
+        pending: PendingHandle,
+        launch_spec: LaunchSpec,
+        launch_body: Callable[[RunningHandle], LaunchResult],
+        grace_seconds: float,
+        attempt: int,
+        final_prelaunch_validator: Callable[[], None] | None,
+    ) -> SessionOutcome:
         # ── recovery-only final launch validation ────────────────────
         # Preparation may consume a bounded recovery interval or permit a
         # replacement/cancellation. This hook deliberately runs after that
@@ -1739,6 +1789,11 @@ class HostSessionSupervisor:
             if not ctx.commit_launch():
                 self._abandon_pre_launch(ctx, pending, attempt, request.move_reservation)
                 return self._outcome(request, ctx, attempt)
+        # Observe a winner that landed while a caller-owned commitment was
+        # returning, before invoking the opaque backend launch operation.
+        if ctx.terminal_reason() is not None:
+            self._abandon_pre_launch(ctx, pending, attempt, request.move_reservation)
+            return self._outcome(request, ctx, attempt)
         # ── launch ──
         try:
             running = self._backend.launch(pending, launch_spec)

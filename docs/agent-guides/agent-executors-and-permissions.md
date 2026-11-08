@@ -1360,6 +1360,16 @@ historical process ownership. No permission, sandbox or credential rule changes.
 
 Built-in executors converge on `executors._run_command`, which runs every launch under the **per-provider throttle** (`runtime/orchestrator/throttle.py`, issue #85): a `threading.BoundedSemaphore` ceiling per provider string, an inter-launch spacing gate, and slot-releasing 429 backoff. Each executor passes its own `provider` string (the profile name — `"claude"`, `"codex"`, `"opencode"`, `"pi"`, or a custom profile name) and an optional `on_throttle_event` audit callback. The throttle never touches the permission surface — it is purely a launch-timing wrapper. See [runtime-and-configuration.md → Executor Throttle](./runtime-and-configuration.md#executor-throttle) and `docs/adr/0001-per-provider-executor-throttle.md`.
 
+For contained thread invocations, the supervisor's per-attempt prelaunch wrapper
+runs the throttle before final thread-move validation/commitment and spawn. The
+common builtin body and independent custom-adapter body reuse the already-held
+provider slot; neither repeats slot/spacing waits or `before_fifo()` after spawn.
+All abandon/veto/exception paths release it, as does completed containment cleanup,
+before supervisor-owned 429 backoff. Passthrough and direct self-launch keep the
+existing executor-owned throttle; other contained producers keep their wiring.
+The ownership/integrity/prepare/register/final-validation/commit/launch/bind order,
+unsigned/native callback boundaries and lifecycle audit payloads remain intact.
+
 Codex: `CodexExecutor.run` passes `-c sandbox_workspace_write.network_access=true` on every invocation. The workspace-write sandbox blocks localhost by default, which would prevent `happyranch report-completion` callbacks to `127.0.0.1`.
 
 opencode: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default denying `*` and allowing `happyranch *` plus per-agent allow rules. Do not pass `--dangerously-skip-permissions`; it bypasses `opencode.json`.

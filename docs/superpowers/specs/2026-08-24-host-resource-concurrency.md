@@ -1,5 +1,20 @@
 # Host-Resource Concurrency: Capability-Based Session Supervisor
 
+> **Issue #1307 contained-thread ordering correction (PR-B).** After the existing
+> ownership/integrity/prepare/cancel-register/ownership gates, thread invocations
+> on a real backend acquire provider capacity, spacing and `before_fifo()` checks
+> before final thread-move validation/commitment and spawn. An attempt-scoped
+> throttle binding lets the executor communicate without repeating those gates
+> after spawn. Capacity spans backend cleanup and releases on abandon, veto,
+> failure and success, before supervisor-owned 429 sleep/re-admission. A terminal
+> winner observed after admission or caller-owned commitment abandons pending
+> containment without launching; commitment-to-bind races retain the existing
+> first-wins containment protocol. Passthrough/direct self-launch and other
+> producers retain their throttle wiring. No schema, lifecycle writer/row shape,
+> TaskStatus, permission or callback contract changes. Historical slice wiring
+> descriptions below retain their original scope.
+
+
 > Status: current
 > Authority: founder rulings THR-207 seq 32 (approving rulings 1/2/3/4/5/6 as
 > amended by seq 31 rulings 3/4), design artifact TASK-5568
