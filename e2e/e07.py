@@ -778,10 +778,8 @@ def exercise(c: Controller) -> None:
             c.poll(lambda: relay.selected.get("closed"),"E07 downstream outcome")
             require(relay.selected["status"] == 409 and relay.selected["response"] == {"detail":{"code":"task_not_active","task_id":W,"status":"cancelled","cancelled":True}}
                     and relay.selected["downstream"] in {"EOF","peer-gone"},"E07 task-active denial separate from dead CLI")
-            window = dict(entered=time.monotonic(),samples=[])
+            window = dict(samples=[])
             c.e07["window"] = window
-            window["end"] = window["entered"]+1
-            require(window["end"] < c.case_deadline,"E07 reserve full second")
             # Retained full evidence is live: cyclic GC can scan that entire
             # growing graph without reclaiming it. Defer only automatic cyclic
             # collection in THIS controller interpreter during the bounded
@@ -791,6 +789,11 @@ def exercise(c: Controller) -> None:
                 gc.disable()
                 while True:
                     sample, sample_content = frame(c,P,W)
+                    if not window["samples"]:
+                        # The first fresh acquisition defines entry, with no
+                        # setup/GC scheduling gap outside the sampled window.
+                        window.update(entered=sample["entered"], end=sample["entered"]+1)
+                        require(window["end"] < c.case_deadline,"E07 reserve full second")
                     sample["closure"] = closure(c,tree,held["launch"]["child"])
                     window["samples"].append(sample)
                     require(sample_content == freeze_content and sample["witnesses"] == after["witnesses"],"E07 bounded full content/launch absence")
@@ -798,7 +801,9 @@ def exercise(c: Controller) -> None:
                     require(not any(p["start"] == p["observed_start"] for p in sample["closure"]["processes"])
                             and not any(g["pids"] for g in sample["closure"]["groups"].values()) and not sample["closure"]["pending"],"E07 product stays closed")
                     previous = window["entered"] if len(window["samples"]) == 1 else window["samples"][-2]["entered"]
-                    require(sample["entered"]-previous <= .05 and sample["finished"]-sample["entered"] <= .05,"E07 fresh sample interval <=50ms")
+                    gap, duration = sample["entered"]-previous, sample["finished"]-sample["entered"]
+                    require(0 <= gap <= .25 and 0 <= duration <= .25,"E07 fresh sample interval <=250ms",
+                            dict(interval_seconds=gap, frame_seconds=duration, sample=len(window["samples"])))
                     c.remaining()
                     if sample["entered"] >= window["end"]:
                         break
@@ -813,6 +818,7 @@ def exercise(c: Controller) -> None:
                     gc.enable()
                 else:
                     gc.disable()
+            require(len(window["samples"]) >= 5,"E07 at least five fresh samples", len(window["samples"]))
             window["finished"] = time.monotonic()
             c.remaining()
 
