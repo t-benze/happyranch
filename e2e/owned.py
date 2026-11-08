@@ -27,7 +27,7 @@ class Owned:
         self.groups: set[str] = set()
         self.providers: set[int] = set()
         self.lock = threading.RLock()
-        # Independent of the optional diagnostic slots. This launcher is the
+        # This launcher is the
         # sole consuming owner of adopted children; Popen owns direct children.
         self.launcher = (os.getpid(), identity(os.getpid()))
         if self.launcher[1] is None:
@@ -40,28 +40,6 @@ class Owned:
         self.errors: list[str] = []
         self.reaped: list[dict] = []
         self.collisions: list[dict] = []
-        # Optional baseline diagnostics. No slot is armed by construction, and
-        # none of this memory supplies containment, signal or wait authority.
-        self.evidence_main = threading.current_thread()
-        self.evidence_binding = None
-        self.evidence_phase = None
-        self.evidence_original_phase = None
-        self.evidence_terminal = False
-        self.evidence_phase_pid = None
-        self.evidence_active_open = False
-        self.evidence_entry = None
-        self.evidence_entry_consumed = False
-        self.evidence_writes_ended = False
-        self.evidence_budget = dict(clocks=0, stats=0, cycles=0, tokens=0)
-        self.evidence_fd_clear = True
-        self.evidence_slots = {}
-        for name in ("active", "precleanup"):
-            self.evidence_slots[name] = dict(
-                state="unattempted", reason="unreached", owner=None, entered=None,
-                finished=None, deadline=None, join="unknown", launcher_a=None,
-                launcher_b=None, controller_a=None, controller_b=None, targets=None)
-        self.evidence_returns = dict(state="unattempted", reason="unreached",
-                                     outcome="unreached", rows=None, coverage="none")
         if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
             raise RuntimeError("runner subreaper unavailable")
         descriptor = os.pidfd_open(os.getpid())
@@ -186,39 +164,6 @@ class Owned:
 
     def sample(self) -> None:
         with self.lock:
-            # Harvest only the ORIGINAL traversal below. A failed traversal is
-            # never repaired by another sample or a first-17 projection.
-            evidence = self.evidence_binding
-            phase = self.evidence_phase
-            budget = self.evidence_budget
-            who = threading.current_thread()
-            selected = None
-            children = []
-            token_steps = 0
-            traversal_complete = True
-            traversal_reason = "incomplete"
-            cycle = False
-            entry = self.evidence_entry
-            if evidence is not None and not self.evidence_writes_ended:
-                if (who is self.evidence_main and entry is not None
-                        and not self.evidence_entry_consumed):
-                    self.evidence_entry_consumed = True  # Original entry only.
-                    selected = "precleanup"
-                elif (who is self.evidence_main and self.evidence_entry_consumed
-                      and self.evidence_slots["precleanup"]["state"] == "claimed"):
-                    self.evidence_slots["precleanup"].update(state="refused", reason="reentry")
-                elif (who is self.thread and self.evidence_active_open
-                      and self.evidence_slots["active"]["state"] in ("unattempted", "claimed")):
-                    cycle = budget["cycles"] < 24000
-                    if cycle:
-                        budget["cycles"] += 1
-                    elif self.evidence_slots["active"]["state"] == "unattempted":
-                        self.evidence_slots["active"].update(state="refused", reason="cycle_limit", owner="watcher")
-                if selected is not None:
-                    self.evidence_slots[selected].update(state="claimed", reason="incomplete", owner="main")
-                elif cycle and self.evidence_slots["active"]["state"] == "claimed":
-                    self.evidence_slots["active"].update(state="refused", reason="reentry")
-                    cycle = False
             for pid,start in list(self.pids.items()):
                 observed = identity(pid)
                 if observed is not None and observed != start:
@@ -244,36 +189,15 @@ class Owned:
                     continue
                 seen.add(pid)
                 if pid != os.getpid() and identity(pid) != self.pids[pid]:
-                    traversal_complete = False
                     continue
                 try:
                     for task in Path(f"/proc/{pid}/task").iterdir():
                         for child in (task / "children").read_text().split():
                             child_pid = int(child)
-                            if (evidence is not None and not self.evidence_writes_ended
-                                    and pid == evidence["launcher"]["pid"] and (cycle or selected is not None)):
-                                if token_steps < 18 and budget["tokens"] < 432000:
-                                    token_steps += 1
-                                    budget["tokens"] += 1
-                                    if not 0 < child_pid < 2**64:
-                                        traversal_complete = False
-                                        traversal_reason = "malformed"
-                                    elif child_pid not in children:
-                                        children.append(child_pid)
-                                    if (cycle and selected is None and self.evidence_active_open
-                                            and self.evidence_slots["active"]["state"] == "unattempted"
-                                            and child_pid != self.evidence_phase_pid and child_pid in self.pids):
-                                        selected = "active"
-                                        self.evidence_slots[selected].update(
-                                            state="claimed", reason="incomplete", owner="watcher")
-                                else:
-                                    traversal_complete = False
-                                    traversal_reason = "overflow" if token_steps == 18 else "no_budget"
                             self.add(child_pid)
                             if child_pid in self.pids:
                                 pending.append(child_pid)
                 except (FileNotFoundError, ProcessLookupError):
-                    traversal_complete = False
                     continue
             for group in self.groups:
                 directory = Path("/sys/fs/cgroup") / group.lstrip("/")
@@ -282,290 +206,8 @@ class Owned:
                         if entry.is_dir() and (entry / "cgroup.procs").exists():
                             for pid in (entry / "cgroup.procs").read_text().split():
                                 self.add(int(pid))
-            # Optional incomplete traversal/diagnostics cannot veto an otherwise
-            # independently registered, generation/custody-qualified child.
+            # Reap only independently registered, generation/custody-qualified children.
             self.reap()
-            if selected is None:
-                return
-            slot = self.evidence_slots[selected]
-            # Claim is already consumed, before any optional I/O or clock.
-            reason = "incomplete"
-            try:
-                end = self.evidence_entry[1] if selected == "precleanup" else phase["deadline"] if phase else None
-                if budget["clocks"] >= 512:
-                    reason = "no_budget"
-                    return
-                budget["clocks"] += 1
-                entered = time.monotonic()
-                if type(end) not in (int, float) or not 0 <= entered < end <= 9007199254740991:
-                    reason = "no_budget"
-                    return
-                if selected == "precleanup":
-                    entered = self.evidence_entry[0]
-                slot.update(entered=entered, deadline=end)
-                if (evidence is not self.evidence_binding or phase is not self.evidence_phase
-                        or evidence["state"] != "bound" or phase is None
-                        or phase["allocation_state"] != "bound" or self.evidence_phase_pid is None):
-                    reason = "unbound"
-                    slot["join"] = "never_bound"
-                    return
-                if phase["outcome"] == "malformed":
-                    slot["join"] = reason = "malformed"
-                    return
-                expected_owner = self.evidence_main if selected == "precleanup" else self.thread
-                if who is not expected_owner or os.getpid() != evidence["launcher"]["pid"]:
-                    reason = "off_owner"
-                    return
-                if not traversal_complete:
-                    reason = traversal_reason
-                    return
-                if len(children) > 17:
-                    reason = "overflow"
-                    return
-                if selected == "active" and not self.evidence_active_open:
-                    reason = "unbound"
-                    return
-                targets = []
-                for child_pid in children:
-                    registered = self.pids.get(child_pid)
-                    if registered is not None and not (type(registered) is str and 1 <= len(registered) <= 20
-                                                        and registered[0] in "123456789" and all(c in "0123456789" for c in registered)):
-                        reason = "malformed"
-                        return
-                    kind = ("direct_phase" if registered == phase["controller"]["start"] else "phase_number_excluded") if child_pid == self.evidence_phase_pid else "nonphase"
-                    targets.append(dict(pid=child_pid, start=registered, kind=kind,
-                                        registration="unregistered" if registered is None else "matched",
-                                        a=None, b=None, close="not_opened",
-                                        wait=dict(state="unattempted", reason="excluded" if kind != "nonphase" else "not_registered" if registered is None else "unreached",
-                                                  outcome="unknown", at=None, code=None, status=None)))
-                context = {}
-                # This is work on the finite harvested set, not a second tree
-                # traversal. Context brackets enclose EVERY target observation.
-                reads = [("launcher_a", evidence["launcher"]["pid"], None, None),
-                         ("controller_a", phase["controller"]["pid"], None, None)]
-                for index, target in enumerate(targets):
-                    reads.extend(((None, target["pid"], index, "a"), (None, target["pid"], index, "b")))
-                reads.extend((("controller_b", phase["controller"]["pid"], None, None),
-                              ("launcher_b", evidence["launcher"]["pid"], None, None)))
-                for key, read_pid, index, side in reads:
-                    if budget["clocks"] >= 512 or budget["stats"] >= 80:
-                        reason = "no_budget"
-                        return
-                    budget["clocks"] += 1
-                    at = time.monotonic()
-                    if not entered <= at < end:
-                        reason = "no_budget"
-                        return
-                    budget["stats"] += 1
-                    observed = dict(outcome="unattempted", at=at, start=None, state=None, ppid=None)
-                    try:
-                        with open(f"/proc/{read_pid}/stat", "rb", buffering=0) as stream:
-                            raw = stream.read(4097)
-                    except TimeoutError:
-                        raise
-                    except (FileNotFoundError, ProcessLookupError):
-                        observed["outcome"] = "absent"
-                    except InterruptedError:
-                        observed["outcome"] = "interrupted"
-                    except OSError:
-                        observed["outcome"] = "unreadable"
-                    else:
-                        observed["outcome"] = "malformed"
-                        if not raw:
-                            observed["outcome"] = "empty"
-                        elif len(raw) > 4096:
-                            observed["outcome"] = "oversized"
-                        elif not raw.endswith(b"\n"):
-                            observed["outcome"] = "partial"
-                        elif raw.startswith(str(read_pid).encode("ascii") + b" (") and b") " in raw:
-                            tail = raw.rsplit(b") ", 1)[1].split()
-                            if (len(tail) >= 20 and tail[0] in (b"R", b"S", b"D", b"Z", b"T", b"t", b"W", b"X", b"x", b"K", b"P", b"I")
-                                    and 1 <= len(tail[1]) <= 20 and all(48 <= c <= 57 for c in tail[1])
-                                    and int(tail[1]) < 2**64
-                                    and 1 <= len(tail[19]) <= 20 and 49 <= tail[19][0] <= 57
-                                    and all(48 <= c <= 57 for c in tail[19]) and int(tail[19]) < 2**64):
-                                observed.update(outcome="observed", start=tail[19].decode("ascii"),
-                                                state=tail[0].decode("ascii"), ppid=int(tail[1]))
-                    if key is not None:
-                        context[key] = observed
-                        if key == "launcher_a" and (observed["outcome"] != "observed" or observed["start"] != evidence["launcher"]["start"]):
-                            reason = "reused" if observed["outcome"] == "observed" else "absent" if observed["outcome"] == "absent" else "malformed"
-                            return
-                        continue
-                    target = targets[index]
-                    target[side] = observed
-                    wait = target["wait"]
-                    matched = (observed["outcome"] == "observed" and observed["start"] == target["start"]
-                               and observed["ppid"] == evidence["launcher"]["pid"])
-                    if observed["outcome"] == "observed" and target["start"] is not None and observed["start"] != target["start"]:
-                        target["registration"] = "reused"
-                    if side == "b":
-                        if wait["state"] == "complete" and not matched:
-                            wait.update(state="refused", reason="reused" if target["registration"] == "reused" else "mismatch",
-                                        outcome="unknown", code=None, status=None)
-                        continue
-                    # Exclusion is numerical and permanent, even on unbound,
-                    # reused or absent phase generations. No Popen status here.
-                    if target["pid"] == self.evidence_phase_pid or target["start"] is None:
-                        continue
-                    if not matched:
-                        wait.update(state="refused", reason="reused" if target["registration"] == "reused" else "mismatch")
-                        continue
-                    if not self.evidence_fd_clear:
-                        wait["reason"] = "close_unknown"
-                        continue
-                    if not all(hasattr(os, name) for name in ("pidfd_open", "waitid", "P_PIDFD", "WEXITED", "WNOHANG", "WNOWAIT", "CLD_EXITED", "CLD_KILLED", "CLD_DUMPED")):
-                        wait.update(state="refused", reason="unsupported")
-                        continue
-                    if budget["clocks"] >= 512:
-                        reason = "no_budget"
-                        return
-                    budget["clocks"] += 1
-                    wait_at = time.monotonic()
-                    if not at <= wait_at < end:
-                        reason = "no_budget"
-                        return
-                    wait.update(state="claimed", reason="incomplete")
-                    self.evidence_fd_clear = False  # Uncertain BEFORE acquisition.
-                    descriptor = None
-                    try:
-                        try:
-                            descriptor = os.pidfd_open(target["pid"], 0)
-                        except TimeoutError:
-                            raise
-                        except OSError:
-                            self.evidence_fd_clear = True  # Ordinary failed open; no descriptor.
-                            wait.update(state="refused", reason="io_error")
-                        else:
-                            try:
-                                if budget["clocks"] >= 512:
-                                    reason = "no_budget"
-                                    return
-                                budget["clocks"] += 1
-                                actual_wait_at = time.monotonic()
-                                if actual_wait_at >= end:
-                                    reason = "no_budget"
-                                    return
-                                wait["at"] = actual_wait_at
-                                result = os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-                            except TimeoutError:
-                                raise
-                            except ChildProcessError:
-                                wait.update(state="complete", reason="echild", outcome="ineligible")
-                            except OSError:
-                                wait.update(state="refused", reason="io_error")
-                            else:
-                                if result is None:
-                                    wait.update(state="complete", reason="none", outcome="no_exit_state")
-                                elif (type(result.si_pid) is int and result.si_pid == target["pid"]
-                                      and type(result.si_signo) is int and result.si_signo == signal.SIGCHLD
-                                      and type(result.si_status) is int and 0 <= result.si_status < 2**31
-                                      and type(result.si_code) is int
-                                      and result.si_code in (os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED)
-                                      and ((result.si_code == os.CLD_EXITED and result.si_status <= 255)
-                                           or (result.si_code != os.CLD_EXITED and result.si_status > 0))):
-                                    codes = {os.CLD_EXITED: "CLD_EXITED", os.CLD_KILLED: "CLD_KILLED", os.CLD_DUMPED: "CLD_DUMPED"}
-                                    wait.update(state="complete", reason="none", outcome="eligible_exit",
-                                                code=codes[result.si_code], status=result.si_status)
-                                else:
-                                    wait.update(state="refused", reason="malformed")
-                    finally:
-                        if descriptor is not None:
-                            target["close"] = "unknown"  # ONE close opportunity, no retry.
-                            try:
-                                os.close(descriptor)
-                            except TimeoutError:
-                                raise
-                            except OSError:
-                                wait.update(state="refused", reason="close_unknown", outcome="unknown", code=None, status=None)
-                            else:
-                                target["close"] = "closed"
-                                self.evidence_fd_clear = True
-                launcher_a, launcher_b = context["launcher_a"], context["launcher_b"]
-                controller_a, controller_b = context["controller_a"], context["controller_b"]
-                if (launcher_b["outcome"] != "observed" or launcher_b["start"] != evidence["launcher"]["start"]):
-                    reason = "reused" if launcher_b["outcome"] == "observed" else "mismatch"
-                    return
-                controller_start = phase["controller"]["start"]
-                if any(row["outcome"] == "observed" and row["start"] != controller_start for row in (controller_a, controller_b)):
-                    slot["join"] = reason = "reused"
-                    return
-                live = all(row["outcome"] == "observed" and row["start"] == controller_start
-                           and row["state"] not in ("Z", "X", "x") for row in (controller_a, controller_b))
-                terminal = phase["outcome"] == "terminal"
-                if terminal and all(row["outcome"] == "absent" for row in (controller_a, controller_b)):
-                    join = "bound_terminal_absent"
-                elif terminal and all(row["outcome"] == "observed" and row["state"] in ("Z", "X", "x") for row in (controller_a, controller_b)):
-                    join = "bound_terminal_observed"
-                elif terminal:
-                    slot["join"] = reason = "mismatch"
-                    return
-                elif live and selected == "active":
-                    join = "bound_live"
-                elif live and phase["outcome"] == "interrupted":
-                    join = "bound_interrupted_live"
-                else:
-                    join = "bound_outcome_unknown"
-                if selected == "active" and (not live or not self.evidence_active_open):
-                    reason = "unbound"
-                    return
-                if budget["clocks"] >= 512:
-                    reason = "no_budget"
-                    return
-                budget["clocks"] += 1
-                finished = time.monotonic()
-                if not entered <= finished < end:
-                    reason = "no_budget"
-                    return
-                if evidence is not self.evidence_binding or phase is not self.evidence_phase or slot["state"] != "claimed":
-                    reason = "reentry"
-                    return
-                candidate = dict(slot, **context, targets=targets, finished=finished, join=join, state="complete", reason="none")
-                import json
-                # At the actual top-level attachment depth (indent=2).
-                if len(json.dumps({"ownership_evidence": {"data": {selected: candidate}}}, indent=2).encode("utf-8")) > 8192:
-                    reason = "overflow"
-                    return
-                if budget["clocks"] >= 512:
-                    reason = "no_budget"
-                    return
-                budget["clocks"] += 1
-                if time.monotonic() >= end:
-                    reason = "no_budget"
-                    return
-                claim = slot
-                # Failure cleanup must own the candidate BEFORE installation:
-                # an interruption after the store must clear its positive data,
-                # not merely the displaced claim. An earlier interruption leaves
-                # that claim incomplete and permanently consumed.
-                slot = candidate
-                self.evidence_slots[selected] = candidate  # Last positive write.
-                # Formatting and even the store can straddle main's closure.
-                # The active window never reopens, references never revert and
-                # a revoked claim never returns to claimed. Checking AFTER the
-                # store therefore detects invalidation before/during it, without
-                # another check/store gap. Closure after this check follows a
-                # valid earlier completion. Until this gate finishes, stopped-
-                # watcher-only freeze excludes all inspection of these slots.
-                if (evidence is not self.evidence_binding or phase is not self.evidence_phase
-                        or claim["state"] != "claimed" or self.evidence_slots[selected] is not candidate):
-                    reason = "reentry"
-                    return
-                if selected == "active" and not self.evidence_active_open:
-                    reason = "unbound"
-                    return
-                reason = "none"
-            except TimeoutError:
-                reason = "interrupted"
-                raise
-            except BaseException:
-                reason = "interrupted"
-                raise
-            finally:
-                if reason != "none":
-                    slot.update(state="incomplete" if reason in ("interrupted", "incomplete") else "refused", reason=reason,
-                                launcher_a=None, launcher_b=None, controller_a=None, controller_b=None, targets=None)
-
     def observe(self) -> None:
         while not self.stop.wait(0.02):
             try:
@@ -591,10 +233,6 @@ class Owned:
     def cleanup(self) -> dict:
         started = time.monotonic()
         self.sample()
-        annotations = self.evidence_returns
-        annotate = self.evidence_binding is not None and not self.evidence_writes_ended
-        if annotate:
-            annotations.update(state="claimed", reason="incomplete", outcome="unknown", rows=[], coverage="none")
         for sig, seconds in ((signal.SIGTERM, 8), (signal.SIGKILL, 5)):
             for pid in list(self.pids):
                 self.signal(pid, sig)
@@ -635,10 +273,6 @@ class Owned:
         groups = {group: (Path("/sys/fs/cgroup") / group.lstrip("/")).exists() for group in self.groups}
         absent = not survivors and not any(groups.values()) and all(
             "LoadState=not-found" in row["stdout"] for row in units.values())
-        if annotate:
-            # Historical diagnostic waitpid slots cannot qualify these new
-            # pidfd receipts. Keep unavailable attribution honest and separate.
-            annotations.update(state="incomplete", reason="incomplete", outcome="unknown", coverage="partial")
         waits_complete = all(row is not None and row["absent"] for row in self.reap_claims.values())
         return dict(ok=absent and waits_complete and not self.creation_unknown and not self.errors and not self.thread.is_alive(),
                     creation_unknown=self.creation_unknown, survivors=survivors, units=units, groups=groups,

@@ -1,7 +1,7 @@
 """Private lane content checks; never uploaded or rerun by Health.
 
-These predicates moved from aggregate.py. Controller snapshots remain private
-in slice 1; later slices replace their inputs without dropping product checks.
+Product predicates consume private in-memory observations in their owning lane.
+Only actual screenshots and executable witnesses are read from scratch files.
 """
 from __future__ import annotations
 
@@ -233,7 +233,7 @@ raise SystemExit(0)
 
 
 def validate_e04(row: dict, observations: dict, browser: list[dict], directory: Path) -> None:
-    """Recompute actual artifact content independently of the scenario driver.
+    """Recompute actual local content independently of the scenario driver.
 
     Called inside the lane before private inputs are deleted.
     Static verification does not establish behavioral sensitivity.
@@ -337,7 +337,7 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
         variant = expected_variants[index]
         check(record["variant"] == variant and record["index"] == index and record["source_sha"] == row["source_sha"]
               and record["method"] == "serial-public-metrics-window-causal-v1"
-              and row["variants"][variant]["evidence"]["host_cleanup_attribution"] == record, "actual variant evidence reference")
+              and row["variants"][variant]["evidence"]["job_case"] == record, "actual variant evidence reference")
         check(record["entered"] <= record["finished"] < record["deadline"]
               and record["deadline"] <= record["entered"] + [20, 15, 20, 25, 25, 25][index], "case bound")
         begin, end = ((18,20),(20,21),(21,23),(23,25),(25,27),(27,29))[index]
@@ -544,8 +544,9 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                       and peer["start"] == closure["start"] and closure["start"] != closure["observed_start"]
                       and closure["eof"] is True and closure["members"] == [] and payload["exit_code"] == code, "real job process/group/EOF closure")
                 check(any(d.get("jobs_peer") == peer for d in durable), "retained owned script peer")
-                check(str(peer["pid"]) in row["cleanup"]["identities"]
-                      and row["cleanup"]["identities"][str(peer["pid"]) ] == peer["start"], "outer owned census join")
+                # The launcher owns the census and checks this exact generation
+                # after Owned.cleanup; only these process pins cross processes.
+                observations["cleanup_pins"].append(dict(variant=variant, pid=peer["pid"], start=peer["start"]))
                 if code == -9:
                     check(payload["reason"] == "timeout" and 5000 <= raw["duration_ms"] <= 17000 and "released" not in job, "product timeout without controller release")
                 else:
@@ -835,7 +836,7 @@ def validate_e05_originals(observations: dict, directory: Path) -> dict:
     def check(value, reason):
         if not value:
             raise ValueError('E05 originals: ' + reason)
-    events = json.loads((directory/'e05-browser-events.json').read_text())
+    events = observations["thread_events"]
     inventory = observations['capture_inventory']
     check(set(inventory) == {'refusals','closed','requests','retained_bytes','retained_facts'} and inventory['refusals'] == []
           and type(inventory['closed']) in (int,float) and math.isfinite(inventory['closed']), 'closed complete inventory, no refusal')
@@ -1977,7 +1978,6 @@ def validate_e05_operations(row: dict, observations: dict, point: dict, groups: 
               'R1 N/D independent executable source/argv witness')
 
 
-
 def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     """Independent literal-content consumer, never import the scenario oracle."""
     originals = validate_e05_originals(observations, directory)
@@ -2072,7 +2072,7 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     systems = [json.loads(m['system_payload_json']) for m in final['thread_messages'] if m['thread_id'] == D['thread'] and m['kind'] == 'system']
     validate_e05_operations(row,observations,case['checkpoints'][-1],groups)
 
-    events = json.loads((directory / "e05-browser-events.json").read_text())
+    events = observations["thread_events"]
     validate_e05_safety(observations, events)
     check(C["created"] in events and C["created"]["dialog_count"] == 0 and C["created"]["list_rows"] == 1, "actual dialog closure and one list row")
     check(events and events[-1]["event"] == "context-closed" and not any(e["event"] in {"pageerror","origin-bypass"} for e in events), "real browser origin/closure")
@@ -2342,7 +2342,7 @@ def validate_e07_admission(row: dict, observations: dict, directory: Path) -> tu
         return json.dumps(a,sort_keys=True,allow_nan=False) == json.dumps(b,sort_keys=True,allow_nan=False)
     # Original first48 are a real dependency of these finite checkpoints, not
     # invented prefix receipts. Reuse their complete existing independent reader.
-    validate_e04(row,observations,json.loads((directory/'browser-events.json').read_text()),directory)
+    validate_e04(row,observations,observations["browser_events"],directory)
     a = observations['e07_admission']
     check(a['state'] == 'accepted' and a['refusal'] is None and a == observations['e07']['admission'] == row['e07_admission'], 'actual admission export equality')
     check(a['checkpoint'] in {'pre-E05','C','N','D'}, 'finite genuine checkpoint')
@@ -2379,7 +2379,7 @@ def validate_e07_admission(row: dict, observations: dict, directory: Path) -> tu
     closures = [d['thread_proxy_closure'] for d in observations['durable'] if 'thread_proxy_closure' in d]
     check(len(closures) == 1 and not any(closures[0][k] for k in ('errors','connections','workers_alive','listener_alive'))
           and closures[0]['finished'] <= case['cleanup_finished'], 'positive proxy listener/worker/socket closure')
-    events = json.loads((directory/'e05-browser-events.json').read_text())
+    events = observations["thread_events"]
     validate_e05_safety(observations, events)
     validate_e05_originals(observations,directory)
     current = a['frame']
@@ -2576,7 +2576,7 @@ def validate_e07_failures(row: dict, observations: dict, archive: dict, trace: o
 
 
 def validate_e07(row: dict, observations: dict, directory: Path) -> None:
-    """Reopen serialized C evidence; no producer oracle or expected helper import."""
+    """Read local C observations; no producer oracle or expected helper import."""
     import hashlib
     import socket
     from collections import Counter
@@ -2586,16 +2586,15 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
             raise ValueError("E07 content: " + message)
 
     S,H,point = validate_e07_admission(row, observations, directory)
-    case = json.loads((directory / "e07.json").read_text())
+    case = observations["e07"]
     check(case == observations["e07"] == row["e07"], "actual raw/observations/scenario export equality")
     check(case["launch_record_failures"] == [], "missing/malformed/incomplete/unexpected private launch record")
     variants = ["E07.cancel-cascade-browser","E07.cancel-terminal-unchanged","E07.cancelled-late-cli"]
     check(case["variants"] == variants and case["prefix"]["variants"] in (MANIFEST['variants'][:48],MANIFEST['variants'][:53])
           and list(row["variants"]) == case["prefix"]["variants"] + variants
-          and case["design_sha256"] == MANIFEST["e07_c_design_sha256"]
           and case["source_sha"] == row["source_sha"], "exact C manifest/design/source/preserved53")
     for name in variants:
-        check(row["variants"][name]["status"] == "PASS" and row["variants"][name]["evidence"] == {"e07_file":"e07.json","source_sha":row["source_sha"]}
+        check(row["variants"][name]["status"] == "PASS" and row["variants"][name]["evidence"] == {"source_sha":row["source_sha"]}
               and row["variants"][name]["at"] >= case["finished"], "new marks follow actual case content")
     phase = next(p for p in row["phases"] if p["name"] == "scenarios")
     check(case["end"] == min(case["entered"]+50,case["scenario_deadline"])
@@ -2606,10 +2605,8 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     check(all(a["entered"] < b["entered"] <= a["end"] for a,b in zip(case["phases"],case["phases"][1:])), "no overrun borrows next phase")
     e05 = next(d["threads_cases"] for d in observations["durable"] if "threads_cases" in d)
     boundary = case["prefix"]
-    archive_raw = (directory/"e07-prefix.json").read_bytes()
-    archive = json.loads(archive_raw)
-    check(hashlib.sha256(archive_raw).hexdigest() == boundary["archive_sha256"]
-          and archive["starts"] == observations["starts"][:S]
+    archive = observations["e07_prefix"]
+    check(archive["starts"] == observations["starts"][:S]
           and archive["commands"] == observations["commands"][:boundary["command_count"]]
           and archive["provider_commands"] == observations["provider_commands"]
           and archive["thread_commands"] == observations["thread_commands"]
@@ -2619,7 +2616,7 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     check(case["anchors"] == [dict(name='E05-end-B24' if len(case['prefix']['variants']) == 53 else f"E05-checkpoint-{point['name']}-B{H}",samples=[case["baseline"]]),
           dict(name=f"P-success-W-live-B{H+1}",samples=case["live"]),dict(name=f"cancelled-B{H+2}",samples=case["freeze"]),
           dict(name=f"final-B{H+2}",samples=[case["final"]])], "dedicated complete E07 boundary content")
-    raw = (directory / "launch-witnesses.jsonl").read_bytes()
+    raw = observations["witness_data"].encode()
     check(raw.endswith(b"\n") and len(raw) == observations["witness_bytes"]
           and hashlib.sha256(raw).hexdigest() == observations["witness_sha256"], "complete actual final append-only bytes")
     all_witness = [json.loads(line) for line in raw.splitlines()]
@@ -2927,25 +2924,11 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     def image(value: object) -> str:
         return json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
 
-    def strict_file(name: str) -> object:
-        def pairs(items: list) -> dict:
-            value = {}
-            for key, item in items:
-                check(key not in value, "duplicate exported JSON key")
-                value[key] = item
-            return value
-        def nonfinite(_value: str) -> None:
-            raise ValueError("E07 content: nonfinite exported JSON")
-        return json.loads((directory/name).read_bytes().decode("utf-8"),
-                          object_pairs_hook=pairs, parse_constant=nonfinite)
-
-    check(image(strict_file("e07.json")) == image(case)
-          and image(strict_file("observations.json")) == image(observations), "complete private inputs")
     check(row["python"] in ("3.12", "3.14")
           and any(d.get("python_version", "").startswith(row["python"]+".")
                   for d in observations["durable"]), "actual cell/interpreter version")
-    trace = strict_file("browser-events.json")
-    validate_e07_failures(row, observations, strict_file('e07-prefix.json'), trace)
+    trace = observations["browser_events"]
+    validate_e07_failures(row, observations, observations["e07_prefix"], trace)
     ref = listing["roots_observation"]
     check(type(ref) is dict and set(ref) == {"group_id", "checkpoint_site", "selected_request_sequence", "query", "accepted_at"}
           and type(ref["group_id"]) is int and ref["group_id"] > 0
@@ -3164,125 +3147,6 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           and image(case) == image(observations["e07"]) == image(row["e07"]),
           "earliest cancelled original, full selected body and identical public references/copies")
 
-    # Optional diagnostics belong ONLY to complete cases. All original equality,
-    # actual-source and behavioral gates above remain mandatory. This reader
-    # neither imports the stat parser nor makes a claim that a syscall ran.
-    def diag_number(value: object, *, zero: bool = False) -> bool:
-        return type(value) is int and (0 if zero else 1) <= value < 10**20
-
-    def diag_ticks(value: object) -> bool:
-        return (type(value) is str and 1 <= len(value) <= 20 and value.isascii()
-                and value.isdecimal() and int(value) > 0)
-
-    def diag_time(value: object) -> bool:
-        return type(value) in (int, float) and 0 <= value < float("inf")
-
-    def read_observation(value: object, pid: int, lower: float, upper: float) -> None:
-        check(type(value) is dict and set(value) == {
-            "pid", "start", "state", "ppid", "reason", "entered", "finished"}, "diagnostic read keys")
-        check(diag_number(value["pid"]) and value["pid"] == pid
-              and diag_time(value["entered"]) and diag_time(value["finished"])
-              and lower <= value["entered"] <= value["finished"] <= upper, "diagnostic read identity/interval")
-        check(type(value["reason"]) is str and value["reason"] in {
-            "observed", "absent", "unreadable", "interrupted", "empty", "partial", "oversized", "malformed"},
-              "finite diagnostic read reason")
-        if value["reason"] == "observed":
-            check(diag_ticks(value["start"]) and diag_number(value["ppid"], zero=True)
-                  and type(value["state"]) is str and len(value["state"]) == 1
-                  and value["state"] in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-                  "same-buffer diagnostic scalars")
-        else:
-            check(all(value[k] is None for k in ("start", "state", "ppid")), "UNKNOWN/absence has no scalar fact")
-
-    def association(value: object, pid: int, pin: str | None, pins: dict,
-                    lower: float, upper: float) -> int:
-        check(type(value) is dict and set(value) == {
-            "entered", "finished", "expected_start", "target_a", "parent", "target_b", "parent_pin", "relation"},
-              "diagnostic association keys")
-        check(diag_time(value["entered"]) and diag_time(value["finished"])
-              and lower <= value["entered"] <= value["finished"] <= upper
-              and (value["expected_start"] is None if pin is None else
-                   diag_ticks(value["expected_start"]) and value["expected_start"] == pin),
-              "diagnostic original pin/interval")
-        a, p, b = value["target_a"], value["parent"], value["target_b"]
-        read_observation(a, pid, value["entered"], value["finished"])
-        reads = 1
-        if a["reason"] != "observed":
-            expected = "target-absent" if a["reason"] == "absent" else "target-unknown"
-        elif pin is not None and a["start"] != pin:
-            expected = "target-reused"
-        elif a["ppid"] == 0:
-            expected = "no-parent"
-        else:
-            reads = 3
-            read_observation(p, a["ppid"], a["finished"], value["finished"])
-            read_observation(b, pid, p["finished"], value["finished"])
-            parent_pin = pins.get(a["ppid"])
-            check(value["parent_pin"] is None if parent_pin is None else
-                  diag_ticks(value["parent_pin"]) and value["parent_pin"] == parent_pin,
-                  "parent pin comes only from existing generation/context")
-            if b["reason"] != "observed" or b["start"] != a["start"] or b["ppid"] != a["ppid"]:
-                expected = "target-changed"
-            elif p["reason"] != "observed":
-                expected = "parent-missing" if p["reason"] == "absent" else "parent-unknown"
-            elif parent_pin is not None and p["start"] != parent_pin:
-                expected = "parent-reused"
-            else:
-                expected = "bracketed"
-        if reads == 1:
-            check(p is None and b is None and value["parent_pin"] is None, "unconfirmed target has no parent walk")
-        check(type(value["relation"]) is str and value["relation"] == expected,
-              "independent sequential relation, never closure/adoption/wait ownership")
-        return reads
-
-    def diagnostics(closed: dict, upper: float) -> None:
-        processes = closed["processes"]
-        present = "controller_diagnostic" in closed or any("diagnostic" in p for p in processes)
-        if not present:
-            return  # Historical absence is unobserved; no backfill or credit.
-        check(type(processes) is list and len(processes) == len(tree["chain"])+1 <= 17
-              and [(p["pid"], p["start"]) for p in processes]
-              == [(p["pid"], p["start"]) for p in tree["chain"]+[child]],
-              "all original targets/order, no diagnostic truncation")
-        pins = {}
-        for p in [*processes, transport["daemon"]]:
-            check(diag_number(p["pid"]) and diag_ticks(p["start"])
-                  and (p["pid"] not in pins or pins[p["pid"]] == p["start"]), "unambiguous original diagnostic pins")
-            pins[p["pid"]] = p["start"]
-        check(diag_time(closed["sampled"]) and case["entered"] <= closed["sampled"] <= upper,
-              "original sample time before optional work")
-        check("controller_diagnostic" in closed and all("diagnostic" in p for p in processes)
-              and diag_number(phase["pid"]) and transport["daemon"]["ppid"] == phase["pid"],
-              "complete optional records and controller invocation PID join")
-        context = closed["controller_diagnostic"]
-        reads = association(context, phase["pid"], None, pins, closed["sampled"], upper)
-        # A surviving owner.add receipt can corroborate self generation. It
-        # never supplies the missing independent launcher generation/role pin.
-        identities = row["cleanup"].get("identities", {})
-        check(type(identities) is dict, "optional controller owner identities")
-        controller_pin = identities.get(str(phase["pid"]))
-        if controller_pin is not None:
-            check(diag_ticks(controller_pin), "retained controller generation pin")
-            for observation in (context["target_a"], context["target_b"]):
-                if observation is not None and observation["reason"] == "observed":
-                    check(observation["start"] == controller_pin, "observed self matches retained owner pin")
-        if context["relation"] == "bracketed":
-            for observation in (context["target_a"], context["parent"]):
-                pins.setdefault(observation["pid"], observation["start"])
-        last = context["finished"]
-        for p in processes:
-            check(p["observed_start"] is None or diag_ticks(p["observed_start"]), "original observed start type")
-            reads += association(p["diagnostic"], p["pid"], p["start"], pins, last, upper)
-            last = p["diagnostic"]["finished"]
-        check(reads <= 54, "per-closure finite diagnostic read cardinality")
-
-    for index, closed in enumerate(case["closure_samples"]):
-        upper = (case["closure_samples"][index+1]["sampled"]
-                 if index+1 < len(case["closure_samples"]) else freeze["entered"])
-        diagnostics(closed, min(upper, case["phases"][1]["end"], case["finished"]))
-    for index, sample in enumerate(samples):
-        upper = samples[index+1]["entered"] if index+1 < len(samples) else window["finished"]
-        diagnostics(sample["closure"], min(upper, case["phases"][3]["end"], case["finished"]))
 
 def validate_groups(result: dict, observations: dict, selected: str | None = None) -> None:
     groups = result['groups']

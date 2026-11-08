@@ -1,6 +1,6 @@
 # Daily product E2E health
 
-## Current reporting contract — slice 1 of 3 (THR-291 seq659)
+## Current reporting contract — slice 2 of 3 (THR-291 seq659)
 
 The standalone harness uses stdlib `xml.etree.ElementTree`, without pytest or
 new dependencies. Each Python lane writes `reports/junit.xml`: a `product` suite
@@ -13,11 +13,15 @@ from finalizers, including ordinary exceptions; an absent report fails Health.
 
 `e2e/checks.py` owns the former aggregate content predicates. Each E04/prefix,
 E05 and E07 reader runs independently inside the lane before private data is
-deleted. A completion mark alone cannot pass a case. Controller/scenario
-snapshots and `completed.py` remain **private intermediate inputs** in slice 1;
-they are neither uploaded nor certified by Health. The launcher no longer
-publishes result/snapshot/member-hash/ownership/failure-category receipt bundles,
-validates redaction contexts, or applies publication byte/fact/depth budgets.
+deleted. A completion mark alone cannot pass a case. Content checks consume
+in-memory HTTP, browser, command, SQL and checkpoint observations in the controller;
+SQL/state JSON files and `completed.py` plus its imports/callers are removed.
+The controller hands ordinary JUnit to the launcher and a private list of
+`{variant,pid,start}` pins for the launcher's actual `Owned.cleanup` census.
+PID keys are normalized to integers once by that reader. Missing or reused
+generations fail the affected E04 case and cleanup; no success is inferred.
+The controller and launcher no longer publish snapshot/member-hash/ownership/
+failure-category receipts, validate export contexts, or apply publication budgets.
 Those removed export protocols in historical records below are superseded.
 Product output-cap assertions and original operational deadlines remain: baseline
 480s, other commands 240s, action cutoff 720s, cleanup at most 60s clipped at
@@ -27,7 +31,14 @@ The existing safe E05→E07 continuation stays on the same runtime, using real
 pre-E05/C/N/D checkpoints, positive closure and the full original 50s remaining.
 An E05 failure remains red even if E07 passes. Unsafe dependent work produces
 errors without reset, replay, replacement runtime, extra allowance or retries.
-Broader case boundaries are slice 2 work. Known E05 browser-copy unavailability
+Safe identity/bearer denials and Pause child/idempotent/stale/terminal/overview
+cases continue only after the complete protected-state comparison
+succeeds; assertion/value failures stay attached to their own names. Unexpected
+runtime/transport errors stop dependent effects and become prerequisite errors. Stateful baseline, Pause
+and E04 groups keep their exact count prerequisites. A failed group gives
+unreached dependent cases explicit prerequisite ERRORs, while owned cleanup
+and independent local readers still run. E05 captures failure diagnostics in
+its context owner before teardown; later closed-page capture is never required. Known E05 browser-copy unavailability
 remains a failure; this reporting slice does not make E05 or full56 green.
 
 Launcher TERM on Python3.12 and INT on Python3.14 are separate `diagnostic`
@@ -75,8 +86,17 @@ not dispatch E2E. Required merge checks remain Source Boundary Lint and Web Lint
 (Node24), with independent review/scoped QA, normal hooks and manager guarded
 merge. Python units remain RETIRED; integration SKIPPED THR-243 seq42.
 Historical failures, protected proof holds, abrupt-restart and jobs-cap/Stop work
-remain unresolved. Slice 2 removes private state/completion publication; slice 3
-removes remaining browser/transport export collectors without losing assertions.
+remain unresolved. Slice 2 removes private state/completion publication and optional Owned/E07
+process annotations, keeping real PID-generation, cgroup, reaper, process/port/
+socket/data cleanup and every product predicate. The E07 prefix is frozen in
+memory before allocation; its witness and checkpoint/first-cause joins remain.
+Native launch identity comes from the original provider socket acknowledgement,
+not a published launch file. Slice 3 owns the unchanged browser/transport/
+thread-provider collectors, including their temporary private token-list reader.
+The browser final-observation hook now reads event lists in memory without
+writing browser-event JSON; slice3 can remove its legacy hook name.
+The controller supplies that reader's existing private list for compatibility;
+there is no validated-context export or uploaded state protocol.
 
 <details>
 <summary>Historical implementation, case, failure and hold records</summary>

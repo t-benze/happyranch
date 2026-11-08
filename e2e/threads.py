@@ -526,6 +526,13 @@ def exercise(c: Controller) -> None:
             primary=c.primary_error is exc)
         if active_variant is not None and isinstance(exc, AssertionError):
             record['case_outcomes'][active_variant] = dict(status='FAIL',error_ref=index)
+        if active_variant is not None:
+            c.report.record("product", active_variant, exc)
+        else:
+            for variant in VARIANTS:
+                c.report.record("product", variant, exc)
+        if c.browser:
+            c.browser.capture_failure()
         c.groups['E05'].update(first_error_ref=c.groups['E05']['first_error_ref'] if c.groups['E05']['first_error_ref'] is not None else index,
             state='unknown' if c.groups['E05']['state'] == 'unknown' else 'failed')
         raise

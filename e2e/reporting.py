@@ -41,6 +41,41 @@ class Report:
         self.cases[suite, name] = {"kind": ("failure" if isinstance(error, (AssertionError, ValueError)) else "error") if error else None,
                                       "message": str(error) if error else "", "seconds": max(0.0, seconds)}
 
+    def merge(self, path: Path, expected: list[str]) -> None:
+        document = ET.parse(path).getroot()
+        seen: set[tuple[str, str]] = set()
+        product = []
+        incoming = []
+        for suite in document.findall("testsuite"):
+            group = suite.attrib["name"]
+            if group not in {"product", "harness"}:
+                raise ValueError("Unexpected controller suite")
+            properties = {p.attrib["name"]: p.attrib["value"] for p in suite.findall("./properties/property")}
+            if any(properties.get(name) != str(self.properties.get(name, "UNKNOWN")) for name in IDENTITY):
+                raise ValueError("Controller report identity mismatch")
+            for case in suite.findall("testcase"):
+                name = case.attrib["name"]
+                key = group, name
+                if key in seen or case.find("skipped") is not None:
+                    raise ValueError("Duplicate or skipped controller case")
+                seen.add(key)
+                if group == "product":
+                    product.append(name)
+                failures = [node for node in case if node.tag in {"failure", "error"}]
+                if len(failures) > 1:
+                    raise ValueError("Multiple controller case outcomes")
+                kind = failures[0].tag if failures else None
+                seconds = float(case.attrib.get("time", "0"))
+                if not 0 <= seconds < float("inf"):
+                    raise ValueError("Invalid controller case duration")
+                incoming.append((key, dict(kind=kind, message=failures[0].attrib.get("message", "") if failures else "", seconds=seconds)))
+        if product != expected:
+            raise ValueError("Controller product names/order differ from manifest")
+        for key, row in incoming:
+            prior = self.cases.get(key)
+            if not prior or prior.get("pending") or not prior["kind"]:
+                self.cases[key] = row
+
     @contextmanager
     def check(self, suite: str, name: str) -> Iterator[None]:
         started = time.monotonic()

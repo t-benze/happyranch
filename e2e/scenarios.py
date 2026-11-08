@@ -26,9 +26,11 @@ def unchanged(c: Controller, before: dict) -> None:
 
 def deny(c: Controller, variant: str, org: str, payload: dict, status: int, detail: dict) -> None:
     before = protected(c)
-    record = c.callback(org, payload, status, detail)
-    unchanged(c, before)
-    c.mark(variant, record)
+    with c.case(variant, lambda: unchanged(c, before)):
+        record = c.callback(org, payload, status, detail)
+        unchanged(c, before)
+        c.mark(variant, record)
+
 
 
 def compare_public(c: Controller, org: str, root: str, payloads: list[dict], starts: list[dict], child: str | None = None) -> None:
@@ -78,10 +80,11 @@ def bearer(c: Controller, task: str) -> None:
         for token, label, detail in ((None, "absent", "missing bearer token"), ("definitely-wrong", "wrong", "bad token")):
             path = f"/api/v1/orgs/alpha/tasks" + (f"/{task}" if method == "GET" else "")
             before = protected(c)
-            status, response = c.api(method, path, {"team": "engineering", "brief": "DENIED_NEW_TASK"} if method == "POST" else None, token)
-            require((status, response) == (401, {"detail": detail}), "exact bearer denial", (status, response))
-            unchanged(c, before)
-            c.mark(f"E03.bearer-{name}-{label}", dict(status=status, response=response))
+            with c.case(f"E03.bearer-{name}-{label}", lambda: unchanged(c, before)):
+                status, response = c.api(method, path, {"team": "engineering", "brief": "DENIED_NEW_TASK"} if method == "POST" else None, token)
+                require((status, response) == (401, {"detail": detail}), "exact bearer denial", (status, response))
+                unchanged(c, before)
+                c.mark(f"E03.bearer-{name}-{label}", dict(status=status, response=response))
     response = c.get(f"/api/v1/orgs/alpha/tasks/{task}")
     require(response["task"]["task_id"] == task, "legitimate GET identity", response)
     c.mark("E03.bearer-get-valid")

@@ -316,7 +316,7 @@ def final_task(c: Controller, task: str, starts: list[dict], jobs: list[dict], s
                record: dict) -> dict:
     snap = c.stores["alpha"].jobs(task)  # One genuine frame, even if validation fails.
     record["final_snapshot_validation"] = "partial/unvalidated"
-    record["final_snapshot"] = json.loads(c.sanitize(json.dumps(snap)))
+    record["final_snapshot"] = snap
     require(len(starts) == 2 and all(isinstance(s["session"], str) and s["session"] for s in starts)
             and starts[0]["session"] != starts[1]["session"], "two distinct genuine start SIDs")
     require(len(snap["tasks"]) == 1 and len(snap["results"]) == 2, "no children or extra result", snap)
@@ -625,7 +625,7 @@ def exercise(c: Controller) -> None:
                     screenshot="e04-task-1.png", at=time.monotonic())
                 record.update(finished=time.monotonic(), observer_end=len(c.observer), commands_end=len(c.provider_commands))
                 require(record["finished"] < record["deadline"], "original15s refusal allowance")
-                c.mark(variant, dict(host_cleanup_attribution=record))
+                c.mark(variant, dict(job_case=record))
                 del c.case_deadline
                 c.publish_end()
                 continue
@@ -747,7 +747,7 @@ def exercise(c: Controller) -> None:
             c.remaining()
             record.update(finished=time.monotonic(), observer_end=len(c.observer), commands_end=len(c.provider_commands))
             require(record["finished"] < record["deadline"], "case stays within original shared allowance")
-            c.mark(variant, dict(host_cleanup_attribution=record))
+            c.mark(variant, dict(job_case=record))
             del c.case_deadline
             c.publish_end()
         final = anchor(c, "final-drain-B", 17, previous)
