@@ -1123,7 +1123,7 @@ def is_root(task: "TaskRecord") -> bool:
 
 def _enqueue_task_generation_aware(
     orch: "Orchestrator", task_id: str, *, metadata: dict | None = None,
-    legacy: str = "put_nowait",
+    legacy: str = "put_nowait", queue=None,
 ) -> None:
     """Route a producer's enqueue through the common DB-aware boundary.
 
@@ -1140,7 +1140,7 @@ def _enqueue_task_generation_aware(
     ``enqueue(slug, task_id, metadata=...)`` (the blocked-job resume producer).
     The boundary's publish/refuse decisions are identical either way.
     """
-    queue = getattr(orch, "_queue", None)
+    queue = queue if queue is not None else getattr(orch, "_queue", None)
     if queue is None:
         return
     from runtime.orchestrator.authority import enqueue_task_generation_aware
@@ -5667,6 +5667,7 @@ def _enqueue_parent_if_waiting(
     *,
     root_auto_revisit_spawned: bool = False,
     current_owner: Callable[[], bool] | None = None,
+    queue=None,
 ) -> None:
     """Idempotent: advance the parent only if it's actually waiting on THIS
     lineage (in_progress+delegated) AND all its children are now terminal.
@@ -5701,7 +5702,11 @@ def _enqueue_parent_if_waiting(
         return
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(orch._db, task_id, org_slug=getattr(orch, "_slug", None))
-    if ownership.kind != 'legacy':
+    if ownership.kind == 'seq_source_waiting':
+        from runtime.workflows.sequential_return import returned_source
+        if not returned_source(orch._db, orch._slug, ownership.intent_id, task_id):
+            return
+    elif ownership.kind != 'legacy':
         if ownership.kind != 'coding_source_waiting':
             return
         # The original source may notify its ordinary caller only after the
@@ -5725,21 +5730,21 @@ def _enqueue_parent_if_waiting(
         """Keep a restart-reconstructed wake from duplicating a live tail."""
         if current_owner is not None and not current_owner():
             return
-        queue = getattr(orch, "_queue", None)
-        if queue is None:
+        selected_queue = queue if queue is not None else getattr(orch, "_queue", None)
+        if selected_queue is None:
             return
-        enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
+        enqueue_if_absent = getattr(selected_queue, "enqueue_if_absent", None)
         if callable(enqueue_if_absent):
             enqueue_if_absent(
                 orch._slug,
                 parent.id,
-                publisher=lambda: _enqueue_task_generation_aware(orch, parent.id),
+                publisher=lambda: _enqueue_task_generation_aware(orch, parent.id, queue=queue),
             )
             return
         # Lightweight test adapters predate TaskQueue's atomic boundary. The
         # production daemon always wires TaskQueue; retain adapter compatibility
         # without reaching into either queue implementation's private storage.
-        _enqueue_task_generation_aware(orch, parent.id)
+        _enqueue_task_generation_aware(orch, parent.id, queue=queue)
 
     # Chain-advance branch: if the parent has an active chain and the just-
     # terminated subtask completed cleanly, try to auto-advance to the next

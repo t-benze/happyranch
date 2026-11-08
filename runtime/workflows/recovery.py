@@ -112,13 +112,20 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
     return True
 
 
-def rediscover_returned(coding: Any, *, queue: Any = None) -> None:
+def rediscover_returned(coding: Any, *, queue: Any = None, sequential: bool = False) -> None:
     """Replay only committed caller notifications, never a stage or PR action.
 
     Terminal coding sources are absent from ordinary nonterminal startup scans.
     Complete reader validation precedes any notification; literal old complete
     records without the additive return are deliberately left alone.
     """
+    if sequential:
+        if not isinstance(coding, SequentialDispatcher):
+            raise ValueError('sequential_return_owner_required')
+        from runtime.workflows.sequential_return import notify_returned, returned_run_ids
+        for run_id in returned_run_ids(coding):
+            notify_returned(coding, run_id, queue=queue)
+        return
     from runtime.workflows.coding_authority_history import _Budget
     from runtime.workflows.coding_progression import notify_returned
     db = coding.db

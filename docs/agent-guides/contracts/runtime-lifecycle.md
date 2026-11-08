@@ -678,3 +678,23 @@ SB-8 adds only `sequential` to the persisted Pause owner vocabulary. Older code
 cannot validate a root retaining that owner: **roll back only with no nonterminal sequential Pause entries**. This consequence becomes relevant only after U3e
 and separately authorized live admission; it is not permission to clear journals
 or infer settlement. Existing U3d-1 settlement hunks remain byte-preserved.
+
+### U3e-2 returned-only caller rediscovery
+
+Startup/dynamic attachment rediscovery has an explicit sequential-owner branch.
+It independently validates complete history, discovers only actual committed
+`returned`/`run_return` obligations, and calls the same postcommit consumer as the
+terminal dispatcher tail. Terminal sources need this branch because ordinary
+nonterminal recovery does not scan them. Completed-without-return has no caller
+effect. A failed/exhausted reader cannot fall back to ordinary launch or wake.
+
+The consumer rebuilds existing source/carrier histories and asks the original
+source's existing parent helper to publish on the supplied attachment queue (or
+the ordinary orchestrator queue when omitted). Parked/lineage/generation and
+`enqueue_if_absent` checks remain. Re-entry can repair a missed parent enqueue,
+but queue insertion is not durable delivery/execution acknowledgement. Outbox
+bytes remain immutable and are never marked consumed. Thread follow-up/SYSTEM/
+invocation minting are not invoked, including for retained partial thread rows.
+No native visit recovery or original host settlement is inferred. Existing
+unknown-owner rules, U5 hold, settings-generation limitation and the rule to
+roll back only with no nonterminal sequential Pause entries remain unchanged.

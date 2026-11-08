@@ -805,3 +805,26 @@ brief inputs refuse under the existing renderer bounds. U5 trusted domain and
 access witnesses remain separate prerequisites. The existing bundled sequential
 callback paragraph is unchanged. Actual launch, handle, PID, callback, terminal
 and outer settlement through the host remain UNVERIFIED (V3).
+
+### U3e-2 caller return consumer (source checkpoint)
+
+U3e-2 attaches caller effects only to an independently validated committed
+`returned` event and its immutable `run_return` outbox obligation. A completed
+run without that return is ineligible. U3c closes source/carrier status and
+completion times; the same writer projects the final native task's retained
+summary/output directory, clears their block kind and records the run note.
+The original source result/SID remain unchanged; the carrier gains neither.
+After COMMIT the consumer rebuilds their existing task histories and requests
+only the original source's ordinary parent wake. The shared helper independently
+validates that source's return, then preserves parked/delegated, lineage,
+all-children-terminal and generation checks. An explicitly supplied attachment
+queue owns both `enqueue_if_absent` reservation and generation-aware publication;
+an omitted queue retains the existing orchestrator queue behavior.
+
+Returned-only rediscovery replays the same consumer for terminal sources. It
+never resumes a sequential visit or mutates/acknowledges the outbox. The guarantee
+is one immutable workflow return; queue insertion is not a durable caller
+execution acknowledgement. Thread follow-up/SYSTEM/invocation minting are not
+invoked. No fresh-start producer, public command or bundled skill change ships
+in U3e-2. Existing U5 successful-output, native recovery, venue/settings and Pause
+backout holds remain. Source/static delivery supplies no V3 or restart proof.
