@@ -274,11 +274,12 @@ another run; the complete reader also refuses cross-run start-key conflicts.
 Visit ordinal/predecessor and accepted source visit/result constraints select
 one operation; a partial unique index permits one selected visit per run. The complete reader additionally checks the active pointer and
 rejects committed provisional runs. Only the new run `last_event_id` FK is
-`DEFERRABLE INITIALLY DEFERRED`: the future owning `BEGIN IMMEDIATE` transaction
-keeps foreign keys enabled and connection-wide deferral off, inserts the
-provisional run with a null active pointer, then the visit/task/mark and event,
-and finalizes pointers. Complete target/history/FK validation must succeed
-before COMMIT; a missing deferred event still refuses at COMMIT. No existing
+`DEFERRABLE INITIALLY DEFERRED`. U3b's caller-owned `BEGIN IMMEDIATE` keeps
+foreign keys enabled and sets transaction-local `PRAGMA defer_foreign_keys=ON`
+for the run/native-task/visit cycle. It inserts the provisional run with a null
+active pointer, then the visit/task/mark and event, and finalizes pointers.
+Selected admission validation precedes COMMIT; SQLite checks the deferred FKs
+at COMMIT, and missing references refuse. Deferral resets at COMMIT/ROLLBACK. No existing
 table or transaction/startup owner is changed. No table extends frozen
 document/Coding state grammar. No index is placed in an existing startup executescript block.
 
@@ -434,3 +435,77 @@ separate. Disposable SQLite structural observations and lint/static checks do
 not prove V3 behavior, current authority, native settlement or ordinary-use
 acceptance. No real-org install/migration, deploy, restart or activation follows.
 See [source pointer](../../superpowers/specs/2026-11-08-sequential-engine-u3a.md).
+
+
+## U3b inert admission and first activation (THR336 msg85/95)
+
+TASK-14635 under TASK-14633 / ROOT TASK-14563 implements only U3b from
+TASK-14615, as amended by TASK-14630 revision2 sections 2/3/5. This supersedes
+that design's full-reader composition for admission. `sequential_engine.py`
+exports `admit_uncommitted` and `activate_uncommitted`; no dispatcher, route,
+startup, callback or other production caller attaches them. U3a's execution
+holds remain. U3c scopes and capability/return/launch work remain unavailable.
+
+The prospective native carrier and entry TaskRecords are validated before any
+INSERT: canonical start bytes, immutable stored definition and selected settings
+pins, latest generation, Allowed admission, complete independent role bindings,
+current captured authority, the actual source task/principal/SID/INTEGER-result,
+legacy v1 source ownership and pristine native tasks. The caller exclusively
+owns a genuine `WorkflowAuthorityCoordinator.admission_writer(capture)`;
+discovery happens before that context. All engine work inside is synchronous
+SQL/pure validation, with no file/network/await/launch/notification/commit.
+
+The writer defers FKs for its transaction, inserts the provisional run, native
+carrier and v2 mark, adopts only the source's legacy v1 mark, writes the first
+visit/native task/v2 mark, admitted event and `visit_queued` outbox, finalizes
+pointers/counters, and validates before the caller commits. Outbox bytes are
+stored only. The source/native IDs keep their existing meanings; run/visit/event
+identities never become native task IDs or audit scope prefixes. No audit rows,
+`active_chain` or `active_fanout` are produced. Failure must escape the writer
+context and roll back the whole graph. First activation is not a separately
+supported commit boundary. Exact start-key/bytes/source replay returns the
+persisted IDs even when prospective native task IDs differ; changed bytes refuse.
+Admission-only replay refuses a run that has already entered a later lifecycle.
+
+`sequential_run_validation.validate_selected_run_uncommitted(conn, *, org_slug,
+run_id, scope, evidence_ids=())` requires the caller's transaction and accepts
+only `scope='admission'`. One fresh unchanged `_ReadBudget`, `_sql_budget` and
+`_schema_snapshot` cover its entire acquisition. It returns the original budget's
+diagnostic counters. It copies the temp-shadow refusal, compares selected
+sequential/ownership structure to independent literal DDL/view references using
+the parallel S1 `_candidate_structure` copy, and calls the unchanged selected
+`_native_contract`. A named-table probe selects the document letter/coding flag;
+column metadata comes from that matched structure.
+
+Indexed selected row reads use a parallel `_rows` copy with explicit columns and
+WHERE/args into unchanged `_bounded_rows`, plus the same per-row type loop.
+Only this admission's run, first visit/event/outbox, native task/result links and
+three ownership marks are validated. The selected definition is compiled once
+per validation; selected settings/operation checks copy the reader's per-row
+checks and use an indexed newer-generation probe. No settings generation-chain,
+legacy history, full layout or full ownership inventory reader is called.
+`read_sequential_owner` and copied v2 native checks validate each selected mark.
+Requested evidence IDs use PK `IN (...)` reads into unchanged `_auxiliary`;
+previous output `content_bytes` and visit `result_bytes` are never acquired.
+Pointers, CAS/event/counter limits, the admission hash anchor and outbox closure
+must all agree before success. Other scopes refuse before acquisition.
+
+The unchanged full `read_sequential_history` remains the independent **offline
+oracle**, including immutable generation history and older-row tampering outside
+this selected write set. It has a known scale limit (TASK-14631, Founder THR336
+seq99 Decision2): schema metadata plus whole-org task/ownership scans exhaust
+8,192 rows at roughly 68 org tasks on J / 362 on I, even without runs. Large
+payloads can separately exhaust bytes/steps. Use it only on small fixture DBs;
+an opaque `coding_authority_history_invalid` at history scale is that known
+reader limit, not evidence of a U3b defect. This unit changes no reader or cap.
+The protected module's sentence “No normal startup, allocator, route or producer
+imports this module” is now stale: this new validator imports its private helpers.
+That docstring correction is deferred; the protected source remains untouched.
+
+Maximum-request disposable admissions, independent small-DB oracle reads,
+negative rollbacks and lint/static checks are STRUCTURAL OBSERVATIONS only.
+They establish no V3 behavioral PASS, actual callback/native settlement,
+repository capability, live installation, activation or ordinary-use readiness.
+Independent full review and scoped QA remain required. U4.0 remains NO-GO;
+U3c, F4, SB-1, reader-limits Decision2 and held PR1252 remain separate.
+See [U3b source contract](../../superpowers/specs/2026-11-08-sequential-engine-u3b.md).

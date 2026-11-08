@@ -261,3 +261,24 @@ read errors and missing/wrong-org dispatcher never become ordinary.
 
 See [the U3a boundary](reusable-workflows.md#u3a-ownership-union-and-holding-attachment)
 and [source pointer](../../superpowers/specs/2026-11-08-sequential-engine-u3a.md).
+
+
+## U3b creation-time sequential marks (THR336 msg85/95)
+
+The inert U3b engine adds `insert_owner_uncommitted`'s version2 branch only for
+`SEQUENTIAL_KINDS`; the existing v1 INSERT remains unchanged for every other
+kind, including ordinary legacy tasks. `adopt_sequential_source_uncommitted`
+requires a caller transaction and updates exactly the same-org source's
+`version=1,kind=legacy,owner_id=NULL` mark to `version=2,kind=seq_source_waiting`
+with its actual run ID. Exactly one row must change or the writer raises.
+Carrier and first-visit native insertion use unchanged Database row primitives,
+with `seq_carrier`/run and `seq_visit`/visit marks in the same transaction.
+
+No native task ID, audit scope, active chain/fanout or old mark is repurposed.
+Only the selected engine's original source is adopted; all failure paths leave
+the graph to the caller-owned authority writer's rollback. This producer is
+unattached: U3a continues to hold sequential tasks; no source completion,
+callback, launcher, recovery or return caller is added. Admission's selected
+validator is admission-only; the unchanged full reader remains the offline
+oracle with its known small-org scale limit. See [U3b contract](reusable-workflows.md#u3b-inert-admission-and-first-activation-thr336-msg8595).
+Disposable observations are not V3 behavioral acceptance or live enablement.
