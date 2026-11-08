@@ -226,9 +226,11 @@ and v1 marks and allows version2 only for `seq_source_waiting`, `seq_carrier`,
 `seq_visit`; its literal view appends relations without changing old branches.
 Selected v1 marks use the existing scalar reader. New marks require complete
 matching run/visit/native task relations; absent marks never mean ordinary.
-Complete companion validation uses bounded binding/native-task/mark acquisition
-and cached run/visit relations on the history call’s original allowance, without
-per-task inventory rescans. TASK-14576 adds installed selected v2 recognition:
+Complete companion validation in the full history reader uses run-scoped
+primary-key native-task/mark lookups and cached run/visit relations under allowance
+C and the original deadline, without per-task inventory rescans. No binding-view
+text is acquired inside C; retained legacy `_inventory` completeness runs under L.
+TASK-14576 adds installed selected v2 recognition:
 validate exact org/version/kind/owner and binding/native relations. U3a returns
 that exact kind from `selected_owner`; `classify_task` exposes it only with an
 attached same-org `SequentialDispatcher`, otherwise `reconciliation_required`.
@@ -279,8 +281,9 @@ Only the selected engine's original source is adopted; all failure paths leave
 the graph to the caller-owned authority writer's rollback. This producer is
 unattached: U3a continues to hold sequential tasks; no source completion,
 callback, launcher, recovery or return caller is added. Admission's selected
-validator is admission-only; the unchanged full reader remains the offline
-oracle with its known small-org scale limit. See [U3b contract](reusable-workflows.md#u3b-inert-admission-and-first-activation-thr336-msg8595).
+validator is admission-only; the full reader remains the offline oracle under
+[D2's A/B/C/L allowances](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary)
+and one original deadline. See [U3b contract](reusable-workflows.md#u3b-inert-admission-and-first-activation-thr336-msg8595).
 Disposable observations are not V3 behavioral acceptance or live enablement.
 
 

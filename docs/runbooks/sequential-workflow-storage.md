@@ -101,9 +101,11 @@ existing complete-reader allowances.
 The complete layout comparison retains its fully acquired and independently
 validated column tuples inside the same schema snapshot. Sequential row reads
 reuse those tuples for the unchanged type/length gates instead of acquiring
-`pragma_table_xinfo` a second time. The metadata map consumes the original copy
-allowance; the 8192-row, byte, traversal, SQL-step and deadline limits remain
-unchanged. Full native metadata and all legacy comparisons are still required.
+`pragma_table_xinfo` a second time. The metadata map consumes C. Decision 2
+separates schema observation/native metadata (A), reference/comparison (B), data
+and run-scoped ownership (C), and org-wide guard/legacy SQL (L), with one original
+deadline and no allowance reset. Full native metadata and all legacy
+comparisons are still required.
 
 The native writer opens `mode=rw`, keeps `foreign_keys=1` and
 `defer_foreign_keys=0`, and owns one `BEGIN IMMEDIATE` through COMMIT. After writer
@@ -149,19 +151,23 @@ event is a commit failure. This is a new-table dependency contract, not a
 startup change or permission to run an admission writer.
 
 Standalone inspection uses the [finite reader contract](../agent-guides/contracts/reusable-workflows.md#u2a-storage-and-standalone-reader-boundary):
-one original row/raw/decoded/copy/work/deadline allowance includes independent
-schema references and new companion ownership inventory. Exhaustion refuses; an
-operator cannot substitute a subset or call exhaustion empty/unavailable data.
+A/B/C each retain 8192 rows, 64 MiB raw/decoded/copy reservations, 65536 steps
+and two million SQL progress units. L supplies 32 million SQL progress units for
+zero-row guards and retained legacy composition, with acquired rows/bytes/steps
+charged to C. Ownership acquisition is run-scoped through cached run/visit
+relations and primary-key task/mark lookups; no binding-view text is acquired in
+C. All four accumulate without reset under one original five-second deadline.
+The fixed reference prelude is deadline-bracketed only, not SQL-metered.
+Exhaustion refuses; an operator cannot substitute a subset or call exhaustion empty/unavailable data.
 The connection and its SQLite progress hook are exclusively owned for the call.
 TASK-14552's disposable AST/SQLite observations are structural evidence only;
 no populated-history, installer, native or migration behavior is established.
 
 Legacy-only and combined validation pass an exact retained `_Budget` with its
 original per-call caps through the unchanged native connection, inside the same
-snapshot and SQL progress/deadline context. TASK-14576 keeps those narrower
-phase counters separate from the new schema/copy charges and adds them to the
-unchanged outer totals on success or refusal. Outer success checks enforce the
-original aggregate allowance without replenishment; retained refusals propagate.
-Acquisition uses the retained per-call caps plus shared SQL-step/deadline bound,
-not pre-reservation against the outer 64 MiB cap. Unbudgeted retained document/
-ownership query bytes are not included in the outer byte counter.
+snapshot under L's SQL meter and the shared original deadline. TASK-14576 keeps
+those narrower phase counters separate from schema/copy charges and folds them
+into C on success or refusal. Success checks enforce C without replenishment;
+retained refusals propagate. Acquisition uses retained per-call caps plus L and
+the original deadline, not pre-reservation against C's 64 MiB cap. Unbudgeted
+retained document/ownership query bytes are not included in C's byte counter.
