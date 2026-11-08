@@ -349,15 +349,20 @@ class _ThreadLifecycleSegment:
     def __init__(self, store: ThreadAdmissionStore, thread_id: str) -> None:
         self.store, self.thread_id = store, thread_id
         self.decoded: dict[int, list[tuple[Mapping[str, Any], ThreadLifecycle]]] | None = None
-        self.selected: dict[tuple[int, str, str | None], ThreadLifecycle | None] = {}
+        self.selected: dict[tuple[int, str, str | None], tuple[int, ThreadLifecycle] | None] = {}
 
     def read(self, inv: Any) -> ThreadLifecycle | None:
+        final = self.read_final(inv)
+        return final[1] if final is not None else None
+
+    def read_final(self, inv: Any) -> tuple[int, ThreadLifecycle] | None:
+        """Selected final row and state, sharing this interval's single scan."""
         try:
             if inv.thread_id != self.thread_id:
                 raise ValueError("thread segment owner")
             if self.decoded is None:
                 rows = self.store.db._conn.execute(
-                    "SELECT agent,payload FROM audit_log WHERE task_id=? "
+                    "SELECT id,agent,payload FROM audit_log WHERE task_id=? "
                     "AND action='thread_move_lifecycle' ORDER BY id", (self.thread_id,),
                 )
                 decoded: dict[int, list[tuple[Mapping[str, Any], ThreadLifecycle]]] = {}
@@ -369,9 +374,9 @@ class _ThreadLifecycleSegment:
             key = (inv.id, inv.agent_name, inv.session_id)
             if key not in self.selected:
                 prior = None
-                for _, state in self.store._replay_selected(
+                for row, state in self.store._replay_selected(
                         inv, self.decoded.get(inv.id, ()), check=lambda: None):
-                    prior = state
+                    prior = (int(row["id"]), state)
                 self.selected[key] = prior
             return self.selected[key]
         except (ValueError, TypeError, ValidationError) as exc:

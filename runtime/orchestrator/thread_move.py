@@ -563,15 +563,19 @@ class ThreadMoveAdmission:
 
     def _abort_predecessors_uncommitted(self, owner: ThreadPreparation) -> None:
         # Durable history, not map absence or a no-op receipt, decides settlement.
+        # This mutation-free interval shares ONE complete thread replay, including
+        # final row IDs for attestations. Never reuse it across admission calls.
+        lifecycle = self.store._read_segment(owner.inv.thread_id)
         for inv in self.db.list_thread_invocations(owner.inv.thread_id):
             if inv.id == owner.inv.id or inv.agent_name != owner.inv.agent_name or inv.decline_reason != "founder_aborted":
                 continue
-            state = self.store.read_uncommitted(inv)
+            final = lifecycle.read_final(inv)
+            state = final[1] if final is not None else None
             control = self.controls.get(inv.id)
             if (state is None and inv.started_at is not None
                     and not self._pre_lifecycle_settled_uncommitted(inv, control)
                     or state is not None and (state.unknown or not state.producer_settled)
-                    and not self._attested_settled_uncommitted(inv, control)
+                    and not self._attested_settled_uncommitted(inv, control, final)
                     or control is not None and (control.failure is not None
                         or control.dispatch_future is None or not control.dispatch_future.done())):
                 raise DeferredTeamMove("thread_abort_predecessor_unsettled")
@@ -598,12 +602,13 @@ class ThreadMoveAdmission:
         return bool(state.failed_cleanup and state.producer_settled
             and all(a.settled and a.quiescent for a in state.attempts))
 
-    def _attested_settled_uncommitted(self, inv: Any, control: Any) -> bool:
+    def _attested_settled_uncommitted(
+        self, inv: Any, control: Any, final: tuple[int, ThreadLifecycle] | None,
+    ) -> bool:
         # Founder attestation settles this veto only, bound to the exact final
         # lifecycle row. failed_cleanup stays sticky for every other reader.
         if control is not None or inv.status == ThreadInvocationStatus.PENDING or inv.consumed_at is None:
             return False
-        final = self.store.read_final_uncommitted(inv)
         if final is None:
             return False
         row_id, state = final

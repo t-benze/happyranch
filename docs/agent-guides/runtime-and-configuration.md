@@ -4210,6 +4210,10 @@ control, live ownership or lifecycle. Repeated blocked polls append no lifecycle
 rows. Fresh producers still record initial evidence and first deferral; genuine
 resumption and attempts retain their writes. Final validation still rechecks
 predecessors, abort and team-move state after reservation.
+Each predecessor check decodes the complete thread lifecycle history at most
+once, sharing final audit-row IDs with attestation matching only within that
+mutation-free call under the existing locks. Later calls re-read history and
+controls; settled, unknown and attested predecessors keep the same veto rules.
 Founder-approved era cutoff: a started founder-aborted predecessor with no
 lifecycle row, no in-process control, a terminal status and `consumed_at`
 strictly before the org's first `thread_move_lifecycle` row ran under
@@ -4230,6 +4234,11 @@ agent, residue or unhealthy measurement refuses. Success appends one strict
 preparation and exact final lifecycle audit id. The veto accepts it only while
 that final row is unchanged; a malformed attestation fails closed. It never clears
 `failed_cleanup`, so cleanup/census/diagnostic readers still see uncertainty.
+Thread `no_callback:` and `no_callback_after_reprompt:` reasons retain the
+selected primary cause plus raw stderr diagnostics. Their single-line detail
+is capped at 2,000 characters with an explicit truncation marker between the
+head and tail, preserving both a leading Warning and final Error when large
+stderr exceeds the cap. The prefixes and failure classification are unchanged.
 Each offload owns its original callable/context and return acknowledgement before
 executor submission. A submission may throw after queueing; a missing, done or
 cancelled Future proves neither no effects nor original return. Unknown admission

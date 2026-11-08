@@ -80,30 +80,37 @@ def _executor_error_detail(result, rc) -> str:
     was previously only recoverable by digging into the claude session JSONL.
     """
     human_error = str(getattr(result, "human_error", "") or "")
+    stderr_tail = str(getattr(result, "stderr_tail", "") or "")
     stderr = human_error or (
-        "" if getattr(result, "human_error_inspected", False) else str(
-            getattr(result, "stderr_tail", "") or ""
-        )
+        "" if getattr(result, "human_error_inspected", False) else stderr_tail
     )
     terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
     notice = str(getattr(result, "terminal_error_notice", "") or "").strip()
     if terminal_error and not _meaningful_stderr(stderr):
-        return f"{terminal_error}; notice: {notice[:_REASON_DETAIL_CAP]}" if notice else terminal_error
-
-    # ``human_error`` was selected from the complete producer stream before
-    # tailing.  Keep that human cause distinct from the raw diagnostic tails
-    # below; ``error`` may contain the complete stderr and is only a legacy
-    # fallback when no selected cause exists.
-    if stderr:
-        detail = stderr.replace("\n", " ")[:_REASON_DETAIL_CAP]
+        detail = terminal_error
+    elif stderr:
+        detail = stderr
     else:
         raw = (str(getattr(result, "error", "") or "")
                or str(getattr(result, "stderr_tail", "") or "")).strip()
         prefix = f"Command exited with code {rc}"
         if raw.startswith(prefix):
             raw = raw[len(prefix):].lstrip(": ").strip()
-        detail = raw.replace("\n", " ")[:_REASON_DETAIL_CAP]
-    return f"{detail}; notice: {notice[:_REASON_DETAIL_CAP]}" if notice else detail
+        detail = raw
+    if notice:
+        detail = f"{detail}; notice: {notice}"
+    # The selected human cause may be only the first Warning line. Preserve
+    # the raw stderr as diagnostics too, including the final Error line, without
+    # reclassifying an inspected tail or changing the selected primary cause.
+    if stderr_tail and (notice or stderr_tail not in detail):
+        detail = f"{detail}; stderr: {stderr_tail}"
+    detail = detail.replace("\n", " ").replace("\r", " ")
+    if len(detail) > _REASON_DETAIL_CAP:
+        marker = " ...[truncated]... "
+        head = (_REASON_DETAIL_CAP - len(marker)) // 2
+        tail = _REASON_DETAIL_CAP - len(marker) - head
+        detail = detail[:head] + marker + detail[-tail:]
+    return detail
 
 
 @dataclass(frozen=True)
