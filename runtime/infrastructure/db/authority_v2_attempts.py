@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -32,12 +33,14 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_TRANSITIONS,
     AUTHORITY_POLICY_V2_ESCALATION_DECISION_ACTION,
+    AUTHORITY_POLICY_V2_INERT_CLOSE_ACTION,
     AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION,
     AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES,
     AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
     AuthorityPolicyV2Attempt,
+    AuthorityPolicyV2InertCloseAudit,
     AuthorityPolicyV2Candidate,
     AuthorityPolicyV2CandidateAudit,
     AuthorityPolicyV2Evaluation,
@@ -80,6 +83,14 @@ _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
     "already_evaluated": "interrupted_pre_final",
     "already_consumed": "interrupted_pre_final",
 }
+
+
+def _v2_result_row_digest(decoded: dict) -> str:
+    payload = {"columns": sorted(decoded), "row": decoded}
+    return hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")).hexdigest()
 
 
 class _V2StartupConnectionUnsafe(RuntimeError):
@@ -944,6 +955,8 @@ class AuthorityV2AttemptsMixin:
             return None
         if not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row)):
             return None
+        if attempt.finalization_state == "inert_closed" and not self._authenticate_v2_inert_close_uncommitted(attempt):
+            return None
         return attempt
 
     @_synchronized
@@ -965,7 +978,55 @@ class AuthorityV2AttemptsMixin:
             return None
         if not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row)):
             return None
+        if attempt.finalization_state == "inert_closed" and not self._authenticate_v2_inert_close_uncommitted(attempt):
+            return None
         return attempt
+
+    def _authenticate_v2_inert_close_uncommitted(
+        self, attempt: AuthorityPolicyV2Attempt,
+    ) -> bool:
+        """Authenticate exactly one closed audit, including its outer custody."""
+        if (attempt.finalization_state != "inert_closed"
+                or attempt.stage != "admitted" or attempt.refusal_code is not None):
+            return False
+        from runtime.infrastructure.db.tasks import _decode_task_result_row
+        try:
+            rows = self._conn.execute(
+                """SELECT task_id,agent,payload FROM audit_log WHERE action=? AND
+                   (task_id=? OR json_extract(
+                       CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+                       '$.attempt_id')=?)""",
+                (AUTHORITY_POLICY_V2_INERT_CLOSE_ACTION, attempt.root_task_id,
+                 attempt.attempt_id),
+            ).fetchall()
+            matches = []
+            for row in rows:
+                payload = json.loads(row["payload"])
+                if not isinstance(payload, dict):
+                    return False
+                if payload.get("attempt_id") != attempt.attempt_id:
+                    continue
+                audit = AuthorityPolicyV2InertCloseAudit.model_validate(payload)
+                if (row["task_id"] != attempt.root_task_id
+                        or row["agent"] != attempt.manager_agent
+                        or any(getattr(audit, key) != getattr(attempt, key) for key in (
+                            "attempt_id", "root_task_id", "manager_agent", "manager_session_id",
+                            "result_id", "stage", "finalization_state",
+                        ))):
+                    return False
+                matches.append(audit)
+            if len(matches) != 1:
+                return False
+            result = self._conn.execute(
+                "SELECT * FROM task_results WHERE id=?", (attempt.result_id,),
+            ).fetchone()
+            if result is None or (
+                result["task_id"], result["agent"], result["session_id"]
+            ) != (attempt.root_task_id, attempt.manager_agent, attempt.manager_session_id):
+                return False
+            return matches[0].result_row_digest == _v2_result_row_digest(_decode_task_result_row(result))
+        except (ValueError, TypeError, sqlite3.Error):
+            return False
 
     def _authority_policy_v2_attempt_from_row(self, row) -> AuthorityPolicyV2Attempt:
         try:
@@ -2367,6 +2428,8 @@ class AuthorityV2AttemptsMixin:
             return "identity_mismatch", None
         if attempt.attempt_id != attempt_id:
             return "identity_mismatch", None
+        if attempt.finalization_state == "inert_closed":
+            return "identity_mismatch", None
         if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED:
             return "evidence_drift", None
         attempt_row = dict(row)
@@ -3757,6 +3820,8 @@ class AuthorityV2AttemptsMixin:
         finalization_state: str,
     ) -> bool:
         """Require exactly one authentic closed terminal refusal stage event."""
+        if attempt_row["finalization_state"] == "inert_closed" or finalization_state == "inert_closed":
+            return False
         expected = self._v2_refusal_stage_payload(
             attempt_row, candidate_id, refusal_code, finalization_state,
         )
@@ -4121,6 +4186,9 @@ class AuthorityV2AttemptsMixin:
                     except BaseException:
                         pass
                     raise primary
+                return _pending("identity_mismatch")
+            if attempt.finalization_state == "inert_closed":
+                _rollback()
                 return _pending("identity_mismatch")
             attempt_row = dict(row)
             if attempt_id != attempt.attempt_id:
@@ -4673,6 +4741,8 @@ class AuthorityV2AttemptsMixin:
         self, row, *, obligation_code: str | None,
     ) -> AuthorityPolicyV2HousekeepingTarget:
         attempt = self._authority_policy_v2_attempt_from_row(row)
+        if attempt.finalization_state == "inert_closed" and not self._authenticate_v2_inert_close_uncommitted(attempt):
+            raise ValueError("v2 inert closure evidence mismatch")
         candidate_row = self._conn.execute(
             "SELECT candidate_id FROM authority_policy_v2_candidates WHERE result_id=?",
             (attempt.result_id,),

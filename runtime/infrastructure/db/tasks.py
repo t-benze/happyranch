@@ -506,6 +506,16 @@ def repository_preparation_closed(events: list[dict]) -> bool:
     return complete
 
 
+def _decode_task_result_row(row) -> dict:
+    """The shared SELECT * representation used by readers and startup closure."""
+    decoded = dict(row)
+    if decoded.get("risks_flagged"):
+        decoded["risks_flagged"] = json.loads(decoded["risks_flagged"])
+    if decoded.get("waiting_on_job_ids"):
+        decoded["waiting_on_job_ids"] = json.loads(decoded["waiting_on_job_ids"])
+    return decoded
+
+
 class TasksMixin:
     def repository_preparation_history_uncommitted(self, scope: str) -> list[dict]:
         """Bounded whole scoped stream; sentinel/invalid bytes refuse, never truncate."""
@@ -4222,15 +4232,7 @@ class TasksMixin:
             "SELECT * FROM task_results WHERE task_id = ? ORDER BY id", (task_id,)
         )
         rows = cursor.fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            if d.get("risks_flagged"):
-                d["risks_flagged"] = json.loads(d["risks_flagged"])
-            if d.get("waiting_on_job_ids"):
-                d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
-            result.append(d)
-        return result
+        return [_decode_task_result_row(row) for row in rows]
 
     @_synchronized
     def get_agent_task_results(self, agent: str, since: str | None = None) -> list[dict]:
@@ -4267,12 +4269,7 @@ class TasksMixin:
         row = cursor.fetchone()
         if row is None:
             return None
-        d = dict(row)
-        if d.get("risks_flagged"):
-            d["risks_flagged"] = json.loads(d["risks_flagged"])
-        if d.get("waiting_on_job_ids"):
-            d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
-        return d
+        return _decode_task_result_row(row)
 
     @_synchronized
     def get_latest_completion_report(

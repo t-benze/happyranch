@@ -3677,6 +3677,10 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                         # on a later failure; no sibling or writer authority is inferred.
                         if anchor is None:
                             anchor = current_anchor
+                        if target.finalization_state == "inert_closed":
+                            reads.count("finalized")
+                            reads.check()
+                            continue  # Closed history is never refusal/continuation work.
                         if target.finalization_state != "unfinalized":
                             reads.count("finalized")
                             reads.invalidate("finalized")
@@ -4013,6 +4017,8 @@ def _run_authority_hook_v2(
             orch, task, agent, result_row_id=result_row_id,
             owner_attempt_id=None, code="identity_mismatch",
         )
+    if attempt.finalization_state == "inert_closed":
+        return HOOK_V2_PENDING  # Read-only denial; no policy/refusal/repair authority.
     # The attempt's own authenticated identity is the only identity used; a
     # drift from the current task/session is a fail-closed refusal, never a
     # fresh authority.

@@ -1046,6 +1046,7 @@ AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES = frozenset({
     "unfinalized", "continued", "refused", "owner_lost", "inert_closed",
 })
 AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION = "authority_policy_v2_result_stage"
+AUTHORITY_POLICY_V2_INERT_CLOSE_ACTION = "authority_policy_v2_attempt_inert_closed"
 # THR-229 C3c correction: the ONE accepted manager decision action that the v2
 # authority-policy evaluation/continuation path serves (the accepted root
 # escalation decision).  A missing/malformed/non-escalate persisted decision
@@ -1526,6 +1527,39 @@ class AuthorityPolicyV2Attempt(BaseModel):
         elif self.refusal_code is not None:
             raise ValueError("an unfinalized v2 attempt carries no refusal code")
         return self
+
+
+class AuthorityPolicyV2InertCloseAudit(BaseModel):
+    """Historical closure only: no policy verdict, effect or receipt claim."""
+
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    format: Literal["authority-policy-v2-attempt-inert-closed@1"]
+    attempt_id: StrictStr
+    root_task_id: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    stage: Literal["admitted"]
+    finalization_state: Literal["inert_closed"]
+    closure: Literal["startup_terminal_inert"]
+    decision_family: Literal[
+        "delegate", "done", "fanout", "blocked", "supersede", "workflow_start",
+        "other_non_escalate",
+    ]
+    result_row_digest: StrictStr
+    root_status_at_close: Literal["completed", "failed", "cancelled", "superseded"]
+    boot_id: StrictStr
+
+    @field_validator("result_row_digest")
+    @classmethod
+    def _inert_close_digest(cls, value: str) -> str:
+        return _validate_authority_policy_v2_digest(value, "result_row_digest")
+
+    @field_validator("attempt_id", "root_task_id", "manager_agent", "manager_session_id", "boot_id")
+    @classmethod
+    def _inert_close_identity(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
 
 
 # THR-229 checkpoint C3b: the durable candidate/pin/claim-audit values.

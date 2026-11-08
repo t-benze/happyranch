@@ -2099,6 +2099,9 @@ class Database(
                 ):
                     self._conn.rollback()
                     return False
+                if admitted.finalization_state == "inert_closed" and not self._authenticate_v2_inert_close_uncommitted(admitted):
+                    self._conn.rollback()
+                    return False
                 if (
                     admitted.assessment_digest != v2_admission["assessment_digest"]
                     or admitted.binding_id != v2_admission["binding_id"]
