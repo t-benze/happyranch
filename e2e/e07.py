@@ -687,24 +687,34 @@ def exercise(c: Controller) -> None:
                         result[task]["detail_snapshot"] = detail
                 return result
             c.e07["browser_cancel"] = c.browser.e07_cancel(P,W, expected=browser_expected(second))
-            def closed() -> tuple[dict, dict] | None:
+            previous_closed = None
+            def closed() -> tuple[dict, dict, dict, dict] | None:
+                nonlocal previous_closed
                 observed = closure(c,tree,held["launch"]["child"])
                 c.e07.setdefault("closure_samples",[]).append(observed)
                 if any(p["start"] == p["observed_start"] for p in observed["processes"]) or any(g["pids"] for g in observed["groups"].values()):
+                    previous_closed = None
                     return None
                 require(not observed["pending"], "E07 no resumption peer")
                 snap, snap_content = frame(c,P,W)
                 c.e07["frames"].append(snap)
                 audits = snap["sql"]["alpha"]["tables"]["audit_log"]
                 if not any(a["task_id"] == W and a["action"] == "session_end" for a in audits):
+                    previous_closed = None
                     return None
                 if snap["metrics"]["host_sessions"]["admission"]["released_total"] != H+2:
+                    previous_closed = None
                     return None
                 cancelled(c,snap,parent,worker,result)
-                host(snap,H+2,H+2,0,second["metrics"]["host_sessions"]["receipts"])
-                return snap, snap_content
-            freeze, freeze_content = c.poll(closed,"E07 product closure before rescue")
-            freeze2, freeze2_content = frame(c,P,W)
+                projection = host(snap,H+2,H+2,0,second["metrics"]["host_sessions"]["receipts"])
+                previous = previous_closed
+                previous_closed = snap, snap_content
+                if previous is None or previous[1] != snap_content:
+                    return None
+                if host(previous[0],H+2,H+2,0,second["metrics"]["host_sessions"]["receipts"]) != projection:
+                    return None
+                return previous[0], previous[1], snap, snap_content
+            freeze, freeze_content, freeze2, freeze2_content = c.poll(closed,"E07 product closure before rescue")
             require(freeze_content == freeze2_content
                     and host(freeze2,H+2,H+2,0,second["metrics"]["host_sessions"]["receipts"]) == host(freeze,H+2,H+2,0,second["metrics"]["host_sessions"]["receipts"]), "E07 settled cancellation frame")
             receipt = freeze["metrics"]["host_sessions"]["receipts"]["recent"][0]

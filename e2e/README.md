@@ -29,7 +29,12 @@ start+780s, total 900s. There is no separate 120s publication reserve.
 
 The existing safe E05→E07 continuation stays on the same runtime, using real
 pre-E05/C/N/D checkpoints, positive closure and the full original 50s remaining.
-An E05 failure remains red even if E07 passes. Unsafe dependent work produces
+An E05 failure remains red even if E07 passes. E07 establishes its cancellation
+freeze from two consecutive complete equal frames and exact host projections
+inside the original cancel-and-close phase end; all candidate frames are retained.
+The subsequent unit-inactive freeze and full unchanged window remain strict.
+The E05 identity/cardinality failure includes its finite observed and expected
+projection fields; no predicate is relaxed. Unsafe dependent work produces
 errors without reset, replay, replacement runtime, extra allowance or retries.
 Safe identity/bearer denials and Pause child/idempotent/stale/terminal/overview
 cases continue only after the complete protected-state comparison
@@ -40,7 +45,11 @@ unreached dependent cases explicit prerequisite ERRORs, while owned cleanup
 and independent local readers still run. E05 captures failure diagnostics in
 its context owner before teardown; later closed-page capture is never required.
 E05 now reads each exact Playwright Response body on its original native loop,
-within the original absolute end, before context close. A missing, failed or
+within the original absolute end, before context close. Before each deliberate
+new-document thread navigation, the harness drains every observed required body
+and waits for known in-flight required Requests to reach native terminals. This
+keeps departure from overtaking the eager body RPCs; the final sweep still
+checks every required Response, including newly discovered automatic refreshes. A missing, failed or
 incomplete browser body fails the case; relay JSON never substitutes for it.
 Body-read failures name the query-free Response path, HTTP status, request
 method and consumption role (selected view or `thread_bodies` sweep), without

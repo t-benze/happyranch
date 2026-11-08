@@ -1705,6 +1705,7 @@ class Browser:
         expect(page.get_by_role("dialog")).to_have_count(0, timeout=self.controller.remaining(5)*1000)
         self.controller.remaining()
         created_url = page.url
+        self._thread_before_navigation()
         self.thread_events.append(dict(event="deliberate-revisit", url=self.thread_base+"/orgs/alpha/threads", at=time.monotonic()))
         with page.expect_response(lambda r: r.url.split("?")[0] == self.thread_base+"/api/v1/orgs/alpha/threads" and r.status == 200, timeout=self.controller.remaining(10)*1000):
             page.goto(self.thread_base+"/orgs/alpha/threads", timeout=self.controller.remaining(10)*1000)
@@ -1721,6 +1722,7 @@ class Browser:
     def thread_view(self, thread: str, subject: str, bodies: list[str], label: str, task: str | None = None) -> dict:
         page = self.thread_page
         page.set_default_timeout(self.controller.remaining(10) * 1000)
+        self._thread_before_navigation()
         url = self.thread_base + f"/orgs/alpha/threads/{thread}"
         path = self.thread_base + f"/api/v1/orgs/alpha/threads/{thread}"
         self.thread_events.append(dict(event="deliberate-revisit", url=url, at=time.monotonic()))
@@ -1797,6 +1799,24 @@ class Browser:
         require(observation['record']['browser_copy'] == 'measured-browser',
                 'E05 actual browser JSON unavailable')
         return body
+
+    def _thread_before_navigation(self) -> None:
+        # Scheduling an eager body task is insufficient if goto reaches the
+        # browser before that task's RPC. Drain the departing document first,
+        # including required Requests whose Response has not arrived yet.
+        while True:
+            self.thread_bodies()
+            terminals = {e['request_id'] for e in self.thread_events
+                         if e['event'] in {'request-finished', 'request-failed'}}
+            pending = [r for r in self.thread_requests.values()
+                       if r['url'].startswith(self.thread_base + '/')
+                       and self.controller.browser_relay.required_kind(
+                           r['method'], r['url'][len(self.thread_base):], r['method'] == 'POST') is not None
+                       and r['request_id'] not in terminals]
+            if not pending:
+                return
+            self.thread_page.wait_for_timeout(min(10, self.controller.remaining() * 1000))
+            self.controller.remaining()
 
     def thread_bodies(self) -> None:
         # Native delivery may discover another automatic response while waiting.

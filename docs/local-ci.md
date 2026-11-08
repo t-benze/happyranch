@@ -35,7 +35,14 @@ uncertainty retain poisoned-state teardown refusal. Owned page/context and raw
 navigation callbacks latch faults before a later API call can clear Playwright's
 transient connection error; that provenance is never reset. All sweep Responses
 remain required by the independent content reader; no browser JSON is substituted or
-excluded. Missing E07 admission reports an ordinary prerequisite failure.
+excluded. Every deliberate thread document navigation first drains required
+Response bodies and known in-flight required Requests within the original end,
+so navigation cannot overtake their body RPCs. The final sweep remains strict.
+E07 selects two consecutive complete equal cancellation frames and exact host
+projections before freezing, inside the original phase deadline, retaining all
+candidates and every later immutability check. E05 identity/cardinality errors
+include the actual and expected finite projection fields with unchanged predicates.
+Missing E07 admission reports an ordinary prerequisite failure.
 E05 selects delivered message articles by their direct header and `.gl-prose`,
 without waiting away held typing indicators. Exact count/content assertions
 remain. E07 checks exact first48/first53 membership/count while preserving the
