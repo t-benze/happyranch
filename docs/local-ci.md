@@ -36,6 +36,18 @@ ten-read timing is not a serving-daemon restart or production-size estimate.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
+Focused audit-prefilter observation (THR308seq353/354): run
+`bash scripts/test-coding-audit-prefilter.sh` locally with frozen Python3.14.
+It compares the real complete coding scan with its ordinary SQL projection
+disabled, on synthetic earlier-layout and complete-coding SQLite history.
+The corpus covers every typed discriminator, incomplete/duplicate/escaped
+members, UTF8/16/32 envelopes, invalid UTF8 TEXT, BLOB/NULL/numeric storage,
+size/depth/integer-digit bounds and benign near-misses. It also compares
+accepted built-in history, shared budgets and committed/joined/refused watermark
+publication. Local before/after timings cover both sparse and wider flat rows;
+they do not predict a serving-daemon restart saving. No daemon/worker starts,
+retired unit selection, general integration, E2E or CI trigger is added.
+
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
 THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12445

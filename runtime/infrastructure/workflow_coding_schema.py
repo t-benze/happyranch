@@ -8,9 +8,13 @@ whole-org SQL equality. This module grants no repository or current authority.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
+import sys
 import threading
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -118,6 +122,8 @@ CODING_VALUES = {
     'namespace': ('release/happyranch',),
 }
 CODING_NAMESPACE_COLUMNS = ('namespace', 'authority_namespace', 'org_namespace')
+
+_logger = logging.getLogger(__name__)
 
 
 def has_coding_schema_objects(conn: sqlite3.Connection) -> bool:
@@ -409,6 +415,71 @@ def _coding_metadata_candidate(raw: object, *, location: str) -> bool:
     return False
 
 
+def _coding_scan_projection(table: str, columns: list[str]) -> str:
+    """Mark only provably ordinary audit payloads for skipping JSON decoding.
+
+    Keep every rowid and the original scalar action. This is NOT a JSON reader:
+    uncertain storage/encoding, keys, escapes, size or nesting always retain the
+    original payload for the unchanged discriminator. Expected coding rows are
+    acquired independently in full, with their original cumulative allowance.
+    Raw TEXT is ALWAYS fetched/decoded normally, before acting on this marker:
+    invalid UTF8 must retain the original sqlite3 decoding error, not disappear.
+    """
+    quoted = ['"' + name.replace('"', '""') + '"' for name in columns]
+    if table != 'audit_log' or columns != ['action', 'payload']:
+        return ','.join(quoted)
+    # json.loads can refuse a long integer even in otherwise ordinary JSON.
+    # Bound the WHOLE text by the active digit limit (zero means disabled).
+    limit = min(65536, sys.get_int_max_str_digits() or 65536)
+    ordinary = []
+    for name in quoted:
+        ordinary.extend((
+            f"typeof({name})='text'",
+            f'length(CAST({name} AS BLOB))<={limit}',
+            # Conservatively retain non-ASCII/NUL text. Invalid UTF8 may still
+            # satisfy this SQL check, so _coding_scan_rows ALWAYS fetches raw
+            # TEXT through sqlite3's original UTF8 decoder before any skip.
+            f'length(CAST({name} AS BLOB))=length({name})',
+        ))
+    ordinary.extend((
+        "lower(\"action\") NOT GLOB 'coding_*' AND \"action\"!='workflow_start'",
+        "substr(ltrim(\"payload\", ' \t\r\n'),1,1) IN ('{','[')",
+        r"""instr("payload", '\u')=0""",
+        # Count even openers in quoted prose: false positives only. At most
+        # one container rules out BOTH decoder and recursive-visitor overflow.
+        "length(\"payload\")-length(replace(replace(\"payload\",'{',''),'[',''))<=1",
+        'json_valid("payload")',
+    ))
+    # json_each is evaluated ONLY for valid shallow JSON, and visits duplicate
+    # keys too. Every recognized key retains the original Python scan regardless
+    # of value. Invalid/incomplete envelopes never enter this branch.
+    keys = sorted(CODING_PREFIXES.keys() | CODING_VALUES.keys() | set(CODING_NAMESPACE_COLUMNS))
+    key_sql = ','.join("'" + key.replace("'", "''") + "'" for key in keys)
+    return ('"action","payload",CASE WHEN ' + ' AND '.join(ordinary)
+            + ' THEN NOT EXISTS (SELECT 1 FROM json_each("payload") WHERE key IN ('
+            + key_sql + ')) ELSE 0 END AS _coding_ordinary')
+
+
+def _coding_scan_rows(conn: sqlite3.Connection, table: str, columns: list[str], *,
+                      where: str, args: tuple, ordered: bool) -> Iterator[tuple | sqlite3.Row]:
+    """Retain original fetch/type/UTF8 failures, then omit ordinary JSON work."""
+    quoted = '"' + table.replace('"', '""') + '"'
+    projection = _coding_scan_projection(table, columns)
+    query = ('SELECT rowid' + (',' + projection if projection else '')
+             + ' FROM ' + quoted + where + (' ORDER BY rowid' if ordered else ''))
+    cursor = conn.execute(query, args)
+    try:
+        for row in cursor:
+            if len(row) == len(columns) + 2:
+                # This marker exists only for the ordinary action/payload
+                # projection. The complete raw row has already decoded above.
+                yield (row[0], row[1], None if row[-1] == 1 else row[2])
+            else:
+                yield row
+    finally:
+        cursor.close()
+
+
 def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
                            structured, keys, known, watermark):
     """Locate independently expected rows and reserved metadata, never admit by ID.
@@ -418,7 +489,6 @@ def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
     are freshly acquired with the original bounded cell gates and shared budget.
     """
     from runtime.workflows.coding_authority_history import _bounded_rows
-    quoted = '"' + table.replace('"', '""') + '"'
     key_names = ['"' + key.replace('"', '""') + '"' for key in keys]
     key_sql = '(' + ','.join(key_names) + ')' if len(keys) > 1 else key_names[0]
     placeholders = '(' + ','.join('?' for _ in keys) + ')' if len(keys) > 1 else '?'
@@ -431,7 +501,6 @@ def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
         row = selected[0]
         yield (row[0], True, *row[1:len(columns) + 1])
     metadata = list(dict.fromkeys((*scalar, *structured)))
-    projection = ','.join('"' + name.replace('"', '""') + '"' for name in metadata)
     predicates, args = [], ()
     if known:
         predicates.append('(' + ' OR '.join(name + ' IS NULL' for name in key_names)
@@ -442,8 +511,7 @@ def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
         predicates.append('rowid>?')
         args += (watermark,)
     where = ' WHERE ' + ' AND '.join(predicates) if predicates else ''
-    for rowid, *values in conn.execute('SELECT rowid' + (',' + projection if projection else '')
-                                       + ' FROM ' + quoted + where + ' ORDER BY rowid', args):
+    for rowid, *values in _coding_scan_rows(conn, table, metadata, where=where, args=args, ordered=True):
         candidate = any(_coding_scalar(name, raw) if name in scalar else
                         _coding_metadata_candidate(raw, location=f'{table}.{name}')
                         for name, raw in zip(metadata, values, strict=True))
@@ -576,10 +644,11 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             selected_columns = columns
         if not selected_columns:
             continue
-        selected = ','.join('"' + column.replace('"', '""') + '"' for column in selected_columns)
         file_key = _audit_log_file_key(conn) if table == 'audit_log' else None
         watermark = _audit_log_watermark(conn, file_key)
         last_id = watermark
+        scan_start = time.perf_counter() if table == 'audit_log' else None
+        observed_rows = 0
         if table_bounded:
             types = {
                 'workflow_coding_mappings': (('text',), ('text',), ('text',), ('integer',),
@@ -629,9 +698,11 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                     scalar=scalar, structured=structured, keys=keys, known=known,
                     watermark=watermark if file_key else None)
         else:
-            query = f'SELECT rowid, {selected} FROM "{quoted}"' + (' WHERE rowid > ? ORDER BY rowid' if file_key else '')
-            rows = ((row[0], False, *row[1:]) for row in conn.execute(query, (watermark,) if file_key else ()))
+            rows = ((row[0], False, *row[1:]) for row in _coding_scan_rows(
+                conn, table, selected_columns, where=' WHERE rowid > ?' if file_key else '',
+                args=(watermark,) if file_key else (), ordered=bool(file_key)))
         for rowid, expected_candidate, *row in rows:
+            observed_rows += 1
             last_id = max(last_id, rowid)
             if table_bounded and row == [None]:
                 continue  # Already discriminated ordinary metadata, no coding spend.
@@ -701,6 +772,9 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 advances.append((file_key, last_id))  # applied after the owned snapshot ends
             else:
                 _advance_audit_log_watermark(conn, file_key, last_id)
+        if scan_start is not None:
+            _logger.info('workflow_coding_audit_scan elapsed_seconds=%.6f observed_rows=%d watermark=%d',
+                         time.perf_counter() - scan_start, observed_rows, watermark)
     if queued is not None:
         return _CodingInventory(budget, release, imported, mappings, queued)
     return None
