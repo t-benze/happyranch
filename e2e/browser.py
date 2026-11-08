@@ -1499,12 +1499,12 @@ class Browser:
         self.thread_document = None
         self.thread_pending_documents = set()
         self.thread_context = self.browser.new_context(locale="en-US", viewport={"width": 1440, "height": 900})
-        self.thread_context.tracing.start(screenshots=True, snapshots=True, sources=False)
-        (self.controller.root / "thread-browser-started").touch()
         # F1: observe a genuinely returned context before any later acquisition.
         def context_closed(_context):
             self.thread_events.append(dict(event='context-close', at=time.monotonic()))
         self.thread_context.on('close', context_closed)
+        self.thread_context.tracing.start(screenshots=True, snapshots=True, sources=False)
+        (self.controller.root / "thread-browser-started").touch()
         self.controller.remaining()
         self.thread_page = self.thread_context.new_page()
         self.controller.remaining()
@@ -1824,7 +1824,7 @@ class Browser:
                             raise TimeoutError('E05 original native close deadline')
                         try:
                             await self.thread_context._impl_obj.tracing.stop(path=str(self.controller.root / "traces/threads.zip"))
-                        except Exception as exc:
+                        except Exception as exc:  # noqa: BLE001 - trace failure must not suppress owned context close
                             errors.append(exc)
                         await self.thread_context._impl_obj.close()
                     except Exception as exc:
@@ -2173,10 +2173,15 @@ class Browser:
                 names = ["launcher"]
             for name in set(names):
                 page = getattr(self, "thread_page", self.page) if name.startswith("E05.") else self.page
-                page.screenshot(path=str(c.root / "screenshots" / (name + ".png")), full_page=True,
-                                timeout=c.remaining(4) * 1000)
-        except BaseException as exc:
+                end = min(c.effective_end(), time.monotonic() + 4)
+                with c.phase(end, native=True):
+                    page.screenshot(path=str(c.root / "screenshots" / (name + ".png")), full_page=True,
+                                    timeout=c.remaining(end - time.monotonic()) * 1000)
+        except BaseException as exc:  # noqa: BLE001 - preserve capture failure and native safety
+            from playwright._impl._errors import TimeoutError as NativeTimeoutError
             c.record_error("failure-screenshot", exc)
+            if isinstance(exc, (NativeTimeoutError, TimeoutError)) or not isinstance(exc, Exception):
+                self.poison(exc)
 
     def close(self) -> None:
         c = self.controller
