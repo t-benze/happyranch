@@ -4235,10 +4235,16 @@ preparation and exact final lifecycle audit id. The veto accepts it only while
 that final row is unchanged; a malformed attestation fails closed. It never clears
 `failed_cleanup`, so cleanup/census/diagnostic readers still see uncertainty.
 Thread `no_callback:` and `no_callback_after_reprompt:` reasons retain the
-selected primary cause plus raw stderr diagnostics. Their single-line detail
-is capped at 2,000 characters with an explicit truncation marker between the
-head and tail, preserving both a leading Warning and final Error when large
-stderr exceeds the cap. The prefixes and failure classification are unchanged.
+selected primary cause plus raw stderr diagnostics. Before trimming detail over
+2,000 characters, the formatter reserves the last Error line and first Warning
+line available in the executor's raw diagnostic fields (case-insensitive
+`Error:`/`Warning:` labels), even when stack context follows the Error. Error is reserved first;
+each line is capped at 900 characters including an explicit truncation marker,
+retaining its label and omitting an overlong prefix if needed. This deterministic
+rule also applies when both lines alone exceed the total budget. Remaining space
+retains head/tail context with a truncation marker; the complete single-line detail
+stays within 2,000 characters. Short detail keeps its existing format. The reason
+prefixes, rc envelopes and failure classification logic are unchanged.
 Each offload owns its original callable/context and return acknowledgement before
 executor submission. A submission may throw after queueing; a missing, done or
 cancelled Future proves neither no effects nor original return. Unknown admission

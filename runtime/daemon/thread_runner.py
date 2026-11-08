@@ -69,6 +69,7 @@ logger = logging.getLogger(__name__)
 # Cap for the underlying-error detail appended to a no_callback reason so a
 # multi-KB stdout/stderr tail can't bloat the audit row.
 _REASON_DETAIL_CAP = 2000
+_REASON_DIAGNOSTIC_LINE_CAP = 900
 
 
 def _executor_error_detail(result, rc) -> str:
@@ -107,9 +108,35 @@ def _executor_error_detail(result, rc) -> str:
     detail = detail.replace("\n", " ").replace("\r", " ")
     if len(detail) > _REASON_DETAIL_CAP:
         marker = " ...[truncated]... "
-        head = (_REASON_DETAIL_CAP - len(marker)) // 2
-        tail = _REASON_DETAIL_CAP - len(marker) - head
-        detail = detail[:head] + marker + detail[-tail:]
+        raw_error = str(getattr(result, "error", "") or "").strip()
+        prefix = f"Command exited with code {rc}"
+        if raw_error.startswith(prefix):
+            raw_error = raw_error[len(prefix):].lstrip(": ").strip()
+        lines = [line.strip() for source in (
+            human_error, raw_error, terminal_error, notice, stderr_tail,
+        ) for line in source.splitlines() if line.strip()]
+        # Reserve the last Error and first Warning BEFORE budgeting context.
+        # Error wins ordering; each line gets at most 900 characters, including
+        # its marker. Keep the label even when a very long prefix precedes it.
+        reserved = []
+        for label, candidates in (("error", reversed(lines)), ("warning", iter(lines))):
+            for line in candidates:
+                match = re.search(rf"\b{label}\s*:", line, re.IGNORECASE)
+                if match is None:
+                    continue
+                if len(line) > _REASON_DIAGNOSTIC_LINE_CAP:
+                    if match.end() > _REASON_DIAGNOSTIC_LINE_CAP - len(marker):
+                        line = marker + line[match.start():]
+                    line = line[:_REASON_DIAGNOSTIC_LINE_CAP - len(marker)] + marker
+                reserved.append(line)
+                break
+        reservation = "; ".join(reserved)
+        if reservation:
+            reservation += "; context: "
+        remaining = _REASON_DETAIL_CAP - len(reservation) - len(marker)
+        head = remaining // 2
+        tail = remaining - head
+        detail = reservation + detail[:head] + marker + detail[-tail:]
     return detail
 
 
