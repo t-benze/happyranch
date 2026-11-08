@@ -6,7 +6,6 @@ import json
 import os
 import re
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
@@ -14,31 +13,10 @@ import time
 from pathlib import Path
 
 
-def redaction_context(root: Path, token: str | None) -> set[str]:
-    """Read the retained private context; never echo unsafe bytes on failure."""
-    try:
-        path = root / "coord/redaction-context.json"
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(descriptor, "r") as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
-                raise ValueError
-            context = json.load(stream)
-        bearer = (root / "daemon/daemon.token").read_text().strip()
-        if (not isinstance(context, list) or not context or not bearer
-                or not all(isinstance(s, str) and s for s in context)
-                or bearer not in context or (token is not None and token not in context)):
-            raise ValueError
-        for secret in context:
-            secret.encode("utf-8", errors="strict")
-        return set(context)
-    except Exception:
-        raise RuntimeError("E05 private redaction context unavailable or unsafe") from None
-
-
 def command(instruction: dict, binding: dict, token: str | None, files: dict) -> dict:
     root = Path(os.environ["E2E_ROOT"])
-    secrets = redaction_context(root, token)
+    # Only known literals are scrubbed; no export-context admission protocol.
+    secrets = {value for value in (token, (root / "daemon/daemon.token").read_text().strip()) if value}
     manifest = json.loads((root / "coord/manifest.json").read_text())
     callback = Path(manifest["callback"])
     if hashlib.sha256(callback.read_bytes()).hexdigest() != manifest["callback_sha256"]:
@@ -116,10 +94,6 @@ def command(instruction: dict, binding: dict, token: str | None, files: dict) ->
         timed_out = True
         out, err = exc.stdout or b"", exc.stderr or b""
     timed_out = timed_out or time.monotonic() >= end
-    retained = redaction_context(root, token)
-    if not secrets <= retained:
-        raise RuntimeError("E05 retained redaction context lost identities")
-    secrets |= retained
 
     def sanitize(value: object) -> object:
         if isinstance(value, str):

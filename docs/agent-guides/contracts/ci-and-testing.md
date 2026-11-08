@@ -1,6 +1,6 @@
 # CI, E2E and test-venue contracts
 
-Founder THR-291 seq659 slice 2 uses standard per-case JUnit and explicit
+Founder THR-291 seq659 slice 3 uses standard per-case JUnit and explicit
 failure-only trace/screenshot/log artifacts with GitHub default retention.
 Both lanes must report the exact56 once each, both launcher diagnostics and all
 setup/cleanup checks must pass. Health checks reports and identity only; former
@@ -12,13 +12,16 @@ unsafe dependents report prerequisite ERROR, with no reset/retry. The strict
 same-runtime E05→E07 checkpoint/closure/full50s admission and first cause remain;
 E05 failure stays red even if E07 passes. Failure capture precedes E05 teardown.
 Optional Owned/E07 process diagnostics are removed; real cleanup is mandatory.
-Browser/transport/thread-provider private collectors remain for slice3, including
-the temporary private token list. No validated-context export, SQL/state upload,
-receipt/hash/ownership publisher or publication budgets remain. Operational480/240/720/60/900 bounds and product output caps stay.
+Browser/transport original-body archives, framing/segment hashes and publication
+member/byte/fact budgets are removed. Actual Playwright Response JSON supplies
+E05 browser/public/DOM equality. The native HTTP/SSE forwarding and GET-owner
+shutdown/physical closure checks remain. Thread providers scrub their known token
+literals without an export-context protocol. No SQL/state upload, receipt/hash/
+ownership publisher or publication budgets remain. Operational480/240/720/60/900 bounds and product output caps stay.
 JUnit always uploads; missing reports fail. Known synthetic tokens receive literal
-scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../../../e2e/README.md#current-reporting-contract--slice-2-of-3-thr-291-seq659).
+scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../../../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
 Historical records below preserve actual failures and holds; their removed
-controller/launcher/export/optional-diagnostic instructions are superseded, never current acceptance.
+controller/launcher/export/collector/optional-diagnostic instructions are superseded, never current acceptance.
 
 
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
@@ -68,19 +71,21 @@ blind same-source retry, new trigger/schedule or automatic retry is authorized.
 Scheduled runs38482572306 and38644465643 failed at their own sources; corrected
 behavior remains pending an authorized main run. Historical baseline is separate evidence.
 Current THR291seq495 / sole ROOT13112 bounded test-harness composition captures
-original E05 responses at BrowserRelay and admits E07 after failed E05 only from
+actual E05 browser Response JSON and admits E07 after failed E05 only from
 complete genuine same-runtime pre-E05/C/N/D checkpoints. Starts29/32/33/36 and
 current-host17/20/21/24 select exact source-owned memberships; the only suffix is
 two actual P/W starts/four commands/one P result, final31/34/35/38 starts. Healthy
 53/36/38/23tasks31results/B24→26 remains the strict original specification. Both
 real boots/index1, positive owner/resource/provider/cgroup closure, complete raw
-content/public/SQL/files/witness/source joins, safe export and a full50s remaining
+content/public/SQL/files/witness/source joins and a full50s remaining
 in ORIGINAL480 work are mandatory; unsafe/unknown/expired/poisoned states refuse
 before allocation, without reset or borrowed reserve. Separate producer groups
 and independent scoped readers preserve the first E05 error and later errors;
-full56/Health remains strict FAIL for failed/missing evidence. Known open item:
-independent browser-copy body/hash/length/full-projection proof is UNAVAILABLE;
-healthy E05/full56 remains unmet, never satisfied by relay/public/SQL/DOM copies.
+full56/Health remains strict FAIL for failed/missing observations. Slice3 removes
+original-body/hash/length publication proof and reads exact native browser JSON
+within the original time/closure rules. Full detail/message/public/DOM equality
+remains mandatory; relay/public/SQL/DOM copies cannot supply missing browser JSON.
+Source delivery does not establish healthy E05/full56.
 All56 BOTH3.12/3.14,31s/full1s/BOTH50ms/GC/content assertions, original budgets,
 TERM/INT/four JUnit reports/daily19UTC and lint-only checks remain. See e2e/README.md
 for the maintained current contract,26 cases/keeper/four-answer records and actual
@@ -88,7 +93,8 @@ source/control evidence; historical observations and execution holds remain.
 The historical TASK13130 detached export and ownership protocols are superseded
 for the launcher and Health by seq659. The retained private content checks still
 require genuine browser input; no relay/public/SQL/DOM substitution is accepted.
-Native behavior and trace-viewer readability remain NOT RUN by this source slice.
+Native Product E2E behavior remains NOT RUN by source/static checks; synthetic
+body/standard-trace evidence must identify the actual adapter/browser venue.
 See `e2e/README.md` and `docs/local-ci.md`. Old units remain retired.
 
 Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.

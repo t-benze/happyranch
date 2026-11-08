@@ -758,207 +758,72 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                    and w["argv_sha256"] == digest]) == 1, "provider child/PID/argv source witness")
 
 
-def require_browser_copy(event: dict, original: dict) -> None:
-    """A measured independent browser input is mandatory, including full JSON."""
-    if event.get('browser_copy') != 'measured-browser':
-        raise ValueError('E05 browser evidence UNKNOWN: independent browser copy unavailable')
-    if (event.get('body') != original['body'] or event.get('sha256') != original['sha256']
-            or type(event.get('bytes')) is not int or event['bytes'] != original['bytes']):
-        raise ValueError('E05 browser evidence FAIL: original/browser full body/hash/length mismatch')
-
-
-def validate_original_member(record: dict) -> object:
-    """Independent bounded original/forwarding grammar, not browser receipt."""
-    def check(value, reason):
-        if not value:
-            raise ValueError('E05 original: ' + reason)
-    def number(value):
-        return type(value) in (int,float) and math.isfinite(value)
-    o,f = record['original'], record['forwarding']
-    check(set(o) == {'schema','relay_id','required_kind','started','status','framing','header_bytes','finished',
-                     'outcome','byte_length','sha256','first_error','capture_state','capture_refusal','entity_copy'}, 'closed original grammar')
-    check(type(o['schema']) is int and o['schema'] == 1 and type(o['relay_id']) is int
-          and o['relay_id'] == record['relay_id'] and o['required_kind'] in {'compose','detail','messages'}, 'original identity')
-    check(o['outcome'] in {'complete','empty','bodyless','partial','error','pending'}
-          and o['capture_state'] in {'open','sealed','refused'}, 'distinct original outcome')
-    check(o['capture_state'] == 'sealed' and o['capture_refusal'] is None
-          and o['first_error'] is None and o['outcome'] == 'complete', 'complete required original, never partial/empty/error/refusal')
-    check(type(o['status']) is int and o['status'] == record['status'] == 200
-          and number(o['started']) and number(o['finished'])
-          and o['started'] == record['entered'] <= o['finished'] <= record['closed'], 'original status/timeline')
-    framing = o['framing']
-    check(set(framing) == {'content_type','content_encoding','content_length','transfer_encoding','bodyless'}
-          and all(type(framing[k]) is list and len(framing[k]) <= 1 and all(type(v) is str for v in framing[k])
-                  for k in ('content_type','content_encoding','content_length','transfer_encoding'))
-          and type(framing['bodyless']) is bool and not framing['bodyless']
-          and framing['content_encoding'] in ([],['identity'])
-          and len(framing['content_type']) == 1 and framing['content_type'][0].split(';')[0] == 'application/json', 'identity UTF8 JSON framing')
-    check(type(o['header_bytes']) is int and 0 <= o['header_bytes'] <= 65536
-          and type(o['byte_length']) is int and 0 < o['byte_length'] <= 1048576, 'entity/header bounds')
-    entity = o['entity_copy']
-    check(set(entity) == {'representation','text','copy_bytes','copy_sha256','original_byte_check'}
-          and entity['representation'] == 'unchanged_utf8' and entity['original_byte_check'] == 'available'
-          and type(entity['text']) is str, 'unchanged safe original bytes available; sanitized copy is not original proof')
-    raw = entity['text'].encode('utf8')
-    check(len(raw) == o['byte_length'] == entity['copy_bytes']
-          and hashlib.sha256(raw).hexdigest() == o['sha256'] == entity['copy_sha256'], 'original entity bytes/hash')
-    check(not framing['content_length'] or framing['content_length'][0].isascii()
-          and framing['content_length'][0].isdecimal() and int(framing['content_length'][0]) == len(raw), 'complete declared entity length')
-    check(set(f) == {'segments','byte_length','sha256','finished'} and type(f['segments']) is list
-          and len(f['segments']) <= 16384, 'closed forwarding grammar')
-    offset = 0
-    for segment in f['segments']:
-        check(set(segment) == {'offset','length','sha256','write_started','write_returned','flush_returned','written'}
-              and type(segment['offset']) is int and type(segment['length']) is int
-              and segment['offset'] == offset and segment['length'] > 0
-              and type(segment['written']) is int and segment['written'] == segment['length'], 'actual contiguous full write prefix')
-        part = raw[offset:offset+segment['length']]
-        check(len(part) == segment['length'] and hashlib.sha256(part).hexdigest() == segment['sha256'], 'forwarded original segment digest')
-        check(all(number(segment[k]) for k in ('write_started','write_returned','flush_returned'))
-              and record['entered'] <= segment['write_started'] <= segment['write_returned'] <= segment['flush_returned'] <= record['delivered'], 'separate actual write and flush returns')
-        offset += segment['length']
-    check(offset == f['byte_length'] == o['byte_length'] and f['sha256'] == o['sha256']
-          and number(f['finished']) and o['finished'] <= f['finished'] <= record['delivered'] <= record['closed'], 'complete forwarding, never browser receipt')
-    def pairs(items):
-        result = {}
-        for k,v in items:
-            check(k not in result, 'duplicate original JSON key')
-            result[k] = v
-        return result
-    def constant(_value):
-        raise ValueError('E05 original: nonfinite original JSON')
-    return json.loads(raw.decode('utf8'), object_pairs_hook=pairs, parse_constant=constant)
-
-
-def validate_e05_originals(observations: dict, directory: Path) -> dict:
-    """Census every required native Response and independently recompute joins."""
+def validate_e05_browser(observations: dict) -> dict:
+    """Actual browser JSON and native Request identity, without an archive join."""
     import re
     def check(value, reason):
         if not value:
-            raise ValueError('E05 originals: ' + reason)
-    events = observations["thread_events"]
-    inventory = observations['capture_inventory']
-    check(set(inventory) == {'refusals','closed','requests','retained_bytes','retained_facts'} and inventory['refusals'] == []
-          and type(inventory['closed']) in (int,float) and math.isfinite(inventory['closed']), 'closed complete inventory, no refusal')
-    check(type(inventory['retained_bytes']) is int and 0 <= inventory['retained_bytes'] <= 8*1024*1024
-          and type(inventory['retained_facts']) is int and 0 <= inventory['retained_facts'] <= 16384,
-          'whole-context reserved byte/fact bounds')
-    requests = [e for e in events if e['event'] == 'request']
-    check([e['request_id'] for e in requests] == list(range(len(requests)))
-          and all(type(e['request_id']) is int for e in requests), 'unique complete Request census')
-    check(len(requests) <= 512 and len(events) <= 16384 and len(inventory['requests']) == len(requests)
-          and all(len(e['url'].encode('utf8')) <= 8192 for e in requests), 'complete original Request inventory')
+            raise ValueError('E05 browser: ' + reason)
+    events = observations['thread_events']
     case = next(d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d)
     origin = 'http://127.0.0.1:' + str(case['transport']['browser_port'])
-    for issued, retained in zip(requests,inventory['requests']):
-        check(issued['url'].startswith(origin+'/'), 'native Request origin safety')
-        expected = dict(issued,target=issued['url'][len(origin):])
-        terminals = [e for e in events if e['event'] in {'request-failed','request-finished'} and e['request_id'] == issued['request_id']]
-        check(len(terminals) <= 1, 'unique original Request terminal')
-        if terminals:
-            expected['terminals'] = terminals
-            if terminals[0]['event'] == 'request-failed':
-                expected['failed'] = terminals[0]['at']
-        check(retained == expected, 'exact original Request/terminal inventory')
-    required_requests = [e for e in requests if
+    requests = [e for e in events if e['event'] == 'request']
+    required = [e for e in requests if
         e['method'] == 'POST' and e['url'].split('?')[0] == origin+'/api/v1/orgs/alpha/threads'
-        or e['method'] == 'GET' and re.fullmatch(re.escape(origin)+r'/api/v1/orgs/alpha/threads/THR-\d+(?:/messages)?',e['url'].split('?')[0])]
-    native = [e for e in events if e['event'] in {'compose-response','thread-response'}]
-    check([e['response_id'] for e in native] == list(range(len(native)))
-          and all(type(e['response_id']) is int and type(e['request_id']) is int for e in native)
-          and len({e['request_id'] for e in native}) == len(native) <= 512, 'exact unique Response objects')
-    check({e['request_id'] for e in required_requests} == {e['request_id'] for e in native}
-          and len(required_requests) == len(native), 'every required native Request has its own Response')
-    # Replay the ORIGINAL order, never search a future Request to establish an
-    # issuing document. Main-frame/unredirected facts come from native objects;
-    # the pinned main-frame commit callback supplies the commit observation.
-    check(all(type(e['at']) in (int,float) and math.isfinite(e['at']) for e in events)
-          and all(a['at'] <= b['at'] for a,b in zip(events,events[1:])), 'chronological native document ledger')
+        or e['method'] == 'GET' and re.fullmatch(re.escape(origin)+r'/api/v1/orgs/alpha/threads/THR-\d+(?:/messages)?', e['url'].split('?')[0])]
+    responses = [e for e in events if e['event'] in {'compose-response', 'thread-response'}]
+    check([e['response_id'] for e in responses] == list(range(len(responses)))
+          and len({e['request_id'] for e in responses}) == len(responses), 'distinct native Response objects')
+    check({e['request_id'] for e in required} == {e['request_id'] for e in responses}
+          and len(required) == len(responses), 'every required Request has its actual Response')
+    # Reconstruct the issuing document in event order. A future navigation
+    # cannot lend its Request identity to an earlier API response.
     seen, committed, pending = {}, set(), set()
-    current_document = None
+    current = None
     for event in events:
         if event['event'] == 'request':
-            check(all(type(event.get(k)) is bool for k in ('navigation','main_frame','unredirected')),
-                  'native main-frame and redirect provenance available')
-            check(type(event['pending_documents']) is list
-                  and all(type(i) is int for i in event['pending_documents'])
-                  and event['pending_documents'] == sorted(pending), 'consistent original pending document snapshot')
-            expected_document = current_document if event['main_frame'] and event['unredirected'] else None
-            check(event['document_request_id'] is None if expected_document is None else
-                  type(event['document_request_id']) is int and event['document_request_id'] == expected_document,
-                  'actual committed issuing document at Request issuance')
-            if event in required_requests:
-                check(event['main_frame'] and event['unredirected'] and current_document is not None and not pending,
-                      'unambiguous issuing document at issue time')
+            check(all(type(event.get(k)) is bool for k in ('navigation', 'main_frame', 'unredirected')),
+                  'native frame/redirect provenance')
+            document = current if event['main_frame'] and event['unredirected'] else None
+            check(event['document_request_id'] == document and event['pending_documents'] == sorted(pending),
+                  'actual issuing document and pending navigation')
+            if event in required:
+                check(document is not None and not pending, 'unambiguous current document at API issuance')
             seen[event['request_id']] = event
             if event['navigation'] and event['main_frame']:
                 pending.add(event['request_id'])
         elif event['event'] == 'navigation':
-            document_id = event['document_request_id']
-            check(type(event['new_document']) is bool and type(document_id) is int
-                  and event['url'].startswith(origin+'/'), 'typed same-origin native document commit lineage')
+            document = event['document_request_id']
+            check(type(event['new_document']) is bool and type(document) is int
+                  and event['url'].startswith(origin+'/'), 'typed same-origin document commit')
             if event['new_document']:
-                document = seen.get(document_id)
-                check(document is not None and document_id not in committed and document_id in pending
-                      and document['navigation'] and document['main_frame'] and document['unredirected']
-                      and document['resource_type'] == 'document' and document['method'] == 'GET'
-                      and document['url'] == event['url'] and document['at'] <= event['at'],
-                      'actual earlier unredirected main-frame GET document commit')
-                committed.add(document_id)
-                pending.remove(document_id)
-                current_document = document_id
+                issued = seen.get(document)
+                check(issued is not None and document in pending and document not in committed
+                      and issued['navigation'] and issued['main_frame'] and issued['unredirected']
+                      and issued['resource_type'] == 'document' and issued['method'] == 'GET'
+                      and issued['url'] == event['url'] and issued['at'] <= event['at'],
+                      'earlier unredirected main-frame document Request')
+                committed.add(document)
+                pending.remove(document)
+                current = document
             else:
-                check(current_document is not None and document_id == current_document and not pending,
-                      'same-document retains committed lineage without pending navigation')
-    proxies = observations['thread_proxy']
-    check(len(proxies) <= 512 and [r['relay_id'] for r in proxies] == list(range(len(proxies))), 'complete relay membership including late requests')
-    def required(r):
-        return (r['method'] == 'POST' and r['ordinal'] is not None
-                or r['method'] == 'GET' and re.fullmatch(r'/api/v1/orgs/alpha/threads/THR-\d+(?:/messages)?',r['target'].split('?')[0]))
-    members = [r for r in proxies if required(r)]
-    check(len(members) == len(native) <= 512 and all('original' in r for r in members)
-          and all(r['closed'] <= inventory['closed'] for r in members), 'every automatic/view/revisit required original is retained')
-    check(sum(r['original']['byte_length']+r['original']['header_bytes'] for r in members) <= 8*1024*1024
-          and sum(len(r['forwarding']['segments'])+1 for r in members) <= 16384, 'whole-context original bounds')
-    check(sum(r['original']['byte_length']+r['original']['header_bytes'] for r in members) <= inventory['retained_bytes']
-          and len(proxies)+len(requests)+sum(len(r['forwarding']['segments'])+4 for r in members) <= inventory['retained_facts'],
-          'complete retained membership has original byte/fact reservations')
-    case = next(d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d)
-    origin = 'http://127.0.0.1:' + str(case['transport']['browser_port'])
-    def candidates(e, response):
-        terminal = [t for t in events if t['event'] in {'request-finished','request-failed'} and t['request_id'] == e['request_id']]
-        check(len(terminal) == 1 and terminal[0]['event'] == 'request-finished'
-              and terminal[0]['url'] == e['url'] and terminal[0]['method'] == e['method'], 'exact successful original native terminal')
-        check(e['at'] <= response['at'] <= terminal[0]['at']
-              and events.index(e) <= events.index(response) <= events.index(terminal[0]),
-              'exact Request <= Response <= successful terminal interval')
-        return [r for r in members if r['method'] == e['method'] and origin+r['target'] == e['url']
-                and r['entered'] <= terminal[0]['at'] and r['closed'] >= e['at']]
-    matches = {}
-    for response in native:
-        issued = [e for e in requests if e['request_id'] == response['request_id']]
-        check(len(issued) == 1 and issued[0]['url'] == response['url'] and issued[0]['method'] == response['method'], 'exact Response.request identity')
-        issued = issued[0]
-        check(type(issued.get('document_request_id')) is int and issued.get('pending_documents') == [], 'unambiguous issuing document at issue time')
-        options = candidates(issued, response)
-        check(len(options) == 1 and options[0]['relay_id'] not in {r['relay_id'] for r in matches.values()}, 'full-window unique bijection; no URL/ordinal fallback')
-        wire = options[0]
-        check(response['status'] == wire['status'] == 200 and wire['original']['required_kind'] ==
-              ('compose' if response['event'] == 'compose-response' else 'messages' if wire['path'].endswith('/messages') else 'detail'), 'required response kind/status')
-        matches[response['request_id']] = wire
-    check(len({r['relay_id'] for r in matches.values()}) == len(members), 'no omitted or reused required member')
-    originals = observations['thread_originals']
-    check(len(originals) == len(native), 'final original observations include every response')
+                check(current is not None and document == current and not pending,
+                      'same-document committed lineage')
     bodies = {}
-    for response, original in zip(native, originals):
-        wire = matches[response['request_id']]
-        body = validate_original_member(wire)
-        check(set(original) == {'relay_id','request_id','origin','body','bytes','sha256','response_id'}
-              and original['origin'] == 'relay-original' and original['relay_id'] == wire['relay_id']
-              and original['request_id'] == response['request_id'] and original['response_id'] == response['response_id']
-              and original['body'] == body and original['bytes'] == wire['original']['byte_length']
-              and original['sha256'] == wire['original']['sha256'], 'full original object/content reference')
-        bodies[response['request_id']] = original
+    for response in responses:
+        issued, = [e for e in required if e['request_id'] == response['request_id']]
+        terminal = [e for e in events if e['event'] in {'request-finished', 'request-failed'}
+                    and e['request_id'] == issued['request_id']]
+        check(len(terminal) == 1 and terminal[0]['event'] == 'request-finished'
+              and issued['at'] <= response['at'] <= terminal[0]['at'], 'successful native Request terminal')
+        check(issued['main_frame'] and issued['unredirected'] and issued['document_request_id'] is not None
+              and not issued['pending_documents'], 'current unredirected issuing document')
+        check(response['url'] == issued['url'] == terminal[0]['url']
+              and response['method'] == issued['method'] == terminal[0]['method']
+              and response['status'] == 200, 'exact native response URL/method/status')
+        check(response['browser_copy'] == 'measured-browser' and type(response['body']) is dict,
+              'actual complete browser JSON required')
+        bodies[response['request_id']] = response
     return bodies
 
 
@@ -988,11 +853,11 @@ def validate_e05_safety(observations: dict, events: list[dict]) -> None:
         'stream-response': 'request_id url method status',
         'context-closing': 'request_ids', 'proxy-streams-shutdown': 'streams',
         'context-close': '', 'context-closed': '',
-        'compose-request': 'url method sha256 bytes payload', 'compose-response': 'url method status request_id response_id browser_copy sha256 bytes body',
+        'compose-request': 'url method request_text payload', 'compose-response': 'url method status request_id response_id browser_copy body',
         'compose-created': 'thread dialog_count list_rows url list_url',
         'navigation': 'url new_document document_request_id', 'deliberate-revisit': 'url',
-        'snapshot': 'name', 'event-batch': 'rows guard_sensitivity', 'thread-response': 'url method status request_id response_id browser_copy sha256 bytes body',
-        'thread-view': 'thread body original_body original_ref messages_original_ref request_id response_id messages_request_id messages_response_id browser_copy text screenshot url response_url method status messages_body original_messages_body messages_url messages_status messages_method rendered_messages',
+        'snapshot': 'name', 'event-batch': 'rows guard_sensitivity', 'thread-response': 'url method status request_id response_id browser_copy body',
+        'thread-view': 'thread body request_id response_id messages_request_id messages_response_id browser_copy text screenshot url response_url method status messages_body messages_url messages_status messages_method rendered_messages',
     }
     check(all(e.get('event') in event_fields and set(e) == {'event', 'at', *event_fields[e['event']].split()}
               for e in events), 'R2 closed original browser event grammar')
@@ -1103,7 +968,7 @@ def validate_e05_safety(observations: dict, events: list[dict]) -> None:
                       <= min(h['closed'] for h in resources) for r in registrations),
               'R2 actual selector registrations removed before any acquired handle close')
         trace = owner['trace']
-        check(type(trace) is list and 0 < len(trace) <= 16384
+        check(type(trace) is list and bool(trace)
               and all(type(t) is dict and number(t.get('at')) for t in trace)
               and [t['at'] for t in trace] == sorted(t['at'] for t in trace)
               and proxied['forwarded'] <= trace[0]['at'] <= trace[-1]['at'] <= owner['finished'],
@@ -1446,8 +1311,8 @@ def validate_e05_safety(observations: dict, events: list[dict]) -> None:
     paired_requests = set()
     owner_generations = set()
     for proxied in observations['thread_proxy']:
-        check(set(proxied) <= set(('relay_id original forwarding method path target ordinal entered browser_request_id forwarded status streaming delivered closed '
-                                  'request_sha256 request_bytes upstream_complete response_sha256 response_bytes content_type request '
+        check(set(proxied) <= set(('relay_id method path target ordinal entered browser_request_id forwarded status streaming delivered closed '
+                                  'request_text upstream_complete response_bytes request '
                                   'invalid_request_json response commit committed held release_observed error client_disconnected failure_operation '
                                   'failure_at browser_abort abort_shutdown_error '
                                   'stream_read upstream_operation response_outcome '
@@ -1980,7 +1845,7 @@ def validate_e05_operations(row: dict, observations: dict, point: dict, groups: 
 
 def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     """Independent literal-content consumer, never import the scenario oracle."""
-    originals = validate_e05_originals(observations, directory)
+    browser_responses = validate_e05_browser(observations)
     import hashlib
     from collections import Counter
 
@@ -2088,9 +1953,8 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check(request["url"] == response["url"] == origin + "/api/v1/orgs/alpha/threads"
           and wire["target"] == "/api/v1/orgs/alpha/threads" and request["method"] == wire["method"] == "POST"
           and request["payload"] == wire["request"] == {"subject":"E05 compose race","recipients":["case_manager","case_worker"],"body_markdown":"E05 opening\nliteral beta"}
-          and request["sha256"] == wire["request_sha256"] and request["bytes"] == wire["request_bytes"], "exact end-to-end compose bytes")
-    check(wire["status"] == response["status"] == 200 and wire["response"] == originals[response['request_id']]["body"]
-          and wire["response_sha256"] == originals[response['request_id']]["sha256"] and wire["response_bytes"] == originals[response['request_id']]["bytes"]
+          and request["request_text"] == wire["request_text"], "exact end-to-end compose bytes")
+    check(wire["status"] == response["status"] == 200 and wire["response"] == browser_responses[response['request_id']]["body"]
           and wire["response"]["thread_id"] == C["thread"] and set(wire["response"]["pending_replies"]) == {"case_manager","case_worker"}, "original actual200 identity/payload")
     check(C["armed"]["at"] <= wire["forwarded"] <= wire["upstream_complete"] <= wire["committed"] <= wire["held"] <= C["released"]
           <= wire["delivered"] <= wire["closed"] <= C["armed"]["deadline"] <= C["armed"]["at"]+5, "single bounded hold/release timeline")
@@ -2159,14 +2023,16 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     for view, group, count, name in zip(views, (C,C,D), (1,2,5), ('e05-compose.png','e05-reply.png','e05-dispatch.png')):
         tid = group['thread']
         public = group['settled']['public']
-        body = view['original_body']
-        check(view['original_ref'] == originals[view['request_id']] and view['messages_original_ref'] == originals[view['messages_request_id']], 'R2 exact view Response object/original references')
+        body = view['body']
+        check(view['body'] == browser_responses[view['request_id']]['body']
+              and view['messages_body'] == browser_responses[view['messages_request_id']]['body'],
+              'R2 exact native view Response JSON')
         check(view['screenshot'] == name and (directory/name).read_bytes().startswith(b'\x89PNG\r\n\x1a\n'),
               'R2 named PNG bytes only; rendered semantics checked separately')
         view_index = events.index(dict(event='thread-view', **view))
         revisit_index = max(i for i,e in enumerate(events[:view_index]) if e['event'] == 'deliberate-revisit')
         response_rows = [e for e in events[revisit_index+1:view_index] if e['event'] == 'thread-response'
-                         and e['url'] == origin + f'/api/v1/orgs/alpha/threads/{tid}' and e['request_id'] == view['request_id'] and e['response_id'] == view['response_id'] and originals[e['request_id']]['body'] == body]
+                         and e['url'] == origin + f'/api/v1/orgs/alpha/threads/{tid}' and e['request_id'] == view['request_id'] and e['response_id'] == view['response_id'] and browser_responses[e['request_id']]['body'] == body]
         check(view['url'] == origin + f'/orgs/alpha/threads/{tid}' and view['response_url'] == origin + f'/api/v1/orgs/alpha/threads/{tid}'
               and view['method'] == 'GET' and view['status'] == 200 and response_rows
               and response_rows[0]['method'] == 'GET' and response_rows[0]['status'] == 200,
@@ -2179,17 +2045,17 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
             check(all(actual[k] == expected[k] for k in ('seq','speaker','kind','body_markdown','attachments','system_payload')),
                   'R2 rendered response literal message and complete system-payload projection')
         message_rows = [e for e in events[revisit_index+1:view_index] if e['event'] == 'thread-response'
-                        and e['url'] == view['messages_url'] and e['request_id'] == view['messages_request_id'] and e['response_id'] == view['messages_response_id'] and originals[e['request_id']]['body'] == view['original_messages_body']]
+                        and e['url'] == view['messages_url'] and e['request_id'] == view['messages_request_id'] and e['response_id'] == view['messages_response_id'] and browser_responses[e['request_id']]['body'] == view['messages_body']]
         check(view['messages_url'].split('?')[0] == origin + f'/api/v1/orgs/alpha/threads/{tid}/messages'
               and view['messages_status'] == 200 and view['messages_method'] == 'GET' and message_rows
               and message_rows[0]['status'] == 200 and message_rows[0]['method'] == 'GET'
-              and len(view['original_messages_body']['messages']) == count and view['original_messages_body']['has_more'] is False,
+              and len(view['messages_body']['messages']) == count and view['messages_body']['has_more'] is False,
               'R2 actual browser message-page response joins displayed projection')
-        for detail_message, page_message in zip(body['messages'], view['original_messages_body']['messages']):
+        for detail_message, page_message in zip(body['messages'], view['messages_body']['messages']):
             check(all(detail_message[k] == page_message[k] for k in ('seq','speaker','kind','body_markdown','attachments','system_payload','created_at')),
                   'R2 detail/message-page immutable content equality; initial responder state may advance')
         if count != 1:
-            check(view['original_messages_body']['messages'] == public['messages'], 'R2 settled message-page full public projection')
+            check(view['messages_body']['messages'] == public['messages'], 'R2 settled message-page full public projection')
         expected_bubbles = [m for m in body['messages'] if m['kind'] == 'message']
         check(len(view['rendered_messages']) == len(expected_bubbles), 'R2 exact rendered message bubble count')
         for rendered, message in zip(view['rendered_messages'], expected_bubbles):
@@ -2214,15 +2080,8 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         check((len(d["snapshot"]["tasks"]),len(d["snapshot"]["results"])) == expected
               and all(t["status"] == "completed" for t in d["snapshot"]["tasks"]), "global21tasks30results")
 
-    for event in events:
-        if event['event'] in {'compose-response','thread-response'}:
-            require_browser_copy(event, originals[event['request_id']])
     for view in views:
         check(view.get('browser_copy') == 'measured-browser', 'mandatory independent browser view JSON unavailable')
-        check(view['body'] == view['original_body'] and view['messages_body'] == view['original_messages_body'],
-              'original independent full browser detail/message-page projection')
-        # Includes created_at, has_more, all system payloads and rendered-response
-        # equality already checked above for the full original entity.
     check(all(row['variants'][v]['evidence']['threads'] == case for v in variants), 'five actual completed case references')
 
 
@@ -2381,7 +2240,7 @@ def validate_e07_admission(row: dict, observations: dict, directory: Path) -> tu
           and closures[0]['finished'] <= case['cleanup_finished'], 'positive proxy listener/worker/socket closure')
     events = observations["thread_events"]
     validate_e05_safety(observations, events)
-    validate_e05_originals(observations,directory)
+    validate_e05_browser(observations)
     current = a['frame']
     check(same(current['sql'],point['frame']['sql'])
           and e07_public_state(current,observations['http']) == e07_public_state(point['frame'],observations['http']), 'stable full checkpoint SQL/files/public/rawHTTP')
@@ -3074,8 +2933,6 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
               and steps[joins["body-settled"]]["outcome"] == "success"
               and steps[joins["body-settled"]]["error"] is None, "own original response/body AND finish")
         raw_body = next(body for body in bodies if body["request_sequence"] == seq)
-        check(type(raw_body["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}",raw_body["sha256"]) is not None,
-              "diagnostic private raw-byte identity only")
         body = raw_body["body"]
         check("[REDACTED]" not in image(body) and type(body) is dict
               and type(body.get("tasks")) is list and "next_cursor" in body and body["next_cursor"] is None,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import http.client
 import json
@@ -131,10 +132,6 @@ class Controller:
             require(all(isinstance(token, str) and token for token in tokens), "readable thread redaction identities")
             self.secrets.update(tokens)
             (self.root / "known-tokens.json").write_text(json.dumps(sorted(self.secrets)))
-            temporary = self.root / "coord/thread-redaction.tmp"
-            temporary.write_text(json.dumps(sorted(self.secrets)))
-            temporary.chmod(0o600)
-            temporary.replace(self.root / "coord/redaction-context.json")
 
     def capture_thread_secrets(self) -> None:
         if self.threads_active:
@@ -161,7 +158,7 @@ class Controller:
         entered = time.monotonic()
         deadline = min(entered + self.remaining(10), self.deadline, getattr(self, "case_deadline", self.deadline))
         # One absolute exchange end; the child stops one second earlier so its
-        # partial receipt can reach the existing sanitized finally exporter.
+        # partial receipt can reach the local command reader.
         require(deadline - entered > 1, "provider CLI requires receipt delivery room")
         instruction = dict(action=action, deadline=deadline, execution_deadline=deadline - 1, **arguments)
         offset = len(self.relay.records)
@@ -547,9 +544,6 @@ class Controller:
             self.token = (home / "daemon.token").read_text().strip()
             self.secrets.add(self.token)
             (self.root / "known-tokens.json").write_text(json.dumps(sorted(self.secrets)))
-            secrets_path = self.root / "coord/redaction-context.json"
-            secrets_path.write_text(json.dumps(sorted(self.secrets)))
-            secrets_path.chmod(0o600)
             try:
                 return self.get("/api/v1/health")["status"] == "ok"
             except ConnectionError:
@@ -642,9 +636,6 @@ class Controller:
             self.token = (home / "daemon.token").read_text().strip()
             self.secrets.add(self.token)
             (self.root / "known-tokens.json").write_text(json.dumps(sorted(self.secrets)))
-            secrets_path = self.root / "coord/redaction-context.json"
-            secrets_path.write_text(json.dumps(sorted(self.secrets)))
-            secrets_path.chmod(0o600)
             # Register every discovered port, including on failed readiness.
             if self.port not in ports:
                 ports.append(self.port)
@@ -856,8 +847,8 @@ class Controller:
                 attempt['finished'] = time.monotonic()
                 self._final_attempt, self._final_attempt_cause = None, None
 
-    def stage_browser_trace(self) -> tuple[list[dict], list[dict]]:
-        """Keep the slice3 browser hook local; no event JSON is published."""
+    def browser_observations(self) -> tuple[list[dict], list[dict]]:
+        """Read native browser observations for the local product predicates."""
         return (list(self.browser.events) if self.browser else [],
                 list(getattr(self.browser, "thread_events", [])))
 
@@ -961,13 +952,12 @@ class Controller:
             launches, failures = self.collect_e07_launches()
             self.e07.update(partial_launches=launches, launch_record_failures=failures)
         rows.update(e07=self.e07, e07_commands=self.e07_commands, boots=self.boots)
+        thread_proxy = []
+        if self.browser_relay:
+            with self.browser_relay.lock:
+                thread_proxy = copy.deepcopy(self.browser_relay.records)
         rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
-                    thread_proxy=self.browser_relay.snapshot(self.sanitize) if self.browser_relay else [],
-                    thread_originals=getattr(self.browser, 'thread_originals', []),
-                    capture_inventory=dict(refusals=list(self.browser_relay.capture_refusals),
-                        retained_bytes=self.browser_relay.capture_bytes, retained_facts=self.browser_relay.capture_facts,
-                        closed=self.browser_relay.capture_closed,
-                        requests=list(self.browser_relay.browser_requests)) if self.browser_relay else None)
+                    thread_proxy=thread_proxy)
         witness = self.root / "witness/identities.jsonl"
         if witness.exists():
             def witness_evidence() -> None:
@@ -979,7 +969,7 @@ class Controller:
                 rows["witness_data"] = data.decode()
                 rows["launch_witnesses"] = [json.loads(line) for line in data.split(b"\n")[:-1]]
             witness_evidence()
-        browser_events, thread_events = self.stage_browser_trace()
+        browser_events, thread_events = self.browser_observations()
         rows.update(browser_events=browser_events, thread_events=thread_events,
                     e07_prefix=self.e07_prefix)
         # Preserve former decoded types and literal token substitution privately.
@@ -1115,7 +1105,7 @@ def main() -> None:
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException as exc:
-        # Save the actual first exception/traceback before any cleanup/export.
+        # Save the actual first exception/traceback before any cleanup.
         controller.record_error("controller-action", exc)
         if controller.groups['E05']['state'] != 'not_started' and controller.groups['E07']['state'] == 'not_started':
             controller.groups['E07'].update(state='refused', first_error_ref=len(controller.failures)-1,

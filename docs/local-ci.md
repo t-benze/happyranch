@@ -1,6 +1,6 @@
 # Local CI
 
-Founder THR-291 seq659 slice 2 uses standard per-case JUnit and explicit
+Founder THR-291 seq659 slice 3 uses standard per-case JUnit and explicit
 failure-only trace/screenshot/log artifacts with GitHub default retention.
 Both lanes must report the exact56 once each, both launcher diagnostics and all
 setup/cleanup checks must pass. Health checks reports and identity only; former
@@ -12,13 +12,16 @@ unsafe dependents report prerequisite ERROR, with no reset/retry. The strict
 same-runtime E05→E07 checkpoint/closure/full50s admission and first cause remain;
 E05 failure stays red even if E07 passes. Failure capture precedes E05 teardown.
 Optional Owned/E07 process diagnostics are removed; real cleanup is mandatory.
-Browser/transport/thread-provider private collectors remain for slice3, including
-the temporary private token list. No validated-context export, SQL/state upload,
-receipt/hash/ownership publisher or publication budgets remain. Operational480/240/720/60/900 bounds and product output caps stay.
+Browser/transport original-body archives, framing/segment hashes and publication
+member/byte/fact budgets are removed. Actual Playwright Response JSON supplies
+E05 browser/public/DOM equality. The native HTTP/SSE forwarding and GET-owner
+shutdown/physical closure checks remain. Thread providers scrub their known token
+literals without an export-context protocol. No SQL/state upload, receipt/hash/
+ownership publisher or publication budgets remain. Operational480/240/720/60/900 bounds and product output caps stay.
 JUnit always uploads; missing reports fail. Known synthetic tokens receive literal
-scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-2-of-3-thr-291-seq659).
+scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
 Historical records below preserve actual failures and holds; their removed
-controller/launcher/export/optional-diagnostic instructions are superseded, never current acceptance.
+controller/launcher/export/collector/optional-diagnostic instructions are superseded, never current acceptance.
 
 
 Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
@@ -630,30 +633,22 @@ full56 EACH3.12/3.14 L1–L7 plus TERM/INT/validator references.
 
 ### Historical E05/E07 publication and retained failure isolation (ROOT13112 / THR291seq495)
 
-Slice2 replaces the publication steps below with local observations and JUnit.
-The same-runtime checkpoint, closure, full50s and first-cause product constraints
-remain; optional publication/diagnostic protocols below are historical only.
-
-The [current bounded originals/admission contract](../e2e/README.md#current-bounded-originals-and-e05e07-outcomes--task13118--root13112)
-supersedes only the old unconditional E05-success/cumulative-count coupling.
-Original53/36/38/23tasks31results and B24→26 are the healthy strict specification.
-Safe failed-E05 pre/C/N/D checkpoints retain real29/32/33/36 starts and17/20/21/24
+Slice3 replaces the historical collector/publication steps below with actual
+browser JSON, local observations and JUnit. The same-runtime checkpoint,
+positive resource closure, full50s and first-cause constraints remain. The
+current contract is [ordinary lane reporting](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
+Healthy53/36/38/23tasks31results and B24→26 remain the strict specification.
+Safe failed-E05 pre/C/N/D checkpoints retain29/32/33/36 starts and17/20/21/24
 host releases, then exactly two P/W starts/four commands/one P result. No fake
-prefix, new boot or renewed end. Positive full state/action/owner/resource/source/
-boot/cgroup/export/time admission precedes allocation; any unknown, poison,
-interruption, expired original E05 cleanup end or insufficient full50s refuses.
-Independent E04/E05/E07 content and scoped completion/source joins execute
-separately, while unchanged completed.join_results/full56 and overall Health stay
-strict. A separately complete E07 result survives unrelated missing E05 PNGs or
-later export/cleanup failure; unavailable durable proof remains UNKNOWN.
-
-Known open item: measured independent E05 browser body/hash/length/full JSON and
-rendered-response projection remain UNAVAILABLE; healthy E05/full56 is unmet.
-Original relay entities, actual native responses/terminals, DOM and public/SQL
-facts have distinct meanings. Mandatory browser comparisons remain, never relay
-self-comparison. First E05 error is recorded before cleanup and remains the same
-original winner across E07 and final failure publication; the first-recorder and
-terminal-scope rules below are unchanged. Groups are evidence, not acceptance.
+prefix, new boot or renewed end is allowed. Positive state/action/owner/resource/
+source/boot/cgroup/time admission precedes allocation; unknown/poisoned/expired
+state or insufficient full50s refuses. Independent local E04/E05/E07 checks feed
+JUnit; an E05 failure remains red even if E07 passes. Exact native browser
+Response bodies now supply the detail/message-page JSON and DOM/public equality
+checks before context close. Missing or failed browser JSON fails its case;
+source delivery is not a healthy E05/full56 claim. Standard traces/logs receive
+known-token literal scrubbing; no original-byte or export-context certification
+is part of Health. The following TASK13130 publication protocols are historical.
 
 TASK13130 preserves safely redacted detached scenario/group/first-cause/admission/
 finalization claims in the existing FAIL fallback before later collection/export/

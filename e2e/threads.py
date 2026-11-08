@@ -493,16 +493,9 @@ def exercise(c: Controller) -> None:
         record.update(witnesses=rows, final_anchor=anchor(c,"E05:final",24,previous))
         # This context owns long-lived SSE reads. Settle it and its proxy in
         # the existing final4, before E07 can leave their original ends behind.
-        # Q1: original entities and DOM do not provide independently measured
-        # browser bodies. Preserve every other available assertion above, then
-        # record this precise missing input BEFORE our own resource cleanup.
-        record['original_checkpoint'] = [browser._thread_original(response) for response in browser.thread_responses]
-        unavailable = [r['unavailable'] for r in record['original_checkpoint'] if r.get('unavailable') is not None]
-        require(not any(reason in {'invalid-json','invalid-utf8'} for reason in unavailable),
-                'E05 observed invalid original JSON entity')
-        if unavailable:
-            c.groups['E05']['state'] = 'unknown'
-            raise ValueError('E05 complete original response evidence unavailable before cleanup')
+        # Acquire every actual browser JSON before context teardown, including
+        # automatic detail refreshes; failure never borrows a relay body.
+        browser.thread_bodies()
         if any(e.get('browser_copy') != 'measured-browser' for e in browser.thread_events
                if e['event'] in {'compose-response', 'thread-response', 'thread-view'}):
             c.groups['E05']['state'] = 'unknown'

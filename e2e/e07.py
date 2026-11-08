@@ -436,7 +436,7 @@ def exercise(c: Controller) -> None:
               and list(c.browser.thread_requests.values()) == requests,
               'complete unique native Request census')
         origin = c.browser.thread_base
-        check(len(requests) == len(proxy.browser_requests) <= 512,
+        check(len(requests) == len(proxy.browser_requests),
               'complete original native Request inventory')
         for issued,retained in zip(requests,proxy.browser_requests):
             check(issued['url'].startswith(origin+'/'), 'native Request origin safety')
@@ -459,7 +459,9 @@ def exercise(c: Controller) -> None:
               and all(type(e['response_id']) is int and type(e['request_id']) is int for e in responses)
               and {e['request_id'] for e in required_requests} == {e['request_id'] for e in responses}
               and len(required_requests) == len(responses) == len(c.browser.thread_responses)
-              and list(c.browser.thread_responses.values()) == [dict(request_id=e['request_id'],response_id=e['response_id']) for e in responses],
+              and [o['record'] for o in c.browser.thread_responses.values()] == responses
+              and all(o['task'].done() and not o['task'].cancelled() and o['task'].exception() is None
+                      for o in c.browser.thread_responses.values()),
               'every required native Request has one original Response')
         # Reconstruct current main-frame ownership in ORIGINAL ledger order.
         # A later document Request/commit cannot justify an earlier API Request.
@@ -522,9 +524,8 @@ def exercise(c: Controller) -> None:
                    {'context-closing','proxy-streams-shutdown','context-close','context-closed'}]
                    == ['context-closing','proxy-streams-shutdown','context-close','context-closed'],
               'chronological native ledger and full original context lifecycle')
-        check(not proxy.capture_refusals and proxy.capture_closed is not None
-              and not proxy.io_owners and not proxy.active_streams and not proxy.active_responses
-              and not proxy.operation_gates, 'no capture refusal or unresolved I/O owner')
+        check(not proxy.io_owners and not proxy.active_streams and not proxy.active_responses
+              and not proxy.operation_gates, 'no unresolved I/O owner')
         generations = set()
         for record in proxy.records:
             owner = record.get('io_owner')
@@ -540,17 +541,6 @@ def exercise(c: Controller) -> None:
                 check(type(record.get('owner_generation')) is int and record['owner_generation'] not in generations
                       and owner['generation'] == record['owner_generation'], 'unique actual original GET owner generation')
                 generations.add(record['owner_generation'])
-            if 'original' in record:
-                check(record['original']['capture_state'] == 'sealed'
-                      and record['original']['outcome'] == 'complete'
-                      and record['original']['first_error'] is None
-                      and record['forwarding']['byte_length'] == record['original']['byte_length']
-                      and record['forwarding']['sha256'] == record['original']['sha256'], 'complete original and actual forwarding')
-        try:
-            for issued in required_requests:
-                c.browser_relay.original_for(issued['request_id'])
-        except (ValueError,UnicodeError):
-            check(False, 'complete required original Request/document/window/JSON join')
         check(len(c.boots) == 2 and c.boots[1]['pid'] == c.daemon.pid
               and c.boots[1]['start'] == identity(c.daemon.pid), 'same two actual boots and current daemon generation')
         check(all(hashlib.sha256((c.source/n).read_bytes()).hexdigest() == digest
@@ -581,9 +571,8 @@ def exercise(c: Controller) -> None:
                          boots=c.boots, source_sha=c.revision, python=c.python)
         check(all(p in admission['ports'] for p in (c.port,c.relay.port,proxy.port)), 'original D/L/P registry retained')
         archived_prefix = c.observations()
-        check(not archived_prefix['capture_inventory']['refusals']
-              and all(r['original']['entity_copy']['original_byte_check'] == 'available'
-                      for r in archived_prefix['thread_proxy'] if 'original' in r), 'complete unchanged private originals')
+        from checks import validate_e05_browser
+        validate_e05_browser(archived_prefix)
         c.e07_prefix = archived_prefix
         check(time.monotonic()+50 < c.deadline, 'full50s remains after admission in original work budget')
         admission.update(state='accepted', finished=time.monotonic())

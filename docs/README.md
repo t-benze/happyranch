@@ -5,6 +5,7 @@ Use the source that matches the question:
 - [Project README](../README.md) — end-user setup and product surface.
 - [Agent and developer guides](agent-guides/) — maintained architecture,
   configuration, executor, orchestration, feature, web, and CLI guidance.
+- [Product E2E reporting and browser observations](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659) — current lane/Health and standard diagnostic contract.
 - [Operations](operations/) — operator runbooks and release checklists.
 - [Product documents](product/) and [PRDs](product/prds/) — product intent,
   conventions, and scoped requirements; each document's status and the shipped
