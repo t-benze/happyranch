@@ -253,9 +253,11 @@ full review and scoped QA precede manager guarded merge.
 
 TASK-14536 under replacement root TASK-14531 adds the records/standalone-reader
 boundary of U2a. This is SOURCE-INERT: no production caller of the standalone
-history reader, producer, allocator, route, startup SQL or installer is attached. It does not close U2,
+history reader, producer, allocator, route or startup SQL is attached. U2b adds
+only the explicit operator script described below. It does not close U2,
 M1, AC5, AC8 or AC12. TASK-14576 under root TASK-14563 adds the
-readers-only composition below; U2b installation and U3 producers remain separate.
+readers-only composition below; TASK-14597 adds U2b installer/check source.
+Real installation and U3 producers remain separate.
 
 `runtime/infrastructure/workflow_sequential_schema.py` owns a separate version1
 marker and nine tables: definitions, settings snapshots, settings operations,
@@ -306,6 +308,11 @@ copy and per-run replay. Each sequential table is acquired once; visits/events
 are grouped once instead of rescanning all history for every run. The rowid-less
 ownership view uses a complete bounded scalar preflight and reserves its payload
 before its one payload traversal, on the same snapshot and allowance.
+The complete layout match also returns the already acquired column metadata to
+sequential row acquisition inside that same snapshot. It retains the exact
+validated tuples and charges the metadata map to the original copy allowance;
+row acquisition does not repeat `pragma_table_xinfo`. Full native metadata,
+independent comparisons, exact-type gates and every existing cap remain intact.
 
 This standalone call permits at most 8192 acquired rows (including schema and
 reference acquisitions), 64 MiB aggregate raw/decoded/copy reservations, 65536
@@ -336,8 +343,8 @@ original columns and v1 kinds, and adds explicit v2 `seq_source_waiting`,
 `seq_carrier`, `seq_visit` marks. The literal view appends three relations to
 the original branches unchanged. Complete inventory rejects missing/conflicting
 marks; a selected v1 mark still uses the existing scalar reader. There is no
-source adoption, mark insertion, table rebuild or native task encoding change.
-The actual explicit companion upgrade belongs to U2b; adoption belongs to U3.
+source adoption or native task encoding change. The explicit U2b installer below
+rebuilds this companion while preserving every v1 mark; adoption belongs to U3.
 
 **Complete reader composition (TASK-14576):** the standalone reader first
 validates the entire sequential structure and data/ownership closure. It then
@@ -362,7 +369,41 @@ source/carrier/visit mark returns `reconciliation_required` until the future com
 engine attaches; the standalone selected reader exposes its exact sequential kind.
 Selected lookup uses the mark/binding index and scalar run/visit/native relations,
 not a full-history scan. Complete inventory remains at the compatibility boundary.
-No installer, install/reopen/backout result or compatibility safety claim follows
-from this boundary. [Draft installation/backout contract](../../runbooks/sequential-workflow-storage.md)
+No install/reopen/backout result or compatibility safety claim follows
+from this reader boundary. [Installation/backout contract](../../runbooks/sequential-workflow-storage.md)
 is UNVERIFIED. V3 and actual runs remain NOT RUN; old bytes and historical
 receipts remain unchanged. U4–U9 remain held on the separate U4.0 NO-GO.
+
+
+## U2b explicit installer/check source
+
+`scripts/install_workflow_sequential_schema.py` is the sole caller of
+`workflow_schema.install_sequential_schema`; no daemon/startup/org-init
+path calls it. Both check and install first use the existing complete scoped
+reader on an immutable RO checkpointed image. Nonempty WAL/journal files refuse;
+file bookends detect observed drift. Exit0 means compatible/installed storage,
+exit3 means install-needed, exit1 refusal, exit2 usage and exit4 uncertainty.
+
+New installation requires a complete original v1 ownership companion, maintained
+cooperative offline/native-owner exclusion, registered stopped lifecycle and a
+separate checksum-verified backup matching the entire source SQL/typed-row/rowid
+inventory. One native `BEGIN IMMEDIATE` with foreign keys enabled installs the
+unchanged literal extension and marker, rebuilds only ownership table/view to v2
+and copies all original v1 values/rowids. Complete independent target/data/FK
+validation and preservation comparison precede COMMIT. No ordinary-source
+adoption, old-layout upgrade, startup initialization or guard change occurs.
+Known mismatch rolls back with error evidence; failed COMMIT stays uncertain,
+never success. Installed complete storage reruns are RO no-ops. Missing marks or
+partial extension refuses; there is no repair/backfill mode.
+
+The separate preservation inventory is bounded to 8192 rows, 64 MiB encoded cells
+and five cooperative seconds per observation; unsupported rowid/virtual/generated
+shapes refuse. Original complete-reader caps and refusals remain intact. File and
+lifecycle checks are cooperative observations, not an OS fence or native closure
+proof. Even empty installed ownership@2/storage requires compatible code;
+old-code-only downgrade is unsupported and must refuse. See the
+[runbook](../../runbooks/sequential-workflow-storage.md) for backup, custody and
+backout limits. Execution behavior remains **UNVERIFIED**: disposable structural
+SQLite observations do not establish real install/reopen/backout safety, V3,
+current authority, native settlement or ordinary-use acceptance. U3–U9 remain
+outside this source unit.

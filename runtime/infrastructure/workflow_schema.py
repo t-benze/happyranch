@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from runtime.infrastructure.database import Database
     from runtime.infrastructure.workflow_coding_schema import _CodingInventory
     from runtime.workflows.coding_authority_history import _Budget
+    from runtime.workflows.sequential_history import SequentialLayout
 
 
 CANONICAL_WORKFLOW_DDL = """\
@@ -2516,4 +2517,178 @@ def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
         return 'migrated'
     except BaseException:
         conn.rollback()
+        raise
+
+
+class SequentialCommitUncertain(RuntimeError):
+    """COMMIT was attempted; preserve its cause and reconcile before retry."""
+
+
+def sequential_storage_inventory(conn: sqlite3.Connection) -> tuple[tuple, dict[str, tuple[int, str]]]:
+    """Exact whole-database SQL and typed row/rowid inventory, never a reference.
+
+    This separate preservation/backup observation is bounded to 8192 rows,
+    64 MiB encoded cells and five cooperative seconds. Complete family readers
+    still own schema/data acceptance; no candidate SQL is executed as DDL.
+    """
+    import hashlib
+    import time
+
+    if type(conn) is not sqlite3.Connection or not conn.in_transaction:
+        raise ValueError('workflow_seq_inventory_requires_native_snapshot')
+    cursor = conn.cursor()
+    cursor.row_factory = None
+    deadline = time.monotonic() + 5.0
+    consumed = count = 0
+
+    def encode(value: object) -> bytes:
+        nonlocal consumed
+        if value is None:
+            raw = b'n'
+        elif type(value) is bytes:
+            raw = b'b' + value
+        elif type(value) is str:
+            raw = b's' + value.encode('utf8')
+        elif type(value) is int:
+            raw = b'i' + str(value).encode('ascii')
+        elif type(value) is float:
+            raw = b'f' + value.hex().encode('ascii')
+        else:
+            raise ValueError('workflow_seq_inventory_storage_invalid')
+        consumed += len(raw)
+        if consumed > 64 * 1048576 or time.monotonic() > deadline:
+            raise ValueError('workflow_seq_inventory_exhausted')
+        return str(len(raw)).encode('ascii') + b':' + raw
+
+    try:
+        schema = tuple(cursor.execute(
+            'SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name,tbl_name'))
+        for row in schema:
+            for value in row:
+                encode(value)
+        tables = {}
+        for kind, table, _, _ in schema:
+            if kind != 'table':
+                continue
+            quoted = '"' + table.replace('"', '""') + '"'
+            metadata = tuple(cursor.execute('PRAGMA table_xinfo(' + quoted + ')'))
+            columns = ','.join('"' + row[1].replace('"', '""') + '"' for row in metadata)
+            # Unsupported virtual/WITHOUT ROWID or shadowed rowid tables refuse;
+            # never silently omit an identity from preservation evidence.
+            if any(row[6] for row in metadata) or any(row[1].lower() == '_rowid_' for row in metadata):
+                raise ValueError('workflow_seq_inventory_table_unsupported:' + table)
+            digest = hashlib.sha256()
+            rows = 0
+            for row in cursor.execute('SELECT _rowid_,' + columns + ' FROM ' + quoted + ' ORDER BY _rowid_'):
+                count += 1
+                rows += 1
+                if count > 8192:
+                    raise ValueError('workflow_seq_inventory_exhausted')
+                for value in row:
+                    digest.update(encode(value))
+            tables[table] = (rows, digest.hexdigest())
+        return schema, tables
+    finally:
+        cursor.close()
+
+
+def inspect_sequential_install(conn: sqlite3.Connection, *, expected_org_slug: str) -> SequentialLayout:
+    """Use complete existing readers; absent ownership needs its original owner."""
+    from runtime.workflows.sequential_history import read_sequential_history
+
+    history = read_sequential_history(conn, expected_org_slug=expected_org_slug)
+    layout = history.layout
+    if layout.document is None or layout.ownership != (2 if layout.sequential else 1):
+        raise ValueError('workflow_seq_install_requires_complete_document_and_ownership_companion')
+    if conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
+        raise ValueError('workflow_seq_install_foreign_key_mismatch')
+    return layout
+
+
+def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
+                              expected_path: str, source_identity: tuple,
+                              source_inventory: tuple, offline_check: Callable[[], None]) -> str:
+    """One explicit owning writer; no startup, adoption, backfill or live caller.
+
+    The original RO inventory/identity remain authoritative across RW reopen.
+    A failed COMMIT is uncertain even if SQLite subsequently permits rollback.
+    """
+
+    from runtime.infrastructure.workflow_sequential_schema import CANONICAL_WORKFLOW_SEQUENTIAL_DDL, SEQUENTIAL_TABLES
+    from runtime.infrastructure.workflow_sequential_ownership import (
+        SEQUENTIAL_OWNERSHIP_DDL, sequential_binding_view_ddl,
+    )
+
+    if (type(conn) is not sqlite3.Connection or conn.in_transaction
+            or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1
+            or conn.execute('PRAGMA defer_foreign_keys').fetchone()[0] != 0):
+        raise ValueError('workflow_seq_install_requires_idle_native_foreign_keys')
+    committing = False
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        offline_check()
+        if _coding_org_identity(conn, expected_org_slug=expected_org_slug,
+                                expected_path=expected_path) != source_identity:
+            raise ValueError('workflow_seq_install_source_identity_changed')
+        layout = inspect_sequential_install(conn, expected_org_slug=expected_org_slug)
+        if sequential_storage_inventory(conn) != source_inventory:
+            raise ValueError('workflow_seq_install_source_inventory_changed')
+        if layout.sequential:
+            conn.rollback()
+            return 'compatible-already-installed'
+        # Complete source and exact preservation inventory bound this acquisition.
+        owners = [tuple(row) for row in conn.execute(
+            'SELECT rowid,task_id,org_slug,version,kind,owner_id '
+            'FROM workflow_task_ownership ORDER BY rowid LIMIT 8193')]
+        if len(owners) > 8192:
+            raise ValueError('workflow_seq_inventory_exhausted')
+        _execute_ddl(conn, CANONICAL_WORKFLOW_SEQUENTIAL_DDL)
+        conn.execute('INSERT INTO workflow_seq_schema_versions(version) VALUES (1)')
+        conn.execute('DROP VIEW workflow_task_owner_bindings')
+        conn.execute('DROP TABLE workflow_task_ownership')
+        conn.execute(SEQUENTIAL_OWNERSHIP_DDL)
+        conn.executemany('INSERT INTO workflow_task_ownership '
+                         '(rowid,task_id,org_slug,version,kind,owner_id) VALUES (?,?,?,?,?,?)', owners)
+        conn.execute(sequential_binding_view_ddl(layout.document, coding_extension=layout.coding))
+        target = inspect_sequential_install(conn, expected_org_slug=expected_org_slug)
+        if (not target.sequential or target.ownership != 2
+                or (target.document, target.coding, target.owner_indexed)
+                != (layout.document, layout.coding, layout.owner_indexed)):
+            raise ValueError('workflow_seq_install_target_mismatch')
+        after_schema, after_tables = sequential_storage_inventory(conn)
+        old_schema, old_tables = source_inventory
+        if (set(after_tables) != set(old_tables) | set(SEQUENTIAL_TABLES)
+                or any(after_tables[table] != rows for table, rows in old_tables.items())
+                or any(after_tables[table][0] != (1 if table == SEQUENTIAL_TABLES[0] else 0)
+                       for table in SEQUENTIAL_TABLES)):
+            raise ValueError('workflow_seq_install_retained_data_mismatch')
+        # Complete independent target comparison above owns the two replacements
+        # and new objects. Every other pre-existing SQL byte must be unchanged.
+        replacements = {'workflow_task_ownership', 'workflow_task_owner_bindings'}
+        old_objects = {(row[0], row[1]): row for row in old_schema if row[1] not in replacements}
+        new_objects = {(row[0], row[1]): row for row in after_schema}
+        if any(new_objects.get(key) != row for key, row in old_objects.items()):
+            raise ValueError('workflow_seq_install_retained_sql_mismatch')
+        if (conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1
+                or conn.execute('PRAGMA defer_foreign_keys').fetchone()[0] != 0
+                or conn.execute('PRAGMA foreign_key_check').fetchone() is not None):
+            raise ValueError('workflow_seq_install_foreign_key_mismatch')
+        offline_check()
+        if _coding_org_identity(conn, expected_org_slug=expected_org_slug,
+                                expected_path=expected_path) != source_identity:
+            raise ValueError('workflow_seq_install_source_identity_changed')
+        committing = True
+        conn.commit()
+        return 'installed'
+    except BaseException as exc:
+        rollback_error = None
+        try:
+            conn.rollback()
+        except BaseException as rollback_exc:
+            rollback_error = rollback_exc
+        if committing:
+            raise SequentialCommitUncertain(
+                f'workflow_seq_commit_uncertain: {exc}; rollback_error={rollback_error!r}') from exc
+        if rollback_error is not None:
+            raise RuntimeError(f'{exc}; workflow_seq_rollback_failed: {rollback_error}') from exc
         raise

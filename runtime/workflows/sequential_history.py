@@ -151,11 +151,12 @@ def _sql_budget(conn: sqlite3.Connection, budget: _ReadBudget) -> Iterator[None]
         conn.set_progress_handler(None, 0)
 
 
-def _rows(conn: sqlite3.Connection, table: str, budget: _ReadBudget) -> Iterator[dict]:
+def _rows(conn: sqlite3.Connection, table: str, metadata: tuple[tuple, ...],
+          budget: _ReadBudget) -> Iterator[dict]:
     # Complete schema was independently matched; names/types are trusted only
     # after that match. Reuse pre-fetch typeof/length gating, never SELECT *.
-    metadata = _structure_cells(conn, 'SELECT * FROM pragma_table_xinfo(?)',
-        ('cid', 'name', 'type', 'notnull', 'dflt_value', 'pk', 'hidden'), ('cid',), budget, (table,))
+    # These exact columns were acquired and matched inside this snapshot by
+    # _read_layout. Reacquisition would charge the same metadata rows twice.
     names = tuple(row[1] for row in metadata)
     kinds = {'TEXT': 'text', 'INTEGER': 'integer', 'BLOB': 'blob'}
     allowed = tuple((kinds[row[2]],) + (() if row[3] else ('null',)) for row in metadata)
@@ -204,12 +205,12 @@ def read_sequential_layout(conn: sqlite3.Connection) -> SequentialLayout:
     """Read complete dimensions with one finite budget and coherent snapshot."""
     budget = _ReadBudget()
     with _sql_budget(conn, budget), _schema_snapshot(conn):
-        layout = _read_layout(conn, budget)
+        layout, _ = _read_layout(conn, budget)
         budget.check()
         return layout
 
 
-def _read_layout(conn: sqlite3.Connection, budget: _ReadBudget) -> SequentialLayout:
+def _read_layout(conn: sqlite3.Connection, budget: _ReadBudget) -> tuple[SequentialLayout, dict[str, tuple[tuple, ...]]]:
     """Compare the ENTIRE owned schema against independently built references.
 
     Observation selects only finite dimensions. No candidate DDL, object filter,
@@ -225,7 +226,7 @@ def _read_layout(conn: sqlite3.Connection, budget: _ReadBudget) -> SequentialLay
     sequential = any(str(name).casefold().startswith('workflow_seq_')
                      for row in actual[0] for name in row[1:3])
     if not names:
-        return SequentialLayout(None, False, False, 0, False)
+        return SequentialLayout(None, False, False, 0, False), {}
     coding = any(str(name).casefold().startswith('workflow_coding_')
                  for row in actual[0] for name in row[1:3])
     document = ('I' if 'workflow_document_revision_operations' in names else
@@ -258,7 +259,11 @@ def _read_layout(conn: sqlite3.Connection, budget: _ReadBudget) -> SequentialLay
                 reference = _candidate_structure(expected, budget)[0]
                 budget.work(sum(len(part) for part in actual) + sum(len(part) for part in reference))
                 if actual == reference:
-                    return SequentialLayout(document, coding, indexed, ownership, sequential)
+                    # Retain the already acquired, fully matched column tuples
+                    # for row reads in the SAME snapshot and original budget.
+                    budget.reserve(128 * len(actual[1]))
+                    metadata = {table: columns for table, columns, _ in actual[1]}
+                    return SequentialLayout(document, coding, indexed, ownership, sequential), metadata
     raise ValueError('workflow_seq_complete_layout_mismatch')
 
 
@@ -606,14 +611,14 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str)
     _require(type(expected_org_slug) is str and bool(expected_org_slug), 'org_required')
     budget = _ReadBudget()
     with _sql_budget(conn, budget), _schema_snapshot(conn):
-        layout = _read_layout(conn, budget)
+        layout, metadata = _read_layout(conn, budget)
         if not layout.sequential:
             if layout.document is not None:
                 _legacy_history(conn, expected_org_slug, budget)
             budget.check()
             return SequentialHistory(layout, 'new-engine unavailable', (), ())
         _native_contract(conn, budget)
-        data = {table: list(_rows(conn, table, budget)) for table in SEQUENTIAL_TABLES}
+        data = {table: list(_rows(conn, table, metadata[table], budget)) for table in SEQUENTIAL_TABLES}
         _require([tuple(row.values()) for row in data['workflow_seq_schema_versions']] == [(1,)],
                  'schema_marker_invalid')
         for table in SEQUENTIAL_TABLES:
