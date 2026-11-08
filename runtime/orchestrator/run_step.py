@@ -6149,6 +6149,9 @@ def _maybe_post_thread_followup(
         # Bail; the eventual real terminal will re-enter this helper.
         return
 
+    from runtime.infrastructure.thread_archive import notify_composed_threads_task_terminal
+    notify_composed_threads_task_terminal(orch, task_id)
+
     # Only root tasks fire. Children are handled at their parent's terminal site.
     if terminal_task.parent_task_id is not None:
         return

@@ -318,6 +318,8 @@ class OrgState:
             return history
         self.event_bus = EventBus(history_loader=loader)
         self.thread_store = ThreadStore(self.root / "threads")
+        from runtime.infrastructure.thread_archive import bind_thread_archive_notifications
+        bind_thread_archive_notifications(self)
 
     def memory_collection_observation(self) -> dict:
         """Read this serving org; observation failure never changes launch state."""

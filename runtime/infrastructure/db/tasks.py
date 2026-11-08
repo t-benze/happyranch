@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from runtime.infrastructure.thread_archive import after_thread_invocations_commit
+
 import hashlib
 import json
 import sqlite3
@@ -4670,6 +4672,7 @@ class TasksMixin:
             self._conn.rollback()
             raise
 
+    @after_thread_invocations_commit("agent_name")
     @_synchronized
     def terminate_agent_cleanups(
         self, agent_name: str,

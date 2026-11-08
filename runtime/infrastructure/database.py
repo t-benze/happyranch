@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from runtime.infrastructure.thread_archive import after_thread_invocations_commit
+
 # Database facade domain map:
 # - db/dreams.py: dream records and dream KB candidates, except the _now keeper
 # - db/knowledge.py: KB stats, skill validation reads, and org settings
@@ -2694,6 +2696,7 @@ class Database(
 
 
 
+    @after_thread_invocations_commit("token")
     @_synchronized
     def consume_invocation(self, token: str) -> bool:
         move = getattr(self, "_team_move_coordinator", None)
@@ -2708,6 +2711,7 @@ class Database(
         return cursor.rowcount == 1
 
 
+    @after_thread_invocations_commit("thread_id")
     @_synchronized
     def decline_pending_invocations_for_agent(
         self, thread_id: str, agent_name: str,
@@ -2729,6 +2733,7 @@ class Database(
 
 
 
+    @after_thread_invocations_commit("token")
     @_synchronized
     def fail_invocation(
         self, token: str, *, status: ThreadInvocationStatus, decline_reason: str
@@ -2768,6 +2773,7 @@ class Database(
 
 
 
+    @after_thread_invocations_commit("agent_name")
     @_synchronized
     def decline_unstarted_invocations_for_agent(
         self, agent_name: str, *, decline_reason: str,
@@ -2814,6 +2820,7 @@ class Database(
         ).fetchone()
         return int(row["n"])
 
+    @after_thread_invocations_commit("thread_id")
     @_synchronized
     def abort_thread_replies(self, thread_id: str, *, signal: Callable) -> Any:
         """One abort transaction and signal-only handoff under this SAME RLock.
@@ -2858,6 +2865,7 @@ class Database(
             outcome.errors.append(exc)
         return outcome
 
+    @after_thread_invocations_commit("thread_id")
     @_synchronized
     def reap_pending_invocations(
         self,

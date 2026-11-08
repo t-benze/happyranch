@@ -289,6 +289,10 @@ async def _lifespan(app: FastAPI):
                     ThreadJob(org_slug=org.slug, invocation_token=token),
                 )
 
+        from runtime.infrastructure.thread_archive import sweep_resolved_threads
+        for org in state.orgs_snapshot().values():
+            await sweep_resolved_threads(org)
+
         thread_worker_tasks = [
             asyncio.create_task(thread_worker_loop(state, state.settings))
             for _ in range(4)

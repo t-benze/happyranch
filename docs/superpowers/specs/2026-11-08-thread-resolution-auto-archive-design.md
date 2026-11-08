@@ -1,14 +1,14 @@
 # Explicit thread resolution and safe auto-archive v1
 
-Founder authorization: THR-339 seq2–5; implementation delegation TASK-14487
+Founder authorization: THR-339 seq2–5; implementation delegations TASK-14487 (PR1) and TASK-14508 (PR2)
 under engineering_manager TASK-14477. This finalizes the revised memo after
 TASK-14479 established that `mentions_json` contains only agent participants.
 
 ## Delivery boundary
 
 PR1 provides explicit resolution state, resolving sends, clearing, audits and
-read projections. Resolution is inert: an open resolved thread remains open.
-The evaluator, archive changes and triggers below are **PR2, not yet shipped**.
+read projections. PR2 activates automatic archiving after tracked obligations
+settle, using the existing manual archive owner and shared transcript publisher.
 There is no new channel, privacy model, ThreadStatus or TaskStatus lifecycle.
 Founder-created and dream-composed threads remain manual archive only.
 
@@ -20,7 +20,7 @@ ThreadStatus remains `open|archived`. Resolution is orthogonal:
 | --- | --- | --- |
 | Open, unresolved | Eligible resolving send | Open, resolved |
 | Open, resolved | Any later MESSAGE, including founder or invocation reply | Open, unresolved |
-| Open, resolved | Settled obligations and no founder hold | PR2: archived |
+| Open, resolved | Settled obligations and no founder hold | Archived |
 | Archived | Existing founder `/resume` | Open, unresolved |
 
 Silence, decline, timeout, elapsed time and task termination never set
@@ -108,9 +108,9 @@ Audit scope follows existing thread convention `task_id=<thread_id>`:
 | `thread_resolution_cleared` | Clearing speaker, including `founder` | `{resolved_seq, cleared_by_seq}` |
 | `thread_resumed` | `founder` | Existing `{prior_archived_at}` plus `cleared_resolution_seq` (nullable) |
 
-## Auto-archive: PR2, not yet shipped
+## Auto-archive (PR2)
 
-`maybe_auto_archive_thread(org, thread_id, trigger)` will require open, resolved,
+`maybe_auto_archive_thread(org, thread_id, trigger)` requires open, resolved,
 eligible, settled obligations and no founder hold. Settled means no pending
 thread invocations of any purpose and no live delivery state or held exchange
 deferrals on open exchanges. Derive the exact owner predicate from
@@ -118,16 +118,30 @@ deferrals on open exchanges. Derive the exact owner predicate from
 Text-only promises such as "I'll get back to you" are untracked in v1: do not
 resolve while they remain actionable.
 
-PR2 will reuse the existing archive operation, parameterize its system speaker
-and audit actor, and share the founder route's transcript/path/SSE publication.
-Founder archive behavior remains unchanged. Automatic `thread_archived` uses
-agent `orchestrator` and payload `{turns_used, trigger, resolved_by, resolved_seq}`.
+The archive transaction rechecks all predicates at decision time, including
+`composed_from_dream_id IS NULL`. Its shared owner relation includes pending
+invocations of every purpose, queued/running/unacknowledged delivery ranges and
+held deferrals on open exchanges. Settled delivery rows and breaker history do
+not block. Existing move admission remains in force. The transaction archives,
+resets sessions, appends the system message as `orchestrator`, and commits
+`thread_archived` with agent `orchestrator`, task_id equal to the thread ID and
+payload `{turns_used, trigger, resolved_by, resolved_seq}` atomically.
 
-PR2's four evaluation triggers are resolving-send commit, any thread invocation
-becoming terminal, composed-from task termination, and one daemon-startup sweep
-of open resolved threads. Task termination only evaluates; unresolved threads
-stay open with the composer visible. Evaluations are idempotent; logged failures
-must not fail their triggering paths. PR1 installs none of these triggers.
+The shared non-daemon helper then writes the transcript, persists its path and
+publishes the existing detail/inbox SSE. Founder manual archive keeps its
+`founder` system speaker and exact `{turns_used}` audit payload. Publication
+failures are logged; native COMMIT is not rolled back by a filesystem/SSE failure.
+The founder can inspect and resume any archived thread; resume clears resolution.
+
+Evaluation runs after resolving-send commit, after any thread invocation
+becomes terminal, after composed-from task termination (completed, failed,
+cancelled or superseded), and in one daemon-startup sweep of open resolved
+threads after recovery. The existing exchange reaper/reconcile also reevaluates
+when the last held deferral is released without an invocation terminal. Triggers
+are post-commit, idempotent and best-effort; logged failures never fail the
+triggering operation. Task termination only evaluates; unresolved threads stay
+open with the composer visible, including threads composed by subtasks.
+Silence, declines, elapsed time and task termination never establish resolution.
 
 ## Reserved decisions
 

@@ -2919,6 +2919,17 @@ Traps:
 - Chain-advance branch handles FAILED subtasks as well as COMPLETED:
   FAILED subtasks clear the chain and fall through to sibling-check +
   bounded-wake.
+
+Task-composed threads explicitly resolved by the opener or its executable team
+manager automatically archive only when all tracked invocation/delivery/exchange
+obligations settle and no founder hold remains. Post-commit send, invocation,
+composing-task terminal, startup and exchange-release checks re-read admission
+inside the existing archive transaction. Unresolved threads stay open with their
+owner visible; task termination, silence, declines and time never resolve them.
+Text-only promises are untracked in v1. Founder-created and dream-composed threads
+stay manual, and the founder can resume any archived thread (clearing resolution).
+See [threads and naming](contracts/threads-and-naming.md#explicit-resolution-and-automatic-archive-thr-339).
+
 ## Thread Broadcast Routing
 
 Every `kind=message` thread row is a **conversational arrival** for its recipient set. Since GH-688 Phase 1 (Slice A store + Slice B route/runner wiring), arrivals coalesce: a `(thread_id, agent_name)` pair holds at most one unstarted `REPLY` (queued) and at most one running `REPLY`; a burst advances the queued/running wake's `required_through_seq` instead of minting one invocation per message. The store owns the queued/running token transitions (`record_conversational_arrival`, `claim_conversational_reply`, `settle_conversational_reply`) — routes and the runner never open-code them. Founder participates through the web UI; Feishu is not used for ongoing thread conversation. Spec: `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md`; approved Phase-1 design recorded in THR-198 and TASK-5437 output.

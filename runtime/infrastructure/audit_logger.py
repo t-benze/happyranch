@@ -1312,12 +1312,16 @@ class AuditLogger:
         thread_id: str,
         *,
         turns_used: int,
+        agent: str = "founder",
+        extra_payload: dict | None = None,
+        uncommitted: bool = False,
     ) -> None:
-        self._db.insert_audit_log(
+        insert = self._db.insert_audit_log_uncommitted if uncommitted else self._db.insert_audit_log
+        insert(
             task_id=thread_id,
-            agent="founder",
+            agent=agent,
             action="thread_archived",
-            payload={"turns_used": turns_used},
+            payload={"turns_used": turns_used, **(extra_payload or {})},
         )
 
     def log_thread_resumed(

@@ -120,8 +120,14 @@ messages both `@founder` and the founder's current name are tracked. Historical
 NULL rows detect only lexical `@founder`, case-insensitively; historical personal
 names are not detected. Text-only promises are untracked in v1: keep requests
 unresolved while actionable work remains. Founder-created and dream-composed
-threads remain manual archive only. PR1 records resolution while leaving the
-thread open; auto-archive and its triggers are PR2, not yet shipped.
+threads remain manual archive only. Task-composed threads auto-archive once
+explicitly resolved, all pending reply/bootstrap/task_followup invocations and
+live delivery ranges/held exchange deferrals settle, and no founder hold remains.
+Checks run after resolving send, invocation termination, composing-task termination
+and at daemon startup; exchange release also reevaluates settled holds. Task
+termination is cleanup only: unresolved requests stay open with their owner
+visible. Silence, declines and elapsed time never resolve a thread. The founder
+can inspect and resume any archived thread; resume clears resolution.
 
 Look for this line in your prompt:
 

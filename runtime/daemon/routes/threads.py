@@ -25,7 +25,10 @@ from runtime.infrastructure.memory_collection import CensusReadUnavailable
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifactName
 from runtime.infrastructure.thread_scoped_attachment_store import MAX_THREAD_ATTACHMENT_BYTES
-from runtime.infrastructure.thread_store import render_transcript_body
+from runtime.infrastructure.thread_archive import (
+    finish_thread_archive, maybe_auto_archive_thread,
+    publish_thread_event as _publish_thread_event,
+)
 from runtime.models import (
     ResponderStatusEntry,
     TaskRecord,
@@ -130,34 +133,6 @@ def _resolve_message_recipients(org: Any, recipients: list[str], body_markdown: 
         if name not in resolved:
             resolved.append(name)
     return resolved
-
-
-async def _publish_thread_event(
-    org,
-    slug: str,
-    *,
-    thread_id: str,
-    seq: int | None,
-    speaker: str,
-    kind: str,
-    preview: str = "",
-    status: str = "open",
-) -> None:
-    from runtime.daemon.event_bus import thread_topic, thread_inbox_topic
-    await org.event_bus.publish(
-        thread_topic(thread_id),
-        {
-            "thread_id": thread_id,
-            "seq": seq,
-            "speaker": speaker,
-            "kind": kind,
-            "preview": (preview or "")[:160],
-        },
-    )
-    await org.event_bus.publish(
-        thread_inbox_topic(slug),
-        {"thread_id": thread_id, "event_kind": kind, "status": status},
-    )
 
 
 def _create_agent_thread_locked(
@@ -2385,6 +2360,9 @@ async def _post_agent_message(
         status="open",
     )
 
+    if resolution is not None:
+        await maybe_auto_archive_thread(org, thread_id, "resolving_send")
+
     return {"thread_id": thread_id, "seq": seq, "pending_replies": [a.agent_name for a in arrivals]}
 
 
@@ -2693,30 +2671,9 @@ async def archive_thread_endpoint(
             }
         participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
 
-    # Write transcript file synchronously (was the finalizer's job).
-    msgs = org.db.list_thread_messages(thread_id, limit=10000)
-    rendered = render_transcript_body(msgs)
-    transcript_path = org.thread_store.write_transcript(
-        thread_id=thread_id,
-        subject=t.subject,
-        started_at=t.started_at,
-        archived_at=archived_at,
-        participants=participants,
-        turns_used=t.turns_used,
-        forwarded_from_id=t.forwarded_from_id,
-        summary=summary,
-        rendered_transcript=rendered,
-    )
-    async with org.db_lock:
-        org.db.set_thread_transcript_path(thread_id, str(transcript_path))
-        AuditLogger(org.db).log_thread_archived(
-            thread_id, turns_used=t.turns_used,
-        )
-
-    await _publish_thread_event(
-        org, slug,
-        thread_id=thread_id, seq=sys_seq, speaker="founder",
-        kind="system", preview="archived", status="archived",
+    transcript_path = await finish_thread_archive(
+        org, t, summary=summary, archived_at=archived_at,
+        participants=participants, seq=sys_seq,
     )
 
     return {
