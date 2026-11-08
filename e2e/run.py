@@ -142,6 +142,11 @@ def prepare_diagnostics(root: Path, output: Path, report: Report, check: Callabl
     for path in (root / "screenshots").glob("*.png"):
         check()
         shutil.copyfile(path, output / "screenshots" / path.name)
+    # E05's selected views are captured while their owning page is alive.
+    # A later closure/content failure must not require recapturing a closed page.
+    for path in (root / "raw").glob("e05-*.png"):
+        check()
+        shutil.copyfile(path, output / "screenshots" / path.name)
     # A genuine final observation covers failures outside a product assertion.
     final_image = root / "raw/browser-final.png"
     if final_image.is_file() and not list((output / "screenshots").glob("*.png")):
@@ -149,9 +154,8 @@ def prepare_diagnostics(root: Path, output: Path, report: Report, check: Callabl
         shutil.copyfile(final_image, output / "screenshots" / name)
     # Capture can be unavailable after poisoned native transport. Never invent it.
     if failed and (root / "browser-started").exists() and (
-            not (output / "traces/main.zip").is_file()
-            or not list((output / "screenshots").glob("*.png"))
-            or ((root / "thread-browser-started").exists() and not (output / "traces/threads.zip").is_file())):
+            not any(path.is_file() and path.stat().st_size for path in (output / "traces").glob("*.zip"))
+            or not any(path.is_file() and path.stat().st_size for path in (output / "screenshots").glob("*.png"))):
         raise RuntimeError("Browser failure diagnostics unavailable: trace or failure screenshot missing")
 
 

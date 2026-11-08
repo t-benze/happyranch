@@ -43,6 +43,15 @@ E05 now reads each exact Playwright Response body on its original native loop,
 within the original absolute end, before context close. A missing, failed or
 incomplete browser body fails the case; relay JSON never substitutes for it.
 Detail/message-page JSON, public/durable content and DOM assertions remain.
+Native cached assets/documents do not require new relay records. An incidental
+detail/messages GET with no Response is excluded from body collection only when
+its exact native terminal is `net::ERR_ABORTED` and a later document navigation
+committed; selected view Responses, POSTs and all other missing/failed bodies
+still fail. Native aborts arriving before the HTTP worker/reader are retained
+for that worker's stop. Physical resource closure is counted separately from
+parser errors, which still fail transport checks. E07 checks the actual accepted
+admission and reconstructs checkpoint/product state; equality among copied
+admission dictionaries is not an additional product assertion.
 This source change makes no full56 or native behavior claim.
 
 Launcher TERM on Python3.12 and INT on Python3.14 are separate `diagnostic`
@@ -69,6 +78,11 @@ Playwright `main.zip`/`threads.zip` with source capture disabled; screenshots us
 manifest names or `setup.png`/`launcher.png`. A page already closed by its owner
 records a non-failure screenshot-unavailable note without native capture; the
 original product failure stays red and strict E07 admission is unchanged.
+On browser failure, at least one nonempty captured trace ZIP and screenshot PNG
+must be present; `threads.zip` counts without an additional `main.zip`.
+Existing `e05-*.png` selected-view screenshots are also copied from private scratch
+for failure upload, so closed-page recapture is unnecessary. Missing either kind
+still fails diagnostics.
 Other collection failures remain harness errors, never fabricated artifacts.
 A failure before browser startup can provide logs only. All artifacts use GitHub
 default retention; no override.

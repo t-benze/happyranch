@@ -474,15 +474,31 @@ class BrowserRelay:
                 self.owner.parser_phase = 'payload'
                 return left
 
+        def stop_aborted(record: dict, event: dict) -> None:
+            # Native cancellation can precede the HTTP handler or its reader.
+            # Keep that terminal until the actual worker can own the stop.
+            record['browser_abort'] = dict(event)
+            owner = relay.io_owners.get(id(record))
+            if owner is not None and 'stop_intent' not in record:
+                try:
+                    owner.enqueue('navigation', event, relay.deadline)
+                except Exception as exc:
+                    record['abort_shutdown_error'] = type(exc).__name__
+                    relay.errors.append('E05 native abort owner unavailable')
+
         def pair_request(method: str, target: str) -> None:
             # Called under lock from either observation order. Never guess an
-            # order among concurrent identical requests, or reuse a failed one.
+            # order among concurrent identical requests, or reuse a paired one.
             pending = [e for e in relay.browser_requests if e['method'] == method and e['target'] == target
                        and not any(r.get('browser_request_id') == e['request_id'] for r in relay.records)]
             records = [r for r in relay.records if r['method'] == method and r['target'] == target
                        and 'browser_request_id' not in r]
-            if len(pending) == len(records) == 1 and 'failed' not in pending[0]:
+            if len(pending) == len(records) == 1:
                 records[0]['browser_request_id'] = pending[0]['request_id']
+                terminals = pending[0].get('terminals', [])
+                if (method == 'GET' and len(terminals) == 1
+                        and terminals[0].get('failure') == 'net::ERR_ABORTED'):
+                    stop_aborted(records[0], dict(terminals[0], target=target))
 
         def browser_request(event: dict) -> None:
             with relay.lock:
@@ -518,12 +534,7 @@ class BrowserRelay:
                 if len(matches) != 1:
                     return
                 record = matches[0]
-                record['browser_abort'] = dict(event)
-                try:
-                    enqueue_stop(record, 'navigation', event, relay.deadline)
-                except Exception as exc:
-                    record['abort_shutdown_error'] = type(exc).__name__
-                    relay.errors.append('E05 native abort owner unavailable')
+                stop_aborted(record, event)
         self.browser_abort = browser_abort
 
         def close_context_streams(event: dict, end: float) -> list[dict]:
@@ -719,6 +730,9 @@ class BrowserRelay:
                         io_owner.acquire('connection', connection)
                         io_owner.acquire('original', upstream_socket)
                         io_owner.initialize(upstream_socket)
+                        with relay.lock:
+                            if 'browser_abort' in record:
+                                stop_aborted(record, record['browser_abort'])
                         connection.response_class = lambda sock, *args, **kwargs: Response(io_owner, sock, *args, **kwargs)
                     else:
                         upstream_socket.settimeout(remaining())
@@ -842,7 +856,7 @@ class BrowserRelay:
                                     record[name+'_close_error'] = type(exc).__name__
                                     relay.errors.append('E05 '+name+' close failed')
                     with relay.lock:
-                        complete = (not io_owner.state['errors'] if io_owner is not None else
+                        complete = (all('closed' in resource for resource in io_owner.state['resources']) if io_owner is not None else
                                     'connection_close_error' not in record and 'response_close_error' not in record)
                         if complete:
                             relay.connections.discard(connection)
