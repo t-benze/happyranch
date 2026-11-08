@@ -131,9 +131,12 @@ class _Registrations(dict):
         self.topology = {}
         self.metadata = {}
         self.errors = {}
+        self.residues = {}
         self.missing_heads = set()
 
     def owner(self, path: str) -> tuple:
+        if path in self.residues:
+            return path, self.topology[path], None
         entry = self.linked[path]
         return str(entry), self.topology[str(entry)], self.topology[path]
 
@@ -152,7 +155,8 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
     """Prove the entire literal mapping and safe file census BEFORE Git.
 
     Only ordinary I/O/change errors after that proof can be registration-local.
-    Missing pointers, enumeration, aliases, hardlinks and conflicts stay shared.
+    Only a final missing gitdir in an otherwise safe entry can be an unmapped
+    residue. Enumeration, unsafe metadata and unreconciled task roots stay shared.
     """
     common = repo / '.git'
     admin = common / 'worktrees'
@@ -202,7 +206,39 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
                 if identity(os.fstat(fd)) != identity(tree[name]):
                     raise Retain(f'changed_registration_entry:{entry}')
                 topology[str(entry)] = identity(os.fstat(fd))
-            seen, gitdir = _metadata_file(entry / 'gitdir', deadline, text=True)
+            try:
+                seen, gitdir = _metadata_file(entry / 'gitdir', deadline, text=True)
+            except _MetadataFileError as exc:
+                if not isinstance(exc.__cause__, OSError) or exc.__cause__.errno != errno.ENOENT:
+                    raise
+                # No location can be attributed to this entry. Validate every
+                # remaining object, including commondir for any nonempty entry.
+                # Never turn its name, HEAD or Git's omission into a worktree.
+                topology[str(entry / 'gitdir')] = None
+                local_tree = by_entry.get(name, {})
+                if local_tree:
+                    seen, commondir = _metadata_file(entry / 'commondir', deadline, text=True)
+                    if commondir not in ('../..\n', str(common) + '\n'):
+                        raise Retain(f'redirected_commondir:{entry / "commondir"}')
+                    for relative, observed in local_tree.items():
+                        target = entry / relative
+                        if stat.S_ISDIR(observed.st_mode):
+                            if relative in ('HEAD', 'index'):
+                                raise Retain(f'nonregular_registration_metadata:{target}')
+                            current = signature(observed)
+                        else:
+                            current, head = _metadata_file(target, deadline, text=relative == 'HEAD')
+                            if current != signature(observed):
+                                raise Retain(f'metadata_changed:{target}')
+                            if relative == 'HEAD' and not (
+                                    re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\n', head)
+                                    or re.fullmatch(r'ref: refs/[^\s]+\n', head)):
+                                raise Retain(f'malformed_head:{target}')
+                        topology[str(target)] = current
+                    if topology[str(entry / 'commondir')] != seen:
+                        raise Retain(f'metadata_changed:{entry / "commondir"}')
+                result.residues[str(entry)] = str(exc)
+                continue
             topology[str(entry / 'gitdir')] = seen
             seen, commondir = _metadata_file(entry / 'commondir', deadline, text=True)
             topology[str(entry / 'commondir')] = seen
@@ -318,11 +354,12 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None) 
         latched = retained.setdefault(str(repo), {})
         for path, (_, owner) in latched.items():
             check(deadline)
-            if path not in before.linked or before.owner(path) != owner:
+            if (path not in before.linked and path not in before.residues) or before.owner(path) != owner:
                 raise _RegistrationUnknown(f'local_registration_attribution_lost:{repo}:{path}')
-        for path, error in errors.items():
+        for path, error in (errors | before.residues).items():
             latched.setdefault(path, (error, before.owner(path)))
-        errors = {path: value[0] for path, value in latched.items()}
+        errors = {path: value[0] for path, value in latched.items() if path in before.linked}
+        after.residues = {path: latched[path][0] for path in after.residues}
     try:
         raw = git(repo, deadline, 'worktree', 'list', '--porcelain', '-z')
     except (Retain, UnicodeError) as exc:
@@ -531,6 +568,11 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     else:
         git_identity = _worktree_gate(candidate, deadline, retained)
     tree = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
+    if candidate['phase'] == 'worktree':
+        for relative in sorted(tree):
+            check(deadline)
+            if relative != '.git' and Path(relative).name == '.git':
+                raise Retain(f'possible_nested_worktree:{path / relative}')
     import stat
     links = Counter(identity(s) for s in tree.values())
     if any(not stat.S_ISDIR(s.st_mode) and s.st_nlink > links[identity(s)] for s in tree.values()):
@@ -552,6 +594,11 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained) != git_identity:
         raise Retain('git_identity_changed_during_admission')
     latest = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
+    if candidate['phase'] == 'worktree':
+        for relative in sorted(latest):
+            check(deadline)
+            if relative != '.git' and Path(relative).name == '.git':
+                raise Retain(f'possible_nested_worktree:{path / relative}')
     if not trees_equal(latest, tree, deadline):
         raise Retain('tree_changed_during_admission')
     check(deadline)
@@ -623,6 +670,8 @@ def discover(org: Path, deadline: float, *, inventory: dict | None = None, check
                             with directory(repo / '.git', deadline):
                                 pass
                             rows = registrations(repo, deadline, retained=retained)
+                            for path, error in rows.residues.items():
+                                inventory['discovery_scopes'].append(dict(path=path, reason=error, candidate_count=0))
                             for path, error in rows.errors.items():
                                 inventory['discovery_scopes'].append(dict(path=path, reason=error, candidate_count=None))
                             if str(repo) not in rows:
@@ -729,9 +778,9 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     retained = {}
     def report_checkpoint() -> None:
         for errors in retained.values():
-            for path, (error, _) in errors.items():
+            for path, (error, owner) in errors.items():
                 if not any(scope['path'] == path for scope in result.get('discovery_scopes', [])):
-                    result.setdefault('discovery_scopes', []).append(dict(path=path, reason=error, candidate_count=None))
+                    result.setdefault('discovery_scopes', []).append(dict(path=path, reason=error, candidate_count=0 if owner[2] is None else None))
                     if result.get('discovery') == 'complete':
                         result['discovery'] = 'partial'
         for candidate in result.get('candidates', []):
@@ -846,9 +895,10 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 # the whole repository's prune scope untouched.
                 # The reconciled no-follow census proves there are no admin
                 # entries as well as no linked rows when only primary remains.
-                if rows.errors:
+                if rows.errors or rows.residues:
                     report_checkpoint()
                     result['outcome'] = 'incomplete'
+                    break
                 if set(rows) != {repo}:
                     result.setdefault('prune_retained', []).append(repo)
                     continue

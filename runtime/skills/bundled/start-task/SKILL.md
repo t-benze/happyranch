@@ -105,8 +105,25 @@ exhaustive literal no-follow names, fresh common/admin/entry identities, canonic
 unique reciprocal mappings and task-root/containment reconciliation before Git.
 An ordinary index/HEAD/auxiliary read/change error retains its proven worktree with
 its exact metadata path/native cause; independently validated same-repository peers
-can progress. Missing mapping/enumeration/entry, unsafe alias/hardlink/special
-objects, conflict or unknown descendant location retains the shared scope.
+can progress. Founder THR307seq285–290 permits a safe admin entry with final
+`gitdir` ENOENT to remain an unmapped residue after the same exhaustive census
+and conventional-root reconciliation. Empty entries qualify; nonempty entries
+require valid commondir and strictly safe/readable remaining metadata. Its scope
+is the literal admin entry, candidate_count=0, with the exact native gitdir cause;
+no worktree location, candidate, HEAD, branch, linked row or allocation is inferred.
+Discovery stays partial/incomplete and residue is never repaired, cleaned or pruned.
+Other missing mapping/enumeration/entry, unsafe alias/hardlink/special objects,
+conflicts and unregistered conventional TASK roots still retain the shared scope.
+Rule4-prime retains every worktree candidate in every repository/org when either
+completed existing admission snapshot contains a non-root `.git` of any ordinary
+file/directory/live-or-dangling-link form, at any depth. The reason is
+`possible_nested_worktree:<first sorted literal absolute .git path>`; only the
+candidate's own root `.git` is exempt. This is unconditional, latched, and checked
+at initial/fresh/repair/retry admissions before snapshot mismatch can mask it;
+linked_descendant keeps precedence and prior mutation stays partial_or_unknown.
+It adds no scan, nested content read, ownership inference or cross-org pre-pass;
+scratch under seq194 is unchanged. Real Git rows must still exactly equal the
+primary plus proven linked paths; only the observed residue omissions are tolerated.
 All proven paths, including locally uncertain non-task descendants, protect
 containing trees at every final remove/repair/retry boundary. Retention is latched
 for the attempt, never clearance; own metadata and shared topology stay fresh.
