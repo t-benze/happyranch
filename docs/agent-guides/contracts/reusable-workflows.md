@@ -420,6 +420,88 @@ current authority, native settlement or ordinary-use acceptance. U3–U9 remain
 outside this source unit.
 
 
+## U3s venue-only sequential start enablement (SB-1 a)
+
+Founder THR-336 msg102 accepts SB-1 (a): an operator-only disposable-venue
+publisher and a SQL-free marker fence, both inert until U3e attaches them.
+This source adds no runtime caller, route, CLI verb, UI, credential, environment
+flag or settings/config field. Coding settings/start and the U9 fence are unchanged.
+
+`scripts/setup_sequential_venue.py` requires `--runtime-root`, `--org`,
+`--definition`, `--definition-sha256`, `--bindings-file`, `--admission`
+(`Allowed` or `Disabled`), `--operation-key`, `--principal` (operator label),
+and `--confirm-disposable-venue`. `--limits-file` optionally lowers the definition
+limits; otherwise those exact limits are used. Bindings are a closed JSON array
+of `{role,principal}` objects containing exactly the declared roles and satisfying
+all declared independence pairs. Limits are the closed `Limits` object.
+These labels/bindings grant no authority; actual admission remains with the
+unchanged authority coordinator and engine.
+
+**V1 (engineering_manager TASK-14640 step9):** U3s structural observations use
+an own-UID, mode-0700 disposable `mktemp -d /var/tmp/hr-u3s-<task-id>-XXXXXX`
+directory whose realpath equals its literal path and lies outside the passwd
+home entirely. It contains only fixture runtime/daemon-home trees, initialized
+org DBs and backups. No daemon, executor or job starts there; no live-home
+content is copied. The live-home guard stays unchanged, with no symlink, mount,
+UID, HOME or environment override of that guard. Save concise evidence, then
+remove only that exact directory if safe and record its path/removal exit.
+This grants no V3, V3-0b or genuine Coding scratch run. A future V3 venue must
+also lie outside the real account's `.happyranch` tree.
+
+**A1' (engineering_manager TASK-14640 step8):** this script is the bounded,
+explicit resource reader. It reads a regular no-follow file of at most 1 MiB,
+requires `--definition-sha256` to equal SHA256 of the complete source file,
+and requires exactly one final LF (no missing/double LF or CRLF ending).
+Canonical bytes are exactly `raw[:-1]`; no other stripping, normalization or
+reserialization occurs. The unchanged compiler refuses noncanonical bytes.
+Optional `--canonical-sha256` must equal SHA256 of those canonical bytes.
+The script prints `canonical_sha256` with the original storage receipt.
+Every mismatch refuses with exit 1 and zero new rows. A2: `StorageSettings`
+and `_bytes` are imported read-only from the unchanged history owner.
+
+The existing sequential storage must already be installed through the explicit
+offline installer. The publisher refuses agent task environment markers,
+live-account daemon/org paths, unlisted/aliased runtime roots, unstopped daemon
+controls, invalid definitions/bindings/independence, and incompatible storage.
+The live-account home is obtained from passwd, independently of private `HOME`.
+The operator maintains cooperative stopped-state exclusion; neither missing PID
+nor the confirmation flag proves historical cleanup or excludes same-UID writers.
+
+One `BEGIN IMMEDIATE` publishes an immutable definition, the next contiguous
+settings generation and its exact request/receipt operation row. Deterministic
+IDs bind org, operator and key; exact replay returns the original receipt with
+zero rows; a different request under the same identity refuses. A directory
+advisory lock serializes operator invocations through oracle/marker publication,
+without creating a lock file. Before changing a generation the publisher
+withdraws any previous marker. Allowed ordering is COMMIT, then the unchanged
+`read_sequential_history` oracle (`storage readable` required), then marker.
+Disabled ordering is marker unlink before the Disabled generation. A post-commit
+refusal preserves committed rows and reports them; it never repairs history.
+An old operation replay never changes the current marker decision. Exits are
+0 success, 1 refusal (including post-commit refusal), 2 argument usage.
+
+`runtime/workflows/sequential_venue.py` reads `HAPPYRANCH_DAEMON_HOME` fresh.
+Metadata-only environment/live-home checks precede every file open. Live aliases
+receive `sequential_venue_live_home`; other missing/relative/aliased homes receive
+`sequential_venue_env_absent`. Its closed no-follow marker is
+`sequential-venue-start.json`, format `happyranch-sequential-venue-start@1`:
+exact keys `format`, `daemon_home`, `runtime_root`, `org_slug`, `database_dev`,
+`database_ino`. It must be a regular, single-link, current-UID file of at most
+4096 bytes, strict UTF8 JSON without duplicate keys/constants. Paths, org and
+DB inode must match. Refusals are `sequential_venue_marker_absent`,
+`sequential_venue_marker_invalid` or `sequential_venue_mismatch`. The helpers
+publish via an exclusive pending inode and descriptor-relative rename/unlink.
+This is a fresh filesystem observation, not a racing-rename or same-UID fence.
+
+U3e alone will attach the fence outside writers at the completion pre-check and
+again before capture/admission. No callback or continuation consults the fence.
+Marker removal disables the next fresh start; a newer Disabled generation makes
+older settings fail `settings_generation_stale`. The latter may also hold U3c
+continuations because its selected reader checks newest-generation pins; use
+marker removal alone for the V3 mid-run scenario. V3, V3-0b and U3e attachment
+remain UNVERIFIED. See the [U3s record](../../superpowers/specs/2026-11-08-sequential-venue-start.md)
+for the finite matrix, future attachment and teardown contracts, and I1–I4.
+
 ## U3a ownership union and holding attachment
 
 TASK-14616 under ROOT TASK-14563 implements the U3a row of TASK-14596's plan
