@@ -776,6 +776,39 @@ def validate_e05_browser(observations: dict) -> dict:
           and len({e['request_id'] for e in responses}) == len(responses), 'distinct native Response objects')
     check({e['request_id'] for e in required} == {e['request_id'] for e in responses}
           and len(required) == len(responses), 'every required Request has its actual Response')
+    # Reconstruct the issuing document in event order. A future navigation
+    # cannot lend its Request identity to an earlier API response.
+    seen, committed, pending = {}, set(), set()
+    current = None
+    for event in events:
+        if event['event'] == 'request':
+            check(all(type(event.get(k)) is bool for k in ('navigation', 'main_frame', 'unredirected')),
+                  'native frame/redirect provenance')
+            document = current if event['main_frame'] and event['unredirected'] else None
+            check(event['document_request_id'] == document and event['pending_documents'] == sorted(pending),
+                  'actual issuing document and pending navigation')
+            if event in required:
+                check(document is not None and not pending, 'unambiguous current document at API issuance')
+            seen[event['request_id']] = event
+            if event['navigation'] and event['main_frame']:
+                pending.add(event['request_id'])
+        elif event['event'] == 'navigation':
+            document = event['document_request_id']
+            check(type(event['new_document']) is bool and type(document) is int
+                  and event['url'].startswith(origin+'/'), 'typed same-origin document commit')
+            if event['new_document']:
+                issued = seen.get(document)
+                check(issued is not None and document in pending and document not in committed
+                      and issued['navigation'] and issued['main_frame'] and issued['unredirected']
+                      and issued['resource_type'] == 'document' and issued['method'] == 'GET'
+                      and issued['url'] == event['url'] and issued['at'] <= event['at'],
+                      'earlier unredirected main-frame document Request')
+                committed.add(document)
+                pending.remove(document)
+                current = document
+            else:
+                check(current is not None and document == current and not pending,
+                      'same-document committed lineage')
     bodies = {}
     for response in responses:
         issued, = [e for e in required if e['request_id'] == response['request_id']]

@@ -1563,6 +1563,8 @@ class Browser:
                     # The exact browser Response owns this body RPC. Never use
                     # relay JSON as a substitute, including on failure.
                     raw = await res._impl_obj.body()
+                    require((res.headers.get("content-type") or "").split(";")[0] == "application/json",
+                            "E05 browser JSON content type")
                     body = _strict_json(raw)
                     require(time.monotonic() < end, 'E05 browser body original deadline')
                     record.update(body=body, browser_copy='measured-browser')
