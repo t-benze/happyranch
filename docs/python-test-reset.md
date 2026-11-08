@@ -1,6 +1,6 @@
 # Python test reset — THR-291 seq40
 
-Founder THR-291 seq659 slice 2 uses standard per-case JUnit and explicit
+Founder THR-291 seq659 slice 3 uses standard per-case JUnit and explicit
 failure-only trace/screenshot/log artifacts with GitHub default retention.
 Both lanes must report the exact56 once each, both launcher diagnostics and all
 setup/cleanup checks must pass. Health checks reports and identity only; former
@@ -12,13 +12,16 @@ unsafe dependents report prerequisite ERROR, with no reset/retry. The strict
 same-runtime E05→E07 checkpoint/closure/full50s admission and first cause remain;
 E05 failure stays red even if E07 passes. Failure capture precedes E05 teardown.
 Optional Owned/E07 process diagnostics are removed; real cleanup is mandatory.
-Browser/transport/thread-provider private collectors remain for slice3, including
-the temporary private token list. No validated-context export, SQL/state upload,
-receipt/hash/ownership publisher or publication budgets remain. Operational480/240/720/60/900 bounds and product output caps stay.
+Browser/transport original-body archives, framing/segment hashes and publication
+member/byte/fact budgets are removed. Actual Playwright Response JSON supplies
+E05 browser/public/DOM equality. The native HTTP/SSE forwarding and GET-owner
+shutdown/physical closure checks remain. Thread providers scrub their known token
+literals without an export-context protocol. No SQL/state upload, receipt/hash/
+ownership publisher or publication budgets remain. Operational480/240/720/60/900 bounds and product output caps stay.
 JUnit always uploads; missing reports fail. Known synthetic tokens receive literal
-scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-2-of-3-thr-291-seq659).
+scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
 Historical records below preserve actual failures and holds; their removed
-controller/launcher/export/optional-diagnostic instructions are superseded, never current acceptance.
+controller/launcher/export/collector/optional-diagnostic instructions are superseded, never current acceptance.
 
 
 Founder seq40 authorizes deletion of the entire former Python unit selection

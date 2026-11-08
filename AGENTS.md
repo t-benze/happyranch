@@ -124,7 +124,7 @@ authorized Mac Linux guest. Run them before changes touching daemon lifespan,
 - Static checks and source review never prove behavior. Independent full code
   review, scoped QA and manager guarded merge remain mandatory.
 
-Product E2E slice2 local-case/JUnit/cleanup contract: [e2e/README.md](e2e/README.md).
+Product E2E slice3 browser-JSON/JUnit/cleanup contract: [e2e/README.md](e2e/README.md).
 
 Details: [CI and testing contracts](docs/agent-guides/contracts/ci-and-testing.md).
 

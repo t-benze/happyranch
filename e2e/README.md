@@ -1,6 +1,6 @@
 # Daily product E2E health
 
-## Current reporting contract — slice 2 of 3 (THR-291 seq659)
+## Current reporting contract — slice 3 of 3 (THR-291 seq659)
 
 The standalone harness uses stdlib `xml.etree.ElementTree`, without pytest or
 new dependencies. Each Python lane writes `reports/junit.xml`: a `product` suite
@@ -38,8 +38,12 @@ runtime/transport errors stop dependent effects and become prerequisite errors. 
 and E04 groups keep their exact count prerequisites. A failed group gives
 unreached dependent cases explicit prerequisite ERRORs, while owned cleanup
 and independent local readers still run. E05 captures failure diagnostics in
-its context owner before teardown; later closed-page capture is never required. Known E05 browser-copy unavailability
-remains a failure; this reporting slice does not make E05 or full56 green.
+its context owner before teardown; later closed-page capture is never required.
+E05 now reads each exact Playwright Response body on its original native loop,
+within the original absolute end, before context close. A missing, failed or
+incomplete browser body fails the case; relay JSON never substitutes for it.
+Detail/message-page JSON, public/durable content and DOM assertions remain.
+This source change makes no full56 or native behavior claim.
 
 Launcher TERM on Python3.12 and INT on Python3.14 are separate `diagnostic`
 suites: `launcher.TERM` or `launcher.INT`, plus setup/process/port/socket/data
@@ -91,12 +95,22 @@ process annotations, keeping real PID-generation, cgroup, reaper, process/port/
 socket/data cleanup and every product predicate. The E07 prefix is frozen in
 memory before allocation; its witness and checkpoint/first-cause joins remain.
 Native launch identity comes from the original provider socket acknowledgement,
-not a published launch file. Slice 3 owns the unchanged browser/transport/
-thread-provider collectors, including their temporary private token-list reader.
-The browser final-observation hook now reads event lists in memory without
-writing browser-event JSON; slice3 can remove its legacy hook name.
-The controller supplies that reader's existing private list for compatibility;
-there is no validated-context export or uploaded state protocol.
+not a published launch file. Slice 3 removes the remaining relay-original archive,
+forwarding segments, entity/hash/byte copies, capture inventory and provider
+redaction-context validation. Native Request/Response identity and document
+lineage remain private observations used by product and shutdown predicates.
+The small `_response_facts`/`_read_facts` validators still reject ambiguous or
+incomplete HTTP at the actual read boundary; they do not publish an archive.
+GET-owner counters/checkpoints describe physical reader and descriptor shutdown,
+not publication capacity. E05 compose raw request equality is checked privately
+using the browser POST data and actual upstream request text. Genuine committed
+response loss and E05 CLI response observation remain owned by `Relay`.
+
+Known synthetic bearer/invocation literals are scrubbed from standard logs and
+trace ZIP content before upload. ZIP paths and standard trace/network/resource
+formats are preserved; no context-validation/member-ledger publisher is rebuilt.
+Readability and absence of literals require attributable trace checks; synthetic
+proof does not establish full Product E2E or supported hosted browser behavior.
 
 <details>
 <summary>Historical implementation, case, failure and hold records</summary>
