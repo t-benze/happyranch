@@ -55,11 +55,12 @@ class Dispatcher:
             org = attachment if attachment is not None else self._state.get_org(slug)
         except KeyError:
             return False
-        from runtime.workflows.recovery import classify_task
+        from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
         ownership = classify_task(org.db, task_id, org_slug=slug)
         if ownership.kind == 'coding_attempt':
             return org.workflow_coding_dispatch.queue_admission_allowed(task_id)
-        if ownership.kind.startswith('coding_') or ownership.kind == 'reconciliation_required':
+        if (ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind.startswith('coding_')
+                or ownership.kind == 'reconciliation_required'):
             return False
         move = org.orchestrator._team_moves
         try:
@@ -92,14 +93,15 @@ class Dispatcher:
             org = attachment if attachment is not None else self._state.get_org(slug)
         except KeyError:
             return
-        from runtime.workflows.recovery import classify_task
+        from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
         owner = classify_task(org.db, task_id, org_slug=slug)
         if owner.kind in ('coding_source_waiting', 'coding_attempt'):
             if queue_owner is None or queue_owner[0] is not org.workflow_coding_dispatch:
                 return
             org.workflow_coding_dispatch.heartbeat(task_id, queue_owner[1])
             return
-        if owner.kind.startswith('coding_') or owner.kind == 'reconciliation_required':
+        if (owner.kind in SEQUENTIAL_HELD_KINDS or owner.kind.startswith('coding_')
+                or owner.kind == 'reconciliation_required'):
             return
         now = datetime.now(timezone.utc).isoformat()
         org.db.update_task(task_id, last_heartbeat=now)

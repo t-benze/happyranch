@@ -229,8 +229,9 @@ matching run/visit/native task relations; absent marks never mean ordinary.
 Complete companion validation uses bounded binding/native-task/mark acquisition
 and cached run/visit relations on the history call’s original allowance, without
 per-task inventory rescans. TASK-14576 adds installed selected v2 recognition:
-validate exact org/version/kind/owner and binding/native relations, then return
-`reconciliation_required` to existing routing until the new engine attaches.
+validate exact org/version/kind/owner and binding/native relations. U3a returns
+that exact kind from `selected_owner`; `classify_task` exposes it only with an
+attached same-org `SequentialDispatcher`, otherwise `reconciliation_required`.
 The standalone selected reader returns the exact new kind; v1 routing remains
 with the original reader and results. Unknown, missing or inconsistent marks
 refuse, never become ordinary. The original complete ownership reader accepts v2
@@ -240,3 +241,23 @@ No writer, adoption, allocation or execution permission is implemented here.
 Native TaskRecord/SELECT-* encodings, results, chains and audit scopes stay
 unchanged. Complete old/new reader composition is source-only; the U2b operator
 installer and U3 source adoption remain separate. See [the storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary).
+
+
+## U3a sequential ownership holds (THR336 msg85/95)
+
+`seq_source_waiting`, `seq_carrier` and `seq_visit` are routing selections only.
+The OrgState-constructed `SequentialDispatcher` is mirrored to the orchestrator
+and database; all its ports refuse or do nothing. No mark/task/run producer,
+source adoption, engine, launch, callback acceptance or caller return is attached.
+Queue admission and heartbeat explicitly hold these kinds. Recovery and routing
+return owned without enqueue or dispatch; ordinary PID publication refuses.
+Native mutation guards hold them with the existing refusal codes, including the
+sole caller of the unchanged historical Coding guard. Enqueue logs the hold.
+Completion keeps unknown-task HTTP404 before classification, then HTTP409
+`workflow_reconciliation_required` for sequential owners; cancel uses that same
+HTTP409. Job, portability, ordinary result-action and parent propagation gates
+continue to exclude non-legacy owners. Missing storage/marks, dual bindings,
+read errors and missing/wrong-org dispatcher never become ordinary.
+
+See [the U3a boundary](reusable-workflows.md#u3a-ownership-union-and-holding-attachment)
+and [source pointer](../../superpowers/specs/2026-11-08-sequential-engine-u3a.md).

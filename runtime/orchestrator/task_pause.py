@@ -1015,7 +1015,7 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
     store = getattr(org.db, "_task_pause_store", None)
     if store is None or queue is None:
         return
-    from runtime.workflows.recovery import classify_task
+    from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
     from runtime.orchestrator.authority import enqueue_task_generation_aware
     from runtime.daemon.routes.jobs import _run_job_core
     # One bounded page per sweep, retaining cursor only as a traversal aid.
@@ -1112,7 +1112,7 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                         org.workflow_reviews.notify_queued(task_id, queue)
                     elif ownership.kind == 'coding_attempt':
                         org.workflow_coding_dispatch.notify_queued(task_id, queue)
-                    elif ownership.kind.startswith('coding_'):
+                    elif ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind.startswith('coding_'):
                         continue
                     elif ownership.kind == "legacy":
                         enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
@@ -1144,7 +1144,7 @@ def prepared_cancel_controls(db: Any, task_id: str) -> list[tuple[str, Callable[
 
 def pause_overview(org: Any, *, limit: int, before: str | None) -> dict:
     """Read a stable org-scoped root page; never discover or mutate work."""
-    from runtime.workflows.recovery import classify_task
+    from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
     store = org.db._task_pause_store
     capture = None
     try:
@@ -1197,7 +1197,7 @@ def pause_overview(org: Any, *, limit: int, before: str | None) -> dict:
                     elif dispatch.kind not in {"absent", "retired"}:
                         runnable = False
                         projection["evidence_complete"] = False
-                elif ownership.kind.startswith('coding_'):
+                elif ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind.startswith('coding_'):
                     # Complete saved ownership is known; downstream execution
                     # is unavailable. It cannot become an ordinary runnable root.
                     projection["evidence_complete"] = False

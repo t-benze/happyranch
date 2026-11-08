@@ -1171,11 +1171,12 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             status_code=404,
             detail={"code": "unknown_task", "task_id": task_id},
         )
-    from runtime.workflows.recovery import classify_task
+    from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
     ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
     workflow_draft = ownership.kind in {"draft", "f5", "coding_attempt"}
     workflow_owner = (org.workflow_coding_dispatch if ownership.kind == "coding_attempt" else org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
-    if ownership.kind not in {"legacy", "draft", "f5", "coding_attempt", "coding_source_waiting"}:
+    if (ownership.kind in SEQUENTIAL_HELD_KINDS
+            or ownership.kind not in {"legacy", "draft", "f5", "coding_attempt", "coding_source_waiting"}):
         raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
     draft_prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id) if workflow_draft else None
     # Task-active gate runs BEFORE session ownership (see _require_task_active).
@@ -2394,8 +2395,10 @@ async def cancel_task(
         root = org.db.get_task(task_id)
         if root is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-        from runtime.workflows.recovery import classify_task
+        from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
         ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
+        if ownership.kind in SEQUENTIAL_HELD_KINDS:
+            raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
         if ownership.kind != "legacy" and not ownership.kind.startswith("coding_"):
             if ownership.kind not in {"draft", "f5"}:
                 raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})

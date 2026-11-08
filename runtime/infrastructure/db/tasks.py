@@ -1728,14 +1728,21 @@ class TasksMixin:
         owner = getattr(self, '_workflow_coding_start', None)
         if owner is not None:
             owner.guard_native_mutation(task_id)
+            # Keep the historical Coding guard and its call order unchanged.
+            # Its sole native caller fences the newly exposed sequential kinds.
+            from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
+            if classify_task(self, task_id, org_slug=owner.org.slug).kind in SEQUENTIAL_HELD_KINDS:
+                from runtime.workflows.coding_start import CodingStartError
+                raise CodingStartError('coding_queued_mutation_unavailable')
         else:
             from runtime.infrastructure.workflow_task_ownership import ownership_storage_present
             org = getattr(self, '_task_ownership_org', None)
             if org is None and not ownership_storage_present(self._conn):
                 return  # Unattached generic Database has no workflow routing.
-            from runtime.workflows.recovery import classify_task
+            from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
             selected = classify_task(self, task_id, org_slug=org)
-            if selected.kind.startswith('coding_') or selected.kind == 'reconciliation_required':
+            if (selected.kind in SEQUENTIAL_HELD_KINDS or selected.kind.startswith('coding_')
+                    or selected.kind == 'reconciliation_required'):
                 raise ValueError('workflow_task_ownership_mutation_refused')
 
     @contextmanager
