@@ -162,7 +162,11 @@ def insert_owner_uncommitted(db: Any, task_id: str, *, ownership: tuple[str, str
     kind, owner = ('legacy', None) if ownership is None else ownership
     if kind == 'legacy' and ownership is not None:
         raise ValueError('workflow_task_ownership_invalid_producer')
-    conn.execute('INSERT INTO workflow_task_ownership VALUES (?,?,1,?,?)', (task_id, org, kind, owner))
+    from runtime.infrastructure.workflow_sequential_ownership import SEQUENTIAL_KINDS
+    if kind in SEQUENTIAL_KINDS:
+        conn.execute('INSERT INTO workflow_task_ownership VALUES (?,?,2,?,?)', (task_id, org, kind, owner))
+    else:
+        conn.execute('INSERT INTO workflow_task_ownership VALUES (?,?,1,?,?)', (task_id, org, kind, owner))
 
 
 def adopt_coding_source_uncommitted(db: Any, task_id: str, instance_id: str) -> None:
@@ -172,6 +176,17 @@ def adopt_coding_source_uncommitted(db: Any, task_id: str, instance_id: str) -> 
     changed = db._conn.execute("UPDATE workflow_task_ownership SET kind='coding_source_waiting',owner_id=? "
         "WHERE task_id=? AND org_slug=? AND version=1 AND kind='legacy' AND owner_id IS NULL",
         (instance_id, task_id, getattr(db, '_task_ownership_org', None)))
+    if changed.rowcount != 1:
+        raise ValueError('workflow_task_ownership_source_conflict:' + task_id)
+
+
+def adopt_sequential_source_uncommitted(db: Any, task_id: str, run_id: str) -> None:
+    """The admitted sequential writer alone adopts its original legacy source."""
+    if not db._conn.in_transaction:
+        raise ValueError('workflow_task_ownership_requires_transaction')
+    changed = db._conn.execute("UPDATE workflow_task_ownership SET version=2,kind='seq_source_waiting',owner_id=? "
+        "WHERE task_id=? AND org_slug=? AND version=1 AND kind='legacy' AND owner_id IS NULL",
+        (run_id, task_id, getattr(db, '_task_ownership_org', None)))
     if changed.rowcount != 1:
         raise ValueError('workflow_task_ownership_source_conflict:' + task_id)
 
