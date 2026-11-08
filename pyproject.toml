@@ -50,6 +50,7 @@ exclude = ["runtime/skills/bundled/**"]
 [tool.hatch.build.targets.wheel.force-include]
 "runtime/skills/bundled" = "runtime/skills/bundled"
 "runtime/workflows/builtin_templates/coding.v1.json" = "runtime/workflows/builtin_templates/coding.v1.json"
+"runtime/workflows/builtin_templates/coding.v2.json" = "runtime/workflows/builtin_templates/coding.v2.json"
 
 [tool.uv.sources]
 pyinstaller = [
