@@ -40,10 +40,10 @@ fixture() {
   sudo install -d -m 0700 -o happyranch -g happyranch /etc/happyranch
 
   # Reuse the existing CI fixture's pinned control server and genuine peer.
-  curl --fail --location --proto '=https' --tlsv1.2 \
+  curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 90 --retry-max-time 240 \
     https://github.com/juanfont/headscale/releases/download/v0.25.1/headscale_0.25.1_linux_amd64 -o "$M1_WORK/headscale"
   echo "d2cda0a5d748587f77c920a76cd1bf1ab429e5299ba5bc6b3dda90712721b45b  $M1_WORK/headscale" | sha256sum --check
-  curl --fail --location --proto '=https' --tlsv1.2 \
+  curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 90 --retry-max-time 240 \
     https://pkgs.tailscale.com/stable/tailscale_1.102.3_amd64.tgz -o "$M1_WORK/tailscale.tgz"
   echo "36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5  $M1_WORK/tailscale.tgz" | sha256sum --check
   chmod 0700 "$M1_WORK/headscale"
