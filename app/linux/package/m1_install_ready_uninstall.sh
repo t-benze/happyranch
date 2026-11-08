@@ -138,13 +138,52 @@ import sys
 from pathlib import Path
 from runtime.remote_access.linux_package import (
     install_linux_package, uninstall_linux_package, _MANAGED_PACKAGE_DIAGNOSTIC,
-    _empty_managed_package_diagnostic, _managed_package_diagnostic_projection,
+    _empty_managed_package_diagnostic, _managed_package_diagnostic_projection, UNITS,
 )
+
+QUERY_PROPERTY_NAMES = frozenset('''
+LoadState FragmentPath DropInPaths NeedDaemonReload Wants Requires BindsTo PartOf
+After Before Conflicts RequiresMountsFor DefaultDependencies StopWhenUnneeded
+RefuseManualStart RefuseManualStop User Group Type NotifyAccess Restart RestartUSec
+RestartMode StartLimitIntervalUSec KillMode TimeoutStartUSec TimeoutStopUSec
+TimeoutAbortUSec WatchdogUSec WatchdogSignal NoNewPrivileges ProtectSystem
+ProtectHome PrivateTmp PrivateDevices ProtectKernelTunables ProtectKernelModules
+ProtectControlGroups RestrictSUIDSGID RestrictRealtime LockPersonality
+MemoryDenyWriteExecute CapabilityBoundingSet AmbientCapabilities UMask
+StateDirectory StateDirectoryMode ExecStop ExecStopPost DynamicUser
+SupplementaryGroups ReadWritePaths Environment EnvironmentFiles PassEnvironment
+LoadCredentialEncrypted RootDirectory RootImage ExecStartEx ExecStartPreEx
+ExecStartPostEx LoadCredential RestartPreventExitStatus RestrictAddressFamilies
+SystemCallArchitectures
+'''.split())
+
+def query_missing_names(value: object) -> dict | None:
+    # The caller supplies the validated private projection. Never emit raw loaded
+    # values, even for Query: only fixed requested names and the fixed unit name.
+    if not isinstance(value, list) or len(value) != 16 or value[:1] != [2] or value[2:4] != ['Query', 'query']:
+        return None
+    delta = value[4]
+    result = {'unit': UNITS[value[1]], 'missing': [], 'missing_complete': False}
+    if delta[:1] not in ('=', '~'):
+        return result
+    count, _, prefix = delta[1:].partition(':')
+    names = prefix.split()
+    if delta.startswith('~') and prefix and not prefix.endswith(' '):
+        names = names[:-1]  # The last name may have been clipped by existing caps.
+    if any(name not in QUERY_PROPERTY_NAMES for name in names):
+        return result
+    result.update(missing=sorted(set(names)), missing_count=int(count),
+                  missing_complete=delta.startswith('=') and len(set(names)) == int(count))
+    return result
 
 def without_loaded_context(value: object) -> object:
     # Even bounded loaded facts can contain mount/credential-source paths (F1).
     if isinstance(value, dict):
-        return {key: without_loaded_context(item) for key, item in value.items() if key != 'loaded'}
+        result = {key: without_loaded_context(item) for key, item in value.items() if key != 'loaded'}
+        missing = query_missing_names(value.get('loaded'))
+        if missing is not None:
+            result['missing_properties'] = missing
+        return result
     if isinstance(value, list):
         return [without_loaded_context(item) for item in value]
     return value

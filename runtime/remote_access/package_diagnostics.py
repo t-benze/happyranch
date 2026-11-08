@@ -176,7 +176,11 @@ def loaded_projection(value: object) -> list:
                 or _LOADED_SAFE.fullmatch(item[1:]) is None):
             raise ValueError('private_loaded_invalid')
     if offset:
-        if value[2] not in LOADED_CONTEXT or value[3] == 'query':
+        if value[2:4] == ['Query', 'query']:
+            # Missing requested NAMES only, with no expected/observed/context values.
+            if value[5:] != ['=0:', *['?'] * 10]:
+                raise ValueError('private_loaded_invalid')
+        elif value[2] not in LOADED_CONTEXT or value[3] == 'query':
             raise ValueError('private_loaded_invalid')
         for item in value[4:6]:
             if item not in ('!', '?') and re.fullmatch(r'[=~](0|[1-9][0-9]{0,4}):[A-Za-z0-9_./:@ \\\"\'~-]*', item) is None:

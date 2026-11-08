@@ -179,8 +179,18 @@ func lifecyclePackageLoadedValid(raw []byte) bool {
 		return false
 	}
 	sensitive := lifecycleOneOf(prop, "Environment", "EnvironmentFiles", "PassEnvironment", "LoadCredential", "LoadCredentialEncrypted", "ExecStartEx", "ExecStartPreEx", "ExecStartPostEx", "ExecStop", "ExecStopPost")
-	if offset == 1 && (!lifecycleOneOf(prop, "Wants", "Requires", "After", "Before", "PartOf", "Conflicts", "RequiresMountsFor", "BindsTo") || relation == "query") {
-		return false
+	if offset == 1 {
+		if prop == "Query" && relation == "query" {
+			// Missing requested names only; Python enforces the same empty value slots.
+			for i := 5; i < len(facts); i++ {
+				var value string
+				if json.Unmarshal(facts[i], &value) != nil || i == 5 && value != "=0:" || i > 5 && value != "?" {
+					return false
+				}
+			}
+		} else if !lifecycleOneOf(prop, "Wants", "Requires", "After", "Before", "PartOf", "Conflicts", "RequiresMountsFor", "BindsTo") || relation == "query" {
+			return false
+		}
 	}
 	for i := offset + 3; i < len(facts); i++ {
 		var value string

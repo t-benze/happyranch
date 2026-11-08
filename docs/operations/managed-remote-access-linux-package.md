@@ -16,6 +16,12 @@ additionally printed to refusing Python stderr, prefixed by the refusal code.
 The existing 96/240-byte diagnostics and Go carrier stay unchanged; stderr output
 does not certify delivery through those bounded carriers.
 
+P000241 retains the fixed unit identity and missing requested property names in
+the existing bounded loaded delta. The M1 plain log projects only these names,
+their count and completeness, suppressing all loaded values and contexts. A
+truncated name prefix is explicitly incomplete; the existing 96/240-byte caps
+and the refusal's complete-key check remain unchanged.
+
 After uninstall, all installer residue must be absent except the documented
 volatile `/run/happyranch-connector-images` namespace. M1 prints its full listing,
 checks only `.allocation.lock` and current-boot/operation/fixed-site `image`

@@ -3614,7 +3614,9 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                     raise diagnostic_error("P000240", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
                 values[key] = value
             if set(values) != set(names):
-                raise diagnostic_error("P000241", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+                raise loaded_error(diagnostic_error("P000241", "managed_manager_unavailable", PackageError("managed_manager_unavailable")),
+                                   "Query", None, None, "query", context={},
+                                   missing=set(names) - set(values), unexpected=set())
             return values
         except Exception as error:
             loaded_error(error, "Query", "complete", None, "query", context={**base, **values})
