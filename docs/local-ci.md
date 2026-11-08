@@ -26,6 +26,16 @@ reads accepted state and product checkpoints rather than comparing copied
 dictionaries. Failure diagnostics require a nonempty trace ZIP and screenshot
 PNG, accepting `threads.zip` and existing E05 view screenshots without requiring
 an extra `main.zip` or closed-page recapture.
+An ordinary returned Playwright body-read error names the query-free path,
+status, method and selected-view/sweep role. It leaves failure screenshots and
+standard trace teardown available only for a completed bridge task, no latched
+owned listener fault, healthy dispatcher/connection, unexpired original end and uninterrupted controller.
+Native deadlines, closed-target subclasses, listener faults and ownership
+uncertainty retain poisoned-state teardown refusal. Owned page/context and raw
+navigation callbacks latch faults before a later API call can clear Playwright's
+transient connection error; that provenance is never reset. All sweep Responses
+remain required by the independent content reader; no browser JSON is substituted or
+excluded. Missing E07 admission reports an ordinary prerequisite failure.
 E05 selects delivered message articles by their direct header and `.gl-prose`,
 without waiting away held typing indicators. Exact count/content assertions
 remain. E07 checks exact first48/first53 membership/count while preserving the

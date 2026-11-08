@@ -2250,10 +2250,11 @@ def validate_e07_admission(row: dict, observations: dict, directory: Path) -> tu
             raise ValueError('E07 admission content: ' + reason)
     def same(a,b):
         return json.dumps(a,sort_keys=True,allow_nan=False) == json.dumps(b,sort_keys=True,allow_nan=False)
+    a = observations.get('e07_admission')
+    check(isinstance(a, dict), 'prerequisite unavailable: E07 admission was not reached')
     # Original first48 are a real dependency of these finite checkpoints, not
     # invented prefix receipts. Reuse their complete existing independent reader.
     validate_e04(row,observations,observations["browser_events"],directory)
-    a = observations['e07_admission']
     check(a['state'] == 'accepted' and a['refusal'] is None, 'actual admission accepted')
     check(a['checkpoint'] in {'pre-E05','C','N','D'}, 'finite genuine checkpoint')
     name = a['checkpoint']

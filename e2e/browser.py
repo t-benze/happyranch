@@ -26,6 +26,10 @@ if TYPE_CHECKING:
     from controller import Controller
 
 
+class _ThreadBodyError(ValueError):
+    """A returned body RPC error, subject to the bridge's native health gates."""
+
+
 # Shared by the native bridge and finite, detached-DOM controls. Ownership is
 # resolved here, not by a fixture or by searching descendant text for a match.
 _RENDERED_DOM = r"""(main, args) => {
@@ -716,6 +720,7 @@ class Browser:
         self.controller = controller
         self.events: list[dict] = []
         self.poisoned = False
+        self._listener_fault = False
         self._scopes: list[_ResponseObservation] = []
         self._group: _ObservationGroup | None = None
         self._group_end = float("inf")
@@ -761,9 +766,21 @@ class Browser:
             (self.page._impl_obj, "crash", self._closed),
             (self.page._impl_obj, "pageerror", self._page_error),
         ):
+            listener = self._guard_listener(listener)
             emitter.on(event, listener)
             self._tracker_listeners.append((emitter, event, listener))
         self.set_page_timeout(15)
+
+    def _guard_listener(self, listener: Any) -> Any:
+        def guarded(*args: Any) -> Any:
+            try:
+                return listener(*args)
+            except BaseException:
+                # Playwright may consume and clear connection._error on the
+                # next body API call. Retain provenance before returning to it.
+                self._listener_fault = True
+                raise
+        return guarded
 
     @staticmethod
     def _detach(emitter: Any, event: str, listener: Any) -> None:
@@ -984,7 +1001,8 @@ class Browser:
         return left
 
     def _healthy(self) -> None:
-        require(not self.poisoned and not self._loop.is_closed() and not self._dispatcher.dead
+        require(not self.poisoned and not self._listener_fault
+                and not self._loop.is_closed() and not self._dispatcher.dead
                 and self._connection._error is None, "native dispatcher available")
 
     def _drive(self, coroutine: Any, end: float) -> Any:
@@ -1014,7 +1032,19 @@ class Browser:
         except BaseException as exc:
             if task is None:
                 coroutine.close()
-            self.poison(exc)
+            # A completed Response.body RPC can fail without losing native
+            # ownership. Only that attributed error may preserve teardown;
+            # deadlines, listener/dispatcher failures and cancellation cannot.
+            returned_body_error = (isinstance(exc, _ThreadBodyError) and task is not None
+                                   and task.done() and not task.cancelled() and task.exception() is exc
+                                   and time.monotonic() < end and not self.controller.interrupted)
+            if returned_body_error:
+                try:
+                    self._healthy()
+                except BaseException as native_error:
+                    self.poison(native_error)
+            else:
+                self.poison(exc)
             raise
         finally:
             active = self._bridge_active = False
@@ -1500,7 +1530,7 @@ class Browser:
         # F1: observe a genuinely returned context before any later acquisition.
         def context_closed(_context):
             self.thread_events.append(dict(event='context-close', at=time.monotonic()))
-        self.thread_context.on('close', context_closed)
+        self.thread_context.on('close', self._guard_listener(context_closed))
         self.thread_context.tracing.start(screenshots=True, snapshots=True, sources=False)
         (self.controller.root / "thread-browser-started").touch()
         self.controller.remaining()
@@ -1572,8 +1602,8 @@ class Browser:
                 task = self._loop.create_task(read_body())
                 self.thread_responses[res] = dict(request_id=observed['request_id'],
                                                   response_id=response_id, record=record, task=task)
-        page.on("request", request)
-        page.on("requestfailed", failed)
+        page.on("request", self._guard_listener(request))
+        page.on("requestfailed", self._guard_listener(failed))
         def finished(req):
             observed = requests[req]
             self.thread_streams.discard(observed['request_id'])
@@ -1582,8 +1612,8 @@ class Browser:
             self.thread_events.append(event)
             if req.url.startswith(self.thread_base + '/'):
                 self.controller.browser_relay.browser_terminal(event)
-        page.on('requestfinished', finished)
-        page.on("response", response)
+        page.on('requestfinished', self._guard_listener(finished))
+        page.on("response", self._guard_listener(response))
         lineage = None
         def navigated(payload):
             nonlocal lineage
@@ -1605,11 +1635,11 @@ class Browser:
             require(lineage is not None, 'E05 navigation retains original document lineage')
             self.thread_events.append(dict(event='navigation', url=payload['url'], new_document=new,
                                            document_request_id=lineage, at=time.monotonic()))
-        self.thread_navigation_listener = page.main_frame._impl_obj._channel, 'navigated', navigated
-        self.thread_navigation_listener[0].on('navigated', navigated)
+        self.thread_navigation_listener = page.main_frame._impl_obj._channel, 'navigated', self._guard_listener(navigated)
+        self.thread_navigation_listener[0].on('navigated', self.thread_navigation_listener[2])
         def pageerror(_error):
             self.thread_events.append(dict(event='pageerror', at=time.monotonic()))
-        page.on('pageerror', pageerror)
+        page.on('pageerror', self._guard_listener(pageerror))
         page.goto(self.thread_base + "/orgs/alpha/threads", timeout=self.controller.remaining(10)*1000)
         self.controller.remaining()
 
@@ -1739,11 +1769,30 @@ class Browser:
         self.thread_events.append(dict(event="thread-view", **result))
         return result
 
-    def _thread_body(self, response: Any) -> Any:
+    def _thread_body(self, response: Any, *, selected: bool = True) -> Any:
         observation = self.thread_responses[response]
         task = observation['task']
         async def complete() -> Any:
-            return await task
+            try:
+                return await task
+            except Exception as exc:
+                # Do not propagate native exception text: it may contain URLs
+                # with query credentials. Role is known at consumption time,
+                # even when the eager body task failed before view selection.
+                role = 'selected (assertion-consumed)' if selected else 'thread_bodies sweep'
+                message = (f'E05 browser body read failed: path={urlsplit(response.url).path} '
+                           f'status={response.status} method={response.request.method} '
+                           f'role={role} error={type(exc).__name__}')
+                # Native timeout/closed-target subclasses and non-Playwright
+                # failures retain the bridge's conservative poison behavior.
+                error_type: type[Exception] = Error
+                if type(exc) is Error and not self._listener_fault:
+                    error_type = _ThreadBodyError
+                elif isinstance(exc, (Error, TimeoutError, AssertionError)):
+                    error_type = type(exc)
+                elif isinstance(exc, ValueError):
+                    error_type = ValueError
+                raise error_type(message) from None
         body = self._native(complete, self.controller.effective_end())
         require(observation['record']['browser_copy'] == 'measured-browser',
                 'E05 actual browser JSON unavailable')
@@ -1754,7 +1803,7 @@ class Browser:
         while True:
             responses = list(self.thread_responses)
             for response in responses:
-                self._thread_body(response)
+                self._thread_body(response, selected=False)
             if len(responses) == len(self.thread_responses):
                 return
 
@@ -1978,6 +2027,7 @@ class Browser:
         def capture(request):
             if request.method == "POST" and request.url == self.base + path:
                 requests.append(dict(method=request.method,url=request.url,body=request.post_data_json,at=time.monotonic()))
+        capture = self._guard_listener(capture)
         self.page.on("request",capture)
         rationale = dialog.get_by_role("textbox").input_value(timeout=self.controller.remaining(4)*1000)
         self.controller.remaining()
