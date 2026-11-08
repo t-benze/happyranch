@@ -162,7 +162,9 @@ widths and the declared 16-visit ceiling. The measured longest Coding path uses
 10 visits with both QA returns consumed. Padding to 16 adds at most six ordinary
 visit/event/output/outbox closures; the two return closures are already present.
 Counting the bounded column reads, record traversals and auxiliary fields gives
-at most 256 additional steps/ordinary closure. JSON decode contributes exactly
+at most 256 additional steps/ordinary closure in accept. Transition counts its
+repeated history passes separately, at up to 512 additional steps/closure
+(8275 + 6×512 = 11347, below its 12000 ceiling). JSON decode contributes exactly
 24576 steps at 49152 bytes. Evidence adds 8192 decode steps per 16384-byte row.
 String padding increases reserved bytes without increasing JSON node traversal.
 64 KiB result parsing is structured (one output, at most 32 findings/eight
