@@ -98,6 +98,13 @@ unsupported virtual/generated/WITHOUT ROWID/shadowed-rowid tables refuse rather
 than omit identities. These bounds supplement, never replace or relax, the
 existing complete-reader allowances.
 
+The complete layout comparison retains its fully acquired and independently
+validated column tuples inside the same schema snapshot. Sequential row reads
+reuse those tuples for the unchanged type/length gates instead of acquiring
+`pragma_table_xinfo` a second time. The metadata map consumes the original copy
+allowance; the 8192-row, byte, traversal, SQL-step and deadline limits remain
+unchanged. Full native metadata and all legacy comparisons are still required.
+
 The native writer opens `mode=rw`, keeps `foreign_keys=1` and
 `defer_foreign_keys=0`, and owns one `BEGIN IMMEDIATE` through COMMIT. After writer
 acquisition it rechecks the original identity, lifecycle, backup observation,

@@ -308,6 +308,11 @@ copy and per-run replay. Each sequential table is acquired once; visits/events
 are grouped once instead of rescanning all history for every run. The rowid-less
 ownership view uses a complete bounded scalar preflight and reserves its payload
 before its one payload traversal, on the same snapshot and allowance.
+The complete layout match also returns the already acquired column metadata to
+sequential row acquisition inside that same snapshot. It retains the exact
+validated tuples and charges the metadata map to the original copy allowance;
+row acquisition does not repeat `pragma_table_xinfo`. Full native metadata,
+independent comparisons, exact-type gates and every existing cap remain intact.
 
 This standalone call permits at most 8192 acquired rows (including schema and
 reference acquisitions), 64 MiB aggregate raw/decoded/copy reservations, 65536
