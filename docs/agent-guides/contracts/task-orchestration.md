@@ -216,3 +216,20 @@ contract for precise counting, `task_thread_origin_unavailable`/`census_database
 refusals and cooperative-bound limits. Complete 200-node lineage remains valid;
 201-node/malformed lineage has null derived origin, with literal direct rows
 preserved on complete successful reads. No cross-snapshot cache is retained.
+
+## Unattached ownership companion@2 reference (THR336 U2a)
+
+TASK-14536 adds `workflow_sequential_ownership.py` as a standalone reference and
+reader. Existing production ownership storage/readers and their v1 writers are
+unchanged. The proposed explicit companion rebuild preserves original columns
+and v1 marks and allows version2 only for `seq_source_waiting`, `seq_carrier`,
+`seq_visit`; its literal view appends relations without changing old branches.
+Selected v1 marks use the existing scalar reader. New marks require complete
+matching run/visit/native task relations; absent marks never mean ordinary.
+Complete companion validation uses bounded binding/native-task/mark acquisition
+and cached run/visit relations on the history call’s original allowance, without
+per-task inventory rescans. This does not change the existing v1 scalar reader.
+No writer, adoption, allocation or execution permission is implemented here.
+Native TaskRecord/SELECT-* encodings, results, chains and audit scopes stay
+unchanged. Combined old-history reader integration precedes the U2b operator
+installer and U3 source adoption. See [the storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary).

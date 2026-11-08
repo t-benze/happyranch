@@ -2319,3 +2319,20 @@ accepted layout, start/pair/serving, and original import file/intent/send/receip
 readback remain distinct. Failed commands remain failed; no next effect, automatic
 restart/restore/replay or new key follows uncertainty. Source delivery leaves
 Coding Disabled and real host/workflow/Founder/backup/recovery acceptance open.
+
+## Unattached reusable storage reference (THR336 U2a)
+
+TASK-14536 defines separate sequential persistence and standalone integrity
+readers. Historical Coding tables, stage/revision checks, pins, examples,
+`coding.v1.json`, `coding.v2.json` and fixed progression remain byte-identical.
+The new companion reference adds explicit v2 source/carrier/visit marks beside
+unchanged v1 kinds; no adoption or task producer is attached.
+Org/initiating-principal/start-key and retained source/result/start uniqueness,
+the deferred run last-event bootstrap FK and a selected-visit partial index
+belong only to the new tables. The standalone history and complete ownership
+inventory share one bounded acquisition/copy/replay allowance; neither original
+Coding grammar nor its scalar ownership reader is changed.
+Empty/absent storage is `new-engine unavailable`, with no old-Coding fallback.
+Combined old-history reader integration remains outstanding before installation;
+this does not enable the bundled v2 definition or change any admitted old run.
+See [the reusable storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary).

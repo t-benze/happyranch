@@ -635,3 +635,17 @@ Manager-owned bounded two-template public smoke must precede Founder invitation.
 No live migration/enable/assignment/deploy/restart follows.
 
 - **Owner review discovery (THR139 seq506).** Current owner GET `/workflows/activations/{activation_id}/review-selection?proof_kind=owner-human` returns closed `workflow-owner-review-selection@1` navigation IDs, read-only r1 collection and complete advisory return readiness. Relational owner/grants precede decoding and renew at the coherent read boundary; no domain/lease/event/queue/join writes. I and separately admitted selected readers remain required. POST independently retains atomic replay/CAS/current checks. Old daemon discovery is unavailable with dependent actions disabled. Native policy unchanged; mounted UI and behavioral acceptance remain separate. See the four maintained guides and product-design-u0 specification.
+
+## Unattached sequential storage reference (THR336 U2a)
+
+TASK-14536 adds separate sequential tables and a standalone reader; it changes
+no F/E/G/H/I/J DDL, historical bytes, compiler contracts, r1/r2 semantics or
+startup/migration behavior. Whole-schema references compare the document layout,
+Coding, owner indexes, ownership companion and new storage independently.
+New-table start-key uniqueness and run-first deferred bootstrap do not alter
+any document table. Complete new-history, reference and ownership acquisition
+share the finite reader allowance described in the reusable storage guide.
+Combined **old-history reader integration is still outstanding**; production
+readers refuse the extension and no installation is authorized by source delivery.
+See [the reusable storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary)
+and [UNVERIFIED operator draft](../../runbooks/sequential-workflow-storage.md).

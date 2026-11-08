@@ -231,10 +231,11 @@ included in wheel packaging without a catalog reader or selector. The three
 other files live only in documentation as **noncatalog** examples.
 
 Historical `templates.py`, `release_templates.py`, `coding.v1.json` and
-`coding_progression.py` remain byte-identical. No storage/schema, task producer,
-route, settings, admission, CLI, native enforcement or old-reader behavior
-changes. Existing admitted histories keep their original family. Startup,
-installation, cutover and live enablement are outside U1 source delivery.
+`coding_progression.py` remain byte-identical. U1 changed no storage/schema,
+task producer, route, settings, admission, CLI, native enforcement or old-reader
+behavior. U2a's separate storage references are described below. Existing
+admitted histories keep their original family. Startup, installation, cutover
+and live enablement are outside U1 source delivery.
 
 No committed tests or behavioral harness are added. Python units remain RETIRED,
 general integration SKIPPED under THR-243 seq42, and Product E2E is not triggered.
@@ -247,3 +248,103 @@ capability, native settlement, allocation or guarded merge. Actual service
 progression, negative compiler coverage, real-task returns and M1/V3 acceptance
 remain NOT RUN/open. Lint/static results are source evidence only. Independent
 full review and scoped QA precede manager guarded merge.
+
+## U2a storage and standalone reader boundary
+
+TASK-14536 under replacement root TASK-14531 adds the records/standalone-reader
+boundary of U2a. This is SOURCE-INERT: no production importer, producer,
+allocator, route, startup SQL or installer is attached. It does not close U2,
+M1, AC5, AC8 or AC12. The remaining U2a reader integration must precede U2b
+installation and U3 producers.
+
+`runtime/infrastructure/workflow_sequential_schema.py` owns a separate version1
+marker and nine tables: definitions, settings snapshots, settings operations,
+runs, visits, outputs, evidence, events and outbox. Definitions, settings,
+operations, outputs, evidence, events and notifications are immutable, with
+UPDATE/DELETE refusal triggers. Runs retain immutable admission pins; visits
+retain immutable node/task/input pins and an accepted result cannot be replaced.
+Current lifecycle fields remain with their future writer. All result references
+are genuine positive INTEGER native identities, never operation IDs. Unique
+org/initiating-principal/start-key and source/result/start constraints retain
+the exact original source task/session/INTEGER-result and canonical request
+binding. A new source task/result cannot reuse the same principal/key to create
+another run; the complete reader also refuses cross-run start-key conflicts.
+Visit ordinal/predecessor and accepted source visit/result constraints select
+one operation; a partial unique index permits one selected visit per run. The complete reader additionally checks the active pointer and
+rejects committed provisional runs. Only the new run `last_event_id` FK is
+`DEFERRABLE INITIALLY DEFERRED`: the future owning `BEGIN IMMEDIATE` transaction
+keeps foreign keys enabled and connection-wide deferral off, inserts the
+provisional run with a null active pointer, then the visit/task/mark and event,
+and finalizes pointers. Complete target/history/FK validation must succeed
+before COMMIT; a missing deferred event still refuses at COMMIT. No existing
+table or transaction/startup owner is changed. No table extends frozen
+document/Coding state grammar. No index is placed in an existing startup executescript block.
+
+`runtime/workflows/sequential_history.py` compares the whole owned schema with
+independently constructed F/E/G/H/I/J references, Coding absent/present, owner
+indexes absent/complete and marks absent/v1/v2. It does not filter new objects
+out of the candidate, derive references from candidate SQL, mutate the supplied
+DB or relax an existing reader. Partial/extra/changed objects refuse, including
+an otherwise empty extension. `read_sequential_history` validates all new rows:
+canonical bytes/digests and ABI pins, settings generations and operation custody,
+native task/result tuple links, visit predecessors/selected inputs, original
+limits, reducer decisions, event sequence/hash/CAS anchors and exact task outbox
+closure. Its transaction joins the caller's snapshot or rolls back its own read
+interval. Empty/absent new storage says `new-engine unavailable`. A populated
+`storage readable` inventory establishes new-record consistency only, never
+engine readiness, business admission, current authority or authentic native
+settlement. Stored verified-check arrays remain adapter assertions for U3 to
+authenticate; content/capability policy remains with U4/U5.
+
+The sequential acquisition path uses the retained
+`coding_authority_history._Budget` / `_bounded_rows` / `_decoded` model and
+`workflow_schema._candidate_structure` / `_structure_cells` metadata acquisition.
+SQL `typeof`/byte-length gates withhold wrong-class or oversized cells before
+payload fetch. The original allowance covers candidate and independent reference
+metadata, native links, new ownership inventory, sequential rows, every decoded/model
+copy and per-run replay. Each sequential table is acquired once; visits/events
+are grouped once instead of rescanning all history for every run. The rowid-less
+ownership view uses a complete bounded scalar preflight and reserves its payload
+before its one payload traversal, on the same snapshot and allowance.
+
+This standalone call permits at most 8192 acquired rows (including schema and
+reference acquisitions), 64 MiB aggregate raw/decoded/copy reservations, 65536
+traversal/replay steps, a cooperative five-second original deadline and two
+million SQLite progress steps. Individual cells remain at most 1 MiB; the
+existing definition/result limits also apply. The copy/work allowance includes
+both whole schema references; it does not replenish between phases or runs.
+Callers must exclusively own the connection and its progress hook during the
+call. Checks occur before success, including unavailable/empty results;
+exhaustion raises a refusal, never validates a subset or reports empty success.
+These are cooperative limits, not hard RSS or OS-I/O timing guarantees.
+
+Legacy-only complete validation receives the unchanged native connection and an
+exact retained `_Budget`, seeded with the outer consumed-byte, accepted-row and
+traversal counters. Its counters fold back by maximum, then the outer byte/work/
+deadline checks run before an unavailable result; no allowance is replenished.
+Retained readers keep their original per-call caps and may refuse earlier.
+Their byte acquisition is bounded by those retained caps plus the same outer
+SQLite progress/deadline bound, **not pre-reservation against the outer 64 MiB
+cap**. Retained document/ownership queries without a budget argument remain
+under that progress handler; their bytes are not added to the outer counter.
+Any retained-reader refusal propagates unchanged.
+
+The separate `workflow_sequential_ownership.py` companion reference keeps all
+original columns and v1 kinds, and adds explicit v2 `seq_source_waiting`,
+`seq_carrier`, `seq_visit` marks. The literal view appends three relations to
+the original branches unchanged. Complete inventory rejects missing/conflicting
+marks; a selected v1 mark still uses the existing scalar reader. There is no
+source adoption, mark insertion, table rebuild or native task encoding change.
+The actual explicit companion upgrade belongs to U2b; adoption belongs to U3.
+
+**Remaining reader integration:** on legacy-only storage the standalone reader
+uses the existing complete history reader. On combined storage it validates
+new history and complete legacy structure, but does not yet compose all original
+document/Coding history validators over the extension. Existing production
+readers still refuse installed new objects. A follow-up U2a source unit must
+compose those validators without weakening their original recursive structural
+checks or routing/scalar ownership contracts before U2b installation is usable.
+No installer, install/reopen/backout result or compatibility safety claim follows
+from this boundary. [Draft installation/backout contract](../../runbooks/sequential-workflow-storage.md)
+is UNVERIFIED. V3 and actual runs remain NOT RUN; old bytes and historical
+receipts remain unchanged. U4–U9 remain held on the separate U4.0 NO-GO.
