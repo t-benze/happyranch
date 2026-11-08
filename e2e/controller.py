@@ -855,6 +855,11 @@ class Controller:
                 attempt['finished'] = time.monotonic()
                 self._final_attempt, self._final_attempt_cause = None, None
 
+    def stage_browser_trace(self) -> tuple[list[dict], list[dict]]:
+        """Keep the slice3 browser hook local; no event JSON is published."""
+        return (list(self.browser.events) if self.browser else [],
+                list(getattr(self.browser, "thread_events", [])))
+
     def observer_snapshot(self) -> tuple[list[dict], dict]:
         begin = time.monotonic()
         alive_before = self.observer_thread.is_alive()
@@ -973,8 +978,8 @@ class Controller:
                 rows["witness_data"] = data.decode()
                 rows["launch_witnesses"] = [json.loads(line) for line in data.split(b"\n")[:-1]]
             witness_evidence()
-        rows.update(browser_events=list(self.browser.events) if self.browser else [],
-                    thread_events=list(getattr(self.browser, "thread_events", [])),
+        browser_events, thread_events = self.stage_browser_trace()
+        rows.update(browser_events=browser_events, thread_events=thread_events,
                     e07_prefix=self.e07_prefix)
         # Preserve former decoded types and literal token substitution privately.
         # No SQL/state observation is serialized to disk or sent to the launcher.

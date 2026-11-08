@@ -91,6 +91,8 @@ memory before allocation; its witness and checkpoint/first-cause joins remain.
 Native launch identity comes from the original provider socket acknowledgement,
 not a published launch file. Slice 3 owns the unchanged browser/transport/
 thread-provider collectors, including their temporary private token-list reader.
+The browser final-observation hook now reads event lists in memory without
+writing browser-event JSON; slice3 can remove its legacy hook name.
 The controller supplies that reader's existing private list for compatibility;
 there is no validated-context export or uploaded state protocol.
 
