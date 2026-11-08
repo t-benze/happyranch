@@ -194,6 +194,9 @@ class TaskInvocation:
     def prepare(self) -> None:
         if self.owner == "coding":
             self.orch._workflow_coding_dispatch.require_task_ready(self.task.id)
+        elif self.owner == "sequential":
+            if not self.workflow_dispatcher.queue_admission_allowed(self.task.id):
+                raise DeferredRootPause("sequential_queue_unavailable")
         with self.store.writer(self.task.id, admission=True) as (root, row):
             self.store.held_uncommitted(self.task.id)
             self.orch._team_moves.check_task_uncommitted(self.task)
@@ -216,6 +219,8 @@ class TaskInvocation:
             coding = getattr(self.orch, "_workflow_coding_dispatch", None)
             if coding is not None:
                 coding.bind_queue_invocation(self)
+            if self.owner == "sequential":
+                self.workflow_dispatcher.bind_queue_invocation(self)
 
     def _entry(self, row: dict) -> dict:
         entries = [e for e in row["journal"]["entries"] if e["id"] == self.identity]
@@ -335,7 +340,7 @@ class TaskInvocation:
             settled = db._settle_v2_continuation_generation_uncommitted(**arguments, now_dt=datetime.now(timezone.utc))
             if settled.status not in {"settled", "already_settled_exact"}:
                 raise DeferredRootPause("v2 settlement refused")
-        elif self.owner in ("draft", "coding"):
+        elif self.owner in ("draft", "coding", "sequential"):
             dispatcher = self.workflow_dispatcher or self.orch._workflow_drafts
             dispatcher._claim_launch_uncommitted(self)
         elif self.owner == "ordinary":
@@ -364,12 +369,12 @@ class TaskInvocation:
         entry["context"]["audit_ids"] = audit_ids
         if self.admission_effects is not None:
             self.admission_effects()
-        if self.owner == "coding":
+        if self.owner in ("coding", "sequential"):
             self.workflow_dispatcher._session_bound_uncommitted(self)
         return recovery_deadline
 
     def commit(self, ctx: Any = None) -> bool:
-        if self.owner in ("draft", "coding"):
+        if self.owner in ("draft", "coding", "sequential"):
             drafts = self.workflow_dispatcher or self.orch._workflow_drafts
             return drafts._on_loop(drafts._commit_pause_launch(self, ctx))
         return self._commit_local(ctx)
@@ -439,6 +444,10 @@ class TaskInvocation:
                     # and the final saved journal before this SAME COMMIT.
                     from runtime.infrastructure.workflow_schema import validate_workflow_schema
                     validate_workflow_schema(self.store.db._conn, expected_org_slug=self.store.org_slug)
+                elif self.owner == "sequential":
+                    from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
+                    run, _, _ = self.workflow_dispatcher._entry(self.store.db._conn, self.task.id)
+                    validate_selected_run_uncommitted(self.store.db._conn, org_slug=self.store.org_slug, run_id=run["id"], scope="session")
                 won = True
             if self.publish_binding is not None:
                 cancelled_binding = self.publish_binding()
@@ -556,7 +565,7 @@ class TaskInvocation:
                       backoff: float = 0.0, schedule: tuple[float, ...] | None = None,
                       enqueued_at: str | None = None) -> dict:
         """Retain the original retry budget; every actual retry arbitrates again."""
-        if self.owner == "coding" and ordinal:
+        if self.owner in ("coding", "sequential") and ordinal:
             raise PauseControlError("pause_control_unavailable")
         self._begin_launch_attempt()
         if boundary == "host" and ordinal and self.unsettled:
@@ -719,6 +728,8 @@ def _deferred_invocation_uncommitted(orch: Any, task: TaskRecord, metadata: dict
     if len(entries) != 1 or entries[0]["phase"] not in {"retry_deferred", "recovery_deferred"}:
         raise DeferredRootPause("invocation already owned")
     entry = entries[0]
+    if entry["owner"] == "sequential":
+        raise DeferredRootPause("sequential_native_recovery_unavailable")
     if entry["owner"] == "coding":
         # K3 control/recovery remains unavailable; never adopt as ordinary.
         raise DeferredRootPause("coding_native_recovery_unavailable")
@@ -1122,6 +1133,8 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                         org.workflow_reviews.notify_queued(task_id, queue)
                     elif ownership.kind == 'coding_attempt':
                         org.workflow_coding_dispatch.notify_queued(task_id, queue)
+                    elif ownership.kind == 'seq_visit':
+                        org.workflow_sequential_dispatch.notify_queued(task_id, queue)
                     elif ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind.startswith('coding_'):
                         continue
                     elif ownership.kind == "legacy":

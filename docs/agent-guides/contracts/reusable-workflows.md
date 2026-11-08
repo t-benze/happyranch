@@ -762,3 +762,31 @@ access and V3 remain UNVERIFIED. Python units are RETIRED; general integration i
 SKIPPED THR243seq42; no Product E2E trigger. Independent full review, same-head
 scoped QA and guarded manager merge remain mandatory. See
 [U3d-1 source record](../../superpowers/specs/2026-11-08-sequential-engine-u3d1.md).
+
+
+## Sequential queue and launch ports (U3d-2)
+
+U3d-2 supplies source-only queue, native Pause preparation/claim/session binding,
+host request/handle/PID and node-instruction ports. This supersedes U3a/U3d-1's
+queue-always-False description for selected visits only. Admission still refuses
+without a positive deterministic source `outer` evidence row read by primary key
+using the U3d-1 evidence helpers (visit_id NULL). Nothing writes that row until
+U3e. Settings remain Disabled by default; U3s's venue fence is not attached here.
+Merged source is not production reachability or activation.
+
+The run must be active, its selected visit queued with no SID/result, and its
+native task pending with step count zero, no block or cancellation and no SID.
+The dispatcher rechecks this before preparation and native claim. Current
+authority serializes launch; the generic Database claim CAS is reused and U3c
+`bind_session_uncommitted` alone writes running/SID. Queue notification follows
+committed engine work; source/carrier remain held. Heartbeat remains a no-op,
+without task stamps or audit rows. No sequential retry or native recovery exists.
+
+`node_instruction` uses unchanged `render_node_brief` with the immutable request,
+selected input refs, addressed stored inputs and attributed returned findings.
+The fixed safety text remains separate from labelled untrusted node JSON; saved
+refs/recipients do not grant new access or capabilities. Unavailable/oversized
+brief inputs refuse under the existing renderer bounds. U5 trusted domain and
+access witnesses remain separate prerequisites. The existing bundled sequential
+callback paragraph is unchanged. Actual launch, handle, PID, callback, terminal
+and outer settlement through the host remain UNVERIFIED (V3).

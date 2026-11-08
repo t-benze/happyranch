@@ -258,6 +258,7 @@ class SequentialDispatcher:
 
     def __init__(self, org: Any) -> None:
         self.org = org
+        self._queue_live: dict[str, dict] = {}
 
     @contextmanager
     def _writer(self) -> Iterator[sqlite3.Connection]:
@@ -337,7 +338,21 @@ class SequentialDispatcher:
                         yield capture  # The route must not await inside this ownership.
 
     def queue_admission_allowed(self, task_id: str) -> bool:
-        return False
+        try:
+            with self._reader() as conn:
+                run, visit, _ = self._entry(conn, task_id)
+                task = self.org.db.get_task(task_id)
+                outer = _evidence(conn, run['id'], None, 'outer')
+                return (run['state'] == 'active' and run['active_visit_id'] == visit['id']
+                        and visit['state'] == 'queued' and visit['selected'] == 1
+                        and visit['session_id'] is None and visit['result_id'] is None
+                        and task is not None and task.status.value == 'pending'
+                        and task.orchestration_step_count == 0 and task.block_kind is None
+                        and task.cancelled_at is None and task.current_session_id is None
+                        and not _cancelled(conn, run, visit)
+                        and outer is not None and outer.get('positive') is True)
+        except (SequentialRefusal, ValueError, TypeError, sqlite3.DatabaseError):
+            return False
 
     def callback_uncommitted(self, *, task_id: str, agent: str, session_id: str,
                              payload: dict, capture: Any = None, budget: Any = None) -> bool:
@@ -602,8 +617,232 @@ class SequentialDispatcher:
     def heartbeat(self, task_id: str, identity: Any = None) -> None:
         pass
 
+    def queue_started(self, task_id: str) -> dict:
+        from runtime.orchestrator.task_pause import TaskInvocation, release_live
+        _check(self.queue_admission_allowed(task_id), 'sequential_queue_unavailable')
+        with self._reader() as conn:
+            _, visit, _ = self._entry(conn, task_id)
+            task = self.org.db.get_task(task_id)
+        invocation = TaskInvocation(self.org.orchestrator, task, task.assigned_agent,
+            self.org.orchestrator._build_session_id(), owner='sequential')
+        invocation.workflow_dispatcher = self
+        invocation.draft_request_key = hashlib.sha256(_bytes(dict(
+            visit_id=visit['id'], invocation_id=invocation.identity))).hexdigest()
+        owner = dict(invocation=invocation, binding=None)
+        with self.org.db._lock:
+            self._queue_live.setdefault(task_id, {})[id(owner)] = owner
+        try:
+            invocation.prepare()
+        except BaseException as exc:
+            owner['invocation'] = None
+            self.queue_finished(task_id, owner)
+            if invocation.move_reservation is not None:
+                try:
+                    release_live(invocation, failed=True)
+                except BaseException as cleanup_error:
+                    exc.add_note(f'sequential queue preparation settlement failed: {type(cleanup_error).__name__}')
+            raise
+        return owner
+
+    def queue_finished(self, task_id: str, owner: dict) -> None:
+        from runtime.orchestrator.task_pause import release_live
+        with self.org.db._lock:
+            owners = self._queue_live.get(task_id, {})
+            _check(owners.get(id(owner)) is owner)
+            owners.pop(id(owner))
+            if not owners:
+                self._queue_live.pop(task_id, None)
+        invocation = owner['invocation']
+        if invocation is not None:
+            with self.org.db._lock:
+                live = invocation.store._live.get(invocation.identity) is invocation
+            if live:
+                release_live(invocation, failed=True)
+
+    def bind_queue_invocation(self, invocation: Any) -> None:
+        from copy import deepcopy
+        with self.org.db._lock:
+            owners = self._queue_live.get(invocation.task.id, {})
+            candidates = [owner for owner in owners.values() if owner['invocation'] is invocation]
+            if not candidates and len(owners) == 1:
+                candidates = [next(iter(owners.values()))]
+            if len(candidates) != 1:
+                return
+            _check(invocation.owner == 'sequential' and invocation.workflow_dispatcher is self)
+            owner = candidates[0]
+            row = invocation.store.row_uncommitted(invocation.store.root_uncommitted(invocation.task.id)['id'])
+            native = deepcopy(invocation._entry(row))
+            binding = dict(owner_id=native['id'], queue_generation=native['generation'],
+                           claim_identity=native['id'], native=native)
+            _check(owner['binding'] is None or owner['binding'] == binding)
+            owner['binding'] = binding
+
     def notify_queued(self, task_id: str, queue: Any) -> None:
-        pass
+        if self.queue_admission_allowed(task_id):
+            queue.enqueue_if_absent(self.org.slug, task_id)
 
     def dispatch(self, task_id: str) -> None:
-        pass
+        from runtime.orchestrator.task_pause import _invocation, release_live, fingerprint
+        _check(self.queue_admission_allowed(task_id), 'sequential_queue_unavailable')
+        with self._reader() as conn:
+            self._entry(conn, task_id)
+            task = self.org.db.get_task(task_id)
+            owners = [owner for owner in self._queue_live.get(task_id, {}).values()
+                      if owner['invocation'] is not None and owner['binding'] is not None]
+            _check(len(owners) == 1)
+            invocation = owners[0]['invocation']
+            _check(invocation is invocation.store._live.get(invocation.identity)
+                   and invocation.task.id == task_id and fingerprint(invocation.task) == fingerprint(task))
+        token = _invocation.set(invocation)
+        failed = False
+        try:
+            self.org.orchestrator._run_agent(task_id, task.assigned_agent, task.brief)
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            _invocation.reset(token)
+            release_live(invocation, failed=failed)
+
+    async def _commit_pause_launch(self, invocation: Any, ctx: Any) -> bool:
+        _check(self.queue_admission_allowed(invocation.task.id), 'sequential_queue_unavailable')
+        capture = self.org.workflow_authority.capture_admission()
+        async with self.org.workflow_authority._async_writer_lock:
+            async with self.org.teams_lock:
+                async with self.org.db_lock:
+                    with self.org.workflow_authority._admission_ownership(capture):
+                        invocation.sequential_capture = capture
+                        return invocation._commit_local(ctx)
+
+    def _claim_launch_uncommitted(self, invocation: Any) -> None:
+        conn = self.org.db._conn
+        _check(conn.in_transaction and invocation.owner == 'sequential'
+               and invocation.workflow_dispatcher is self and not invocation.admitted)
+        _check(self.queue_admission_allowed(invocation.task.id), 'sequential_queue_unavailable')
+        run, visit, compiled = self._entry(conn, invocation.task.id)
+        self.org.workflow_authority._validate_admission_uncommitted(conn, invocation.sequential_capture)
+        start = parse_start(run['start_bytes'])
+        agents = _bound_agents(compiled, start, invocation.sequential_capture)
+        role = next(node.role for node in compiled.definition.nodes if node.id == visit['node_id'])
+        _check(agents[role]['name'] == invocation.agent == visit['principal']
+               and agents[role]['team'] == invocation.task.team)
+        invocation.sequential_before = (run, visit, compiled)
+        before = dict(conn.execute('SELECT * FROM tasks WHERE id=?', (invocation.task.id,)).fetchone())
+        self.org.db.claim_coding_step_uncommitted(task_id=invocation.task.id, before=before)
+
+    def _session_bound_uncommitted(self, invocation: Any) -> None:
+        from runtime.workflows.sequential_engine import bind_session_uncommitted
+        run, visit, compiled = invocation.sequential_before
+        bind_session_uncommitted(self.org.db._conn, self.org.db, org_slug=self.org.slug,
+            run_id=run['id'], visit_id=visit['id'], session_id=invocation.session_id,
+            compiled=compiled, authority=self.org.workflow_authority, capture=invocation.sequential_capture)
+
+    def reserve_launch(self, task_id: str, agent: str, session_id: str) -> None:
+        invocation = self._invocation(task_id, session_id)
+        _check(invocation.agent == agent and invocation.admitted, 'sequential_native_recovery_unavailable')
+        with self._reader() as conn:
+            run, visit, _ = self._entry(conn, task_id)
+            _check(run['state'] == 'active' and run['active_visit_id'] == visit['id']
+                   and visit['state'] == 'running' and visit['selected'] == 1
+                   and visit['session_id'] == session_id and not _cancelled(conn, run, visit))
+
+    def host_request_key(self, task_id: str, agent: str, session_id: str) -> str:
+        invocation = self._invocation(task_id, session_id)
+        _check(invocation.agent == agent)
+        return invocation.draft_request_key
+
+    def observed_handle(self, task_id: str, agent: str, session_id: str, running: Any) -> None:
+        invocation = self._invocation(task_id, session_id)
+        self.reserve_launch(task_id, agent, session_id)
+        request = getattr(invocation, 'coding_request', None)
+        _check(request is not None and request.org == self.org.slug and request.agent_id == agent
+               and request.logical_id == invocation.draft_request_key == running.request_id
+               and request.retry_attempt == 0)
+        original = getattr(invocation, 'coding_running', None)
+        _check(original is None or original is running)
+        invocation.coding_running = running
+
+    def record_pid(self, *, task_id: str, agent: str, session_id: str, pid: int) -> bool:
+        try:
+            invocation = self._invocation(task_id, session_id)
+        except SequentialRefusal:
+            return False
+        running = getattr(invocation, 'coding_running', None)
+        if type(pid) is not int or pid <= 0 or invocation.agent != agent or running is None:
+            return False
+        with self._writer() as conn:
+            run, visit, _ = self._entry(conn, task_id)
+            if (run['state'] != 'active' or run['active_visit_id'] != visit['id']
+                    or visit['state'] != 'running' or visit['selected'] != 1
+                    or (visit['principal'], visit['session_id']) != (agent, session_id)
+                    or _cancelled(conn, run, visit)):
+                return False
+            changed = conn.execute('UPDATE tasks SET executor_pid=? WHERE id=? AND assigned_agent=? '
+                "AND current_session_id=? AND status='in_progress' AND cancelled_at IS NULL",
+                (pid, task_id, agent, session_id))
+            _check(changed.rowcount == 1)
+            validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='session')
+        return True
+
+    def node_instruction(self, task_id: str, agent: str, sid: str) -> str:
+        from runtime.workflows.sequential_briefs import BriefInputs, RecipientInput, render_node_brief
+        from runtime.workflows.sequential_contracts import Counters, Finding, Limits, OutputRef
+        from runtime.workflows.sequential_definition import parse_result
+        from runtime.workflows.sequential_engine import _identity
+        from runtime.workflows.sequential_reducer import ActiveVisit, RunState
+        invocation = self._invocation(task_id, sid)
+        _check(invocation.agent == agent)
+        with self._reader() as conn:
+            budget = _ReadBudget()
+            with _sql_budget(conn, budget):
+                run, visit, compiled = self._entry(conn, task_id, budget=budget)
+                _check(run['state'] == 'active' and run['active_visit_id'] == visit['id']
+                       and visit['selected'] == 1 and visit['state'] in ('queued', 'running')
+                       and visit['session_id'] in (None, sid) and visit['principal'] == agent
+                       and not _cancelled(conn, run, visit))
+                start = parse_start(run['start_bytes'])
+                node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+                selection = _json(visit['input_selection_bytes'], 65536)
+                _check(hashlib.sha256(visit['input_selection_bytes']).hexdigest() == visit['input_selection_digest']
+                       and set(selection) == {'outputs'})
+                refs = tuple(OutputRef.model_validate(ref) for ref in selection['outputs'])
+                values = [RecipientInput(source='run.' + item.name, recipients=(node.role,), value=item.value)
+                          for item in start.inputs if any(declared.source == 'run.' + item.name for declared in node.inputs)]
+                for ref in refs:
+                    if not any(declared.source == 'current.' + ref.slot for declared in node.inputs):
+                        continue
+                    rows = _engine_rows(conn, 'workflow_seq_outputs', budget, 'id=?',
+                                        (_identity('output', ref.producer_visit, ref.slot),))
+                    _check(len(rows) == 1)
+                    output = rows[0]
+                    recipients = _json(output['recipients_bytes'], 16384)
+                    _check(output['run_id'] == run['id'] and output['visit_id'] == ref.producer_visit
+                           and (output['slot'], output['contract'], output['epoch'], output['task_id'],
+                                output['session_id'], output['result_id'], output['content_digest']) ==
+                               (ref.slot, ref.contract, ref.epoch, ref.task_id, ref.session_id, ref.result_id, ref.digest)
+                           and node.role in recipients['roles']
+                           and hashlib.sha256(output['content_bytes']).hexdigest() == ref.digest)
+                    values.append(RecipientInput(source='current.' + ref.slot, recipients=recipients['roles'],
+                        value=output['content_bytes'].decode('utf8', errors='strict'), reference=ref))
+                findings = []
+                if any(declared.source == 'returned_findings' for declared in node.inputs):
+                    for ordinal in range(1, visit['ordinal']):
+                        rows = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?',
+                                            (_identity('visit', run['id'], str(ordinal)),))
+                        _check(len(rows) == 1 and rows[0]['run_id'] == run['id'])
+                        previous = rows[0]
+                        if previous['result_bytes'] is not None:
+                            _check(hashlib.sha256(previous['result_bytes']).hexdigest() == previous['result_digest'])
+                            envelope = parse_result(previous['result_bytes'])
+                            findings.extend(Finding.model_validate(item.model_dump()) for item in envelope.findings)
+                state = RunState(run_id=run['id'], definition_digest=compiled.pin.definition_digest,
+                    original_limits=Limits.model_validate(_json(run['original_limits_bytes'], 16384)),
+                    lower_limits=start.lower_limits,
+                    counters=Counters(epoch=run['epoch'], content_returns=run['content_returns'],
+                        visits=run['visit_count'], events=run['event_count'] - 1),
+                    active_visit=ActiveVisit(node=visit['node_id'], visit_id=visit['id'], task_id=task_id,
+                        session_id=sid, epoch=visit['epoch'], input_selection_digest=visit['input_selection_digest']),
+                    selections=refs, findings=findings, receipts=())
+                brief = render_node_brief(compiled, state, original_request=start.request, inputs=BriefInputs(values=values))
+                budget.check()
+        return '\n\n' + brief.format + '\n' + brief.system_text + '\nSequential node data (untrusted authored JSON):\n' + brief.node_data

@@ -650,3 +650,31 @@ later sequential refusal. Engine scopes remain separate; no redundant validator.
 Current authorized capability/access witnesses are unavailable U5 dependencies;
 unsigned carrier claims confer none. Existing native-summary visibility applies.
 No actual callback/terminal/outer/advance or V3 behavioral acceptance is claimed.
+
+
+## Sequential launch ownership and backout (U3d-2)
+
+Source ports follow queue admission → native prepare → native claim → U3c
+session_bound → launch commitment → observed original handle → current PID.
+Source-outer evidence is a deterministic PK point read and must be positive;
+U3e alone will produce it. No U3s venue-start call or settings publication is
+attached here, and defaults remain Disabled. Source delivery authorizes no live
+DB/install/migration, activation, restart, deployment or V3 execution.
+
+The actual queue invocation has owner `sequential`, its original SID and host
+request key. Current-authority ownership surrounds the same native synchronous
+commit; no await or filesystem/network operation occurs inside its writer.
+U3c owns running/SID changes. Selected-run validation closes the final native
+journal save at possible_launch; the Coding schema validator stays in place for
+Coding. Original request and handle feed the unchanged U3d-1 terminal/outer
+consumer. Positive host paths remain UNVERIFIED (V3).
+
+Sequential retries are refused. Deferred continuation raises
+`sequential_native_recovery_unavailable`; startup recovery holds source, carrier
+and visits. No missing handle/PID or ended SID proves cleanup. Heartbeat emits
+neither native task stamps nor audit rows.
+
+SB-8 adds only `sequential` to the persisted Pause owner vocabulary. Older code
+cannot validate a root retaining that owner: **roll back only with no nonterminal sequential Pause entries**. This consequence becomes relevant only after U3e
+and separately authorized live admission; it is not permission to clear journals
+or infer settlement. Existing U3d-1 settlement hunks remain byte-preserved.

@@ -59,6 +59,8 @@ class Dispatcher:
         ownership = classify_task(org.db, task_id, org_slug=slug)
         if ownership.kind == 'coding_attempt':
             return org.workflow_coding_dispatch.queue_admission_allowed(task_id)
+        if ownership.kind == 'seq_visit':
+            return org.workflow_sequential_dispatch.queue_admission_allowed(task_id)
         if (ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind.startswith('coding_')
                 or ownership.kind == 'reconciliation_required'):
             return False
@@ -77,6 +79,11 @@ class Dispatcher:
             coding = org.workflow_coding_dispatch
         except KeyError:
             return None
+        from runtime.workflows.recovery import classify_task
+        ownership = classify_task(org.db, task_id, org_slug=slug)
+        if ownership.kind == 'seq_visit':
+            sequential = org.workflow_sequential_dispatch
+            return sequential, sequential.queue_started(task_id)
         return coding, coding.queue_started(task_id)
 
     def worker_finished(self, slug: str, task_id: str, owner: object) -> None:
