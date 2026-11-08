@@ -2091,7 +2091,9 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         check(body['thread_id'] == tid and body['subject'] == public['subject'] and body['status'] == 'open'
               and body['turns_used'] == (1 if count == 1 else public['turns_used'])
               and sorted(body['participants']) == sorted(public['participants']) and len(body['messages']) == count,
-              'R2 initial/reply/dispatch public identity and exact projection cardinality')
+              'R2 initial/reply/dispatch public identity and exact projection cardinality'
+              f'; view={name} observed={(body["thread_id"], body["subject"], body["status"], body["turns_used"], sorted(body["participants"]), len(body["messages"]))!r}'
+              f' expected={(tid, public["subject"], "open", 1 if count == 1 else public["turns_used"], sorted(public["participants"]), count)!r}')
         for actual, expected in zip(body['messages'], public['messages'][:count]):
             check(all(actual[k] == expected[k] for k in ('seq','speaker','kind','body_markdown','attachments','system_payload')),
                   'R2 rendered response literal message and complete system-payload projection')
