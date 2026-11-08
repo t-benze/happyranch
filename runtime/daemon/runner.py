@@ -43,17 +43,17 @@ def enqueue_task(
             if exc.detail["code"] == "root_paused":
                 return  # Durable eligible work is rediscovered after release.
             raise
-    from runtime.workflows.recovery import classify_task
+    from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
     ownership = classify_task(orchestrator._db, task_id, org_slug=slug)
     if ownership.kind != "legacy":
         if ownership.kind in ("draft", "f5"):
             state.queue.enqueue(slug, task_id)
-        elif ownership.kind == "reconciliation_required":
+        elif ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind == "reconciliation_required":
             # Not enqueued: the task stays pending until reconciled. Say so,
             # so a classifier refusal is never a silent stall.
             logger.warning(
-                "task %s/%s not enqueued: ownership reconciliation_required (%s)",
-                slug, task_id, ownership.state or "no detail",
+                "task %s/%s not enqueued: ownership %s (%s)",
+                slug, task_id, ownership.kind, ownership.state or "no detail",
             )
         return
     from runtime.orchestrator.authority import enqueue_task_generation_aware

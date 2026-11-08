@@ -182,10 +182,7 @@ def selected_owner(conn: sqlite3.Connection, task_id: str, org_slug: str | None)
         't.status,t.current_session_id FROM workflow_task_ownership o JOIN tasks t ON t.id=o.task_id '
         'WHERE o.task_id=?', (task_id,)).fetchone()
     if row is not None and type(row[1]) is int and row[1] == 2:
-        _, owner, state = _selected_sequential_owner(conn, task_id, org_slug)
-        # Installed callers know only the historical routing union. Keep new
-        # ownership held until the separately reviewed common engine attaches.
-        return 'reconciliation_required', owner, state
+        return _selected_sequential_owner(conn, task_id, org_slug)
     if row is None or org_slug is None or row[0] != org_slug or type(row[1]) is not int or row[1] != 1:
         raise ValueError('workflow_task_ownership_missing_or_unsupported')
     org, _, kind, owner, agent, parent, status, session = row

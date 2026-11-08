@@ -364,9 +364,10 @@ Partial/lookalike/unknown structures refuse, and non-sequential reserved metadat
 still requires its original Coding family. Definitions, settings and empty storage
 do not imply engine availability or legacy fallback.
 
-Installed selected ownership recognition preserves v1 results. A consistent v2
-source/carrier/visit mark returns `reconciliation_required` until the future common
-engine attaches; the standalone selected reader exposes its exact sequential kind.
+Installed selected ownership recognition preserves v1 results. U3a exposes a
+consistent v2 source/carrier/visit kind only with an attached same-org holding
+`SequentialDispatcher`; otherwise classification returns `reconciliation_required`.
+Both selected scalar readers return the exact sequential kind.
 Selected lookup uses the mark/binding index and scalar run/visit/native relations,
 not a full-history scan. Complete inventory remains at the compatibility boundary.
 No install/reopen/backout result or compatibility safety claim follows
@@ -407,3 +408,29 @@ backout limits. Execution behavior remains **UNVERIFIED**: disposable structural
 SQLite observations do not establish real install/reopen/backout safety, V3,
 current authority, native settlement or ordinary-use acceptance. U3–U9 remain
 outside this source unit.
+
+
+## U3a ownership union and holding attachment
+
+TASK-14616 under ROOT TASK-14563 implements the U3a row of TASK-14596's plan
+(Founder THR336 msg85 approved TASK-14461 revision3 SOURCE; msg95 continue).
+The routing union includes exactly `seq_source_waiting`, `seq_carrier`,
+`seq_visit`. Unchanged selected scalar checks precede recognition. OrgState
+constructs an inert `SequentialDispatcher` and mirrors it to DB/orchestrator;
+classification requires that class and the same org slug. An absent or wrong-org
+attachment remains `reconciliation_required`.
+
+Every execution-facing consumer holds sequential ownership: admission refuses,
+heartbeat does not write, routing/recovery do not enqueue or dispatch, ordinary
+PID/native mutation paths refuse, and completion/cancel return the existing
+reconciliation code. Non-legacy guards continue to fence jobs, portability,
+result-action consumption and parent propagation. Pause discovery holds these
+kinds and reports downstream execution evidence incomplete. All dispatcher ports
+are refusing/no-op; it imports no Coding module and owns no writer or allocator.
+
+This unit adds no sequential mark/task/run producer, source adoption, engine,
+callback transition, host launch or return publication. U3b–U3e and U4–U9 remain
+separate. Disposable SQLite structural observations and lint/static checks do
+not prove V3 behavior, current authority, native settlement or ordinary-use
+acceptance. No real-org install/migration, deploy, restart or activation follows.
+See [source pointer](../../superpowers/specs/2026-11-08-sequential-engine-u3a.md).

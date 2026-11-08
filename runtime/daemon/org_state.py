@@ -99,6 +99,7 @@ class OrgState:
     workflow_coding_start: CodingStartStore = field(init=False)
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
     workflow_coding_dispatch: Any = field(init=False)
+    workflow_sequential_dispatch: Any = field(init=False)
     workflow_submissions: WorkflowSubmissionStore = field(init=False)
     workflow_revisions: WorkflowRevisionStore = field(init=False)
     workflow_reviews: WorkflowReviewDispatcher = field(init=False)
@@ -270,6 +271,8 @@ class OrgState:
         self.workflow_drafts = WorkflowDraftDispatcher(self)
         from runtime.workflows.coding_dispatch import CodingDispatcher
         self.workflow_coding_dispatch = CodingDispatcher(self)
+        from runtime.workflows.sequential_dispatch import SequentialDispatcher
+        self.workflow_sequential_dispatch = SequentialDispatcher(self)
         self.workflow_submissions = WorkflowSubmissionStore(self)
         self.workflow_revisions = WorkflowRevisionStore(self)
         self.workflow_reviews = WorkflowReviewDispatcher(self)
@@ -279,10 +282,12 @@ class OrgState:
             self.orchestrator._workflow_coding_start = self.workflow_coding_start
             self.orchestrator._workflow_drafts = self.workflow_drafts
             self.orchestrator._workflow_coding_dispatch = self.workflow_coding_dispatch
+            self.orchestrator._workflow_sequential_dispatch = self.workflow_sequential_dispatch
             self.orchestrator._workflow_submissions = self.workflow_submissions
             self.orchestrator._workflow_reviews = self.workflow_reviews
         self.db._workflow_drafts = self.workflow_drafts
         self.db._workflow_coding_dispatch = self.workflow_coding_dispatch
+        self.db._workflow_sequential_dispatch = self.workflow_sequential_dispatch
         self.db._workflow_reviews = self.workflow_reviews
         self.dashboard_projection = DashboardProjectionManager(
             org_slug=self.slug, org_root=self.root,

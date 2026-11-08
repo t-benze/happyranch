@@ -8,11 +8,15 @@ from typing import Literal, Any
 from runtime.infrastructure.workflow_schema import _schema_snapshot
 from runtime.infrastructure.workflow_task_ownership import selected_owner
 from runtime.workflows.coding_authority_history import _Budget
+from runtime.workflows.sequential_dispatch import SequentialDispatcher
+
+
+SEQUENTIAL_HELD_KINDS = frozenset({"seq_source_waiting", "seq_carrier", "seq_visit"})
 
 
 @dataclass(frozen=True)
 class WorkflowTaskOwnership:
-    kind: Literal["legacy", "draft", "f5", "coding_source_waiting", "coding_carrier", "coding_attempt", "reconciliation_required"]
+    kind: Literal["legacy", "draft", "f5", "coding_source_waiting", "coding_carrier", "coding_attempt", "seq_source_waiting", "seq_carrier", "seq_visit", "reconciliation_required"]
     intent_id: str | None = None
     state: str | None = None
 
@@ -30,6 +34,11 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None,
     try:
         with db._lock, _schema_snapshot(db._conn):
             kind, reference, state = selected_owner(db._conn, task_id, org_slug)
+            if kind in SEQUENTIAL_HELD_KINDS:
+                service = getattr(db, "_workflow_sequential_dispatch", None)
+                if (not isinstance(service, SequentialDispatcher)
+                        or getattr(getattr(service, "org", None), "slug", None) != org_slug):
+                    return WorkflowTaskOwnership("reconciliation_required", reference, state)
             service_name = {"draft": "_workflow_drafts", "f5": "_workflow_reviews"}.get(kind)
             if service_name is not None:
                 service = getattr(db, service_name, None)
@@ -45,6 +54,8 @@ def route_owned_task(orch: Any, task_id: str) -> bool:
     ownership = classify_task(orch._db, task_id, org_slug=getattr(orch, "_slug", None))
     if ownership.kind == "legacy":
         return False
+    if ownership.kind in SEQUENTIAL_HELD_KINDS:
+        return True  # U3a recognizes ownership but has no execution ports attached.
     dispatcher = getattr(orch, "_workflow_drafts", None)
     if ownership.kind == "draft" and dispatcher is not None:
         dispatcher.dispatch(task_id)
@@ -66,6 +77,8 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
     ownership = classify_task(db, task_id, org_slug=slug)
     if ownership.kind == "legacy":
         return False
+    if ownership.kind in SEQUENTIAL_HELD_KINDS:
+        return True  # No enqueue, reconciliation writer or sequential dispatch.
     if ownership.kind in ('coding_attempt', 'coding_source_waiting', 'coding_carrier'):
         coding = getattr(orchestrator, '_workflow_coding_dispatch', None)
         if coding is not None:

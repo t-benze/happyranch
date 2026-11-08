@@ -578,3 +578,22 @@ Strict older readers may refuse; compatible-reader rollback preserves index/hist
 
 - **Atomic pending parent-wake admission.** Receipt-owned cleanup tails and startup recovery can produce the same bounded parent wake concurrently. Every shipping parent-wake producer and the startup delegated/blocked-job dedupe paths use `TaskQueue.enqueue_if_absent`, which claims an ephemeral per-task reservation under the queue lock, runs generation-aware/DB-aware publication with that lock released, then clears the reservation on success, refusal, or failure. A concurrent bounded producer loses to either the reservation or an actual pending item. Dequeue atomically ends pending suppression so a later legitimate transition can wake the task again; unrelated FIFO ordering and ordinary non-coalescing enqueue are unchanged. Tests join every cleanup worker they create before another sweep, queue assertions, or shared `jobs_runner` restoration because durable settlement is not cleanup completion.
 - **Graceful daemon shutdown preserves blocked-on-job recovery.** Lifespan teardown permanently stops `TaskQueue` consumers and producer admission before signalling in-flight jobs. A genuinely owned signal request preserves the first actual timeout/cap/task/shutdown/Stop cause; a natural pre-signal exit keeps its result. The original job owner commits its row, terminal audit, producer observation and strict Pause disposition together; persistence failure remains unknown, never a fabricated terminal result. The stopped queue refuses `enqueue`, `put_nowait`, and `enqueue_if_absent` (`False`), so a terminal-job hook cannot claim the waiter during teardown. The task stays `in_progress(blocked_on_job)` with its session unchanged; startup rediscovers only genuine all-terminal waits through Branch 3 / the lifespan scan plus pending-item dedupe, subject to cancellation, Pause and move admission. Unproven running jobs remain running/unknown. Resume headers and non-JSON `happyranch jobs show` expose the stored reason and exit code; the existing `task_resumed_from_jobs.job_outcomes` status values remain unchanged.
+
+
+## Sequential ownership startup/recovery hold (THR336 U3a)
+
+OrgState attaches the holding-only `SequentialDispatcher` beside the historical
+Coding dispatcher and mirrors it to its orchestrator and DB. This constructs
+no storage, writer or engine and installs/upgrades nothing. A selected
+`seq_source_waiting`, `seq_carrier` or `seq_visit` is exposed only with that
+same-org attachment; without it, classification is `reconciliation_required`.
+Both selections remain held. Startup/recovery routing returns owned without
+legacy recovery, enqueue or sequential dispatch. Queue admission refuses and
+heartbeat/PID publication cannot write through ordinary task paths. Enqueue
+emits the ownership hold warning; Pause discovery keeps sequential work held
+and marks downstream execution evidence incomplete. Existing non-legacy zombie,
+host, session, result-action and parent gates remain in force.
+
+U3a supplies no producer, admission, launch, callback/transition engine or caller
+return. No startup schema upgrade, real-org install, live migration, deploy,
+restart or activation is authorized. See [the U3a source boundary](reusable-workflows.md#u3a-ownership-union-and-holding-attachment).
