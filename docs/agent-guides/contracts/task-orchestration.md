@@ -334,3 +334,23 @@ unchanged; the dedicated current-invocation PID port is the only added PID route
 and refuses without the original live sequential invocation. Cancellation still
 returns409: U3e must attach its cancellation fence before a start producer.
 No real launch/PID/callback/settlement or V3 behavior has been verified.
+
+### U3e-2 returned source parent bookkeeping
+
+Only the original `seq_source_waiting` task can wake its ordinary caller after
+the unchanged complete reader admits the actual returned event and `run_return`
+obligation for that same source. Completed-without-return is insufficient, and
+the structural carrier never separately wakes the caller. The existing shared
+parent helper retains parked/delegated, sibling/lineage, current-owner and
+current-generation gates. Its optional attachment queue is passed explicitly to
+both reservation and generation-aware publication; existing callers keep their
+ordinary queue selection. The real Orchestrator remains the domain owner.
+
+The terminal return writer projects only the final visit task's retained output
+summary/directory, clears source/carrier block kinds and records a bounded run
+note, after U3c's unchanged return. U3c remains the status/timestamp owner. No
+source result is consumed again and no carrier result/SID is created. Postcommit
+history rebuilding and parent wake are replayable through returned-only
+rediscovery; this gives no durable acknowledgement of caller execution. Thread
+follow-up, SYSTEM messages and invocation minting are excluded. No new command
+or bundled start-task instruction is required at this source checkpoint.

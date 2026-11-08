@@ -608,7 +608,19 @@ class SequentialDispatcher:
                             if terminal_edge:
                                 return_uncommitted(conn, self.org.db, **common, operation_key=return_key,
                                     expected_cas=c + 1, completed_at=task['completed_at'])
-                        # Sole sequential COMMIT precedes notification; no caller notification.
+                                if returned is None:
+                                    # U3c owns lifecycle closure. Project only the final
+                                    # native task's retained caller fields in this writer.
+                                    conn.execute('UPDATE tasks SET block_kind=NULL,note=?,'
+                                        'final_output_summary=(SELECT final_output_summary FROM tasks WHERE id=?),'
+                                        'final_output_dir=(SELECT final_output_dir FROM tasks WHERE id=?) '
+                                        'WHERE id IN (?,?)',
+                                        ('Sequential run ' + run_id + ' returned.', visit['task_id'], visit['task_id'],
+                                         run['source_task_id'], run['carrier_task_id']))
+                        # Sole sequential COMMIT precedes all queue/caller effects.
+                        if terminal_edge:
+                            from runtime.workflows.sequential_return import notify_returned
+                            notify_returned(self, run_id)
                         if moved.visit_task_id is not None:
                             self.notify_queued(moved.visit_task_id, self.org.orchestrator._queue)
                         return moved
