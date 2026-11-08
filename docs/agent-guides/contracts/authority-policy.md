@@ -92,8 +92,9 @@ checks and independently authenticating refusal transactions remain fresh.
 Both discovery first-failure examples and exact committed-effect order remain;
 whole-epoch invalidation, one clean uncached fallback, caller custody, anchored
 quarantine-before-log, global ambiguous exclusion and entire unsafe finally
-suppression retain their contracts. No inert admission is skipped/finalized or
-changed, and no authority verdict/history payload is retained in the catalogue.
+suppression retain their contracts. Inert classification itself stays read-only;
+standing B below closes eligible terminal-root attempts only after the exact loop.
+No authority verdict/history payload is retained in the catalogue.
 Metadata eligibility permits only main alone or main plus positively empty local
 TEMP with an empty filename. Normal workflow integrity validation can initialize
 that TEMP. Its actual integer schema cookie is compared at both bookends and
@@ -114,6 +115,90 @@ See [orchestrator detail](../orchestrator-contracts.md) and
 Six runtime/count/lifetime/timing/speed cases remain NOT RUN and sensitivity
 PROOF NOT RUN under manager acceptance, not behavioral PASS or a new proof gate.
 Source/static delivery grants no restart, deployment, checkpoint or policy change.
+
+## Standing startup inert closure (THR-308 seq366/367, TASK-14648)
+
+`inert_closed` is a terminal authority-v2 attempt state written only by standing
+startup B for an independently authenticated inert admitted attempt on a
+completed/failed/cancelled/superseded root. Its stage stays `admitted` and
+`refusal_code` is NULL. It proves neither successful decision carry-out, policy
+continuation nor refusal/receipt settlement. It is excluded from unfinalized
+discovery and cannot reopen. It requires the widened CHECK and compatible
+readers; rollback after B runs retains that compatible code. `continued` keeps
+its existing policy-continuation meaning. Escalated/live roots remain unfinalized.
+
+The generic Database initializer recognizes exact old/T2 table, index, trigger
+and inbound-FK bundles before other schema mutators. Only the old CHECK gets an
+FK-disabled, TEMP-staged, one-parent rebuild under BEGIN IMMEDIATE, with the
+original table name recreated directly (no ALTER rename). All parent values,
+SQLite types/rowids, both child relations, other schema and historical audit/
+canonical bytes survive. The two indexes and three triggers are recreated from
+literal definitions; finalization remains terminal, including inert_closed.
+Integrity and whole FK checks run before and after the rebuild. Fresh creation
+uses the same T2 literals and validates the result. Exact T2 reopen validates
+layout without DDL, markers or a new full history/integrity scan. Drift/remnants,
+unusable journaling, failed cleanup or an unacknowledged schema COMMIT refuse
+construction; cleanup cannot certify rollback of an uncertain commit. Complete
+release-schema comparisons remain strict and independently constructed; v2
+schema observations remain diagnostics only. The schema commit itself is a
+compatibility boundary, even with no inert_closed rows.
+
+On EVERY boot the shipping parser (including blocked and legacy-summary
+fallback) captures each inert admitted candidate and the SHA256 of its complete
+decoded SELECT * result row, including the sorted column-name list. After the
+exact loop, inside the same open startup reader, B processes at most 256 rows per
+transaction. Each row rechecks canonical identity, admission audit, binding
+existence, every binding join field and sealed-binding authentication (normal
+None means success), terminal root and end-of-loop failed/fenced exclusions,
+positive absence of every related obligation, and available process-local live/
+failed-refusal owner custody. Unattributable obligation/owner evidence skips.
+The exact result row is decoded identically to the getters, digest-compared and
+reconstructed with the same parser inside the transaction; family drift skips.
+
+Each row has a SAVEPOINT. A separate strict closed audit is inserted with the
+CAS to admitted/inert_closed/NULL; canonical JSON changes consistently. A lost
+CAS or failed strict read-back rolls back that row before COMMIT. The action is
+`authority_policy_v2_attempt_inert_closed`, format
+`authority-policy-v2-attempt-inert-closed@1`, with exactly `format`, `attempt_id`,
+`root_task_id`, `manager_agent`, `manager_session_id`, `result_id`, `stage`,
+`finalization_state`, `closure` (`startup_terminal_inert`), `decision_family`
+(delegate/done/fanout/blocked/supersede/workflow_start/other_non_escalate),
+`result_row_digest`, `root_status_at_close` and `boot_id`. Outer task_id and agent
+must equal the attempt's root and manager; exactly one audit per attempt must
+match the row and full result digest. This is never a result-stage event.
+
+Only a confirmed clean rollback before any COMMIT attempt, followed by the
+post-writer connection check, permits a failed batch to be skipped and the next
+batch to proceed. BEGIN uncertainty, cleanup/SAVEPOINT failure, unresolved
+COMMIT, post-writer check failure or any error without confirmed clean rollback
+raises sticky `_V2StartupConnectionUnsafe` (`inert_close_transaction` for writer
+custody failures). Startup suppresses the entire finally worktree batch. Earlier
+committed batches survive; the failing unsafe batch's durable state is unknown.
+No deletion, task, queue, thread, continuation or receipt effect is added.
+
+Authenticated exact/by-result getters accept T2 only with canonical/admission
+and strict closure proof; invalid proof returns None. Thin store, route,
+draft/f5 and logger callers inherit this without reordering their gates. Ordinary
+terminal callbacks still return Database False / HTTP409 `task_not_active`
+before authentication. Conditional workflow retry still requires its genuine
+classification, installed owner, exact prior result and successful owner replay.
+The logger retains its unattributed completion_report fallback on getter None.
+Hook/finalizer/post-final/refusal readers deny policy/refusal authority; zombie
+receipt returns False. Dispatch lineage retains its conservative live predicate
+and envelope-owned causal prerequisites. Synthetic active-root T2 reader cases
+do not establish a production callback path.
+
+The existing bounded startup counter record adds `inert_closed`,
+`inert_close_skipped:<category>` and `inert_close_batches` (begun batches with a
+confirmed clean end). There is no per-row log or one-time marker. The activation
+revision is the eventual merge commit. Separately authorized operator first/
+second boots read `authority_discovery`/`authority_exact`, these counters and
+`startup_partition`; second boot should discover no newly closable rows if none
+became eligible. First-upgrade/first-close latency and savings are unmeasured.
+Source delivery grants no live migration, restart/deployment, benchmark, consumer
+closure C, completion-owner fence or outside-startup abort. B1/B8a-e/B10/M1-M6
+and remaining behavioral/fault/performance proof are NOT RUN / PROOF NOT RUN;
+Python units remain RETIRED and general integration SKIPPED THR243seq42.
 
 **Current THR-279 v2 final-return diagnostic.** When the automatic v2 hook's final continuation call returns a bounded non-success status, the hook records that exact closed status and reason through the existing best-effort `authority_hook` `capture_failure` action before requesting the unchanged `final_commit_failed` refusal. A raised finalizer exception retains its distinct existing diagnostic. This changes no continuation decision, refusal code, audit action, task note, or identity semantics.
 
@@ -148,7 +233,7 @@ Source/static delivery grants no restart, deployment, checkpoint or policy chang
 
 - **Manager authority self-evaluation (THR-181 S6a).** An eligible manager session with an active DB policy must include exactly one strict closed `manager_self_evaluation` beside its completion decision. The authenticated completion/session binding pins root, manager session, immutable release/activation, contract, and the effective manager provider/executor/model; malformed, missing, mismatched, stale, replayed, ambiguous, or low-confidence evidence fails closed with a digest-only durable diagnostic. Production does not launch a second evaluator subprocess. The manager result is advisory semantic evidence only: daemon eligibility, closed-reason and protected/mechanical fences, fresh cancellation/budget checks, single-use envelope, and all candidate/evaluation/CAS/restart rules remain authoritative. Worker and legacy/no-active-policy completions omit the field and keep their prior wire behavior.
 
-- **THR-277 authority-v2 refusal routing.** A still-current root v2 refusal retains the existing `escalated` transition and `escalation` audit. A still-current non-root refusal instead atomically becomes `failed` with `completed_at`, cleared chain/fanout state, note `authority_v2_refusal:<code>`, and the closed `authority_v2_refusal_task_failed` audit; it never writes `escalation`, never notifies the founder, and wakes its parent through the ordinary/recovery-owned FAILED tail. At startup, only `admitted` attempts are classified from their exact causal completion: blocked or parsed non-escalate results are left wholly untouched and unfenced, while missing/unreadable evidence, parser-unavailable callers, later stages, and parsed escalation retain refusal handling. All general escalation CAS writers include a root predicate and loudly refuse non-roots.
+- **THR-277 authority-v2 refusal routing.** A still-current root v2 refusal retains the existing `escalated` transition and `escalation` audit. A still-current non-root refusal instead atomically becomes `failed` with `completed_at`, cleared chain/fanout state, note `authority_v2_refusal:<code>`, and the closed `authority_v2_refusal_task_failed` audit; it never writes `escalation`, never notifies the founder, and wakes its parent through the ordinary/recovery-owned FAILED tail. At startup, only `admitted` attempts are classified from their exact causal completion: blocked or parsed non-escalate results remain unfenced during classification; standing B above may subsequently close independently authenticated terminal-root rows, while missing/unreadable evidence, parser-unavailable callers, later stages, and parsed escalation retain refusal handling. All general escalation CAS writers include a root predicate and loudly refuse non-roots.
 - **THR-181 pre-escalation authority hook (Track A):** before a current manager-owned Engineering root escalates, including a thread-originated root, exactly one audited LLM evaluation runs against immutable release policy. Every committed post-activation escalation has one `authority_hook` denominator outcome; runtime-raised mechanical escalations atomically record linked `not_applicable` rather than invoking evaluation. Thread id/origin remain structured provenance and do not relax same-root identity or the prohibition on revisit/successor/supersession/fresh-root replacement. A clean CONTINUE_SAME_ROOT atomically returns the same root to pending and mints a single-use lifecycle envelope bound to evaluation, causal result, manager, team, root, session, and policy identity. The next turn uses the manager agent's ordinary configured executor permissions and normal manager-decision validation; no exact-action whitelist, executor capability refusal, Claude allowTools narrowing, or opencode permission-map swap applies. The daemon remains authoritative for same-root identity, cancellation, replay, CAS, budgets, protected boundaries, and terminal audit reconciliation. Evaluator error or ambiguity fails closed to ESCALATE. See `docs/agent-guides/orchestrator-contracts.md` §THR-181.
 - **Escalation continuation:** autonomous thread escalation continuation is retired. `orchestration_step_count` is monotonic telemetry, not a blocker; every genuine human blocker — including exhausted revise-round or per-slice retry budgets — remains escalated. The direct task-level continue route remains the named, auditable manual break-glass exception under the current shared-bearer trust model.
 - **Escalation reason display (THR-279):** `tasks.note`, the authority-v2 refusal finalizer, escalation audit payloads, and `audit_log.task_id` scope semantics remain unchanged. Task detail, dashboard Waiting on you, and `happyranch details` receive an additive read-only `escalation_reason`: consecutive exact-task escalation audit IDs delimit the current episode; only an intervening manager `decision.action=escalate` can supply a v2 refusal's primary reason. Closed refusal codes map to server-owned plain-English secondary copy; a no-escalate episode has no primary, unknown codes render verbatim, ordinary escalations retain their existing bytes, and non-escalated tasks are unaffected.

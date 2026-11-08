@@ -727,6 +727,8 @@ class AuthorityV2ContinuationMixin:
             return code, None
         assert proof is not None
         attempt = proof["attempt"]
+        if attempt.finalization_state == "inert_closed":
+            return "identity_mismatch", None
         if attempt.finalization_state != "continued":
             return "identity_mismatch", None
         attempt_row = proof["row"]
@@ -937,6 +939,11 @@ class AuthorityV2ContinuationMixin:
             return _pending("identity_mismatch")
         attempt_row = dict(row)
 
+        if attempt.finalization_state == "inert_closed":
+            if (not self._authenticate_v2_attempt_admission_audit_uncommitted(attempt_row)
+                    or not self._authenticate_v2_inert_close_uncommitted(attempt)):
+                return _pending("identity_mismatch")
+            return _pending("already_finalized")
         if attempt.finalization_state == "continued":
             return self._finalize_v2_continuation_replay_uncommitted(
                 attempt, attempt_row,
@@ -4460,6 +4467,8 @@ class AuthorityV2ContinuationMixin:
         ).fetchone()
         if attempt_row is None:
             return "identity_mismatch", None
+        if attempt_row["finalization_state"] == "inert_closed":
+            return "identity_mismatch", None
         manager_session_id = attempt_row["manager_session_id"]
         if not isinstance(manager_session_id, str) or not manager_session_id:
             return "identity_mismatch", None
@@ -5171,6 +5180,8 @@ class AuthorityV2ContinuationMixin:
                 return True
         if dispatch_row is None:
             for attempt in attempts:
+                # inert_closed retains the conservative live predicate. Closure
+                # supplies no refusal receipt or envelope-owned causal entitlement.
                 if attempt["finalization_state"] not in (
                     AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
                     AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
@@ -5749,6 +5760,8 @@ class AuthorityV2ContinuationMixin:
             attempt = self._authority_policy_v2_attempt_from_row(row)
         except ValueError:
             return False
+        if attempt.finalization_state == "inert_closed":
+            return False  # Closure is neither a continuation nor a refusal receipt.
         if attempt.finalization_state == "continued":
             code, _ = self._authenticate_v2_post_final_evidence_uncommitted(
                 root_task_id=task_id, manager_agent=agent,

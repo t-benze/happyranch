@@ -3750,6 +3750,22 @@ post-effect failed-ack interruption refusal, the preserved task/child effect, th
 no-repeat consumer/child/enqueue count and the exact read-only replay over both
 fresh and full historical-migrated venues.
 
+Standing startup B (THR308seq366/367) adds the distinct
+`authority_policy_v2_attempt_inert_closed` action, format
+`authority-policy-v2-attempt-inert-closed@1`. Its closed payload is `format`,
+`attempt_id`, `root_task_id`, `manager_agent`, `manager_session_id`, `result_id`,
+`stage=admitted`, `finalization_state=inert_closed`,
+`closure=startup_terminal_inert`, `decision_family` (delegate/done/fanout/blocked/
+supersede/workflow_start/other_non_escalate), `result_row_digest`,
+`root_status_at_close` (completed/failed/cancelled/superseded) and `boot_id`.
+Outer task/agent attribution, unique cardinality, exact row identity and complete
+result digest are strict; this action is separate from all result-stage and
+continued/refusal receipt evidence. `inert_closed` keeps admitted/NULL, cannot
+reopen and confers no effect or policy verdict. The initializer's exact one-table
+CHECK/guard rebuild and whole release references require compatible code even
+before B writes; old binaries reject the new typed rows. See the maintained
+[standing B contract](contracts/authority-policy.md#standing-startup-inert-closure-thr-308-seq366367-task-14648).
+
 The next serial checkpoint wires startup pre-final refusal discovery and the
 zombie reaper's exact v2 completion effects without changing the existing v1 or
 no-policy paths. `_sweep_on_startup` performs authenticated unfinalized-attempt
@@ -3775,7 +3791,24 @@ earlier sibling never authenticates another attempt. Missing admission proof
 alone neither relabels inert residue nor blocks the independent refusal writer.
 The actual completion reconstruction and `_parse_next_step`, including legacy
 fallback, still classify readable admitted blocked/non-escalate results as inert,
-with zero writes or fence. Finalized rechecks never replay a stale pre-final target.
+with zero classification writes or fence. Standing B below may close terminal-root candidates after this loop. Finalized rechecks never replay a stale pre-final target.
+
+Standing B runs after the complete exact loop, inside the same open
+`_V2StartupReads`, on every boot without a marker. Independently authenticated
+inert admitted candidates on completed/failed/cancelled/superseded roots close
+in <=256-row transactions with per-row SAVEPOINTs, full decoded-result digest/
+shipping-parser rechecks, admission plus exact authenticated binding, positive
+obligation absence, available live/failed-owner exclusions and the final failed/
+fenced-root sets. CAS plus strict audit read-back precedes COMMIT. A clean
+pre-COMMIT rollback and post-writer check skips that batch; every uncertain
+custody outcome is sticky unsafe and suppresses the entire finally worktree
+batch. Earlier confirmed batches survive; an unsafe batch remains unknown.
+No task/Q/thread effect or consumer closure C follows. `inert_closed` typed reads
+require separate closure authentication and never provide policy/refusal proof;
+ordinary terminal callback False / HTTP409 task_not_active still precedes those
+reads. Conditional workflow retry ownership/order, logger None fallback, zombie
+False and conservative dispatch lineage remain unchanged. The bounded counters
+are `inert_closed`, `inert_close_skipped:<category>` and `inert_close_batches`.
 
 An anchored exact/read/refusal failure adds the root to both downstream fencing
 and failed-root quarantine before bounded server-category logging. Every later

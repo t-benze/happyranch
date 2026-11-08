@@ -4,6 +4,117 @@ import json
 import sqlite3
 
 
+_V2_ATTEMPTS_TABLE = "authority_policy_v2_attempts"
+_V2_ATTEMPTS_STAGE = "_authority_policy_v2_attempts_t2_stage"
+_V2_ATTEMPTS_CHILDREN = (
+    "authority_policy_v2_candidates", "authority_policy_v2_continue_envelopes",
+)
+
+
+def _v2_attempt_layout(conn: sqlite3.Connection, table: str) -> tuple:
+    """Complete literal DDL and metadata, including automatic index details."""
+    objects = tuple(tuple(row) for row in conn.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE tbl_name=? "
+        "ORDER BY type,name", (table,),
+    ))
+    indexes = []
+    for row in conn.execute(f'PRAGMA index_list("{table}")'):
+        # Sequence numbers are discovery order, not part of index semantics.
+        indexes.append((tuple(row)[1:], tuple(tuple(value) for value in
+                        conn.execute(f'PRAGMA index_xinfo("{row[1]}")'))))
+    return (
+        objects,
+        tuple(tuple(row) for row in conn.execute(f'PRAGMA table_xinfo("{table}")')),
+        tuple(tuple(row) for row in conn.execute(f'PRAGMA foreign_key_list("{table}")')),
+        tuple(sorted(indexes)),
+    )
+
+
+def _v2_attempt_reference_layouts() -> tuple[tuple, tuple, dict[str, tuple]]:
+    """Independent shipped literals; never derive an expectation from the DB."""
+    reference = sqlite3.connect(":memory:")
+    try:
+        reference.executescript(_AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL)
+        widened = _v2_attempt_layout(reference, _V2_ATTEMPTS_TABLE)
+        children = {name: _v2_attempt_layout(reference, name)
+                    for name in _V2_ATTEMPTS_CHILDREN}
+        reference.execute(f"DROP TABLE {_V2_ATTEMPTS_TABLE}")
+        reference.executescript(_AUTHORITY_POLICY_V2_ATTEMPTS_OLD_SQL)
+        return _v2_attempt_layout(reference, _V2_ATTEMPTS_TABLE), widened, children
+    finally:
+        reference.close()
+
+
+def _v2_attempt_schema_preflight(conn: sqlite3.Connection) -> str:
+    """Recognize only genuine absence or a complete old/T2 parent bundle."""
+    if conn.in_transaction or conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+        raise ValueError("v2 attempt retrofit requires an idle FK-enabled connection")
+    return _v2_attempt_schema_kind(conn)
+
+
+def _v2_attempt_schema_kind(conn: sqlite3.Connection) -> str:
+    # Refuse remnants in either schema, including reserved replacement tables.
+    for schema in ("main", "temp"):
+        for kind, name, owner in conn.execute(f"SELECT type,name,tbl_name FROM {schema}.sqlite_schema"):
+            if (schema == "temp" and owner == _V2_ATTEMPTS_TABLE) or name == _V2_ATTEMPTS_STAGE or (
+                kind in ("table", "view")
+                and name.startswith(_V2_ATTEMPTS_TABLE + "_")
+            ):
+                raise ValueError("v2 attempt rebuild remnant requires operator diagnosis")
+    objects = conn.execute(
+        "SELECT name FROM sqlite_schema WHERE name=? OR tbl_name=?",
+        (_V2_ATTEMPTS_TABLE, _V2_ATTEMPTS_TABLE),
+    ).fetchall()
+    inbound = set()
+    for (name,) in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'"):
+        quoted = '"' + name.replace('"', '""') + '"'
+        for fk in conn.execute(f"PRAGMA foreign_key_list({quoted})"):
+            if fk[2].casefold() == _V2_ATTEMPTS_TABLE.casefold():
+                inbound.add(name)
+    if not objects:
+        if inbound or any(conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE name=?", (child,),
+        ).fetchone() for child in _V2_ATTEMPTS_CHILDREN):
+            raise ValueError("v2 attempt parent missing from an existing child graph")
+        # Orphan owned indexes/triggers are not a fresh database either.
+        if conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE name LIKE '%authority_policy_v2_attempts%'",
+        ).fetchone():
+            raise ValueError("partial v2 attempt schema")
+        return "absent"
+    old, widened, children = _v2_attempt_reference_layouts()
+    observed = _v2_attempt_layout(conn, _V2_ATTEMPTS_TABLE)
+    if observed not in (old, widened):
+        raise ValueError("v2 attempt table/index/trigger layout drift")
+    if inbound != set(_V2_ATTEMPTS_CHILDREN) or any(
+        _v2_attempt_layout(conn, name) != layout for name, layout in children.items()
+    ):
+        raise ValueError("v2 attempt inbound reference layout drift")
+    return "old" if observed == old else "t2"
+
+
+def _v2_attempt_integrity(conn: sqlite3.Connection) -> None:
+    if [tuple(row) for row in conn.execute("PRAGMA integrity_check")] != [("ok",)]:
+        raise ValueError("v2 attempt retrofit database integrity failure")
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise ValueError("v2 attempt retrofit database FK failure")
+
+
+def _v2_attempt_retained_rows(conn: sqlite3.Connection, table: str) -> tuple:
+    columns = [row[1] for row in conn.execute(f'PRAGMA table_xinfo("{table}")')]
+    projection = ",".join(f'typeof("{name}"),"{name}"' for name in columns)
+    return tuple(tuple(row) for row in conn.execute(
+        f'SELECT rowid,{projection} FROM "{table}" ORDER BY rowid',
+    ))
+
+
+def _v2_attempt_other_schema(conn: sqlite3.Connection) -> tuple:
+    return tuple(tuple(row) for row in conn.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE tbl_name<>? "
+        "ORDER BY type,name", (_V2_ATTEMPTS_TABLE,),
+    ))
+
+
 class AuthorityAuditMigrationRefusal(Exception):
     """Legacy ``authority_audit`` rows reference candidates that do not exist,
     so the candidate-FK retrofit was refused atomically. The legacy schema and
@@ -59,6 +170,204 @@ _AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL = """
                 END;
 """
 
+
+
+# THR-308 seq366/367: exact historical and T2 parent bundles. Shared by
+# fresh creation, retrofit and independent in-memory layout references.
+_AUTHORITY_POLICY_V2_ATTEMPTS_OLD_SQL = """
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                manager_session_id TEXT NOT NULL,
+                result_id INTEGER NOT NULL
+                    REFERENCES task_results(id) ON DELETE RESTRICT,
+                binding_id TEXT NOT NULL,
+                contract_id TEXT NOT NULL,
+                contract_version TEXT NOT NULL,
+                contract_digest TEXT NOT NULL,
+                release_id TEXT NOT NULL,
+                activation_id TEXT NOT NULL,
+                activation_epoch INTEGER NOT NULL
+                    CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
+                selector_id TEXT NOT NULL,
+                stage TEXT NOT NULL CHECK(stage IN
+                    ('admitted','claimed','claim_audited','evaluated',
+                     'evaluation_audited','consumed','consumed_audited')),
+                finalization_state TEXT NOT NULL
+                    CHECK(finalization_state IN
+                        ('unfinalized','continued','refused','owner_lost')),
+                refusal_code TEXT,
+                origin_boot_id TEXT NOT NULL,
+                owner_attempt_id TEXT NOT NULL,
+                assessment_digest TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(root_task_id, manager_agent, manager_session_id, result_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_attempts_result
+                ON authority_policy_v2_attempts(result_id);
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_attempts_team_root
+                ON authority_policy_v2_attempts(team, root_task_id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_identity_immutable
+                BEFORE UPDATE ON authority_policy_v2_attempts
+                WHEN OLD.attempt_id IS NOT NEW.attempt_id
+                  OR OLD.team IS NOT NEW.team
+                  OR OLD.root_task_id IS NOT NEW.root_task_id
+                  OR OLD.manager_agent IS NOT NEW.manager_agent
+                  OR OLD.manager_session_id IS NOT NEW.manager_session_id
+                  OR OLD.result_id IS NOT NEW.result_id
+                  OR OLD.binding_id IS NOT NEW.binding_id
+                  OR OLD.contract_id IS NOT NEW.contract_id
+                  OR OLD.contract_version IS NOT NEW.contract_version
+                  OR OLD.contract_digest IS NOT NEW.contract_digest
+                  OR OLD.release_id IS NOT NEW.release_id
+                  OR OLD.activation_id IS NOT NEW.activation_id
+                  OR OLD.activation_epoch IS NOT NEW.activation_epoch
+                  OR OLD.selector_id IS NOT NEW.selector_id
+                  OR OLD.origin_boot_id IS NOT NEW.origin_boot_id
+                  OR OLD.owner_attempt_id IS NOT NEW.owner_attempt_id
+                  OR OLD.assessment_digest IS NOT NEW.assessment_digest
+                BEGIN SELECT RAISE(ABORT, 'v2 attempt identity is immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_no_delete
+                BEFORE DELETE ON authority_policy_v2_attempts
+                BEGIN SELECT RAISE(ABORT, 'v2 attempt journal cannot be deleted'); END;
+            -- THR-229 checkpoint C3d1: finalized attempts are terminal.  The
+            -- greatest committed stage is retained on finalization, and once
+            -- ``finalization_state`` leaves ``unfinalized`` the row can never
+            -- reopen, advance or rewrite its refusal evidence.  While
+            -- ``unfinalized``, only the exact forward-only stage transitions
+            -- (or a single terminal finalization) are accepted; a refused or
+            -- owner_lost terminal always carries a non-null refusal_code.
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_finalization_guard
+                BEFORE UPDATE ON authority_policy_v2_attempts
+                WHEN NOT (
+                    (OLD.finalization_state IS NOT 'unfinalized'
+                     AND NEW.stage IS OLD.stage
+                     AND NEW.finalization_state IS OLD.finalization_state
+                     AND NEW.refusal_code IS OLD.refusal_code)
+                    OR
+                    (OLD.finalization_state IS 'unfinalized' AND (
+                        (NEW.finalization_state IS 'unfinalized'
+                         AND NEW.refusal_code IS NULL
+                         AND NEW.stage = CASE OLD.stage
+                             WHEN 'admitted' THEN 'claimed'
+                             WHEN 'claimed' THEN 'claim_audited'
+                             WHEN 'claim_audited' THEN 'evaluated'
+                             WHEN 'evaluated' THEN 'evaluation_audited'
+                             WHEN 'evaluation_audited' THEN 'consumed'
+                             WHEN 'consumed' THEN 'consumed_audited'
+                             ELSE NULL END)
+                        OR
+                        (NEW.finalization_state IN ('continued','refused','owner_lost')
+                         AND NEW.stage IS OLD.stage
+                         AND (NEW.finalization_state IS 'continued'
+                              OR NEW.refusal_code IS NOT NULL))
+                    ))
+                )
+                BEGIN SELECT RAISE(ABORT, 'v2 attempt finalization is terminal'); END;
+
+"""
+_AUTHORITY_POLICY_V2_ATTEMPTS_SQL = """
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                manager_session_id TEXT NOT NULL,
+                result_id INTEGER NOT NULL
+                    REFERENCES task_results(id) ON DELETE RESTRICT,
+                binding_id TEXT NOT NULL,
+                contract_id TEXT NOT NULL,
+                contract_version TEXT NOT NULL,
+                contract_digest TEXT NOT NULL,
+                release_id TEXT NOT NULL,
+                activation_id TEXT NOT NULL,
+                activation_epoch INTEGER NOT NULL
+                    CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
+                selector_id TEXT NOT NULL,
+                stage TEXT NOT NULL CHECK(stage IN
+                    ('admitted','claimed','claim_audited','evaluated',
+                     'evaluation_audited','consumed','consumed_audited')),
+                finalization_state TEXT NOT NULL
+                    CHECK(finalization_state IN
+                        ('unfinalized','continued','refused','owner_lost','inert_closed')),
+                refusal_code TEXT,
+                origin_boot_id TEXT NOT NULL,
+                owner_attempt_id TEXT NOT NULL,
+                assessment_digest TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(root_task_id, manager_agent, manager_session_id, result_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_attempts_result
+                ON authority_policy_v2_attempts(result_id);
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_attempts_team_root
+                ON authority_policy_v2_attempts(team, root_task_id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_identity_immutable
+                BEFORE UPDATE ON authority_policy_v2_attempts
+                WHEN OLD.attempt_id IS NOT NEW.attempt_id
+                  OR OLD.team IS NOT NEW.team
+                  OR OLD.root_task_id IS NOT NEW.root_task_id
+                  OR OLD.manager_agent IS NOT NEW.manager_agent
+                  OR OLD.manager_session_id IS NOT NEW.manager_session_id
+                  OR OLD.result_id IS NOT NEW.result_id
+                  OR OLD.binding_id IS NOT NEW.binding_id
+                  OR OLD.contract_id IS NOT NEW.contract_id
+                  OR OLD.contract_version IS NOT NEW.contract_version
+                  OR OLD.contract_digest IS NOT NEW.contract_digest
+                  OR OLD.release_id IS NOT NEW.release_id
+                  OR OLD.activation_id IS NOT NEW.activation_id
+                  OR OLD.activation_epoch IS NOT NEW.activation_epoch
+                  OR OLD.selector_id IS NOT NEW.selector_id
+                  OR OLD.origin_boot_id IS NOT NEW.origin_boot_id
+                  OR OLD.owner_attempt_id IS NOT NEW.owner_attempt_id
+                  OR OLD.assessment_digest IS NOT NEW.assessment_digest
+                BEGIN SELECT RAISE(ABORT, 'v2 attempt identity is immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_no_delete
+                BEFORE DELETE ON authority_policy_v2_attempts
+                BEGIN SELECT RAISE(ABORT, 'v2 attempt journal cannot be deleted'); END;
+            -- THR-229 checkpoint C3d1: finalized attempts are terminal.  The
+            -- greatest committed stage is retained on finalization, and once
+            -- ``finalization_state`` leaves ``unfinalized`` the row can never
+            -- reopen, advance or rewrite its refusal evidence.  While
+            -- ``unfinalized``, only the exact forward-only stage transitions
+            -- (or a single terminal finalization) are accepted; a refused or
+            -- owner_lost terminal always carries a non-null refusal_code.
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_finalization_guard
+                BEFORE UPDATE ON authority_policy_v2_attempts
+                WHEN NOT (
+                    (OLD.finalization_state IS NOT 'unfinalized'
+                     AND NEW.stage IS OLD.stage
+                     AND NEW.finalization_state IS OLD.finalization_state
+                     AND NEW.refusal_code IS OLD.refusal_code)
+                    OR
+                    (OLD.finalization_state IS 'unfinalized' AND (
+                        (NEW.finalization_state IS 'unfinalized'
+                         AND NEW.refusal_code IS NULL
+                         AND NEW.stage = CASE OLD.stage
+                             WHEN 'admitted' THEN 'claimed'
+                             WHEN 'claimed' THEN 'claim_audited'
+                             WHEN 'claim_audited' THEN 'evaluated'
+                             WHEN 'evaluated' THEN 'evaluation_audited'
+                             WHEN 'evaluation_audited' THEN 'consumed'
+                             WHEN 'consumed' THEN 'consumed_audited'
+                             ELSE NULL END)
+                        OR
+                        (NEW.finalization_state IS 'inert_closed'
+                         AND OLD.stage IS 'admitted' AND NEW.stage IS OLD.stage
+                         AND NEW.refusal_code IS NULL)
+                        OR
+                        (NEW.finalization_state IN ('continued','refused','owner_lost')
+                         AND NEW.stage IS OLD.stage
+                         AND (NEW.finalization_state IS 'continued'
+                              OR NEW.refusal_code IS NOT NULL))
+                    ))
+                )
+                BEGIN SELECT RAISE(ABORT, 'v2 attempt finalization is terminal'); END;
+
+"""
 
 # THR-229 checkpoint B1: the accepted control-plane subset of the approved v2
 # dual-text persistence. These are strictly additive tables used only by the
@@ -250,99 +559,7 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
             -- advances ``stage``/``finalization_state`` under its own
             -- transaction-owned methods, which this unit deliberately does not
             -- implement or expose.
-            CREATE TABLE IF NOT EXISTS authority_policy_v2_attempts (
-                attempt_id TEXT PRIMARY KEY,
-                team TEXT NOT NULL,
-                root_task_id TEXT NOT NULL,
-                manager_agent TEXT NOT NULL,
-                manager_session_id TEXT NOT NULL,
-                result_id INTEGER NOT NULL
-                    REFERENCES task_results(id) ON DELETE RESTRICT,
-                binding_id TEXT NOT NULL,
-                contract_id TEXT NOT NULL,
-                contract_version TEXT NOT NULL,
-                contract_digest TEXT NOT NULL,
-                release_id TEXT NOT NULL,
-                activation_id TEXT NOT NULL,
-                activation_epoch INTEGER NOT NULL
-                    CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
-                selector_id TEXT NOT NULL,
-                stage TEXT NOT NULL CHECK(stage IN
-                    ('admitted','claimed','claim_audited','evaluated',
-                     'evaluation_audited','consumed','consumed_audited')),
-                finalization_state TEXT NOT NULL
-                    CHECK(finalization_state IN
-                        ('unfinalized','continued','refused','owner_lost')),
-                refusal_code TEXT,
-                origin_boot_id TEXT NOT NULL,
-                owner_attempt_id TEXT NOT NULL,
-                assessment_digest TEXT NOT NULL,
-                canonical_payload_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                UNIQUE(root_task_id, manager_agent, manager_session_id, result_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_attempts_result
-                ON authority_policy_v2_attempts(result_id);
-            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_attempts_team_root
-                ON authority_policy_v2_attempts(team, root_task_id);
-            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_identity_immutable
-                BEFORE UPDATE ON authority_policy_v2_attempts
-                WHEN OLD.attempt_id IS NOT NEW.attempt_id
-                  OR OLD.team IS NOT NEW.team
-                  OR OLD.root_task_id IS NOT NEW.root_task_id
-                  OR OLD.manager_agent IS NOT NEW.manager_agent
-                  OR OLD.manager_session_id IS NOT NEW.manager_session_id
-                  OR OLD.result_id IS NOT NEW.result_id
-                  OR OLD.binding_id IS NOT NEW.binding_id
-                  OR OLD.contract_id IS NOT NEW.contract_id
-                  OR OLD.contract_version IS NOT NEW.contract_version
-                  OR OLD.contract_digest IS NOT NEW.contract_digest
-                  OR OLD.release_id IS NOT NEW.release_id
-                  OR OLD.activation_id IS NOT NEW.activation_id
-                  OR OLD.activation_epoch IS NOT NEW.activation_epoch
-                  OR OLD.selector_id IS NOT NEW.selector_id
-                  OR OLD.origin_boot_id IS NOT NEW.origin_boot_id
-                  OR OLD.owner_attempt_id IS NOT NEW.owner_attempt_id
-                  OR OLD.assessment_digest IS NOT NEW.assessment_digest
-                BEGIN SELECT RAISE(ABORT, 'v2 attempt identity is immutable'); END;
-            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_no_delete
-                BEFORE DELETE ON authority_policy_v2_attempts
-                BEGIN SELECT RAISE(ABORT, 'v2 attempt journal cannot be deleted'); END;
-            -- THR-229 checkpoint C3d1: finalized attempts are terminal.  The
-            -- greatest committed stage is retained on finalization, and once
-            -- ``finalization_state`` leaves ``unfinalized`` the row can never
-            -- reopen, advance or rewrite its refusal evidence.  While
-            -- ``unfinalized``, only the exact forward-only stage transitions
-            -- (or a single terminal finalization) are accepted; a refused or
-            -- owner_lost terminal always carries a non-null refusal_code.
-            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_finalization_guard
-                BEFORE UPDATE ON authority_policy_v2_attempts
-                WHEN NOT (
-                    (OLD.finalization_state IS NOT 'unfinalized'
-                     AND NEW.stage IS OLD.stage
-                     AND NEW.finalization_state IS OLD.finalization_state
-                     AND NEW.refusal_code IS OLD.refusal_code)
-                    OR
-                    (OLD.finalization_state IS 'unfinalized' AND (
-                        (NEW.finalization_state IS 'unfinalized'
-                         AND NEW.refusal_code IS NULL
-                         AND NEW.stage = CASE OLD.stage
-                             WHEN 'admitted' THEN 'claimed'
-                             WHEN 'claimed' THEN 'claim_audited'
-                             WHEN 'claim_audited' THEN 'evaluated'
-                             WHEN 'evaluated' THEN 'evaluation_audited'
-                             WHEN 'evaluation_audited' THEN 'consumed'
-                             WHEN 'consumed' THEN 'consumed_audited'
-                             ELSE NULL END)
-                        OR
-                        (NEW.finalization_state IN ('continued','refused','owner_lost')
-                         AND NEW.stage IS OLD.stage
-                         AND (NEW.finalization_state IS 'continued'
-                              OR NEW.refusal_code IS NOT NULL))
-                    ))
-                )
-                BEGIN SELECT RAISE(ABORT, 'v2 attempt finalization is terminal'); END;
-
+""" + _AUTHORITY_POLICY_V2_ATTEMPTS_SQL + """
             -- THR-229 checkpoint C3b: durable candidate (K), policy pin (P) and
             -- the closed candidate-audit event (a1 claim stage).  The candidate
             -- is created by the claim transaction from one immutable admitted
@@ -2432,6 +2649,125 @@ class SchemaMixin:
             columns = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
             if column not in columns:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+
+    def _retrofit_v2_attempts_inert_closed(self) -> str:
+        """One FK-safe parent rebuild, before any initializer can mask drift."""
+        conn = self._conn
+        kind = _v2_attempt_schema_preflight(conn)
+        if kind == "absent":
+            return kind
+        journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        file_backed = any(row[1] == "main" and row[2]
+                          for row in conn.execute("PRAGMA database_list"))
+        if file_backed and str(journal).lower() not in (
+            "delete", "truncate", "persist", "wal",
+        ):
+            raise ValueError("v2 attempt rebuild requires persistent journaling")
+        if kind == "t2":
+            return kind  # No DDL, row traversal or integrity scan on reopen.
+        legacy = conn.execute("PRAGMA legacy_alter_table").fetchone()[0]
+        commit_attempted = False
+        ended = False
+        primary: BaseException | None = None
+        cleanup: list[BaseException] = []
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("PRAGMA legacy_alter_table=OFF")
+            if (conn.execute("PRAGMA foreign_keys").fetchone()[0] != 0
+                    or conn.execute("PRAGMA legacy_alter_table").fetchone()[0] != 0):
+                raise ValueError("v2 attempt rebuild PRAGMA admission failed")
+            conn.execute("BEGIN IMMEDIATE")
+            # Re-observe under the writer: another initializer may have won.
+            current = _v2_attempt_schema_kind(conn)
+            if current not in ("old", "t2"):
+                raise ValueError("v2 attempt source changed")
+            if current == "old":
+                _v2_attempt_integrity(conn)
+                for row in conn.execute(f"SELECT * FROM {_V2_ATTEMPTS_TABLE}"):
+                    self._authority_policy_v2_attempt_from_row(row)
+                retained = _v2_attempt_retained_rows(conn, _V2_ATTEMPTS_TABLE)
+                child_rows = {name: _v2_attempt_retained_rows(conn, name)
+                              for name in _V2_ATTEMPTS_CHILDREN}
+                other_schema = _v2_attempt_other_schema(conn)
+                columns = ",".join('"' + row[1] + '"' for row in
+                                   conn.execute(f"PRAGMA table_xinfo({_V2_ATTEMPTS_TABLE})"))
+                conn.execute(
+                    f"CREATE TEMP TABLE {_V2_ATTEMPTS_STAGE} AS "
+                    f"SELECT rowid AS original_rowid,{columns} FROM {_V2_ATTEMPTS_TABLE}",
+                )
+                # Never rename either parent: inbound REFERENCES retain their name.
+                conn.execute(f"DROP TABLE main.{_V2_ATTEMPTS_TABLE}")
+                # execute(), not executescript(): retain the ONE transaction.
+                statements = []
+                statement = ""
+                for line in _AUTHORITY_POLICY_V2_ATTEMPTS_SQL.splitlines(keepends=True):
+                    statement += line
+                    if sqlite3.complete_statement(statement):
+                        statements.append(statement)
+                        statement = ""
+                conn.execute(statements[0])
+                conn.execute(
+                    f"INSERT INTO {_V2_ATTEMPTS_TABLE}(rowid,{columns}) "
+                    f"SELECT original_rowid,{columns} FROM temp.{_V2_ATTEMPTS_STAGE}",
+                )
+                for statement in statements[1:]:
+                    conn.execute(statement)
+                conn.execute(f"DROP TABLE temp.{_V2_ATTEMPTS_STAGE}")
+                if _v2_attempt_schema_kind(conn) != "t2":
+                    raise ValueError("v2 attempt target layout mismatch")
+                if (retained != _v2_attempt_retained_rows(conn, _V2_ATTEMPTS_TABLE)
+                        or other_schema != _v2_attempt_other_schema(conn)
+                        or any(rows != _v2_attempt_retained_rows(conn, name)
+                               for name, rows in child_rows.items())):
+                    raise ValueError("v2 attempt rebuild changed retained data/schema")
+                _v2_attempt_integrity(conn)
+            commit_attempted = True
+            conn.commit()
+            ended = not conn.in_transaction
+            if not ended:
+                raise RuntimeError("v2 attempt schema COMMIT did not end transaction")
+        except BaseException as exc:
+            primary = exc
+            try:
+                conn.rollback()
+                ended = not conn.in_transaction
+            except BaseException as failure:
+                cleanup.append(failure)
+            if commit_attempted:
+                # Cleanup cannot certify whether an unacknowledged COMMIT won.
+                primary.add_note("v2 attempt schema COMMIT attempted; durable outcome uncertain")
+        finally:
+            if not ended and not commit_attempted:
+                try:
+                    ended = conn.in_transaction is False
+                except BaseException as failure:
+                    cleanup.append(failure)
+            if ended:
+                try:
+                    conn.execute(f"PRAGMA legacy_alter_table={legacy}")
+                    conn.execute("PRAGMA foreign_keys=ON")
+                    if (conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1
+                            or conn.execute("PRAGMA legacy_alter_table").fetchone()[0] != legacy):
+                        raise RuntimeError("v2 attempt rebuild PRAGMA restoration failed")
+                    if primary is None:
+                        if _v2_attempt_schema_preflight(conn) != "t2":
+                            raise ValueError("v2 attempt schema not ready after commit")
+                        _v2_attempt_integrity(conn)
+                except BaseException as failure:
+                    cleanup.append(failure)
+            else:
+                cleanup.append(RuntimeError("v2 attempt rebuild transaction end unconfirmed"))
+        if primary is not None or cleanup:
+            errors = ([] if primary is None else [primary]) + cleanup
+            # Constructor closes/discards this connection; no fresh/B fallback.
+            raise BaseExceptionGroup("v2 attempt schema migration refused", errors)
+        return "migrated"
+
+    def _validate_v2_attempts_inert_closed(self, *, fresh: bool) -> None:
+        if _v2_attempt_schema_preflight(self._conn) != "t2":
+            raise ValueError("v2 attempt T2 schema is not complete")
+        if fresh:
+            _v2_attempt_integrity(self._conn)
 
     def _create_authority_tables(self) -> None:
         """THR-181 Track A Slice 1: additive durable authority foundation.
