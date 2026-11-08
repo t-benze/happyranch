@@ -8,7 +8,6 @@
   "baseline_scenario_seconds": 480,
   "command_seconds": 240,
   "cleanup_seconds": 60,
-  "evidence_seconds": 120,
   "variants": [
     "E02.lifecycle-browser",
     "E06.literal-active",

@@ -4,26 +4,38 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
-import traceback
 from pathlib import Path
 
 from owned import identity
-from run import daily_admission, validate_admission, validate_timing
+from reporting import HOUSEKEEPING, Report, scrub
+from run import daily_admission, validate_admission
 
 
 def validate(row: dict, source: str, python: str, signum: int) -> None:
     result, active = row["launcher_result"], row["active"]
-    validate_timing(result)
     validate_admission(result, row)
     if (row["source_sha"] != source or active["source_sha"] != source
             or result["source_sha"] != source or result["python"] != python
             or result["exercise"] != "cancellation" or result["status"] != "FAIL"
-            or row["launcher_exit"] != 1 or result["skipped"] != 0):
+            or row["launcher_exit"] != 1):
         raise ValueError("cancellation source/cell/non-success mismatch")
+    if (result["action_deadline"] != result["started"] + 720
+            or result["hard_deadline"] != result["started"] + 900
+            or result["action_finished"] > result["action_deadline"]
+            or result["cleanup_deadline"] != min(result["action_finished"] + 60, result["started"] + 780)
+            or result["cleanup_finished"] >= result["cleanup_deadline"]):
+        raise ValueError("launcher operational deadline exceeded")
+    for phase in result["phases"]:
+        cap = 240  # All diagnostic commands, including its hold exercise.
+        if (phase["deadline"] != min(phase["entered"] + cap, result["action_deadline"])
+                or not result["started"] <= phase["entered"] <= phase["finished"] <= phase["deadline"]):
+            raise ValueError("diagnostic command operational deadline exceeded")
     sent = row["sent"]
     caught = result["signals"]
     if (sent["signal"] != signum or len(caught) != 1 or caught[0]["signal"] != signum
@@ -74,74 +86,111 @@ def main() -> int:
     parser.add_argument("--artifacts", type=Path, required=True)
     args = parser.parse_args()
     output = args.artifacts.resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    started = float(os.environ.get("E2E_STARTED_MONOTONIC", time.monotonic()))
-    if not 0 <= time.monotonic() - started < 720:
-        raise RuntimeError("invalid cleanup-inclusive clock")
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "logs").mkdir(exist_ok=True)
     source = Path(__file__).resolve().parents[1]
-    row = dict(status="FAIL", source_sha=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip())
+    version = "3.12" if args.signal == "TERM" else "3.14"
+    row = {"exercise": "cancellation", "python": version}
+    report = Report(row)
+    report.expect("diagnostic", ["launcher." + args.signal, *HOUSEKEEPING])
+    started = time.monotonic()
     launcher = None
     launcher_start = None
+    private = None
     signum = getattr(signal, "SIG" + args.signal)
     try:
+        started = float(os.environ.get("E2E_STARTED_MONOTONIC", started))
+        if not 0 <= time.monotonic() - started < 720:
+            raise RuntimeError("Invalid cleanup-inclusive clock")
         row.update(daily_admission(source))
+        private = Path(tempfile.mkdtemp(prefix="e2e-private-cancellation-", dir=os.environ.get("RUNNER_TEMP")))
+        private.chmod(0o700)
         command = [sys.executable, str(source / "e2e/run.py"), "--python", args.python,
-                   "--exercise", "cancellation", "--artifacts", str(output / "launcher")]
+                   "--exercise", "cancellation", "--artifacts", str(output), "--handoff", str(private)]
         row["command"] = command
-        with (output / "launcher.log").open("w") as log:
+        with (private / "launcher.log").open("w") as log:
             launcher = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
             launcher_start = identity(launcher.pid)
-            ready = output / "launcher/active.json"
+            ready = private / "active.json"
             while not ready.exists():
                 if launcher.poll() is not None:
-                    raise RuntimeError(f"launcher exited before active witness: {launcher.returncode}")
+                    raise RuntimeError(f"Launcher exited before active work: {launcher.returncode}")
                 if time.monotonic() >= started + 720:
-                    raise TimeoutError("no active witness before action cutoff")
+                    raise TimeoutError("No active work before action cutoff")
                 time.sleep(0.05)
             active = json.loads(ready.read_text())
             row["active"] = active
-            if active["launcher"] != dict(pid=launcher.pid, start=launcher_start):
-                raise RuntimeError("launcher identity mismatch")
+            if active["launcher"] != {"pid": launcher.pid, "start": launcher_start}:
+                raise RuntimeError("Launcher identity mismatch")
             identities = [active["launcher"], active["daemon"], active["controller"],
-                          dict(pid=active["provider"]["pid"], start=active["provider"]["pid_start"])]
+                          {"pid": active["provider"]["pid"], "start": active["provider"]["pid_start"]}]
             row["identities_live_at_signal"] = all(identity(p["pid"]) == p["start"] for p in identities)
             if not row["identities_live_at_signal"]:
-                raise RuntimeError("owned work no longer active")
+                raise RuntimeError("Owned work no longer active")
             descriptor = os.pidfd_open(launcher.pid)
             try:
                 if identity(launcher.pid) != launcher_start:
-                    raise RuntimeError("launcher changed before signal")
-                row["sent"] = dict(signal=int(signum), at=time.monotonic(), pid=launcher.pid, start=launcher_start)
+                    raise RuntimeError("Launcher changed before signal")
+                row["sent"] = {"signal": int(signum), "at": time.monotonic(), "pid": launcher.pid, "start": launcher_start}
                 signal.pidfd_send_signal(descriptor, signum)
             finally:
                 os.close(descriptor)
             remaining = started + 900 - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError("cancellation hard deadline exhausted")
+                raise TimeoutError("Cancellation hard deadline exhausted")
             row["launcher_exit"] = launcher.wait(timeout=remaining)
         row["launcher_absent"] = identity(launcher.pid) != launcher_start
-        row["launcher_result"] = json.loads((output / "launcher/result.json").read_text())
+        row["launcher_result"] = json.loads((private / "result.json").read_text())
         row["total_seconds"] = time.monotonic() - started
-        validate(row, row["source_sha"], row["launcher_result"]["python"], int(signum))
-        row["status"] = "PASS"
-    except BaseException:
-        row["error"] = traceback.format_exc()
+        validate(row, row["source_sha"], version, int(signum))
+        report.record("diagnostic", "launcher." + args.signal)
+    except BaseException as exc:  # noqa: BLE001 - finalize reports and owned cleanup on interruption
+        report.record("diagnostic", "launcher." + args.signal, exc)
     finally:
-        # A failed supervisor never fabricates closure. Give its exact child the
-        # ordinary catchable teardown opportunity; the runner's 15m cap remains.
+        # Exact-child fallback, within the original hard envelope; never claim
+        # closure merely because the supervisor failed or a PID is missing.
         if launcher is not None and launcher.poll() is None and identity(launcher.pid) == launcher_start:
-            launcher.send_signal(signal.SIGTERM)
             try:
-                remaining = min(180, started + 900 - time.monotonic())
-                if remaining <= 0:
-                    raise subprocess.TimeoutExpired(row["command"], 0)
-                row["launcher_exit"] = launcher.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                row["cleanup_unknown"] = True
-        row["total_seconds"] = time.monotonic() - started
-        row["target_exceeded"] = row["total_seconds"] > 600
-        (output / "cancellation.json").write_text(json.dumps(row, indent=2))
-    return 0 if row["status"] == "PASS" else 1
+                launcher.send_signal(signal.SIGTERM)
+                launcher.wait(timeout=max(0, min(180, started + 900 - time.monotonic())))
+            except (subprocess.TimeoutExpired, OSError):
+                report.record("diagnostic", "owned-processes", RuntimeError("Launcher cleanup remains unknown"))
+        if private is not None and (private / "result.json").is_file():
+            with report.check("diagnostic", "setup"):
+                result = json.loads((private / "result.json").read_text())
+                phases = {p["name"]: p for p in result["phases"]}
+                required = {"dependencies", "browser-dependencies", "browser-install", "web-dependencies", "web-build", "scenarios"}
+                if set(phases) != required or any(phases[n]["exit"] != 0 for n in required - {"scenarios"}):
+                    raise AssertionError("Launcher setup did not finish")
+            cleanup = result.get("cleanup", {}) if "result" in locals() else {}
+            conditions = {
+                "owned-processes": cleanup.get("ok") is True and cleanup.get("watcher_stopped") is True
+                    and not cleanup.get("survivors", True) and not cleanup.get("errors", True)
+                    and launcher is not None and identity(launcher.pid) != launcher_start,
+                "ports": bool(cleanup.get("ports_absent")) and all(v is True for v in cleanup["ports_absent"].values()),
+                "sockets": cleanup.get("sockets_absent") is True,
+                "data": cleanup.get("data_absent") is True,
+            }
+            for name, passed in conditions.items():
+                report.record("diagnostic", name, None if passed else RuntimeError("Launcher " + name + " cleanup failed or unknown"))
+        if "result" not in locals():
+            for name in HOUSEKEEPING:
+                report.record("diagnostic", name, RuntimeError("Launcher setup/cleanup result unavailable"))
+        if private is not None:
+            with report.check("diagnostic", "data"):
+                # Inner launcher console contains only named case outcomes.
+                log = private / "launcher.log"
+                if log.is_file():
+                    (output / "logs/launcher.log").write_text(scrub(log.read_text(errors="replace"), report.tokens))
+                shutil.rmtree(private)
+                if private.exists():
+                    raise RuntimeError("Supervisor private data remains")
+        if time.monotonic() - started > 900:
+            report.record("diagnostic", "launcher." + args.signal, TimeoutError("Hard deadline exceeded"))
+        (output / "logs/harness.log").write_text("\n".join(f"{'FAIL' if case['kind'] else 'PASS'} {name}" for (_, name), case in report.cases.items()) + "\n")
+        report.write(output / "reports/junit.xml")
+        report.console()
+    return 0 if report.ok else 1
 
 
 if __name__ == "__main__":

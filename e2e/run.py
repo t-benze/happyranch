@@ -1,12 +1,8 @@
-#!/usr/bin/env python3
-"""Standalone, bounded disposable-runner entry; never a pytest selection."""
+"""Bounded disposable-runner entry with private checks and ordinary JUnit."""
 from __future__ import annotations
 
 import argparse
-import errno
-import hashlib
 import json
-import math
 import os
 import shutil
 import signal
@@ -16,140 +12,14 @@ import subprocess
 import sys
 import tempfile
 import time
-import traceback
+from collections.abc import Callable
 from pathlib import Path
-from contextlib import contextmanager
-from typing import Any, Callable
 
 from owned import Owned, identity
-import completed
+from reporting import HOUSEKEEPING, Report, scrub, scrub_trace
 
-
-# Existing baseline artifact presence contract; no content/projection oracle.
-BASELINE_ARTIFACTS = ["observations.json", "browser-events.json", "daemon.txt",
-                      "lifecycle.png", "response-loss.png", "org-switch-0.png", "org-switch-1.png",
-                      "org-switch-2.png", "org-switch-return-revalidated.png", "browser-final.png", "e07.json", "e07-prefix.json", "launch-witnesses.jsonl",
-                      "e07-parent.png", "e07-child.png", "e07-list.png"]
-
-
-def _diagnostic_write(line: bytes, end: float) -> bool:
-    """One caller-charged native-fd2 opportunity, with no latency guarantee."""
-    if type(line) is not bytes or not 0 < len(line) <= 512 or time.monotonic() >= end:
-        return False
-    try:
-        count = os.write(2, line)  # Unchanged inherited fd; no buffering/flag work.
-    except TimeoutError:
-        raise  # A real raising alarm is never an ordinary optional I/O failure.
-    except OSError:
-        return False
-    return count == len(line) and time.monotonic() < end
-
-
-def _diagnostic_packet(data: bytes) -> bool:
-    if len(data) != 23:
-        return False
-    fields = data.split(b":")
-    return (len(fields) == 8 and fields[:2] == [b"HRD2", b"S"]
-            and fields[2] in (b"PH", b"BD", b"RS", b"CT", b"AC", b"TD", b"EV", b"BR", b"OT")
-            and fields[3] in (b"RM", b"PH", b"BD", b"TS", b"WE", b"RD", b"CS", b"RS", b"CL", b"EV", b"MN", b"AL", b"UN")
-            and len(fields[4]) == len(fields[5]) == 2
-            and all(c in b"0123456789ABCDEF" for c in fields[4] + fields[5])
-            and fields[6] in (b"P", b"A")
-            and ((fields[7] in (b"P\n", b"E\n")
-                  and 1 <= int(fields[4], 16) <= 31 and 1 <= int(fields[5], 16) <= 127)
-                 or (fields[7] == b"U\n" and fields[4] == fields[5] == b"00")))
-
-
-class _ScenarioDiagnostic:
-    """Invocation-local ownership; refusal/charged calls cannot be repaired."""
-    def __init__(self, end: float) -> None:
-        self.end = end
-        self.receiver = self.sender = None
-        self.receiver_close_started = self.sender_close_started = False
-        self.receiver_released = self.sender_released = False
-        self.ready = False
-        self.sample_claimed = self.probe_claimed = self.output_claimed = False
-        self.descriptor = None
-        try:
-            if time.monotonic() >= end:
-                return
-            if not all(hasattr(socket, name) for name in ("SOCK_NONBLOCK", "SOCK_CLOEXEC", "MSG_DONTWAIT", "MSG_PEEK")):
-                return
-            self.receiver, self.sender = socket.socketpair(
-                socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
-            self.receiver.shutdown(socket.SHUT_WR)
-            self.sender.shutdown(socket.SHUT_RD)
-            self.descriptor = self.sender.fileno()
-            self.ready = (self.descriptor > 2 and not self.receiver.getblocking() and not self.sender.getblocking()
-                          and not self.receiver.get_inheritable() and not self.sender.get_inheritable()
-                          and time.monotonic() < end)
-        except TimeoutError:
-            raise
-        except OSError:
-            self.ready = False  # Ordinary setup decline precedes ONE launch choice.
-        finally:
-            if not self.ready:
-                self.release()
-
-    def release_endpoint(self, name: str) -> bool:
-        if getattr(self, name + "_close_started"):
-            return getattr(self, name + "_released")
-        setattr(self, name + "_close_started", True)
-        endpoint = getattr(self, name)
-        if endpoint is None:
-            return False
-        try:
-            endpoint.close()
-        except TimeoutError:
-            raise
-        except OSError:
-            self.ready = False
-            return False
-        setattr(self, name + "_released", True)
-        return True
-
-    def release(self) -> None:
-        try:
-            self.release_endpoint("sender")
-        finally:
-            self.release_endpoint("receiver")
-
-    def receive(self) -> None:
-        # Called ONLY after the original loop's direct exit and original phase
-        # finalization/log closure. Endpoint close alone is not termination.
-        if not self.ready or not self.sender_released or self.sample_claimed:
-            return
-        self.sample_claimed = True
-        if time.monotonic() >= self.end:
-            return
-        try:
-            data, ancillary, flags, _ = self.receiver.recvmsg(513, 0, socket.MSG_DONTWAIT)
-        except TimeoutError:
-            raise
-        except OSError:
-            return  # Including first EAGAIN: no valid sample, so no probe.
-        if ancillary or flags or not _diagnostic_packet(data):
-            return
-        if not self.ready or not self.sender_released or time.monotonic() >= self.end:
-            return
-        self.probe_claimed = True
-        try:
-            self.receiver.recvmsg(1, 0, socket.MSG_PEEK | socket.MSG_DONTWAIT)
-        except TimeoutError:
-            raise
-        except OSError as exc:
-            if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
-                return
-        else:
-            return  # ANY tuple, including b''/invalid/truncated/ancillary, refuses ALL.
-        if not self.ready or not self.sender_released or time.monotonic() >= self.end:
-            return
-        if not self.release_endpoint("receiver"):
-            return
-        self.output_claimed = True
-        if self.ready and self.receiver_released and time.monotonic() < self.end:
-            _diagnostic_write(b"HRD1:controller:" + data, self.end)
-
+ADMISSION_FIELDS = ("event", "cron", "repository", "workflow_ref", "workflow_sha",
+                    "run_id", "run_attempt", "source_ref", "source_sha", "source_tree")
 
 def arm_deadline(deadline: float) -> None:
     remaining = deadline - time.monotonic()
@@ -157,7 +27,6 @@ def arm_deadline(deadline: float) -> None:
         raise TimeoutError("exhausted absolute deadline")
     # alarm(int(remaining)) can disable the timer for a positive fraction.
     signal.setitimer(signal.ITIMER_REAL, remaining)
-
 
 def copy_npm_downloads(source: Path, destination: Path, deadline: float) -> None:
     """Copy only ordinary _cacache trees; no shared live state or race fence."""
@@ -197,50 +66,10 @@ def copy_npm_downloads(source: Path, destination: Path, deadline: float) -> None
         shutil.copytree(source, destination, dirs_exist_ok=True, copy_function=shutil.copyfile)
     arm_deadline(deadline)
 
-
-def validate_timing(row: dict) -> None:
-    """Require complete, bounded launcher receipts in both daily consumers."""
-    timing = row["timing"]
-    started, action_end, hard_end = (timing[key] for key in ("started", "action_deadline", "hard_deadline"))
-    if not all(math.isfinite(value) for value in (started, action_end, hard_end)):
-        raise ValueError("nonfinite timing")
-    if action_end != started + 720 or hard_end != started + 900:
-        raise ValueError("changed outer deadlines")
-    action = timing["action"]
-    if (not started <= action["finished"] <= action_end or action["deadline"] != action_end
-            or action["allowance_seconds"] != 720 or action["elapsed_seconds"] != action["finished"] - started):
-        raise ValueError("action budget exhausted")
-    cleanup, export = timing["cleanup"], timing["export"]
-    for phase, cap, outer in ((cleanup, 60, min(action_end + 60, hard_end)), (export, 120, hard_end)):
-        if (phase["ok"] is not True or not action["finished"] <= phase["entered"]
-                or phase["deadline"] != min(phase["entered"] + cap, outer)
-                or not phase["entered"] <= phase["finished"] < phase["deadline"]
-                or phase["allowance_seconds"] != phase["deadline"] - phase["entered"]
-                or phase["elapsed_seconds"] != phase["finished"] - phase["entered"]):
-            raise ValueError("missing, failed or inconsistent reserve timing")
-    if cleanup["finished"] > export["entered"]:
-        raise ValueError("overlapping cleanup/export")
-    if (row["total_seconds"] != export["finished"] - started
-            or row["evidence_seconds"] != export["elapsed_seconds"]):
-        raise ValueError("inconsistent elapsed timing")
-    for phase in row["phases"]:
-        cap = 480 if phase["name"] == "scenarios" and row["exercise"] == "baseline" else 240
-        if (phase["cap_seconds"] != cap
-                or phase["deadline"] != min(phase["entered"] + cap, action_end)
-                or phase["allowance_seconds"] != phase["deadline"] - phase["entered"]
-                or not started <= phase["entered"] <= phase["finished"] <= phase["deadline"]):
-            raise ValueError("inconsistent command timing")
-
-
-ADMISSION_FIELDS = ("event", "cron", "repository", "workflow_ref", "workflow_sha",
-                    "run_id", "run_attempt", "source_ref", "source_sha", "source_tree")
-
-
 def validate_admission(row: dict, admission: dict) -> None:
     """Join a receipt to the independently admitted Actions event/run/source."""
     if any(key not in row or row[key] != admission[key] for key in ADMISSION_FIELDS):
         raise ValueError("Actions event/run/source receipt mismatch")
-
 
 def daily_admission(source: Path) -> dict:
     """Admit the daily schedule or an explicitly authorized main dispatch.
@@ -283,575 +112,75 @@ def daily_admission(source: Path) -> dict:
     tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=source, text=True).strip()
     if actual != sha or len(tree) != 40 or any(c not in "0123456789abcdef" for c in tree):
         raise RuntimeError("checkout differs from immutable Actions source or has invalid tree")
-    return dict(event=event_name, cron=event.get("schedule"), repository=repo,
-                workflow_ref=workflow_ref, workflow_sha=workflow_sha, run_id=run_id,
-                run_attempt=attempt, source_sha=sha, source_ref=ref, source_tree=tree)
+    return {"event": event_name, "cron": event.get("schedule"), "repository": repo,
+                "workflow_ref": workflow_ref, "workflow_sha": workflow_sha, "run_id": run_id,
+                "run_attempt": attempt, "source_sha": sha, "source_ref": ref, "source_tree": tree}
 
+def private_checks(root: Path, row: dict, report: Report) -> None:
+    """Each old content reader runs independently, before owned data deletion."""
+    from checks import (
+        MANIFEST,
+        validate_e04,
+        validate_e05,
+        validate_e07,
+        validate_groups,
+    )
 
-def _failure_error(error: BaseException) -> str:
-    """Closed subclass precedence; never inspect text, names, args or chains."""
-    for kinds, category in (
-        (UnicodeError, "unicode"), (TimeoutError, "timeout"),
-        ((KeyboardInterrupt, SystemExit, GeneratorExit, InterruptedError), "interruption"),
-        (AssertionError, "assertion"), (ValueError, "value"),
-        (OSError, "io"), (RuntimeError, "runtime"),
-    ):
-        if isinstance(error, kinds):
-            return category
-    return "other"
-
-
-def _failure_slot(stage: str, error: BaseException) -> tuple[str, str, float] | None:
-    at = time.monotonic()
-    if type(at) not in (int, float) or not 0 <= at <= 9007199254740991 or not math.isfinite(at):
-        return None
-    return stage, _failure_error(error), at
-
-
-def _failure_object(slot: tuple | None) -> dict | None:
-    return dict(zip(("stage", "error", "at"), slot)) if slot is not None else None
-
-
-def _failure_source(value: object) -> bool:
-    return type(value) is str and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
-
-
-@contextmanager
-def _failure_directories(root: Path, check: Callable[[], None], *, coord: bool = True,
-                         owned: bool = True) -> Any:
-    """Pin literal no-follow ancestors; no repair or racing-rename guarantee."""
-    spelling = str(root)
-    parts = spelling.split("/")[1:]
-    if not spelling.startswith("/") or not parts or any(p in ("", ".", "..") for p in parts):
-        raise ValueError("invalid diagnostic root")
-    descriptors = []
-    links = []
-
-    def verify() -> None:
-        for parent, name, descriptor, original, private in links:
-            check()
-            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            opened = os.fstat(descriptor)
-            if (not stat.S_ISDIR(named.st_mode) or not stat.S_ISDIR(opened.st_mode)
-                    or (named.st_dev, named.st_ino) != (original.st_dev, original.st_ino)
-                    or (opened.st_dev, opened.st_ino) != (original.st_dev, original.st_ino)
-                    or (private and (named.st_uid != os.geteuid() or opened.st_uid != os.geteuid()
-                                     or stat.S_IMODE(named.st_mode) != 0o700
-                                     or stat.S_IMODE(opened.st_mode) != 0o700))):
-                raise ValueError("diagnostic directory identity changed")
-            check()
-
-    try:
-        check()
-        current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        descriptors.append(current)
-        check()
-        for index, name in enumerate(parts + (["coord"] if coord else [])):
-            check()
-            named = os.stat(name, dir_fd=current, follow_symlinks=False)
-            if not stat.S_ISDIR(named.st_mode):
-                raise ValueError("aliased diagnostic directory")
-            check()
-            descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
-            descriptors.append(descriptor)
-            info = os.fstat(descriptor)
-            if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
-                raise ValueError("diagnostic directory changed before open")
-            links.append((current, name, descriptor, info, owned and index >= len(parts) - 1))
-            current = descriptor
-            verify()
-        yield current, verify
-        if coord:
-            verify()
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
-
-
-def _failure_file(info: os.stat_result) -> None:
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
-        raise ValueError("unsafe diagnostic file")
-
-
-def _read_failure_categories(root: Path | None, source: object, check: Callable[[], None],
-                             missing_ok: bool) -> tuple[dict, str | None, str]:
-    unavailable = dict(availability="unavailable", snapshot=None)
-    if not _failure_source(source):
-        return unavailable, None, "source_unavailable"  # Internal only; never projected.
-    if root is None:
-        return unavailable, None, "root_unset"
-
-    def pairs(items: list[tuple]) -> dict:
-        result = {}
-        for key, value in items:
-            if key in result:
-                raise ValueError("duplicate diagnostic key")
-            result[key] = value
-        return result
-
-    def invalid_constant(_value: str) -> None:
-        raise ValueError("nonfinite diagnostic constant")
-
-    def slot(value: object) -> dict | None:
-        if value is None:
-            return None
-        if type(value) is not dict or set(value) != {"stage", "error", "at"}:
-            raise ValueError("invalid diagnostic slot")
-        stage, error, at = (value[key] for key in ("stage", "error", "at"))
-        if (type(stage) is not str or stage not in {"phase", "bounded", "restore", "context", "action",
-                                                    "teardown", "evidence", "browser", "other"}
-                or type(error) is not str or error not in {"unicode", "timeout", "interruption", "assertion",
-                                                          "value", "io", "runtime", "other"}
-                or type(at) not in (int, float) or not 0 <= at <= 9007199254740991
-                or not math.isfinite(at)):
-            raise ValueError("invalid diagnostic value")
-        return dict(stage=stage, error=error, at=at)
-
-    try:
-        check()
+    observations = json.loads((root / "raw/observations.json").read_text())
+    directory = root / "raw"
+    readers = (
+        ("E04", MANIFEST["variants"][:48], lambda: validate_e04(row, observations, json.loads((directory / "browser-events.json").read_text()), directory)),
+        ("E05", MANIFEST["variants"][48:53], lambda: validate_e05(row, observations, directory)),
+        ("E07", MANIFEST["variants"][53:], lambda: validate_e07(row, observations, directory)),
+    )
+    with report.check("harness", "variant-inventory"):
+        if set(row.get("variants", {})) - set(MANIFEST["variants"]):
+            raise AssertionError("Unexpected product variant")
+    for group, names, reader in readers:
+        started = time.monotonic()
+        error = None
         try:
-            with _failure_directories(root, check) as (directory, verify):
-                final, pending = "failure-categories.json", ".failure-categories.pending"
-
-                def no_pending() -> None:
-                    check()
-                    try:
-                        os.stat(pending, dir_fd=directory, follow_symlinks=False)
-                    except FileNotFoundError:
-                        check()
-                        return
-                    raise ValueError("unfinished diagnostic publication")
-
-                no_pending()
-                try:
-                    named = os.stat(final, dir_fd=directory, follow_symlinks=False)
-                except FileNotFoundError:
-                    verify()
-                    no_pending()
-                    check()
-                    return unavailable, None, "final_missing"  # Literal final ENOENT only.
-                _failure_file(named)
-                check()
-                descriptor = os.open(final, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-                try:
-                    check()
-                    before = os.fstat(descriptor)
-                    _failure_file(before)
-                    if (before.st_dev, before.st_ino) != (named.st_dev, named.st_ino) or before.st_size > 4096:
-                        raise ValueError("diagnostic identity or size")
-                    verify()
-                    check()
-                    data = os.read(descriptor, 4097)  # ONE bounded read, no EOF retry.
-                    check()
-                    after = os.fstat(descriptor)
-                    named = os.stat(final, dir_fd=directory, follow_symlinks=False)
-                    _failure_file(after)
-                    _failure_file(named)
-                    stamp = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                    if (stamp(before) != stamp(after) or stamp(after) != stamp(named)
-                            or len(data) > 4096 or len(data) != before.st_size):
-                        raise ValueError("short or changed diagnostic snapshot")
-                    no_pending()
-                    verify()
-                    check()
-                    decoded = data.decode("utf-8", errors="strict")
-                    check()
-                    value = json.loads(decoded, object_pairs_hook=pairs, parse_constant=invalid_constant)
-                    check()
-                    if (type(value) is not dict or set(value) != {"schema", "source_sha", "first_observed", "context_capture"}
-                            or type(value["schema"]) is not int or value["schema"] != 1
-                            or not _failure_source(value["source_sha"]) or value["source_sha"] != source):
-                        raise ValueError("invalid diagnostic envelope")
-                    snapshot = dict(schema=1, source_sha=source, first_observed=slot(value["first_observed"]),
-                                    context_capture=slot(value["context_capture"]))
-                    # Admit only while file/parent/pending identities still agree.
-                    verify()
-                    no_pending()
-                    named = os.stat(final, dir_fd=directory, follow_symlinks=False)
-                    _failure_file(named)
-                    if stamp(named) != stamp(before):
-                        raise ValueError("diagnostic identity changed while parsing")
-                    check()
-                finally:
-                    os.close(descriptor)
-            check()
-            return dict(availability="available", snapshot=snapshot), None, "available"
-        except FileNotFoundError as exc:
-            if missing_ok and exc.filename in (root.name, "coord"):
-                check()
-                return unavailable, None, "root_missing" if exc.filename == root.name else "coord_missing"
-            raise
-    except TimeoutError:
-        raise  # Expiry is never an ordinary unavailable continuation.
-    except BaseException as exc:
-        check()  # An absorbed alarm or slow failing I/O cannot renew C.
-        return unavailable, _failure_error(exc), "refused"
+            if group != "E04":
+                validate_groups(row, observations, group)
+            reader()
+        except Exception as exc:  # noqa: BLE001 - record every ordinary case/report failure
+            error = exc
+        for name in names:
+            marked = row.get("variants", {}).get(name)
+            cause = error
+            if not marked or marked.get("status") != "PASS":
+                cause = AssertionError(str(marked.get("error", "Product assertion failed"))) if marked else RuntimeError("Case did not finish; prerequisite unavailable")
+            report.record("product", name, cause, seconds=(time.monotonic() - started) / len(names))
+    with report.check("harness", "controller"):
+        if observations["failures"]:
+            raise AssertionError("Controller recorded action/finalization failures: " + str(observations["failures"]))
 
 
-def scenario_fields(result: dict, sanitize: Callable[[str], str]) -> dict:
-    """Detach only existing scenario fields through the established redactor.
-
-    These are producer claims, not accepted cases or cleanup/export proof.
-    Call only after acquiring the complete original redaction context. A failed
-    projection cannot replace a previously retained safe snapshot.
-    """
-    if type(result) is not dict or type(result.get('variants')) is not dict:
-        raise ValueError('scenario state unavailable')
-    # This is a bounded publication projection, not a case/content validator.
-    # Redact individual strings BEFORE JSON escaping, including nested keys.
-    remaining = 8 * 1024 * 1024
-    facts = 200000
-
-    def detach(value: object, depth: int = 0):
-        nonlocal remaining, facts
-        facts -= 1
-        if facts < 0 or depth > 64:
-            raise ValueError('scenario projection capacity refused')
-        if type(value) is str:
-            if len(value) > remaining:
-                raise ValueError('scenario projection capacity refused')
-            remaining -= len(value.encode('utf8'))
-            safe = sanitize(value)
-            if type(safe) is not str or len(safe) > remaining:
-                raise ValueError('scenario projection capacity refused')
-            remaining -= len(safe.encode('utf8'))
-            if remaining < 0:
-                raise ValueError('scenario projection capacity refused')
-            return safe
-        if type(value) is dict:
-            if len(value) > facts:
-                raise ValueError('scenario projection capacity refused')
-            output = {}
-            for key, item in value.items():
-                if type(key) is not str:
-                    raise ValueError('scenario key unavailable')
-                safe_key = detach(key, depth + 1)
-                if safe_key in output:
-                    raise ValueError('scenario redacted key collision')
-                output[safe_key] = detach(item, depth + 1)
-            return output
-        if type(value) is list:
-            if len(value) > facts:
-                raise ValueError('scenario projection capacity refused')
-            return [detach(item, depth + 1) for item in value]
-        if (value is None or type(value) is bool or type(value) is int and value.bit_length() <= 64
-                or type(value) is float and math.isfinite(value)):
-            return value
-        raise ValueError('scenario value unavailable')
-
-    selected = {k: result[k] for k in ("variants", "scenario_phases", "e07", "groups", "e07_admission", "failures", "finalization") if k in result}
-    detached = detach(selected)
-    detached.setdefault('variants', {})
-    # Bound the eventual JSON representation too; escaping may expand strings.
-    size = 0
-    for chunk in json.JSONEncoder(allow_nan=False, indent=2).iterencode(detached):
-        size += len(chunk.encode('utf8'))
-        if size > 8 * 1024 * 1024:
-            raise ValueError('scenario projection capacity refused')
-    return detached
-
-
-def redact(text: str, token: str, context: list[str]) -> str:
-    """Use only the complete original literal redaction context."""
-    if not token or not context or token not in context:
-        raise ValueError("redaction context unavailable")
-    for secret in [token, *context]:
-        text = text.replace(secret, "[REDACTED]")
-    return text
-
-
-def _ordinary_evidence_error(error: BaseException) -> bool:
-    # Subclasses precede OSError/ValueError. Safety-state failures never call
-    # this predicate: a category alone cannot authorize continuation.
-    if isinstance(error, (TimeoutError, InterruptedError, KeyboardInterrupt, SystemExit, GeneratorExit)):
-        return False
-    return isinstance(error, (UnicodeError, OSError, ValueError))
-
-
-def _collection_annotation(state: dict, reason: str) -> tuple:
-    return state.get("operation", "UNKNOWN"), reason, state.get("chars", "U"), state.get("utf8_bytes", "U")
-
-
-def _collection_line(phase: str, window: str, kind: str, annotation: tuple) -> bytes | None:
-    windows = ("ROOT", "TOKEN_READ", "TOKEN_EMPTY", "CONTEXT_PRESENT", "CONTEXT_READ", "CONTEXT_DECODE",
-               "CONTEXT_VALIDATE", "SCENARIO_PRESENT", "SCENARIO_READ", "SCENARIO_DECODE", "SCENARIO_MERGE",
-               "RAW_ENUM", "TEXT_READ", "REDACT", "IMAGE_READ", "REQUIRED", "UNKNOWN")
-    operations = (set(windows) - {"SCENARIO_MERGE"}) | {"SCENARIO_OPEN", "SCENARIO_UTF8", "SCENARIO_CAPACITY", "SCENARIO_PROJECT", "TEXT_UTF8"}
-    reasons = {"IO", "UNICODE", "VALUE", "CAPACITY", "DECODE", "MISSING", "UNSAFE", "DEADLINE", "INTERRUPTION", "OTHER", "UNKNOWN"}
-    operation, reason, chars, size = annotation
-    if (phase not in ("cleanup", "export") or window not in windows or kind not in ("F", "U")
-            or operation not in operations or reason not in reasons
-            or any(value != "U" and (type(value) is not int or not 0 <= value <= cap)
-                   for value, cap in ((chars, 8388609), (size, 33554436)))):
-        return None
-    return f"HRD1:C:{phase.upper()}:{window}:{kind}:D1:{operation}:{reason}:{chars}:{size}\n".encode("ascii")
-
-
-def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: dict, exercise: str,
-                     staged: dict[str, bytes], state: dict, check: Callable[[], None],
-                     failed: Callable[..., None]) -> tuple[bool, tuple | None]:
-    """Scenario first, then the SAME raw enumeration after ordinary refusal.
-
-    State retains only complete original context/snapshots and a fatal latch.
-    Failed operations reserve their real cause before diagnostics/continuation.
-    """
-    first_error = None
-    incomplete = False
-    state.update(operation="ROOT", window="ROOT", chars="U", utf8_bytes="U")
-
-    def refuse(error: BaseException | None, *, reason: str | None = None) -> None:
-        nonlocal first_error, incomplete
-        incomplete = True
-        if error is not None and first_error is None:
-            first_error = (error, error.__traceback__)
-        category = _failure_error(error) if error is not None else "other"
-        if reason is None:
-            reason = {"timeout": "DEADLINE", "interruption": "INTERRUPTION", "unicode": "UNICODE",
-                      "io": "IO", "value": "VALUE"}.get(category, "OTHER")
-        failed(error, category=category, annotation=_collection_annotation(state, reason))
-
-    def mark(operation: str) -> None:
-        state["operation"] = operation
-        state["window"] = {"SCENARIO_OPEN": "SCENARIO_READ", "SCENARIO_UTF8": "SCENARIO_READ",
-                           "SCENARIO_CAPACITY": "SCENARIO_READ", "SCENARIO_PROJECT": "SCENARIO_MERGE",
-                           "TEXT_UTF8": "REDACT"}.get(operation, operation)
-
-    try:
-        if state.get("fatal"):
-            raise ValueError("detailed evidence stopped")
+def prepare_diagnostics(root: Path, output: Path, report: Report, check: Callable[[], None], *, failed: bool) -> None:
+    """Only standard logs, PNGs and Playwright ZIPs leave private scratch."""
+    for name in ("logs", "traces", "screenshots"):
+        (output / name).mkdir(parents=True, exist_ok=True)
+    for path in (root / "raw").glob("*.txt"):
         check()
-        if root is None or root_identity is None:
-            raise ValueError("owned evidence root unavailable")
-        with _failure_directories(root, check, coord=False) as (directory, verify):
-            if tuple(root_identity) != (os.fstat(directory).st_dev, os.fstat(directory).st_ino):
-                raise ValueError("owned evidence root identity changed")
-
-            def eligible() -> None:
-                try:
-                    check()
-                    verify()
-                    if state.get("fatal"):
-                        raise ValueError("detailed evidence stopped")
-                    check()
-                except BaseException:
-                    state["fatal"] = True
-                    raise
-
-            def step(operation: str, action: Callable[[], Any]) -> Any:
-                mark(operation)
-                eligible()
-                value = action()
-                eligible()
-                return value
-
-            # Partial/moved context can never replace the original trusted list.
-            candidate_token = state.get("token", "")
-            if not candidate_token:
-                candidate_token = step("TOKEN_READ", lambda: (root / "daemon/daemon.token").read_text().strip())
-            mark("TOKEN_EMPTY")
-            if not candidate_token:
-                raise ValueError("redaction token unavailable")
-            context_path = root / "coord/redaction-context.json"
-            if not step("CONTEXT_PRESENT", context_path.exists):
-                raise ValueError("retained redaction context unavailable")
-            context_text = step("CONTEXT_READ", context_path.read_text)
-            context = step("CONTEXT_DECODE", lambda: json.loads(context_text))
-            mark("CONTEXT_VALIDATE")
-            if (type(context) is not list or not context or any(type(s) is not str or not s for s in context)
-                    or candidate_token not in context or state.get("context") and context != state["context"]):
-                raise ValueError("invalid or changed retained redaction context")
-            eligible()
-            state.update(token=candidate_token, context=context)
-
-            def sanitize(text: str) -> str:
-                try:
-                    return redact(text, state["token"], state["context"])
-                except BaseException:
-                    state["fatal"] = True
-                    raise
-
-            scenario_present = False
-            try:
-                scenario_path = root / "scenario.json"
-                scenario_present = step("SCENARIO_PRESENT", scenario_path.exists)
-                if not scenario_present:
-                    refuse(None, reason="MISSING")
-                else:
-                    scenario_file = step("SCENARIO_OPEN", lambda: scenario_path.open(encoding="utf8"))
-                    with scenario_file:
-                        # Facts are set only when each original operation returns.
-                        mark("SCENARIO_READ")
-                        eligible()
-                        scenario_text = scenario_file.read(8 * 1024 * 1024 + 1)
-                        state["chars"] = len(scenario_text)
-                        eligible()
-                    mark("SCENARIO_UTF8")
-                    eligible()
-                    encoded = scenario_text.encode("utf8")
-                    state["utf8_bytes"] = len(encoded)
-                    eligible()
-                    mark("SCENARIO_CAPACITY")
-                    if len(encoded) > 8 * 1024 * 1024:
-                        raise ValueError("scenario input capacity refused")
-                    result = step("SCENARIO_DECODE", lambda: json.loads(scenario_text))
-                    detached = step("SCENARIO_PROJECT", lambda: scenario_fields(result, sanitize))
-                    state["safe_scenario"] = detached  # Complete assignment only.
-                    receipt.update(detached)
-            except BaseException as exc:
-                fatal = state.get("fatal") or not _ordinary_evidence_error(exc)
-                if fatal:
-                    state["fatal"] = True
-                reason = ("CAPACITY" if state["operation"] == "SCENARIO_CAPACITY" and type(exc) is ValueError
-                          else "DECODE" if state["operation"] == "SCENARIO_DECODE" and isinstance(exc, json.JSONDecodeError)
-                          else None)
-                refuse(exc, reason=reason)
-                if fatal:
-                    raise
-            eligible()  # Slow ordinary errors cannot borrow another allowance.
-            paths = iter(step("RAW_ENUM", lambda: (root / "raw").glob("*")))
-            while True:
-                try:
-                    path = step("RAW_ENUM", lambda: next(paths))
-                except StopIteration:
-                    break
-                except BaseException as exc:
-                    fatal = not _ordinary_evidence_error(exc)
-                    if fatal:
-                        state["fatal"] = True
-                    refuse(exc)
-                    if fatal:
-                        raise
-                    eligible()
-                    break  # No re-enumeration after unavailable membership.
-                try:
-                    if path.suffix in {".txt", ".json", ".jsonl"}:
-                        text = step("TEXT_READ", lambda: path.read_text(errors="replace"))
-                        mark("REDACT")
-                        eligible()
-                        if "\\" in text:
-                            raise ValueError("raw text representation withheld")
-                        safe = sanitize(text)
-                        if "\\" in safe or any(secret in safe for secret in state["context"]):
-                            state["fatal"] = True
-                            raise ValueError("unsafe raw sanitation")
-                        eligible()
-                        content = step("TEXT_UTF8", lambda: safe.encode("utf8"))
-                        staged[path.name] = content
-                    elif path.suffix == ".png":
-                        staged[path.name] = step("IMAGE_READ", path.read_bytes)
-                except BaseException as exc:
-                    fatal = state.get("fatal") or not _ordinary_evidence_error(exc)
-                    if fatal:
-                        state["fatal"] = True
-                    refuse(exc, reason="UNSAFE" if state.get("fatal") and _ordinary_evidence_error(exc) else None)
-                    if fatal:
-                        raise
-                eligible()
-            mark("REQUIRED")
-            eligible()
-            required = (BASELINE_ARTIFACTS + [phase["name"] + ".txt" for phase in receipt["phases"]]
-                        if exercise == "baseline" else ["observations.json"])
-            if not scenario_present or any(name not in staged or (name.endswith((".json", ".png")) and not staged[name]) for name in required):
-                refuse(None, reason="MISSING")
-            eligible()
-            if not incomplete:
-                mark("UNKNOWN")
-            return not incomplete, first_error
-    except BaseException as exc:
-        state["fatal"] = True
-        # Preserve an earlier actual exception; do not manufacture a replacement
-        # first claim when an optional diagnostic/eligibility check also failed.
-        if first_error is None or first_error[0] is not exc:
-            refuse(exc, reason="UNSAFE" if _ordinary_evidence_error(exc) else None)
-        raise
-
-
-def _publication_destination(output: Path, output_identity: tuple, name: str,
-                             check: Callable[[], None]) -> None:
-    with _failure_directories(output, check, coord=False, owned=False) as (directory, verify):
-        verify()
-        info = os.fstat(directory)
-        if (info.st_dev, info.st_ino) != output_identity or Path(name).name != name:
-            raise ValueError("evidence destination changed")
-        for leaf in (name, "result.tmp" if name == "result.json" else name + ".tmp"):
-            check()
-            try:
-                info = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            if stat.S_ISLNK(info.st_mode) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)) or info.st_nlink > 1 and stat.S_ISREG(info.st_mode):
-                raise ValueError("unsafe evidence destination")
-        verify()
+        name = {"daemon": "daemon", "scenarios": "controller"}.get(path.stem, "setup-" + path.stem)
+        (output / "logs" / (name + ".log")).write_text(scrub(path.read_text(errors="replace"), report.tokens))
+    for path in (root / "traces").glob("*.zip"):
         check()
-
-
-def publish_evidence(output: Path, output_identity: tuple, staged: dict[str, bytes], published: dict[str, bytes],
-                     failed_members: set[str], state: dict, check: Callable[[], None],
-                     failed: Callable[[BaseException], None]) -> None:
-    """Drain safe bytes only; failed members have no second-pass retry."""
-    if state.get("fatal"):
-        raise ValueError("detailed evidence stopped")
-    for name, content in staged.items():
-        if name in failed_members or published.get(name) == content:
-            continue
-        try:
-            # Safety failures are fatal, independently of their exception class.
-            try:
-                check()
-                _publication_destination(output, output_identity, name, check)
-            except BaseException:
-                state["fatal"] = True
-                raise
-            temporary = output / (name + ".tmp")
-            with temporary.open("xb") as stream:
-                stream.write(content)
-            check()
-            try:
-                _publication_destination(output, output_identity, name, check)
-            except BaseException:
-                state["fatal"] = True
-                raise
-            temporary.replace(output / name)
-            published[name] = content  # Actual replace, before any later check.
-            check()
-        except BaseException as exc:
-            failed_members.add(name)
-            if not _ordinary_evidence_error(exc):
-                state["fatal"] = True
-            failed(exc)
-            if state.get("fatal"):
-                raise
-            check()
-
-
-def publish_failure(output: Path, output_identity: tuple, row: dict, check: Callable[[], None]) -> None:
-    """The original nonfinal FAIL opportunity; no postcommit success inference."""
-    _publication_destination(output, output_identity, "result.json", check)
-    temporary = output / "result.tmp"
-    temporary.write_text(json.dumps(row, indent=2))
-    _publication_destination(output, output_identity, "result.json", check)
-    temporary.replace(output / "result.json")
-
-
-def failure_receipt(receipt: dict, safe_scenario: dict, categories: dict, completed_exported: dict | None,
-                    ownership_evidence: dict | None, exercise: str, started: float) -> dict:
-    """Only fully detached decoded-safe claims accompany closed FAIL metadata."""
-    closure = receipt["cleanup"]
-    safe_cleanup = {key: closure[key] for key in
-                    ("identities", "groups", "ports_absent", "data_absent", "sockets_absent", "watcher_stopped")
-                    if key in closure}
-    safe_cleanup.update(ok=False, observed_units=closure.get("observed_units", sorted(closure.get("units", {}))),
-                        observed_groups=closure.get("observed_groups", sorted(closure.get("groups", {}))))
-    binding = {key: receipt[key] for key in ADMISSION_FIELDS + ("interpreter", "node") if key in receipt}
-    safe_timing = dict(receipt["timing"], cleanup=dict(receipt["timing"]["cleanup"], ok=False))
-    return dict(binding, **categories, schema=1, status="FAIL", source_sha=receipt["source_sha"],
-                python=receipt["python"], exercise=exercise, skipped=0,
-                **safe_scenario, signals=receipt["signals"], phases=receipt["phases"],
-                cleanup=safe_cleanup, timing=safe_timing,
-                failure_phase=receipt.get("failure_phase", "export"), failure="incomplete detailed evidence",
-                completed_cases=completed_exported, total_seconds=time.monotonic() - started,
-                **({"ownership_evidence": ownership_evidence} if ownership_evidence is not None else {}))
+        scrub_trace(path, output / "traces" / path.name, report.tokens, check)
+    for path in (root / "screenshots").glob("*.png"):
+        check()
+        shutil.copyfile(path, output / "screenshots" / path.name)
+    # A genuine final observation covers failures outside a product assertion.
+    final_image = root / "raw/browser-final.png"
+    if final_image.is_file() and not list((output / "screenshots").glob("*.png")):
+        name = "launcher.png" if report.properties["exercise"] == "cancellation" else "setup.png"
+        shutil.copyfile(final_image, output / "screenshots" / name)
+    # Capture can be unavailable after poisoned native transport. Never invent it.
+    if failed and (root / "browser-started").exists() and (
+            not (output / "traces/main.zip").is_file()
+            or not list((output / "screenshots").glob("*.png"))
+            or ((root / "thread-browser-started").exists() and not (output / "traces/threads.zip").is_file())):
+        raise RuntimeError("Browser failure diagnostics unavailable: trace or failure screenshot missing")
 
 
 def main() -> int:
@@ -859,1044 +188,207 @@ def main() -> int:
     parser.add_argument("--python", required=True, help="absolute supported interpreter")
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--exercise", choices=["baseline", "cancellation"], default="baseline")
+    parser.add_argument("--handoff", type=Path, help="private launcher diagnostic handoff")
     args = parser.parse_args()
     source = Path(__file__).resolve().parents[1]
     output = args.artifacts.resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    output_info = output.stat()
-    output_identity = (output_info.st_dev, output_info.st_ino)
-    started = float(os.environ.get("E2E_STARTED_MONOTONIC", time.monotonic()))
-    receipt = dict(schema=1, status="ENVIRONMENT_FAILURE", cleanup={"ok": False}, skipped=0,
-                   variants={}, phases=[], source_sha=None, python=None,
-                   exercise=args.exercise, signals=[])
-    root = None
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = json.loads((source / "e2e/manifest.json").read_text())
+    row = {"exercise": args.exercise, "signals": [], "phases": [], "cleanup": {}, "variants": {}}
+    report = Report(row)
+    report.expect("harness", HOUSEKEEPING)
+    if args.exercise == "baseline":
+        report.expect("product", manifest["variants"])
+    started = time.monotonic()
+    root = owner = None
     root_identity = None
-    owner = None
-    action_failure = None
-    cleanup_failure: dict[str, tuple] = {}
-    export_failure: dict[str, tuple] = {}
-    launcher_slots: dict[str, tuple] = {}
-    controller_snapshot = dict(availability="unavailable", snapshot=None)
-    diagnostic_read_observation = ("unknown", None)
-    staging_incomplete = closure_incomplete = cleanup_incomplete = export_incomplete = False
-    detail_complete = False
-    final_result_committed = False
-    # Detached fallback is selected before any optional acquisition. It never
-    # references watcher memory; cancellation receives no diagnostic member.
-    ownership_evidence = (dict(availability="unavailable", reason="not_frozen", data=None)
-                          if args.exercise == "baseline" else None)
-    ownership_frozen = False
-    ownership_cleanup_returned = False
-    ownership_budget = dict(clocks=0, stats=0, cycles=0, tokens=0)
-    retained_completed = None
-    completed_staged: dict[str, bytes] = {}
-    completed_exported = None
-
-    def latch_launcher(name: str, error: BaseException | None = None, *, category: str = "other") -> None:
-        try:
-            stage = "action" if name == "action" else "evidence" if name in {"collection", "export"} else "teardown"
-            if error is None:
-                at = time.monotonic()
-                slot = (stage, category, at) if type(at) in (int, float) and 0 <= at <= 9007199254740991 and math.isfinite(at) else None
-            else:
-                slot = _failure_slot(stage, error)
-            if slot is not None:
-                launcher_slots.setdefault(name, slot)
-        except BaseException:
-            pass  # Diagnostic completion cannot replace any actual error.
-
-    def failure_categories() -> dict:
-        source_sha = receipt.get("source_sha")
-        if not _failure_source(source_sha):
-            return {}
-        # Frozen validated controller state; export never rereads coord files.
-        projection = dict(schema=1, source_sha=source_sha, controller=controller_snapshot,
-                          launcher={name: _failure_object(launcher_slots.get(name)) for name in
-                                    ("action", "owner", "diagnostic_read", "collection", "port", "root", "export")})
-        result = dict(failure_categories=projection)
-        try:
-            state, outcome = diagnostic_read_observation
-            # Closed frozen values only; no private read or observation at export.
-            result["diagnostic_read_observation"] = dict(schema=1, source_sha=source_sha,
-                                                        state=state, outcome=outcome)
-        except BaseException:
-            pass  # Omit the whole addition if optional projection fails.
-        return result
-    logs = []
-    action_end, hard_end = started + 720, started + 900
-    receipt["timing"] = dict(started=started, action_deadline=action_end,
-                             hard_deadline=hard_end, phase="action")
+    action_end = hard_end = started
+    active_phase = None
+    setup_done = False
+    failure = None
+    handoff = args.handoff.resolve() if args.handoff else None
 
     def interrupted(signum: int, _frame: object) -> None:
-        phase = receipt["timing"]["phase"]
-        if signum == signal.SIGALRM and phase != "action":
-            receipt["timing"][phase]["timeout_signal"] = dict(signal=signum, at=time.monotonic(),
-                                                              pid=os.getpid(), start=identity(os.getpid()), phase=phase)
-            raise TimeoutError(f"{phase} deadline exhausted")
-        receipt["signals"].append(dict(signal=signum, at=time.monotonic(),
-                                       pid=os.getpid(), start=identity(os.getpid()), phase=phase))
-        raise RuntimeError(f"runner interrupted by signal {signum}")
+        row["signals"].append({"signal": signum, "at": time.monotonic(), "pid": os.getpid(), "start": identity(os.getpid())})
+        raise TimeoutError("Operational deadline exhausted") if signum == signal.SIGALRM else RuntimeError(f"Launcher interrupted by signal {signum}")
 
-    # Register before dependencies, daemon, browser or any other child launch.
+    def command(name: str, argv: list[str], env: dict, cwd: Path = source) -> None:
+        nonlocal active_phase
+        begin = time.monotonic()
+        cap = 480 if name == "scenarios" and args.exercise == "baseline" else 240
+        end = min(begin + cap, action_end)
+        if name == "scenarios":
+            argv = [*argv, "--deadline", str(end)]
+        arm_deadline(end)
+        active_phase = {"name": name, "entered": begin, "deadline": end, "exit": None, "interrupted": False}
+        row["phases"].append(active_phase)
+        process = None
+        try:
+            with (root / "raw" / (name + ".txt")).open("w") as log:
+                process = owner.popen(argv, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
+                active_phase["pid"] = process.pid
+                while process.poll() is None:
+                    arm_deadline(end)
+                    ready = root / "cancellation-ready.json"
+                    if args.exercise == "cancellation" and ready.exists() and handoff and not (handoff / "active.json").exists():
+                        witness = json.loads(ready.read_text())
+                        owner.sample()
+                        with owner.lock:
+                            if owner.pids.get(witness["provider"]["pid"]) == witness["provider"]["pid_start"] and owner.units and owner.groups:
+                                active = dict(witness, launcher={"pid": os.getpid(), "start": identity(os.getpid())},
+                                              owned={"identities": dict(owner.pids), "units": sorted(owner.units), "groups": sorted(owner.groups)}, source_sha=row["source_sha"])
+                                temporary = handoff / "active.tmp"
+                                temporary.write_text(json.dumps(active))
+                                temporary.replace(handoff / "active.json")
+                    time.sleep(0.02)
+                active_phase["exit"] = process.returncode
+                if process.returncode:
+                    raise RuntimeError(f"{name} exited {process.returncode}")
+        finally:
+            active_phase["finished"] = time.monotonic()
+            active_phase["interrupted"] = process is not None and process.poll() is None
+        arm_deadline(action_end)
+
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGALRM):
         signal.signal(sig, interrupted)
     try:
+        started = float(os.environ.get("E2E_STARTED_MONOTONIC", started))
+        action_end, hard_end = started + 720, started + 900
+        row.update(started=started, action_deadline=action_end, hard_deadline=hard_end)
         if not 0 <= time.monotonic() - started < 720:
-            raise RuntimeError("invalid or exhausted cleanup-inclusive start clock")
+            raise RuntimeError("Invalid cleanup-inclusive clock")
         arm_deadline(action_end)
-        receipt.update(daily_admission(source))
-        if not (sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
-                and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
-                and os.environ.get("RUNNER_OS") == "Linux"):
+        row.update(daily_admission(source))
+        if not (sys.platform == "linux" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted" and os.environ.get("RUNNER_OS") == "Linux"):
             raise RuntimeError("E2E requires an authorized disposable GitHub Ubuntu runner")
         if not Path(args.python).is_absolute():
-            raise RuntimeError("interpreter must be absolute")
+            raise RuntimeError("Interpreter must be absolute")
         version = subprocess.check_output([args.python, "-I", "-c", "import sys; print('.'.join(map(str,sys.version_info[:2])))"], text=True).strip()
-        if version not in {"3.12", "3.14"}:
-            raise RuntimeError("unsupported Python")
-        receipt["python"] = version
-        receipt["source_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+        if version not in manifest["daily_python"]:
+            raise RuntimeError("Unsupported Python")
+        row["python"] = version
         if subprocess.check_output(["git", "status", "--porcelain"], cwd=source, text=True):
-            raise RuntimeError("clean committed source required")
-        receipt["interpreter"] = dict(path=str(Path(args.python).resolve()),
-                                      sha256=hashlib.sha256(Path(args.python).resolve().read_bytes()).hexdigest())
+            raise RuntimeError("Clean committed source required")
         node, npm, uv = (shutil.which(tool) for tool in ("node", "npm", "uv"))
-        if not all((node, npm, uv)):
+        if not all((node, npm, uv)) or not subprocess.check_output([node, "--version"], text=True).startswith("v24."):
             raise RuntimeError("Node24/npm/uv required")
-        node_version = subprocess.check_output([node, "--version"], text=True).strip()
-        if not node_version.startswith("v24."):
-            raise RuntimeError("Node major must be 24")
-        receipt["node"] = dict(path=node, version=node_version)
-        root = Path(tempfile.mkdtemp(prefix="happyranch-e2e-"))
+        root = Path(tempfile.mkdtemp(prefix="happyranch-e2e-", dir=os.environ.get("RUNNER_TEMP")))
         root.chmod(0o700)
-        root_info = root.lstat()
-        root_identity = (root_info.st_dev, root_info.st_ino)
-        for name in ("home", "config", "cache", "data", "tmp", "daemon", "client", "coord", "bin", "witness", "raw"):
+        info = root.lstat()
+        root_identity = info.st_dev, info.st_ino
+        for name in ("home", "config", "cache", "data", "tmp", "daemon", "client", "coord", "bin", "witness", "raw", "traces", "screenshots"):
             (root / name).mkdir(mode=0o700)
-        # Independent same-buffer launcher reads bracket ORIGINAL Owned setup.
-        # The original initializer/signal capability check is unchanged.
-        launcher_reads = []
-        for bracket in (0, 1):
-            if args.exercise == "baseline":
-                ownership_budget["clocks"] += 1
-                at = time.monotonic()
-                observation = None
-                if at < action_end:
-                    ownership_budget["stats"] += 1
-                    try:
-                        with open(f"/proc/{os.getpid()}/stat", "rb", buffering=0) as stream:
-                            raw = stream.read(4097)
-                    except TimeoutError:
-                        raise
-                    except OSError:
-                        pass
-                    else:
-                        if (0 < len(raw) <= 4096 and raw.endswith(b"\n")
-                                and raw.startswith(str(os.getpid()).encode("ascii") + b" (") and b") " in raw):
-                            tail = raw.rsplit(b") ", 1)[1].split()
-                            if (len(tail) >= 20 and tail[0] in (b"R", b"S", b"D", b"Z", b"T", b"t", b"W", b"X", b"x", b"K", b"P", b"I")
-                                    and 1 <= len(tail[1]) <= 20 and all(48 <= c <= 57 for c in tail[1]) and int(tail[1]) < 2**64
-                                    and 1 <= len(tail[19]) <= 20 and 49 <= tail[19][0] <= 57
-                                    and all(48 <= c <= 57 for c in tail[19]) and int(tail[19]) < 2**64):
-                                observation = tail[19].decode("ascii")
-                launcher_reads.append(observation)
-            if bracket == 0:
-                owner = Owned(root)
-        if args.exercise == "baseline":
-            owner.evidence_budget = ownership_budget
-            ownership_budget["clocks"] += 1
-            binding_at = time.monotonic()
-            if (type(os.getpid()) is int and 0 < os.getpid() < 2**64
-                    and launcher_reads[0] is not None and launcher_reads[0] == launcher_reads[1]
-                    and binding_at < action_end
-                    and all(type(receipt.get(key)) is str and len(receipt[key]) == 40
-                            and all(c in "0123456789abcdef" for c in receipt[key])
-                            for key in ("source_sha", "source_tree"))
-                    and receipt["event"] in ("schedule", "workflow_dispatch")
-                    and all(type(receipt.get(key)) is str and 1 <= len(receipt[key]) <= 20
-                            and receipt[key][0] in "123456789" and all(c in "0123456789" for c in receipt[key])
-                            for key in ("run_id", "run_attempt"))
-                    and all(type(value) is int and 0 <= value < 2**64 for value in root_identity)
-                    and root_identity[1] > 0):
-                owner.evidence_binding = dict(
-                    state="bound", reason="none", source_sha=receipt["source_sha"], source_tree=receipt["source_tree"],
-                    event=receipt["event"], run_id=receipt["run_id"], run_attempt=receipt["run_attempt"], exercise="baseline",
-                    root=dict(device=root_identity[0], inode=root_identity[1]),
-                    launcher=dict(pid=os.getpid(), start=launcher_reads[0]), subreaper="initialized")
-        env = {"HOME": str(root / "home"), "XDG_CONFIG_HOME": str(root / "config"),
-               "XDG_CACHE_HOME": str(root / "cache"), "XDG_DATA_HOME": str(root / "data"),
-               "TMPDIR": str(root / "tmp"), "TMP": str(root / "tmp"), "TEMP": str(root / "tmp"),
+        (root / "known-tokens.json").write_text("[]")
+        owner = Owned(root)
+        env = {"HOME": str(root / "home"), "XDG_CONFIG_HOME": str(root / "config"), "XDG_CACHE_HOME": str(root / "cache"),
+               "XDG_DATA_HOME": str(root / "data"), "TMPDIR": str(root / "tmp"), "TMP": str(root / "tmp"), "TEMP": str(root / "tmp"),
                "PATH": os.pathsep.join(dict.fromkeys([str(Path(node).parent), str(Path(uv).parent), "/usr/local/bin", "/usr/bin", "/bin"])),
-               "LANG": "C.UTF-8", "E2E_ROOT": str(root), "CI": "1",
-               "HAPPYRANCH_DAEMON_HOME": str(root / "daemon"), "HAPPYRANCH_DAEMON_PORT": "0",
-               "HAPPYRANCH_WEB_DIST": str(source / "web" / "dist"),
-               "UV_PROJECT_ENVIRONMENT": str(root / "venv"), "UV_PYTHON_DOWNLOADS": "never",
-               "PLAYWRIGHT_BROWSERS_PATH": str(root / "browsers")}
-        env.update(E2E_SOURCE_TREE=receipt["source_tree"], E2E_RUN_ID=receipt["run_id"],
-                   E2E_RUN_ATTEMPT=receipt["run_attempt"], E2E_PYTHON=receipt["python"])
-        # Production systemd selection may need the user's runtime socket.
-        # These contain paths only, and never substitute/force a backend.
+               "LANG": "C.UTF-8", "E2E_ROOT": str(root), "CI": "1", "HAPPYRANCH_DAEMON_HOME": str(root / "daemon"),
+               "HAPPYRANCH_DAEMON_PORT": "0", "HAPPYRANCH_WEB_DIST": str(source / "web/dist"),
+               "UV_PROJECT_ENVIRONMENT": str(root / "venv"), "UV_PYTHON_DOWNLOADS": "never", "PLAYWRIGHT_BROWSERS_PATH": str(root / "browsers"),
+               "E2E_SOURCE_TREE": row["source_tree"], "E2E_RUN_ID": row["run_id"], "E2E_RUN_ATTEMPT": row["run_attempt"], "E2E_PYTHON": version}
         for key in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
             if key in os.environ:
                 env[key] = os.environ[key]
-
-        def command(name: str, argv: list[str], cwd: Path = source) -> None:
-            begin = time.monotonic()
-            cap = 480 if name == "scenarios" and args.exercise == "baseline" else 240
-            end = min(begin + cap, action_end)
-            if name == "scenarios":
-                argv = [*argv, "--deadline", str(end)]
-            arm_deadline(end)  # Reject exhaustion before opening logs or spawning.
-            log = root / "raw" / (name + ".txt")
-            logs.append(log)
-            diagnostic = None
-            launch_argv, launch_options = argv, {}  # Disabled fallback chosen BEFORE optional setup.
-            try:
-                if name == "scenarios":
-                    diagnostic = _ScenarioDiagnostic(end)
-                    if diagnostic.ready:
-                        launch_argv = [*argv, "--_diagnostic-fd", str(diagnostic.descriptor)]
-                        launch_options = {"pass_fds": (diagnostic.descriptor,)}
-                with log.open("w") as stream:
-                    arm_deadline(end)
-                    try:
-                        process = owner.popen(launch_argv, cwd=cwd, env=env, stdout=stream,
-                                                   stderr=subprocess.STDOUT, **launch_options)
-                    finally:
-                        if diagnostic is not None:
-                            diagnostic.release_endpoint("sender")  # Before wait, also on Popen failure.
-                    active_phase = dict(name=name, argv=launch_argv, pid=process.pid, exit=None,
-                                        entered=begin, deadline=end, cap_seconds=cap, allowance_seconds=end - begin)
-                    receipt["phases"].append(active_phase)
-                    try:
-                        if name == "scenarios" and args.exercise == "baseline":
-                            # Numeric exclusion is recorded even if generation binding
-                            # fails. Unknown numeric identity can never enable probes.
-                            owner.evidence_phase_pid = process.pid if type(process.pid) is int and 0 < process.pid < 2**64 else None
-                            owner.evidence_original_phase = active_phase
-                            phase_reads = []
-                            for bracket in (0, 1):
-                                ownership_budget["clocks"] += 1
-                                at = time.monotonic()
-                                observation = None
-                                if at < end and owner.evidence_phase_pid is not None:
-                                    ownership_budget["stats"] += 1
-                                    try:
-                                        with open(f"/proc/{process.pid}/stat", "rb", buffering=0) as stream:
-                                            raw = stream.read(4097)
-                                    except TimeoutError:
-                                        raise
-                                    except OSError:
-                                        pass
-                                    else:
-                                        if (0 < len(raw) <= 4096 and raw.endswith(b"\n")
-                                                and raw.startswith(str(process.pid).encode("ascii") + b" (") and b") " in raw):
-                                            tail = raw.rsplit(b") ", 1)[1].split()
-                                            if (len(tail) >= 20 and tail[0] in (b"R", b"S", b"D", b"Z", b"T", b"t", b"W", b"X", b"x", b"K", b"P", b"I")
-                                                    and 1 <= len(tail[1]) <= 20 and all(48 <= c <= 57 for c in tail[1]) and int(tail[1]) < 2**64
-                                                    and 1 <= len(tail[19]) <= 20 and 49 <= tail[19][0] <= 57
-                                                    and all(48 <= c <= 57 for c in tail[19]) and int(tail[19]) < 2**64):
-                                                observation = (tail[19].decode("ascii"), int(tail[1]))
-                                phase_reads.append(observation)
-                            ownership_budget["clocks"] += 1
-                            binding_at = time.monotonic()
-                            if (owner.evidence_binding is not None and phase_reads[0] is not None
-                                    and phase_reads[0] == phase_reads[1]
-                                    and phase_reads[0] == (owner.pids.get(process.pid), owner.evidence_binding["launcher"]["pid"])
-                                    and type(begin) in (int, float) and type(end) in (int, float)
-                                    and 0 <= begin <= binding_at < end <= 9007199254740991
-                                    and cap == 480 and end == min(begin + 480, action_end)):
-                                owner.evidence_phase = dict(
-                                    name="scenarios", allocation_state="bound", reason="none",
-                                    controller=dict(pid=process.pid, start=phase_reads[0][0]), entered=begin, deadline=end,
-                                    outcome="partial", exit=None, finished=None, seconds=None, interrupted=None)
-                                owner.evidence_active_open = True  # Immutable allocation complete LAST.
-                        while process.poll() is None:
-                            if time.monotonic() >= end:
-                                raise TimeoutError(f"{name} action deadline")
-                            ready = root / "cancellation-ready.json"
-                            if args.exercise == "cancellation" and ready.exists() and not (output / "active.json").exists():
-                                witness = json.loads(ready.read_text())
-                                owner.sample()
-                                with owner.lock:
-                                    if (owner.pids.get(witness["provider"]["pid"]) == witness["provider"]["pid_start"]
-                                            and owner.units and owner.groups):
-                                        active = dict(witness, launcher=dict(pid=os.getpid(), start=identity(os.getpid())),
-                                                      owned=dict(identities=dict(owner.pids), units=sorted(owner.units),
-                                                                 groups=sorted(owner.groups)), source_sha=receipt["source_sha"])
-                                        temporary = output / "active.tmp"
-                                        temporary.write_text(json.dumps(active, indent=2))
-                                        temporary.replace(output / "active.json")
-                            time.sleep(0.02)
-                        code = process.returncode
-                        active_phase["exit"] = code
-                    finally:
-                        if name == "scenarios" and args.exercise == "baseline":
-                            owner.evidence_active_open = False
-                        active_phase["finished"] = time.monotonic()
-                        active_phase["seconds"] = active_phase["finished"] - begin
-                        active_phase["interrupted"] = process.poll() is None
-                        if name == "scenarios" and args.exercise == "baseline":
-                            # This marker is reached only after ALL original phase
-                            # assignments. No extra poll, decode or status transfer.
-                            owner.evidence_terminal = True
-                if diagnostic is not None:
-                    diagnostic.receive()  # SAME command end/alarm, after actual exit/finalization.
-            finally:
-                if diagnostic is not None:
-                    diagnostic.release()
-            arm_deadline(action_end)
-            if code:
-                raise RuntimeError(f"{name} exited {code}")
-
-        command("dependencies", [uv, "sync", "--frozen", "--python", args.python])
-        python = str(root / "venv" / "bin" / "python")
-        command("browser-dependencies", [uv, "pip", "install", "--python", python, "--require-hashes", "-r", str(source / "e2e" / "browser.lock")])
-        command("browser-install", [python, "-I", "-m", "playwright", "install", "chromium"])
-        npm_prefix = root / "cache" / "npm"
-        npm_prefix.mkdir(mode=0o700)
+        command("dependencies", [uv, "sync", "--frozen", "--python", args.python], env)
+        python = str(root / "venv/bin/python")
+        command("browser-dependencies", [uv, "pip", "install", "--python", python, "--require-hashes", "-r", str(source / "e2e/browser.lock")], env)
+        command("browser-install", [python, "-I", "-m", "playwright", "install", "chromium"], env)
+        npm_cache = root / "cache/npm"
+        npm_cache.mkdir(mode=0o700)
         bridge = os.environ.get("E2E_NPM_DOWNLOAD_STORE")
         download_store = None
         if bridge is not None:
             if not bridge or bridge != str(Path(bridge)) or bridge.startswith("//"):
-                raise ValueError("invalid runner npm download-store path")
+                raise ValueError("Invalid runner npm download-store path")
             download_store = Path(bridge)
-            copy_npm_downloads(download_store, npm_prefix / "_cacache", action_end)
-        command("web-dependencies", [npm, "ci", "--cache", str(npm_prefix)], source / "web")
+            copy_npm_downloads(download_store, npm_cache / "_cacache", action_end)
+        command("web-dependencies", [npm, "ci", "--cache", str(npm_cache)], env, source / "web")
         if download_store is not None:
-            copy_npm_downloads(npm_prefix / "_cacache", download_store, action_end)
-        command("web-build", [npm, "run", "build"], source / "web")
-        # Harness uses only stdlib + locked browser library; runtime lives in
-        # separate real processes. No runtime/pytest import in the controller.
-        command("scenarios", [python, "-I", str(source / "e2e" / "controller.py"),
-                              "--root", str(root), "--source", str(source),
-                              "--sha", receipt["source_sha"],
-                              "--exercise", args.exercise])
-        result = json.loads((root / "scenario.json").read_text())
-        receipt.update(result)
-        receipt["status"] = "PASS"
-    except BaseException as exc:
-        action_failure = (exc, exc.__traceback__)  # Before formatting or diagnostic work.
-        latch_launcher("action", exc)
-        receipt["failure_phase"] = "action"
-        receipt["failure"] = repr(exc)
-        receipt["traceback"] = traceback.format_exc()
+            copy_npm_downloads(npm_cache / "_cacache", download_store, action_end)
+        command("web-build", [npm, "run", "build"], env, source / "web")
+        setup_done = True
+        command("scenarios", [python, "-I", str(source / "e2e/controller.py"), "--root", str(root), "--source", str(source), "--sha", row["source_sha"], "--exercise", args.exercise], env)
+    except BaseException as exc:  # noqa: BLE001 - finalize reports and owned cleanup on interruption
+        failure = exc
+        report.record("harness", "launcher", exc)
     finally:
-        action_finished = time.monotonic()
-        receipt["timing"]["action"] = dict(finished=action_finished, deadline=action_end,
-                                           allowance_seconds=720, elapsed_seconds=action_finished - started)
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(sig, signal.SIG_IGN)
-        staged: dict[str, bytes] = {}
-        collection_state = dict(token="", context=[], safe_scenario=dict(variants={}), fatal=False,
-                                operation="UNKNOWN", window="UNKNOWN", chars="U", utf8_bytes="U")
-        collection_diagnostic: dict[str, tuple] = {}
-        published_members: dict[str, bytes] = {}
-        failed_members: set[str] = set()
-
-        def sanitize_evidence(text: str) -> str:
-            return redact(text, collection_state["token"], collection_state["context"])
-
-        def reserve(name: str, cap: float, outer: float) -> dict:
-            entered = time.monotonic()
-            phase = dict(entered=entered, deadline=min(entered + cap, outer), ok=False)
-            phase["allowance_seconds"] = max(0, phase["deadline"] - entered)
-            receipt["timing"].update({"phase": name, name: phase})
-            return phase
-
-        cleanup = reserve("cleanup", 60, min(action_end + 60, hard_end))
-        operations = {name: dict(attempted=False, complete=False) for name in
-                      ("owner", "diagnostic_read", "collection", "port_list", "ports", "root", "absence")}
-        owner_ok = False
-        current_attempt = "owner"
-
-        def cleanup_time() -> None:
-            if time.monotonic() >= cleanup["deadline"]:
-                raise TimeoutError("cleanup deadline exhausted")
-
-        def incomplete(name: str, error: BaseException | None = None, *, category: str = "other",
-                       annotation: tuple = ("UNKNOWN", "UNKNOWN", "U", "U")) -> tuple | None:
-            nonlocal staging_incomplete, closure_incomplete, cleanup_incomplete
-            if error is not None and receipt["timing"]["phase"] == "cleanup":
-                cleanup_failure.setdefault("first", (error, error.__traceback__))
-            cleanup_incomplete = True
-            first_collection = name == "collection" and not staging_incomplete
-            if name == "collection":
-                staging_incomplete = True
-            elif name in {"owner", "port", "root"}:
-                closure_incomplete = True
-            latch_launcher(name, error, category=category)
-            # Sticky reservation above is FIRST. An interrupted/unreached claim
-            # cannot be filled by recollection: staging_incomplete already owns it.
-            if first_collection:
-                claim = (receipt["timing"]["phase"], collection_state["window"], "F" if error is not None else "U", object(), annotation)
-                if collection_diagnostic.setdefault("claim", claim) is claim:
-                    return claim
-            return None
-
-        def observe_collection(claim: tuple | None) -> None:
-            if claim is None or collection_diagnostic.get("claim") is not claim or "output" in collection_diagnostic:
-                return
-            collection_diagnostic["output"] = claim  # Charge before eligibility/write.
-            phase, window, kind, _, annotation = claim
-            line = _collection_line(phase, window, kind, annotation)
-            if line is None:
-                return
-            end = receipt["timing"][phase]["deadline"] - (1 if phase == "export" else 0)
-            if time.monotonic() >= end:
-                return
-            _diagnostic_write(line, end)
-
-        def collection_failed(error: BaseException | None, *, category: str, annotation: tuple) -> None:
-            if error is not None and receipt["timing"]["phase"] == "export":
-                export_failure.setdefault("first", (error, error.__traceback__))
-            claim = incomplete("collection", error, category=category, annotation=annotation)
-            observe_collection(claim)
-
-        def stage_evidence(check: Callable[[], None]) -> None:
-            nonlocal detail_complete
-            complete, error = collect_evidence(root, root_identity, receipt, args.exercise,
-                                               staged, collection_state, check, collection_failed)
-            if complete:
-                detail_complete = True
-            if error is not None:
-                raise error[0].with_traceback(error[1])
-            check()
-
+        row["action_finished"] = time.monotonic()
+        cleanup_end = min(row["action_finished"] + 60, action_end + 60, hard_end)
+        row["cleanup_deadline"] = cleanup_end
+        report.record("harness", "setup", None if setup_done else failure or RuntimeError("Setup did not finish"))
         try:
-            arm_deadline(cleanup["deadline"])
-            # Closed incremental evidence is independent of final raw-log
-            # redaction/export and must be retained before root teardown.
+            arm_deadline(cleanup_end)
+            with report.check("harness", "owned-processes"):
+                if owner is None:
+                    raise RuntimeError("Owned containment was not initialized")
+                # Private readers retain the former JSON-decoded PID keys.
+                row["cleanup"] = json.loads(json.dumps(owner.cleanup()))
+                if row["cleanup"].get("ok") is not True:
+                    raise RuntimeError("Owned process/unit/group cleanup failed or remains unknown")
             if root is not None:
-                try:
-                    retained_completed, completed_staged = completed.read_bundle(root / "coord", receipt)
-                except FileNotFoundError:
-                    pass  # No accepted ledger; cases remain UNKNOWN.
-                except (OSError, ValueError, KeyError, TypeError, UnicodeError) as exc:
-                    incomplete("collection", exc)
-            operations["owner"]["attempted"] = True
-            try:
-                if owner is not None and args.exercise == "baseline":
-                    owner.evidence_active_open = False
-                    original_phase = owner.evidence_original_phase
-                    phase = owner.evidence_phase
-                    if phase is None:
-                        phase = dict(name="scenarios", allocation_state="unbound", reason="unreached",
-                                     controller=None, entered=None, deadline=None, outcome="unreached",
-                                     exit=None, finished=None, seconds=None, interrupted=None)
-                    if original_phase is not None:
-                        # Main copies only already-assigned ORIGINAL fields. A
-                        # partial finalizer never becomes terminal from its exit.
-                        phase = dict(phase)
-                        malformed = False
-                        for key in ("exit", "finished", "seconds", "interrupted"):
-                            value = original_phase.get(key)
-                            valid = (value is None or (type(value) is int and -(2**31) <= value < 2**31)) if key == "exit" else (value is None or type(value) is bool) if key == "interrupted" else (value is None or type(value) in (int, float) and 0 <= value <= 9007199254740991)
-                            if not valid:
-                                malformed = True
-                            phase[key] = value if valid else None
-                        if (phase["finished"] is not None and phase["seconds"] is not None
-                                and phase["entered"] is not None
-                                and (phase["finished"] < phase["entered"] or phase["seconds"] != phase["finished"] - phase["entered"])):
-                            malformed = True
-                        if malformed:
-                            phase.update(outcome="malformed", exit=None, finished=None, seconds=None, interrupted=None)
-                        elif (phase["allocation_state"] == "bound" and owner.evidence_terminal and phase["finished"] is not None and phase["seconds"] is not None
-                              and phase["interrupted"] is False and phase["exit"] is not None):
-                            phase["outcome"] = "terminal"
-                        elif (phase["allocation_state"] == "bound" and owner.evidence_terminal and phase["finished"] is not None and phase["seconds"] is not None
-                              and phase["interrupted"] is True and phase["exit"] is None):
-                            phase["outcome"] = "interrupted"
-                        else:
-                            phase["outcome"] = "partial"
-                    owner.evidence_phase = phase
-                    # This marker is consumed by main's ORIGINAL first sample.
-                    owner.evidence_entry = (cleanup["entered"], cleanup["deadline"])
-                receipt["cleanup"] = owner.cleanup() if owner else {"ok": False, "reason": "setup did not admit containment"}
-                ownership_cleanup_returned = owner is not None
-                owner_ok = receipt["cleanup"]["ok"] is True
-                operations["owner"]["complete"] = owner_ok
-                if not owner_ok:
-                    incomplete("owner")
-            except TimeoutError as exc:
-                incomplete("owner", exc)
-                raise
-            except BaseException as exc:
-                incomplete("owner", exc)
-            finally:
-                # ONE freeze decision under the SAME original cleanup end,
-                # before collection/root loss. Unknown/live watcher => no slot
-                # inspection at all. Claim precedes work; completion is last.
-                if args.exercise == "baseline" and not ownership_frozen:
-                    ownership_frozen = True
-                    ownership_evidence = dict(availability="unavailable", reason="interrupted", data=None)
-                    if owner is not None:
-                        owner.evidence_writes_ended = True
-                    freeze_reason = "watcher_unknown"
-                    try:
-                        original_cleanup = receipt["cleanup"]
-                        if (ownership_cleanup_returned and type(original_cleanup) is dict and original_cleanup.get("watcher_stopped") is False):
-                            freeze_reason = "watcher_active"
-                        elif (ownership_cleanup_returned and owner is not None and type(original_cleanup) is dict
-                              and original_cleanup.get("watcher_stopped") is True):
-                            if not owner.evidence_writes_ended:
-                                freeze_reason = "main_writes_open"
-                            elif ownership_budget["clocks"] >= 512:
-                                freeze_reason = "no_budget"
-                            else:
-                                ownership_budget["clocks"] += 1
-                                freeze_at = time.monotonic()
-                                if not cleanup["entered"] <= freeze_at < cleanup["deadline"]:
-                                    freeze_reason = "no_budget"
-                                elif owner.evidence_binding is None:
-                                    freeze_reason = "malformed"
-                                else:
-                                    freeze_reason = "malformed"
-                                    binding = owner.evidence_binding
-                                    phase = owner.evidence_phase
-                                    slots = {}
-                                    for name in ("active", "precleanup"):
-                                        slot = dict(owner.evidence_slots[name])
-                                        if slot["state"] == "claimed":
-                                            slot.update(state="incomplete", reason="incomplete", targets=None,
-                                                        launcher_a=None, launcher_b=None, controller_a=None, controller_b=None)
-                                        slots[name] = slot
-                                    returns = dict(owner.evidence_returns)
-                                    if returns["state"] == "claimed":
-                                        returns.update(state="incomplete", reason="interrupted", outcome="interrupted", coverage="partial")
-                                    candidate = dict(availability="available", reason="none", data=dict(
-                                        binding=binding, phase=phase, active=slots["active"], precleanup=slots["precleanup"],
-                                        returns=returns, freeze=dict(state="frozen", watcher="stopped", writes="ended")))
-                                    # Closed finite grammar, independently checked before
-                                    # any serialization. No raw/private string is admitted.
-                                    reasons = ("none", "unreached", "incomplete", "interrupted", "excluded", "not_registered", "unbound", "mismatch", "reused", "malformed", "absent", "unsupported", "io_error", "no_budget", "overflow", "reentry", "off_owner", "echild", "close_unknown", "cycle_limit")
-                                    binding_reasons = ("none", "unreached", "incomplete", "interrupted", "mismatch", "malformed", "budget")
-                                    states = ("unattempted", "claimed", "incomplete", "refused", "complete")
-                                    grammar = {
-                                        "member": dict(availability=("available",), reason=("none",), data="data"),
-                                        "data": dict(binding="binding", phase="phase", active="slot", precleanup="slot", returns="returns", freeze="freeze"),
-                                        "binding": dict(state=("bound",), reason=("none",), source_sha="H", source_tree="H", event=("schedule", "workflow_dispatch"), run_id="D", run_attempt="D", exercise=("baseline",), root="root", launcher="pin", subreaper=("initialized",)),
-                                        "root": dict(device="U", inode="P"),
-                                        "pin": dict(pid="P", start="D"),
-                                        "phase": dict(name=("scenarios",), allocation_state=("unbound", "bound", "refused"), reason=binding_reasons, controller="?pin", entered="?T", deadline="?T", outcome=("unreached", "partial", "terminal", "interrupted", "malformed"), exit="?E", finished="?T", seconds="?T", interrupted="?B"),
-                                        "slot": dict(state=states, reason=reasons, owner=(None, "watcher", "main"), entered="?T", finished="?T", deadline="?T", join=("unknown", "bound_live", "bound_interrupted_live", "bound_terminal_absent", "bound_terminal_observed", "bound_outcome_unknown", "never_bound", "reused", "mismatch", "malformed"), launcher_a="?stat", launcher_b="?stat", controller_a="?stat", controller_b="?stat", targets="?targets"),
-                                        "stat": dict(outcome=("observed", "absent", "unreadable", "interrupted", "empty", "partial", "oversized", "malformed", "unattempted"), at="?T", start="?D", state=(None, "R", "S", "D", "Z", "T", "t", "W", "X", "x", "K", "P", "I"), ppid="?U"),
-                                        "target": dict(pid="P", start="?D", kind=("direct_phase", "phase_number_excluded", "nonphase"), registration=("matched", "unregistered", "reused"), a="?stat", b="?stat", wait="wait", close=("not_opened", "closed", "unknown")),
-                                        "wait": dict(state=states, reason=reasons, outcome=("unknown", "no_exit_state", "ineligible", "eligible_exit"), at="?T", code=(None, "CLD_EXITED", "CLD_KILLED", "CLD_DUMPED"), status="?N"),
-                                        "returns": dict(state=states, reason=("none", "unreached", "incomplete", "interrupted", "malformed", "annotation_limit", "no_budget"), outcome=("unreached", "returned", "interrupted", "unknown"), rows="?rows", coverage=("none", "all_reached", "partial")),
-                                        "return": dict(index="index", pid="P", wait_status="W", exit="?E", generation="?D", join=("qualified", "unknown"), slot=(None, "precleanup"), target="?index0"),
-                                        "freeze": dict(state=("frozen",), watcher=("stopped",), writes=("ended",)),
-                                    }
-                                    pending_fields = [(candidate, "member")]
-                                    valid = True
-                                    visits = 0
-                                    while pending_fields:
-                                        value, domain = pending_fields.pop()
-                                        visits += 1
-                                        if visits > 4096:
-                                            valid = False
-                                            break
-                                        if type(domain) is tuple:
-                                            if not any(type(value) is type(option) and value == option for option in domain):
-                                                valid = False
-                                                break
-                                            continue
-                                        if domain.startswith("?"):
-                                            if value is None:
-                                                continue
-                                            domain = domain[1:]
-                                        if domain in grammar:
-                                            shape = grammar[domain]
-                                            if type(value) is not dict or value.keys() != shape.keys():
-                                                valid = False
-                                                break
-                                            pending_fields.extend((value[key], field) for key, field in shape.items())
-                                        elif domain in ("targets", "rows"):
-                                            limit = 17 if domain == "targets" else 34
-                                            if type(value) is not list or len(value) > limit:
-                                                valid = False
-                                                break
-                                            pending_fields.extend((item, "target" if domain == "targets" else "return") for item in value)
-                                        else:
-                                            if domain in ("U", "P", "E", "W", "N", "index", "index0"):
-                                                lower, upper = {"U": (0, 2**64-1), "P": (1, 2**64-1), "E": (-(2**31), 2**31-1), "W": (0, 2**32-1), "N": (0, 2**31-1), "index": (1, 34), "index0": (0, 16)}[domain]
-                                                good = type(value) is int and lower <= value <= upper
-                                            elif domain == "T":
-                                                good = type(value) in (int, float) and 0 <= value <= 9007199254740991
-                                            elif domain == "B":
-                                                good = type(value) is bool
-                                            elif domain == "D":
-                                                good = (type(value) is str and 1 <= len(value) <= 20 and value[0] in "123456789"
-                                                        and all(c in "0123456789" for c in value))
-                                            elif domain == "H":
-                                                good = type(value) is str and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
-                                            else:
-                                                good = False
-                                            if not good:
-                                                valid = False
-                                                break
-                                    if not valid:
-                                        raise ValueError("ownership shape refused")
-                                    if (binding is not owner.evidence_binding or phase is not owner.evidence_phase
-                                            or binding["root"] != dict(device=root_identity[0], inode=root_identity[1])
-                                            or any(binding[key] != receipt[key] for key in ("source_sha", "source_tree", "event", "run_id", "run_attempt"))):
-                                        raise ValueError("ownership binding refused")
-                                    if phase["allocation_state"] == "bound":
-                                        if (phase["reason"] != "none" or phase["controller"] is None
-                                                or phase["controller"]["pid"] != owner.evidence_phase_pid
-                                                or phase["entered"] is None or phase["deadline"] is None
-                                                or not phase["entered"] <= phase["deadline"] == min(phase["entered"] + 480, action_end)):
-                                            raise ValueError("ownership phase refused")
-                                    elif (phase["reason"] == "none" or any(phase[key] is not None for key in ("controller", "entered", "deadline"))
-                                          or phase["outcome"] not in ("unreached", "partial", "malformed")):
-                                        raise ValueError("ownership unbound phase refused")
-                                    if phase["outcome"] in ("terminal", "interrupted"):
-                                        if (phase["allocation_state"] != "bound" or not owner.evidence_terminal
-                                                or phase["finished"] is None or phase["seconds"] is None
-                                                or phase["finished"] < phase["entered"] or phase["seconds"] != phase["finished"] - phase["entered"]
-                                                or (phase["outcome"] == "terminal" and (phase["exit"] is None or phase["interrupted"] is not False))
-                                                or (phase["outcome"] == "interrupted" and (phase["exit"] is not None or phase["interrupted"] is not True))):
-                                            raise ValueError("ownership outcome refused")
-                                    elif phase["outcome"] in ("unreached", "malformed") and any(phase[key] is not None for key in ("exit", "finished", "seconds", "interrupted")):
-                                        raise ValueError("ownership null outcome refused")
-                                    for name, slot in slots.items():
-                                        if slot["state"] != "complete":
-                                            if slot["reason"] == "none" or any(slot[key] is not None for key in ("launcher_a", "launcher_b", "controller_a", "controller_b", "targets")):
-                                                raise ValueError("ownership incomplete slot refused")
-                                            if slot["state"] == "unattempted" and (slot["reason"] != "unreached" or slot["join"] != "unknown" or any(slot[key] is not None for key in ("owner", "entered", "finished", "deadline"))):
-                                                raise ValueError("ownership unattempted slot refused")
-                                            continue
-                                        if (slot["reason"] != "none" or slot["owner"] != ("watcher" if name == "active" else "main")
-                                                or phase["allocation_state"] != "bound"
-                                                or any(slot[key] is None for key in ("entered", "finished", "deadline", "launcher_a", "launcher_b", "controller_a", "controller_b", "targets"))
-                                                or not slot["entered"] <= slot["finished"] <= slot["deadline"]
-                                                or slot["deadline"] != (phase["deadline"] if name == "active" else cleanup["deadline"])
-                                                or slot["entered"] < (phase["entered"] if name == "active" else cleanup["entered"])
-                                                or (name == "precleanup" and phase["finished"] is not None and slot["entered"] < phase["finished"])):
-                                            raise ValueError("ownership slot interval refused")
-                                        if not slot["launcher_a"]["at"] <= slot["controller_a"]["at"] <= slot["controller_b"]["at"] <= slot["launcher_b"]["at"]:
-                                            raise ValueError("ownership context order refused")
-                                        for key in ("launcher_a", "launcher_b"):
-                                            row = slot[key]
-                                            if row["outcome"] != "observed" or row["start"] != binding["launcher"]["start"]:
-                                                raise ValueError("ownership launcher bracket refused")
-                                        a, b = slot["controller_a"], slot["controller_b"]
-                                        live = all(row["outcome"] == "observed" and row["start"] == phase["controller"]["start"] and row["state"] not in ("Z", "X", "x") for row in (a, b))
-                                        if any(row["outcome"] == "observed" and row["start"] != phase["controller"]["start"] for row in (a, b)):
-                                            raise ValueError("ownership reused controller refused")
-                                        join = slot["join"]
-                                        if ((join == "bound_live" and (name != "active" or not live))
-                                                or (join == "bound_interrupted_live" and (phase["outcome"] != "interrupted" or not live))
-                                                or (join == "bound_terminal_absent" and (phase["outcome"] != "terminal" or any(row["outcome"] != "absent" for row in (a, b))))
-                                                or (join == "bound_terminal_observed" and (phase["outcome"] != "terminal" or any(row["outcome"] != "observed" or row["state"] not in ("Z", "X", "x") for row in (a, b))))
-                                                or join not in ("bound_live", "bound_interrupted_live", "bound_terminal_absent", "bound_terminal_observed", "bound_outcome_unknown")
-                                                or (join == "bound_outcome_unknown" and phase["outcome"] == "terminal")):
-                                            raise ValueError("ownership phase join refused")
-                                        seen_pids = set()
-                                        stats = [slot[key] for key in ("launcher_a", "launcher_b", "controller_a", "controller_b")]
-                                        for target in slot["targets"]:
-                                            if target["pid"] in seen_pids:
-                                                raise ValueError("ownership duplicate target refused")
-                                            seen_pids.add(target["pid"])
-                                            a, b, wait = target["a"], target["b"], target["wait"]
-                                            if a is None or b is None or not slot["controller_a"]["at"] <= a["at"] <= b["at"] <= slot["controller_b"]["at"]:
-                                                raise ValueError("ownership target interval refused")
-                                            stats.extend((a, b))
-                                            excluded = target["pid"] == owner.evidence_phase_pid
-                                            if excluded != (target["kind"] != "nonphase") or (excluded and (wait["state"] != "unattempted" or wait["reason"] != "excluded" or target["close"] != "not_opened")):
-                                                raise ValueError("ownership direct exclusion refused")
-                                            if (target["kind"] == "direct_phase" and target["start"] != phase["controller"]["start"]
-                                                    or target["registration"] == "unregistered" and target["start"] is not None):
-                                                raise ValueError("ownership registration refused")
-                                            if wait["at"] is not None and not a["at"] <= wait["at"] <= b["at"]:
-                                                raise ValueError("ownership wait interval refused")
-                                            if wait["state"] == "complete":
-                                                if (excluded or target["start"] is None or target["registration"] != "matched" or target["close"] != "closed"
-                                                        or wait["at"] is None or any(row["outcome"] != "observed" or row["start"] != target["start"] or row["ppid"] != binding["launcher"]["pid"] for row in (a, b))):
-                                                    raise ValueError("ownership wait bracket refused")
-                                                if wait["outcome"] == "eligible_exit":
-                                                    if (wait["reason"] != "none" or wait["code"] is None or wait["status"] is None
-                                                            or (wait["code"] == "CLD_EXITED" and wait["status"] > 255)
-                                                            or (wait["code"] != "CLD_EXITED" and wait["status"] == 0)):
-                                                        raise ValueError("ownership eligible exit refused")
-                                                elif (wait["outcome"], wait["reason"], wait["code"], wait["status"]) not in (("no_exit_state", "none", None, None), ("ineligible", "echild", None, None)):
-                                                    raise ValueError("ownership empty wait refused")
-                                            elif wait["reason"] == "none" or wait["outcome"] != "unknown" or wait["code"] is not None or wait["status"] is not None:
-                                                raise ValueError("ownership unqualified wait refused")
-                                        for row in stats:
-                                            if row["at"] is None or not slot["entered"] <= row["at"] <= slot["finished"]:
-                                                raise ValueError("ownership stat time refused")
-                                            if row["outcome"] == "observed":
-                                                if row["start"] is None or row["state"] is None or row["ppid"] is None:
-                                                    raise ValueError("ownership stat fields refused")
-                                            elif any(row[key] is not None for key in ("start", "state", "ppid")):
-                                                raise ValueError("ownership stat nulls refused")
-                                    if returns["state"] == "complete":
-                                        if (returns["reason"], returns["outcome"], returns["coverage"]) != ("none", "returned", "all_reached") or returns["rows"] is None:
-                                            raise ValueError("ownership return coverage refused")
-                                    elif returns["state"] == "unattempted":
-                                        if (returns["reason"], returns["outcome"], returns["coverage"], returns["rows"]) != ("unreached", "unreached", "none", None):
-                                            raise ValueError("ownership unreached returns refused")
-                                    elif returns["state"] == "incomplete":
-                                        if returns["reason"] == "none" or returns["coverage"] != "partial" or returns["outcome"] not in ("interrupted", "unknown"):
-                                            raise ValueError("ownership partial returns refused")
-                                    else:
-                                        raise ValueError("ownership returns refused")
-                                    for index, row in enumerate(returns["rows"] or []):
-                                        if row["index"] != index + 1:
-                                            raise ValueError("ownership return order refused")
-                                        if row["join"] == "qualified":
-                                            slot = slots["precleanup"]
-                                            if returns["state"] != "complete" or slot["state"] != "complete" or row["slot"] != "precleanup" or row["target"] is None or row["target"] >= len(slot["targets"]):
-                                                raise ValueError("ownership return pin refused")
-                                            target = slot["targets"][row["target"]]
-                                            if (row["pid"] != target["pid"] or row["generation"] != target["start"] or target["wait"]["outcome"] != "eligible_exit"
-                                                    or row["pid"] == owner.evidence_phase_pid or row["generation"] is None):
-                                                raise ValueError("ownership return generation refused")
-                                        elif any(row[key] is not None for key in ("generation", "slot", "target")):
-                                            raise ValueError("ownership unknown return refused")
-                                    # Grammar and joins are checked before this bounded
-                                    # fresh-container detach. No watcher/main writer remains.
-                                    detached = json.loads(json.dumps(candidate, allow_nan=False))
-                                    formatted = json.dumps({"ownership_evidence": detached}, indent=2, allow_nan=False).encode("utf-8")
-                                    parts = [len(json.dumps({"ownership_evidence": {"data": {name: detached["data"][name]}}}, indent=2).encode("utf-8")) for name in ("active", "precleanup")]
-                                    rest = {key: value for key, value in detached["data"].items() if key not in ("active", "precleanup")}
-                                    rest_size = len(json.dumps({"ownership_evidence": dict(detached, data=rest)}, indent=2).encode("utf-8"))
-                                    freeze_reason = "format_refused"
-                                    # Wrapper includes both braces/newlines; +2 covers
-                                    # the actual comma/separator when other members exist.
-                                    if len(formatted) + 2 <= 32768 and max(parts) <= 8192 and rest_size <= 16384:
-                                        if ownership_budget["clocks"] >= 512:
-                                            freeze_reason = "no_budget"
-                                        else:
-                                            ownership_budget["clocks"] += 1
-                                            if time.monotonic() >= cleanup["deadline"]:
-                                                freeze_reason = "no_budget"
-                                            else:
-                                                ownership_evidence = detached  # Complete LAST; no later upgrade.
-                                                freeze_reason = "none"
-                    except TimeoutError:
-                        freeze_reason = "interrupted"
-                        raise
-                    except (ValueError, TypeError, KeyError, OverflowError):
-                        freeze_reason = "malformed"
-                    except BaseException:
-                        freeze_reason = "interrupted"
-                        raise
-                    finally:
-                        if freeze_reason != "none":
-                            ownership_evidence = dict(availability="unavailable", reason=freeze_reason, data=None)
-            cleanup_time()  # Even a caught ordinary error may have exhausted C.
-
-            current_attempt = "diagnostic_read"
-            operations["diagnostic_read"]["attempted"] = True
-            try:
-                try:
-                    cleanup_time()
-                    diagnostic_read_observation = ("admitted", None)
-                except BaseException:
-                    pass  # Optional history cannot replace the actual read/error.
-                controller_snapshot, read_error, read_outcome = _read_failure_categories(
-                    root, receipt["source_sha"], cleanup_time, "failure_phase" in receipt)
-                try:
-                    cleanup_time()
-                    diagnostic_read_observation = ("completed", read_outcome)
-                except BaseException:
-                    pass  # Mandatory snapshot/error assignment above still stands.
-                operations["diagnostic_read"]["complete"] = read_error is None
-                if read_error is not None:
-                    incomplete("diagnostic_read", category=read_error)
-            except TimeoutError as exc:
-                incomplete("diagnostic_read", exc)
-                raise
-            cleanup_time()
-
-            current_attempt = "collection"
-            operations["collection"]["attempted"] = True
-            try:
-                stage_evidence(cleanup_time)
-                operations["collection"]["complete"] = detail_complete and not staging_incomplete
-            except TimeoutError:
-                raise
-            except BaseException:
-                pass  # Already latched; remaining existing teardown is independent.
-            cleanup_time()
-
-            current_attempt = "port"
-            operations["port_list"]["attempted"] = True
-            ports = None
-            try:
-                cleanup_time()
-                if root is None:
-                    incomplete("port")
-                else:
-                    # Missing metadata is unknown, never an invented empty list.
+                # Plain known-token list only: no context validation/export protocol.
+                with report.check("harness", "token-hygiene"):
+                    report.tokens.update(json.loads((root / "known-tokens.json").read_text()))
+                    token = root / "daemon/daemon.token"
+                    if token.is_file():
+                        report.tokens.add(token.read_text().strip())
+                if args.exercise == "baseline":
+                    with report.check("harness", "private-checks"):
+                        row.update(json.loads((root / "scenario.json").read_text()))
+                        private_checks(root, row, report)
+                with report.check("harness", "ports"):
                     ports = json.loads((root / "ports.json").read_text())
-                    if type(ports) is not list or any(type(port) is not int or not 0 < port < 65536 for port in ports):
-                        raise ValueError("invalid port observation")
-                    operations["port_list"]["complete"] = True
-            except TimeoutError as exc:
-                incomplete("port", exc)
-                raise
-            except BaseException as exc:
-                incomplete("port", exc)
-            cleanup_time()
-            if ports is not None and operations["port_list"]["complete"]:
-                absence = {}
-                receipt["cleanup"]["ports_absent"] = absence
-                operations["ports"]["attempted"] = True
-                for port in ports:
-                    cleanup_time()
-                    try:
+                    if not ports or any(type(port) is not int or not 0 < port < 65536 for port in ports):
+                        raise RuntimeError("Registered ports unavailable")
+                    row["cleanup"]["ports_absent"] = {}
+                    for port in ports:
+                        arm_deadline(cleanup_end)
                         with socket.socket() as sock:
-                            cleanup_time()
-                            sock.settimeout(min(1, cleanup["deadline"] - time.monotonic()))
-                            absence[str(port)] = sock.connect_ex(("127.0.0.1", port)) != 0
-                        if not absence[str(port)]:
-                            incomplete("port")
-                    except TimeoutError as exc:
-                        incomplete("port", exc)
-                        # An individual ordinary 1s probe timeout may continue
-                        # only if the original overall allowance is still live.
-                    except BaseException as exc:
-                        incomplete("port", exc)
-                    cleanup_time()
-                operations["ports"]["complete"] = len(absence) == len(set(ports)) and all(absence.values())
-            cleanup_time()
-
-            current_attempt = "root"
-            operations["root"]["attempted"] = True
-            try:
+                            sock.settimeout(min(1, cleanup_end - time.monotonic()))
+                            absent = sock.connect_ex(("127.0.0.1", port)) != 0
+                        row["cleanup"]["ports_absent"][str(port)] = absent
+                        if not absent:
+                            raise AssertionError("Owned listener remains")
+                if report.cases.get(("harness", "token-hygiene"), {}).get("kind") is None:
+                    failed = failure is not None or any(case["kind"] and not case.get("pending") for case in report.cases.values())
+                    with report.check("harness", "diagnostics"):
+                        prepare_diagnostics(root, output, report, lambda: arm_deadline(cleanup_end), failed=failed)
+        except BaseException as exc:  # noqa: BLE001 - finalize reports and owned cleanup on interruption
+            report.record("harness", "finalization", exc)
+        finally:
+            # Data cleanup never depends on successful report/artifact collection.
+            with report.check("harness", "data"):
+                arm_deadline(cleanup_end)
                 if root is None or root_identity is None:
-                    incomplete("root")
-                else:
-                    with _failure_directories(root, cleanup_time, coord=False) as (directory, verify):
-                        verify()
-                        observed = os.fstat(directory)
-                        if (observed.st_dev, observed.st_ino) != root_identity:
-                            raise ValueError("owned root identity changed")
-                        cleanup_time()
-                        shutil.rmtree(root)  # ONE existing attempt, never export rescue.
-                        cleanup_time()
-                    operations["root"]["complete"] = True
-            except TimeoutError as exc:
-                incomplete("root", exc)
-                raise
-            except BaseException as exc:
-                incomplete("root", exc)
-            cleanup_time()
-            operations["absence"]["attempted"] = True
-            try:
-                if root is not None:
-                    with _failure_directories(root.parent, cleanup_time, coord=False, owned=False) as (parent, verify):
-                        verify()
-                        cleanup_time()
-                        try:
-                            os.stat(root.name, dir_fd=parent, follow_symlinks=False)
-                        except FileNotFoundError:
-                            absent = True  # Literal final ENOENT, pinned safe parent.
-                        else:
-                            absent = False
-                        verify()
-                        cleanup_time()
-                    receipt["cleanup"].update(data_absent=absent, sockets_absent=absent)
-                    operations["absence"]["complete"] = absent
-                    if not absent:
-                        incomplete("root")
-                else:
-                    incomplete("root")
-            except TimeoutError as exc:
-                incomplete("root", exc)
-                raise
-            except BaseException as exc:
-                incomplete("root", exc)
-            cleanup_time()
-        except BaseException as exc:
-            incomplete(current_attempt, exc)
-            try:
-                cleanup_time()
-                if (current_attempt == "owner" and not operations["diagnostic_read"]["attempted"]
-                        and controller_snapshot == dict(availability="unavailable", snapshot=None)
-                        and launcher_slots.get("diagnostic_read") is None):
-                    diagnostic_read_observation = ("unreached", None)
-            except BaseException:
-                pass  # Expiry/interruption retains the prior tuple; no rescue.
-        finally:
-            cleanup["finished"] = time.monotonic()
-            cleanup["elapsed_seconds"] = cleanup["finished"] - cleanup["entered"]
-            if (cleanup["finished"] >= cleanup["deadline"]
-                    or not all(state["complete"] for state in operations.values())):
-                cleanup_incomplete = True
-            cleanup["ok"] = owner_ok and not (staging_incomplete or closure_incomplete or cleanup_incomplete)
-            receipt["cleanup"]["ok"] = cleanup["ok"]
-            if cleanup_failure:
-                first = cleanup_failure["first"][0]
-                cleanup["error"] = type(first).__name__
-                try:
-                    receipt["cleanup"].setdefault("error", repr(first))
-                except BaseException:
-                    pass
-            if not cleanup["ok"]:
-                receipt["status"] = "FAIL"
-                receipt.setdefault("failure_phase", "cleanup")
-                # No new sample: preserve original observations, not absence.
-                if owner and not owner.thread.is_alive():
-                    receipt["cleanup"].setdefault("identities", owner.pids.copy())
-                    receipt["cleanup"].setdefault("observed_units", sorted(owner.units.copy()))
-                    receipt["cleanup"].setdefault("observed_groups", sorted(owner.groups.copy()))
-
-        export = reserve("export", 120, hard_end)
-
-        def publish(row: dict, *, final: bool = False) -> None:
-            nonlocal final_result_committed
-            temporary = output / "result.tmp"
-            destination = output / "result.json"
-            if not final:
-                def failure_time() -> None:
-                    if time.monotonic() >= export["deadline"]:
-                        raise TimeoutError("export deadline exhausted")
-                publish_failure(output, output_identity, row, failure_time)
-                return
-            _publication_destination(output, output_identity, "result.json", export_time)
-            temporary.write_text(json.dumps(row, indent=2))
-            # Finish all fallible preparation before the final admission check.
-            # Retire SIGALRM process-wide, including any queued alarm. A thread
-            # mask alone cannot cover an alarm delivered to a surviving watcher.
-            # Disarming and the SAME original E-1 check are both precommit.
-            signal.signal(signal.SIGALRM, signal.SIG_IGN)
+                    raise RuntimeError("Owned root unavailable")
+                info = root.lstat()
+                if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != root_identity:
+                    raise RuntimeError("Owned root identity changed")
+                shutil.rmtree(root)
+                if root.exists():
+                    raise AssertionError("Owned data remains")
+                row["cleanup"]["data_absent"] = True
+            with report.check("harness", "sockets"):
+                if row["cleanup"].get("data_absent") is not True:
+                    raise RuntimeError("Owned socket/data absence unknown")
+                row["cleanup"]["sockets_absent"] = True
             signal.setitimer(signal.ITIMER_REAL, 0)
-            export_time()
-            os.replace(temporary, destination)
-            final_result_committed = True
-            # No postcommit deadline check: an admitted OS call can overrun or
-            # a crash can interrupt it. This is not hard timing/crash durability.
-
-        def failure_row() -> dict:
-            return failure_receipt(receipt, collection_state["safe_scenario"], failure_categories(),
-                                   completed_exported, ownership_evidence, args.exercise, started)
-
-        initial_fail_published = False
-
-        def export_time() -> None:
-            if time.monotonic() >= export["deadline"] - 1:
-                raise TimeoutError("export deadline exhausted")
-
-        def export_failed(exc: BaseException) -> None:
-            nonlocal export_incomplete
-            export_failure.setdefault("first", (exc, exc.__traceback__))
-            export_incomplete = True
-            latch_launcher("export", exc)
-
-        def ordinary_export(action: Callable[[], None]) -> None:
-            try:
-                action()
-            except BaseException as exc:
-                export_failed(exc)
-                if collection_state["fatal"] or not _ordinary_evidence_error(exc):
-                    collection_state["fatal"] = True
-                    raise
-                export_time()
-
-        try:
-            arm_deadline(export["deadline"])
-            if retained_completed is not None:
-                # Independent closed references precede any result naming them.
-                def export_completed() -> None:
-                    nonlocal completed_exported
-                    for name, data in completed_staged.items():
-                        export_time()
-                        completed.publish(output, name, data)
-                    export_time()
-                    copied, _ = completed.read_bundle(output, receipt)
-                    if copied != retained_completed:
-                        raise ValueError("completed export identity moved")
-                    completed_exported = copied
-                ordinary_export(export_completed)
-            try:
-                publish(failure_row())
-                initial_fail_published = True  # Only actual replacement counts.
-            except BaseException as exc:
-                export_failed(exc)
-                if not _ordinary_evidence_error(exc):
-                    collection_state["fatal"] = True
-                    raise
-                # Validate destination independently; unsafe state is fatal.
-                try:
-                    _publication_destination(output, output_identity, "result.json", export_time)
-                except BaseException:
-                    collection_state["fatal"] = True
-                    raise
-            arm_deadline(export["deadline"] - 1)
-            publish_evidence(output, output_identity, staged, published_members, failed_members,
-                             collection_state, export_time, export_failed)
-            if not collection_state["fatal"] and root and root.exists():
-                ordinary_export(lambda: stage_evidence(export_time))
-            # The second ORIGINAL pass also drains newly safe bytes after an
-            # ordinary recollection refusal. It never retries failed members.
-            publish_evidence(output, output_identity, staged, published_members, failed_members,
-                             collection_state, export_time, export_failed)
-            export_time()
-            if export_failure:
-                error, tb = export_failure["first"]
-                raise error.with_traceback(tb)
-            if not detail_complete or staging_incomplete:
-                raise ValueError("incomplete detailed evidence")
-            if not collection_state["token"]:
-                raise ValueError("redaction context unavailable")
-            if receipt["status"] == "PASS" and args.exercise == "baseline":
-                required = BASELINE_ARTIFACTS + [phase["name"] + ".txt" for phase in receipt["phases"]]
-                if any(name not in staged or (name.endswith((".json", ".png")) and not staged[name]) for name in required):
-                    raise ValueError("missing/empty baseline evidence")
-            manifest = json.loads((source / "e2e" / "manifest.json").read_text())
-            export_time()
-            export["finished"] = time.monotonic()
-            export["elapsed_seconds"] = export["finished"] - export["entered"]
-            export["ok"] = not export_incomplete
-            receipt["evidence_seconds"] = export["elapsed_seconds"]
-            receipt["total_seconds"] = export["finished"] - started
-            receipt["target_exceeded"] = receipt["total_seconds"] > 600
-            if (args.exercise != "baseline" or receipt["signals"] or not cleanup["ok"]
-                    or set(receipt["variants"]) != set(manifest["variants"])
-                    or any(row["status"] != "PASS" for row in receipt["variants"].values())):
-                receipt["status"] = "FAIL"
-            if receipt["status"] == "PASS":
-                validate_timing(receipt)
-                receipt["completed_cases"] = completed_exported
-                completed.join_results(completed_exported, receipt)
-            receipt.update(failure_categories())
-            receipt["completed_cases"] = completed_exported
-            export_time()
-            detailed = json.loads(sanitize_evidence(json.dumps(receipt)))
-            detailed["completed_cases"] = completed_exported
-            if ownership_evidence is not None:
-                detailed["ownership_evidence"] = ownership_evidence
-            publish(detailed, final=True)
-        except BaseException as exc:
-            if not final_result_committed:
-                receipt["status"] = "FAIL"
-                export_failure.setdefault("first", (exc, exc.__traceback__))
-                export_incomplete = True
-                latch_launcher("export", exc)
-                export["ok"] = False
-                export["error"] = type(export_failure["first"][0]).__name__
-                export["finished"] = time.monotonic()
-                export["elapsed_seconds"] = export["finished"] - export["entered"]
-                receipt.setdefault("failure_phase", "export")
-                try:
-                    signal.signal(signal.SIGALRM, interrupted)
-                    arm_deadline(export["deadline"])
-                    publish(failure_row())
-                except BaseException:
-                    # A successful initial FAIL remains if replacement never commits.
-                    # False means persistence was unavailable, never a claimed receipt.
-                    if not initial_fail_published:
-                        export_incomplete = True
-            # Successful replacement is terminal; never reclassify it or depend
-            # on a rescue write. Its alarm was already retired before commit.
-        finally:
-            if not final_result_committed:
-                signal.setitimer(signal.ITIMER_REAL, 0)
-    return 0 if receipt["status"] == "PASS" else 1
+            row["total_seconds"] = time.monotonic() - started
+            row["cleanup_finished"] = time.monotonic()
+            if row["total_seconds"] > 900 or row["cleanup_finished"] >= cleanup_end:
+                report.record("harness", "deadline", TimeoutError("Original cleanup/hard deadline exceeded"))
+            row["status"] = "PASS" if report.ok and args.exercise == "baseline" else "FAIL"
+            if handoff:
+                with report.check("harness", "private-handoff"):
+                    (handoff / "result.json").write_text(json.dumps(row))
+            (output / "logs").mkdir(parents=True, exist_ok=True)
+            (output / "logs/harness.log").write_text("\n".join(f"{'FAIL' if case['kind'] else 'PASS'} {suite}.{name}" for (suite, name), case in report.cases.items()) + "\n")
+            report.write(output / "reports/junit.xml")
+            report.console()
+    return 0 if row["status"] == "PASS" else 1
 
 
 if __name__ == "__main__":

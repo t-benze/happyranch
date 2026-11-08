@@ -42,14 +42,26 @@ jobs:
           e2e_npm_cache="$(npm config get cache)"
           [[ "$e2e_npm_cache" == /* && "$e2e_npm_cache" != / && "$e2e_npm_cache" != *$'\n'* && "$e2e_npm_cache" != *$'\r'* ]] || { echo 'Invalid runner npm cache path' >&2; exit 1; }
           E2E_NPM_DOWNLOAD_STORE="${e2e_npm_cache%/}/_cacache" python3 e2e/run.py --python "$e2e_python" --artifacts "$RUNNER_TEMP/e2e-${{ matrix.python }}"
-      - name: Publish sanitized observations and absence receipts
+      - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-${{ matrix.python }}
-          path: ${{ runner.temp }}/e2e-${{ matrix.python }}
+          path: ${{ runner.temp }}/e2e-${{ matrix.python }}/reports/junit.xml
           if-no-files-found: error
-          retention-days: 7
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-${{ matrix.python }}-failure
+          path: |
+            ${{ runner.temp }}/e2e-${{ matrix.python }}/traces/*.zip
+            ${{ runner.temp }}/e2e-${{ matrix.python }}/screenshots/*.png
+            ${{ runner.temp }}/e2e-${{ matrix.python }}/logs/daemon.log
+            ${{ runner.temp }}/e2e-${{ matrix.python }}/logs/controller.log
+            ${{ runner.temp }}/e2e-${{ matrix.python }}/logs/harness.log
+            ${{ runner.temp }}/e2e-${{ matrix.python }}/logs/setup-*.log
+          if-no-files-found: error
 
   cancellation:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main')
@@ -85,14 +97,27 @@ jobs:
           e2e_npm_cache="$(npm config get cache)"
           [[ "$e2e_npm_cache" == /* && "$e2e_npm_cache" != / && "$e2e_npm_cache" != *$'\n'* && "$e2e_npm_cache" != *$'\r'* ]] || { echo 'Invalid runner npm cache path' >&2; exit 1; }
           E2E_NPM_DOWNLOAD_STORE="${e2e_npm_cache%/}/_cacache" python3 e2e/cancellation.py --python "$e2e_python" --signal '${{ matrix.signal }}' --artifacts "$RUNNER_TEMP/e2e-cancel-${{ matrix.signal }}"
-      - name: Publish signal, non-success and owned closure receipts
+      - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-cancel-${{ matrix.signal }}
-          path: ${{ runner.temp }}/e2e-cancel-${{ matrix.signal }}
+          path: ${{ runner.temp }}/e2e-cancel-${{ matrix.signal }}/reports/junit.xml
           if-no-files-found: error
-          retention-days: 7
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-cancel-${{ matrix.signal }}-failure
+          path: |
+            ${{ runner.temp }}/e2e-cancel-${{ matrix.signal }}/traces/*.zip
+            ${{ runner.temp }}/e2e-cancel-${{ matrix.signal }}/screenshots/*.png
+            ${{ runner.temp }}/e2e-cancel-${{ matrix.signal }}/logs/daemon.log
+            ${{ runner.temp }}/e2e-cancel-${{ matrix.signal }}/logs/controller.log
+            ${{ runner.temp }}/e2e-cancel-${{ matrix.signal }}/logs/harness.log
+            ${{ runner.temp }}/e2e-cancel-${{ matrix.signal }}/logs/setup-*.log
+            ${{ runner.temp }}/e2e-cancel-${{ matrix.signal }}/logs/launcher.log
+          if-no-files-found: error
 
   aggregate:
     name: Daily Product E2E Health
@@ -106,12 +131,25 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: e2e-*
-          path: e2e-results
-      - name: Check aggregate refusal controls (harness only)
         if: always()
-        run: python3 e2e/aggregate.py --controls
+        with:
+          name: e2e-3.12
+          path: e2e-results/e2e-3.12
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: always()
+        with:
+          name: e2e-3.14
+          path: e2e-results/e2e-3.14
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: always()
+        with:
+          name: e2e-cancel-TERM
+          path: e2e-results/e2e-cancel-TERM
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: always()
+        with:
+          name: e2e-cancel-INT
+          path: e2e-results/e2e-cancel-INT
       - name: "Report event health: exact source, all cells, diagnostics and cleanup"
         if: always()
         env:

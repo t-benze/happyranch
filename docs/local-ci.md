@@ -1,5 +1,19 @@
 # Local CI
 
+Founder THR-291 seq659 slice 1 uses standard per-case JUnit and explicit
+failure-only trace/screenshot/log artifacts with GitHub default retention.
+Both lanes must report the exact56 once each, both launcher diagnostics and all
+setup/cleanup checks must pass. Health checks reports and identity only; former
+aggregate product predicates run privately in-lane before data deletion.
+Controller snapshots/completed ledgers remain private until slice2; no launcher
+receipt/hash/ownership export, redaction-context protocol or publication budgets
+remain. Operational480/240/720/60/900 bounds and product output caps stay.
+JUnit always uploads; missing reports fail. Known synthetic tokens receive literal
+scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-1-of-3-thr-291-seq659).
+Historical records below preserve actual failures and holds; their removed
+launcher/export/aggregate instructions are superseded, never current acceptance.
+
+
 Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
 Required checks at the final PR head and exact merge on main are exactly
 `Source Boundary Lint` and `Web Lint (Node 24)`, both unconditional with no
@@ -356,7 +370,7 @@ cleanup/evidence reserves. Missing/failed/skipped cells, wrong source/version,
 incomplete diagnostics/artifacts or unknown cleanup give nonzero daily health.
 The Actions summary identifies the actual source, expected `e2e-3.12`,
 `e2e-3.14`, `e2e-cancel-TERM`, `e2e-cancel-INT` artifacts,
-7-day retention, job states and missing/failure evidence. Launcher cleanup is
+GitHub default retention, job states and missing/failure evidence. Launcher cleanup is
 not product cancellation/restart coverage. The case record keeps four authoring
 answers and twelve UNEXECUTED/unauthorized protected defect proposals;
 RED/restoration/GREEN/repetitions and full assertion validation remain absent.
@@ -562,7 +576,7 @@ validation outside `tests/`, not a retired suite or product E2E evidence.
 Docs Manual and tenant-isolation workflows are explicit manual-only; neither
 is a required path check. macOS packaging remains manual/tag release activity.
 
-## Bounded E2E recovery diagnostics (ROOT12610 / TASK12643)
+## Historical E2E recovery diagnostics (ROOT12610 / TASK12643)
 
 The controller latches the first actually recorded exception/traceback before
 diagnostic work; record_error performs no I/O. After the action catch's existing
@@ -2500,7 +2514,7 @@ Historical checkpoints and failed roots are not rewritten or revived. Readiness
 and require_ready remain unconditionally disabled; no E2E/build/live run follows.
 
 
-## Bounded launcher ownership diagnostics — TASK12803 / ROOT12738
+## Historical launcher ownership diagnostics — TASK12803 / ROOT12738
 
 Manager step39 accepts exact TASK12796 consolidated54165B/SHA256
 `7959be74101b32b2b54c616e1d280f8e94746cd37e4a4cc457fcaa902ce9969b`

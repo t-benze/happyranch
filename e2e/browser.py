@@ -742,6 +742,8 @@ class Browser:
         require(version("playwright") == "1.58.0", "pinned native adapter version")
         controller.durable.append(dict(playwright_version=version("playwright"), chromium_version=self.browser.version))
         self.context = self.browser.new_context(locale="en-US", viewport={"width": 1440, "height": 900})
+        self.context.tracing.start(screenshots=True, snapshots=True, sources=False)
+        (controller.root / "browser-started").touch()
         controller.remaining()
         self.page = self.context.new_page()
         controller.remaining()
@@ -1501,6 +1503,8 @@ class Browser:
         def context_closed(_context):
             self.thread_events.append(dict(event='context-close', at=time.monotonic()))
         self.thread_context.on('close', context_closed)
+        self.thread_context.tracing.start(screenshots=True, snapshots=True, sources=False)
+        (self.controller.root / "thread-browser-started").touch()
         self.controller.remaining()
         self.thread_page = self.thread_context.new_page()
         self.controller.remaining()
@@ -1818,6 +1822,10 @@ class Browser:
                     try:
                         if time.monotonic() >= end:
                             raise TimeoutError('E05 original native close deadline')
+                        try:
+                            await self.thread_context._impl_obj.tracing.stop(path=str(self.controller.root / "traces/threads.zip"))
+                        except Exception as exc:  # noqa: BLE001 - trace failure must not suppress owned context close
+                            errors.append(exc)
                         await self.thread_context._impl_obj.close()
                     except Exception as exc:
                         errors.append(exc)
@@ -2149,11 +2157,42 @@ class Browser:
                 self.poison(exc)
                 raise
 
+    def capture_failure(self) -> None:
+        """Best effort in the existing healthy native budget; failures stay visible."""
+        c = self.controller
+        try:
+            self._healthy()
+            manifest = json.loads((c.source / "e2e/manifest.json").read_text())
+            names = [name for name, row in c.results.items() if row.get("status") == "FAIL"]
+            for item in c.durable:
+                names.extend(name for name, row in item.get("threads_cases", {}).get("case_outcomes", {}).items()
+                             if row.get("status") == "FAIL")
+            if not names:
+                names = [next((name for name in manifest["variants"] if name not in c.results), "setup")]
+            if c.exercise == "cancellation":
+                names = ["launcher"]
+            for name in set(names):
+                page = getattr(self, "thread_page", self.page) if name.startswith("E05.") else self.page
+                if page.is_closed():
+                    self.events.append(dict(event="failure-screenshot-unavailable", case=name,
+                                            reason="page-closed", at=time.monotonic()))
+                    continue
+                end = min(c.effective_end(), time.monotonic() + 4)
+                with c.phase(end, native=True):
+                    page.screenshot(path=str(c.root / "screenshots" / (name + ".png")), full_page=True,
+                                    timeout=c.remaining(end - time.monotonic()) * 1000)
+        except BaseException as exc:  # noqa: BLE001 - preserve capture failure and native safety
+            from playwright._impl._errors import TimeoutError as NativeTimeoutError
+            c.record_error("failure-screenshot", exc)
+            if isinstance(exc, (NativeTimeoutError, TimeoutError)) or not isinstance(exc, Exception):
+                self.poison(exc)
+
     def close(self) -> None:
         c = self.controller
         stages = [
             ("browser-final-observation", self.final_observation),
             ("thread-context-close", self.close_threads_context),
+            ("browser-trace-stop", lambda: self._native(lambda: self.context._impl_obj.tracing.stop(path=str(c.root / "traces/main.zip")), c.effective_end())),
             ("browser-context-close", lambda: self._native(self.context._impl_obj.close, c.effective_end())),
             ("browser-close", lambda: self._native(self.browser._impl_obj.close, c.effective_end())),
             ("browser-terminal-stop", self._terminal_stop),
