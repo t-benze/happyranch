@@ -3384,6 +3384,11 @@ class TasksMixin:
             if coding is None or coding.org.slug != org:
                 return False
             return coding.record_pid(task_id=task_id, agent=agent, session_id=session_id, pid=pid)
+        if owner.kind == 'seq_visit':
+            sequential = getattr(self, '_workflow_sequential_dispatch', None)
+            if sequential is None or sequential.org.slug != org:
+                return False
+            return sequential.record_pid(task_id=task_id, agent=agent, session_id=session_id, pid=pid)
         if owner.kind != 'legacy':
             return False
         began = not self._conn.in_transaction

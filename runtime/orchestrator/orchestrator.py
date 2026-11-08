@@ -1236,6 +1236,8 @@ class Orchestrator:
         coding = getattr(self, "_workflow_coding_dispatch", None)
         if coding is not None and pause_invocation is not None and pause_invocation.owner == 'coding' and not recovery:
             brief += coding.development_instruction(task_id, agent_name, session_id)
+        if pause_invocation is not None and pause_invocation.owner == 'sequential' and not recovery:
+            brief += pause_invocation.workflow_dispatcher.node_instruction(task_id, agent_name, session_id)
         full_prompt = self._build_agent_prompt(
             provider,
             agent_name,
@@ -1673,6 +1675,7 @@ class Orchestrator:
                          else "legacy"))
         drafts = (getattr(self, "_workflow_reviews", None) if ownership.kind == "f5"
                   else getattr(self, "_workflow_coding_dispatch", None) if ownership.kind == "coding_attempt"
+                  else getattr(self, "_workflow_sequential_dispatch", None) if ownership.kind == "seq_visit"
                   else getattr(self, "_workflow_drafts", None) if ownership.kind == "draft" else None)
         if ownership.kind != "legacy" and drafts is None:
             return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,
@@ -1853,7 +1856,7 @@ class Orchestrator:
             on_started=(lambda pid: on_started(pid) if pid > 0 else None),
             cancellation=token,
         )
-        if invocation is not None and invocation.owner == 'coding':
+        if invocation is not None and invocation.owner in ('coding', 'sequential'):
             invocation.coding_request = host_request
         outcome = self._host_supervisor.run(
             host_request,

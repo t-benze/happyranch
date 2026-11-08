@@ -54,8 +54,13 @@ def route_owned_task(orch: Any, task_id: str) -> bool:
     ownership = classify_task(orch._db, task_id, org_slug=getattr(orch, "_slug", None))
     if ownership.kind == "legacy":
         return False
+    if ownership.kind == "seq_visit":
+        sequential = getattr(orch, "_workflow_sequential_dispatch", None)
+        if sequential is not None:
+            sequential.dispatch(task_id)
+        return True
     if ownership.kind in SEQUENTIAL_HELD_KINDS:
-        return True  # U3a recognizes ownership but has no execution ports attached.
+        return True  # Source/carrier have no execution ports attached.
     dispatcher = getattr(orch, "_workflow_drafts", None)
     if ownership.kind == "draft" and dispatcher is not None:
         dispatcher.dispatch(task_id)

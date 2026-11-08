@@ -311,3 +311,23 @@ Fresh ended/foreign sessions cannot author output. Native summaries retain their
 existing audience; role recipients are no private-custody guarantee. Claims supply
 no capability/access or settlement proof. Missing U5 proof leaves advancement
 unavailable. No queued native launch, caller notification or live enablement follows.
+
+
+## Sequential native queue owner (U3d-2)
+
+A source-only sequential visit can own the native queue preparation tuple and
+Pause journal owner `sequential`. `Dispatcher.worker_started` adds one ownership
+classification before the unchanged Coding call; legacy and other kinds retain
+that Coding tuple. Selected visit admission requires positive source-outer
+evidence; no current producer writes it. Queue finish retains the actual native
+preparation's close/release obligations. Heartbeat remains a no-op for all three
+sequential kinds.
+
+`route_owned_task` sends only `seq_visit` to the sequential dispatcher; source
+and carrier return owned without enqueue or launch. Startup `recover_owned_task`
+remains unchanged and holds all sequential kinds. Pause discovery may notify a
+queued visit through the same source-outer gate. Normal mutation guards remain
+unchanged; the dedicated current-invocation PID port is the only added PID route
+and refuses without the original live sequential invocation. Cancellation still
+returns409: U3e must attach its cancellation fence before a start producer.
+No real launch/PID/callback/settlement or V3 behavior has been verified.

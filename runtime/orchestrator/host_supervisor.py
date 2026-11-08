@@ -1805,7 +1805,7 @@ class HostSessionSupervisor:
             return self._outcome(request, ctx, attempt)
         ctx.bind_running(running, grace_seconds)
         from runtime.orchestrator.task_pause import TaskInvocation
-        if isinstance(final_prelaunch_validator, TaskInvocation) and final_prelaunch_validator.owner == 'coding':
+        if isinstance(final_prelaunch_validator, TaskInvocation) and final_prelaunch_validator.owner in ('coding', 'sequential'):
             final_prelaunch_validator.workflow_dispatcher.observed_handle(
                 final_prelaunch_validator.task.id, final_prelaunch_validator.agent,
                 final_prelaunch_validator.session_id, running)
