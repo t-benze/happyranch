@@ -475,6 +475,10 @@ class BrowserRelay:
                 return left
 
         def stop_aborted(record: dict, event: dict) -> None:
+            # A completed finite exchange needs no reader stop. Its downstream
+            # write can still observe the native cancellation; close joins it.
+            if relay._upstream_complete(record):
+                return
             # Native cancellation can precede the HTTP handler or its reader.
             # Keep that terminal until the actual worker can own the stop.
             record['browser_abort'] = dict(event)
@@ -704,6 +708,7 @@ class BrowserRelay:
                     remaining()
                     if selected:
                         record["request_text"] = raw.decode("utf8")
+                    operation = 'upstream'
                     connection = http.client.HTTPConnection("127.0.0.1", relay.upstream, timeout=remaining())
                     with relay.lock:
                         relay.connections.add(connection)
@@ -722,7 +727,6 @@ class BrowserRelay:
                         relay.connections.add(upstream_socket)
                         relay.active_responses[id(record)] = upstream_socket
                     record["forwarded"] = time.monotonic()
-                    operation = 'upstream'
                     if self.command == 'GET' and not selected:
                         io_owner = RequestOwner(record, end)
                         with relay.lock:
@@ -783,14 +787,20 @@ class BrowserRelay:
                         if key.lower() not in hops:
                             self.send_header(key, value)
                     self.send_header("Connection", "close")
+                    operation = 'downstream-write'
                     self.end_headers()
+                    operation = 'downstream'
                     if self.command != "HEAD" and response.status not in {204, 304}:
                         if content is not None:
                             self.connection.settimeout(remaining())
+                            operation = 'downstream-write'
                             if self.wfile.write(content) != len(content):
                                 raise IOError("short browser response write")
+                            operation = 'downstream'
                             self.connection.settimeout(remaining())
+                            operation = 'downstream-flush'
                             self.wfile.flush()
+                            operation = 'downstream'
                             remaining()
                         else:
                             # read1 may close the response/socket while returning
@@ -813,10 +823,14 @@ class BrowserRelay:
                                     break
                                 operation = 'downstream'
                                 self.connection.settimeout(remaining())
+                                operation = 'downstream-write'
                                 if self.wfile.write(chunk) != len(chunk):
                                     raise IOError("short browser stream write")
+                                operation = 'downstream'
                                 self.connection.settimeout(remaining())
+                                operation = 'downstream-flush'
                                 self.wfile.flush()
+                                operation = 'downstream'
                                 remaining()
                             if response.length not in (None, 0):
                                 raise http.client.IncompleteRead(b'')
@@ -975,6 +989,47 @@ class BrowserRelay:
         self.proof, self.arm_end = proof, end
         self.hold = dict(armed=time.monotonic(), deadline=end)
 
+    @staticmethod
+    def _upstream_complete(record: dict) -> bool:
+        operation = record.get('upstream_operation', {})
+        response = record.get('response_outcome', {})
+        return (not record.get('streaming', True) and operation.get('outcome') == 'returned'
+                and 'error' not in operation
+                and (operation.get('kind') == 'getresponse' and response.get('length') == 0
+                     or operation.get('kind') == 'read' and operation.get('result', {}).get('closed') is True
+                     and operation['result'].get('remaining_after') in (None, 0)))
+
+    def _cancelled_downstream(self, record: dict, settled: float) -> bool:
+        # Repeated targets are deliberately conservative: native/relay order
+        # alone cannot disambiguate concurrent identical or cached Requests.
+        issued = [e for e in self.browser_requests
+                  if (e['method'], e['target']) == (record['method'], record['target'])]
+        proxied = [r for r in self.records
+                   if (r['method'], r['target']) == (record['method'], record['target'])]
+        if len(issued) != 1 or len(proxied) != 1:
+            return False
+        native = issued[0]
+        terminals = native.get('terminals', [])
+        owner = record.get('io_owner', {})
+        return (record.get('client_disconnected') in {'BrokenPipeError', 'ConnectionResetError'}
+                and 'error' not in record and record['method'] == 'GET' and record['ordinal'] is None
+                and record.get('failure_operation') in {'downstream-write', 'downstream-flush'}
+                and record.get('browser_request_id') == native['request_id']
+                and len(terminals) == 1 and terminals[0].get('event') == 'request-failed'
+                and terminals[0].get('failure') == 'net::ERR_ABORTED'
+                and terminals[0].get('method') == record['method']
+                and terminals[0].get('request_id') == native['request_id']
+                and native['at'] <= record['entered'] <= terminals[0]['at'] <= settled
+                and self._upstream_complete(record) and bool(owner)
+                and owner.get('forced') is None and owner.get('errors') == []
+                and all(o.get('outcome') == 'returned' and 'error' not in o for o in owner['operations'])
+                and bool(owner['resources']) and all('closed' in r and 'error' not in r for r in owner['resources'])
+                and all('unregistered' in r and 'error' not in r for r in owner['registrations'])
+                and not any(k in record for k in ('stop_intent', 'stop_ack', 'browser_abort', 'delivered', 'abort_shutdown_error',
+                                                  'response_close_error', 'connection_close_error'))
+                and record['upstream_operation']['finished'] <= record['failure_at']
+                <= owner['finished'] <= record['closed'] <= settled)
+
     def close(self, end: float | None = None) -> dict:
         entered = time.monotonic()
         end = min(self.deadline, end if end is not None else self.deadline, entered+3)
@@ -1052,8 +1107,13 @@ class BrowserRelay:
                     trigger = dict(intent['event'])
                     trigger.pop('target')
                     expected = issued[0].get('terminals') == [trigger]
-            if not expected:
-                errors.append(failure + ': browser transport failed')
+            if not expected and not self._cancelled_downstream(record, settled):
+                # Fixed safe fields only: never raw exception text, target/query,
+                # headers or bodies. Keep the ORIGINAL failure time and identity.
+                attribution = dict(method=record['method'], path=record['path'],
+                                   operation=record.get('failure_operation'), at=record.get('failure_at'),
+                                   relay_id=record['relay_id'], request_id=record.get('browser_request_id'))
+                errors.append(failure + ': browser transport failed ' + json.dumps(attribution, sort_keys=True))
         with self.lock:
             # Observe late-entering request owners and their pre-registered
             # downstream sockets in ONE snapshot after listener admission ends.

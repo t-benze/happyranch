@@ -540,7 +540,7 @@ def exercise(c: Controller) -> None:
                 c.browser_relay_closed = not (closure['workers_alive'] or closure['listener_alive'] or closure['connections'])
                 c.durable.append(dict(thread_proxy_closure=closure))
                 if closure['errors'] or closure['workers_alive'] or closure['listener_alive'] or closure['connections']:
-                    c.record_error('thread-proxy-closure', RuntimeError('proxy closure/transport failure'))
+                    c.record_error('thread-proxy-closure', RuntimeError(f'proxy closure/transport failure: {closure!r}'))
         record['cleanup_finished'] = time.monotonic()
         record['cleanup_deadline'] = c.effective_end()
         if hasattr(c, "case_deadline"):
