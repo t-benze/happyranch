@@ -324,7 +324,8 @@ def main() -> int:
             with report.check("harness", "owned-processes"):
                 if owner is None:
                     raise RuntimeError("Owned containment was not initialized")
-                row["cleanup"] = owner.cleanup()
+                # Private readers retain the former JSON-decoded PID keys.
+                row["cleanup"] = json.loads(json.dumps(owner.cleanup()))
                 if row["cleanup"].get("ok") is not True:
                     raise RuntimeError("Owned process/unit/group cleanup failed or remains unknown")
             if root is not None:

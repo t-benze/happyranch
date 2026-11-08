@@ -51,9 +51,12 @@ artifacts use `if: failure()` and explicit lane-root paths: `traces/*.zip`,
 `screenshots/*.png`, `logs/daemon.log`, `logs/controller.log`, `logs/harness.log`,
 `logs/setup-*.log`, plus diagnostic `logs/launcher.log`. Traces are standard
 Playwright `main.zip`/`threads.zip` with source capture disabled; screenshots use
-manifest names or `setup.png`/`launcher.png`. Collection failure is a harness
-error, never a fabricated screenshot/trace. A failure before browser startup
-can provide logs only. All artifacts use GitHub default retention; no override.
+manifest names or `setup.png`/`launcher.png`. A page already closed by its owner
+records a non-failure screenshot-unavailable note without native capture; the
+original product failure stays red and strict E07 admission is unchanged.
+Other collection failures remain harness errors, never fabricated artifacts.
+A failure before browser startup can provide logs only. All artifacts use GitHub
+default retention; no override.
 No raw runtime, database, payload, configuration, token file, controller snapshot,
 `result.json`, `active.json`, `case-NN.json` or completion archive is uploaded.
 

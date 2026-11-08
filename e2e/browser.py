@@ -2173,6 +2173,10 @@ class Browser:
                 names = ["launcher"]
             for name in set(names):
                 page = getattr(self, "thread_page", self.page) if name.startswith("E05.") else self.page
+                if page.is_closed():
+                    self.events.append(dict(event="failure-screenshot-unavailable", case=name,
+                                            reason="page-closed", at=time.monotonic()))
+                    continue
                 end = min(c.effective_end(), time.monotonic() + 4)
                 with c.phase(end, native=True):
                     page.screenshot(path=str(c.root / "screenshots" / (name + ".png")), full_page=True,
