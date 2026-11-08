@@ -85,7 +85,8 @@ def _inventory(conn: sqlite3.Connection) -> dict[str, tuple[str, str | None, str
     return {task: _binding_owner(task, bindings) for task, bindings in selected.items()}
 
 
-def validate_ownership_data(conn: sqlite3.Connection, *, org_slug: str | None) -> None:
+def validate_ownership_data(conn: sqlite3.Connection, *, org_slug: str | None,
+                             sequential: bool = False) -> None:
     """Complete boundary reader; never entered by routine discrimination."""
     expected = _inventory(conn)
     tasks = {row[0] for row in conn.execute('SELECT id FROM tasks')}
@@ -93,6 +94,14 @@ def validate_ownership_data(conn: sqlite3.Connection, *, org_slug: str | None) -
         raise ValueError('workflow_task_ownership_task_missing:' + sorted(expected.keys() - tasks)[0])
     actual = {}
     for task, org, version, kind, owner in conn.execute('SELECT * FROM workflow_task_ownership'):
+        if sequential and type(version) is int and version == 2:
+            selected_kind, selected_owner_id, _ = _selected_sequential_owner(conn, task, org_slug)
+            if (task in actual or type(org) is not str or not org
+                    or (kind, owner) != expected.get(task, ('legacy', None, None))[:2]
+                    or (kind, owner) != (selected_kind, selected_owner_id)):
+                raise ValueError('workflow_task_ownership_invalid:' + str(task))
+            actual[task] = org
+            continue
         if (task in actual or type(version) is not int or version != 1
                 or type(org) is not str or not org or (org_slug is not None and org != org_slug)
                 or (kind, owner) != expected.get(task, ('legacy', None, None))[:2]):
@@ -172,6 +181,11 @@ def selected_owner(conn: sqlite3.Connection, task_id: str, org_slug: str | None)
     row = conn.execute('SELECT o.org_slug,o.version,o.kind,o.owner_id,t.assigned_agent,t.parent_task_id,'
         't.status,t.current_session_id FROM workflow_task_ownership o JOIN tasks t ON t.id=o.task_id '
         'WHERE o.task_id=?', (task_id,)).fetchone()
+    if row is not None and type(row[1]) is int and row[1] == 2:
+        _, owner, state = _selected_sequential_owner(conn, task_id, org_slug)
+        # Installed callers know only the historical routing union. Keep new
+        # ownership held until the separately reviewed common engine attaches.
+        return 'reconciliation_required', owner, state
     if row is None or org_slug is None or row[0] != org_slug or type(row[1]) is not int or row[1] != 1:
         raise ValueError('workflow_task_ownership_missing_or_unsupported')
     org, _, kind, owner, agent, parent, status, session = row
@@ -232,3 +246,50 @@ def selected_owner(conn: sqlite3.Connection, task_id: str, org_slug: str | None)
     if kind == 'document':
         return 'reconciliation_required', owner, None
     raise ValueError('workflow_task_ownership_unsupported')
+
+
+def _selected_sequential_owner(conn: sqlite3.Connection, task_id: str,
+                                org_slug: str | None) -> tuple[str, str | None, str | None]:
+    """Selected v2 scalar consistency, never history or execution authority.
+
+    Complete layout validation belongs to the caller's compatibility boundary.
+    Reuse the installed ownership index and the literal binding view; no whole
+    inventory scan or schema reconstruction belongs in routine classification.
+    """
+    if not conn.in_transaction:
+        raise ValueError('workflow_seq_ownership_requires_snapshot')
+    mark = conn.execute('SELECT org_slug,version,kind,owner_id FROM workflow_task_ownership '
+                        'WHERE task_id=?', (task_id,)).fetchone()
+    if (mark is None or type(org_slug) is not str or not org_slug or mark[0] != org_slug
+            or type(mark[1]) is not int or mark[1] != 2
+            or mark[2] not in ('seq_source_waiting', 'seq_carrier', 'seq_visit')
+            or type(mark[3]) is not str or not mark[3] or '\x00' in mark[3]):
+        raise ValueError('workflow_seq_ownership_missing_or_unsupported')
+    bindings = [tuple(row) for row in conn.execute(
+        'SELECT relation,owner_id,instance_id FROM workflow_task_owner_bindings WHERE task_id=? LIMIT 4', (task_id,))]
+    if any(type(value) is not str or not value or '\x00' in value
+           for row in bindings for value in row):
+        raise ValueError('workflow_seq_ownership_invalid_binding')
+    kind, owner, run_id = _binding_owner(task_id, bindings)
+    if (kind, owner) != tuple(mark[2:]):
+        raise ValueError('workflow_seq_ownership_relation_conflict')
+    run = conn.execute('SELECT source_task_id,carrier_task_id,state,source_principal '
+                       'FROM workflow_seq_runs WHERE id=? AND org_slug=?', (run_id, org_slug)).fetchone()
+    task = conn.execute('SELECT parent_task_id,assigned_agent,current_session_id FROM tasks WHERE id=?',
+                        (task_id,)).fetchone()
+    if run is None or task is None:
+        raise ValueError('workflow_seq_ownership_reference_missing')
+    if kind == 'seq_source_waiting':
+        valid = task_id == run[0] and task[1] == run[3]
+        state = run[2]
+    elif kind == 'seq_carrier':
+        valid = task_id == run[1] and task[0] == run[0] and task[2] is None
+        state = run[2]
+    else:
+        visit = conn.execute('SELECT principal,state FROM workflow_seq_visits '
+                             'WHERE id=? AND run_id=? AND task_id=?', (owner, run_id, task_id)).fetchone()
+        valid = visit is not None and task[0] == run[1] and task[1] == visit[0]
+        state = None if visit is None else visit[1]
+    if not valid:
+        raise ValueError('workflow_seq_ownership_native_conflict')
+    return kind, owner, state

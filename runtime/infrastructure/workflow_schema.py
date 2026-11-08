@@ -15,6 +15,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
@@ -828,6 +829,54 @@ def _schema_snapshot(conn: sqlite3.Connection):
             conn.rollback()
 
 
+_sequential_legacy_read: ContextVar[tuple[sqlite3.Connection, dict[str, list[dict]]] | None] = ContextVar(
+    'workflow_sequential_legacy_read', default=None,
+)
+
+
+def _sequential_validated_rows(conn: sqlite3.Connection) -> dict[str, list[dict]]:
+    """Rows authenticated by the complete sequential reader in this snapshot."""
+    scope = _sequential_legacy_read.get()
+    return scope[1] if scope is not None and scope[0] is conn else {}
+
+
+@lru_cache(maxsize=72)
+def _canonical_sequential_layout(layout: str, *, coding_extension: bool,
+                                 owner_indexed: bool, ownership: int) -> tuple[object, ...]:
+    """Independent combined reference, used only by the explicit new reader."""
+    from runtime.infrastructure.workflow_sequential_schema import CANONICAL_WORKFLOW_SEQUENTIAL_DDL
+    from runtime.infrastructure.workflow_sequential_ownership import (
+        SEQUENTIAL_OWNERSHIP_DDL, sequential_binding_view_ddl,
+    )
+    from runtime.infrastructure.workflow_task_ownership import OWNERSHIP_DDL, binding_view_ddl
+    with _canonical_connection(layout, coding_extension=coding_extension,
+                               owner_indexed=owner_indexed) as expected:
+        _execute_ddl(expected, CANONICAL_WORKFLOW_SEQUENTIAL_DDL)
+        if ownership:
+            expected.execute(SEQUENTIAL_OWNERSHIP_DDL if ownership == 2 else OWNERSHIP_DDL)
+            expected.execute(sequential_binding_view_ddl(layout, coding_extension=coding_extension)
+                             if ownership == 2 else binding_view_ddl(layout, coding_extension=coding_extension))
+        return _layout(expected)
+
+
+def _read_sequential_legacy_data(conn: sqlite3.Connection, *, expected_org_slug: str,
+                                 budget: _Budget, sequential_rows: dict[str, list[dict]]) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
+    """Compose original recursive readers over a complete combined schema.
+
+    Only the standalone sequential reader enters this scope. Recursive structure
+    checks still compare every object/column/index/FK against literal references;
+    the native connection, exact budget and all retained data readers are used
+    unchanged. Default installed readers continue refusing the new extension.
+    """
+    if not conn.in_transaction or _sequential_legacy_read.get() is not None:
+        raise ValueError('workflow_seq_legacy_reader_requires_snapshot')
+    token = _sequential_legacy_read.set((conn, sequential_rows))
+    try:
+        return _read_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+    finally:
+        _sequential_legacy_read.reset(token)
+
+
 def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], bool]:
     """Independently recognize document layout plus the unchanged coding family.
 
@@ -849,6 +898,14 @@ def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H
     expected = _canonical_layout(layout, coding_extension=coding,
                                  owner_indexed=bool(_owner_indexes_present(conn)),
                                  owner_marked='workflow_task_ownership' in names or 'workflow_task_owner_bindings' in names)
+    if _sequential_validated_rows(conn):
+        from runtime.infrastructure.workflow_sequential_ownership import SEQUENTIAL_OWNERSHIP_DDL
+        companion = ' '.join(SEQUENTIAL_OWNERSHIP_DDL.strip().removesuffix(';').split())
+        marked = bool(names & {'workflow_task_ownership', 'workflow_task_owner_bindings'})
+        ownership = (2 if any(row[1] == 'workflow_task_ownership' and row[3] == companion
+                              for row in actual[0]) else 1) if marked else 0
+        expected = _canonical_sequential_layout(layout, coding_extension=coding,
+            owner_indexed=bool(_owner_indexes_present(conn)), ownership=ownership)
     if _object_keys(actual) != _object_keys(expected):
         raise ValueError('workflow_schema_object_set_mismatch')
     if actual != expected:
@@ -937,7 +994,8 @@ def _read_installed(
         validate_revision_storage(conn, expected_org_slug=expected_org_slug)
     from runtime.infrastructure.workflow_task_ownership import ownership_storage_present, validate_ownership_data
     if ownership_storage_present(conn):
-        validate_ownership_data(conn, org_slug=expected_org_slug)
+        validate_ownership_data(conn, org_slug=expected_org_slug,
+                                sequential=bool(_sequential_validated_rows(conn)))
     return layout, coding
 
 

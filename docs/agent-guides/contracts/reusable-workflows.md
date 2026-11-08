@@ -252,10 +252,10 @@ full review and scoped QA precede manager guarded merge.
 ## U2a storage and standalone reader boundary
 
 TASK-14536 under replacement root TASK-14531 adds the records/standalone-reader
-boundary of U2a. This is SOURCE-INERT: no production importer, producer,
-allocator, route, startup SQL or installer is attached. It does not close U2,
-M1, AC5, AC8 or AC12. The remaining U2a reader integration must precede U2b
-installation and U3 producers.
+boundary of U2a. This is SOURCE-INERT: no production caller of the standalone
+history reader, producer, allocator, route, startup SQL or installer is attached. It does not close U2,
+M1, AC5, AC8 or AC12. TASK-14576 under root TASK-14563 adds the
+readers-only composition below; U2b installation and U3 producers remain separate.
 
 `runtime/infrastructure/workflow_sequential_schema.py` owns a separate version1
 marker and nine tables: definitions, settings snapshots, settings operations,
@@ -318,16 +318,18 @@ call. Checks occur before success, including unavailable/empty results;
 exhaustion raises a refusal, never validates a subset or reports empty success.
 These are cooperative limits, not hard RSS or OS-I/O timing guarantees.
 
-Legacy-only complete validation receives the unchanged native connection and an
-exact retained `_Budget`, seeded with the outer consumed-byte, accepted-row and
-traversal counters. Its counters fold back by maximum, then the outer byte/work/
-deadline checks run before an unavailable result; no allowance is replenished.
-Retained readers keep their original per-call caps and may refuse earlier.
-Their byte acquisition is bounded by those retained caps plus the same outer
-SQLite progress/deadline bound, **not pre-reservation against the outer 64 MiB
-cap**. Retained document/ownership queries without a budget argument remain
-under that progress handler; their bytes are not added to the outer counter.
-Any retained-reader refusal propagates unchanged.
+Legacy-only and combined complete validation receive the unchanged native
+connection and an exact retained `_Budget` with its original per-call caps.
+TASK-14576 separates those narrower counters from the new reader's schema/copy
+charges: the enclosing totals remain intact, each retained counter is added back
+on success or refusal, and the outer byte/work/deadline checks run before success.
+No aggregate allowance replenishes. Seeding the wider new-reader metadata charges
+into the original 16 MiB/16384-step counters would reject even empty Coding.
+Retained readers may refuse at their own original caps. Their acquisition is
+bounded by those caps plus the same outer SQLite progress/deadline bound, **not
+pre-reservation against the outer 64 MiB cap**. Retained document/ownership queries
+without a budget argument remain under that progress handler; their bytes are
+not added to the outer counter. Original refusals propagate unchanged.
 
 The separate `workflow_sequential_ownership.py` companion reference keeps all
 original columns and v1 kinds, and adds explicit v2 `seq_source_waiting`,
@@ -337,13 +339,29 @@ marks; a selected v1 mark still uses the existing scalar reader. There is no
 source adoption, mark insertion, table rebuild or native task encoding change.
 The actual explicit companion upgrade belongs to U2b; adoption belongs to U3.
 
-**Remaining reader integration:** on legacy-only storage the standalone reader
-uses the existing complete history reader. On combined storage it validates
-new history and complete legacy structure, but does not yet compose all original
-document/Coding history validators over the extension. Existing production
-readers still refuse installed new objects. A follow-up U2a source unit must
-compose those validators without weakening their original recursive structural
-checks or routing/scalar ownership contracts before U2b installation is usable.
+**Complete reader composition (TASK-14576):** the standalone reader first
+validates the entire sequential structure and data/ownership closure. It then
+enters a connection-bound read scope for the original complete document/Coding
+validators, whose recursive structure checks compare independently built complete
+combined references. Normal installed callers outside this scope still refuse the
+extension. Genuine native connections and exact retained budgets keep their guards.
+
+The Coding discriminator imports the closed `SEQUENTIAL_TABLES` names from their
+DDL owner. Only within the validated scope, it acquires and compares each enrolled
+row in full, with exact storage types, against the sequential reader's authenticated
+same-snapshot rows. Thus the separate Coding definition's scalar identity and
+identity inside `definition_bytes` belong to the complete sequential reader.
+The scan is retained; no prefix exemption, table hiding, metadata sanitizer,
+connection/budget adapter or non-sequential refusal change is introduced.
+Partial/lookalike/unknown structures refuse, and non-sequential reserved metadata
+still requires its original Coding family. Definitions, settings and empty storage
+do not imply engine availability or legacy fallback.
+
+Installed selected ownership recognition preserves v1 results. A consistent v2
+source/carrier/visit mark returns `reconciliation_required` until the future common
+engine attaches; the standalone selected reader exposes its exact sequential kind.
+Selected lookup uses the mark/binding index and scalar run/visit/native relations,
+not a full-history scan. Complete inventory remains at the compatibility boundary.
 No installer, install/reopen/backout result or compatibility safety claim follows
 from this boundary. [Draft installation/backout contract](../../runbooks/sequential-workflow-storage.md)
 is UNVERIFIED. V3 and actual runs remain NOT RUN; old bytes and historical
