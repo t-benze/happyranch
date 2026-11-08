@@ -698,3 +698,26 @@ invocation minting are not invoked, including for retained partial thread rows.
 No native visit recovery or original host settlement is inferred. Existing
 unknown-owner rules, U5 hold, settings-generation limitation and the rule to
 roll back only with no nonterminal sequential Pause entries remain unchanged.
+
+
+## U3e-1a selected-run cancellation
+
+Selected-run cancellation is a business stop. The authority → teams → DB writer
+commits the unchanged U3c fence with native cancellation stamps/audits before
+the existing route tail invokes opaque prepared/live controls outside locks.
+Root worktree transition capture spans that COMMIT; cleanup still follows the
+original tail. A successful control, missing PID or absent control is no proof
+of original native close/release. In-progress or retained preparation ownership
+keeps teardown incomplete; cancellation clears no Pause journal or tracker.
+Existing callback/evidence/advance/queue/launch guards refuse fresh effects after
+the fence; only an already committed exact native callback can drain unchanged.
+
+Cancellation does not call check_venue_start or inspect the marker. **Venue
+backout removes the marker; it must not publish Disabled while a run remains
+admitted.** The unchanged selected validator rejects any newer settings
+generation, including Disabled; such cancellation/return attempts truthfully
+refuse and roll back. Marker removal creates no settings generation. This
+documented venue limitation grants no settings operation or validator exception.
+The existing rule to roll back only with no nonterminal sequential Pause entries
+still applies. Real host stop, restart and cancellation race acceptance remain
+UNVERIFIED(V3); U3e-1b and native recovery are separate work.

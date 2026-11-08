@@ -354,3 +354,27 @@ history rebuilding and parent wake are replayable through returned-only
 rediscovery; this gives no durable acknowledgement of caller execution. Thread
 follow-up, SYSTEM messages and invocation minting are excluded. No new command
 or bundled start-task instruction is required at this source checkpoint.
+
+
+## U3e-1a selected-run cancellation
+
+The existing authenticated task-cancel route retains unknown-task 404 ordering
+and its original post-COMMIT tail. A direct nonterminal sequential source,
+carrier or current visit uses the selected-run cancellation owner and never
+falls through to generic update_task. A cancelled direct target can replay only
+its exact original stop request. Unsupported source/carrier point stops, mixed
+closures and ordinary ancestors containing sequential descendants refuse with
+409 and zero task/event/audit writes. The ancestor guard includes terminal paths
+and refuses beyond 512 distinct rows on its one unchanged read budget.
+
+The owned transaction collects prepared/live opaque controls and prior statuses,
+fences the run and stamps live selected native rows with one aware UTC timestamp
+for cancelled_at, completed_at and updated_at, block_kind NULL and the existing
+cancellation note. Existing task_cancelled audits are emitted once per changed
+task. Historical rows, original result/SID/PID and Pause ownership are retained.
+After COMMIT the existing tail invokes controls outside locks in its original
+order. Sequential work never uses bare-PID signalling or tracker clearing.
+In-progress ownership or retained preparation without positive original
+close/release remains teardown-incomplete even when no control exists or a
+control returns successfully. Source/carrier cascade=false refuses remaining
+live work; a current visit stop fences the whole selected run.
