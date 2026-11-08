@@ -3952,6 +3952,11 @@ class ThreadRecord(BaseModel):
     composed_by: str = "founder"
     composed_from_task_id: str | None = None
     composed_from_dream_id: str | None = None
+    resolved_seq: int | None = None
+    resolved_by: str | None = None
+    resolved_at: datetime | None = None
+    resolved_from_task_id: str | None = None
+    resolution_next_owner: str | None = None
     last_speaker: str | None = None
     # Founder-workspace presentation state (THR-209): non-None when the thread
     # is pinned by the founder. Pinning changes display only — never identity,
@@ -4031,6 +4036,8 @@ class ThreadMessage(BaseModel):
     # mentions_json). Empty list when derived with no valid mentions; NULL
     # rows (system/decline + pre-change history) read back as empty list.
     mentions: list[str] = Field(default_factory=list)
+    # NULL denotes history predating durable founder-address classification.
+    addresses_founder: bool | None = None
     created_at: datetime = Field(default_factory=_now)
 
 

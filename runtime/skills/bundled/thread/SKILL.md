@@ -94,6 +94,35 @@ notification after commit can publish only the same genuine replacement token.
 
 ## Your invocation_token
 
+### Explicit task-session resolution (THR-339 PR1)
+
+When a task-composed thread's request is explicitly settled, its opener or the
+opener's executable team manager may resolve it in the substantive decision
+message using the existing `threads send` file payload:
+
+```json
+{"composer":"agent_id","body_markdown":"Decision and outcome; no action remains.","resolution":{"next_owner":null}}
+```
+
+Send with `happyranch threads send --org ORG --thread-id THR-ID --task-id TASK-ID
+--session-id CURRENT --from-file ABS`. This requires a current active,
+non-recovery TASK session and current participation; an invocation token alone
+does not authorize resolution. Do not put `resolution` on `threads reply`.
+`next_owner` may be null/omitted or a known active agent ID, never founder.
+The nonempty body records the decision; there is no acknowledgement round and
+the resolving send creates no REPLY invocations. Do not send a separate ack or
+promise a later resolution in prose instead of using the field.
+
+Pending founder addresses refuse409 `founder_decision_pending`, including an
+address in the resolving message. Wait for the founder's MESSAGE reply before
+resolving; a subsequent founder or agent MESSAGE clears resolution. For new
+messages both `@founder` and the founder's current name are tracked. Historical
+NULL rows detect only lexical `@founder`, case-insensitively; historical personal
+names are not detected. Text-only promises are untracked in v1: keep requests
+unresolved while actionable work remains. Founder-created and dream-composed
+threads remain manual archive only. PR1 records resolution while leaving the
+thread open; auto-archive and its triggers are PR2, not yet shipped.
+
 Look for this line in your prompt:
 
     Your invocation_token for this turn is: <opaque-string>

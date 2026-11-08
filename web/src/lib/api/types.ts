@@ -331,6 +331,12 @@ export interface ThreadRecord {
   summary: string | null;
   transcript_path: string | null;
   composed_from_dream_id: string | null;
+  /** Read-only explicit agent resolution; absent on older daemons. */
+  readonly resolved_seq?: number | null;
+  readonly resolved_by?: string | null;
+  readonly resolved_at?: string | null;
+  readonly resolved_from_task_id?: string | null;
+  readonly resolution_next_owner?: string | null;
   last_speaker: string | null;
   /** Founder-workspace pin state (THR-209). Wire is derived from the durable
    *  ``pinned_at`` column: false when never pinned, true while pinned. */
