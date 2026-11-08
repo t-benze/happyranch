@@ -286,7 +286,7 @@ def reconcile_namespace(org, namespace, *, install=False):
             raise NamingError('naming_database_unavailable') from exc
     with transaction(org.db) as conn:
         version = (validate_naming_install_admission(
-            conn, org_slug=org.slug, expected_db_path=expected_db_path,
+            conn, org_slug=org.slug, expected_db_path=expected_db_path, load_source=True,
         ) if install else validate_names(conn, org_slug=org.slug))
         if not version:
             if not install:

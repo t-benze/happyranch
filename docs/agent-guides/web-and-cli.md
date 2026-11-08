@@ -48,7 +48,9 @@ failures refuse without repair or adoption. Body/interruption
 and COMMIT failures preserve the primary cause and secondary cleanup errors;
 uncertain COMMIT is not success or proof of absence. Audit-watermark advances
 publish only after positive COMMIT under the same lock. Failed unpublished org
-construction closes/refuses before attachment; later installers are separate.
+construction closes/refuses before attachment. Load-only source validation reuse
+uses coherent SQLite bookends (THR308seq348/353/354); writer target and public
+checks remain complete. See [runtime configuration](runtime-and-configuration.md).
 
 Coding validates its canonical inventory and actual shared columns, keys, FKs,
 owner histories, template/authority/native dependencies and Pause/move/naming

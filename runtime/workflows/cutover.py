@@ -58,11 +58,15 @@ class WorkflowCutoverStore:
                 conn.rollback()
                 raise
 
-    def _read(self, conn: sqlite3.Connection, *, budget: _Budget | None = None) -> tuple:
+    def _read(self, conn: sqlite3.Connection, *, budget: _Budget | None = None, load_source: bool = False) -> tuple:
         """Return local validation with marker/history for this unchanged snapshot."""
         try:
-            validated = _read_installed(conn, expected_org_slug=self._org_slug,
-                                        validate_data=False, budget=budget)
+            if load_source:
+                from runtime.infrastructure.workflow_schema_load import read_installed_for_org_load
+                validated = read_installed_for_org_load(conn, expected_org_slug=self._org_slug, budget=budget)
+            else:
+                validated = _read_installed(conn, expected_org_slug=self._org_slug,
+                                            validate_data=False, budget=budget)
             marker, events = _validate_cutover_data(conn, expected_org_slug=self._org_slug)
             return marker, events, validated
         except (ValueError, sqlite3.DatabaseError) as exc:
@@ -145,7 +149,7 @@ class WorkflowCutoverStore:
             for _ in range(3):
                 with self._transaction(write=True) as conn:
                     budget = _Budget()
-                    marker, events, validated = self._read(conn, budget=budget)
+                    marker, events, validated = self._read(conn, budget=budget, load_source=True)
                     state = marker["state"]
                     if state in ("enable_requested", "compatibility_verified"):
                         if self._compatibility_blockers(conn, _validated=validated):

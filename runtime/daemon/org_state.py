@@ -31,9 +31,10 @@ from runtime.daemon.thread_queue import ThreadQueue
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
 from runtime.infrastructure.workflow_schema import (
-    draft_migration_guidance, install_or_recover, validate_workflow_schema, submission_migration_guidance,
+    draft_migration_guidance, install_or_recover, submission_migration_guidance,
     author_handoff_migration_guidance,
 )
+from runtime.infrastructure.workflow_schema_load import org_load_validation, read_workflow_schema_for_org_load
 from runtime.workflows.cutover import WorkflowCutoverStore
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator._paths import OrgPaths
@@ -418,136 +419,137 @@ class OrgState:
         if attachment_owner is not None:
             attachment_owner["load_db"] = db
         try:
-            with _startup_span("org_workflow_schema"):
-                install_or_recover(db, expected_org_slug=slug)
-                with db._lock:
-                    layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
-            # Native org release preparation, after strict early move discovery
-            # and complete workflow validation, before any roster/publication or
-            # producer attachment. Generic Database and diagnostic recovery never
-            # install this extension. An existing hold/unknown layout refuses.
-            from runtime.infrastructure.team_move_store import install_team_move_schema
-            install_team_move_schema(db, org_slug=slug)
-            if layout == "F":
-                logger.warning("org %r: %s", slug, draft_migration_guidance(
-                    org_slug=slug, runtime_root=str(root.parent.parent),
-                ))
-            if layout in ("F", "E"):
-                logger.warning("org %r: %s", slug, submission_migration_guidance(
-                    org_slug=slug, runtime_root=str(root.parent.parent),
-                ))
-            if layout == "G":
-                logger.warning("org %r: %s", slug, author_handoff_migration_guidance())
-            WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
-            from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
-            install_pause_schema(db, org_slug=slug)
-            db._task_pause_store = TaskPauseStore(db, slug)
-            with _startup_span("org_workflow_revalidation"):
-                with db._lock:
-                    validate_workflow_schema(db._conn, expected_org_slug=slug)
-            from runtime.infrastructure.workflow_task_ownership import install_task_ownership
-            install_task_ownership(db, org_slug=slug)
-            teams = TeamsRegistry.load(root)
-            # THR-095: one-shot seed — copy the 4 web-writable knobs from
-            # config.yaml into the org_settings DB table exactly once per org.
-            # Idempotent (sentinel); runs on every daemon startup but is a no-op
-            # after the first run.
-            try:
-                from runtime.orchestrator.org_config import (
-                    backfill_reviewer_agents_setting,
-                    seed_org_settings_from_config,
-                )
-                seed_org_settings_from_config(paths, db)
-                # THR-175: reviewer_agents is a 5th knob orgs seeded before this
-                # change never received.  Backfill is idempotent (row-absent) and
-                # never overwrites an explicit setting.
-                backfill_reviewer_agents_setting(paths, db)
-            except Exception as exc:
-                logger.warning(
-                    "org %r: org_settings seed skipped (non-fatal): %s", slug, exc
-                )
-
-            # Refuse to attach if agent files and teams.yaml disagree. Raises
-            # OrgConsistencyError on drift; DaemonState.from_runtime catches
-            # per-org so one broken org cannot crash daemon startup, while
-            # add_org propagates so explicit founder actions fail loudly.
-            validate_team_membership(paths, teams)
-            orchestrator = Orchestrator(
-                db=db,
-                settings=settings,
-                paths=paths,
-                slug=slug,
-                teams=teams,
-                authority_evaluator=_build_authority_evaluator(),
-            )
-            from runtime.orchestrator.task_pause import restore_pause_preparations
-            restore_pause_preparations(orchestrator)
-            state = cls(
-                slug=slug,
-                root=root,
-                db=db,
-                teams=teams,
-                settings=settings,
-                orchestrator=orchestrator,
-            )
-            if attachment_owner is not None:
-                attachment_owner["org"] = state
-            from runtime.identities.registry import read_name_metadata, refresh_names
-            # Binding reads current validated org metadata at prompt construction;
-            # no cached snapshot, reconciliation or new launch/readiness gate.
-            orchestrator._name_metadata_reader = lambda: read_name_metadata(state)
-            state.naming_diagnostic = naming_preflight
-            # Observe original native/ordinary ownership before any startup
-            # writer. UNKNOWN survives a cold boot and cannot be republished or
-            # adopted merely because its process/lease disappeared.
-            from runtime.infrastructure.producer_admission import (
-                NativeWriterStore,
-                historical_disk_sweep,
-                native_owner_uncommitted,
-            )
-            from runtime.orchestrator.team_move import DeferredTeamMove
-            from runtime.workflows.authority import WorkflowAuthorityError
-            try:
-                with db._lock:
-                    history = NativeWriterStore(db, slug).history_uncommitted()
-                    active = state.workflow_authority._active_journal(db._conn, state.workflow_authority.namespace)
-                    # THR320seq477 extended to startup: a stale nightly sweep
-                    # touches only workspaces, never what startup publishes. An
-                    # unavailable native owner keeps every record blocking.
-                    try:
-                        owner = native_owner_uncommitted(db)
-                    except DeferredTeamMove:
-                        owner = None
-                    unsettled = any(
-                        row.state != "settled"
-                        and (owner is None or not historical_disk_sweep(key, row, owner.writers))
-                        for key, row in history.items()
-                    )
-                    ordinary = (active is not None and active["publisher"] != "org-startup"
-                                and not active["publisher_invocation"].startswith("profile-coordinator:"))
-                if unsettled or ordinary:
-                    raise WorkflowAuthorityError("authority_pointer_not_ready")
-            except (ValueError, sqlite3.DatabaseError, WorkflowAuthorityError) as exc:
-                state._startup_publication_held = True
-                state._runner_admission_closed = True
-                state._startup_authority_error = exc
-                logger.exception("org %r: original startup authority owner remains held", slug)
-            if not state._startup_publication_held:
-                # Cold load has no concurrent route coroutine. Discovery stays
-                # outside short publication/profile leases.
-                with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
-                    refresh_names(state, install=True, writer=interval.native_disposition)
+            with org_load_validation(db, org_slug=slug):
+                with _startup_span("org_workflow_schema"):
+                    install_or_recover(db, expected_org_slug=slug)
+                    with db._lock:
+                        layout = read_workflow_schema_for_org_load(db._conn, expected_org_slug=slug)[0]
+                # Native org release preparation, after strict early move discovery
+                # and complete workflow validation, before any roster/publication or
+                # producer attachment. Generic Database and diagnostic recovery never
+                # install this extension. An existing hold/unknown layout refuses.
+                from runtime.infrastructure.team_move_store import install_team_move_schema
+                install_team_move_schema(db, org_slug=slug)
+                if layout == "F":
+                    logger.warning("org %r: %s", slug, draft_migration_guidance(
+                        org_slug=slug, runtime_root=str(root.parent.parent),
+                    ))
+                if layout in ("F", "E"):
+                    logger.warning("org %r: %s", slug, submission_migration_guidance(
+                        org_slug=slug, runtime_root=str(root.parent.parent),
+                    ))
+                if layout == "G":
+                    logger.warning("org %r: %s", slug, author_handoff_migration_guidance())
+                WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
+                from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
+                install_pause_schema(db, org_slug=slug)
+                db._task_pause_store = TaskPauseStore(db, slug)
+                with _startup_span("org_workflow_revalidation"):
+                    with db._lock:
+                        read_workflow_schema_for_org_load(db._conn, expected_org_slug=slug)
+                from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+                install_task_ownership(db, org_slug=slug)
+                teams = TeamsRegistry.load(root)
+                # THR-095: one-shot seed — copy the 4 web-writable knobs from
+                # config.yaml into the org_settings DB table exactly once per org.
+                # Idempotent (sentinel); runs on every daemon startup but is a no-op
+                # after the first run.
                 try:
-                    state.workflow_authority.recover_or_publish()
-                except Exception as exc:
-                    state._startup_authority_error = exc
-                    logger.exception(
-                        "org %r: workflow authority startup publication remains fenced", slug,
+                    from runtime.orchestrator.org_config import (
+                        backfill_reviewer_agents_setting,
+                        seed_org_settings_from_config,
                     )
-            # Inert definition only, after the actual recovery/authority tail.
-            # A serving-before-recovery owner must defer this call with that tail.
-            state.workflow_coding_builtin.ensure_registered()
-            return state
+                    seed_org_settings_from_config(paths, db)
+                    # THR-175: reviewer_agents is a 5th knob orgs seeded before this
+                    # change never received.  Backfill is idempotent (row-absent) and
+                    # never overwrites an explicit setting.
+                    backfill_reviewer_agents_setting(paths, db)
+                except Exception as exc:
+                    logger.warning(
+                        "org %r: org_settings seed skipped (non-fatal): %s", slug, exc
+                    )
+
+                # Refuse to attach if agent files and teams.yaml disagree. Raises
+                # OrgConsistencyError on drift; DaemonState.from_runtime catches
+                # per-org so one broken org cannot crash daemon startup, while
+                # add_org propagates so explicit founder actions fail loudly.
+                validate_team_membership(paths, teams)
+                orchestrator = Orchestrator(
+                    db=db,
+                    settings=settings,
+                    paths=paths,
+                    slug=slug,
+                    teams=teams,
+                    authority_evaluator=_build_authority_evaluator(),
+                )
+                from runtime.orchestrator.task_pause import restore_pause_preparations
+                restore_pause_preparations(orchestrator)
+                state = cls(
+                    slug=slug,
+                    root=root,
+                    db=db,
+                    teams=teams,
+                    settings=settings,
+                    orchestrator=orchestrator,
+                )
+                if attachment_owner is not None:
+                    attachment_owner["org"] = state
+                from runtime.identities.registry import read_name_metadata, refresh_names
+                # Binding reads current validated org metadata at prompt construction;
+                # no cached snapshot, reconciliation or new launch/readiness gate.
+                orchestrator._name_metadata_reader = lambda: read_name_metadata(state)
+                state.naming_diagnostic = naming_preflight
+                # Observe original native/ordinary ownership before any startup
+                # writer. UNKNOWN survives a cold boot and cannot be republished or
+                # adopted merely because its process/lease disappeared.
+                from runtime.infrastructure.producer_admission import (
+                    NativeWriterStore,
+                    historical_disk_sweep,
+                    native_owner_uncommitted,
+                )
+                from runtime.orchestrator.team_move import DeferredTeamMove
+                from runtime.workflows.authority import WorkflowAuthorityError
+                try:
+                    with db._lock:
+                        history = NativeWriterStore(db, slug).history_uncommitted()
+                        active = state.workflow_authority._active_journal(db._conn, state.workflow_authority.namespace)
+                        # THR320seq477 extended to startup: a stale nightly sweep
+                        # touches only workspaces, never what startup publishes. An
+                        # unavailable native owner keeps every record blocking.
+                        try:
+                            owner = native_owner_uncommitted(db)
+                        except DeferredTeamMove:
+                            owner = None
+                        unsettled = any(
+                            row.state != "settled"
+                            and (owner is None or not historical_disk_sweep(key, row, owner.writers))
+                            for key, row in history.items()
+                        )
+                        ordinary = (active is not None and active["publisher"] != "org-startup"
+                                    and not active["publisher_invocation"].startswith("profile-coordinator:"))
+                    if unsettled or ordinary:
+                        raise WorkflowAuthorityError("authority_pointer_not_ready")
+                except (ValueError, sqlite3.DatabaseError, WorkflowAuthorityError) as exc:
+                    state._startup_publication_held = True
+                    state._runner_admission_closed = True
+                    state._startup_authority_error = exc
+                    logger.exception("org %r: original startup authority owner remains held", slug)
+                if not state._startup_publication_held:
+                    # Cold load has no concurrent route coroutine. Discovery stays
+                    # outside short publication/profile leases.
+                    with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
+                        refresh_names(state, install=True, writer=interval.native_disposition)
+                    try:
+                        state.workflow_authority.recover_or_publish()
+                    except Exception as exc:
+                        state._startup_authority_error = exc
+                        logger.exception(
+                            "org %r: workflow authority startup publication remains fenced", slug,
+                        )
+                # Inert definition only, after the actual recovery/authority tail.
+                # A serving-before-recovery owner must defer this call with that tail.
+                state.workflow_coding_builtin.ensure_registered()
+                return state
         except BaseException as primary:
             if attachment_owner is not None:
                 attachment_owner["primary"] = primary
