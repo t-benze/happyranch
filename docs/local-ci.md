@@ -10,7 +10,15 @@ readers use in-memory observations; ordinary controller JUnit and process pins
 are the launcher handoff. Safe denial cases continue after no-effects checks;
 unsafe dependents report prerequisite ERROR, with no reset/retry. The strict
 same-runtime E05→E07 checkpoint/closure/full50s admission and first cause remain;
-E05 failure stays red even if E07 passes. Failure capture precedes E05 teardown.
+E05 failure stays red even if E07 passes. E04 content failures affect its six
+cases, with explicit prerequisite ERRORs for the dependent E07 reader; unrelated
+E02/E03/E06/Pause results remain independent. E04 observer ordering and full
+barrier coverage replace its hard 1s thread-gap cap. E07 uses a 250ms full-frame/
+start-interval cap (formerly 50ms), at least five samples, first at entry and
+last at/after the full 1s window end. Every per-sample product assertion and
+original deadline remains; measured cadence/coverage values accompany failures.
+Historical run42501816137 timing attribution is unresolved from its artifacts.
+Failure capture precedes E05 teardown.
 Optional Owned/E07 process diagnostics are removed; real cleanup is mandatory.
 Browser/transport original-body archives, framing/segment hashes and publication
 member/byte/fact budgets are removed. Actual Playwright Response JSON supplies

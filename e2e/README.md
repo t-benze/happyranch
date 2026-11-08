@@ -11,13 +11,17 @@ or unfinished cases produce errors. No skips or inferred success are allowed.
 Console output names every PASS/FAIL and totals. Reports are atomically replaced
 from finalizers, including ordinary exceptions; an absent report fails Health.
 
-`e2e/checks.py` owns the former aggregate content predicates. Each E04/prefix,
+`e2e/checks.py` owns the former aggregate content predicates. Each E04,
 E05 and E07 reader runs independently inside the lane before private data is
 deleted. A completion mark alone cannot pass a case. Content checks consume
 in-memory HTTP, browser, command, SQL and checkpoint observations in the controller;
 SQL/state JSON files and `completed.py` plus its imports/callers are removed.
 The controller hands ordinary JUnit to the launcher and a private list of
 `{variant,pid,start}` pins for the launcher's actual `Owned.cleanup` census.
+E04 content failures affect its six E04 cases, while E02/E03/E06/Pause retain
+their own scenario results. E07 genuinely depends on the independently checked
+E04 checkpoint: failed E04 validation gives E07 prerequisite ERRORs. E05 keeps
+its independent reader and sticky failures. Unfinished cases remain ERRORs.
 PID keys are normalized to integers once by that reader. Missing or reused
 generations fail the affected E04 case and cleanup; no success is inferred.
 The controller and launcher no longer publish snapshot/member-hash/ownership/
@@ -26,6 +30,22 @@ Those removed export protocols in historical records below are superseded.
 Product output-cap assertions and original operational deadlines remain: baseline
 480s, other commands 240s, action cutoff 720s, cleanup at most 60s clipped at
 start+780s, total 900s. There is no separate 120s publication reserve.
+
+The passive E04 provider observer still targets 50ms polling. Its former hard
+1s inter-sample cap is replaced by strictly increasing finite sample times and
+the existing requirement that observations cover every one of the 27 barriers
+from entry through completion. Counter monotonicity, the actual closed 29-stub
+prefix, process-generation closure and every metrics/content assertion remain.
+E07's former 50ms frame/start-interval cap and 21-sample minimum become 250ms
+and at least five fresh full frames over the same complete one-second window.
+The first frame starts exactly at window entry and the last starts at or after
+its end; every acquired frame still checks full content, witnesses, no launch,
+host state and product closure. Original phase/deadline bounds are unchanged.
+Failures report actual intervals, frame durations and coverage endpoints.
+Run42501816137 saved neither sampler's timestamps, so its timing cause remains
+unresolved. The revised harness limits allow for sequential SQL, nine HTTP
+reads and closure work on a shared runner; they are not product timing claims.
+These focused changes do not establish that a subsequent hosted run will pass.
 
 The existing safe E05→E07 continuation stays on the same runtime, using real
 pre-E05/C/N/D checkpoints, positive closure and the full original 50s remaining.

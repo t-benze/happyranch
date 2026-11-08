@@ -982,22 +982,30 @@ class Controller:
         observations["cleanup_pins"] = self.cleanup_pins
         row = dict(observations, source_sha=self.revision, python=os.environ.get("E2E_PYTHON"),
                    phases=[dict(name="scenarios", deadline=self.deadline)])
-        readers = ((MANIFEST["variants"][:48], None, lambda: validate_e04(row, observations, observations["browser_events"], self.root / "raw")),
+        readers = (([name for name in MANIFEST["variants"] if name.startswith("E04.")], "E04", lambda: validate_e04(row, observations, observations["browser_events"], self.root / "raw")),
                    (MANIFEST["variants"][48:53], "E05", lambda: validate_e05(row, observations, self.root / "raw")),
                    (MANIFEST["variants"][53:], "E07", lambda: validate_e07(row, observations, self.root / "raw")))
+        for name in MANIFEST["variants"]:
+            if name not in self.results and self.report.cases["product", name].get("pending"):
+                self.report.record("product", name, RuntimeError("Prerequisite ERROR: case did not reach its required closure"))
+        e04_error = None
         for names, group, reader in readers:
-            for name in names:
-                if name not in self.results and self.report.cases["product", name].get("pending"):
-                    self.report.record("product", name, RuntimeError("Prerequisite ERROR: case did not reach its required closure"))
             try:
-                if group:
+                # E07 explicitly reconstructs the E04 checkpoint in its admission
+                # reader. Unavailable proof is a prerequisite error, not another
+                # group's failed product assertion. E05 has its own reader.
+                if group == "E07" and e04_error is not None:
+                    raise RuntimeError("Prerequisite ERROR: E04 content validation did not close: " + str(e04_error))
+                if group in {"E05", "E07"}:
                     validate_groups(row, observations, group)
                 reader()
             except Exception as exc:
+                if group == "E04":
+                    e04_error = exc
                 for name in names:
                     if name in self.results:
                         self.report.record("product", name, exc)
-                self.report.record("harness", "content:" + (group or "prefix"), exc)
+                self.report.record("harness", "content:" + group, exc)
         if self.failures:
             self.report.record("harness", "controller", AssertionError("Controller action or cleanup failed"))
 
