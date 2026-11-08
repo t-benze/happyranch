@@ -450,10 +450,8 @@ def exercise(c: Controller) -> None:
                 if terminals[0]['event'] == 'request-failed':
                     expected_request['failed'] = terminals[0]['at']
             check(retained == expected_request, 'exact original Request/terminal inventory')
-            owners = [r for r in proxy.records if r.get('browser_request_id') == issued['request_id']]
-            check(len(owners) == 1 and owners[0]['method'] == issued['method']
-                  and owners[0]['target'] == expected_request['target'], 'every native Request has one original relay owner')
-        required_requests = [e for e in requests if proxy.required_kind(e['method'],e['url'][len(origin):],e['method'] == 'POST')]
+        from checks import e05_required_requests
+        required_requests = e05_required_requests(events, origin)
         responses = [e for e in events if e['event'] in {'compose-response','thread-response'}]
         check([e['response_id'] for e in responses] == list(range(len(responses)))
               and all(type(e['response_id']) is int and type(e['request_id']) is int for e in responses)

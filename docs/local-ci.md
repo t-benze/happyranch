@@ -18,6 +18,14 @@ E05 browser/public/DOM equality. The native HTTP/SSE forwarding and GET-owner
 shutdown/physical closure checks remain. Thread providers scrub their known token
 literals without an export-context protocol. No SQL/state upload, receipt/hash/
 ownership publisher or publication budgets remain. Operational480/240/720/60/900 bounds and product output caps stay.
+Cached native Requests need no new relay record. Only incidental GETs with an
+exact native navigation-abort terminal and a later committed document may lack
+a body; selected views and every other required Response still fail if missing.
+Early aborts are retained until their actual worker owns shutdown. Admission
+reads accepted state and product checkpoints rather than comparing copied
+dictionaries. Failure diagnostics require a nonempty trace ZIP and screenshot
+PNG, accepting `threads.zip` and existing E05 view screenshots without requiring
+an extra `main.zip` or closed-page recapture.
 JUnit always uploads; missing reports fail. Known synthetic tokens receive literal
 scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
 Historical records below preserve actual failures and holds; their removed
