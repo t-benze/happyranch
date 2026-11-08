@@ -392,6 +392,9 @@ predecessor veto before republishing ownership. Unchanged blocked polls preserve
 the original control and lifecycle without new rows; fresh initial/deferral,
 genuine resumption and attempt evidence remain. Final admission validation still
 checks fresh predecessor, abort and team-move races.
+Each aborted-predecessor check shares one complete lifecycle decode and exact
+final audit-row IDs within that mutation-free call, including attestation
+matching. No result is cached across calls and no settlement/veto rule changes.
 Captured actual running turns alone may settle under WAITING; no drain label
 admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
 notification ownership, and complete durable runnable discovery/redelivery keeps

@@ -69,6 +69,7 @@ logger = logging.getLogger(__name__)
 # Cap for the underlying-error detail appended to a no_callback reason so a
 # multi-KB stdout/stderr tail can't bloat the audit row.
 _REASON_DETAIL_CAP = 2000
+_REASON_DIAGNOSTIC_LINE_CAP = 900
 
 
 def _executor_error_detail(result, rc) -> str:
@@ -80,30 +81,63 @@ def _executor_error_detail(result, rc) -> str:
     was previously only recoverable by digging into the claude session JSONL.
     """
     human_error = str(getattr(result, "human_error", "") or "")
+    stderr_tail = str(getattr(result, "stderr_tail", "") or "")
     stderr = human_error or (
-        "" if getattr(result, "human_error_inspected", False) else str(
-            getattr(result, "stderr_tail", "") or ""
-        )
+        "" if getattr(result, "human_error_inspected", False) else stderr_tail
     )
     terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
     notice = str(getattr(result, "terminal_error_notice", "") or "").strip()
     if terminal_error and not _meaningful_stderr(stderr):
-        return f"{terminal_error}; notice: {notice[:_REASON_DETAIL_CAP]}" if notice else terminal_error
-
-    # ``human_error`` was selected from the complete producer stream before
-    # tailing.  Keep that human cause distinct from the raw diagnostic tails
-    # below; ``error`` may contain the complete stderr and is only a legacy
-    # fallback when no selected cause exists.
-    if stderr:
-        detail = stderr.replace("\n", " ")[:_REASON_DETAIL_CAP]
+        detail = terminal_error
+    elif stderr:
+        detail = stderr
     else:
         raw = (str(getattr(result, "error", "") or "")
                or str(getattr(result, "stderr_tail", "") or "")).strip()
         prefix = f"Command exited with code {rc}"
         if raw.startswith(prefix):
             raw = raw[len(prefix):].lstrip(": ").strip()
-        detail = raw.replace("\n", " ")[:_REASON_DETAIL_CAP]
-    return f"{detail}; notice: {notice[:_REASON_DETAIL_CAP]}" if notice else detail
+        detail = raw
+    if notice:
+        detail = f"{detail}; notice: {notice}"
+    # The selected human cause may be only the first Warning line. Preserve
+    # the raw stderr as diagnostics too, including the final Error line, without
+    # reclassifying an inspected tail or changing the selected primary cause.
+    if stderr_tail and (notice or stderr_tail not in detail):
+        detail = f"{detail}; stderr: {stderr_tail}"
+    detail = detail.replace("\n", " ").replace("\r", " ")
+    if len(detail) > _REASON_DETAIL_CAP:
+        marker = " ...[truncated]... "
+        raw_error = str(getattr(result, "error", "") or "").strip()
+        prefix = f"Command exited with code {rc}"
+        if raw_error.startswith(prefix):
+            raw_error = raw_error[len(prefix):].lstrip(": ").strip()
+        lines = [line.strip() for source in (
+            human_error, raw_error, terminal_error, notice, stderr_tail,
+        ) for line in source.splitlines() if line.strip()]
+        # Reserve the last Error and first Warning BEFORE budgeting context.
+        # Error wins ordering; each line gets at most 900 characters, including
+        # its marker. Keep the label even when a very long prefix precedes it.
+        reserved = []
+        for label, candidates in (("error", reversed(lines)), ("warning", iter(lines))):
+            for line in candidates:
+                match = re.search(rf"\b{label}\s*:", line, re.IGNORECASE)
+                if match is None:
+                    continue
+                if len(line) > _REASON_DIAGNOSTIC_LINE_CAP:
+                    if match.end() > _REASON_DIAGNOSTIC_LINE_CAP - len(marker):
+                        line = marker + line[match.start():]
+                    line = line[:_REASON_DIAGNOSTIC_LINE_CAP - len(marker)] + marker
+                reserved.append(line)
+                break
+        reservation = "; ".join(reserved)
+        if reservation:
+            reservation += "; context: "
+        remaining = _REASON_DETAIL_CAP - len(reservation) - len(marker)
+        head = remaining // 2
+        tail = remaining - head
+        detail = reservation + detail[:head] + marker + detail[-tail:]
+    return detail
 
 
 @dataclass(frozen=True)
