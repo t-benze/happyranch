@@ -98,6 +98,11 @@ _preflight_uv() {
 }
 
 cmd_start() {
+    local launcher_start_epoch="${EPOCHREALTIME:-}"
+    if [[ -z "$launcher_start_epoch" ]]; then
+        # macOS's system Bash lacks EPOCHREALTIME; date has second precision.
+        launcher_start_epoch="$(date +%s 2>/dev/null)" || launcher_start_epoch=""
+    fi
     local start_timeout="${HAPPYRANCH_DAEMON_START_TIMEOUT-120}"
     local bind_host probe_host bg_pid port deadline
 
@@ -132,7 +137,8 @@ cmd_start() {
 
     # No live PID remains, so an old port file cannot describe this launch.
     rm -f "$PORT_FILE"
-    nohup uv run python -m runtime.daemon --reader-guarded-start=online-team-move@3 >> "$LOG_FILE" 2>&1 &
+    HAPPYRANCH_LAUNCHER_START_EPOCH="$launcher_start_epoch" \
+        nohup uv run python -m runtime.daemon --reader-guarded-start=online-team-move@3 >> "$LOG_FILE" 2>&1 &
     bg_pid=$!
 
     # uv currently remains as $bg_pid and waits for its Python child. If that

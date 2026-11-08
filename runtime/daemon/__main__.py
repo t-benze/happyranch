@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import signal
 import socket
@@ -32,7 +33,7 @@ from typing import Iterator
 import uvicorn
 
 from runtime.config import Settings
-from runtime.daemon import paths, runtimes
+from runtime.daemon import _PROCESS_START_EPOCH, _PROCESS_START_MONOTONIC, paths, runtimes
 from runtime.daemon.app import create_app
 from runtime.daemon.queue import TaskQueue
 from runtime.daemon.state import DaemonState
@@ -72,6 +73,29 @@ def _startup_log(phase: str, outcome: str, started: float | None) -> float | Non
         return elapsed
     except BaseException:
         return None
+
+
+def _startup_pre_backend(started: float | None) -> dict[str, float | None]:
+    """Observe bootstrap spans without changing the normal-startup origin."""
+    spans: dict[str, float | None] = {"launcher": None, "imports": None}
+    try:
+        if started is not None and _PROCESS_START_MONOTONIC is not None:
+            spans["imports"] = max(0.0, started - _PROCESS_START_MONOTONIC)
+        raw = os.environ.get("HAPPYRANCH_LAUNCHER_START_EPOCH", "")
+        try:
+            launcher_epoch = float(raw)
+        except (ValueError, OverflowError):
+            launcher_epoch = None
+        if (launcher_epoch is not None and math.isfinite(launcher_epoch)
+                and _PROCESS_START_EPOCH is not None
+                and 0 < launcher_epoch <= _PROCESS_START_EPOCH):
+            spans["launcher"] = _PROCESS_START_EPOCH - launcher_epoch
+        for phase, elapsed in spans.items():
+            logger.info("startup_timing phase=%s outcome=%s seconds=%s", phase,
+                        "unavailable" if elapsed is None else "complete", elapsed)
+    except BaseException:
+        pass  # Clock/environment/logging observations never gate startup.
+    return spans
 
 
 @contextmanager
@@ -932,6 +956,12 @@ class _DiagnosticServer(uvicorn.Server):
                 if elapsed is not None and totals["available"]:
                     partition = {phase: totals[phase] for phase in _STARTUP_PHASES}
                     partition["remaining_startup"] = max(0.0, elapsed - sum(partition.values()))
+                    partition.update(launcher=totals.get("launcher"), imports=totals.get("imports"))
+                    partition["launcher_to_serving"] = (
+                        partition["launcher"] + partition["imports"] + elapsed
+                        if partition["launcher"] is not None and partition["imports"] is not None
+                        else None
+                    )
                     logger.info("startup_partition outcome=serving seconds=%s", partition)
         except BaseException:
             pass
@@ -974,13 +1004,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.maintenance:
         return run_maintenance()
 
-    from runtime.daemon.__main__ import _STARTUP_PARTITION, _startup_clock, _startup_log
+    from runtime.daemon.__main__ import _STARTUP_PARTITION, _startup_clock, _startup_log, _startup_pre_backend
     startup_origin = _startup_clock()
+    pre_backend = _startup_pre_backend(startup_origin)
     observation = None
     timing_token = None
     try:
         observation = dict.fromkeys(_STARTUP_PHASES, 0.0)
-        observation.update(active=True, serving=False, available=True)
+        observation.update(active=True, serving=False, available=True, **pre_backend)
         timing_token = _STARTUP_PARTITION.set(observation)
     except BaseException:
         pass  # Missing diagnostics never gate the actual normal startup.
