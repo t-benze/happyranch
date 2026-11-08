@@ -322,10 +322,14 @@ def exercise(c: Controller) -> None:
     paused = pause_running(c, root, worker)
     c.mark("Pause.chain-drain", paused)
     for action in ("pause", "resume"):
-        denied = control(c, action, worker["task"], 1, error=dict(code="root_task_required", root_task_id=root))
-        c.mark(f"Pause.child-{action}-denied", denied)
-    duplicate = control(c, "pause", root, 1, changed=False)
-    c.mark("Pause.pause-idempotent", duplicate)
+        before_control = state(c)
+        with c.case(f"Pause.child-{action}-denied", lambda: require(state(c) == before_control, "failed child control has no effects")):
+            denied = control(c, action, worker["task"], 1, error=dict(code="root_task_required", root_task_id=root))
+            c.mark(f"Pause.child-{action}-denied", denied)
+    before_control = state(c)
+    with c.case("Pause.pause-idempotent", lambda: require(state(c) == before_control, "failed idempotent Pause has no effects")):
+        duplicate = control(c, "pause", root, 1, changed=False)
+        c.mark("Pause.pause-idempotent", duplicate)
     def browser_expected(before: dict, child_id: str, hold_state: str) -> dict:
         # Reuse this already-required read-only state frame before arming.
         rows = before["stores"]["alpha"]["tasks"]
@@ -396,7 +400,9 @@ def exercise(c: Controller) -> None:
                            rendered=rendered_pausing)
         require(state(c) == before, "live browser readback/locale is read-only")
         c.mark("Pause.browser-pausing-" + ("en" if locale == "en" else "zh"), evidence)
-    c.mark("Pause.overview-readonly", overview(c, root, "pausing"))
+    before_control = state(c)
+    with c.case("Pause.overview-readonly", lambda: require(state(c) == before_control, "failed overview has no effects")):
+        c.mark("Pause.overview-readonly", overview(c, root, "pausing"))
     # Same-org available-capacity positive while the authentic worker is held.
     independent = c.create("alpha", "PAUSE_UNHELD_ROOT")
     other = c.start("alpha", independent, "case_manager")
@@ -447,22 +453,28 @@ def exercise(c: Controller) -> None:
     c.poll(lambda: any(e["session_id"] == reviewer["session"] and e["phase"] == "running"
                       for e in json.loads(control_row(c, root)["admission_journal_json"])["entries"]), "actual reviewer running journal")
     host(c, "post-restart-reviewer-running", 1, 1)
-    retry = control(c, "resume", root, 2, changed=False)
-    c.mark("Pause.resume-idempotent", retry)
+    before_control = state(c)
+    with c.case("Pause.resume-idempotent", lambda: require(state(c) == before_control, "failed idempotent Resume has no effects")):
+        retry = control(c, "resume", root, 2, changed=False)
+        c.mark("Pause.resume-idempotent", retry)
     newer = control(c, "pause", root, 2, changed=True)
     require(newer["response"]["pause"]["generation"] == 3 and newer["response"]["pause"]["held"], "newer actual hold")
-    stale = control(c, "resume", root, 1, error=dict(code="control_generation_conflict", root_task_id=root, generation=3))
-    require(identity(reviewer["pid"]) == reviewer["pid_start"], "stale control preserves reviewer identity")
-    c.mark("Pause.stale-resume", stale)
+    before_control = state(c)
+    with c.case("Pause.stale-resume", lambda: require(state(c) == before_control and identity(reviewer["pid"]) == reviewer["pid_start"], "failed stale Resume preserves state and reviewer")):
+        stale = control(c, "resume", root, 1, error=dict(code="control_generation_conflict", root_task_id=root, generation=3))
+        require(identity(reviewer["pid"]) == reviewer["pid_start"], "stale control preserves reviewer identity")
+        c.mark("Pause.stale-resume", stale)
     control(c, "resume", root, 3, changed=True)
     closure = finish_chain(c, root, manager, worker, reviewer, "PAUSE_RESTART", payloads)
     require(c.stores["alpha"].result(payloads[1]) == worker_finish["result"], "original worker result byte equality after restart/Resume")
     host(c, "post-restart-first-chain-2", 2)
     c.mark("Pause.restart-final", closure)
     ui.terminal(root, rendered=rendered_recall('terminal', pending))
-    for action in ("pause", "resume"):
-        control(c, action, root, 4, error=dict(code="task_terminal", root_task_id=root))
-    c.mark("Pause.terminal-denied", dict(root=root, generation=4, status=detail(c, root)["task"]["status"]))
+    before_control = state(c)
+    with c.case("Pause.terminal-denied", lambda: require(state(c) == before_control, "failed terminal controls have no effects")):
+        for action in ("pause", "resume"):
+            control(c, action, root, 4, error=dict(code="task_terminal", root_task_id=root))
+        c.mark("Pause.terminal-denied", dict(root=root, generation=4, status=detail(c, root)["task"]["status"]))
     # Separate Resume-during-drain journey, with no daemon restart.
     root2, manager2, worker2, payloads2 = open_chain(c, "PAUSE_DRAIN")
     host(c, "drain-case-worker-running", 4, 1)

@@ -31,7 +31,8 @@ The existing safe E05→E07 continuation stays on the same runtime, using real
 pre-E05/C/N/D checkpoints, positive closure and the full original 50s remaining.
 An E05 failure remains red even if E07 passes. Unsafe dependent work produces
 errors without reset, replay, replacement runtime, extra allowance or retries.
-Safe denial cases continue only after the complete protected-state comparison
+Safe identity/bearer denials and Pause child/idempotent/stale/terminal/overview
+cases continue only after the complete protected-state comparison
 succeeds; failures stay attached to their own names. Stateful baseline, Pause
 and E04 groups keep their exact count prerequisites. A failed group gives
 unreached dependent cases explicit prerequisite ERRORs, while owned cleanup
