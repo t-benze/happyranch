@@ -62,13 +62,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      M1_WORK: ${{ runner.temp }}/managed-m1-fixture
-      M1_LOGS: ${{ runner.temp }}/managed-m1-logs
-      M1_PACKAGE: ${{ runner.temp }}/managed-m1-package/happyranch-linux-amd64.tar
       M1_PYTHON: ${{ github.workspace }}/.venv/bin/python
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Set runner temporary paths
+        run: |
+          {
+            echo "M1_WORK=$RUNNER_TEMP/managed-m1-fixture"
+            echo "M1_LOGS=$RUNNER_TEMP/managed-m1-logs"
+            echo "M1_PACKAGE=$RUNNER_TEMP/managed-m1-package/happyranch-linux-amd64.tar"
+          } >> "$GITHUB_ENV"
       - name: Install uv and Python
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
