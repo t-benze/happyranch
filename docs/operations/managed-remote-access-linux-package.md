@@ -22,6 +22,15 @@ their count and completeness, suppressing all loaded values and contexts. A
 truncated name prefix is explicitly incomplete; the existing 96/240-byte caps
 and the refusal's complete-key check remain unchanged.
 
+At P000263, the M1 plain log adds `mismatched_property` with exactly `unit` and
+`property` to the matching refusal, including nested stage refusals. This uses
+the already validated private observation, only the two fixed service names and
+the closed requested-property vocabulary. Expected/observed values and all
+loaded contexts remain suppressed, including environment and credential data.
+Missing or invalid observations do not acquire guessed names. This bounded
+Founder THR327seq134 diagnostic does not change scalar comparisons, unit
+contracts, typed-array reads, deadlines or refusal codes.
+
 Founder THR327seq146 permits positive typed empty-array proof in this SAME
 service-settings check. The systemctl query, arguments, named-record parser,
 4096-byte capture cap plus one overflow sentinel, P000238/P000239/P000240 and

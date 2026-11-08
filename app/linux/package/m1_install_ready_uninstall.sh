@@ -183,6 +183,16 @@ def without_loaded_context(value: object) -> object:
         missing = query_missing_names(value.get('loaded'))
         if missing is not None:
             result['missing_properties'] = missing
+        loaded = value.get('loaded')
+        # P000263 selects one fixed scalar property. Publish its names only,
+        # after the existing private projection has validated the observation.
+        # Never forward expected/observed operands or any loaded context.
+        if (value.get('site') == 'P000263'
+                and value.get('category') == 'managed_loaded_contract_mismatch'
+                and isinstance(loaded, list) and len(loaded) == 13
+                and type(loaded[0]) is int and 0 <= loaded[0] < 2
+                and loaded[1] in QUERY_PROPERTY_NAMES):
+            result['mismatched_property'] = {'unit': UNITS[loaded[0]], 'property': loaded[1]}
         return result
     if isinstance(value, list):
         return [without_loaded_context(item) for item in value]
