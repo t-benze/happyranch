@@ -89,8 +89,14 @@ def bind_thread_archive_notifications(org: Any) -> None:
             loop = getattr(org.orchestrator, "_main_loop", None)
             if loop is None:
                 loop = asyncio.get_running_loop()
+            async def evaluate() -> None:
+                # Reuse detach/shutdown admission and the existing drain set.
+                with org._runner_lifetime() as admitted:
+                    if admitted:
+                        await maybe_auto_archive_thread(org, thread_id, trigger)
+
             def start() -> None:
-                task = loop.create_task(maybe_auto_archive_thread(org, thread_id, trigger))
+                task = loop.create_task(evaluate())
                 pending.add(task)
                 task.add_done_callback(pending.discard)
             loop.call_soon_threadsafe(start)
