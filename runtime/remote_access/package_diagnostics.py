@@ -138,15 +138,20 @@ def dependency_refusal_stderr(code: str, unit: str, prop: str, expected: str | N
                               observed: str | None, context: dict[str, str], *,
                               missing: set[str] | None, unexpected: set[str] | None) -> None:
     """Add full SAME-observation dependency facts; keep bounded receipts unchanged."""
-    # Only these refusal sites and dependency properties can disclose values.
+    # Only these refusal sites, unit edges and four flags can disclose values.
     # ascii() escapes control characters without clipping any unit/property text.
     if code not in ("P000261", "P000262") or prop not in LOADED_CONTEXT + (
             "DefaultDependencies", "StopWhenUnneeded", "RefuseManualStart", "RefuseManualStop"):
         return
-    facts = {"expected": expected, "observed": observed,
-             "missing": None if missing is None else " ".join(sorted(missing)),
-             "unexpected": None if unexpected is None else " ".join(sorted(unexpected))}
-    facts.update((name, context[name]) for name in LOADED_CONTEXT if name in context)
+    if prop == "RequiresMountsFor":
+        # Mount operands are paths and may identify credential sources.
+        facts = {name: "<withheld>" for name in ("expected", "observed", "missing", "unexpected")}
+    else:
+        facts = {"expected": expected, "observed": observed,
+                 "missing": None if missing is None else " ".join(sorted(missing)),
+                 "unexpected": None if unexpected is None else " ".join(sorted(unexpected))}
+    facts.update((name, context[name]) for name in (
+        "Wants", "Requires", "After", "Before", "PartOf", "Conflicts", "BindsTo") if name in context)
     try:
         for name, value in facts.items():
             sys.stderr.write(f"{code} {unit} {prop} {name}={ascii(value)}\n")

@@ -1,5 +1,13 @@
 # Runtime And Configuration
 
+**Current Milestone 1 runner — Founder THR327seq131 / ROOT TASK-14460.**
+The hosted runner uses the plain job-level `if:` gate in `.github/workflows/ci.yml`
+and `m1_install_ready_uninstall.sh` for install, both services READY within their
+original deadlines, then uninstall and residue checks. Uploads contain plain logs
+and the package plus digest. Earlier runner preparation, API readmission,
+30s/8192 budgets, package-manifest and N3 artifact accounting below are preserved
+history and superseded for Milestone 1. The image-custody contract remains unchanged.
+
 **Current runner preparation — Founder THR327seq68 / sole ROOT TASK-14114.**
 
 The [installer-only runner contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#authorized-installer-only-runner--thr327seq68--root14114)
