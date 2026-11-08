@@ -1,15 +1,15 @@
 # Reusable workflow contracts
 
 Founder THR-336 message 85 approved TASK-14461 plan revision 3 under manager
-root TASK-14478. TASK-14483 delivers **U1a**, the records/validator half of U1,
-for F1/F3/F6 and AC1/AC5/AC8. U1b must add the common reducer and data-driven
-brief renderer in a separate PR. This is source delivery, not M1 acceptance.
+root TASK-14478. TASK-14483 delivered **U1a**, the records/validator half of U1.
+TASK-14509 adds **U1b**, the common pure reducer and data-driven brief renderer, for
+F1/F3/F6 and AC1/AC5/AC8. These are source interfaces, not M1 acceptance.
 
 `runtime/workflows/sequential_contracts.py` owns closed syntax and immutable
 compiled records. `sequential_definition.py` owns pure canonical parsing,
 definition compilation, graph validation and start completeness checks.
-Neither module allocates tasks, reads resources, registers releases, performs
-I/O, calls Coding progression, or has a production producer caller. The
+The reducer and brief renderer build on these modules. None allocates tasks,
+reads resources, registers releases, performs I/O, calls Coding progression, or has a production producer caller. The
 definition identity is a pin, never a progression or brief-builder selector.
 
 ## Definition and ABI
@@ -36,8 +36,9 @@ definition SHA256, source SHA256, and these exact ABI identifiers:
 | interpreter | `workflow-sequential-interpreter@1` |
 | capabilities | `workflow-sequential-capabilities@1` |
 
-Interpreter and capability pins reserve the U1b/later-unit interface; they do
-not advertise an installed engine or working capability implementations.
+The interpreter pin names the pure U1 reducer interface; the capability pin
+reserves trusted later-unit integration. Neither advertises an installed engine
+or working capability implementations.
 U1a's registered contract/check vocabulary is a finite syntax registry only.
 No caller may treat a manually constructed `CompiledDefinition` as admission
 proof. A future registration/reader boundary must recompile the pinned bytes
@@ -122,12 +123,14 @@ must supply those proofs and refuse projected work that cannot fit lower
 remaining budgets. A new ID, wait or replay never replenishes an allowance.
 
 `parse_result` accepts canonical `workflow-sequential-result@1`: run/visit IDs,
-definition/input-selection digests, declared outcome, output references,
+definition/input-selection digests, bounded outcome token, output references,
 attributed findings and capability receipt references. Output refs fix slot,
 typed contract, epoch, producer visit/task/SID/positive INTEGER result and
 digest. produced/APPROVE/PASS/merged require outputs. Other outcomes require
 attributed findings and carry no successful output claim. Duplicate output
-slots/capability checks refuse. A reference or unsigned report is no trusted
+slots/capability checks refuse. Unknown bounded outcome tokens require attributed
+findings and reach the reducer as a hold; definition outcomes remain the closed
+finite registry. A reference or unsigned report is no trusted
 receipt; syntax parsing does not validate content, provenance, selected visit,
 current subject, settlement, authority, or whether the node permits the outcome.
 
@@ -136,10 +139,84 @@ and definition pin, source visit/INTEGER result and result/output digests,
 node/outcome, prior CAS/event digest, before/after counters, invalidated output
 refs, selected closed edge and successor visit/task or null. A next edge needs
 its matching successor; other edges cannot supply one. Each counter snapshot
-requires `epoch=content_returns+1`. U1b must deterministically verify counter
-deltas, selected edge, invalidation and result identity; a future owning writer
+requires `epoch=content_returns+1`. The pure reducer determines counter deltas,
+selected edge, invalidation and result identity; a future owning writer
 must authenticate persisted history, CAS, one-time consumption and genuine
 fresh task/visit allocation. Parsing grants none of those effects.
+
+## Pure reducer ABI
+
+`sequential_reducer.reduce_result(compiled, state, result) -> Decision` uses
+`workflow-sequential-interpreter@1`. All records inherit the frozen, strict,
+extra-forbidden U1a `Closed` model; collections are bounded immutable tuples.
+The function has no allocator, clock, environment, filesystem, network or DB.
+It looks up nodes/declared edges from the compiled data without preset dispatch.
+
+- `ActiveVisit`: node, visit/task/session IDs, epoch, input-selection digest.
+- `RunState`: run/definition digest, immutable original and requested lower
+  limits, counters, active visit (or null), current output selections, cumulative
+  attributed findings, and previously committed `Decision` receipts.
+- `AuthenticatedResult`: genuine task/session/INTEGER result binding, parsed
+  envelope and distinct `verified_checks`. This is a **trusted adapter assertion**,
+  not a public callback model or a proof producer. The adapter must authenticate
+  the complete callback, current authority, exact domain subject, output integrity,
+  access and positive original native/outer settlement. Unsigned report/check
+  references cannot construct that trust.
+- `Decision`: run/definition/source/result identity, outcome, result digest,
+  before/after counters, edge, categorical reason, optional `Activation`, current
+  selections, invalidated references and cumulative findings. `Activation` holds
+  only node, epoch and selected current inputs; it has no allocated IDs.
+
+The result digest is SHA256 of canonical JSON for the entire authenticated
+assertion, including binding and verified checks. Any changed field conflicts.
+A committed receipt matching the visit/result returns the exact earlier decision,
+even after later progress; reuse of either identity with changed content refuses.
+Foreign run/pin/visit/task/session/input digest or finding attribution refuses.
+The future U2/U3 complete reader/writer must authenticate receipt history, fixed
+limits, current selections, CAS anchors and actual IDs; constructing these Python
+models establishes no persisted-history validity or current authority.
+
+Only a declared outcome selects an edge. Unknown/undeclared outcomes hold with
+zero activation. Successful output must match the single declared slot/type,
+current epoch and exact source visit/task/session/result; declared completion
+receipt references and trusted verified checks must match. Positive native/outer
+settlement is required even for refusals/returns. Missing evidence holds without
+selecting successful output. Terminal selection requires its declared output to
+be present among validated selections; trusted domain policy remains the adapter's
+responsibility. The develop→finalize fixture uses the same reducer and reaches
+that future capability boundary; synthetic merged input is no merge-guard proof.
+
+`effective_run_limits` returns effective **ceilings**, intersecting definition,
+original and lower requested limits. Accepted reduction spends one event;
+a successor intent spends one visit. A declared return retires the target
+producer and every control/data-dependent selection using U1a's shared return
+analysis, appends attributed findings, and increments epoch/return counters
+before a fresh producer intent. Unaffected earlier-epoch prerequisites remain.
+No wait, replay or new ID resets limits. At exhausted event/visit/return/epoch
+limits the decision holds with zero activation. No counter exceeds its ceiling;
+an attempted return after the last permitted epoch still retires stale dependent
+selections but cannot spend another return/epoch. Missing required current input
+also holds without reserving a visit. Effects and history remain external.
+
+## Pure brief ABI
+
+`sequential_briefs.render_node_brief(compiled, state, original_request=...,
+inputs=BriefInputs(...)) -> NodeBrief` renders `workflow-sequential-node-brief@1`.
+The trusted caller supplies the immutable admitted original request and already
+authorized bounded disclosures. `RecipientInput` names a source, recipient roles,
+text and (for current output) its exact selected reference. A role/reference
+confers no access. Only declared inputs addressed to the pinned node role render;
+a filtered required input refuses without disclosing its bytes. Current references
+must equal the selected output, and findings render only for a node declaring
+`returned_findings`. Original findings retain visit/INTEGER-result attribution.
+
+The brief includes pinned responsibilities, output contract, completion checks,
+outcomes, original request, filtered inputs and remaining counts under effective
+ceilings. It returns fixed `system_text` separately from JSON `node_data`; adapters
+must install these at their corresponding trust levels and add trusted domain
+supplements. Definition/data text cannot replace the fixed system safety field,
+change policy or introduce scripts/expressions/permissions. Rendering grants no
+allocation, execution, disclosure or repository authority.
 
 ## Bundled data and acceptance status
 
@@ -157,14 +234,16 @@ Historical `templates.py`, `release_templates.py`, `coding.v1.json` and
 `coding_progression.py` remain byte-identical. No storage/schema, task producer,
 route, settings, admission, CLI, native enforcement or old-reader behavior
 changes. Existing admitted histories keep their original family. Startup,
-installation, cutover and live enablement are outside U1a.
+installation, cutover and live enablement are outside U1 source delivery.
 
-No tests or behavioral harness are added. Python units remain RETIRED, general
-integration SKIPPED under THR-243 seq42, and Product E2E is not triggered.
-The maker invoked the pure compiler on all four canonical example contents;
-all were accepted. This narrow data-validation smoke establishes no malformed
-input coverage, common reducer behavior or service evidence. Negative compiler
-cases, shared returns, invalidation, rendered briefs, real-task progression and
-M1/V3 acceptance remain **NOT RUN/open**. Lint/static results
-in the PR are source evidence only. Independent full review and scoped QA must
-assess this boundary honestly before manager guarded merge.
+No committed tests or behavioral harness are added. Python units remain RETIRED,
+general integration SKIPPED under THR-243 seq42, and Product E2E is not triggered.
+The maker's authorized out-of-tree pure-function smoke covers all four examples,
+forward paths/briefs, review and second_read returns, QA REVISE, original lower
+limits and third-epoch exhaustion, selection invalidation, unknown/undeclared
+outcomes, identical/conflicting replay, recipient filtering and unverified
+settlement. These synthetic adapter assertions prove no actual authentication,
+capability, native settlement, allocation or guarded merge. Actual service
+progression, negative compiler coverage, real-task returns and M1/V3 acceptance
+remain NOT RUN/open. Lint/static results are source evidence only. Independent
+full review and scoped QA precede manager guarded merge.
