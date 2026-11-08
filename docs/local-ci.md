@@ -16,6 +16,17 @@ Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.
 
+Focused launcher-timing observation (THR308seq353/354): run
+`bash scripts/test-daemon-startup-timing.sh` locally with the frozen Python3.14
+environment. This standalone shell check observes the actual timing log helpers
+and serving partition with only the ASGI/listener return isolated, the real
+`python -m runtime.daemon` entry refusing a temporary file as daemon home before
+any initialization, and the real launcher with an immediately exiting uv stub.
+It covers present/absent/malformed and out-of-range timestamp inputs, unchanged
+backend fields, pre-import clock placement and Bash's portable clock fallback.
+It starts no serving daemon or worker, adds no CI trigger/check, and does not
+restore the retired Python unit selection or execute general integration/E2E.
+
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
 THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12445

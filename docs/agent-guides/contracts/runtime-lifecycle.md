@@ -496,7 +496,24 @@ QA remain mandatory; units RETIRED, integration SKIPPED24342.
 THR308seq280 records monotonic fixed-phase success/incomplete timings at actual
 owners, with no new readiness/cleanup action. Normal startup begins after
 maintenance exclusion, before daemon-home initialization; it excludes process
-bootstrap before that origin. `org_load` covers preflight through return or
+bootstrap before that origin. Under THR308seq353/354, two additive
+`startup_timing` phases measure that earlier work: `launcher` runs from the
+first timestamp in `scripts/daemon.sh start` to entry into the daemon package,
+and `imports` runs from that package entry to the unchanged backend origin
+(including module imports, logging setup and argument parsing). The package
+captures wall and monotonic clocks before heavy imports, including under
+`python -m runtime.daemon` and its canonical-module reimport. The launcher
+passes `HAPPYRANCH_LAUNCHER_START_EPOCH` only to its child: Bash's
+`EPOCHREALTIME` when available, otherwise portable `date +%s` with second
+precision (up to one second of overstatement). No uv preflight is removed.
+`launcher` is a cross-process wall-clock difference; `imports` and the
+existing backend observations use monotonic time. Wall-clock adjustments
+between launcher and package entry can distort the launcher measurement.
+Missing, malformed, nonfinite, nonpositive or future launcher timestamps log
+`phase=launcher outcome=unavailable seconds=None` without refusing startup;
+missing process clocks similarly make their spans unavailable.
+
+`org_load` covers preflight through return or
 failed unpublished close. `org_database`, `org_workflow_schema` (install/recover
 plus first locked validation), and `org_workflow_revalidation` are nested load
 children; move/Pause/ownership/roster/coding work stays load residual.
@@ -515,8 +532,15 @@ startup with started true and no server/lifespan exit request records
 are pre-server markers. `server_startup` stops at that check before best-effort
 signals; `diagnostic_signals` is separate. Failures retain reached spans and
 `normal_startup outcome=incomplete`, without a completed partition. A serving
-partition sums disjoint `org_load`, `authority_discovery`, `authority_exact`,
-`thread_recovery` and `remaining_startup` (total less those four). Inclusive
+partition's existing backend fields sum disjoint `org_load`,
+`authority_discovery`, `authority_exact`, `thread_recovery` and
+`remaining_startup` (backend total less those four). Their meanings and values,
+and `normal_startup outcome=serving seconds`, remain backend-only. The
+`startup_partition outcome=serving seconds` dictionary additionally contains
+`launcher`, `imports` and `launcher_to_serving`; the last is the aggregate
+launcher + imports + backend seconds, or `None` if an earlier span is
+unavailable. Do not sum that aggregate back into the partition. Missing
+pre-backend spans do not suppress the existing backend partition. Inclusive
 build/sweep/schema/lifespan/server times are NEVER added to that partition.
 Caught org-load failures still contribute their elapsed work, not an assertion
 that every org attached successfully. Missing timing suppresses a completed

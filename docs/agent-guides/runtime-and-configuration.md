@@ -2744,6 +2744,20 @@ the last 20 lines of `daemon.log`; if `curl` is unavailable, it announces a
 fallback to the fresh `daemon.port` file. Timeout can leave a possible launch
 running; actual-Python lifetime duplicate-start protection remains separate.
 
+Startup timing is additive: `HAPPYRANCH_LAUNCHER_START_EPOCH` is captured at
+the start of the launch command and passed to the child. The daemon logs
+`startup_timing phase=launcher` (launcher through daemon package entry) and
+`phase=imports` (package entry through the backend clock's unchanged origin).
+The serving `startup_partition` adds `launcher`, `imports` and the aggregate
+`launcher_to_serving`; existing partition fields and `normal_startup` seconds
+still describe backend time only. Missing/invalid launcher input gives
+`outcome=unavailable seconds=None`, and an unavailable end-to-end total,
+without affecting startup. Wall-clock adjustment can distort launcher time;
+older Bash falls back to second-resolution `date +%s`. See
+[startup observations](contracts/runtime-lifecycle.md#synchronous-startup-observations)
+for the clock boundaries and partition arithmetic. All GH-709 uv/Python
+preflight diagnostics and exits remain unchanged.
+
 After genuine successful Server startup, the serving lifespan's private diagnostic
 coordinator schedules one bounded off-loop pass; startup/readiness never waits
 for its acquisition or result. Port/PID files and health probes do not signal it.
