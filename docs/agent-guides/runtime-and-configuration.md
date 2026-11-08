@@ -98,6 +98,24 @@ The additive `startup_workflow_validation` log reports guarded-source full-run
 count/time and reuse count; existing startup timing/partition meanings stay unchanged.
 Those counters exclude unchanged direct writer-target and public-reader checks.
 
+THR308seq353/354 adds a read-only SQL prefilter to ordinary `audit_log`
+action/payload discrimination. Every rowid and original raw TEXT fetch remains;
+invalid UTF8 therefore keeps the original SQLite decoding refusal. Only small,
+shallow, valid ordinary JSON with no recognized member key or backslash-u escape
+can omit Python JSON discrimination. Keys come from the existing typed inventory;
+coding/case-variant actions, partial/malformed/escaped/duplicate coding members,
+nontext/NUL/non-ASCII/large/nested metadata and uncertain cases retain the full
+scanner. The size cap also respects Python's configured integer-digit limit.
+Known coding rows still acquire/compare their complete native values below the
+ordinary watermark, on the unchanged shared budgets. Every rowid remains observed;
+no schema/index, persisted/cross-boot state, history mutation or publication rule
+changes. The additive `workflow_coding_audit_scan` log reports successful scan
+`elapsed_seconds`, `observed_rows` (including known rows) and the starting
+`watermark`; it neither proves publication nor changes existing startup timing
+or partition fields. The first scan after a restart exposes its cost, while later
+watermarked scans describe only their actual suffix. See `docs/local-ci.md` for
+the standalone synthetic differential check; no production saving is asserted.
+
 Coding validates its canonical inventory and actual shared columns, keys, FKs,
 owner histories, template/authority/native dependencies and Pause/move/naming
 controls. Unrelated native ALTER chronology is not a coding-only whole-org SQL

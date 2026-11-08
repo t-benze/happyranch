@@ -8,9 +8,14 @@ whole-org SQL equality. This module grants no repository or current authority.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
+import sys
 import threading
+import time
+from collections.abc import Iterator
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -118,6 +123,8 @@ CODING_VALUES = {
     'namespace': ('release/happyranch',),
 }
 CODING_NAMESPACE_COLUMNS = ('namespace', 'authority_namespace', 'org_namespace')
+
+_logger = logging.getLogger(__name__)
 
 
 def has_coding_schema_objects(conn: sqlite3.Connection) -> bool:
@@ -409,6 +416,71 @@ def _coding_metadata_candidate(raw: object, *, location: str) -> bool:
     return False
 
 
+def _coding_scan_projection(table: str, columns: list[str]) -> str:
+    """Mark only provably ordinary audit payloads for skipping JSON decoding.
+
+    Keep every rowid and the original scalar action. This is NOT a JSON reader:
+    uncertain storage/encoding, keys, escapes, size or nesting always retain the
+    original payload for the unchanged discriminator. Expected coding rows are
+    acquired independently in full, with their original cumulative allowance.
+    Raw TEXT is ALWAYS fetched/decoded normally, before acting on this marker:
+    invalid UTF8 must retain the original sqlite3 decoding error, not disappear.
+    """
+    quoted = ['"' + name.replace('"', '""') + '"' for name in columns]
+    if table != 'audit_log' or columns != ['action', 'payload']:
+        return ','.join(quoted)
+    # json.loads can refuse a long integer even in otherwise ordinary JSON.
+    # Bound the WHOLE text by the active digit limit (zero means disabled).
+    limit = min(65536, sys.get_int_max_str_digits() or 65536)
+    ordinary = []
+    for name in quoted:
+        ordinary.extend((
+            f"typeof({name})='text'",
+            f'length(CAST({name} AS BLOB))<={limit}',
+            # Conservatively retain non-ASCII/NUL text. Invalid UTF8 may still
+            # satisfy this SQL check, so _coding_scan_rows ALWAYS fetches raw
+            # TEXT through sqlite3's original UTF8 decoder before any skip.
+            f'length(CAST({name} AS BLOB))=length({name})',
+        ))
+    ordinary.extend((
+        "lower(\"action\") NOT GLOB 'coding_*' AND \"action\"!='workflow_start'",
+        "substr(ltrim(\"payload\", ' \t\r\n'),1,1) IN ('{','[')",
+        r"""instr("payload", '\u')=0""",
+        # Count even openers in quoted prose: false positives only. At most
+        # one container rules out BOTH decoder and recursive-visitor overflow.
+        "length(\"payload\")-length(replace(replace(\"payload\",'{',''),'[',''))<=1",
+        'json_valid("payload")',
+    ))
+    # json_each is evaluated ONLY for valid shallow JSON, and visits duplicate
+    # keys too. Every recognized key retains the original Python scan regardless
+    # of value. Invalid/incomplete envelopes never enter this branch.
+    keys = sorted(CODING_PREFIXES.keys() | CODING_VALUES.keys() | set(CODING_NAMESPACE_COLUMNS))
+    key_sql = ','.join("'" + key.replace("'", "''") + "'" for key in keys)
+    return ('"action","payload",CASE WHEN ' + ' AND '.join(ordinary)
+            + ' THEN NOT EXISTS (SELECT 1 FROM json_each("payload") WHERE key IN ('
+            + key_sql + ')) ELSE 0 END AS _coding_ordinary')
+
+
+def _coding_scan_rows(conn: sqlite3.Connection, table: str, columns: list[str], *,
+                      where: str, args: tuple, ordered: bool) -> Iterator[tuple | sqlite3.Row]:
+    """Retain original fetch/type/UTF8 failures, then omit ordinary JSON work."""
+    quoted = '"' + table.replace('"', '""') + '"'
+    projection = _coding_scan_projection(table, columns)
+    query = ('SELECT rowid' + (',' + projection if projection else '')
+             + ' FROM ' + quoted + where + (' ORDER BY rowid' if ordered else ''))
+    cursor = conn.execute(query, args)
+    try:
+        for row in cursor:
+            if len(row) == len(columns) + 2:
+                # This marker exists only for the ordinary action/payload
+                # projection. The complete raw row has already decoded above.
+                yield (row[0], row[1], None if row[-1] == 1 else row[2])
+            else:
+                yield row
+    finally:
+        cursor.close()
+
+
 def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
                            structured, keys, known, watermark):
     """Locate independently expected rows and reserved metadata, never admit by ID.
@@ -418,7 +490,6 @@ def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
     are freshly acquired with the original bounded cell gates and shared budget.
     """
     from runtime.workflows.coding_authority_history import _bounded_rows
-    quoted = '"' + table.replace('"', '""') + '"'
     key_names = ['"' + key.replace('"', '""') + '"' for key in keys]
     key_sql = '(' + ','.join(key_names) + ')' if len(keys) > 1 else key_names[0]
     placeholders = '(' + ','.join('?' for _ in keys) + ')' if len(keys) > 1 else '?'
@@ -431,7 +502,6 @@ def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
         row = selected[0]
         yield (row[0], True, *row[1:len(columns) + 1])
     metadata = list(dict.fromkeys((*scalar, *structured)))
-    projection = ','.join('"' + name.replace('"', '""') + '"' for name in metadata)
     predicates, args = [], ()
     if known:
         predicates.append('(' + ' OR '.join(name + ' IS NULL' for name in key_names)
@@ -442,17 +512,17 @@ def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
         predicates.append('rowid>?')
         args += (watermark,)
     where = ' WHERE ' + ' AND '.join(predicates) if predicates else ''
-    for rowid, *values in conn.execute('SELECT rowid' + (',' + projection if projection else '')
-                                       + ' FROM ' + quoted + where + ' ORDER BY rowid', args):
-        candidate = any(_coding_scalar(name, raw) if name in scalar else
-                        _coding_metadata_candidate(raw, location=f'{table}.{name}')
-                        for name, raw in zip(metadata, values, strict=True))
-        if not candidate:
-            yield (rowid, False, None)  # ordinary prefix observation, not a coding row
-            continue
-        yield from ((row[0], False, *row[1:len(columns) + 1]) for row in _bounded_rows(
-            conn, table, tuple(columns), allowed, budget, where='rowid=?',
-            args=(rowid,), maximum=1, with_rowid=True))
+    with closing(_coding_scan_rows(conn, table, metadata, where=where, args=args, ordered=True)) as scan:
+        for rowid, *values in scan:
+            candidate = any(_coding_scalar(name, raw) if name in scalar else
+                            _coding_metadata_candidate(raw, location=f'{table}.{name}')
+                            for name, raw in zip(metadata, values, strict=True))
+            if not candidate:
+                yield (rowid, False, None)  # ordinary prefix observation, not a coding row
+                continue
+            with closing(_bounded_rows(conn, table, tuple(columns), allowed, budget,
+                    where='rowid=?', args=(rowid,), maximum=1, with_rowid=True)) as candidates:
+                yield from ((row[0], False, *row[1:len(columns) + 1]) for row in candidates)
 
 
 def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
@@ -576,131 +646,142 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             selected_columns = columns
         if not selected_columns:
             continue
-        selected = ','.join('"' + column.replace('"', '""') + '"' for column in selected_columns)
         file_key = _audit_log_file_key(conn) if table == 'audit_log' else None
         watermark = _audit_log_watermark(conn, file_key)
         last_id = watermark
-        if table_bounded:
-            types = {
-                'workflow_coding_mappings': (('text',), ('text',), ('text',), ('integer',),
-                    ('text',), ('text',), ('text',), ('blob',), ('text',), ('text',)),
-                'workflow_authorization_revisions': (('text',), ('text',), ('integer',), ('blob',),
-                    ('text',), ('text',), ('text',)),
-                'workflow_admission_records': (('text',), ('text',), ('integer',), ('text',), ('text',)),
-                'audit_log': (('integer',), ('text',), ('text',), ('text',), ('null', 'text'), ('text',)),
-            }.get(table)
-            allowed = types or (('text', 'blob', 'integer', 'real', 'null'),) * len(selected_columns)
-            if table in CODING_TABLES:
-                bounded = _bounded_rows(conn, table, tuple(selected_columns), allowed, budget, with_rowid=True,
-                                        value_limit=16777216 if table == 'workflow_coding_events' else 1048576)
-                rows = ((row[0], False, *row[1:len(selected_columns) + 1]) for row in bounded)
-            else:
-                keys = tuple(row[1] for row in sorted(conn.execute(f'PRAGMA table_xinfo("{quoted}")'),
-                                                       key=lambda row: row[5]) if row[5]) or ('rowid',)
-                def locator(expected):
-                    return tuple((type(expected[key]), expected[key]) for key in keys)
-                known = set()
-                for expected in mapping_rows.get(table, {}).values():
-                    budget.step()
-                    known.add(locator(expected))
-                if release is not None:
-                    for name, expected in release.rows:
-                        budget.step()
-                        if name == table:
-                            known.add(locator(expected))
-                if native_setup and storage is not None:
-                    entries = (storage.issuances if table == 'workflow_authorization_revisions' else storage.pointers)
-                    for entry in entries:
-                        budget.step()
-                        identity = entry.authorization_id if table == 'workflow_authorization_revisions' else entry[0]
-                        known.add(((str, identity),))
-                if native_queued:
-                    from runtime.workflows.coding_authority_history import _decoded
-                    for raw in queued.admitted.get(table, ()):
-                        # The independently reconstructed encoding locates a key
-                        # only. Charge this copy/decode; full typed equality below
-                        # remains mandatory even if the key is unchanged.
-                        budget.consumed += len(raw)
-                        if budget.remaining_bytes < 0:
-                            raise ValueError('workflow_coding_candidate_copy_bound')
-                        expected = _decoded(json.loads(raw), budget)
-                        known.add(locator(expected))
-                rows = _coding_candidate_rows(conn, table, selected_columns, allowed, budget,
-                    scalar=scalar, structured=structured, keys=keys, known=known,
-                    watermark=watermark if file_key else None)
-        else:
-            query = f'SELECT rowid, {selected} FROM "{quoted}"' + (' WHERE rowid > ? ORDER BY rowid' if file_key else '')
-            rows = ((row[0], False, *row[1:]) for row in conn.execute(query, (watermark,) if file_key else ()))
-        for rowid, expected_candidate, *row in rows:
-            last_id = max(last_id, rowid)
-            if table_bounded and row == [None]:
-                continue  # Already discriminated ordinary metadata, no coding spend.
-            data = dict(zip(selected_columns, row, strict=True))
-            if native_queued and queued.matches(table, data):
-                budget.step()
-                continue  # Complete typed row equality after independent semantic closure.
-            if table in CODING_TABLES and table != 'workflow_coding_mappings':
-                raise ValueError('workflow_coding_queued_row_mismatch')
-            if native_mapping:
-                budget.step()
-                expected = mapping_rows.get(table, {}).get((type(data.get('id')), data.get('id')))
-                if expected is not None:
-                    budget.step()  # index lookup is never positive admission
-                    equal = data.keys() == expected.keys()
-                    for key, value in expected.items():
-                        budget.step()
-                        equal = equal and type(data.get(key)) is type(value) and data[key] == value
-                    if equal:
-                        continue  # Complete typed row equality, not an ID exemption.
-                if table == 'workflow_coding_mappings':
-                    raise ValueError('workflow_coding_mapping_row_mismatch')
-            if release is not None and native_import:
-                if table_bounded:
-                    # Complete four/six-row release comparison is also charged here.
-                    for _, expected in release.rows:
-                        for _ in expected:
-                            budget.step()
-                if release.matches(table, data):
-                    continue  # Complete independently derived typed row, never an ID exemption.
-            if native_setup and storage is not None:
-                # A supported family dispatch is an exact whole-row equality,
-                # never an exemption based solely on namespace, ID or digest.
-                if table == 'workflow_authorization_revisions':
-                    for entry in storage.issuances:
-                        if table_bounded:
-                            budget.step()
-                        expected = dict(id=entry.authorization_id, namespace=entry.namespace,
-                            revision=entry.revision, authority_bytes=entry.authority_bytes,
-                            authority_digest=entry.authority_digest,
-                            source_pin='coding-capability-issuer@1', created_at=entry.created_at)
-                        if (data.keys() == expected.keys() and all(type(data[key]) is type(value)
-                                and data[key] == value for key, value in expected.items())):
-                            break
-                    else:
-                        entry = None
-                    if entry is not None:
-                        continue
-                elif (type(data.get('namespace')) is str
-                        and type(data.get('authorization_revision_id')) is str
-                        and set(data) == {'namespace', 'authorization_revision_id'}
-                        and (data['namespace'], data['authorization_revision_id']) in storage.pointers):
-                    continue
-            if expected_candidate:
-                raise ValueError('workflow_coding_expected_row_mismatch')
-            for column, raw in zip(selected_columns, row, strict=True):
-                if table_bounded:
-                    budget.step()  # scalar classification or one metadata decode
-                if column in scalar:
-                    if _coding_scalar(column, raw):
-                        raise ValueError(f'workflow_coding_data_unsupported: {table}.{column}; coding reader required')
+        scan_start = time.perf_counter() if table == 'audit_log' else None
+        observed_rows = 0
+        # Refusal tracebacks may outlive the connection; close every owned
+        # scan (including nested candidate acquisition) before leaving this read.
+        with ExitStack() as scans:
+            if table_bounded:
+                types = {
+                    'workflow_coding_mappings': (('text',), ('text',), ('text',), ('integer',),
+                        ('text',), ('text',), ('text',), ('blob',), ('text',), ('text',)),
+                    'workflow_authorization_revisions': (('text',), ('text',), ('integer',), ('blob',),
+                        ('text',), ('text',), ('text',)),
+                    'workflow_admission_records': (('text',), ('text',), ('integer',), ('text',), ('text',)),
+                    'audit_log': (('integer',), ('text',), ('text',), ('text',), ('null', 'text'), ('text',)),
+                }.get(table)
+                allowed = types or (('text', 'blob', 'integer', 'real', 'null'),) * len(selected_columns)
+                if table in CODING_TABLES:
+                    bounded = _bounded_rows(conn, table, tuple(selected_columns), allowed, budget, with_rowid=True,
+                                            value_limit=16777216 if table == 'workflow_coding_events' else 1048576)
+                    scans.enter_context(closing(bounded))
+                    rows = ((row[0], False, *row[1:len(selected_columns) + 1]) for row in bounded)
                 else:
-                    _refuse_coding_metadata(raw, location=f'{table}.{column}',
-                                            budget=budget if table_bounded else None)
+                    keys = tuple(row[1] for row in sorted(conn.execute(f'PRAGMA table_xinfo("{quoted}")'),
+                                                           key=lambda row: row[5]) if row[5]) or ('rowid',)
+                    def locator(expected):
+                        return tuple((type(expected[key]), expected[key]) for key in keys)
+                    known = set()
+                    for expected in mapping_rows.get(table, {}).values():
+                        budget.step()
+                        known.add(locator(expected))
+                    if release is not None:
+                        for name, expected in release.rows:
+                            budget.step()
+                            if name == table:
+                                known.add(locator(expected))
+                    if native_setup and storage is not None:
+                        entries = (storage.issuances if table == 'workflow_authorization_revisions' else storage.pointers)
+                        for entry in entries:
+                            budget.step()
+                            identity = entry.authorization_id if table == 'workflow_authorization_revisions' else entry[0]
+                            known.add(((str, identity),))
+                    if native_queued:
+                        from runtime.workflows.coding_authority_history import _decoded
+                        for raw in queued.admitted.get(table, ()):
+                            # The independently reconstructed encoding locates a key
+                            # only. Charge this copy/decode; full typed equality below
+                            # remains mandatory even if the key is unchanged.
+                            budget.consumed += len(raw)
+                            if budget.remaining_bytes < 0:
+                                raise ValueError('workflow_coding_candidate_copy_bound')
+                            expected = _decoded(json.loads(raw), budget)
+                            known.add(locator(expected))
+                    rows = scans.enter_context(closing(_coding_candidate_rows(conn, table, selected_columns, allowed, budget,
+                        scalar=scalar, structured=structured, keys=keys, known=known,
+                        watermark=watermark if file_key else None)))
+            else:
+                scan = scans.enter_context(closing(_coding_scan_rows(
+                    conn, table, selected_columns, where=' WHERE rowid > ?' if file_key else '',
+                    args=(watermark,) if file_key else (), ordered=bool(file_key))))
+                rows = ((row[0], False, *row[1:]) for row in scan)
+            for rowid, expected_candidate, *row in rows:
+                observed_rows += 1
+                last_id = max(last_id, rowid)
+                if table_bounded and row == [None]:
+                    continue  # Already discriminated ordinary metadata, no coding spend.
+                data = dict(zip(selected_columns, row, strict=True))
+                if native_queued and queued.matches(table, data):
+                    budget.step()
+                    continue  # Complete typed row equality after independent semantic closure.
+                if table in CODING_TABLES and table != 'workflow_coding_mappings':
+                    raise ValueError('workflow_coding_queued_row_mismatch')
+                if native_mapping:
+                    budget.step()
+                    expected = mapping_rows.get(table, {}).get((type(data.get('id')), data.get('id')))
+                    if expected is not None:
+                        budget.step()  # index lookup is never positive admission
+                        equal = data.keys() == expected.keys()
+                        for key, value in expected.items():
+                            budget.step()
+                            equal = equal and type(data.get(key)) is type(value) and data[key] == value
+                        if equal:
+                            continue  # Complete typed row equality, not an ID exemption.
+                    if table == 'workflow_coding_mappings':
+                        raise ValueError('workflow_coding_mapping_row_mismatch')
+                if release is not None and native_import:
+                    if table_bounded:
+                        # Complete four/six-row release comparison is also charged here.
+                        for _, expected in release.rows:
+                            for _ in expected:
+                                budget.step()
+                    if release.matches(table, data):
+                        continue  # Complete independently derived typed row, never an ID exemption.
+                if native_setup and storage is not None:
+                    # A supported family dispatch is an exact whole-row equality,
+                    # never an exemption based solely on namespace, ID or digest.
+                    if table == 'workflow_authorization_revisions':
+                        for entry in storage.issuances:
+                            if table_bounded:
+                                budget.step()
+                            expected = dict(id=entry.authorization_id, namespace=entry.namespace,
+                                revision=entry.revision, authority_bytes=entry.authority_bytes,
+                                authority_digest=entry.authority_digest,
+                                source_pin='coding-capability-issuer@1', created_at=entry.created_at)
+                            if (data.keys() == expected.keys() and all(type(data[key]) is type(value)
+                                    and data[key] == value for key, value in expected.items())):
+                                break
+                        else:
+                            entry = None
+                        if entry is not None:
+                            continue
+                    elif (type(data.get('namespace')) is str
+                            and type(data.get('authorization_revision_id')) is str
+                            and set(data) == {'namespace', 'authorization_revision_id'}
+                            and (data['namespace'], data['authorization_revision_id']) in storage.pointers):
+                        continue
+                if expected_candidate:
+                    raise ValueError('workflow_coding_expected_row_mismatch')
+                for column, raw in zip(selected_columns, row, strict=True):
+                    if table_bounded:
+                        budget.step()  # scalar classification or one metadata decode
+                    if column in scalar:
+                        if _coding_scalar(column, raw):
+                            raise ValueError(f'workflow_coding_data_unsupported: {table}.{column}; coding reader required')
+                    else:
+                        _refuse_coding_metadata(raw, location=f'{table}.{column}',
+                                                budget=budget if table_bounded else None)
         if file_key is not None:
             if advances is not None:
                 advances.append((file_key, last_id))  # applied after the owned snapshot ends
             else:
                 _advance_audit_log_watermark(conn, file_key, last_id)
+        if scan_start is not None:
+            _logger.info('workflow_coding_audit_scan elapsed_seconds=%.6f observed_rows=%d watermark=%d',
+                         time.perf_counter() - scan_start, observed_rows, watermark)
     if queued is not None:
         return _CodingInventory(budget, release, imported, mappings, queued)
     return None
