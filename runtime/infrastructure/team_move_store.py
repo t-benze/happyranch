@@ -706,8 +706,8 @@ def install_team_move_schema(db: Any, *, org_slug: str) -> None:
     with _transaction(db) as conn:
         # A complete org workflow schema is the existing org-extension
         # discriminator. Generic Database/runtime-audit lack it and refuse.
-        from runtime.infrastructure.workflow_schema import validate_workflow_schema
-        validate_workflow_schema(conn, expected_org_slug=org_slug)
+        from runtime.infrastructure.workflow_schema_load import read_workflow_schema_for_org_load
+        read_workflow_schema_for_org_load(conn, expected_org_slug=org_slug, writer_source=True)
         installed = validate_team_move_schema(conn, org_slug=org_slug)
         if installed and conn.execute("SELECT 1 FROM team_move_operations WHERE active_slot=1").fetchone():
             raise TeamMoveError("team_move_startup_recovery_required")

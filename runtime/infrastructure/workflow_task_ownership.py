@@ -112,8 +112,11 @@ def install_task_ownership(db: Any, *, org_slug: str) -> None:
     repaired or backfilled again. Publication follows successful COMMIT only.
     """
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
+    from runtime.infrastructure.workflow_schema_load import read_workflow_schema_for_org_load
     with db.workflow_schema_transaction() as conn:
-        layout, coding = _read_workflow_schema(conn, expected_org_slug=org_slug)
+        layout, coding = read_workflow_schema_for_org_load(
+            conn, expected_org_slug=org_slug, writer_source=True,
+        )
         if not ownership_storage_present(conn):
             conn.execute(OWNERSHIP_DDL)
             conn.execute(binding_view_ddl(layout, coding_extension=coding is not None))

@@ -27,6 +27,15 @@ backend fields, pre-import clock placement and Bash's portable clock fallback.
 It starts no serving daemon or worker, adds no CI trigger/check, and does not
 restore the retired Python unit selection or execute general integration/E2E.
 
+Focused schema-load observation (THR308seq348/353/354): run
+`bash scripts/test-workflow-schema-load.sh` locally with frozen Python3.14.
+It drives the production validation/reuse seam and real settings/Pause/naming
+writers on disposable SQLite files, including independent-connection movement,
+failed metadata, schema cookies and the first integrity/FK checks. The isolated
+ten-read timing is not a serving-daemon restart or production-size estimate.
+It starts no daemon/worker and adds no CI selection, trigger or dependency;
+retired Python units, general integration and Product E2E are not executed.
+
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
 THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12445

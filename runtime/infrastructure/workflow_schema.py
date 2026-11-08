@@ -966,8 +966,10 @@ class WorkflowCompatibilityStore:
                 coding_present = has_coding_schema_objects(conn)
                 actual = _layout(conn)
                 if actual[0] or coding_present:
-                    layout = _read_workflow_schema(conn, expected_org_slug=expected_org_slug,
-                                                   advances=advances)[0]
+                    from runtime.infrastructure.workflow_schema_load import read_workflow_schema_for_org_load
+                    layout = read_workflow_schema_for_org_load(
+                        conn, expected_org_slug=expected_org_slug, writer_source=True, advances=advances,
+                    )[0]
                     result = "reopened"
                 else:
                     _validate_coding_dependencies(conn)

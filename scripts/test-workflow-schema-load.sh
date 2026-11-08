@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+uv run --frozen --python 3.14 python - <<'PY'
+from pathlib import Path
+from contextvars import copy_context
+import sqlite3
+import tempfile
+import time
+from types import SimpleNamespace
+
+from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover, validate_workflow_schema
+from runtime.infrastructure.workflow_schema_load import org_load_validation, read_workflow_schema_for_org_load
+from runtime.infrastructure.team_move_store import install_team_move_schema, TeamMoveStore
+from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
+from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+from runtime.models import TaskRecord
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.org_config import seed_org_settings_from_config, backfill_reviewer_agents_setting
+from runtime.orchestrator.task_pause import restore_pause_preparations
+from runtime.orchestrator.producer_move import native_writer
+from runtime.orchestrator.team_move import TeamMoveCoordinator
+from runtime.workflows.cutover import WorkflowCutoverStore
+
+with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
+    paths = OrgPaths(root=Path(scratch))
+    paths.org_dir.mkdir()
+    paths.agents_dir.mkdir()
+    db = Database(paths.db_path)
+    try:
+        install_or_recover(db, expected_org_slug='scratch')
+        install_team_move_schema(db, org_slug='scratch')
+        install_pause_schema(db, org_slug='scratch')
+        install_task_ownership(db, org_slug='scratch')
+        TeamMoveCoordinator(TeamMoveStore(db, 'scratch'))
+        db.insert_task(TaskRecord(id='TASK-1', brief='isolated startup writer'))
+        store = db._task_pause_store = TaskPauseStore(db, 'scratch')
+        with store.writer('TASK-1'):
+            store.ensure_uncommitted('TASK-1')
+        statements = []
+        db._conn.set_trace_callback(statements.append)
+
+        def checks():
+            return sum(s == 'PRAGMA integrity_check' for s in statements)
+
+        def read(**kwargs):
+            return read_workflow_schema_for_org_load(db._conn, expected_org_slug='scratch', **kwargs)
+
+        with org_load_validation(db, org_slug='scratch'):
+            first = read()
+            assert checks() == 1, 'first validation lost integrity_check'
+            assert 'PRAGMA foreign_key_check' in statements, 'first full validation lost FK check'
+            assert read() == first
+            assert checks() == 1, 'unchanged load repeated the full traversal'
+        print('PASS unchanged reuse and first-run integrity/FK')
+
+        failures = []
+
+        def expect(condition, message):
+            if not condition:
+                failures.append(message)
+                print('FAIL:', message)
+
+        actions = {
+            'own DML': lambda: db.upsert_org_setting('probe', '{}'),
+            'main schema cookie': lambda: db._conn.execute('CREATE TABLE load_probe (value)'),
+            'TEMP schema cookie': lambda: db._conn.execute('CREATE TEMP TABLE temp_probe (value)'),
+            'settings seed': lambda: seed_org_settings_from_config(paths, db),
+            'settings reviewer backfill': lambda: backfill_reviewer_agents_setting(paths, db),
+            'Pause journal save': lambda: save_pause(),
+            'Pause startup restore': lambda: restore_pause_preparations(SimpleNamespace(_db=db)),
+            'naming reservation audit': lambda: reserve_names(),
+        }
+
+        def save_pause():
+            with store.writer('TASK-1') as (_, row):
+                store.save_journal_uncommitted(row)
+
+        def reserve_names():
+            with native_writer(db, publisher='identity_names_load'):
+                pass
+            assert db._conn.execute("SELECT count(*) FROM audit_log WHERE action='team_move_native_writer'").fetchone()[0] == 2
+
+        for name, action in actions.items():
+            if name == 'settings reviewer backfill':
+                db._conn.execute("DELETE FROM org_settings WHERE section='reviewer_agents'")
+                db._conn.commit()
+            with org_load_validation(db, org_slug='scratch'):
+                read()
+                before = checks()
+                changes = db._conn.total_changes
+                action()
+                db._conn.commit()
+                if name in ('main schema cookie', 'TEMP schema cookie'):
+                    assert db._conn.total_changes == changes, name + ' must exercise DDL without DML detection'
+                else:
+                    assert db._conn.total_changes > changes, name + ' did not execute a real writer'
+                read()
+                expect(checks() == before + 1, name + ' failed to invalidate')
+                read()
+                expect(checks() == before + 1, name + ' did not establish a fresh reusable result')
+            print('CASE invalidation:', name)
+
+        other = sqlite3.connect(paths.db_path)
+        try:
+            with org_load_validation(db, org_slug='scratch'):
+                read()
+                before, local = checks(), db._conn.total_changes
+                other.execute("UPDATE org_settings SET value_json='null' WHERE section='probe'")
+                other.commit()
+                assert db._conn.total_changes == local
+                read()
+                expect(checks() == before + 1, 'independent commit reused stale validation')
+            print('CASE independent connection data_version')
+        finally:
+            other.close()
+
+        for unavailable in ('data_version', 'schema_version', 'database_list', 'query_only'):
+            with org_load_validation(db, org_slug='scratch'):
+                read()
+                before = checks()
+                def deny(action, arg1, arg2, database, source):
+                    return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_PRAGMA and arg1 == unavailable else sqlite3.SQLITE_OK
+                db._conn.set_authorizer(deny)
+                try:
+                    read()
+                    read()
+                finally:
+                    db._conn.set_authorizer(None)
+                expect(checks() == before + 2, unavailable + ' failure did not fall back')
+            print('CASE unknown/failed bookend:', unavailable)
+
+        other = sqlite3.connect(paths.db_path)
+        try:
+            for boundary in ('BEGIN', 'ROLLBACK'):
+                with org_load_validation(db, org_slug='scratch'):
+                    read()
+                    before = checks()
+                    moved = False
+                    def move_at_boundary(sql):
+                        global moved
+                        statements.append(sql)
+                        if sql == boundary and not moved:
+                            moved = True
+                            other.execute("UPDATE org_settings SET value_json=? WHERE section='probe'", ('"' + boundary + '"',))
+                            other.commit()
+                    db._conn.set_trace_callback(move_at_boundary)
+                    try:
+                        read()
+                    finally:
+                        db._conn.set_trace_callback(statements.append)
+                    assert moved, boundary + ' did not exercise the real snapshot boundary'
+                    expect(checks() == before + 1, boundary + ' movement returned reused validation')
+                print('CASE independent movement at snapshot boundary:', boundary)
+        finally:
+            other.close()
+
+        with org_load_validation(db, org_slug='scratch'):
+            read()
+            before = checks()
+            db._conn.execute('PRAGMA query_only=ON')
+            try:
+                read()
+            finally:
+                db._conn.execute('PRAGMA query_only=OFF')
+            expect(checks() == before + 1, 'connection configuration change did not invalidate')
+        print('CASE connection configuration identity')
+        for config_name in ('native config', 'SQL limit'):
+            with org_load_validation(db, org_slug='scratch'):
+                read()
+                before = checks()
+                if config_name == 'native config':
+                    prior = db._conn.getconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE)
+                    db._conn.setconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE, not prior)
+                else:
+                    prior = db._conn.getlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH)
+                    db._conn.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, prior - 1)
+                try:
+                    read()
+                finally:
+                    if config_name == 'native config':
+                        db._conn.setconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE, prior)
+                    else:
+                        db._conn.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, prior)
+                expect(checks() == before + 1, config_name + ' change did not invalidate')
+            print('CASE connection configuration identity:', config_name)
+
+        with org_load_validation(db, org_slug='scratch'):
+            read()
+            inherited = copy_context()
+        before = checks()
+        inherited.run(read)
+        inherited.run(read)
+        assert checks() == before + 2, 'ended load reused through an inherited context'
+        before = checks()
+        with org_load_validation(db, org_slug='scratch'):
+            read()
+        with org_load_validation(db, org_slug='scratch'):
+            read()
+        read()
+        assert checks() == before + 3, 'reuse escaped the org load'
+        print('PASS scope exit, fresh load and public fallback')
+
+        with org_load_validation(db, org_slug='scratch'):
+            read()
+            before = checks()
+            db._conn.execute('BEGIN')
+            try:
+                read()
+                read()
+            finally:
+                db._conn.rollback()
+            assert checks() == before + 2, 'unknown caller read snapshot reused validation'
+            read()  # Establish a fresh reusable source after the unknown view.
+            before = checks()
+            install_team_move_schema(db, org_slug='scratch')
+            assert checks() == before, 'team-move source did not use the real load seam'
+            install_task_ownership(db, org_slug='scratch')
+            assert checks() == before + 1, 'ownership target must remain full; source may reuse'
+            before = checks()
+            WorkflowCutoverStore(db, org_slug='scratch').recover_authorized()
+            assert checks() == before + 1, 'cutover writer source may reuse; public get stays full'
+        print('PASS unknown caller snapshot, real source owners and unconditional writer target')
+
+        assert not failures, failures
+        print('PASS all named invalidation/bookend cases')
+        db._conn.set_trace_callback(None)
+        start = time.perf_counter()
+        for _ in range(10):
+            validate_workflow_schema(db._conn, expected_org_slug='scratch')
+        baseline = time.perf_counter() - start
+        start = time.perf_counter()
+        with org_load_validation(db, org_slug='scratch'):
+            for _ in range(10):
+                read()
+        optimized = time.perf_counter() - start
+        print(f'ISOLATED ten unchanged source validations: before={baseline:.6f}s after={optimized:.6f}s')
+        print('Synthetic local SQLite; not a serving-daemon restart or production-size estimate.')
+    finally:
+        db.close()
+PY
