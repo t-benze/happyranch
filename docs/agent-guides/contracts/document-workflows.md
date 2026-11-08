@@ -643,8 +643,11 @@ no F/E/G/H/I/J DDL, historical bytes, compiler contracts, r1/r2 semantics or
 startup/migration behavior. Whole-schema references compare the document layout,
 Coding, owner indexes, ownership companion and new storage independently.
 New-table start-key uniqueness and run-first deferred bootstrap do not alter
-any document table. Complete new-history, reference and ownership acquisition
-share the finite reader allowance described in the reusable storage guide.
+any document table. Schema observation consumes A; independent reference acquisition/comparison
+consumes B; new-history and run-scoped ownership acquisition consume C. Zero-row
+guards and retained legacy composition use L's SQL meter, with rows/bytes/steps
+folding into C. All four accumulate without reset under the original five-second
+deadline, as detailed in the reusable storage guide.
 TASK-14576 composes all original complete document/Coding data readers in an
 explicit connection-bound scope, after the new history validates. Every recursive
 schema check compares a complete independent combined reference; original native

@@ -312,24 +312,32 @@ The sequential acquisition path uses the retained
 `coding_authority_history._Budget` / `_bounded_rows` / `_decoded` model and
 `workflow_schema._candidate_structure` / `_structure_cells` metadata acquisition.
 SQL `typeof`/byte-length gates withhold wrong-class or oversized cells before
-payload fetch. The original allowance covers candidate and independent reference
-metadata, native links, new ownership inventory, sequential rows, every decoded/model
-copy and per-run replay. Each sequential table is acquired once; visits/events
-are grouped once instead of rescanning all history for every run. The rowid-less
-ownership view uses a complete bounded scalar preflight and reserves its payload
-before its one payload traversal, on the same snapshot and allowance.
+payload fetch. Decision 2 (THR336 msg102; accepted TASK-14643 rev4) separates
+observed schema/native metadata (A), independent reference metadata/comparison (B),
+and sequential data, native links, decoded/model copies and per-run replay (C). Each sequential table is acquired once; visits/events
+are grouped once instead of rescanning all history for every run. Ownership acquisition is scoped to authenticated run-bound tasks: cached run/visit
+relations produce bindings, with primary-key native-task and mark lookups under C.
+No binding-view text is acquired inside C. Zero-row type/size/NUL guards and
+rowid-table decode-candidate checks preserve the non-run guarantees under L's
+org-wide SQL meter; candidate rows/bytes/steps consume C. The unchanged retained
+legacy `_inventory` traverses and decodes the complete binding view under L,
+including cross-family conflicts.
 The complete layout match also returns the already acquired column metadata to
 sequential row acquisition inside that same snapshot. It retains the exact
-validated tuples and charges the metadata map to the original copy allowance;
+validated tuples and charges the metadata map to C;
 row acquisition does not repeat `pragma_table_xinfo`. Full native metadata,
 independent comparisons, exact-type gates and every existing cap remain intact.
 
-This standalone call permits at most 8192 acquired rows (including schema and
-reference acquisitions), 64 MiB aggregate raw/decoded/copy reservations, 65536
-traversal/replay steps, a cooperative five-second original deadline and two
-million SQLite progress steps. Individual cells remain at most 1 MiB; the
-existing definition/result limits also apply. The copy/work allowance includes
-both whole schema references; it does not replenish between phases or runs.
+A, B and C each permit at most 8192 acquired rows, 64 MiB raw/decoded/copy
+reservations, 65536 traversal/replay steps and two million SQLite progress units.
+L permits 32 million SQL progress units only; its acquired rows/bytes/steps
+consume C. All four share one original cooperative five-second deadline and
+accumulate without reset between phases or runs. A is re-entered for native
+metadata. Progress handlers are sequential, never nested. Fixed source-literal
+reference construction before the helper yields is unmetered SQL, bracketed only
+by B's deadline checks. Individual cells remain at most 1 MiB; existing
+definition/result limits also apply. Large hostile schema acquisition exhausts A;
+small extra workflow objects still refuse at the complete comparison under B.
 Callers must exclusively own the connection and its progress hook during the
 call. Checks occur before success, including unavailable/empty results;
 exhaustion raises a refusal, never validates a subset or reports empty success.
@@ -338,21 +346,29 @@ These are cooperative limits, not hard RSS or OS-I/O timing guarantees.
 Legacy-only and combined complete validation receive the unchanged native
 connection and an exact retained `_Budget` with its original per-call caps.
 TASK-14576 separates those narrower counters from the new reader's schema/copy
-charges: the enclosing totals remain intact, each retained counter is added back
-on success or refusal, and the outer byte/work/deadline checks run before success.
-No aggregate allowance replenishes. Seeding the wider new-reader metadata charges
+charges: each retained row/byte/work counter is added back to C on success or
+refusal, and C's byte/work/deadline checks run before success. L meters retained
+SQL under the same original deadline. No allowance replenishes. Seeding the wider new-reader metadata
+charges
 into the original 16 MiB/16384-step counters would reject even empty Coding.
 Retained readers may refuse at their own original caps. Their acquisition is
-bounded by those caps plus the same outer SQLite progress/deadline bound, **not
-pre-reservation against the outer 64 MiB cap**. Retained document/ownership queries
-without a budget argument remain under that progress handler; their bytes are
-not added to the outer counter. Original refusals propagate unchanged.
+bounded by those caps plus L's SQL meter and the shared deadline, **not
+pre-reservation against C's 64 MiB cap**. Retained document/ownership queries
+without a budget argument remain under L's progress handler; their bytes are
+not added to C. Original refusals propagate unchanged.
 
 The separate `workflow_sequential_ownership.py` companion reference keeps all
 original columns and v1 kinds, and adds explicit v2 `seq_source_waiting`,
 `seq_carrier`, `seq_visit` marks. The literal view appends three relations to
-the original branches unchanged. Complete inventory rejects missing/conflicting
-marks; a selected v1 mark still uses the existing scalar reader. There is no
+the original branches unchanged. Run-scoped validation rejects missing/conflicting
+sequential marks under C. Retained legacy completeness under L rejects non-run
+wrong/missing/stray marks and bindings to missing tasks in the same call, with
+`workflow_task_ownership_invalid:<t>`, `workflow_task_ownership_incomplete`,
+`workflow_seq_ownership_relation_conflict` or
+`workflow_task_ownership_task_missing:<t>` respectively.
+Cross-family conflicts still refuse, though an earlier retained family validator
+may supply the first code. A selected v1 mark still uses the existing scalar
+reader. There is no
 source adoption or native task encoding change. The explicit U2b installer below
 rebuilds this companion while preserving every v1 mark; adoption belongs to U3.
 
@@ -583,24 +599,23 @@ previous output `content_bytes` and visit `result_bytes` are never acquired.
 Pointers, CAS/event/counter limits, the admission hash anchor and outbox closure
 must all agree before success. Other scopes refuse before acquisition.
 
-The unchanged full `read_sequential_history` remains the independent **offline
-oracle**, including immutable generation history and older-row tampering outside
-this selected write set. It has a known scale limit (TASK-14631, Founder THR336
-seq99 Decision2): schema metadata plus whole-org task/ownership scans exhaust
-8,192 rows at roughly 68 org tasks on J / 362 on I, even without runs. Large
-payloads can separately exhaust bytes/steps. Use it only on small fixture DBs;
-an opaque `coding_authority_history_invalid` at history scale is that known
-reader limit, not evidence of a U3b defect. This unit changes no reader or cap.
+The full `read_sequential_history` remains the independent **offline oracle**,
+including immutable generation history and older-row tampering outside this
+selected write set. Decision 2 now supplies A/B/C/L under one original deadline
+as described in the storage boundary above, with run-scoped ownership acquisition.
+C still bounds cumulative run history and payload/copy/replay work; L bounds
+org-wide guard and retained legacy SQL. These finite ceilings remain refusals,
+not a universal capacity guarantee. U3b's selected validator remains admission-only.
 The protected module's sentence “No normal startup, allocator, route or producer
 imports this module” is now stale: this new validator imports its private helpers.
-That docstring correction is deferred; the protected source remains untouched.
+That docstring correction remains deferred; its original bytes remain intact.
 
 Maximum-request disposable admissions, independent small-DB oracle reads,
 negative rollbacks and lint/static checks are STRUCTURAL OBSERVATIONS only.
 They establish no V3 behavioral PASS, actual callback/native settlement,
 repository capability, live installation, activation or ordinary-use readiness.
 Independent full review and scoped QA remain required. U4.0 remains NO-GO;
-U3c, F4, SB-1, reader-limits Decision2 and held PR1252 remain separate.
+Decision 2 is delivered by TASK-14734. U3c, F4, SB-1 and held PR1252 remain separate.
 See [U3b source contract](../../superpowers/specs/2026-11-08-sequential-engine-u3b.md).
 
 

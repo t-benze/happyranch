@@ -25,7 +25,7 @@ from runtime.infrastructure.workflow_schema import (
 )
 from runtime.infrastructure.workflow_sequential_ownership import (
     SEQUENTIAL_OWNERSHIP_DDL, sequential_binding_view_ddl,
-    validate_sequential_ownership,
+    validate_sequential_ownership, validate_sequential_ownership_guards,
 )
 from runtime.infrastructure.workflow_sequential_schema import (
     CANONICAL_WORKFLOW_SEQUENTIAL_DDL, SEQUENTIAL_TABLES,
@@ -107,6 +107,7 @@ class _ReadBudget(_Budget):
 
     deadline: float = field(default_factory=lambda: time.monotonic() + 5.0)
     sql_steps: int = 0
+    sql_limit: int = 2000000
 
     @property
     def remaining_bytes(self) -> int:
@@ -137,7 +138,7 @@ class _ReadBudget(_Budget):
 
     def progress(self) -> int:
         self.sql_steps += 1000
-        return int(self.sql_steps > 2000000 or time.monotonic() >= self.deadline)
+        return int(self.sql_steps > self.sql_limit or time.monotonic() >= self.deadline)
 
 
 @contextmanager
@@ -202,26 +203,30 @@ def _parse(raw: bytes, parser: Callable[..., _Parsed], budget: _ReadBudget,
 
 
 def read_sequential_layout(conn: sqlite3.Connection) -> SequentialLayout:
-    """Read complete dimensions with one finite budget and coherent snapshot."""
-    budget = _ReadBudget()
-    with _sql_budget(conn, budget), _schema_snapshot(conn):
-        layout, _ = _read_layout(conn, budget)
-        budget.check()
+    """Read complete dimensions with separate finite allowances in one snapshot."""
+    observed = _ReadBudget()
+    reference = _ReadBudget(deadline=observed.deadline)
+    data = _ReadBudget(deadline=observed.deadline)
+    with _schema_snapshot(conn):
+        layout, _ = _read_layout(conn, observed, reference, data)
+        data.check()
         return layout
 
 
-def _read_layout(conn: sqlite3.Connection, budget: _ReadBudget) -> tuple[SequentialLayout, dict[str, tuple[tuple, ...]]]:
+def _read_layout(conn: sqlite3.Connection, observed: _ReadBudget,
+                 reference: _ReadBudget, data: _ReadBudget) -> tuple[SequentialLayout, dict[str, tuple[tuple, ...]]]:
     """Compare the ENTIRE owned schema against independently built references.
 
     Observation selects only finite dimensions. No candidate DDL, object filter,
     baseline derivation, table stripping or database mutation is used. Existing
     literal reference construction retains its complete F/E/G/H/I/J semantics.
     """
-    _require(not any(str(value).casefold().startswith('workflow_')
-                     or str(value).casefold() in ('tasks', 'task_results')
-                     for row in _structure_cells(conn, 'SELECT rowid,name,tbl_name FROM sqlite_temp_schema',
-                         ('name', 'tbl_name'), ('rowid',), budget) for value in row), 'temporary_shadow_refused')
-    actual = _candidate_structure(conn, budget)[0]
+    with _sql_budget(conn, observed):
+        _require(not any(str(value).casefold().startswith('workflow_')
+                         or str(value).casefold() in ('tasks', 'task_results')
+                         for row in _structure_cells(conn, 'SELECT rowid,name,tbl_name FROM sqlite_temp_schema',
+                             ('name', 'tbl_name'), ('rowid',), observed) for value in row), 'temporary_shadow_refused')
+        actual = _candidate_structure(conn, observed)[0]
     names = {row[1] for row in actual[0]}
     sequential = any(str(name).casefold().startswith('workflow_seq_')
                      for row in actual[0] for name in row[1:3])
@@ -244,24 +249,24 @@ def _read_layout(conn: sqlite3.Connection, budget: _ReadBudget) -> tuple[Sequent
     version2 = any(row[1] == 'workflow_task_ownership' and row[3] == companion for row in actual[0])
     versions = ((2,) if version2 and sequential else (1,)) if marked else (0,)
     for ownership in versions:
-        budget.step()
+        reference.step()
         with _canonical_connection(document, coding_extension=coding,
                                    owner_indexed=indexed) as expected:
-            # Independent literal construction is finite; its metadata, copies
-            # and comparison consume the original allowance, never a new one.
-            with _sql_budget(expected, budget):
+            # Fixed literal construction before yield is deadline-bracketed only;
+            # subsequent metadata and comparison consume reference allowance B.
+            with _sql_budget(expected, reference):
                 if sequential:
                     _execute_ddl(expected, CANONICAL_WORKFLOW_SEQUENTIAL_DDL)
                 if ownership:
                     expected.execute(SEQUENTIAL_OWNERSHIP_DDL if ownership == 2 else OWNERSHIP_DDL)
                     expected.execute(sequential_binding_view_ddl(document, coding_extension=coding)
                                      if ownership == 2 else binding_view_ddl(document, coding_extension=coding))
-                reference = _candidate_structure(expected, budget)[0]
-                budget.work(sum(len(part) for part in actual) + sum(len(part) for part in reference))
-                if actual == reference:
+                expected_structure = _candidate_structure(expected, reference)[0]
+                reference.work(sum(len(part) for part in actual) + sum(len(part) for part in expected_structure))
+                if actual == expected_structure:
                     # Retain the already acquired, fully matched column tuples
-                    # for row reads in the SAME snapshot and original budget.
-                    budget.reserve(128 * len(actual[1]))
+                    # for row reads in the SAME snapshot; the map consumes C.
+                    data.reserve(128 * len(actual[1]))
                     metadata = {table: columns for table, columns, _ in actual[1]}
                     return SequentialLayout(document, coding, indexed, ownership, sequential), metadata
     raise ValueError('workflow_seq_complete_layout_mismatch')
@@ -609,65 +614,74 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str)
     complete combined references only inside the explicit new-reader scope.
     """
     _require(type(expected_org_slug) is str and bool(expected_org_slug), 'org_required')
-    budget = _ReadBudget()
-    with _sql_budget(conn, budget), _schema_snapshot(conn):
-        layout, metadata = _read_layout(conn, budget)
+    observed = _ReadBudget()
+    reference = _ReadBudget(deadline=observed.deadline)
+    budget = _ReadBudget(deadline=observed.deadline)
+    legacy = _ReadBudget(deadline=observed.deadline, sql_limit=32000000)
+    with _schema_snapshot(conn):
+        layout, metadata = _read_layout(conn, observed, reference, budget)
         if not layout.sequential:
             if layout.document is not None:
-                _legacy_history(conn, expected_org_slug, budget)
+                with _sql_budget(conn, legacy):
+                    _legacy_history(conn, expected_org_slug, budget)
             budget.check()
             return SequentialHistory(layout, 'new-engine unavailable', (), ())
-        _native_contract(conn, budget)
-        data = {table: list(_rows(conn, table, metadata[table], budget)) for table in SEQUENTIAL_TABLES}
-        _require([tuple(row.values()) for row in data['workflow_seq_schema_versions']] == [(1,)],
-                 'schema_marker_invalid')
-        for table in SEQUENTIAL_TABLES:
-            _require(conn.execute('PRAGMA foreign_key_check(' + table + ')').fetchone() is None, 'foreign_key_invalid')
-            for row in data[table]:
+        with _sql_budget(conn, observed):
+            _native_contract(conn, observed)
+        with _sql_budget(conn, budget):
+            data = {table: list(_rows(conn, table, metadata[table], budget)) for table in SEQUENTIAL_TABLES}
+            _require([tuple(row.values()) for row in data['workflow_seq_schema_versions']] == [(1,)],
+                     'schema_marker_invalid')
+            for table in SEQUENTIAL_TABLES:
+                _require(conn.execute('PRAGMA foreign_key_check(' + table + ')').fetchone() is None, 'foreign_key_invalid')
+                for row in data[table]:
+                    budget.step()
+                    for name, value in row.items():
+                        if name in ('version', 'generation', 'epoch', 'content_returns', 'visit_count',
+                                    'event_count', 'cas', 'ordinal', 'sequence', 'selected'):
+                            _require(type(value) is int, 'integer_storage_required')
+                        elif name.endswith('result_id'):
+                            _require(value is None or (type(value) is int and value > 0), 'result_identity_invalid')
+                        elif name.endswith(('_id', '_principal')) or name in ('id', 'org_slug', 'principal', 'operation_key', 'start_operation_key'):
+                            _require(value is None or (type(value) is str and bool(value) and '\x00' not in value), 'identity_invalid')
+            definitions = _definitions(data, budget)
+            settings, snapshots = _settings(data, definitions, expected_org_slug, budget)
+            runs = {row['id']: row for row in data['workflow_seq_runs']}
+            visits = {row['id']: row for row in data['workflow_seq_visits']}
+            events = {row['id']: row for row in data['workflow_seq_events']}
+            outputs = _outputs(data, visits, runs, definitions, budget)
+            _require(not runs or layout.ownership == 2, 'companion_ownership_required')
+            by_run_visits: dict[str, list[dict]] = {}
+            by_run_events: dict[str, list[dict]] = {}
+            for rows, grouped in ((visits.values(), by_run_visits), (events.values(), by_run_events)):
+                for row in rows:
+                    budget.step()
+                    _require(row['run_id'] in runs, 'orphan_history')
+                    grouped.setdefault(row['run_id'], []).append(row)
+            start_keys = set()
+            for run in runs.values():
                 budget.step()
-                for name, value in row.items():
-                    if name in ('version', 'generation', 'epoch', 'content_returns', 'visit_count',
-                                'event_count', 'cas', 'ordinal', 'sequence', 'selected'):
-                        _require(type(value) is int, 'integer_storage_required')
-                    elif name.endswith('result_id'):
-                        _require(value is None or (type(value) is int and value > 0), 'result_identity_invalid')
-                    elif name.endswith(('_id', '_principal')) or name in ('id', 'org_slug', 'principal', 'operation_key', 'start_operation_key'):
-                        _require(value is None or (type(value) is str and bool(value) and '\x00' not in value), 'identity_invalid')
-        definitions = _definitions(data, budget)
-        settings, snapshots = _settings(data, definitions, expected_org_slug, budget)
-        runs = {row['id']: row for row in data['workflow_seq_runs']}
-        visits = {row['id']: row for row in data['workflow_seq_visits']}
-        events = {row['id']: row for row in data['workflow_seq_events']}
-        outputs = _outputs(data, visits, runs, definitions, budget)
-        _require(not runs or layout.ownership == 2, 'companion_ownership_required')
-        by_run_visits: dict[str, list[dict]] = {}
-        by_run_events: dict[str, list[dict]] = {}
-        for rows, grouped in ((visits.values(), by_run_visits), (events.values(), by_run_events)):
-            for row in rows:
-                budget.step()
-                _require(row['run_id'] in runs, 'orphan_history')
-                grouped.setdefault(row['run_id'], []).append(row)
-        start_keys = set()
-        for run in runs.values():
-            budget.step()
-            key = (run['org_slug'], run['source_principal'], run['start_operation_key'])
-            _require(key not in start_keys, 'start_operation_conflict')
-            start_keys.add(key)
-            setting = settings.get(run['settings_id'])
-            _require(run['org_slug'] == expected_org_slug and run['definition_id'] in definitions
-                     and setting is not None and setting['definition_id'] == run['definition_id'], 'run_pin_invalid')
-            run_visits, run_events = by_run_visits.get(run['id'], []), by_run_events.get(run['id'], [])
-            for rows in (run_visits, run_events):
-                budget.work(len(rows) * max(1, len(rows).bit_length()))
-            _run_history(conn, run, definitions[run['definition_id']], setting, snapshots[setting['id']],
-                sorted(run_visits, key=lambda row: row['ordinal']),
-                sorted(run_events, key=lambda row: row['sequence']), outputs, budget)
-        _auxiliary(conn, data, runs, visits, events, budget)
-        if layout.ownership:
-            validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget, runs=runs, visits=visits)
+                key = (run['org_slug'], run['source_principal'], run['start_operation_key'])
+                _require(key not in start_keys, 'start_operation_conflict')
+                start_keys.add(key)
+                setting = settings.get(run['settings_id'])
+                _require(run['org_slug'] == expected_org_slug and run['definition_id'] in definitions
+                         and setting is not None and setting['definition_id'] == run['definition_id'], 'run_pin_invalid')
+                run_visits, run_events = by_run_visits.get(run['id'], []), by_run_events.get(run['id'], [])
+                for rows in (run_visits, run_events):
+                    budget.work(len(rows) * max(1, len(rows).bit_length()))
+                _run_history(conn, run, definitions[run['definition_id']], setting, snapshots[setting['id']],
+                    sorted(run_visits, key=lambda row: row['ordinal']),
+                    sorted(run_events, key=lambda row: row['sequence']), outputs, budget)
+            _auxiliary(conn, data, runs, visits, events, budget)
+            if layout.ownership:
+                validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget, runs=runs, visits=visits)
         # Enroll only fully authenticated new rows; recursive old readers still
         # compare complete combined references and every retained data family.
-        _legacy_history(conn, expected_org_slug, budget, data)
+        with _sql_budget(conn, legacy):
+            if layout.ownership:
+                validate_sequential_ownership_guards(conn, budget=budget)
+            _legacy_history(conn, expected_org_slug, budget, data)
         budget.check()
         ready = bool(definitions and settings and layout.ownership == 2)
         return SequentialHistory(layout, 'storage readable' if ready else 'new-engine unavailable',
