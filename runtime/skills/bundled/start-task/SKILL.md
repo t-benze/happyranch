@@ -387,6 +387,23 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
 
    If the task produces a standalone document (report, plan, analysis), write its files under `output/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `output/TASK-001`) and include it as `output_dir` in your completion payload so future sessions can retrieve it via `happyranch recall --org {ORG_SLUG} <task_id>`.
 
+   **Task output hygiene (Founder THR-326 seq13).** These are agent obligations,
+   not daemon auto-expiry:
+
+   - Gzip any file over 1 MB at write time in `output/` (e.g. `.json.gz`, `.log.gz`).
+   - Keep scratch trees, caches, `node_modules`, `.venv`, build directories,
+     checked-out repos, DB copies/WAL and VM/disk images out of `output/`;
+     use runtime task-tmp or the task worktree.
+   - Retain command stdout/stderr as head/tail excerpts totaling at most 256 KB,
+     plus each full stream's total byte count and SHA-256 digest.
+   - The soft cap is 50 MB stored per task output directory. Before completion,
+     run `du -sh output/<task_id>/`; exceeding the cap needs a stated reason
+     in the completion summary.
+   - For your **own terminal tasks only**, after 14 days remove regenerable
+     leftovers; after 60 days shrink uncited task directories to summary and
+     completion files. Never delete or compress a file cited by a task brief,
+     thread message or PR body.
+
    If during the task you realize you need async input from another agent
    (and you're not yet blocked), use the delivered `thread` skill selected
    from the injected skill catalog and follow its "Compose a new thread"
