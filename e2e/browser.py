@@ -26,6 +26,10 @@ if TYPE_CHECKING:
     from controller import Controller
 
 
+class _ThreadBodyError(ValueError):
+    """A returned body RPC error, subject to the bridge's native health gates."""
+
+
 # Shared by the native bridge and finite, detached-DOM controls. Ownership is
 # resolved here, not by a fixture or by searching descendant text for a match.
 _RENDERED_DOM = r"""(main, args) => {
@@ -1014,7 +1018,19 @@ class Browser:
         except BaseException as exc:
             if task is None:
                 coroutine.close()
-            self.poison(exc)
+            # A completed Response.body RPC can fail without losing native
+            # ownership. Only that attributed error may preserve teardown;
+            # deadlines, listener/dispatcher failures and cancellation cannot.
+            returned_body_error = (isinstance(exc, _ThreadBodyError) and task is not None
+                                   and task.done() and not task.cancelled() and task.exception() is exc
+                                   and time.monotonic() < end and not self.controller.interrupted)
+            if returned_body_error:
+                try:
+                    self._healthy()
+                except BaseException as native_error:
+                    self.poison(native_error)
+            else:
+                self.poison(exc)
             raise
         finally:
             active = self._bridge_active = False
@@ -1739,11 +1755,30 @@ class Browser:
         self.thread_events.append(dict(event="thread-view", **result))
         return result
 
-    def _thread_body(self, response: Any) -> Any:
+    def _thread_body(self, response: Any, *, selected: bool = True) -> Any:
         observation = self.thread_responses[response]
         task = observation['task']
         async def complete() -> Any:
-            return await task
+            try:
+                return await task
+            except Exception as exc:
+                # Do not propagate native exception text: it may contain URLs
+                # with query credentials. Role is known at consumption time,
+                # even when the eager body task failed before view selection.
+                role = 'selected (assertion-consumed)' if selected else 'thread_bodies sweep'
+                message = (f'E05 browser body read failed: path={urlsplit(response.url).path} '
+                           f'status={response.status} method={response.request.method} '
+                           f'role={role} error={type(exc).__name__}')
+                # Native timeout/closed-target subclasses and non-Playwright
+                # failures retain the bridge's conservative poison behavior.
+                error_type: type[Exception] = Error
+                if type(exc) is Error:
+                    error_type = _ThreadBodyError
+                elif isinstance(exc, (Error, TimeoutError, AssertionError)):
+                    error_type = type(exc)
+                elif isinstance(exc, ValueError):
+                    error_type = ValueError
+                raise error_type(message) from None
         body = self._native(complete, self.controller.effective_end())
         require(observation['record']['browser_copy'] == 'measured-browser',
                 'E05 actual browser JSON unavailable')
@@ -1754,7 +1789,7 @@ class Browser:
         while True:
             responses = list(self.thread_responses)
             for response in responses:
-                self._thread_body(response)
+                self._thread_body(response, selected=False)
             if len(responses) == len(self.thread_responses):
                 return
 

@@ -42,6 +42,17 @@ its context owner before teardown; later closed-page capture is never required.
 E05 now reads each exact Playwright Response body on its original native loop,
 within the original absolute end, before context close. A missing, failed or
 incomplete browser body fails the case; relay JSON never substitutes for it.
+Body-read failures name the query-free Response path, HTTP status, request
+method and consumption role (selected view or `thread_bodies` sweep), without
+native exception text that could contain credentials. A returned ordinary
+Playwright body RPC error keeps screenshot/trace teardown available only while
+the original bridge task is complete, the dispatcher/connection remain healthy,
+the original end has not expired and the controller is uninterrupted. Native
+timeout/closed-target subclasses, listener faults, cancellation and uncertain
+ownership still poison native state and refuse native teardown. Standard failure
+artifacts use the existing literal-token scrub and upload paths.
+The sweep remains strict: the independent content reader consumes every required
+Response body, including automatic detail/message refreshes.
 Detail/message-page JSON, public/durable content and DOM assertions remain.
 Native cached assets/documents do not require new relay records. An incidental
 detail/messages GET with no Response is excluded from body collection only when
@@ -52,6 +63,8 @@ for that worker's stop. Physical resource closure is counted separately from
 parser errors, which still fail transport checks. E07 checks the actual accepted
 admission and reconstructs checkpoint/product state; equality among copied
 admission dictionaries is not an additional product assertion.
+Missing E07 admission produces an ordinary prerequisite failure stating that
+admission was not reached, before attempting to reconstruct its fields.
 E05 counts only message articles with a direct header and `.gl-prose`, leaving
 held typing indicators visible and retaining exact message count/content checks.
 E07 authenticates exact first48/first53 prefix membership and count independently
