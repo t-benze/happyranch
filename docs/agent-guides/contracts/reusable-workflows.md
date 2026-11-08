@@ -684,3 +684,81 @@ independent full review/scoped QA and manager guarded merge. Product PRD parity
 belongs to product_lead / THR341 and is not edited or certified here.
 
 [U3c source spec](../../superpowers/specs/2026-11-08-sequential-engine-u3c.md).
+
+
+## U3d-1 native carrier and settlement consumer (THR336 msg85/102)
+
+TASK-14721 implements accepted TASK-14718 rev2 under ROOT TASK-14640. This
+section supplies the caller missing from the historical U3c record above: U3c
+still receives explicit content and never extracts a summary. Queue admission
+remains unconditionally False. Launch/instructions/Pause ownership are U3d-2;
+caller notification is U3e; actual domain/access witnesses are U5. No live
+installation, restart, admission or V3 execution follows from source delivery.
+
+For a genuinely bound visit, the existing completion file's summary is a STRING
+containing canonical `workflow-sequential-callback@1`, exactly `format`, `outcome`,
+`content_base64`, `findings` and `capability_claims`. Sorted compact UTF8 JSON,
+strict padded standard base64, no duplicate/extra keys, floats or trailing newline.
+Findings are at most32 own nonblank UTF8 strings; at most8 distinct declared-order
+check/digest claims are unsigned references. No agent identity/recipient/OutputRef
+or operation key is admitted inside the carrier. Metadata with empty base64 is
+at most16384 bytes; summary at most1414488 bytes; other native metadata in
+aggregate at most16384 bytes. Existing SQLite limits are read, never increased;
+summary+metadata+4096 bytes must fit. Native summary readers retain their existing
+visibility. Role recipients do not make this wrapper private. A later narrower
+byte-custody requirement must STOP this use and return to the owner for a reviewed
+custody design, without an auth/permission workaround.
+
+Immediately after transport decoding, imported `check_output_size` checks ACTUAL
+bytes before domain decoding, content hashing or native insertion: JSON49152,
+document1048576 inclusive. Positive produced/APPROVE/PASS/merged requires nonempty
+content; all other outcomes require empty content, own findings, no claims.
+Failed/blocked native callbacks retain their cause and cannot report success.
+The unchanged native wrapper is the durable callback-to-settlement carrier; its
+positive INTEGER is obtained with same-connection last_insert_rowid and PK readback.
+Callback writes no accepted sequential result/output. Exact full-projection replay
+is read-only even after tracker removal, never advances and never chooses a new
+result. Changed projection refuses; no automatic transport retry.
+
+Safe terminal uses the original request/attempt/observed handle and Boolean
+quiescence/clean-or-term-or-kill/no-survivors/no-cleanup-error predicate. Terminal
+and outer evidence IDs are SHA256(canonical `{format:workflow-sequential-evidence-id@1,
+run_id,visit_id,kind}`), selected only by PK. JSON binds the original native
+quartet and carrier digest; SQL task/principal/session/result columns stay NULL.
+Evidence is at most16384 bytes, gated before insertion/digest, and validated in
+scope=evidence with at most two IDs. Initial native-result discovery is indexed
+task/agent LIMIT2; ambiguity/foreign SID refuses, never latest adoption. Later
+selection uses the original result PK. Unsafe/unknown/no-result does not invent a
+sequential hold/result. F-1 option(i): native terminal plus sequential active/running
+after session end means stalled; cancellation is the exit. Restart stays held.
+
+Positive original outer COMMIT precedes a fresh authority capture/writer and
+`_advance(run_id,visit_id,result_id)`. The daemon composes U1 findings/refs with
+real identity and exact content digest, retaining distinct carrier/envelope/content
+digests and separate content/envelope arguments to U3c. Current-subject capability
+and recipient access require genuine authorized witnesses. None is issued by this
+unit: positive output currently refuses `sequential_output_access_unavailable`;
+unsigned claims never populate verified checks/receipts. Negative reports may carry
+only the independently proven native-and-outer settlement check. Missing proof
+means dependency/no advance, never behavioral success.
+
+R1 identity H is SHA256(canonical `{format:workflow-sequential-advance-id@1,run_id,
+visit_id,result_id}`) from the ORIGINAL source. Distinct event keys are
+`seq-advance-transition-`+H (87 ASCII) and `seq-advance-return-`+H (83 ASCII).
+Fresh pre-accept CAS=c; transition uses c; terminal return uses c+1 in the SAME
+atomic writer (event sequences c+2/c+3; final CAS c+2). Replay selects authenticated
+original transition.prior_cas=c and original source/arguments/keys, checks returned
+sequence=(c+1)+2, and returns existing IDs without DML. Later CAS/active visit never
+substitutes for the original; no successor allocation occurs on replay. Incomplete
+or conflicting terminal pairs refuse and never fill a missing return. Cancellation
+is checked before engine writers. A refusal rolls back only the new sequential
+transaction; prior native/terminal/outer commits remain. Notification follows COMMIT;
+queue remains False and caller notification remains absent.
+
+The protected sequential_history.py:3 docstring predates selected validation's
+private-helper imports and remains unchanged. Source/structural observations are
+not behavioral PASS. Positive callback/host terminal/outer/advance, capability,
+access and V3 remain UNVERIFIED. Python units are RETIRED; general integration is
+SKIPPED THR243seq42; no Product E2E trigger. Independent full review, same-head
+scoped QA and guarded manager merge remain mandatory. See
+[U3d-1 source record](../../superpowers/specs/2026-11-08-sequential-engine-u3d1.md).

@@ -616,3 +616,37 @@ host, session, result-action and parent gates remain in force.
 U3a supplies no producer, admission, launch, callback/transition engine or caller
 return. No startup schema upgrade, real-org install, live migration, deploy,
 restart or activation is authorized. See [the U3a source boundary](reusable-workflows.md#u3a-ownership-union-and-holding-attachment).
+
+
+## Sequential original-owner settlement consumer (U3d-1)
+
+A genuine selected visit callback retains its exact canonical summary wrapper in
+its original INTEGER native result; callback acceptance sets no sequential result
+quartet/output. Original host terminal then positive original outer settlement
+COMMIT precede fresh authority capture and explicit original run/visit/result
+advance. Terminal's request identity, attempt0, observed original handle/backend,
+Boolean quiescence, cleanup clean/term/kill, empty survivors and absent cleanup
+error follow Coding's line-parallel safe predicate. U3d-2 still owns all sequential
+producers of those inputs; queue admission remains False. The settle-finally
+sequential call follows Coding with the same exception/add_note preservation.
+Other owners are a no-op.
+
+Evidence carries bounded JSON proof with NULL SQL native identity columns and PK
+reads only; imported check_evidence_size bounds each body to16384 bytes. Original
+callback discovery uses the existing indexed task/agent LIMIT2, then exact PK;
+no latest/foreign adoption. Safe receipt alone is distinct from completed native
+callback and positive original outer cleanup/close/release. Absent or unsafe proof
+never advances; F-1 option(i) leaves sequential active/running after session ended
+meaning stalled, with cancellation as exit, without fabricating held/result/event.
+Restart has no native recovery authorization. A retained carrier is evidence only.
+
+Fresh sequential accept, transition and terminal return share one atomic writer;
+notification is after COMMIT. Original-source stable transition/return keys are
+purpose-separated. CAS=c before accept, c for transition, c+1 for terminal return;
+event sequences c+2/c+3, final CAS c+2. Original replay recovers transition.prior_cas,
+never later current CAS, and performs no replacement allocation or partial-pair
+repair. Cancellation precedes both paths. Native/terminal/outer commits survive a
+later sequential refusal. Engine scopes remain separate; no redundant validator.
+Current authorized capability/access witnesses are unavailable U5 dependencies;
+unsigned carrier claims confer none. Existing native-summary visibility applies.
+No actual callback/terminal/outer/advance or V3 behavioral acceptance is claimed.

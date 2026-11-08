@@ -1949,6 +1949,19 @@ class Database(
                 _read_workflow_schema(self._conn, expected_org_slug=coding.org.slug, budget=coding_budget)
                 self._conn.commit()
                 return True
+            if ownership.kind == 'seq_visit':
+                sequential = getattr(self, '_workflow_sequential_dispatch', None)
+                payload = dict(output_summary=output_summary, confidence_score=confidence_score, status=status,
+                               risks_flagged=risks_flagged, output_dir=output_dir, decision_json=decision_json,
+                               waiting_on_job_ids=waiting_on_job_ids, verdict=verdict, local_ci_json=local_ci_json)
+                # D5: the existing coding_admission keyword also carries the
+                # sequential authority capture; its Coding budget is not reused.
+                if sequential is None or v2_admission is not None or not sequential.callback_uncommitted(
+                        task_id=task_id, agent=agent, session_id=session_id, payload=payload, capture=coding_admission):
+                    self._conn.rollback()
+                    return False
+                self._conn.commit()
+                return True
             if ownership.kind == 'f5':
                 drafts = getattr(self, '_workflow_reviews', None)
             if ownership.kind != "legacy":
