@@ -147,6 +147,7 @@ def _failure_file(info: os.stat_result) -> None:
 class Controller:
     def __init__(self, args: argparse.Namespace) -> None:
         self.root, self.source = args.root, args.source
+        self.exercise = args.exercise
         self.revision, self.deadline = args.sha, args.deadline
         self.local_bounds = threading.local()
         self.timer_phases: list[tuple[str, float]] = []
@@ -253,6 +254,7 @@ class Controller:
         with self.secret_lock:
             require(all(isinstance(token, str) and token for token in tokens), "readable thread redaction identities")
             self.secrets.update(tokens)
+            (self.root / "known-tokens.json").write_text(json.dumps(sorted(self.secrets)))
             temporary = self.root / "coord/thread-redaction.tmp"
             temporary.write_text(json.dumps(sorted(self.secrets)))
             temporary.chmod(0o600)
@@ -688,6 +690,7 @@ class Controller:
             self.port = int((home / "daemon.port").read_text())
             self.token = (home / "daemon.token").read_text().strip()
             self.secrets.add(self.token)
+            (self.root / "known-tokens.json").write_text(json.dumps(sorted(self.secrets)))
             secrets_path = self.root / "coord/redaction-context.json"
             secrets_path.write_text(json.dumps(sorted(self.secrets)))
             secrets_path.chmod(0o600)
@@ -782,6 +785,7 @@ class Controller:
             self.port = int((home / "daemon.port").read_text())
             self.token = (home / "daemon.token").read_text().strip()
             self.secrets.add(self.token)
+            (self.root / "known-tokens.json").write_text(json.dumps(sorted(self.secrets)))
             secrets_path = self.root / "coord/redaction-context.json"
             secrets_path.write_text(json.dumps(sorted(self.secrets)))
             secrets_path.chmod(0o600)
@@ -1655,6 +1659,7 @@ def main(_terminal: dict | None = None) -> None:
                         index = len(controller.failures)
                         controller.record_error('controller-action', exc)
                         controller.groups['E05'].update(state='failed', first_error_ref=index)
+                    controller.browser.capture_failure()
                     if (not isinstance(exc, Exception) or isinstance(exc, TimeoutError)
                             or controller.interrupted or controller.browser.poisoned):
                         raise
@@ -1690,6 +1695,7 @@ def main(_terminal: dict | None = None) -> None:
             controller._stage_failure_categories()
         finally:
             if controller.browser:
+                controller.browser.capture_failure()
                 controller.browser.poison(exc)  # No dispatcher re-entry after interruption.
     finally:
         begin = time.monotonic()

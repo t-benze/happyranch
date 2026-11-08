@@ -742,6 +742,8 @@ class Browser:
         require(version("playwright") == "1.58.0", "pinned native adapter version")
         controller.durable.append(dict(playwright_version=version("playwright"), chromium_version=self.browser.version))
         self.context = self.browser.new_context(locale="en-US", viewport={"width": 1440, "height": 900})
+        self.context.tracing.start(screenshots=True, snapshots=True, sources=False)
+        (controller.root / "browser-started").touch()
         controller.remaining()
         self.page = self.context.new_page()
         controller.remaining()
@@ -1497,6 +1499,7 @@ class Browser:
         self.thread_document = None
         self.thread_pending_documents = set()
         self.thread_context = self.browser.new_context(locale="en-US", viewport={"width": 1440, "height": 900})
+        self.thread_context.tracing.start(screenshots=True, snapshots=True, sources=False)
         # F1: observe a genuinely returned context before any later acquisition.
         def context_closed(_context):
             self.thread_events.append(dict(event='context-close', at=time.monotonic()))
@@ -1818,6 +1821,10 @@ class Browser:
                     try:
                         if time.monotonic() >= end:
                             raise TimeoutError('E05 original native close deadline')
+                        try:
+                            await self.thread_context._impl_obj.tracing.stop(path=str(self.controller.root / "traces/threads.zip"))
+                        except Exception as exc:
+                            errors.append(exc)
                         await self.thread_context._impl_obj.close()
                     except Exception as exc:
                         errors.append(exc)
@@ -2149,11 +2156,33 @@ class Browser:
                 self.poison(exc)
                 raise
 
+    def capture_failure(self) -> None:
+        """Best effort in the existing healthy native budget; failures stay visible."""
+        c = self.controller
+        try:
+            self._healthy()
+            manifest = json.loads((c.source / "e2e/manifest.json").read_text())
+            names = [name for name, row in c.results.items() if row.get("status") == "FAIL"]
+            for item in c.durable:
+                names.extend(name for name, row in item.get("threads_cases", {}).get("case_outcomes", {}).items()
+                             if row.get("status") == "FAIL")
+            if not names:
+                names = [next((name for name in manifest["variants"] if name not in c.results), "setup")]
+            if c.exercise == "cancellation":
+                names = ["launcher"]
+            for name in set(names):
+                page = getattr(self, "thread_page", self.page) if name.startswith("E05.") else self.page
+                page.screenshot(path=str(c.root / "screenshots" / (name + ".png")), full_page=True,
+                                timeout=c.remaining(4) * 1000)
+        except BaseException as exc:
+            c.record_error("failure-screenshot", exc)
+
     def close(self) -> None:
         c = self.controller
         stages = [
             ("browser-final-observation", self.final_observation),
             ("thread-context-close", self.close_threads_context),
+            ("browser-trace-stop", lambda: self._native(lambda: self.context._impl_obj.tracing.stop(path=str(c.root / "traces/main.zip")), c.effective_end())),
             ("browser-context-close", lambda: self._native(self.context._impl_obj.close, c.effective_end())),
             ("browser-close", lambda: self._native(self.browser._impl_obj.close, c.effective_end())),
             ("browser-terminal-stop", self._terminal_stop),
