@@ -3564,6 +3564,65 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                                                               missing=missing, unexpected=unexpected)
         return error
 
+    # systemctl's structured-array formatters omit empty arrays even with --all.
+    # Only these fixed Service properties and literal unit objects may supply a
+    # positive typed empty observation; missing is never interpreted as empty.
+    service_arrays = {
+        "EnvironmentFiles": "a(sb)",
+        "ExecStop": "a(sasbttttuii)",
+        "ExecStopPost": "a(sasbttttuii)",
+        "ExecStartPreEx": "a(sasasttttuii)",
+        "ExecStartPostEx": "a(sasasttttuii)",
+    }
+    service_objects = {
+        "happyranch-connector.service": "/org/freedesktop/systemd1/unit/happyranch_2dconnector_2eservice",
+        "happyranch-tsnet-sidecar.service": "/org/freedesktop/systemd1/unit/happyranch_2dtsnet_2dsidecar_2eservice",
+    }
+
+    def typed_empty_array(unit: str, name: str, bound: float) -> str:
+        from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
+        try:
+            current()
+            if time.monotonic() >= bound:
+                raise ValueError("typed query deadline")
+            child = subprocess.Popen(["/usr/bin/busctl", "get-property", "org.freedesktop.systemd1",
+                                      service_objects[unit], "org.freedesktop.systemd1.Service", name],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL,
+                                     env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+                                     pass_fds=(() if _MANAGED_LOCK.get() is None else (_MANAGED_LOCK.get(),)))
+            initiating = None
+            try:
+                raw, overflow = _capture_bounded_query_output(child, bound)
+                remaining = bound - time.monotonic()
+                if overflow or remaining <= 0 or child.wait(timeout=remaining) != 0:
+                    raise ValueError("typed query unavailable")
+                # Closed byte parser: exact signature, zero count and single LF.
+                # Equality with this short ASCII frame also rejects non-UTF8,
+                # controls, alternate framing, nonempty arrays and extra bytes.
+                if raw != (service_arrays[name] + " 0\n").encode("ascii"):
+                    raise ValueError("typed array is not exactly empty")
+            except BaseException as error:
+                initiating = error
+                raise
+            finally:
+                try:
+                    _close_and_reap_query_process(child, min(bound, deadline / 1_000_000_000), managed=True)
+                except BaseException as error:
+                    if initiating is None:
+                        raise
+                    diagnostic_loss("P900002", "managed_operational_error", error)
+            current()
+            if time.monotonic() >= bound:
+                raise ValueError("typed query deadline")
+            return ""
+        except Exception as error:
+            failure = diagnostic_error("P900001", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
+            # Keep an earlier capture/reap origin as well as this typed-read
+            # boundary; explicit producer causes retain their original identity.
+            failure._managed_package_boundary = exception_refusal(failure)
+            raise failure from error
+
     def properties(unit: str, names: tuple[str, ...]) -> dict[str, str]:
         values: dict[str, str] = {}
         try:
@@ -3613,6 +3672,9 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                         or any(ord(c) < 32 or ord(c) == 127 for c in line)):
                     raise diagnostic_error("P000240", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
                 values[key] = value
+            for name in names:
+                if name not in values and name in service_arrays and unit in service_objects:
+                    values[name] = typed_empty_array(unit, name, bound)
             if set(values) != set(names):
                 raise loaded_error(diagnostic_error("P000241", "managed_manager_unavailable", PackageError("managed_manager_unavailable")),
                                    "Query", None, None, "query", context={},

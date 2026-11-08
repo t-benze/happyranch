@@ -1,3 +1,11 @@
+Founder THR327seq146 / ROOT14561: the installed service-settings check retains
+its exact systemctl query and supplements ONLY omitted EnvironmentFiles,
+ExecStop, ExecStopPost, ExecStartPreEx and ExecStartPostEx with fixed read-only
+typed D-Bus Gets. Exact signature + zero count + single LF proves empty;
+nonempty/malformed/unavailable reads refuse. Both services share this rule and
+the original query bound/operation deadline; all exact-value checks remain.
+See the managed Linux package operations guide for signatures and refusal sites.
+
 Current ROOT14460 / Founder THR327seq131 selects the plain M1 hosted workflow
 in `.github/workflows/ci.yml` and `app/linux/package/m1_install_ready_uninstall.sh`.
 Only its job-level push/TASK-6475/after-SHA/attempt1 condition admits execution.

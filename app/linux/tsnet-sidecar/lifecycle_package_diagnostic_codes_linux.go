@@ -1129,4 +1129,6 @@ var lifecyclePackagePrivateSites = map[string]string{
 	"P800037": "managed_loaded_contract_mismatch",
 	"P800038": "managed_loaded_contract_mismatch",
 	"P800039": "managed_loaded_contract_mismatch",
+	"P900001": "managed_manager_unavailable",
+	"P900002": "managed_operational_error",
 }

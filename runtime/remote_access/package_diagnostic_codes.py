@@ -1,6 +1,8 @@
 """Closed private transport vocabulary. Producers own literal allocations, never coordinates."""
 
 SITE_CATEGORIES = {
+'P900001': 'managed_manager_unavailable',
+'P900002': 'managed_operational_error',
 # P000262 supplementary clauses: each triple is connector, sidecar, target.
 # Wants, Requires, BindsTo, PartOf, After, Before, Conflicts, defaults, stop flags.
 'P800001': 'managed_loaded_contract_mismatch',

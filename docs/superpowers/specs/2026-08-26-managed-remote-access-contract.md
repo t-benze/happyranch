@@ -1,3 +1,28 @@
+# Positive typed empty-array observation — Founder THR327seq146 / ROOT14561
+
+In the existing installed service-settings check only, retain the complete
+systemctl query, all requested keys, framing/duplicate/control/unknown checks,
+exact values, output bounds and original deadlines. Supplement a requested
+omitted EnvironmentFiles (`a(sb)`), ExecStop/ExecStopPost (`a(sasbttttuii)`) or
+ExecStartPreEx/ExecStartPostEx (`a(sasasttttuii)`) through read-only typed Get on
+org.freedesktop.systemd1.Service. This closed rule applies to both fixed services;
+their object paths and `/usr/bin/busctl` are literal, with no general escaping
+or arbitrary service/property access. Connector pre/post-start arrays render
+empty; sidecar commands remain required by the unchanged command comparison.
+
+Every supplemental child uses the existing sanitized environment, fd discipline,
+bounded capture/overflow refusal and owned close/reap under the SAME original
+systemctl absolute query bound and enclosing operation deadline. The closed
+byte parser accepts only exact `SIGNATURE 0\n`, mapping proven present+empty
+to `""` for the existing exact comparison. A typed nonempty array, wrong
+signature, trailing/extra bytes, invalid UTF8, controls, nonzero exit, timeout or
+overflow refuses as managed_manager_unavailable at P900001. Earlier capture/reap
+origins remain primary with the typed boundary retained; P900002 records a
+suppressed cleanup loss. No missing-as-empty rule exists. Other missing names
+still reach P000241 with its fixed-unit/missing-name diagnostic; printed values
+still use the original parser and comparisons. No security expectation, original
+deadline, service configuration, credential, permission or hosted trigger changes.
+
 # Approved loaded dependency policy — Founder THR327seq115
 
 `render_composite_units` and `render_connector_unit` define exactly connector,

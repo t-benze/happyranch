@@ -22,6 +22,32 @@ their count and completeness, suppressing all loaded values and contexts. A
 truncated name prefix is explicitly incomplete; the existing 96/240-byte caps
 and the refusal's complete-key check remain unchanged.
 
+Founder THR327seq146 permits positive typed empty-array proof in this SAME
+service-settings check. The systemctl query, arguments, named-record parser,
+4096-byte capture cap plus one overflow sentinel, P000238/P000239/P000240 and
+P000241 checks, and exact expected values remain. Only a requested omitted name
+in this closed allowlist is supplemented: EnvironmentFiles `a(sb)`, ExecStop
+and ExecStopPost `a(sasbttttuii)`, ExecStartPreEx and ExecStartPostEx
+`a(sasasttttuii)`. The same rule applies to connector and sidecar. Local systemd
+259.5 confirms these empty arrays are omitted even with `--all`; the connector
+renders no pre/post-start commands, while the sidecar's declared commands must
+still be observed and matched exactly.
+
+Each supplement is `/usr/bin/busctl get-property org.freedesktop.systemd1
+FIXED_OBJECT org.freedesktop.systemd1.Service NAME`, with literal object paths
+for the two installed services, sanitized C locale/PATH, no stdin/stderr and
+the same lock descriptor discipline and bounded capture/reap helper. All reads
+share the original systemctl query's absolute bound (at most one second), itself
+capped by the unchanged operation deadline; there is no per-property renewal.
+The new closed byte parser accepts ONLY exact ASCII `SIGNATURE 0\n`, yielding
+`""` for the unchanged P000263 scalar or P000264 command comparison. Nonempty
+typed arrays after systemctl omission are inconsistent and refuse, as do wrong
+signatures, extra bytes, invalid UTF8, controls, nonzero exit, overflow or timeout.
+P900001 is the managed_manager_unavailable typed-read boundary; an earlier
+capture/reap origin remains primary, and suppressed reap loss uses P900002.
+Missing names outside the allowlist still reach unchanged P000241. A printed
+systemctl value never invokes this fallback and retains its exact validation.
+
 After uninstall, all installer residue must be absent except the documented
 volatile `/run/happyranch-connector-images` namespace. M1 prints its full listing,
 checks only `.allocation.lock` and current-boot/operation/fixed-site `image`
