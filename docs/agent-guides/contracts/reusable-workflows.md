@@ -828,3 +828,31 @@ execution acknowledgement. Thread follow-up/SYSTEM/invocation minting are not
 invoked. No fresh-start producer, public command or bundled skill change ships
 in U3e-2. Existing U5 successful-output, native recovery, venue/settings and Pause
 backout holds remain. Source/static delivery supplies no V3 or restart proof.
+
+
+## U3e-1a selected-run cancellation
+
+The existing Founder task-cancel route stops one directly selected sequential
+source, carrier or current visit. Under authority → teams → DB ownership it
+rediscovers the complete selected run, rechecks its CAS and current authority,
+then uses the unchanged U3c cancellation fence and stamps only live selected
+native source/carrier/current-visit rows in that same transaction. Historical
+visits/results and native SID/PID/journal ownership remain intact. Each changed
+task receives the existing task_cancelled audit shape once. No result or source
+session is synthesized. This attachment precedes the separately scoped U3e-1b
+start/source producer; it grants no fresh-start or recovery capability.
+
+The request key is `seq-cancel-` plus SHA256 of canonical `_bytes([run_id,
+target_task_id, cascade, stripped_actor, stripped_rationale])`; an empty actor
+defaults to `founder`. Fresh requests use the locked run CAS. Exact replay uses
+that key's original cancelled event sequence minus two and makes no native,
+audit or control effects. Changed target, actor, rationale or cascade after the
+stop refuses. A source/carrier point stop (`cascade=false`) refuses when other
+live owned work would remain; a current-visit point stop fences the whole run.
+
+The ordinary ancestor guard follows indexed task/parent reads, including
+terminal dependency paths, with one unchanged read allowance and at most 512
+distinct task rows. Any sequential descendant, malformed/cyclic/incomplete or
+exhausted acquisition refuses before Coding or ordinary mutation. A direct run
+stop also refuses live nonmembers and mixed owners. This is a bounded refusal,
+not U6 traversal. See the [U3e-1a spec](../../superpowers/specs/2026-11-09-sequential-engine-u3e1a.md).

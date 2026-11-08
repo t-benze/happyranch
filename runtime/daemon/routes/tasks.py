@@ -2403,9 +2403,8 @@ async def cancel_task(
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
         ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
-        if ownership.kind in SEQUENTIAL_HELD_KINDS:
-            raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
-        if ownership.kind != "legacy" and not ownership.kind.startswith("coding_"):
+        sequential = ownership.kind in SEQUENTIAL_HELD_KINDS
+        if not sequential and ownership.kind != "legacy" and not ownership.kind.startswith("coding_"):
             if ownership.kind not in {"draft", "f5"}:
                 raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
             # Workflow-owned execution has no ordinary delegated subtree. Its durable fence
@@ -2417,7 +2416,7 @@ async def cancel_task(
                 finally:
                     root_tail_failed |= delivery['teardown_incomplete']
         if root.status in _TERMINAL_TASK_STATUSES and not (
-                root.status == TaskStatus.CANCELLED and ownership.kind.startswith("coding_")):
+                root.status == TaskStatus.CANCELLED and (sequential or ownership.kind.startswith("coding_"))):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"code": "task_already_terminal", "current_status": root.status.value},
@@ -2440,70 +2439,89 @@ async def cancel_task(
         controls_to_invoke: list[tuple[str, str, Callable[[], None]]] = []
         pids_without_control: list[tuple[str, str, int]] = []
         audit = AuditLogger(org.db)
-        async with org.db_lock:
-            cancellation = None
+        if sequential:
+            from runtime.workflows.authority import WorkflowAuthorityError
+            from runtime.workflows.sequential_cancel import cancel_selected
             try:
-                if coding is not None:
-                    cancellation = coding.guard_cancellation(task_id, cascade=body.cascade,
-                        rationale=rationale, actor=actor, transitions=root_transitions)
+                cancellation = await cancel_selected(org, task_id, cascade=body.cascade,
+                    rationale=rationale, actor=actor, transitions=root_transitions)
+            except (ValueError, TypeError, KeyError, sqlite3.Error, WorkflowAuthorityError):
+                raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
+            to_cancel = cancellation['tasks']
+            prior_statuses = cancellation['prior']
+            prior_block_kinds = cancellation['block_kinds']
+            controls_to_invoke = cancellation['controls']
+            root_tail_failed |= cancellation['teardown_incomplete']
+        else:
+            async with org.db_lock:
+                from runtime.workflows.sequential_cancel import guard_ordinary_ancestor
+                try:
+                    guard_ordinary_ancestor(org, task_id)
+                except (ValueError, TypeError, KeyError, sqlite3.Error):
+                    raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
+                cancellation = None
+                try:
+                    if coding is not None:
+                        cancellation = coding.guard_cancellation(task_id, cascade=body.cascade,
+                            rationale=rationale, actor=actor, transitions=root_transitions)
+                    else:
+                        # Retained ownership during disabled admission/rollback
+                        # still belongs to the cancellation owner, never legacy.
+                        from runtime.workflows.coding_cancellation import cancel_locked
+                        cancellation = cancel_locked(org, task_id, cascade=body.cascade,
+                            rationale=rationale, actor=actor, transitions=root_transitions)
+                except (ValueError, TypeError, KeyError, sqlite3.Error):
+                    raise HTTPException(status_code=409, detail={'code': 'coding_cancellation_reconciliation_required'}) from None
+                if cancellation is not None:
+                    to_cancel = cancellation['tasks']
+                    prior_statuses = cancellation['prior']
+                    prior_block_kinds = cancellation['block_kinds']
+                    root_tail_failed |= cancellation.get('teardown_incomplete', False)
                 else:
-                    # Retained ownership during disabled admission/rollback
-                    # still belongs to the cancellation owner, never legacy.
-                    from runtime.workflows.coding_cancellation import cancel_locked
-                    cancellation = cancel_locked(org, task_id, cascade=body.cascade,
-                        rationale=rationale, actor=actor, transitions=root_transitions)
-            except (ValueError, TypeError, KeyError, sqlite3.Error):
-                raise HTTPException(status_code=409, detail={'code': 'coding_cancellation_reconciliation_required'}) from None
-            if cancellation is not None:
-                to_cancel = cancellation['tasks']
-                prior_statuses = cancellation['prior']
-                prior_block_kinds = cancellation['block_kinds']
-                root_tail_failed |= cancellation.get('teardown_incomplete', False)
-            else:
-                # Rediscover ordinary membership after the actual lock wait too.
-                to_cancel, prior_statuses, prior_block_kinds = [], {}, {}
-                stack, visited = [task_id], set()
-                while stack:
-                    tid = stack.pop()
-                    if tid in visited:
-                        continue
-                    visited.add(tid)
-                    t = org.db.get_task(tid)
-                    if t is None or t.status in _TERMINAL_TASK_STATUSES:
-                        if tid == task_id:
-                            raise HTTPException(status_code=409, detail={'code': 'task_already_terminal'})
-                        continue
-                    to_cancel.append(tid)
-                    prior_statuses[tid], prior_block_kinds[tid] = t.status, t.block_kind
-                    if body.cascade:
-                        stack.extend(org.db.get_children(tid))
-            for tid in to_cancel:
-                if cancellation is None:
-                    with _capture_root_worktree_transition(org.orchestrator, tid, 'cancel_task', root_transitions):
-                        org.db.update_task(tid, status=TaskStatus.CANCELLED, block_kind=None,
-                            note=note, cancelled_at=now, completed_at=now)
-                    audit.log_task_cancelled(task_id=tid, rationale=rationale, cascade=body.cascade, actor=actor)
-                from runtime.orchestrator.task_pause import prepared_cancel_controls
-                controls_by_agent = dict(org.sessions.iter_task_cancel_controls(tid))
-                controls_by_agent.update(prepared_cancel_controls(org.db, tid))
-                coding_task = cancellation is not None and tid in cancellation.get('coding_tasks', ())
-                if (coding_task and not controls_by_agent
-                        and prior_statuses[tid] == TaskStatus.IN_PROGRESS
-                        and prior_block_kinds[tid] is None):
-                    root_tail_failed = True
-                for agent, control in controls_by_agent.items():
-                    controls_to_invoke.append((tid, agent, control))
-                # THR-207: a wired session's PID is diagnostic/restart evidence
-                # only — cancellation goes through the opaque control above, never
-                # a bare PID signal. A defensive SIGTERM remains ONLY for a
-                # (task, agent) that has a pid but NO registered control
-                # (non-wired/legacy sessions — impossible in production because
-                # the control is registered before launch).
-                for agent, pid in org.sessions.iter_task_pids(tid):
-                    if agent not in controls_by_agent:
-                        root_tail_failed |= cancellation is not None
-                        if not coding_task:
-                            pids_without_control.append((tid, agent, pid))
+                    # Rediscover ordinary membership after the actual lock wait too.
+                    to_cancel, prior_statuses, prior_block_kinds = [], {}, {}
+                    stack, visited = [task_id], set()
+                    while stack:
+                        tid = stack.pop()
+                        if tid in visited:
+                            continue
+                        visited.add(tid)
+                        t = org.db.get_task(tid)
+                        if t is None or t.status in _TERMINAL_TASK_STATUSES:
+                            if tid == task_id:
+                                raise HTTPException(status_code=409, detail={'code': 'task_already_terminal'})
+                            continue
+                        to_cancel.append(tid)
+                        prior_statuses[tid], prior_block_kinds[tid] = t.status, t.block_kind
+                        if body.cascade:
+                            stack.extend(org.db.get_children(tid))
+                for tid in to_cancel:
+                    if cancellation is None:
+                        with _capture_root_worktree_transition(org.orchestrator, tid, 'cancel_task', root_transitions):
+                            org.db.update_task(tid, status=TaskStatus.CANCELLED, block_kind=None,
+                                note=note, cancelled_at=now, completed_at=now)
+                        audit.log_task_cancelled(task_id=tid, rationale=rationale, cascade=body.cascade, actor=actor)
+                    from runtime.orchestrator.task_pause import prepared_cancel_controls
+                    controls_by_agent = dict(org.sessions.iter_task_cancel_controls(tid))
+                    controls_by_agent.update(prepared_cancel_controls(org.db, tid))
+                    coding_task = cancellation is not None and tid in cancellation.get('coding_tasks', ())
+                    if (coding_task and not controls_by_agent
+                            and prior_statuses[tid] == TaskStatus.IN_PROGRESS
+                            and prior_block_kinds[tid] is None):
+                        root_tail_failed = True
+                    for agent, control in controls_by_agent.items():
+                        controls_to_invoke.append((tid, agent, control))
+                    # THR-207: a wired session's PID is diagnostic/restart evidence
+                    # only — cancellation goes through the opaque control above, never
+                    # a bare PID signal. A defensive SIGTERM remains ONLY for a
+                    # (task, agent) that has a pid but NO registered control
+                    # (non-wired/legacy sessions — impossible in production because
+                    # the control is registered before launch).
+                    for agent, pid in org.sessions.iter_task_pids(tid):
+                        if agent not in controls_by_agent:
+                            root_tail_failed |= cancellation is not None
+                            if not coding_task:
+                                pids_without_control.append((tid, agent, pid))
 
         # Phase 1b: fire thread followup for every cancelled task that had NO live
         # subprocess at cancel time.
