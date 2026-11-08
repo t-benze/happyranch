@@ -31,6 +31,7 @@ class MessageAddresses:
     agents: tuple[str, ...]
     founder_only: bool = False
     naming_rows: tuple | None = None
+    founder_addressed: bool = False
 
 
 def classify_message_write(method: Callable[..., Any]) -> Callable[..., Any]:

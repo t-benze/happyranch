@@ -366,6 +366,13 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
     identities.validate_message_payload(payload)
+    # File-only additive resolution travels unchanged on the existing send.
+    resolution = payload.get("resolution")
+    if resolution is not None and (
+        not isinstance(resolution, dict) or set(resolution) - {"next_owner"}
+        or (resolution.get("next_owner") is not None and not isinstance(resolution["next_owner"], str))
+    ):
+        identities.fail("resolution must be an object with optional string/null next_owner", code=2)
     # Agent-initiated send (THR-069): when --task-id is provided, attach
     # the binding fields so the daemon attributes to the agent.
     # FINDING 1 (REVISE): --session-id is REQUIRED when --task-id is supplied

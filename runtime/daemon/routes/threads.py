@@ -20,6 +20,7 @@ from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.thread_queue import ThreadJob
 from runtime.infrastructure.db.tasks import TaskThreadOriginUnavailable
+from runtime.infrastructure.db.threads import ThreadResolutionError
 from runtime.infrastructure.memory_collection import CensusReadUnavailable
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifactName
@@ -1225,6 +1226,11 @@ class ThreadListRowResponse(BaseModel):
     composed_by: str | None
     composed_from_task_id: str | None
     composed_from_dream_id: str | None
+    resolved_seq: int | None
+    resolved_by: str | None
+    resolved_at: str | None
+    resolved_from_task_id: str | None
+    resolution_next_owner: str | None
     last_speaker: str | None
     pinned: bool
     pinned_at: str | None
@@ -1269,6 +1275,11 @@ def _thread_row_to_dict(t: ThreadRecord, *, participants: list[str] | None = Non
         "composed_by": t.composed_by,
         "composed_from_task_id": t.composed_from_task_id,
         "composed_from_dream_id": t.composed_from_dream_id,
+        "resolved_seq": t.resolved_seq,
+        "resolved_by": t.resolved_by,
+        "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
+        "resolved_from_task_id": t.resolved_from_task_id,
+        "resolution_next_owner": t.resolution_next_owner,
         "last_speaker": t.last_speaker,
         "pinned": t.pinned_at is not None,
         "pinned_at": t.pinned_at.isoformat() if t.pinned_at else None,
@@ -2137,6 +2148,11 @@ def _task_in_thread_lineage(org, task_id: str, thread_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+class ThreadResolutionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    next_owner: str | None = None
+
+
 class SendBody(BaseModel):
     body_markdown: str = ""
     attachments: list[AttachmentRefBody] = Field(default_factory=list)
@@ -2144,6 +2160,7 @@ class SendBody(BaseModel):
     composer: str | None = None
     task_id: str | None = None
     session_id: str | None = None
+    resolution: ThreadResolutionBody | None = None
 
 
 class _SendThreadError(Exception):
@@ -2195,6 +2212,7 @@ async def _send_thread_message_inprocess(
     composer: str | None = None,
     task_id: str | None = None,
     session_id: str | None = None,
+    resolution: ThreadResolutionBody | None = None,
 ) -> dict:
     """Append a message to an open thread + mint reply invocations.
 
@@ -2218,6 +2236,11 @@ async def _send_thread_message_inprocess(
     # is rejected with binding_required/422 rather than silently falling through
     # to speaker='founder'.
     any_binding = composer is not None or task_id is not None or session_id is not None
+    if resolution is not None:
+        if not any_binding:
+            raise _SendThreadError(422, "binding_required")
+        if not body_markdown.strip():
+            raise _SendThreadError(422, "resolution_body_required")
     if any_binding:
         if composer is None or task_id is None or session_id is None:
             raise _SendThreadError(422, "binding_required")
@@ -2254,6 +2277,7 @@ async def _send_thread_message_inprocess(
             attachments=normalized_attachments,
             task_id=sent_from_task_id,
             addressed=addressed,
+            resolution=resolution,
         )
 
     tokens_to_enqueue: list[str] = []
@@ -2302,6 +2326,7 @@ async def _post_agent_message(
     attachments: list[ThreadAttachment],
     task_id: str,
     addressed: list[str],
+    resolution: ThreadResolutionBody | None = None,
 ) -> dict:
     """Shared agent-message append/audit/reply/enqueue/SSE/response logic.
 
@@ -2313,14 +2338,33 @@ async def _post_agent_message(
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
         _validate_message_addresses(org, body_text)
-        seq, arrivals = org.db.record_conversational_arrival(
-            thread_id=thread_id, speaker=speaker,
-            kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text,
-            attachments=attachments,
-            sent_from_task_id=task_id,
-            recipients=addressed,
-        )
+        if resolution is not None:
+            thread = org.db.get_thread(thread_id)
+            if thread is None or thread.composed_from_task_id is None or thread.composed_by == "founder":
+                raise _SendThreadError(403, "thread_not_task_composed")
+            team = org.teams.team_for_agent(thread.composed_by)
+            manager = org.teams.executable_manager_for_team(team) if team is not None else None
+            if speaker != thread.composed_by and speaker != manager:
+                raise _SendThreadError(403, "thread_resolution_not_authorized")
+            if resolution.next_owner == "founder":
+                raise _SendThreadError(409, "founder_decision_pending")
+            if resolution.next_owner is not None and resolution.next_owner not in {
+                agent.name for agent in prompt_loader.list_agents(OrgPaths(org.root))
+            }:
+                raise _SendThreadError(422, "unknown_next_owner")
+        try:
+            seq, arrivals = org.db.record_conversational_arrival(
+                thread_id=thread_id, speaker=speaker,
+                kind=ThreadMessageKind.MESSAGE,
+                body_markdown=body_text,
+                attachments=attachments,
+                sent_from_task_id=task_id,
+                recipients=[] if resolution is not None else addressed,
+                resolve=resolution is not None,
+                resolution_next_owner=resolution.next_owner if resolution is not None else None,
+            )
+        except ThreadResolutionError as exc:
+            raise _SendThreadError(exc.status_code, exc.code) from exc
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=speaker, kind="message",
@@ -2356,6 +2400,7 @@ async def send_thread_endpoint(
             composer=body.composer,
             task_id=body.task_id,
             session_id=body.session_id,
+            resolution=body.resolution,
         )
     except _SendThreadError as exc:
         raise HTTPException(
@@ -2381,6 +2426,7 @@ class PostAsAgentBody(BaseModel):
     session_id: str | None = None
     body_markdown: str = ""
     attachments: list[AttachmentRefBody] = Field(default_factory=list)
+    resolution: ThreadResolutionBody | None = None
 
 
 @router.post("/threads/{thread_id}/post-as-agent")
@@ -2418,6 +2464,8 @@ async def post_thread_as_agent(
     if t.status is not ThreadStatus.OPEN:
         raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
 
+    if body.resolution is not None and not body.body_markdown.strip():
+        raise HTTPException(status_code=422, detail={"code": "resolution_body_required"})
     attachments = _normalize_all_attachments(
         org, body.attachments, uploaded_by=body.composer, thread_id=thread_id,
     )
@@ -2427,14 +2475,18 @@ async def post_thread_as_agent(
     # composer — they are the speaker).
     addressed = [name for name in participants if name != body.composer]
 
-    return await _post_agent_message(
-        org, slug, thread_id,
-        speaker=body.composer,
-        body_text=body_text,
-        attachments=attachments,
-        task_id=body.task_id,
-        addressed=addressed,
-    )
+    try:
+        return await _post_agent_message(
+            org, slug, thread_id,
+            speaker=body.composer,
+            body_text=body_text,
+            attachments=attachments,
+            task_id=body.task_id,
+            addressed=addressed,
+            resolution=body.resolution,
+        )
+    except _SendThreadError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, **exc.details}) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -2693,11 +2745,8 @@ async def resume_thread_endpoint(
             detail={"code": "thread_not_archived", "status": t.status.value},
         )
 
-    prior_archived_at = (
-        t.archived_at.isoformat() if t.archived_at else None
-    )
     async with org.db_lock:
-        org.db.set_thread_status(thread_id, status=ThreadStatus.OPEN)
+        org.db.resume_thread_with_audit(thread_id)
         # Re-activate per-pair reply delivery state (idempotent no-op for pairs
         # already cut over; seeds any pair still missing a row).
         org.db.cutover_thread_reply_delivery_state(thread_id)
@@ -2705,9 +2754,6 @@ async def resume_thread_endpoint(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.SYSTEM,
             system_payload={"kind_tag": "resumed"},
-        )
-        AuditLogger(org.db).log_thread_resumed(
-            thread_id, prior_archived_at=prior_archived_at,
         )
 
     await _publish_thread_event(

@@ -546,7 +546,9 @@ def prepare_message_addresses(org: Any, body_markdown: str | None) -> MessageAdd
                                 and subject.lifecycle == 'active'))
     founder_only = bool(subjects) and all(subject is not None and subject.kind == 'founder'
                                          for subject in subjects)
-    return MessageAddresses(agents, founder_only, proof)
+    return MessageAddresses(agents, founder_only, proof, founder_addressed=any(
+        subject is not None and subject.kind == 'founder' for subject in subjects
+    ))
 
 
 def validate_message_addresses(org: Any, addresses: MessageAddresses | None) -> None:

@@ -2269,7 +2269,10 @@ class Database(
         prepare = getattr(self, '_thread_address_prepare', None)
         if prepare is not None:
             return prepare(body_markdown)
-        return MessageAddresses(tuple(parse_mentions(body_markdown)))
+        tokens = parse_mentions(body_markdown)
+        return MessageAddresses(tuple(tokens), founder_addressed=any(
+            token.casefold() == "founder" for token in tokens
+        ))
 
     def validate_thread_message(self, addresses: MessageAddresses | None) -> None:
         validate = getattr(self, '_thread_address_validate', None)
@@ -2298,6 +2301,7 @@ class Database(
                 body_markdown=body_markdown, decline_reason=decline_reason,
                 system_payload=system_payload, attachments=attachments,
                 sent_from_task_id=sent_from_task_id, mentions=mentions,
+                addresses_founder=bool(_addresses and _addresses.founder_addressed),
             )
             self._conn.commit()
         except Exception:
@@ -2317,6 +2321,7 @@ class Database(
         attachments: list[ThreadAttachment] | None = None,
         sent_from_task_id: str | None = None,
         mentions: list[str] | None = None,
+        addresses_founder: bool = False,
     ) -> int:
         """Allocate seq + insert a message (and its attachments) WITHOUT
         opening or committing a transaction. Callers must own the transaction
@@ -2333,7 +2338,7 @@ class Database(
         self._conn.execute(
             "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
             "body_markdown, decline_reason, system_payload_json, "
-            "sent_from_task_id, mentions_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "sent_from_task_id, mentions_json, created_at, addresses_founder) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 thread_id,
                 next_seq,
@@ -2345,6 +2350,7 @@ class Database(
                 sent_from_task_id,
                 json.dumps(mentions) if mentions is not None else None,
                 _now().isoformat(),
+                int(kind is ThreadMessageKind.MESSAGE and addresses_founder),
             ),
         )
         for ordinal, attachment in enumerate(attachments or []):
@@ -2367,6 +2373,13 @@ class Database(
                     attachment.thread_attachment_id,
                 ),
             )
+        if kind is ThreadMessageKind.MESSAGE:
+            cleared_seq = self._clear_thread_resolution_uncommitted(thread_id)
+            if cleared_seq is not None:
+                self.insert_audit_log_uncommitted(
+                    task_id=thread_id, agent=speaker, action="thread_resolution_cleared",
+                    payload={"resolved_seq": cleared_seq, "cleared_by_seq": next_seq},
+                )
         return next_seq
 
 

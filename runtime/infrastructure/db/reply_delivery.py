@@ -1519,6 +1519,8 @@ class ReplyDeliveryMixin:
         attachments: list[ThreadAttachment] | None = None,
         sent_from_task_id: str | None = None,
         recipients: list[str],
+        resolve: bool = False,
+        resolution_next_owner: str | None = None,
         _addresses: MessageAddresses | None = None,
     ) -> tuple[int, list[ThreadReplyArrival]]:
         """Atomic conversational-arrival: append the message, raise the
@@ -1538,13 +1540,18 @@ class ReplyDeliveryMixin:
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             self.validate_thread_message(_addresses)
+            if resolve:
+                self._validate_thread_resolution_uncommitted(
+                    thread_id, speaker, founder_addressed=bool(_addresses and _addresses.founder_addressed),
+                )
             mentions = self._derive_conversational_mentions(
                 thread_id, speaker, kind, body_markdown, addresses=_addresses,
             )
             founder_only = bool(_addresses and _addresses.founder_only)
             # Prior committed catch-up is independent of this message's wake
             # selection. Validate former names BEFORE any stale-close effect.
-            arrivals.extend(self._evaluate_exchange_closure(thread_id))
+            if not resolve:
+                arrivals.extend(self._evaluate_exchange_closure(thread_id))
             seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id,
                 speaker=speaker,
@@ -1553,7 +1560,17 @@ class ReplyDeliveryMixin:
                 attachments=attachments,
                 sent_from_task_id=sent_from_task_id,
                 mentions=mentions,
+                addresses_founder=bool(_addresses and _addresses.founder_addressed),
             )
+            if resolve:
+                self._resolve_thread_uncommitted(
+                    thread_id, seq=seq, speaker=speaker, task_id=sent_from_task_id,
+                    next_owner=resolution_next_owner,
+                )
+                # The substantive decision record has no acknowledgement round,
+                # including due exchange catch-up. Existing obligations remain.
+                self._conn.commit()
+                return seq, []
             open_exchange = self._get_open_exchange_uncommitted(thread_id)
             if open_exchange is not None and seq > int(open_exchange["open_seq"]):
                 # Inside E: strict-hold resolution (U2).
@@ -2065,6 +2082,7 @@ class ReplyDeliveryMixin:
                 body_markdown=body_markdown,
                 attachments=attachments,
                 mentions=mentions,
+                addresses_founder=bool(_addresses and _addresses.founder_addressed),
             )
             if token_purpose is ThreadInvocationPurpose.REPLY:
                 settlement = self._settle_reply_uncommitted(

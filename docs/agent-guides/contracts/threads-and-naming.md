@@ -194,8 +194,9 @@ in the current spec and maker handoff; independent acceptance remains separate. 
 combined source contract and remaining behavioral acceptance gates.
 
 
-Current-founder-only MESSAGE classification is ephemeral and separate from
-empty agent mentions. It suppresses broadcast and frozen-cohort fallback for
+Routing's founder_only MESSAGE classification remains ephemeral and separate from
+empty agent mentions. THR-339 PR1 additionally persists an observation-only
+addresses_founder bit; resolution uses it without changing wake routing. It suppresses broadcast and frozen-cohort fallback for
 that message, while full-recipient required watermarks still advance. Mixed
 founder/eligible-agent mentions route the agents. Founder stays human inbox only,
 never participant/executor. BOOTSTRAP/TASK_FOLLOWUP keep their isolated broadcast.

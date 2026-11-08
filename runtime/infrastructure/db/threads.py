@@ -7,6 +7,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from runtime.infrastructure.db._shared import _late_database_now as _now, _synchronized
+from runtime.infrastructure.thread_mentions import parse_mentions
 from runtime.models import (
     ThreadAttachment,
     ThreadInvocation,
@@ -68,8 +69,90 @@ def _thread_page_cursor(
         raise ValueError("invalid_thread_cursor") from exc
 
 
+class ThreadResolutionError(ValueError):
+    """Resolution refusal from the transaction owner; never a partial send."""
+
+    def __init__(self, status_code: int, code: str) -> None:
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+
+
 class ThreadsMixin:
     # --- Threads Core ---
+
+    def _thread_has_founder_hold_uncommitted(self, thread_id: str) -> bool:
+        """Current pending founder addresses; NULL history uses lexical IDs only."""
+        rows = self._conn.execute(
+            "SELECT addresses_founder, body_markdown FROM thread_messages "
+            "WHERE thread_id = ? AND kind = 'message' AND speaker != 'founder' "
+            "AND seq > (SELECT COALESCE(MAX(seq), 0) FROM thread_messages "
+            "WHERE thread_id = ? AND kind = 'message' AND speaker = 'founder')",
+            (thread_id, thread_id),
+        )
+        return any(
+            bool(row["addresses_founder"]) if row["addresses_founder"] is not None
+            else any(token.casefold() == "founder" for token in parse_mentions(row["body_markdown"]))
+            for row in rows
+        )
+
+    def _validate_thread_resolution_uncommitted(
+        self, thread_id: str, speaker: str, *, founder_addressed: bool,
+    ) -> None:
+        thread = self._conn.execute("SELECT * FROM threads WHERE id = ?", (thread_id,)).fetchone()
+        if thread is None or thread["status"] != "open":
+            raise ThreadResolutionError(400, "thread_not_open")
+        if thread["composed_from_task_id"] is None or thread["composed_by"] == "founder":
+            raise ThreadResolutionError(403, "thread_not_task_composed")
+        if not self._conn.execute(
+            "SELECT 1 FROM thread_participants WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, speaker),
+        ).fetchone():
+            raise ThreadResolutionError(403, "not_a_participant")
+        if founder_addressed or self._thread_has_founder_hold_uncommitted(thread_id):
+            raise ThreadResolutionError(409, "founder_decision_pending")
+
+    def _resolve_thread_uncommitted(
+        self, thread_id: str, *, seq: int, speaker: str, task_id: str,
+        next_owner: str | None,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE threads SET resolved_seq = ?, resolved_by = ?, resolved_at = ?, "
+            "resolved_from_task_id = ?, resolution_next_owner = ? WHERE id = ?",
+            (seq, speaker, _now().isoformat(), task_id, next_owner, thread_id),
+        )
+        self.insert_audit_log_uncommitted(
+            task_id=thread_id, agent=speaker, action="thread_resolved",
+            payload={"seq": seq, "resolved_from_task_id": task_id, "next_owner": next_owner},
+        )
+
+    def _clear_thread_resolution_uncommitted(self, thread_id: str) -> int | None:
+        row = self._conn.execute("SELECT resolved_seq FROM threads WHERE id = ?", (thread_id,)).fetchone()
+        if row is None or row["resolved_seq"] is None:
+            return None
+        self._conn.execute(
+            "UPDATE threads SET resolved_seq = NULL, resolved_by = NULL, resolved_at = NULL, "
+            "resolved_from_task_id = NULL, resolution_next_owner = NULL WHERE id = ?",
+            (thread_id,),
+        )
+        return row["resolved_seq"]
+
+    @_synchronized
+    def resume_thread_with_audit(self, thread_id: str) -> None:
+        """Reopen and forget resolution atomically with the existing resume audit."""
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute("SELECT archived_at FROM threads WHERE id = ?", (thread_id,)).fetchone()
+            cleared_seq = self._clear_thread_resolution_uncommitted(thread_id)
+            self._conn.execute("UPDATE threads SET status = 'open' WHERE id = ?", (thread_id,))
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id, agent="founder", action="thread_resumed",
+                payload={"prior_archived_at": row["archived_at"], "cleared_resolution_seq": cleared_seq},
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def next_thread_id(self) -> str:
@@ -135,6 +218,11 @@ class ThreadsMixin:
             composed_by=row["composed_by"] if "composed_by" in keys else "founder",
             composed_from_task_id=row["composed_from_task_id"] if "composed_from_task_id" in keys else None,
             composed_from_dream_id=row["composed_from_dream_id"] if "composed_from_dream_id" in keys else None,
+            resolved_seq=row["resolved_seq"],
+            resolved_by=row["resolved_by"],
+            resolved_at=row["resolved_at"],
+            resolved_from_task_id=row["resolved_from_task_id"],
+            resolution_next_owner=row["resolution_next_owner"],
             last_speaker=row["last_speaker"] if "last_speaker" in keys else None,
             pinned_at=(
                 datetime.fromisoformat(row["pinned_at"]) if row["pinned_at"] else None
@@ -524,6 +612,7 @@ class ThreadsMixin:
                 system_payload=json.loads(r["system_payload_json"]) if r["system_payload_json"] else None,
                 attachments=attachments_by_seq.get(r["seq"], []),
                 mentions=json.loads(r["mentions_json"]) if r["mentions_json"] else [],
+                addresses_founder=r["addresses_founder"],
                 created_at=datetime.fromisoformat(r["created_at"]),
             )
             for r in rows
@@ -562,6 +651,7 @@ class ThreadsMixin:
             system_payload=json.loads(row["system_payload_json"]) if row["system_payload_json"] else None,
             attachments=attachments_by_seq.get(seq, []),
             mentions=json.loads(row["mentions_json"]) if row["mentions_json"] else [],
+            addresses_founder=row["addresses_founder"],
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 

@@ -2419,6 +2419,20 @@ class SchemaMixin:
             "ON task_results(task_id,agent,id DESC)"
         )
 
+        # THR-339: additive resolution and founder-address observation. Keep
+        # historical rows NULL; no backfill and no new index in fresh DDL.
+        for table, column, sql_type in (
+            ("threads", "resolved_seq", "INTEGER"),
+            ("threads", "resolved_by", "TEXT"),
+            ("threads", "resolved_at", "TEXT"),
+            ("threads", "resolved_from_task_id", "TEXT"),
+            ("threads", "resolution_next_owner", "TEXT"),
+            ("thread_messages", "addresses_founder", "INTEGER"),
+        ):
+            columns = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+
     def _create_authority_tables(self) -> None:
         """THR-181 Track A Slice 1: additive durable authority foundation.
 
