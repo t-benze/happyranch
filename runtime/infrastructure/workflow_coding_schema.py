@@ -609,6 +609,9 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     # Empty J is still a complete coding read: absence must not replenish or
     # bypass the allowance for the subsequent native typed-row discrimination.
     bounded_coding = budget is not None
+    from runtime.infrastructure.workflow_schema import _sequential_validated_rows
+    from runtime.infrastructure.workflow_sequential_schema import SEQUENTIAL_TABLES
+    sequential = _sequential_validated_rows(conn)
     for table in CODING_TABLES:
         if table not in tables:
             if coding_present:
@@ -639,10 +642,21 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             'workflow_coding_mappings', 'workflow_admission_records', 'audit_log', 'workflow_authorization_revisions')
         native_queued = queued is not None and table in (
             *queued.admitted.keys(), *CODING_TABLES)
+        native_sequential = table in SEQUENTIAL_TABLES and table in sequential
+        sequential_rows = {}
+        if native_sequential:
+            # The complete sequential reader has authenticated these full rows
+            # before entering the retained readers in the same snapshot. Exact
+            # family names come from the DDL owner, never a namespace prefix.
+            sequential_key = 'version' if table == 'workflow_seq_schema_versions' else 'id'
+            for expected in sequential[table]:
+                if bounded_coding:
+                    budget.step()
+                sequential_rows[(type(expected[sequential_key]), expected[sequential_key])] = expected
         # Enrollment chooses the full comparison projection, never a table-wide
         # coding charge. Ordinary rows remain ordinary after mapping/start.
         table_bounded = bounded_coding
-        if native_setup or native_import or native_mapping or native_queued:
+        if native_setup or native_import or native_mapping or native_queued or native_sequential:
             selected_columns = columns
         if not selected_columns:
             continue
@@ -675,6 +689,9 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                     def locator(expected):
                         return tuple((type(expected[key]), expected[key]) for key in keys)
                     known = set()
+                    for expected in sequential_rows.values():
+                        budget.step()
+                        known.add(locator(expected))
                     for expected in mapping_rows.get(table, {}).values():
                         budget.step()
                         known.add(locator(expected))
@@ -714,6 +731,16 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 if table_bounded and row == [None]:
                     continue  # Already discriminated ordinary metadata, no coding spend.
                 data = dict(zip(selected_columns, row, strict=True))
+                if native_sequential:
+                    expected = sequential_rows.get((type(data.get(sequential_key)), data.get(sequential_key)))
+                    if (expected is None or data.keys() != expected.keys()
+                            or any(type(data[key]) is not type(value) or data[key] != value
+                                   for key, value in expected.items())):
+                        raise ValueError('workflow_seq_legacy_row_mismatch')
+                    if table_bounded:
+                        for _ in data:
+                            budget.step()
+                    continue  # Complete typed row comparison, not discriminator masking.
                 if native_queued and queued.matches(table, data):
                     budget.step()
                     continue  # Complete typed row equality after independent semantic closure.

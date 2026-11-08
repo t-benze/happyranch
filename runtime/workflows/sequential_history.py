@@ -2,8 +2,8 @@
 
 No normal startup, allocator, route or producer imports this module. The result
 is storage integrity, not current authorization, native settlement or engine
-availability. U2b must compose retained family data readers at installation and
-reopen before any runtime attachment; U3 must authenticate adapter assertions.
+availability. Retained family data readers compose through an explicit scope;
+U2b installation/reopen and U3 adapter authentication remain separate.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from pydantic import BeforeValidator, Field
 
 from runtime.infrastructure.workflow_schema import (
     _candidate_structure, _canonical_connection, _execute_ddl, _read_workflow_schema,
+    _read_sequential_legacy_data,
     _schema_snapshot, _structure_cells,
 )
 from runtime.infrastructure.workflow_sequential_ownership import (
@@ -32,7 +33,7 @@ from runtime.infrastructure.workflow_sequential_schema import (
 from runtime.infrastructure.workflow_task_ownership import (
     OWNERSHIP_DDL, binding_view_ddl,
 )
-from runtime.workflows.coding_authority_history import _Budget, _bounded_rows, _decoded
+from runtime.workflows.coding_authority_history import _Budget, _CALL_ROW_LIMIT, _bounded_rows, _decoded
 from runtime.workflows.sequential_contracts import (
     BindingClaim, Closed, Counters, DefinitionPin, Limits, NextEdge, OutputRef,
     TerminalEdge, _array,
@@ -571,14 +572,36 @@ def _auxiliary(conn: sqlite3.Connection, data: dict[str, list[dict]], runs: dict
     _require(returned == actual_returns, 'outbox_return_missing')
 
 
+def _legacy_history(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget,
+                    sequential_rows: dict[str, list[dict]] | None = None) -> None:
+    # Exact retained budget/native connection and original per-call caps. The
+    # new reader's schema/copy work has wider limits, so it cannot be seeded
+    # into the retained narrower counters. Keep the outer totals intact and
+    # charge this phase's consumption on both success and refusal below.
+    legacy_budget = _Budget()
+    try:
+        if sequential_rows is None:
+            _read_workflow_schema(conn, expected_org_slug=org_slug, budget=legacy_budget)
+        else:
+            _read_sequential_legacy_data(conn, expected_org_slug=org_slug, budget=legacy_budget,
+                                         sequential_rows=sequential_rows)
+    finally:
+        # Preserve original refusals; the outer allowance never replenishes.
+        budget.consumed += legacy_budget.consumed
+        budget.accepted_rows += legacy_budget.accepted_rows
+        budget.traversed += legacy_budget.traversed
+    _require(budget.accepted_rows <= _CALL_ROW_LIMIT, 'read_rows_exhausted')
+    budget.reserve(0)
+
+
 def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str) -> SequentialHistory:
     """Validate all sequential rows and complete combined schema in one snapshot.
 
     Empty/absent storage is explicitly unavailable. A readable inventory is not
     an installed engine, admission, authorization or safe-to-launch disposition.
-    Legacy-only layouts still enter their existing complete data reader. When
-    sequential storage exists this API validates new history plus old structure;
-    U2b must additionally integrate the original old-family data readers.
+    Original complete document/Coding readers validate retained data on both
+    legacy-only and combined layouts. Their recursive structure checks select
+    complete combined references only inside the explicit new-reader scope.
     """
     _require(type(expected_org_slug) is str and bool(expected_org_slug), 'org_required')
     budget = _ReadBudget()
@@ -586,21 +609,7 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str)
         layout = _read_layout(conn, budget)
         if not layout.sequential:
             if layout.document is not None:
-                # Retained readers require the exact base type and native conn.
-                # Keep their original caps without replenishing prior consumption;
-                # the enclosing progress handler also bounds unbudgeted SQL.
-                legacy_budget = _Budget(consumed=budget.consumed,
-                                        accepted_rows=budget.accepted_rows,
-                                        traversed=budget.traversed)
-                try:
-                    _read_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=legacy_budget)
-                finally:
-                    # Seeded counters already include the outer work. Do not add
-                    # it twice, and do not mask a retained reader's refusal.
-                    budget.consumed = max(budget.consumed, legacy_budget.consumed)
-                    budget.accepted_rows = max(budget.accepted_rows, legacy_budget.accepted_rows)
-                    budget.traversed = max(budget.traversed, legacy_budget.traversed)
-                budget.reserve(0)  # Recheck cumulative bytes, work and deadline.
+                _legacy_history(conn, expected_org_slug, budget)
             budget.check()
             return SequentialHistory(layout, 'new-engine unavailable', (), ())
         _native_contract(conn, budget)
@@ -651,6 +660,9 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str)
         _auxiliary(conn, data, runs, visits, events, budget)
         if layout.ownership:
             validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget, runs=runs, visits=visits)
+        # Enroll only fully authenticated new rows; recursive old readers still
+        # compare complete combined references and every retained data family.
+        _legacy_history(conn, expected_org_slug, budget, data)
         budget.check()
         ready = bool(definitions and settings and layout.ownership == 2)
         return SequentialHistory(layout, 'storage readable' if ready else 'new-engine unavailable',

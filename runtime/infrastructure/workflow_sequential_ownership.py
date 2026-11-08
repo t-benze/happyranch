@@ -10,7 +10,7 @@ import sqlite3
 from collections.abc import Iterator
 
 from runtime.infrastructure.workflow_task_ownership import (
-    _binding_owner, binding_view_ddl, selected_owner,
+    _binding_owner, _selected_sequential_owner, binding_view_ddl, selected_owner,
 )
 
 from runtime.infrastructure.workflow_schema import _candidate_reserve
@@ -157,8 +157,8 @@ def read_sequential_owner(conn: sqlite3.Connection, *, task_id: str,
     """Selected scalar consistency only; never allocation/execution authority.
 
     The caller owns a validated complete layout and a read snapshot. Ordinary
-    discrimination must not call this unmounted reader until runtime integration
-    is reviewed. Old marks use their existing selected reader without relabeling.
+    discrimination uses the installed reader and holds new marks for the future
+    engine. Old marks use their existing selected reader without relabeling.
     """
     if not conn.in_transaction:
         raise ValueError('workflow_seq_ownership_requires_snapshot')
@@ -170,28 +170,4 @@ def read_sequential_owner(conn: sqlite3.Connection, *, task_id: str,
         return selected_owner(conn, task_id, org_slug)
     if mark[1] != 2 or mark[2] not in SEQUENTIAL_KINDS:
         raise ValueError('workflow_seq_ownership_unsupported')
-    bindings = [tuple(row) for row in conn.execute(
-        'SELECT relation,owner_id,instance_id FROM workflow_task_owner_bindings WHERE task_id=?', (task_id,))]
-    kind, owner, run_id = _binding_owner(task_id, bindings)
-    if (kind, owner) != tuple(mark[2:]):
-        raise ValueError('workflow_seq_ownership_relation_conflict')
-    run = conn.execute('SELECT source_task_id,carrier_task_id,state,source_principal '
-                       'FROM workflow_seq_runs WHERE id=? AND org_slug=?', (run_id, org_slug)).fetchone()
-    task = conn.execute('SELECT parent_task_id,assigned_agent,current_session_id FROM tasks WHERE id=?',
-                        (task_id,)).fetchone()
-    if run is None or task is None:
-        raise ValueError('workflow_seq_ownership_reference_missing')
-    if kind == 'seq_source_waiting':
-        valid = task_id == run[0] and task[1] == run[3]
-        state = run[2]
-    elif kind == 'seq_carrier':
-        valid = task_id == run[1] and task[0] == run[0] and task[2] is None
-        state = run[2]
-    else:
-        visit = conn.execute('SELECT principal,state FROM workflow_seq_visits '
-                             'WHERE id=? AND run_id=? AND task_id=?', (owner, run_id, task_id)).fetchone()
-        valid = visit is not None and task[0] == run[1] and task[1] == visit[0]
-        state = None if visit is None else visit[1]
-    if not valid:
-        raise ValueError('workflow_seq_ownership_native_conflict')
-    return kind, owner, state
+    return _selected_sequential_owner(conn, task_id, org_slug)

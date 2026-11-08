@@ -26,3 +26,19 @@ The same SQLite progress/deadline handler covers retained unbudgeted queries.
 Retained byte acquisition uses its original per-call caps plus that shared bound,
 not pre-reservation against the outer 64 MiB cap; unbudgeted retained query bytes
 are not charged to that outer counter. Original guards and refusals are unchanged.
+
+TASK-14576 / root TASK-14563 adds the U2a readers-only composition on fresh main,
+including the manager-named additive Coding reference-reader recognition. Full
+sequential validation precedes an explicit native-snapshot scope that retains all
+original recursive document/Coding data checks and complete combined references.
+Exact sequential table names and complete typed-row equality enroll new metadata;
+non-sequential discriminators remain unchanged. Installed v2 scalar recognition
+holds new marks for the future common engine; v1 behavior is retained. The current
+maintained guide owns this extension. Historical descriptions above retain their
+original-head meanings. U2b/V3, live operations, U3 producers and other holds remain
+separate; disposable reader observations are not behavioral acceptance.
+
+TASK-14576 also keeps the retained reader's narrower per-call budget separate
+from the wider schema/copy counters, adding its consumption to the unchanged outer
+totals before success. This corrects empty combined Coding refusal without changing
+any retained budget guard/cap; prior seeded-counter evidence above is historical.

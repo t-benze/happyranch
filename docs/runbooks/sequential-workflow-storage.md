@@ -7,9 +7,13 @@ install/reopen/backout or startup upgrade was executed. This draft grants no
 operating authorization. Founder THR336 msg85 / TASK14461 revision3 supplies the
 source plan; the current task explicitly excludes U2b and V3 execution.
 
-Before U2b writes any script, finish the remaining U2a integration: compose all
-original complete document/Coding data readers with the new schema, preserve
-their independent reference checks and add installed scalar/routing recognition.
+TASK-14576 adds U2a source-only complete document/Coding reader composition and
+installed scalar recognition. After full new-history validation, an explicit
+connection-bound scope selects independent combined references for original
+recursive readers. Exact sequential table names and full typed-row equality
+enroll new metadata; all non-sequential Coding refusals remain. Installed v2
+routing is reconciliation-held; v1 keeps its original route. This is not U2b
+installation/check/reopen/backout evidence.
 The current standalone reader authenticates neither native settlement nor
 capability/current-authority claims; U3 and later adapters must do that. Existing
 production code intentionally refuses the new schema even when empty.
@@ -66,10 +70,12 @@ The connection and its SQLite progress hook are exclusively owned for the call.
 TASK-14552's disposable AST/SQLite observations are structural evidence only;
 no populated-history, installer, native or migration behavior is established.
 
-Legacy-only validation passes an exact retained `_Budget` seeded from the outer
-counters through the unchanged native connection, inside the same snapshot and
-SQL progress/deadline context. Counters fold back without replenishment before
-outer success checks; retained refusals propagate unchanged. Retained byte
-acquisition uses its original per-call caps plus the shared SQL-step/deadline
-bound, not pre-reservation against the outer 64 MiB cap. Unbudgeted retained
-document/ownership query bytes are not included in the outer byte counter.
+Legacy-only and combined validation pass an exact retained `_Budget` with its
+original per-call caps through the unchanged native connection, inside the same
+snapshot and SQL progress/deadline context. TASK-14576 keeps those narrower
+phase counters separate from the new schema/copy charges and adds them to the
+unchanged outer totals on success or refusal. Outer success checks enforce the
+original aggregate allowance without replenishment; retained refusals propagate.
+Acquisition uses the retained per-call caps plus shared SQL-step/deadline bound,
+not pre-reservation against the outer 64 MiB cap. Unbudgeted retained document/
+ownership query bytes are not included in the outer byte counter.

@@ -2350,9 +2350,19 @@ unchanged v1 kinds; no adoption or task producer is attached.
 Org/initiating-principal/start-key and retained source/result/start uniqueness,
 the deferred run last-event bootstrap FK and a selected-visit partial index
 belong only to the new tables. The standalone history and complete ownership
-inventory share one bounded acquisition/copy/replay allowance; neither original
-Coding grammar nor its scalar ownership reader is changed.
+inventory share one bounded acquisition/copy/replay allowance; original Coding
+grammar remains unchanged. Installed scalar recognition holds new v2 marks with
+`reconciliation_required`, retaining original v1 routing.
 Empty/absent storage is `new-engine unavailable`, with no old-Coding fallback.
-Combined old-history reader integration remains outstanding before installation;
-this does not enable the bundled v2 definition or change any admitted old run.
+TASK-14576 composes the original complete Coding/document readers after complete
+sequential validation, in one native snapshot and an explicit connection-bound
+scope. Their recursive schema checks use complete independent combined references.
+Manager TASK-14563 authorizes additive recognition in `workflow_coding_schema.py`:
+exact names from `SEQUENTIAL_TABLES`, full typed-row comparison with authenticated
+new history, including the reserved identity in scalar and `definition_bytes`
+form. No discriminator scan is hidden or wrapped; original Coding and all
+non-sequential refusals, reserved-value inventories and exact-type guards remain.
+Incomplete/lookalike/unknown new tables cannot enroll. Normal installed schema
+readers outside this scope still refuse the extension. This source-inert reader
+composition does not enable the bundled v2 definition or change any admitted run.
 See [the reusable storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary).

@@ -220,16 +220,23 @@ preserved on complete successful reads. No cross-snapshot cache is retained.
 ## Unattached ownership companion@2 reference (THR336 U2a)
 
 TASK-14536 adds `workflow_sequential_ownership.py` as a standalone reference and
-reader. Existing production ownership storage/readers and their v1 writers are
-unchanged. The proposed explicit companion rebuild preserves original columns
+reader. Existing ownership storage literals and v1 writers remain unchanged.
+The proposed explicit companion rebuild preserves original columns
 and v1 marks and allows version2 only for `seq_source_waiting`, `seq_carrier`,
 `seq_visit`; its literal view appends relations without changing old branches.
 Selected v1 marks use the existing scalar reader. New marks require complete
 matching run/visit/native task relations; absent marks never mean ordinary.
 Complete companion validation uses bounded binding/native-task/mark acquisition
 and cached run/visit relations on the history call’s original allowance, without
-per-task inventory rescans. This does not change the existing v1 scalar reader.
+per-task inventory rescans. TASK-14576 adds installed selected v2 recognition:
+validate exact org/version/kind/owner and binding/native relations, then return
+`reconciliation_required` to existing routing until the new engine attaches.
+The standalone selected reader returns the exact new kind; v1 routing remains
+with the original reader and results. Unknown, missing or inconsistent marks
+refuse, never become ordinary. The original complete ownership reader accepts v2
+only inside the complete sequential read scope; default full readers retain their
+original refusal.
 No writer, adoption, allocation or execution permission is implemented here.
 Native TaskRecord/SELECT-* encodings, results, chains and audit scopes stay
-unchanged. Combined old-history reader integration precedes the U2b operator
-installer and U3 source adoption. See [the storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary).
+unchanged. Complete old/new reader composition is source-only; the U2b operator
+installer and U3 source adoption remain separate. See [the storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary).

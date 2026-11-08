@@ -645,7 +645,10 @@ Coding, owner indexes, ownership companion and new storage independently.
 New-table start-key uniqueness and run-first deferred bootstrap do not alter
 any document table. Complete new-history, reference and ownership acquisition
 share the finite reader allowance described in the reusable storage guide.
-Combined **old-history reader integration is still outstanding**; production
-readers refuse the extension and no installation is authorized by source delivery.
+TASK-14576 composes all original complete document/Coding data readers in an
+explicit connection-bound scope, after the new history validates. Every recursive
+schema check compares a complete independent combined reference; original native
+connection/budget guards remain. Normal installed schema readers outside that
+scope still refuse the extension. No installation is authorized by source delivery.
 See [the reusable storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary)
 and [UNVERIFIED operator draft](../../runbooks/sequential-workflow-storage.md).
