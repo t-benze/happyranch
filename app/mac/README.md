@@ -4,6 +4,10 @@ The current Mac build follows Founder THR104 seq369: compile and assemble the
 app, retain authentic dependency notices, check the basic bundle, then ZIP and
 reconcile its receipt. See [the notice contract](../../packaging/manifest-notices.md)
 and [workflow operations](../../docs/runbooks/mac-workflow-operations.md).
+For the complete CI build, download/verification and owner-local signing flow,
+use the [Mac release handbook](../../docs/runbooks/mac-release-handbook.md).
+It supplies the pinned inventory required by `scripts/mac-sign.sh`; Jenkins
+signing stays disabled.
 The asset/freezer/web evidence collectors and packaging supervisor are retired
 from build, spec, Vite, originals preparation, archive and independent verification.
 They supply no shipping tokens, IPC, mandatory receipts or emitted-closure gates.

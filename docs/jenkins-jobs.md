@@ -1,19 +1,12 @@
 # Ordinary Jenkins job helper
 
-The manual HappyRanch signing workload and its attended owner-session source are
-in [`ci/jenkins/mac-signing/README.md`](../ci/jenkins/mac-signing/README.md).
-Founder THR104seq612 permits source preparation only. The guide gives the exact
-nonsecret local `owner-session.sh inspect` command, the later bounded attended
-setup, current manager grant/build binding and separate live permission request.
-The installed job remains disabled; native owner/tools/isolation, Keychain/Apple
-operations and final signed bytes remain unverified. Source acceptance grants
-no live setup, enablement, upload or signing permission.
-The maintained setup requires private `agent/remoting` before the pinned
-launcher, complete typed isolation observations using exported `labelExpression`,
-and a hold unless at least1GiB free is independently known on both Mac volume
-and controller upload storage before the whole-file upload. Client caps do not
-establish server capacity. Current source continuation is TASK14353; historical
-task/SID records confer no execution authority.
+For HappyRanch Mac releases, follow the
+[Mac release handbook](runbooks/mac-release-handbook.md): GitHub Actions builds,
+and the owner signs locally. No Jenkins app-build job is installed; the proposed
+build-only job is unavailable. The Jenkins signing job stays disabled, and its
+[attended signing source](../ci/jenkins/mac-signing/README.md) is superseded
+historical reference, not an operating route. The ordinary job helper below
+does not authorize Mac signing or a new job.
 
 This standalone Python helper operates an already-authorized **existing** Freestyle or Pipeline job on Unix (Linux/macOS). It requires standard-library Python 3.12–3.14 and an owner-controlled receipt/output directory. The same ordinary Jenkins APIs work for either job type; no Jenkinsfile, custom parameters, three-hook template, runtime adapter, node setup or plugin installation is needed.
 
