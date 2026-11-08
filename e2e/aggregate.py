@@ -17,6 +17,8 @@ MANIFEST = json.loads(Path(__file__).with_name("manifest.json").read_text())
 def validate_report(path: Path, expected: dict, *, signal_name: str | None = None) -> tuple[int, int]:
     root = ET.parse(path).getroot()
     suites = root.findall("testsuite")
+    if any(child.tag != "testsuite" for child in root):
+        raise ValueError("Unexpected report content")
     expected_suites = {"diagnostic"} if signal_name else {"product", "harness"}
     if root.tag != "testsuites" or Counter(s.get("name") for s in suites) != Counter(expected_suites):
         raise ValueError("Missing, duplicate or unexpected suites")
@@ -30,6 +32,8 @@ def validate_report(path: Path, expected: dict, *, signal_name: str | None = Non
             raise ValueError("Missing, duplicate or unexpected report identity")
         if {p.get("name"): p.get("value") for p in props} != expected:
             raise ValueError("Report Python/source/event/run/exercise mismatch")
+        if any(child.tag not in {"properties", "testcase"} for child in suite):
+            raise ValueError("Unexpected suite content")
         cases = suite.findall("testcase")
         names = [case.get("name") for case in cases]
         if not cases or len(names) != len(set(names)):
@@ -72,7 +76,7 @@ def main() -> int:
         identity = daily_admission(Path(__file__).resolve().parents[1])
         if identity["source_sha"] != args.source or identity["event"] != args.event:
             raise ValueError("Requested source/event differs from Actions checkout")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - record every ordinary case/report failure
         errors.append(str(exc))
     if args.matrix_result != "success" or args.cancellation_result != "success":
         errors.append(f"Jobs: lanes={args.matrix_result}, diagnostics={args.cancellation_result}")
@@ -80,14 +84,14 @@ def main() -> int:
     reports += [("e2e-cancel-TERM", "3.12", "TERM"), ("e2e-cancel-INT", "3.14", "INT")]
     for artifact, version, signal_name in reports:
         try:
-            expected = dict(python=version, source_sha=args.source, event=args.event,
-                            run_id=identity["run_id"], run_attempt=identity["run_attempt"],
-                            exercise="cancellation" if signal_name else "baseline")
+            expected = {"python": version, "source_sha": args.source, "event": args.event,
+                            "run_id": identity["run_id"], "run_attempt": identity["run_attempt"],
+                            "exercise": "cancellation" if signal_name else "baseline"}
             p, d = validate_report(args.artifacts / artifact / "junit.xml", expected, signal_name=signal_name)
             product += p
             diagnostics += d
             print("PASS " + artifact)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - record every ordinary case/report failure
             errors.append(artifact + ": " + str(exc))
             print("FAIL " + artifact)
     status = "FAIL" if errors else "PASS"

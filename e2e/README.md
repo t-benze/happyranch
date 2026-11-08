@@ -1,6 +1,97 @@
 # Daily product E2E health
 
-## Current bounded originals and E05/E07 outcomes — TASK13118 / ROOT13112
+## Current reporting contract — slice 1 of 3 (THR-291 seq659)
+
+The standalone harness uses stdlib `xml.etree.ElementTree`, without pytest or
+new dependencies. Each Python lane writes `reports/junit.xml`: a `product` suite
+with exactly the 56 names in `e2e/manifest.json`, once each, and a `harness` suite
+for setup, controller/finalization, owned processes, registered ports, sockets
+and data cleanup. Assertion failures produce failures; unavailable prerequisites
+or unfinished cases produce errors. No skips or inferred success are allowed.
+Console output names every PASS/FAIL and totals. Reports are atomically replaced
+from finalizers, including ordinary exceptions; an absent report fails Health.
+
+`e2e/checks.py` owns the former aggregate content predicates. Each E04/prefix,
+E05 and E07 reader runs independently inside the lane before private data is
+deleted. A completion mark alone cannot pass a case. Controller/scenario
+snapshots and `completed.py` remain **private intermediate inputs** in slice 1;
+they are neither uploaded nor certified by Health. The launcher no longer
+publishes result/snapshot/member-hash/ownership/failure-category receipt bundles,
+validates redaction contexts, or applies publication byte/fact/depth budgets.
+Those removed export protocols in historical records below are superseded.
+Product output-cap assertions and original operational deadlines remain: baseline
+480s, other commands 240s, action cutoff 720s, cleanup at most 60s clipped at
+start+780s, total 900s. There is no separate 120s publication reserve.
+
+The existing safe E05→E07 continuation stays on the same runtime, using real
+pre-E05/C/N/D checkpoints, positive closure and the full original 50s remaining.
+An E05 failure remains red even if E07 passes. Unsafe dependent work produces
+errors without reset, replay, replacement runtime, extra allowance or retries.
+Broader case boundaries are slice 2 work. Known E05 browser-copy unavailability
+remains a failure; this reporting slice does not make E05 or full56 green.
+
+Launcher TERM on Python3.12 and INT on Python3.14 are separate `diagnostic`
+suites: `launcher.TERM` or `launcher.INT`, plus setup/process/port/socket/data
+checks. They require actual accepted callback, browser and live provider readiness,
+real pidfd signal delivery to the exact launcher, expected inner failure, and
+positive owned cleanup. The small readiness/result handoff stays private and is
+removed by the supervisor. Launcher interruption is not product cancellation or
+abrupt-restart coverage.
+
+Health downloads exactly `e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM` and
+`e2e-cancel-INT`, each containing `junit.xml`. It parses actual testcase children
+and requires both jobs successful, exactly 56 distinct expected product names
+per lane with no failures/errors/skips, both diagnostics and all setup/cleanup
+checks passed, and matching Python/source/event/run/attempt/exercise properties.
+It never reopens SQL, snapshots or completion ledgers. `GITHUB_STEP_SUMMARY`
+reports product112, diagnostics2, cleanup status and source/event/run errors.
+
+JUnit uploads use `if: always()` and `if-no-files-found: error`. Failure-only
+artifacts use `if: failure()` and explicit lane-root paths: `traces/*.zip`,
+`screenshots/*.png`, `logs/daemon.log`, `logs/controller.log`, `logs/harness.log`,
+`logs/setup-*.log`, plus diagnostic `logs/launcher.log`. Traces are standard
+Playwright `main.zip`/`threads.zip` with source capture disabled; screenshots use
+manifest names or `setup.png`/`launcher.png`. Collection failure is a harness
+error, never a fabricated screenshot/trace. A failure before browser startup
+can provide logs only. All artifacts use GitHub default retention; no override.
+No raw runtime, database, payload, configuration, token file, controller snapshot,
+`result.json`, `active.json`, `case-NN.json` or completion archive is uploaded.
+
+Only synthetic runtimes/credentials are admitted. Avoid logging token-bearing
+headers, bodies or argv. A private plain list retains known old/current bearer
+and invocation tokens; literal replacement sanitizes assertion messages, captured
+logs and standard ZIP member content before upload. It is not an export-context
+protocol. Byte/output assertions still use their original private observations.
+Real pinned-viewer readability, native failure capture and full product behavior
+are NOT RUN by source/static or synthetic JUnit checks; they require the existing
+authorized hosted venue, without a dependency/product/auth change.
+
+Daily `0 19 * * *` and existing main-only `workflow_dispatch`, `fail-fast:false`,
+locked dependencies and lint-only PR checks are unchanged. This source slice does
+not dispatch E2E. Required merge checks remain Source Boundary Lint and Web Lint
+(Node24), with independent review/scoped QA, normal hooks and manager guarded
+merge. Python units remain RETIRED; integration SKIPPED THR-243 seq42.
+Historical failures, protected proof holds, abrupt-restart and jobs-cap/Stop work
+remain unresolved. Slice 2 removes private state/completion publication; slice 3
+removes remaining browser/transport export collectors without losing assertions.
+
+<details>
+<summary>Historical implementation, case, failure and hold records</summary>
+
+All records below retain their original source attribution. Commands and
+launcher/aggregate publication obligations in these records are historical;
+the current reporting contract above replaces those surfaces. The 56 product
+assertions and all unresolved holds remain retained requirements.
+
+<details>
+<summary>Historical publisher/reader correction records (superseded by seq659)</summary>
+
+The following source/proof records retain their original attribution. Launcher
+publication, caps, upload and aggregate-certification instructions here are
+historical only. Controller/browser checks still used privately retain their
+product assertions; see the current reporting contract above.
+
+## Historical bounded originals and E05/E07 outcomes — TASK13118 / ROOT13112
 
 Founder THR291seq495 and manager step3 acceptance select test-only BrowserRelay
 original capture plus safe continuation on the SAME runtime. Playwright/Chromium,
@@ -759,15 +850,16 @@ context sanitation; old/native failures and unknown causes stay unchanged.
 
 The workflow starts the monotonic clock before checkout/tool setup. No budget exhaustion becomes a
 skip. Every enumerated variant must be present with PASS, and failed/missing
-matrix jobs fail the stable `Daily Product E2E Health` aggregate. The aggregate's
-bounded controls prove refusal of missing cells, skips, failed/missing variants, wrong
-SHA, failed jobs and failed cleanup; these controls are not product evidence.
+matrix jobs fail the stable `Daily Product E2E Health` aggregate. The former aggregate controls are historical only. Current Health reads JUnit;
+synthetic report checks do not prove product behavior.
 
 This launcher correction is source delivery only. The illustrative future
 combined375s estimate has105s nominal slack under480 only when global remaining
 time permits; no runtime fit, signal/timer/cleanup behavior or E04/E05 assertion
 validation has been observed. The baseline/Pause42 variants remain at their original boundaries; the E04 prefix below adds six. New deliberate
 defects, RED/restoration/GREEN and repetitions remain UNEXECUTED/unauthorized.
+
+</details>
 
 ## Accepted case record
 
@@ -799,6 +891,12 @@ protected auth/identity/product mutation is authorized by this harness. The
 parent must resolve any proof-control authority gap before dependent execution;
 an unrelated setup failure is never attributable RED. Keep evidence in this
 case record/PR rather than inventing a second proof framework.
+
+Historical case records below preserve their source, four-answer and failure
+attribution. References to uploaded JSON/receipts, publication caps, export
+reserves and aggregate content validation describe their original implementations;
+the current slice-1 contract above controls those surfaces. Product assertions,
+operational deadlines and held work remain binding.
 
 ### TASK-12643 accepted recovery case map (ROOT12610 / THR291)
 
@@ -1571,7 +1669,7 @@ Python3.12/3.14, with TERM3.12/INT3.14 launcher diagnostics at 19:00 UTC /
 executions failed; corrected behavior is pending. Historical TASK10532/run38035241095 at `afb46cbb6` supplies only the
 3.12/3.14 baseline and launcher cleanup, not current-head or daily evidence.
 
-## Admission controls (THR291seq247 / TASK-11897)
+## Historical admission control records (THR291seq247 / TASK-11897)
 
 `python e2e/aggregate.py --controls` exercises shipping admission and receipt
 validators with isolated synthetic Actions-shaped payloads/environment and git
@@ -2264,7 +2362,7 @@ cannot satisfy the case. The original retained POST is then forwarded once to
 boot B: actual409 `task_not_active`, cancelled true. Dead downstream EOF and the
 upstream response are distinct; no killed CLI response/exit is fabricated.
 
-### Active adopted-child reaping and completed-case retention (TASK12942)
+### Private adopted-child reaping and historical completed-case retention (TASK12942)
 
 Founder THR291seq434 and manager TASK12939 under sole ROOT12937 approve
 this linked correction. TASK12915's accepted package governs this source;
@@ -3072,3 +3170,5 @@ Native corrected GREEN, paused/restart/Resume/final transition and downstream
 jobs/threads/E07 behavior remain MISSING until authorized scheduled evidence.
 Finite actual-source controls establish only their exercised observer/producer
 boundaries, never full behavior or test-authoring PASS. No new E2E execution is released.
+
+</details>

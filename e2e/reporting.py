@@ -5,9 +5,9 @@ import os
 import time
 import xml.etree.ElementTree as ET
 import zipfile
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator
 
 HOUSEKEEPING = ("setup", "owned-processes", "ports", "sockets", "data")
 IDENTITY = ("python", "source_sha", "event", "run_id", "run_attempt", "exercise")
@@ -31,15 +31,15 @@ class Report:
 
     def expect(self, suite: str, names: list[str] | tuple[str, ...]) -> None:
         for name in names:
-            self.cases.setdefault((suite, name), dict(kind="error", message="Case did not finish; prerequisite or setup unavailable", seconds=0.0, pending=True))
+            self.cases.setdefault((suite, name), {"kind": "error", "message": "Case did not finish; prerequisite or setup unavailable", "seconds": 0.0, "pending": True})
 
     def record(self, suite: str, name: str, error: BaseException | None = None, *, seconds: float = 0.0) -> None:
         prior = self.cases.get((suite, name))
         # A later success must never erase an earlier failed assertion.
         if prior and not prior.get("pending") and prior["kind"]:
             return
-        self.cases[suite, name] = dict(kind=("failure" if isinstance(error, (AssertionError, ValueError)) else "error") if error else None,
-                                      message=str(error) if error else "", seconds=max(0.0, seconds))
+        self.cases[suite, name] = {"kind": ("failure" if isinstance(error, (AssertionError, ValueError)) else "error") if error else None,
+                                      "message": str(error) if error else "", "seconds": max(0.0, seconds)}
 
     @contextmanager
     def check(self, suite: str, name: str) -> Iterator[None]:

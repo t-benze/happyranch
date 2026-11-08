@@ -4,17 +4,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
-import time
-import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from owned import identity
-from run import daily_admission, validate_admission
 from reporting import HOUSEKEEPING, Report, scrub
+from run import daily_admission, validate_admission
 
 
 def validate(row: dict, source: str, python: str, signum: int) -> None:
@@ -25,6 +25,17 @@ def validate(row: dict, source: str, python: str, signum: int) -> None:
             or result["exercise"] != "cancellation" or result["status"] != "FAIL"
             or row["launcher_exit"] != 1):
         raise ValueError("cancellation source/cell/non-success mismatch")
+    if (result["action_deadline"] != result["started"] + 720
+            or result["hard_deadline"] != result["started"] + 900
+            or result["action_finished"] > result["action_deadline"]
+            or result["cleanup_deadline"] != min(result["action_finished"] + 60, result["started"] + 780)
+            or result["cleanup_finished"] >= result["cleanup_deadline"]):
+        raise ValueError("launcher operational deadline exceeded")
+    for phase in result["phases"]:
+        cap = 240  # All diagnostic commands, including its hold exercise.
+        if (phase["deadline"] != min(phase["entered"] + cap, result["action_deadline"])
+                or not result["started"] <= phase["entered"] <= phase["finished"] <= phase["deadline"]):
+            raise ValueError("diagnostic command operational deadline exceeded")
     sent = row["sent"]
     caught = result["signals"]
     if (sent["signal"] != signum or len(caught) != 1 or caught[0]["signal"] != signum
@@ -79,7 +90,7 @@ def main() -> int:
     (output / "logs").mkdir(exist_ok=True)
     source = Path(__file__).resolve().parents[1]
     version = "3.12" if args.signal == "TERM" else "3.14"
-    row = dict(exercise="cancellation", python=version)
+    row = {"exercise": "cancellation", "python": version}
     report = Report(row)
     report.expect("diagnostic", ["launcher." + args.signal, *HOUSEKEEPING])
     started = time.monotonic()
@@ -109,10 +120,10 @@ def main() -> int:
                 time.sleep(0.05)
             active = json.loads(ready.read_text())
             row["active"] = active
-            if active["launcher"] != dict(pid=launcher.pid, start=launcher_start):
+            if active["launcher"] != {"pid": launcher.pid, "start": launcher_start}:
                 raise RuntimeError("Launcher identity mismatch")
             identities = [active["launcher"], active["daemon"], active["controller"],
-                          dict(pid=active["provider"]["pid"], start=active["provider"]["pid_start"])]
+                          {"pid": active["provider"]["pid"], "start": active["provider"]["pid_start"]}]
             row["identities_live_at_signal"] = all(identity(p["pid"]) == p["start"] for p in identities)
             if not row["identities_live_at_signal"]:
                 raise RuntimeError("Owned work no longer active")
@@ -120,7 +131,7 @@ def main() -> int:
             try:
                 if identity(launcher.pid) != launcher_start:
                     raise RuntimeError("Launcher changed before signal")
-                row["sent"] = dict(signal=int(signum), at=time.monotonic(), pid=launcher.pid, start=launcher_start)
+                row["sent"] = {"signal": int(signum), "at": time.monotonic(), "pid": launcher.pid, "start": launcher_start}
                 signal.pidfd_send_signal(descriptor, signum)
             finally:
                 os.close(descriptor)
@@ -133,16 +144,16 @@ def main() -> int:
         row["total_seconds"] = time.monotonic() - started
         validate(row, row["source_sha"], version, int(signum))
         report.record("diagnostic", "launcher." + args.signal)
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001 - finalize reports and owned cleanup on interruption
         report.record("diagnostic", "launcher." + args.signal, exc)
     finally:
         # Exact-child fallback, within the original hard envelope; never claim
         # closure merely because the supervisor failed or a PID is missing.
         if launcher is not None and launcher.poll() is None and identity(launcher.pid) == launcher_start:
-            launcher.send_signal(signal.SIGTERM)
             try:
+                launcher.send_signal(signal.SIGTERM)
                 launcher.wait(timeout=max(0, min(180, started + 900 - time.monotonic())))
-            except subprocess.TimeoutExpired:
+            except (subprocess.TimeoutExpired, OSError):
                 report.record("diagnostic", "owned-processes", RuntimeError("Launcher cleanup remains unknown"))
         if private is not None and (private / "result.json").is_file():
             with report.check("diagnostic", "setup"):
@@ -162,6 +173,9 @@ def main() -> int:
             }
             for name, passed in conditions.items():
                 report.record("diagnostic", name, None if passed else RuntimeError("Launcher " + name + " cleanup failed or unknown"))
+        if "result" not in locals():
+            for name in HOUSEKEEPING:
+                report.record("diagnostic", name, RuntimeError("Launcher setup/cleanup result unavailable"))
         if private is not None:
             with report.check("diagnostic", "data"):
                 # Inner launcher console contains only named case outcomes.

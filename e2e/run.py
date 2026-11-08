@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Bounded disposable-runner entry with private checks and ordinary JUnit."""
 from __future__ import annotations
 
@@ -13,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from owned import Owned, identity
@@ -112,13 +112,19 @@ def daily_admission(source: Path) -> dict:
     tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=source, text=True).strip()
     if actual != sha or len(tree) != 40 or any(c not in "0123456789abcdef" for c in tree):
         raise RuntimeError("checkout differs from immutable Actions source or has invalid tree")
-    return dict(event=event_name, cron=event.get("schedule"), repository=repo,
-                workflow_ref=workflow_ref, workflow_sha=workflow_sha, run_id=run_id,
-                run_attempt=attempt, source_sha=sha, source_ref=ref, source_tree=tree)
+    return {"event": event_name, "cron": event.get("schedule"), "repository": repo,
+                "workflow_ref": workflow_ref, "workflow_sha": workflow_sha, "run_id": run_id,
+                "run_attempt": attempt, "source_sha": sha, "source_ref": ref, "source_tree": tree}
 
 def private_checks(root: Path, row: dict, report: Report) -> None:
     """Each old content reader runs independently, before owned data deletion."""
-    from checks import MANIFEST, validate_e04, validate_e05, validate_e07, validate_groups
+    from checks import (
+        MANIFEST,
+        validate_e04,
+        validate_e05,
+        validate_e07,
+        validate_groups,
+    )
 
     observations = json.loads((root / "raw/observations.json").read_text())
     directory = root / "raw"
@@ -134,7 +140,7 @@ def private_checks(root: Path, row: dict, report: Report) -> None:
             if group != "E04":
                 validate_groups(row, observations, group)
             reader()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - record every ordinary case/report failure
             error = exc
         for name in names:
             marked = row.get("variants", {}).get(name)
@@ -147,7 +153,7 @@ def private_checks(root: Path, row: dict, report: Report) -> None:
             raise AssertionError("Controller recorded action/finalization failures: " + str(observations["failures"]))
 
 
-def prepare_diagnostics(root: Path, output: Path, report: Report, check, *, failed: bool) -> None:
+def prepare_diagnostics(root: Path, output: Path, report: Report, check: Callable[[], None], *, failed: bool) -> None:
     """Only standard logs, PNGs and Playwright ZIPs leave private scratch."""
     for name in ("logs", "traces", "screenshots"):
         (output / name).mkdir(parents=True, exist_ok=True)
@@ -178,7 +184,7 @@ def main() -> int:
     output = args.artifacts.resolve()
     output.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((source / "e2e/manifest.json").read_text())
-    row = dict(exercise=args.exercise, signals=[], phases=[], cleanup={}, variants={})
+    row = {"exercise": args.exercise, "signals": [], "phases": [], "cleanup": {}, "variants": {}}
     report = Report(row)
     report.expect("harness", HOUSEKEEPING)
     if args.exercise == "baseline":
@@ -193,7 +199,7 @@ def main() -> int:
     handoff = args.handoff.resolve() if args.handoff else None
 
     def interrupted(signum: int, _frame: object) -> None:
-        row["signals"].append(dict(signal=signum, at=time.monotonic(), pid=os.getpid(), start=identity(os.getpid())))
+        row["signals"].append({"signal": signum, "at": time.monotonic(), "pid": os.getpid(), "start": identity(os.getpid())})
         raise TimeoutError("Operational deadline exhausted") if signum == signal.SIGALRM else RuntimeError(f"Launcher interrupted by signal {signum}")
 
     def command(name: str, argv: list[str], env: dict, cwd: Path = source) -> None:
@@ -204,7 +210,7 @@ def main() -> int:
         if name == "scenarios":
             argv = [*argv, "--deadline", str(end)]
         arm_deadline(end)
-        active_phase = dict(name=name, entered=begin, deadline=end, exit=None, interrupted=False)
+        active_phase = {"name": name, "entered": begin, "deadline": end, "exit": None, "interrupted": False}
         row["phases"].append(active_phase)
         process = None
         try:
@@ -219,8 +225,8 @@ def main() -> int:
                         owner.sample()
                         with owner.lock:
                             if owner.pids.get(witness["provider"]["pid"]) == witness["provider"]["pid_start"] and owner.units and owner.groups:
-                                active = dict(witness, launcher=dict(pid=os.getpid(), start=identity(os.getpid())),
-                                              owned=dict(identities=dict(owner.pids), units=sorted(owner.units), groups=sorted(owner.groups)), source_sha=row["source_sha"])
+                                active = dict(witness, launcher={"pid": os.getpid(), "start": identity(os.getpid())},
+                                              owned={"identities": dict(owner.pids), "units": sorted(owner.units), "groups": sorted(owner.groups)}, source_sha=row["source_sha"])
                                 temporary = handoff / "active.tmp"
                                 temporary.write_text(json.dumps(active))
                                 temporary.replace(handoff / "active.json")
@@ -238,6 +244,7 @@ def main() -> int:
     try:
         started = float(os.environ.get("E2E_STARTED_MONOTONIC", started))
         action_end, hard_end = started + 720, started + 900
+        row.update(started=started, action_deadline=action_end, hard_deadline=hard_end)
         if not 0 <= time.monotonic() - started < 720:
             raise RuntimeError("Invalid cleanup-inclusive clock")
         arm_deadline(action_end)
@@ -292,7 +299,7 @@ def main() -> int:
         command("web-build", [npm, "run", "build"], env, source / "web")
         setup_done = True
         command("scenarios", [python, "-I", str(source / "e2e/controller.py"), "--root", str(root), "--source", str(source), "--sha", row["source_sha"], "--exercise", args.exercise], env)
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001 - finalize reports and owned cleanup on interruption
         failure = exc
         report.record("harness", "launcher", exc)
     finally:
@@ -300,6 +307,7 @@ def main() -> int:
             signal.signal(sig, signal.SIG_IGN)
         row["action_finished"] = time.monotonic()
         cleanup_end = min(row["action_finished"] + 60, action_end + 60, hard_end)
+        row["cleanup_deadline"] = cleanup_end
         report.record("harness", "setup", None if setup_done else failure or RuntimeError("Setup did not finish"))
         try:
             arm_deadline(cleanup_end)
@@ -337,7 +345,7 @@ def main() -> int:
                     failed = failure is not None or any(case["kind"] and not case.get("pending") for case in report.cases.values())
                     with report.check("harness", "diagnostics"):
                         prepare_diagnostics(root, output, report, lambda: arm_deadline(cleanup_end), failed=failed)
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - finalize reports and owned cleanup on interruption
             report.record("harness", "finalization", exc)
         finally:
             # Data cleanup never depends on successful report/artifact collection.

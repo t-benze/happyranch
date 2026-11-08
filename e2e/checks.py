@@ -5,6 +5,7 @@ in slice 1; later slices replace their inputs without dropping product checks.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math

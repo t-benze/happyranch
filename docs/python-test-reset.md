@@ -1,5 +1,19 @@
 # Python test reset — THR-291 seq40
 
+Founder THR-291 seq659 slice 1 uses standard per-case JUnit and explicit
+failure-only trace/screenshot/log artifacts with GitHub default retention.
+Both lanes must report the exact56 once each, both launcher diagnostics and all
+setup/cleanup checks must pass. Health checks reports and identity only; former
+aggregate product predicates run privately in-lane before data deletion.
+Controller snapshots/completed ledgers remain private until slice2; no launcher
+receipt/hash/ownership export, redaction-context protocol or publication budgets
+remain. Operational480/240/720/60/900 bounds and product output caps stay.
+JUnit always uploads; missing reports fail. Known synthetic tokens receive literal
+scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-1-of-3-thr-291-seq659).
+Historical records below preserve actual failures and holds; their removed
+launcher/export/aggregate instructions are superseded, never current acceptance.
+
+
 Founder seq40 authorizes deletion of the entire former Python unit selection
 before replacement. It supersedes selective retirement, replacement-before-deletion
 and a small retained contract tier. This is accepted loss of test source, not
@@ -96,12 +110,11 @@ historical evidence at their own source, not daily/final-head verification.
 The bounded launcher uses one baseline-scenario cap480 (other five commands
 and cancellation scenarios240), clipped by original start+720 and shared by
 controller/watchdog. Cleanup at most60 includes owned process/unit/group,
-port/socket/data closure and sanitized evidence staging, clipped by original
-start+780. Export at most120 from its actual entry is clipped by original
-start+900, retains a bounded incomplete FAIL receipt and grants no extra teardown
-or action time. Hosted upload shares the remaining900s/15-minute envelope;
-local timers do not guarantee upload success. Timing evidence is required by
-both daily consumers. These source bounds and480−375=105 nominal planning slack
+port/socket/data closure and private product checks, clipped by original
+start+780. Standard diagnostics and JUnit use the remaining original900s envelope;
+there is no separate publication phase, bounded FAIL receipt or timing-export
+certification. Hosted upload still shares the15-minute job envelope. These source
+bounds and480−375=105 nominal planning slack
 are not measured fit or observed signal/cleanup/export behavior. The42 baseline/Pause variants remain at their original boundaries;
 the E04 prefix below adds six. Cadence and the600 target remain unchanged. See [the timing contract](../e2e/README.md).
 Engineering_manager owns daily failure/missing-evidence triage through existing
