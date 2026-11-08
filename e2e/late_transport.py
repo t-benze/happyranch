@@ -13,7 +13,6 @@ import select
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,24 +49,11 @@ def process_record(pid: int) -> dict:
                 cgroup=Path(f"/proc/{pid}/cgroup").read_text(), at=time.monotonic())
 
 
-def publish_launch(path: Path, record: dict) -> None:
-    """A killed writer leaves the last complete private record in place."""
-    fd, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
-    temporary = Path(name)  # mkstemp creates mode0600, before any private byte.
-    try:
-        with os.fdopen(fd, "w") as file:
-            file.write(json.dumps(record))
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def provider_command(instruction: dict, binding: dict, stream: Any, connection: socket.socket) -> dict:
     """The genuine provider writes its own payload and acknowledges before wait."""
-    from thread_provider import redaction_context
     from provider import remaining
     root = Path(os.environ["E2E_ROOT"])
-    secrets = redaction_context(root, None)
+    secrets = set(json.loads((root / "known-tokens.json").read_text()))
     manifest = json.loads((root / "coord/manifest.json").read_text())
     callback = Path(manifest["callback"])
     if digest(callback.read_bytes()) != manifest["callback_sha256"]:
@@ -90,19 +76,14 @@ def provider_command(instruction: dict, binding: dict, stream: Any, connection: 
     if time.monotonic() >= end:
         raise RuntimeError("E07 provider launch deadline")
     entered = time.monotonic()
-    launch_path = root / "coord" / ("e07-launch-" + binding["session"] + ".json")
     child = subprocess.Popen(argv, cwd=root, env=dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(home)),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    publish_launch(launch_path, dict(action=instruction["action"], provider=binding,
-                                     child_pid=child.pid, entered=entered, incomplete=True))
-    # Durable launch record precedes both acknowledgement and communicate. On
-    # cancellation it survives even when neither process can write a final row.
+    # The original socket acknowledgement carries the actual child observation.
     launch = dict(action=instruction["action"], provider=binding, child=process_record(child.pid),
                   argv=argv, payload=payload, payload_sha256=digest(raw), payload_bytes=len(raw),
                   callback_sha256=manifest["callback_sha256"], source_sha=manifest["revision"],
                   python=sys.executable, entered=entered, execution_deadline=end,
                   acknowledged=time.monotonic())
-    publish_launch(launch_path, launch)
     connection.settimeout(remaining(root, end=instruction["ack_deadline"]))
     stream.write((json.dumps(dict(e07_launch=launch)) + "\n").encode())
     connection.settimeout(remaining(root, end=instruction["ack_deadline"]))

@@ -1149,6 +1149,14 @@ architecture §2
 
 ## Deterministic integration executables
 
+Product E2E (THR-291 seq659 slice2) keeps real provider/callback CLI execution,
+source/argv/PID-generation joins and owned process/port/data cleanup. Product
+checks consume local in-memory observations; controller SQL/state/completed-case
+publication and optional ownership diagnostics are retired. Only JUnit outcomes
+and private process pins return to the launcher. Browser/transport/thread-provider
+collectors remain for slice3; synthetic tokens never enter uploaded logs/reports.
+See [the E2E contract](../../e2e/README.md). This changes no executor permissions.
+
 All retained pytest integration selections, including marked daemon/platform/remote-access siblings
 and the hosted Codex callback smoke, enter `tests/helpers/integration_parent.py`
 before importing pytest/runtime. The test-only fence retains production registry

@@ -116,44 +116,16 @@ def daily_admission(source: Path) -> dict:
                 "workflow_ref": workflow_ref, "workflow_sha": workflow_sha, "run_id": run_id,
                 "run_attempt": attempt, "source_sha": sha, "source_ref": ref, "source_tree": tree}
 
-def private_checks(root: Path, row: dict, report: Report) -> None:
-    """Each old content reader runs independently, before owned data deletion."""
-    from checks import (
-        MANIFEST,
-        validate_e04,
-        validate_e05,
-        validate_e07,
-        validate_groups,
-    )
-
-    observations = json.loads((root / "raw/observations.json").read_text())
-    directory = root / "raw"
-    readers = (
-        ("E04", MANIFEST["variants"][:48], lambda: validate_e04(row, observations, json.loads((directory / "browser-events.json").read_text()), directory)),
-        ("E05", MANIFEST["variants"][48:53], lambda: validate_e05(row, observations, directory)),
-        ("E07", MANIFEST["variants"][53:], lambda: validate_e07(row, observations, directory)),
-    )
-    with report.check("harness", "variant-inventory"):
-        if set(row.get("variants", {})) - set(MANIFEST["variants"]):
-            raise AssertionError("Unexpected product variant")
-    for group, names, reader in readers:
-        started = time.monotonic()
-        error = None
-        try:
-            if group != "E04":
-                validate_groups(row, observations, group)
-            reader()
-        except Exception as exc:  # noqa: BLE001 - record every ordinary case/report failure
-            error = exc
-        for name in names:
-            marked = row.get("variants", {}).get(name)
-            cause = error
-            if not marked or marked.get("status") != "PASS":
-                cause = AssertionError(str(marked.get("error", "Product assertion failed"))) if marked else RuntimeError("Case did not finish; prerequisite unavailable")
-            report.record("product", name, cause, seconds=(time.monotonic() - started) / len(names))
-    with report.check("harness", "controller"):
-        if observations["failures"]:
-            raise AssertionError("Controller recorded action/finalization failures: " + str(observations["failures"]))
+def check_cleanup_pins(pins: list[dict], cleanup: dict, report: Report) -> None:
+    """Owned uses integer PID keys; normalize once at this process boundary."""
+    identities = {int(pid): start for pid, start in cleanup["identities"].items()}
+    failed = False
+    for pin in pins:
+        if identities.get(pin["pid"]) != pin["start"]:
+            report.record("product", pin["variant"], AssertionError("Outer owned census generation mismatch"))
+            failed = True
+    if failed:
+        raise AssertionError("Outer owned census join failed")
 
 
 def prepare_diagnostics(root: Path, output: Path, report: Report, check: Callable[[], None], *, failed: bool) -> None:
@@ -286,7 +258,7 @@ def main() -> int:
                "LANG": "C.UTF-8", "E2E_ROOT": str(root), "CI": "1", "HAPPYRANCH_DAEMON_HOME": str(root / "daemon"),
                "HAPPYRANCH_DAEMON_PORT": "0", "HAPPYRANCH_WEB_DIST": str(source / "web/dist"),
                "UV_PROJECT_ENVIRONMENT": str(root / "venv"), "UV_PYTHON_DOWNLOADS": "never", "PLAYWRIGHT_BROWSERS_PATH": str(root / "browsers"),
-               "E2E_SOURCE_TREE": row["source_tree"], "E2E_RUN_ID": row["run_id"], "E2E_RUN_ATTEMPT": row["run_attempt"], "E2E_PYTHON": version}
+               "E2E_EVENT": row["event"], "E2E_SOURCE_TREE": row["source_tree"], "E2E_RUN_ID": row["run_id"], "E2E_RUN_ATTEMPT": row["run_attempt"], "E2E_PYTHON": version}
         for key in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
             if key in os.environ:
                 env[key] = os.environ[key]
@@ -336,9 +308,10 @@ def main() -> int:
                     if token.is_file():
                         report.tokens.add(token.read_text().strip())
                 if args.exercise == "baseline":
-                    with report.check("harness", "private-checks"):
-                        row.update(json.loads((root / "scenario.json").read_text()))
-                        private_checks(root, row, report)
+                    with report.check("harness", "controller-report"):
+                        report.merge(root / "controller-junit.xml", manifest["variants"])
+                    with report.check("harness", "cleanup-identities"):
+                        check_cleanup_pins(json.loads((root / "cleanup-pins.json").read_text()), row["cleanup"], report)
                 with report.check("harness", "ports"):
                     ports = json.loads((root / "ports.json").read_text())
                     if not ports or any(type(port) is not int or not 0 < port < 65536 for port in ports):

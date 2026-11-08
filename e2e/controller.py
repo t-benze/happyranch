@@ -5,19 +5,16 @@ import argparse
 import hashlib
 import http.client
 import json
-import math
 import os
 import shlex
 import shutil
 import signal
-import stat
 import socket
 import select
 import threading
 import subprocess
 import sys
 import time
-import traceback
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Callable
@@ -25,123 +22,13 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from oracles import Store, require
 from transport import Relay
-import completed
+from reporting import Report
+
+MANIFEST = json.loads(Path(__file__).with_name("manifest.json").read_text())
 
 
 def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _failure_stage(stage: object) -> str:
-    if type(stage) is not str:
-        return "other"
-    for category, names in (
-        ("phase", ("phase",)), ("bounded", ("bounded",)),
-        ("restore", ("phase-state-restore", "bound-state-restore", "timer-restore")),
-        ("context", ("redaction-context-unavailable", "context")),
-        ("action", ("controller-action",)),
-        ("teardown", ("controller-close", "thread-proxy-release", "late-transport-release",
-                      "provider-observer-join", "provider-observer-incomplete", "browser-teardown",
-                      "thread-proxy-close", "thread-proxy-closure", "late-transport-close", "late-transport-closure",
-                      "peer-socket-shutdown", "peer-stream-close", "peer-socket-close", "provider-server-close",
-                      "provider-socket-unlink", "cli-relay-close", "daemon-term", "daemon-wait", "daemon-log-close")),
-        ("evidence", ("controller-evidence", "stage-main-browser-trace", "stage-thread-browser-trace",
-                      "stage-scenario", "stage-browser-trace", "stage-primary-error", "export-e07",
-                      "export-launch-witness", "export-observations", "export-scenario", "export-browser-trace")),
-        ("browser", ("original-body-primary", "original-body-outcome", "native-page-close/crash",
-                     "native-observation", "native-observation-secondary", "native-tracker-detach",
-                     "bridge-wakeup-detach", "bridge-task-cancel", "group-local-detach", "terminal-stop-enforcement",
-                     "terminal-stop-exit", "terminal-stop-cancel", "terminal-stop", "terminal-tracker-detach",
-                     "browser-final-observation", "thread-context-close", "browser-context-close", "browser-close",
-                     "browser-terminal-stop", "browser-tracker-detach")),
-    ):
-        if stage in names:
-            return category
-    return "other"
-
-
-def _failure_error(error: BaseException) -> str:
-    """Closed subclass precedence; never inspect text, names, args or chains."""
-    for kinds, category in (
-        (UnicodeError, "unicode"), (TimeoutError, "timeout"),
-        ((KeyboardInterrupt, SystemExit, GeneratorExit, InterruptedError), "interruption"),
-        (AssertionError, "assertion"), (ValueError, "value"),
-        (OSError, "io"), (RuntimeError, "runtime"),
-    ):
-        if isinstance(error, kinds):
-            return category
-    return "other"
-
-
-def _failure_slot(stage: str, error: BaseException) -> tuple[str, str, float] | None:
-    at = time.monotonic()
-    if type(at) not in (int, float) or not 0 <= at <= 9007199254740991 or not math.isfinite(at):
-        return None
-    return stage, _failure_error(error), at
-
-
-def _failure_object(slot: tuple | None) -> dict | None:
-    return dict(zip(("stage", "error", "at"), slot)) if slot is not None else None
-
-
-def _failure_source(value: object) -> bool:
-    return type(value) is str and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
-
-
-@contextmanager
-def _failure_directories(root: Path, check: Callable[[], None], *, coord: bool = True) -> Any:
-    """Pin literal no-follow ancestors; no repair or racing-rename guarantee."""
-    spelling = str(root)
-    parts = spelling.split("/")[1:]
-    if not spelling.startswith("/") or not parts or any(p in ("", ".", "..") for p in parts):
-        raise ValueError("invalid diagnostic root")
-    descriptors = []
-    links = []
-
-    def verify() -> None:
-        for parent, name, descriptor, original, private in links:
-            check()
-            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            opened = os.fstat(descriptor)
-            if (not stat.S_ISDIR(named.st_mode) or not stat.S_ISDIR(opened.st_mode)
-                    or (named.st_dev, named.st_ino) != (original.st_dev, original.st_ino)
-                    or (opened.st_dev, opened.st_ino) != (original.st_dev, original.st_ino)
-                    or (private and (named.st_uid != os.geteuid() or opened.st_uid != os.geteuid()
-                                     or stat.S_IMODE(named.st_mode) != 0o700
-                                     or stat.S_IMODE(opened.st_mode) != 0o700))):
-                raise ValueError("diagnostic directory identity changed")
-            check()
-
-    try:
-        check()
-        current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        descriptors.append(current)
-        check()
-        for index, name in enumerate(parts + (["coord"] if coord else [])):
-            check()
-            named = os.stat(name, dir_fd=current, follow_symlinks=False)
-            if not stat.S_ISDIR(named.st_mode):
-                raise ValueError("aliased diagnostic directory")
-            check()
-            descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
-            descriptors.append(descriptor)
-            info = os.fstat(descriptor)
-            if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
-                raise ValueError("diagnostic directory changed before open")
-            links.append((current, name, descriptor, info, index >= len(parts) - 1))
-            current = descriptor
-            verify()
-        yield current, verify
-        verify()
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
-
-
-def _failure_file(info: os.stat_result) -> None:
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
-        raise ValueError("unsafe diagnostic file")
 
 
 class Controller:
@@ -161,19 +48,7 @@ class Controller:
         self._final_attempt = None
         self._final_attempt_cause = None
         self._failure_raw: dict[str, tuple] = {}
-        self._failure_slots: dict[str, tuple] = {}
-        self._failure_check: dict[str, tuple] = {}
-        self._failure_writer_owner = threading.get_ident()
-        self._diagnostic_outer_end = self.deadline
-        self._diagnostic_snapshot: dict[str, Any] = {}
-        self._diagnostic_recorder_active = False
-        self._diagnostic_alarm_code = getattr(args, "_diagnostic_alarm_code", None)
-        self._failure_writer_active = False
-        self._failure_publication_state = "not_attempted"
-        self._failure_publication_failed = False
-        self._failure_published: tuple | None = None
         self.observer_join: dict = dict(attempted=False, reason="nonterminal")
-        self.redaction_ready = False
         self.boots = []
         self.env = dict(os.environ, E2E_SCENARIO_DEADLINE=str(args.deadline))
         self.publish_end()
@@ -193,7 +68,7 @@ class Controller:
         self.browser = None
         self.browser_relay = None
         self.groups = {name: dict(state='not_started', begin=None, end=None, first_error_ref=None,
-                                 variants=[v for v in completed.VARIANTS if v.startswith(name+'.')], checkpoint_ref=None, admission_ref=None)
+                                 variants=[v for v in MANIFEST["variants"] if v.startswith(name+'.')], checkpoint_ref=None, admission_ref=None)
                        for name in ('E05','E07')}
         self.interrupted = False
         self.e05_checkpoint = None
@@ -208,12 +83,13 @@ class Controller:
         self.peer_connections: list[tuple] = []
         self.payloads: dict[str, dict] = {}
         self.results: dict[str, dict] = {}
-        self.completed_identity = dict(source_sha=self.revision,
-            source_tree=os.environ.get("E2E_SOURCE_TREE"), run_id=os.environ.get("E2E_RUN_ID"),
-            run_attempt=os.environ.get("E2E_RUN_ATTEMPT"), python=os.environ.get("E2E_PYTHON"),
-            exercise=args.exercise)
-        self.completed = dict(schema=1, identity=self.completed_identity, cases=[])
-        self.completed_files: dict[str, bytes] = {}
+        self.report = Report(dict(source_sha=self.revision, python=os.environ.get("E2E_PYTHON"),
+            event=os.environ.get("E2E_EVENT"), run_id=os.environ.get("E2E_RUN_ID"),
+            run_attempt=os.environ.get("E2E_RUN_ATTEMPT"), exercise=self.exercise), self.secrets)
+        if self.exercise == "baseline":
+            self.report.expect("product", MANIFEST["variants"])
+        self.cleanup_pins: list[dict] = []
+        self.e07_prefix: dict = {}
         self.commands: list[dict] = []
         self.http: list[dict] = []
         self.durable: list[dict] = []
@@ -261,30 +137,10 @@ class Controller:
             temporary.replace(self.root / "coord/redaction-context.json")
 
     def capture_thread_secrets(self) -> None:
-        if not self.threads_active:
-            return
-        try:
-            tokens = [row["invocation_token"] for store in self.stores.values()
-                      for row in store.query("SELECT invocation_token FROM thread_invocations")]
-            self.remember_thread_secrets(tokens)
-        except BaseException as capture_error:
-            # Keep the original [] attempt and its exception precedence. This
-            # diagnostic slot says nothing about successful invalidation.
-            try:
-                (self.root / "coord/redaction-context.json").write_text("[]")
-            except BaseException:
-                invalidation_failed = True
-                try:
-                    self._latch_capture_failure(capture_error)
-                except BaseException:
-                    pass
-                raise
-            invalidation_failed = False
-            try:
-                self._latch_capture_failure(capture_error)
-            except BaseException:
-                pass
-            raise
+        if self.threads_active:
+            self.remember_thread_secrets([row["invocation_token"] for store in self.stores.values()
+                for row in store.query("SELECT invocation_token FROM thread_invocations")])
+
 
     def provider_cli(self, start: dict, action: str, **arguments: Any) -> dict:
         from owned import identity
@@ -919,278 +775,55 @@ class Controller:
         return body
 
     def mark(self, variant: str, evidence: dict | None = None) -> None:
-        require(variant not in self.results, "duplicate variant result", variant)
-        result = dict(status="PASS", evidence=evidence or {}, at=time.monotonic())
-        # No raw result, bearer, token, log, body, path or exception string is
-        # copied into incremental evidence. Future secrets cannot invalidate
-        # these closed counts/identities. Full content proof remains separate.
-        sequence = len(self.completed["cases"]) + 1
-        index = completed.VARIANTS.index(variant)
-        observation = dict(schema=1, identity=self.completed_identity, variant=variant,
-            sequence=sequence, manifest_index=index, at=result["at"],
-            counts=dict(http=len(self.http), commands=len(self.commands), starts=len(self.starts),
-                        durable=len(self.durable), evidence_fields=len(result["evidence"])))
-        data = completed.encode(observation)
-        name = f"case-{sequence:02d}.json"
-        row = dict(variant=variant, sequence=sequence, manifest_index=index, at=result["at"],
-                   reported_status="PASS", evidence=dict(path=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
-        candidate = dict(self.completed, cases=[*self.completed["cases"], row])
-        files = dict(self.completed_files, **{name: data})
-        completed.validate(candidate, self.completed_identity, files)
-        previous = completed.encode(self.completed) if self.completed["cases"] else None
-        completed.publish(self.root / "coord", name, data)
-        completed.publish(self.root / "coord", "completed-cases.json", completed.encode(candidate), previous=previous)
-        self.completed, self.completed_files = candidate, files
-        self.results[variant] = result
+        require(variant in MANIFEST["variants"] and variant not in self.results, "invalid or duplicate variant result")
+        self.results[variant] = dict(status="PASS", evidence=evidence or {}, at=time.monotonic())
+        self.report.record("product", variant)
 
-    def _latch_capture_failure(self, error: BaseException) -> None:
-        try:
-            slot = _failure_slot("context", error)
-            if slot is not None:
-                self._failure_slots.setdefault("context_capture", slot)
-        except BaseException:
-            pass  # Diagnostic interruption must not replace capture/invalidation.
 
     def record_error(self, stage: str, error: BaseException) -> int:
-        # Select actual object/traceback before time, legacy diagnostics or I/O.
-        # Literal-key setdefault prevents a nested callback replacing the winner.
-        candidate = (error, error.__traceback__, _failure_stage(stage))
-        winner = self._failure_raw.setdefault("first", candidate)
+        winner = self._failure_raw.setdefault("first", (error, error.__traceback__, stage))
         self.primary_error, self.primary_traceback = winner[:2]
-        prior_recording = self._diagnostic_recorder_active
-        if prior_recording:
-            self._diagnostic_snapshot["refused"] = True
-        self._diagnostic_recorder_active = True
+        index = len(self.failures)
+        self.failures.append(dict(stage=stage, error=type(error).__name__, at=time.monotonic()))
+        if self._final_attempt is not None:
+            self._final_attempt['failure_refs'].append(index)
+            if self._final_attempt_cause is None:
+                self._final_attempt_cause = error
+            elif self._final_attempt_cause is not error:
+                self._final_attempt['same_cause'] = False
+        return index
+
+    @contextmanager
+    def case(self, variant: str, safe: Callable[[], None]) -> Any:
+        """Continue only after an independent no-effects observation succeeds."""
         try:
-            self._snapshot_first_error(winner, candidate, sys._getframe(1).f_code)
-            try:
-                slot = _failure_slot(winner[2], winner[0])
-                if slot is not None:
-                    self._failure_slots.setdefault("first_observed", slot)
-            except BaseException:
-                pass  # Raw winner is authoritative even if category completion fails.
-            index = len(self.failures)
-            self.failures.append(dict(stage=stage, error=type(error).__name__, at=time.monotonic()))
-            if self._final_attempt is not None:
-                self._final_attempt['failure_refs'].append(index)
-                if self._final_attempt_cause is None:
-                    self._final_attempt_cause = error
-                elif self._final_attempt_cause is not error:
-                    self._final_attempt['same_cause'] = False
-            return index
-        finally:
-            self._diagnostic_recorder_active = prior_recording
+            yield
+        except Exception as exc:
+            self.report.record("product", variant, exc)
+            if isinstance(exc, TimeoutError) or self.interrupted or (self.browser and self.browser.poisoned):
+                raise
+            safe()  # Failure here stops dependent mutations; no reset or retry.
+            self.results[variant] = dict(status="FAIL", evidence={}, at=time.monotonic())
+            self.report.record("harness", "case-failure:" + variant, exc)
 
-    def _snapshot_first_error(self, winner: tuple, candidate: tuple, caller: Any) -> None:
-        """Memory only; a missing/unfinished creator claim is never repaired."""
-        state = self._diagnostic_snapshot
-        if winner is not candidate:
-            if "complete" not in state:
-                state["refused"] = True  # Includes reentry before creator reservation.
-            return
-        if threading.get_ident() != self._failure_writer_owner or state:
-            state["refused"] = True
-            return
-        claim = (winner, object())
-        if state.setdefault("claim", claim) is not claim:
-            state["refused"] = True
-            return
+    def run_group(self, names: list[str], action: Callable[[], None], *, ready: bool = True) -> bool:
+        if not ready:
+            for name in names:
+                self.report.record("product", name, RuntimeError("Prerequisite ERROR: earlier stateful group did not close"))
+            return False
         try:
-            end = self._diagnostic_outer_end
-            if (type(end) not in (int, float) or not math.isfinite(end)
-                    or type(self.deadline) is not type(end) or self.deadline != end
-                    or time.monotonic() >= end):
-                state["refused"] = True
-                return
-            bounds = self._diagnostic_bounds()
-            observed = time.monotonic()
-            if observed >= end:
-                state["refused"] = True
-                return
-            if bounds is None:
-                owners, ties, first_state = 0, 0, "U"
-            else:
-                minimum, owners, ties = bounds
-                first_state = "P" if observed < minimum else "E"
-            codes = {
-                Controller.remaining.__code__: "RM", Controller.phase.__wrapped__.__code__: "PH",
-                Controller.bounded.__wrapped__.__code__: "BD", Controller._timer_sync.__code__: "TS",
-                Controller.publish_end.__code__: "WE", Controller.prepare_redaction.__code__: "RD",
-                Controller.capture_thread_secrets.__code__: "CS", Controller.remember_thread_secrets.__code__: "RS",
-                Controller.close.__code__: "CL", Controller.evidence.__code__: "EV",
-                main.__code__: "MN",
-            }
-            if type(self._diagnostic_alarm_code) is type(main.__code__):
-                codes[self._diagnostic_alarm_code] = "AL"
-            node, previous, leaf = winner[1], None, None
-            for _ in range(32):
-                if node is None:
-                    break
-                previous, leaf = leaf, node.tb_frame.f_code
-                node = node.tb_next
-            origin = (codes.get(previous if leaf is require.__code__ else leaf, "UN")
-                      if node is None and leaf is not None else "UN")
-            stages = dict(phase="PH", bounded="BD", restore="RS", context="CT", action="AC",
-                          teardown="TD", evidence="EV", browser="BR", other="OT")
-            restoration = "P" if (
-                (winner[2] == "phase" and caller is Controller.phase.__wrapped__.__code__)
-                or (winner[2] == "bounded" and caller is Controller.bounded.__wrapped__.__code__)
-            ) else "A"
-            labels = (stages[winner[2]], origin, f"{owners:02X}", f"{ties:02X}", restoration, first_state)
-            # Only ORIGINAL G admits reporting. Expired inner first facts never
-            # renew work, and an unfinished creator claim is never repaired.
-            if (state.get("refused") or state.get("claim") is not claim
-                    or self._failure_raw.get("first") is not winner
-                    or threading.get_ident() != self._failure_writer_owner
-                    or type(self.deadline) is not type(end) or self.deadline != end
-                    or time.monotonic() >= end):
-                state["refused"] = True
-                return
-            state["complete"] = (claim, winner, winner[1], labels)
-        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
-            state["refused"] = True
-        # Real alarms/RuntimeError/KeyboardInterrupt/SystemExit escape. Historical
-        # category handling below is unchanged; it grants no diagnostic retry.
-
-    def _diagnostic_bounds(self) -> tuple[float, int, int] | None:
-        """Complete bounded owner read; malformed facts have no known subminimum."""
-        absent = object()
-        active = [(1, self.deadline)]
-        for bit, value in ((2, getattr(self, "case_deadline", absent)),
-                           (4, getattr(self.local_bounds, "end", absent)),
-                           (8, getattr(self, "observation_end", absent))):
-            if value is not absent:
-                active.append((bit, value))
-        inherited = self.inherited_alarm
-        phases = self.timer_phases
-        if type(phases) is not list or len(phases) > 16:
-            return None
-        phase_timers = []
-        malformed = type(inherited) not in (int, float)
-        if not malformed and inherited != float("inf"):
-            active.append((16, inherited))
-        for phase in phases:
-            if (type(phase) is not tuple or len(phase) != 2 or type(phase[0]) is not str
-                    or phase[0] not in ("python", "native") or type(phase[1]) not in (int, float)
-                    or not math.isfinite(phase[1])):
-                malformed = True
-            else:
-                phase_timers.append((32 if phase[0] == "python" else 64, phase[1]))
-        if malformed or any(type(value) not in (int, float) or not math.isfinite(value) for _, value in active):
-            return None
-        work_end = min(value for _, value in active)
-        timers = active + phase_timers
-        timer_end = min(value for _, value in timers)
-        owners = sum(bit for bit, value in active if value == work_end)
-        ties = 0
-        for bit, value in timers:
-            if value == timer_end:
-                ties |= bit
-        return min(work_end, timer_end), owners, ties
-
-    def _stage_failure_categories(self) -> None:
-        if (threading.get_ident() != self._failure_writer_owner or self._failure_writer_active
-                or self._failure_publication_failed):
-            return
-        self._failure_writer_active = True
-        try:
-            def check(*, initial: bool = False) -> None:
-                exhausted = time.monotonic() >= self.effective_end()
-                if (initial and claim is not None and claim[0] is winner and claim[1] is nonce
-                        and self._failure_raw.get("first") is winner):
-                    category = _failure_error(winner[0])
-                    if type(exhausted) is bool and self._failure_raw.get("first") is winner:
-                        self._failure_check.setdefault("observation", (claim, winner, category, exhausted))
-                if exhausted:
-                    raise TimeoutError("diagnostic work deadline")
-
-            # Claim before the first check prepared with this actual raw winner.
-            # A later invocation cannot complete an interrupted winning nonce.
-            winner = self._failure_raw.get("first")
-            nonce = object()
-            claim = self._failure_check.setdefault("claim", (winner, nonce)) if winner is not None else None
-            check(initial=True)
-            slots = (self._failure_slots.get("first_observed"), self._failure_slots.get("context_capture"))
-            if self._failure_published == slots:
-                self._failure_publication_state = "skipped"
-                return
-            if not _failure_source(self.revision):
-                raise ValueError("diagnostic source unavailable")
-            envelope = dict(schema=1, source_sha=self.revision,
-                            first_observed=_failure_object(slots[0]), context_capture=_failure_object(slots[1]))
-            check()
-            data = json.dumps(envelope, allow_nan=False, separators=(",", ":")).encode("utf-8", errors="strict")
-            check()
-            if len(data) > 4096:
-                raise ValueError("diagnostic snapshot overflow")
-            with _failure_directories(self.root, check) as (directory, verify):
-                final, pending = "failure-categories.json", ".failure-categories.pending"
-
-                def final_info() -> os.stat_result | None:
-                    check()
-                    try:
-                        info = os.stat(final, dir_fd=directory, follow_symlinks=False)
-                    except FileNotFoundError:
-                        check()
-                        return None
-                    _failure_file(info)
-                    check()
-                    return info
-
-                previous = final_info()
-                check()
-                try:
-                    os.stat(pending, dir_fd=directory, follow_symlinks=False)
-                except FileNotFoundError:
-                    pass
-                else:
-                    raise ValueError("unfinished diagnostic publication")
-                verify()
-                check()
-                descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
-                                     dir_fd=directory)
-                try:
-                    check()
-                    opened = os.fstat(descriptor)
-                    _failure_file(opened)
-                    named = os.stat(pending, dir_fd=directory, follow_symlinks=False)
-                    _failure_file(named)
-                    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
-                        raise ValueError("diagnostic pending identity changed")
-                    verify()
-                    check()
-                    if os.write(descriptor, data) != len(data):
-                        raise OSError("short diagnostic write")
-                    check()
-                finally:
-                    os.close(descriptor)
-                check()
-                verify()
-                named = os.stat(pending, dir_fd=directory, follow_symlinks=False)
-                _failure_file(named)
-                if ((opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
-                        or named.st_size != len(data)):
-                    raise ValueError("diagnostic pending identity changed")
-                current = final_info()
-                if ((None if current is None else (current.st_dev, current.st_ino))
-                        != (None if previous is None else (previous.st_dev, previous.st_ino))):
-                    raise ValueError("diagnostic final identity changed")
-                verify()
-                check()
-                os.replace(pending, final, src_dir_fd=directory, dst_dir_fd=directory)
-                check()
-                committed = final_info()
-                if committed is None or (committed.st_dev, committed.st_ino) != (opened.st_dev, opened.st_ino):
-                    raise ValueError("diagnostic replacement identity changed")
-                verify()
-            check()
-            self._failure_published = slots
-            self._failure_publication_state = "published"
-        except BaseException:
-            self._failure_publication_state = "failed"
-            self._failure_publication_failed = True
-        finally:
-            self._failure_writer_active = False
+            action()
+        except Exception as exc:
+            self.record_error("controller-action", exc)
+            pending = [name for name in names if name not in self.results]
+            if pending:
+                self.report.record("product", pending[0], exc)
+            for name in pending[1:]:
+                self.report.record("product", name, RuntimeError("Prerequisite ERROR: " + pending[0] + " did not close"))
+            if isinstance(exc, TimeoutError) or self.interrupted:
+                raise
+            return False
+        return True
 
     def _attempt(self, stage: str, action: Callable[[], Any], *, blocking: bool = True) -> Any:
         # Only the actual direct close call site owns these final-operation
@@ -1222,47 +855,6 @@ class Controller:
                 attempt['finished'] = time.monotonic()
                 self._final_attempt, self._final_attempt_cause = None, None
 
-    def prepare_redaction(self) -> None:
-        self.redaction_ready = False
-        try:
-            require(isinstance(self.token, str) and bool(self.token), "complete bearer redaction context")
-            if self.threads_active:
-                require(self.effective_end() > time.monotonic(), "full thread redaction context unavailable after expiry")
-                self.capture_thread_secrets()
-            self.redaction_ready = True
-        except BaseException as exc:
-            self.record_error("redaction-context-unavailable", exc)
-
-    def _atomic_text(self, path: Path, text: str) -> None:
-        require(self.redaction_ready, "unsafe evidence withheld without full redaction context")
-        temporary = path.with_name(path.name + ".tmp")
-        temporary.write_text(self.sanitize(text))
-        temporary.replace(path)
-
-    def _atomic_json(self, path: Path, value: Any) -> None:
-        self._atomic_text(path, json.dumps(value, indent=2))
-
-    def stage_browser_trace(self) -> None:
-        if self.browser:
-            self._attempt("stage-main-browser-trace", lambda: self._atomic_json(
-                self.root / "raw/browser-events.json", list(self.browser.events)), blocking=False)
-        if self.browser and hasattr(self.browser, "thread_events"):
-            self._attempt("stage-thread-browser-trace", lambda: self._atomic_json(
-                self.root / "raw/e05-browser-events.json", list(self.browser.thread_events)), blocking=False)
-
-    def stage_small_evidence(self) -> None:
-        if not self.redaction_ready:
-            return
-        self._attempt("stage-scenario", lambda: self._atomic_json(self.root / "scenario.json",
-                      dict(variants=self.results, scenario_phases=self.phases, failures=self.failures,
-                           groups=self.groups, e07_admission=self.e07_admission, finalization=self.finalization,
-                           evidence_state="partial/unvalidated")), blocking=False)
-        self._attempt("stage-browser-trace", self.stage_browser_trace, blocking=False)
-        if self.primary_error is not None:
-            self._attempt("stage-primary-error", lambda: self._atomic_text(self.root / "raw/failure.txt",
-                "".join(traceback.format_exception(type(self.primary_error), self.primary_error, self.primary_traceback))),
-                blocking=False)
-
     def observer_snapshot(self) -> tuple[list[dict], dict]:
         begin = time.monotonic()
         alive_before = self.observer_thread.is_alive()
@@ -1283,8 +875,6 @@ class Controller:
         for name, transport in (("thread-proxy", self.browser_relay), ("late-transport", self.late_transport)):
             if transport:
                 self._attempt(name + "-release", transport.release.set, blocking=False)
-        self.prepare_redaction()
-        self.stage_small_evidence()  # Before any screenshot/exit/bulky snapshot.
         self.observer_join = dict(attempted=False, reason="work exhausted", entered=time.monotonic())
         available = self.effective_end() - time.monotonic()
         if available > 0:
@@ -1340,80 +930,20 @@ class Controller:
             self._attempt("daemon-log-close", self.daemon_log.close)
 
     def collect_e07_launches(self) -> tuple[list[dict], list[dict]]:
-        """Retain each valid record; a missing sibling cannot erase evidence."""
-        import math
-
-        def number(value: object) -> bool:
-            return type(value) in (int, float) and value > 0 and (type(value) is int or math.isfinite(value))
-
+        """Use the original genuine socket acknowledgements, without publication."""
         records, failures = [], []
-        expected = set()
         for index, command in enumerate(self.e07_commands):
             if command["action"] not in {"e07-parent", "e07-held"}:
                 continue
-            # The ledger is registered before sending the real instruction.
-            # Even an interrupted send requires evidence or an explicit failure.
-            start = command["provider"]
-            binding = {k:start[k] for k in ("task", "session", "agent", "org", "pid")}
-            path = self.root / "coord" / ("e07-launch-" + start["session"] + ".json")
-            expected.add(path)
-            reason = None
-            try:
-                record = json.loads(path.read_text())
-            except TimeoutError:
-                raise  # Do not turn the original deadline into a parse failure.
-            except FileNotFoundError:
-                reason = "missing"
-            except (OSError, UnicodeError, ValueError, RecursionError):
-                reason = "malformed"
-            if reason is None:
-                valid = (isinstance(record, dict) and record.get("action") == command["action"]
-                         and record.get("provider") == binding and number(record.get("entered")))
-                if valid and record.get("incomplete") is True:
-                    valid = (set(record) == {"action","provider","child_pid","entered","incomplete"}
-                             and type(record["child_pid"]) is int and record["child_pid"] > 1)
-                    reason = "incomplete" if valid else "malformed"
-                elif valid:
-                    child = record.get("child")
-                    valid = (set(record) == {"action","provider","child","argv","payload","payload_sha256",
-                             "payload_bytes","callback_sha256","source_sha","python","entered",
-                             "execution_deadline","acknowledged"}
-                             and isinstance(child, dict)
-                             and set(child) == {"pid","start","state","ppid","argv","cgroup","at"}
-                             and type(child["pid"]) is int and child["pid"] > 1
-                             and type(child["ppid"]) is int and child["ppid"] == start["pid"]
-                             and all(isinstance(child[k], str) and child[k] for k in ("start","state","cgroup"))
-                             and isinstance(child["argv"], list) and all(isinstance(a, str) for a in child["argv"])
-                             and number(child["at"]) and isinstance(record["argv"], list)
-                             and all(isinstance(a, str) for a in record["argv"])
-                             and isinstance(record["payload"], dict)
-                             and all(isinstance(record[k], str) and len(record[k]) == 64
-                                     and all(c in "0123456789abcdef" for c in record[k])
-                                     for k in ("payload_sha256","callback_sha256"))
-                             and type(record["payload_bytes"]) is int and record["payload_bytes"] > 0
-                             and record["source_sha"] == self.revision and record["python"] == self.python
-                             and number(record["acknowledged"]) and number(record["execution_deadline"])
-                             and record["entered"] <= record["acknowledged"] <= record["execution_deadline"]
-                             and record["execution_deadline"] == command["instruction"]["execution_deadline"]
-                             and ("launch" not in command or command["launch"] == record))
-                if valid:
-                    records.append(record)
-                else:
-                    reason = "malformed"
-            if reason:
-                # Fixed categories and ledger index only: never raw bytes,
-                # filenames or exception text from a damaged private record.
-                failures.append(dict(command=index, reason=reason))
-        if any(path not in expected for path in (self.root / "coord").glob("e07-launch-*.json")):
-            failures.append(dict(reason="unexpected"))
+            record = command.get("launch")
+            if record is None:
+                failures.append(dict(command=index, reason="missing-acknowledgement"))
+            else:
+                records.append(record)
         return records, failures
 
-    def evidence(self, *, require_success: bool = True) -> None:
-        # cancellation_hold calls this nonterminally: do not stop/join observer.
-        self.prepare_redaction()
-        self.stage_small_evidence()
-        if not self.redaction_ready:
-            raise RuntimeError("unsafe evidence withheld: full redaction context unavailable")
+
+    def observations(self) -> dict:
         observer, state = self.observer_snapshot()
         rows = dict(variants=self.results, starts=self.starts, commands=self.commands,
                     http=self.http, durable=self.durable, relay=list(self.relay.records) if self.relay else [],
@@ -1422,11 +952,8 @@ class Controller:
                     failures=self.failures, groups=self.groups, e07_admission=self.e07_admission,
                     finalization=self.finalization)
         if self.e07:
-            def e07_evidence() -> None:
-                launches, failures = self.collect_e07_launches()
-                self.e07.update(partial_launches=launches, launch_record_failures=failures)
-                self._atomic_json(self.root / "raw/e07.json", self.e07)
-            self._attempt("export-e07", e07_evidence, blocking=False)
+            launches, failures = self.collect_e07_launches()
+            self.e07.update(partial_launches=launches, launch_record_failures=failures)
         rows.update(e07=self.e07, e07_commands=self.e07_commands, boots=self.boots)
         rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
                     thread_proxy=self.browser_relay.snapshot(self.sanitize) if self.browser_relay else [],
@@ -1443,19 +970,40 @@ class Controller:
                 rows["witness_bytes"] = len(data)
                 rows["witness_sha256"] = hashlib.sha256(data).hexdigest()
                 rows["witness_incomplete_line"] = bool(data and not data.endswith(b"\n"))
-                self._atomic_text(self.root / "raw/launch-witnesses.jsonl", data.decode())
+                rows["witness_data"] = data.decode()
                 rows["launch_witnesses"] = [json.loads(line) for line in data.split(b"\n")[:-1]]
-            self._attempt("export-launch-witness", witness_evidence, blocking=False)
-        self._attempt("export-observations", lambda: self._atomic_json(self.root / "raw/observations.json", rows), blocking=False)
-        self._attempt("export-scenario", lambda: self._atomic_json(self.root / "scenario.json",
-            dict(variants=self.results, scenario_phases=self.phases, e07=self.e07, failures=self.failures,
-                 groups=self.groups, e07_admission=self.e07_admission, finalization=self.finalization,
-                 observer_state=state)), blocking=False)
-        self._attempt("export-browser-trace", self.stage_browser_trace, blocking=False)
-        # All available evidence attempts precede the existing final assertion.
-        require(not self.e07.get("launch_record_failures"), "E07 launch record evidence incomplete")
-        if require_success:
-            require(not self.failures, "evidence/cleanup failed", self.failures)
+            witness_evidence()
+        rows.update(browser_events=list(self.browser.events) if self.browser else [],
+                    thread_events=list(getattr(self.browser, "thread_events", [])),
+                    e07_prefix=self.e07_prefix)
+        # Preserve former decoded types and literal token substitution privately.
+        # No SQL/state observation is serialized to disk or sent to the launcher.
+        return json.loads(self.sanitize(json.dumps(rows)))
+
+    def check_content(self) -> None:
+        from checks import validate_e04, validate_e05, validate_e07, validate_groups
+        observations = self.observations()
+        observations["cleanup_pins"] = self.cleanup_pins
+        row = dict(observations, source_sha=self.revision, python=os.environ.get("E2E_PYTHON"),
+                   phases=[dict(name="scenarios", deadline=self.deadline)])
+        readers = ((MANIFEST["variants"][:48], None, lambda: validate_e04(row, observations, observations["browser_events"], self.root / "raw")),
+                   (MANIFEST["variants"][48:53], "E05", lambda: validate_e05(row, observations, self.root / "raw")),
+                   (MANIFEST["variants"][53:], "E07", lambda: validate_e07(row, observations, self.root / "raw")))
+        for names, group, reader in readers:
+            for name in names:
+                if name not in self.results and self.report.cases["product", name].get("pending"):
+                    self.report.record("product", name, RuntimeError("Prerequisite ERROR: case did not reach its required closure"))
+            try:
+                if group:
+                    validate_groups(row, observations, group)
+                reader()
+            except Exception as exc:
+                for name in names:
+                    if name in self.results:
+                        self.report.record("product", name, exc)
+                self.report.record("harness", "content:" + (group or "prefix"), exc)
+        if self.failures:
+            self.report.record("harness", "controller", AssertionError("Controller action or cleanup failed"))
 
 
 def cancellation_hold(controller: Controller) -> None:
@@ -1470,7 +1018,6 @@ def cancellation_hold(controller: Controller) -> None:
     controller.stores["alpha"].result(payload)
     require(identity(start["pid"]) == start["pid_start"], "provider active after actual callback")
     require(start["pgid"] != os.getpgid(controller.daemon.pid), "provider outside daemon PGID")
-    controller.evidence()
     witness = dict(provider=start, callback=callback, daemon=dict(pid=controller.daemon.pid,
                    start=identity(controller.daemon.pid)), controller=dict(pid=os.getpid(), start=identity(os.getpid())),
                    ports=[controller.port, controller.relay.port], socket=str(controller.socket_path),
@@ -1484,145 +1031,17 @@ def cancellation_hold(controller: Controller) -> None:
         time.sleep(0.05)
 
 
-def _failure_terminal_status(error: BaseException, entry: dict, token: object, frame: Any) -> int | None:
-    """Finite advisory status only after the real final-raise handoff matches."""
-    selected = entry.get("selected")
-    if selected is not None:
-        entry_token, entry_frame, controller, winner, saved, head, claim, observation = selected
-        outer = error.__traceback__
-        if (entry_token is token and entry.get("token") is token
-                and entry_frame is frame and entry.get("frame") is frame
-                and controller._failure_raw.get("first") is winner
-                and controller.primary_error is winner[0] and error is winner[0]
-                and controller.primary_traceback is saved and saved is winner[1]
-                and head.tb_frame.f_code is main.__code__ and head.tb_next is saved
-                and outer is not None and outer.tb_frame is frame and outer.tb_next is head):
-            categories = ("unicode", "timeout", "interruption", "assertion", "value", "io", "runtime", "other")
-            if (type(claim) is tuple and len(claim) == 2 and claim[0] is winner
-                    and type(claim[1]) is object and controller._failure_check.get("claim") is claim
-                    and type(observation) is tuple and len(observation) == 4
-                    and controller._failure_check.get("observation") is observation
-                    and observation[0] is claim and observation[1] is winner
-                    and type(observation[2]) is str and observation[2] in categories
-                    and type(observation[3]) is bool):
-                return 80 + 2 * categories.index(observation[2]) + observation[3]
-            return 1  # Genuine selected entry, without a complete matching check.
-
-    # Only exact built-in SystemExit: never evaluate a subclass's code property
-    # or overridden int operators/conversions, and never mutate the code member.
-    if type(error) is SystemExit:
-        code = error.code
-        if (isinstance(code, int) and int.__ge__(code, -(1 << 63))
-                and int.__le__(code, (1 << 63) - 1)):
-            low = int.__and__(code, 255)
-            if 80 <= low <= 95:
-                return 1
-    return None
-
-
-def _adopt_diagnostic_sender(descriptor: int | None) -> socket.socket | None:
-    """Own the private fd once, before constructor/observer/exec descendants."""
-    if descriptor is None or descriptor <= 2:
-        return None
-    sender = None
-    adopted = False
-    release_error = None
-    try:
-        sender = socket.socket(fileno=descriptor)  # Adoption, never duplication.
-        sender.set_inheritable(False)
-        adopted = (sender.family == socket.AF_UNIX
-                   and sender.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) == socket.SOCK_DGRAM
-                   and not os.get_blocking(descriptor) and not sender.get_inheritable())
-    except TimeoutError:
-        raise
-    except OSError:
-        pass
-    finally:
-        # A close failure escapes: do not construct descendants with unknown
-        # inheritable custody, or retry a potentially reused numeric descriptor.
-        if not adopted:
-            try:
-                if sender is None:
-                    os.close(descriptor)
-                else:
-                    sender.close()
-            except TimeoutError:
-                raise
-            except OSError as exc:
-                release_error = exc
-    if release_error is not None:
-        raise release_error
-    return sender if adopted else None
-
-
-def _send_selected_diagnostic(error: BaseException, entry: dict, token: object, frame: Any) -> None:
-    """Independent full join; advisory status 1/83 is never selection proof."""
-    sender = entry.get("diagnostic_sender")
-    selected = entry.get("selected")
-    if sender is None or selected is None or entry.get("diagnostic_send_claimed"):
-        return
-    entry["diagnostic_send_claimed"] = True
-    entry_token, entry_frame, controller, winner, saved, head, claim, observation = selected
-    outer = error.__traceback__
-    if not (entry_token is token and entry.get("token") is token
-            and entry_frame is frame and entry.get("frame") is frame
-            and controller._failure_raw.get("first") is winner
-            and controller.primary_error is winner[0] and error is winner[0]
-            and controller.primary_traceback is saved and saved is winner[1]
-            and head.tb_frame.f_code is main.__code__ and head.tb_next is saved
-            and outer is not None and outer.tb_frame is frame and outer.tb_next is head):
-        return
-    categories = ("unicode", "timeout", "interruption", "assertion", "value", "io", "runtime", "other")
-    if not (type(claim) is tuple and len(claim) == 2 and claim[0] is winner
-            and type(claim[1]) is object and controller._failure_check.get("claim") is claim
-            and type(observation) is tuple and len(observation) == 4
-            and controller._failure_check.get("observation") is observation
-            and observation[0] is claim and observation[1] is winner
-            and type(observation[2]) is str and observation[2] in categories
-            and type(observation[3]) is bool):
-        return
-    state = controller._diagnostic_snapshot
-    complete = state.get("complete")
-    if (state.get("refused") or type(complete) is not tuple or len(complete) != 4
-            or complete[0] is not state.get("claim") or complete[0][0] is not winner
-            or complete[1] is not winner or complete[2] is not saved
-            or threading.get_ident() != controller._failure_writer_owner):
-        return
-    end = getattr(controller, "_diagnostic_outer_end", None)
-    if (type(end) not in (int, float) or not math.isfinite(end)
-            or type(getattr(controller, "deadline", None)) is not type(end) or controller.deadline != end
-            or time.monotonic() >= end):
-        return
-    data = ("HRD2:S:" + ":".join(complete[3]) + "\n").encode("ascii")
-    if (state.get("refused") or type(getattr(controller, "deadline", None)) is not type(end) or controller.deadline != end
-            or time.monotonic() >= end):
-        return
-    try:
-        sender.send(data, socket.MSG_DONTWAIT)  # ONE charged call; no retry/flush.
-    except TimeoutError:
-        raise
-    except OSError:
-        return  # Full/closed/interrupted ordinary send remains UNKNOWN.
-
-
-def main(_terminal: dict | None = None) -> None:
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--deadline", type=float, required=True)
     parser.add_argument("--exercise", choices=["baseline", "cancellation"], default="baseline")
-    parser.add_argument("--_diagnostic-fd", type=int, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
     def expired(_signum, _frame):
         raise TimeoutError("controller absolute work deadline")
     signal.signal(signal.SIGALRM, expired)
-    sender = _adopt_diagnostic_sender(args._diagnostic_fd)
-    if _terminal is not None:
-        _terminal["diagnostic_sender"] = sender
-    elif sender is not None:
-        sender.close()
-    args._diagnostic_alarm_code = expired.__code__
     controller = Controller(args)
     def interrupted(signum: int, _frame: object) -> None:
         controller.interrupted = True
@@ -1642,12 +1061,17 @@ def main(_terminal: dict | None = None) -> None:
                 cancellation_hold(controller)
             else:
                 from jobs import anchor, exercise as exercise_jobs
-                anchor(controller, "initial-A", 0)
-                exercise(controller)
-                anchor(controller, "baseline-A", 9)
+                def baseline() -> None:
+                    anchor(controller, "initial-A", 0)
+                    exercise(controller)
+                    anchor(controller, "baseline-A", 9)
+                ready = controller.run_group(MANIFEST["variants"][:23], baseline)
                 from pause import exercise as exercise_pause
-                exercise_pause(controller)
-                exercise_jobs(controller)
+                ready = controller.run_group(MANIFEST["variants"][23:42], lambda: exercise_pause(controller), ready=ready)
+                ready = controller.run_group(MANIFEST["variants"][42:48], lambda: exercise_jobs(controller), ready=ready)
+                if not ready:
+                    controller.run_group(MANIFEST["variants"][48:], lambda: None, ready=False)
+                    return
                 from threads import exercise as exercise_threads
                 from threads import VARIANTS as thread_variants
                 controller.groups['E05'].update(state='running', begin=time.monotonic(), variants=list(thread_variants))
@@ -1659,7 +1083,6 @@ def main(_terminal: dict | None = None) -> None:
                         index = len(controller.failures)
                         controller.record_error('controller-action', exc)
                         controller.groups['E05'].update(state='failed', first_error_ref=index)
-                    controller.browser.capture_failure()
                     if (not isinstance(exc, Exception) or isinstance(exc, TimeoutError)
                             or controller.interrupted or controller.browser.poisoned):
                         raise
@@ -1691,12 +1114,9 @@ def main(_terminal: dict | None = None) -> None:
         if controller.groups['E05']['state'] != 'not_started' and controller.groups['E07']['state'] == 'not_started':
             controller.groups['E07'].update(state='refused', first_error_ref=len(controller.failures)-1,
                                            begin=time.monotonic(), end=time.monotonic())
-        try:
-            controller._stage_failure_categories()
-        finally:
-            if controller.browser:
-                controller.browser.capture_failure()
-                controller.browser.poison(exc)  # No dispatcher re-entry after interruption.
+        if controller.browser:
+            controller.browser.capture_failure()
+            controller.browser.poison(exc)
     finally:
         begin = time.monotonic()
         controller.finalization['entered'] = begin
@@ -1707,48 +1127,21 @@ def main(_terminal: dict | None = None) -> None:
         finally:
             controller.finalization['finished'] = time.monotonic()
             controller.phases.append(dict(name="cleanup-drain", seconds=time.monotonic() - begin))
-        controller._stage_failure_categories()
         try:
-            controller.evidence()
+            if args.exercise == "baseline":
+                controller.check_content()
         except BaseException as exc:
-            controller.record_error("controller-evidence", exc)
-        controller._stage_failure_categories()
+            for variant in controller.results:
+                controller.report.record("product", variant, RuntimeError("Required local content check unavailable"))
+            controller.report.record("harness", "local-content", exc)
+        finally:
+            controller.report.write(args.root / "controller-junit.xml")
+            # Only process pins cross back to their actual launcher owner.
+            (args.root / "cleanup-pins.json").write_text(json.dumps(controller.cleanup_pins))
         if controller.primary_error is not None:
-            try:
-                raise controller.primary_error.with_traceback(controller.primary_traceback)
-            except BaseException as exc:
-                if _terminal is not None:
-                    winner = controller._failure_raw.get("first")
-                    head = exc.__traceback__
-                    if (winner is not None and controller.primary_error is winner[0] and exc is winner[0]
-                            and controller.primary_traceback is winner[1] and head is not None
-                            and head.tb_frame is sys._getframe() and head.tb_next is winner[1]):
-                        _terminal.setdefault("selected", (
-                            _terminal["token"], _terminal["frame"], controller, winner, winner[1], head,
-                            controller._failure_check.get("claim"), controller._failure_check.get("observation")))
-                raise
+            raise controller.primary_error.with_traceback(controller.primary_traceback)
+        require(controller.report.ok or args.exercise == "cancellation", "Product cases or local checks failed")
 
 
 if __name__ == "__main__":
-    _entry_token = object()
-    _entry_frame = sys._getframe()
-    _entry = {"token": _entry_token, "frame": _entry_frame}
-    try:
-        try:
-            main(_entry)
-        except BaseException as _error:
-            _status = _failure_terminal_status(_error, _entry, _entry_token, _entry_frame)
-            _send_selected_diagnostic(_error, _entry, _entry_token, _entry_frame)
-            if _status is not None:
-                raise SystemExit(_status) from None
-            raise
-    finally:
-        _sender = _entry.get("diagnostic_sender")
-        if _sender is not None:
-            _entry["diagnostic_sender"] = None
-            try:
-                _sender.close()
-            except TimeoutError:
-                raise
-            except OSError:
-                pass  # UNKNOWN release, no numeric-fd retry or changed status.
+    main()

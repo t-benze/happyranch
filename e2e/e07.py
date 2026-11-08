@@ -34,11 +34,6 @@ def witnesses(c: Controller) -> tuple[bytes, list[dict]]:
     return raw, [json.loads(line) for line in raw.splitlines()]
 
 
-def save(c: Controller) -> None:
-    c.capture_thread_secrets()
-    (c.root / "raw/e07.json").write_text(c.sanitize(json.dumps(c.e07, indent=2)))
-
-
 def frame(c: Controller, parent: str | None = None, child: str | None = None) -> tuple[dict, dict]:
     record = dict(entered=time.monotonic(), sql={}, public={}, http_indices={})
     for org in ("alpha", "beta"):
@@ -112,8 +107,6 @@ def command(c: Controller, start: dict, action: str, wait: bool) -> dict:
     require(launch["provider"] == {k:start[k] for k in ("task", "session", "agent", "org", "pid")}
             and launch["source_sha"] == c.revision and launch["python"] == c.python
             and launch["execution_deadline"] == instruction["execution_deadline"], "E07 actual launch authority")
-    require(launch == json.loads((c.root / "coord" / ("e07-launch-" + start["session"] + ".json")).read_text()),
-            "E07 private durable launch acknowledgement")
     if wait:
         connection.settimeout(c.remaining())
         receipt = json.loads(stream.readline(131072))["e07_return"]
@@ -124,7 +117,6 @@ def command(c: Controller, start: dict, action: str, wait: bool) -> dict:
         require(len(record["wire"]) == 1 and record["wire"][0]["status"] == 200
                 and record["wire"][0]["response"] == {"ok": True} and not record["wire"][0]["dropped"], "E07 one accepted callback")
         c.payloads[start["session"]] = launch["payload"]
-    save(c)
     return record
 
 
@@ -168,97 +160,6 @@ def closure(c: Controller, tree: dict, cli: dict) -> dict:
                     groups[group] = dict(exists=directory.exists(), pids=sorted(set(members)))
     snapshot = dict(processes=rows, groups=groups, sampled=time.monotonic(),
                     pending=bool(select.select([c.server], [], [], 0)[0]))
-    # The original snapshot above remains the ONLY closure oracle. Everything
-    # below is a later, sequential diagnostic, including same-generation Z.
-    c.remaining()
-    require(len(rows) <= 17, "E07 diagnostic target bound; never truncate original rows")
-
-    def parse_stat(raw: bytes, pid: int) -> tuple:
-        if len(raw) > 4096:
-            return "oversized", None, None, None
-        if not raw:
-            return "empty", None, None, None
-        if not raw.endswith(b"\n"):
-            return "partial", None, None, None
-        closing = raw.rfind(b")")
-        if (not raw.startswith(str(pid).encode("ascii") + b" (") or closing < 3
-                or raw[closing+1:closing+2] != b" " or b"\n" in raw[closing+2:-1]):
-            return "malformed", None, None, None
-        tail = raw[closing+2:-1].split()
-        if (len(tail) < 20 or len(tail[0]) != 1
-                or tail[0] not in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-                or not 1 <= len(tail[1]) <= 20 or not tail[1].isdigit()
-                or not 1 <= len(tail[19]) <= 20 or not tail[19].isdigit()
-                or int(tail[19]) == 0):
-            return "malformed", None, None, None
-        return "observed", tail[19].decode("ascii"), tail[0].decode("ascii"), int(tail[1])
-
-    def read_stat(pid: int) -> dict:
-        c.remaining()  # Outside the I/O catch: deadline/assertion failures escape.
-        entered = time.monotonic()
-        try:
-            # ONE unbuffered bounded acquisition; no short-read retry or raw export.
-            with Path(f"/proc/{pid}/stat").open("rb", buffering=0) as stream:
-                raw = stream.read(4097)
-        except TimeoutError:
-            raise  # TimeoutError is also OSError; real raising alarms must escape.
-        except (FileNotFoundError, ProcessLookupError):
-            reason, start, state, ppid = "absent", None, None, None
-        except OSError as exc:
-            reason = "interrupted" if exc.errno == 4 else "unreadable"
-            start = state = ppid = None
-        else:
-            reason, start, state, ppid = parse_stat(raw, pid)
-        observation = dict(pid=pid, start=start, state=state, ppid=ppid, reason=reason,
-                           entered=entered, finished=time.monotonic())
-        c.remaining()
-        return observation
-
-    daemon = c.e07["transport"]["daemon"]
-    pins = {}
-    for proc in [*processes, daemon]:
-        require(type(proc["pid"]) is int and 0 < proc["pid"] < 10**20
-                and type(proc["start"]) is str and 1 <= len(proc["start"]) <= 20
-                and proc["start"].isascii() and proc["start"].isdecimal() and int(proc["start"]) > 0
-                and (proc["pid"] not in pins or pins[proc["pid"]] == proc["start"]),
-                "E07 unambiguous finite diagnostic generation pins")
-        pins[proc["pid"]] = proc["start"]
-
-    def associate(pid: int, expected_start: str | None) -> dict:
-        entered = time.monotonic()
-        a = read_stat(pid)
-        parent = b = parent_pin = None
-        if a["reason"] != "observed":
-            relation = "target-absent" if a["reason"] == "absent" else "target-unknown"
-        elif expected_start is not None and a["start"] != expected_start:
-            relation = "target-reused"
-        elif a["ppid"] == 0:
-            relation = "no-parent"
-        else:
-            parent_pin = pins.get(a["ppid"])
-            parent = read_stat(a["ppid"])
-            b = read_stat(pid)
-            if b["reason"] != "observed" or b["start"] != a["start"] or b["ppid"] != a["ppid"]:
-                relation = "target-changed"
-            elif parent["reason"] != "observed":
-                relation = "parent-missing" if parent["reason"] == "absent" else "parent-unknown"
-            elif parent_pin is not None and parent["start"] != parent_pin:
-                relation = "parent-reused"
-            else:
-                relation = "bracketed"
-        result = dict(entered=entered, finished=time.monotonic(), expected_start=expected_start,
-                      target_a=a, parent=parent, target_b=b, parent_pin=parent_pin, relation=relation)
-        c.remaining()
-        return result
-
-    # Self/ONE-parent/self measures context; it supplies NO launcher role pin.
-    context = associate(os.getpid(), None)
-    snapshot["controller_diagnostic"] = context
-    if context["relation"] == "bracketed":
-        for observation in (context["target_a"], context["parent"]):
-            pins.setdefault(observation["pid"], observation["start"])
-    for row in rows:
-        row["diagnostic"] = associate(row["pid"], row["start"])
     c.remaining()
     return snapshot
 
@@ -407,8 +308,7 @@ def content(record: dict) -> dict:
 
 
 def terminal_cli(c: Controller, task: str, status: str, rationale: str) -> dict:
-    from thread_provider import redaction_context
-    secrets = redaction_context(c.root, None)
+    secrets = set(c.secrets)
     argv = [str(c.root / "bin/happyranch"), "cancel", task, "--org", "alpha", "--rationale", rationale]
     record = dict(action="terminal-cancel", argv=argv, entered=time.monotonic(), task=task, status=status,
                   wire_begin=len(c.relay.records), source_sha=c.revision, python=c.python)
@@ -680,15 +580,11 @@ def exercise(c: Controller) -> None:
         admission.update(frame=current, point=point, ports=json.loads((c.root/'ports.json').read_text()),
                          boots=c.boots, source_sha=c.revision, python=c.python)
         check(all(p in admission['ports'] for p in (c.port,c.relay.port,proxy.port)), 'original D/L/P registry retained')
-        failures = len(c.failures)
-        c.evidence(require_success=False)
-        check(c.redaction_ready and len(c.failures) == failures, 'safe prepared checkpoint export without new failure')
-        prefix_content = (c.root / 'raw/observations.json').read_bytes()
-        c._atomic_text(c.root / 'raw/e07-prefix.json', prefix_content.decode())
-        archived_prefix = json.loads(prefix_content)
+        archived_prefix = c.observations()
         check(not archived_prefix['capture_inventory']['refusals']
               and all(r['original']['entity_copy']['original_byte_check'] == 'available'
-                      for r in archived_prefix['thread_proxy'] if 'original' in r), 'complete safely exported unchanged originals')
+                      for r in archived_prefix['thread_proxy'] if 'original' in r), 'complete unchanged private originals')
+        c.e07_prefix = archived_prefix
         check(time.monotonic()+50 < c.deadline, 'full50s remains after admission in original work budget')
         admission.update(state='accepted', finished=time.monotonic())
         c.groups['E07'].update(checkpoint_ref=name, admission_ref='e07_admission')
@@ -702,7 +598,7 @@ def exercise(c: Controller) -> None:
     c.e07 = dict(variants=VARIANTS, design_sha256=DESIGN, source_sha=c.revision, python=c.python,
                  entered=begin, scenario_deadline=c.deadline, end=min(begin+50,c.deadline),
                  prefix=dict(witness_bytes=len(raw), witness_records=len(prefix), witness_sha256=hashlib.sha256(raw).hexdigest(),
-                             observer_end=len(archived_prefix["provider_observer"]), archive_sha256=hashlib.sha256(prefix_content).hexdigest(), command_count=len(c.commands), e05_finished=prior.get("finished"), variants=list(c.results)),
+                             observer_end=len(archived_prefix["provider_observer"]), command_count=len(c.commands), e05_finished=prior.get("finished"), variants=list(c.results)),
                  admission=admission,
                  phases=[], anchors=[], owned=[], frames=[])
     c.e07["commands"] = c.e07_commands
@@ -787,7 +683,6 @@ def exercise(c: Controller) -> None:
                     and call[0]["argv_sha256"] == hashlib.sha256(json.dumps(held["launch"]["argv"][1:]).encode()).hexdigest(), "E07 live real wrapper witness")
             c.e07["held_witness"] = call[0]
             require(relay.forward_count == 0 and "forwarded" not in relay.selected, "E07 no upstream request before public cancellation")
-            save(c)
 
             phase("cancel-and-close",28)
             def browser_expected(snapshot: dict) -> dict:
@@ -941,19 +836,18 @@ def exercise(c: Controller) -> None:
             require(not any(c.e07["transport_closure"][k] for k in ("listener_alive","workers_alive","sockets","errors")),"E07 transport final closure")
             c.e07["finished"] = time.monotonic()
             require(c.e07["finished"] < c.case_deadline,"E07 complete evidence within C50")
-            save(c)
             for variant in VARIANTS:
-                c.mark(variant,dict(e07_file="e07.json",source_sha=c.revision))
+                c.mark(variant,dict(source_sha=c.revision))
         except BaseException as exc:
             if c.groups['E07']['first_error_ref'] is None:
                 c.groups['E07']['first_error_ref'] = len(c.failures)
             c.record_error("controller-action", exc)
             raise
-        finally:
-            save(c)
     except BaseException as exc:
-        # Reserve the combined body/final-save outgoing before recording or release.
+        # The SAME outgoing cause survives local recording and resource release.
         outgoing, outgoing_tb = exc, exc.__traceback__
+        for variant in VARIANTS:
+            c.report.record("product", variant, exc)
         try:
             if c.groups['E07']['first_error_ref'] is None:
                 c.groups['E07']['first_error_ref'] = len(c.failures)

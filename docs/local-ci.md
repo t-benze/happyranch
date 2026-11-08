@@ -1,17 +1,24 @@
 # Local CI
 
-Founder THR-291 seq659 slice 1 uses standard per-case JUnit and explicit
+Founder THR-291 seq659 slice 2 uses standard per-case JUnit and explicit
 failure-only trace/screenshot/log artifacts with GitHub default retention.
 Both lanes must report the exact56 once each, both launcher diagnostics and all
 setup/cleanup checks must pass. Health checks reports and identity only; former
 aggregate product predicates run privately in-lane before data deletion.
-Controller snapshots/completed ledgers remain private until slice2; no launcher
-receipt/hash/ownership export, redaction-context protocol or publication budgets
-remain. Operational480/240/720/60/900 bounds and product output caps stay.
+Controller SQL/state JSON and completed-case publication are removed. Product
+readers use in-memory observations; ordinary controller JUnit and process pins
+are the launcher handoff. Safe denial cases continue after no-effects checks;
+unsafe dependents report prerequisite ERROR, with no reset/retry. The strict
+same-runtime E05→E07 checkpoint/closure/full50s admission and first cause remain;
+E05 failure stays red even if E07 passes. Failure capture precedes E05 teardown.
+Optional Owned/E07 process diagnostics are removed; real cleanup is mandatory.
+Browser/transport/thread-provider private collectors remain for slice3, including
+the temporary private token list. No validated-context export, SQL/state upload,
+receipt/hash/ownership publisher or publication budgets remain. Operational480/240/720/60/900 bounds and product output caps stay.
 JUnit always uploads; missing reports fail. Known synthetic tokens receive literal
-scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-1-of-3-thr-291-seq659).
+scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-2-of-3-thr-291-seq659).
 Historical records below preserve actual failures and holds; their removed
-launcher/export/aggregate instructions are superseded, never current acceptance.
+controller/launcher/export/optional-diagnostic instructions are superseded, never current acceptance.
 
 
 Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
@@ -621,7 +628,11 @@ See [the existing case record](../e2e/README.md#task-12643-accepted-recovery-cas
 for all thirty R1/R2/R3/X expectations, A/B/D/E four answers, keeper gaps and
 full56 EACH3.12/3.14 L1–L7 plus TERM/INT/validator references.
 
-### Current E05/E07 failure isolation (ROOT13112 / THR291seq495)
+### Historical E05/E07 publication and retained failure isolation (ROOT13112 / THR291seq495)
+
+Slice2 replaces the publication steps below with local observations and JUnit.
+The same-runtime checkpoint, closure, full50s and first-cause product constraints
+remain; optional publication/diagnostic protocols below are historical only.
 
 The [current bounded originals/admission contract](../e2e/README.md#current-bounded-originals-and-e05e07-outcomes--task13118--root13112)
 supersedes only the old unconditional E05-success/cumulative-count coupling.
