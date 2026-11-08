@@ -326,7 +326,7 @@ class TransitionRecord(Closed):
     result_digest: Digest
     output_digest: Digest | None
     node: Name
-    outcome: OutcomeName
+    outcome: Token
     prior_cas: Annotated[StrictInt, Field(ge=0, le=9223372036854775807)]
     prior_event_digest: Digest
     before: Counters
@@ -337,6 +337,8 @@ class TransitionRecord(Closed):
 
     @model_validator(mode="after")
     def local_transition_shape(self) -> Self:
+        if self.outcome not in OutcomeName.__args__ and not isinstance(self.edge, HoldEdge):
+            raise ValueError("non-registry outcome requires a hold edge")
         if isinstance(self.edge, NextEdge):
             if self.successor is None or self.successor.node != self.edge.node:
                 raise ValueError("next edge needs its selected successor")

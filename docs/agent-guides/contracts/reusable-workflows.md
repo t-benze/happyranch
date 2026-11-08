@@ -61,6 +61,11 @@ The ceiling is 32 nodes, 16 roles, 32 input/output slots, 8 outcomes per node,
 at most 1 MiB; result envelopes at most 64 KiB; JSON nesting at most 24.
 Text is at most 16 KiB UTF8 per field, nonblank and NUL-free. These are
 cumulative family bounds, not an extra allocation or execution allowance.
+Node outputs: `immutable-document@1` at most 1 MiB (1,048,576 bytes); every
+JSON-contract output at most 48 KiB (49,152 bytes) of canonical bytes. The
+engine checks raw length before any write, decode or digest. Larger output
+refuses with `sequential_output_limit_exceeded`, is never saved, and cannot
+succeed or advance (Founder THR-336 msg102, Decision 1 = B).
 
 Every node has a unique ID/output slot, an existing role, nonempty declared
 responsibilities, named inputs, a registered typed output and exact compatible
@@ -137,7 +142,11 @@ current subject, settlement, authority, or whether the node permits the outcome.
 `parse_transition` accepts canonical `workflow-sequential-transition@1`: run
 and definition pin, source visit/INTEGER result and result/output digests,
 node/outcome, prior CAS/event digest, before/after counters, invalidated output
-refs, selected closed edge and successor visit/task or null. A next edge needs
+refs, selected closed edge and successor visit/task or null. A non-registry
+bounded outcome token is accepted only with a hold edge; next, terminal and
+fail edges still require the existing outcome registry. This matches the
+result/reducer unknown-outcome hold without relabeling saved result bytes.
+A next edge needs
 its matching successor; other edges cannot supply one. Each counter snapshot
 requires `epoch=content_returns+1`. The pure reducer determines counter deltas,
 selected edge, invalidation and result identity; a future owning writer
@@ -444,7 +453,9 @@ TASK-14615, as amended by TASK-14630 revision2 sections 2/3/5. This supersedes
 that design's full-reader composition for admission. `sequential_engine.py`
 exports `admit_uncommitted` and `activate_uncommitted`; no dispatcher, route,
 startup, callback or other production caller attaches them. U3a's execution
-holds remain. U3c scopes and capability/return/launch work remain unavailable.
+holds remain. This U3b checkpoint did not provide U3c scopes. The inert U3c
+source extension is described below; runtime capability/return/launch callers
+remain unavailable.
 
 The prospective native carrier and entry TaskRecords are validated before any
 INSERT: canonical start bytes, immutable stored definition and selected settings
@@ -509,3 +520,85 @@ repository capability, live installation, activation or ordinary-use readiness.
 Independent full review and scoped QA remain required. U4.0 remains NO-GO;
 U3c, F4, SB-1, reader-limits Decision2 and held PR1252 remain separate.
 See [U3b source contract](../../superpowers/specs/2026-11-08-sequential-engine-u3b.md).
+
+
+## U3c inert lifecycle and selected validation (THR336 msg85/102)
+
+TASK-14681 under ROOT TASK-14640 continues the preserved TASK-14677 candidate.
+The engine adds synchronous session binding, result acceptance, transition,
+return and cancellation functions. They use the caller's genuine
+`WorkflowAuthorityCoordinator.admission_writer(capture)`; they do not commit,
+launch, notify, await or perform file/network I/O. U3b admission/first activation
+are unchanged. No daemon, route, startup or callback caller is attached.
+
+The future trusted adapter supplies exact `content: bytes`, its declared
+`contract`, envelope, genuine INTEGER task/result/session identity and verified
+checks explicitly to `accept_result_uncommitted`. Content is not recovered from
+a completion summary. The adapter must separately authenticate complete callback,
+current authority, output access and positive native/outer settlement; fixture
+result seeding proves none of these. Negative/return envelopes carry empty
+content/recipients and create no output row.
+
+`JSON_OUTPUT_LIMIT=49152` and `DOCUMENT_OUTPUT_LIMIT=1048576` implement Decision
+1 = B. `check_output_size` is raw-length-only, before writes/decode/digest;
+accept validation repeats the gate by an indexed raw byte-length read before
+payload acquisition, then validates the one accepted output. Over-limit
+refusal rolls back with `sequential_output_limit_exceeded`, no successful result
+or advance. No result means a durable sequential hold cannot be represented by
+the unchanged reader/reducer/schema: **F-1 remains open** for the owner before
+U3d-1. A native terminal without accepted result may leave sequential
+active/running meaning stalled; cancellation is the existing exit, not an
+invented accepted result or durable hold reason.
+
+Each writer ends in its own selected scope: session, accept, transition, return
+or cancel; admission stays unchanged. Accept and transition have separate fresh
+original budgets. Transition reconstructs prior counters/selections from
+immutable transition records and output metadata, never prior output payloads.
+It calls the unchanged reducer. Unknown bounded outcomes persist as literal
+hold transitions; exhausted return/visit limits reserve zero successors.
+Exact accept replay selects the original accepted visit. Transition replay
+resolves the stored event for that operation and returns its original IDs even
+after later progress/cancellation. Conflicting result/operation identity refuses
+with no sequential changes. Return closes source/carrier and writes one
+`run_return` outbox record; it sends no notification. Cancellation fences an
+active or held run; native interruption and settlement remain later work.
+
+**Evidence writer contract (EM ROOT14640 evidence-sizing ruling):**
+`EVIDENCE_CONTENT_LIMIT=16384` bounds raw stored evidence bytes.
+`check_evidence_size(raw)` raises the same typed `SequentialRefusal` with code
+`sequential_evidence_limit_exceeded`, using length only before write, decode or
+digest. U3c has no evidence writer. Every future U3d-1 evidence writer must call
+this gate before insertion. Runtime-built evidence is distinct from agent/user
+node output, so this engineering bound does not change Decision 1 = B.
+
+The `evidence` selected scope accepts at most **two evidence IDs per call**.
+The existing 8192-ID request guard is unchanged. Each selected row's raw content
+length is checked by primary-key point read before content acquisition and the
+unchanged `_auxiliary` digest/decode validation. A stored 16,385-byte row or a
+three-ID call refuses with `sequential_evidence_limit_exceeded`. This local
+writer/validator contract does not change the 1 MiB cell bound or full-reader
+caps. The former 65,536-byte dense evidence probe cost 36,936 steps and exceeded
+SB-5; it motivated this bound and is no longer a declared-limit case.
+
+Sizing uses the two pinned fixtures, maximum escaped request, their declared
+16-visit ceiling, 64 KiB result envelopes, JSON outputs of 49,152 bytes,
+documents of 1,048,576 bytes, and evidence of 2 × 16,384 bytes. The binding
+observation is late JSON accept with a maximum envelope: 30,820 aggregate
+engine+validator steps; transition is 24,918,810 aggregate reserved bytes.
+Evidence measured 12,362 / 20,569 validator steps for one/two dense rows at
+admission and 21,909 for two rows after later progress. These remain below
+SB-5's unchanged half-caps: 32 MiB / 4096 rows / 32768 steps / 2.5 seconds.
+See the linked source spec for computed bounds and per-scope measurements.
+These are charged-work/structural observations, **not behavioral PASS** or hard
+RSS/time guarantees. The unchanged full oracle hits its existing inventory cap
+on the 8193-unrelated-task and long Coding history probes; those refusals remain
+explicit, with no reader acceptance or Decision2 resolution claimed.
+
+No live org DB, installation, migration, execution, assignment, deployment,
+restart, V3 or U3d/U3e/U4–U9 acceptance follows. General integration is SKIPPED
+THR243seq42; Python units stay RETIRED and Product E2E is not triggered. Required
+PR checks remain only Source Boundary Lint and Web Lint (Node 24), followed by
+independent full review/scoped QA and manager guarded merge. Product PRD parity
+belongs to product_lead / THR341 and is not edited or certified here.
+
+[U3c source spec](../../superpowers/specs/2026-11-08-sequential-engine-u3c.md).
