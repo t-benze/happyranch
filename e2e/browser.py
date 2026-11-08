@@ -1500,6 +1500,7 @@ class Browser:
         self.thread_pending_documents = set()
         self.thread_context = self.browser.new_context(locale="en-US", viewport={"width": 1440, "height": 900})
         self.thread_context.tracing.start(screenshots=True, snapshots=True, sources=False)
+        (self.controller.root / "thread-browser-started").touch()
         # F1: observe a genuinely returned context before any later acquisition.
         def context_closed(_context):
             self.thread_events.append(dict(event='context-close', at=time.monotonic()))

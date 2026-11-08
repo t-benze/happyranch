@@ -133,6 +133,9 @@ def private_checks(root: Path, row: dict, report: Report) -> None:
         ("E05", MANIFEST["variants"][48:53], lambda: validate_e05(row, observations, directory)),
         ("E07", MANIFEST["variants"][53:], lambda: validate_e07(row, observations, directory)),
     )
+    with report.check("harness", "variant-inventory"):
+        if set(row.get("variants", {})) - set(MANIFEST["variants"]):
+            raise AssertionError("Unexpected product variant")
     for group, names, reader in readers:
         started = time.monotonic()
         error = None
@@ -167,10 +170,17 @@ def prepare_diagnostics(root: Path, output: Path, report: Report, check: Callabl
     for path in (root / "screenshots").glob("*.png"):
         check()
         shutil.copyfile(path, output / "screenshots" / path.name)
+    # A genuine final observation covers failures outside a product assertion.
+    final_image = root / "raw/browser-final.png"
+    if final_image.is_file() and not list((output / "screenshots").glob("*.png")):
+        name = "launcher.png" if report.properties["exercise"] == "cancellation" else "setup.png"
+        shutil.copyfile(final_image, output / "screenshots" / name)
     # Capture can be unavailable after poisoned native transport. Never invent it.
-    if failed and (root / "browser-started").exists():
-        if not (output / "traces/main.zip").is_file() or not list((output / "screenshots").glob("*.png")):
-            raise RuntimeError("Browser failure diagnostics unavailable: trace or failure screenshot missing")
+    if failed and (root / "browser-started").exists() and (
+            not (output / "traces/main.zip").is_file()
+            or not list((output / "screenshots").glob("*.png"))
+            or ((root / "thread-browser-started").exists() and not (output / "traces/threads.zip").is_file())):
+        raise RuntimeError("Browser failure diagnostics unavailable: trace or failure screenshot missing")
 
 
 def main() -> int:
