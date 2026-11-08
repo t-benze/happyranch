@@ -1,5 +1,20 @@
 # PR800 staged credential and mode cases — THR228seq428
 
+## Current M1 scope — ROOT14460 / Founder THR327seq131
+
+The current CI job invokes only `m1_install_ready_uninstall.sh`, using the
+shipping install/start/READY/uninstall paths and a strict residue check with the
+documented whole-boot image exception. Fixture account/group/configs are removed
+after that check. Job-level push/ref/SHA/attempt admission replaces embedded API
+readmission and custom D1/N3 accounting. Retained n3_* files are not invoked.
+P000261/P000262 additionally write full original dependency facts to stderr;
+96/240-byte diagnostic projection and Go carrier remain unchanged. A retained
+native Go regression checks full stderr beyond those bounds without collecting
+retired Python units. Its focused retained command is
+`cd app/linux/tsnet-sidecar && go test -run '^TestDependencyRefusalFullStderr$' -count=1 -v .`.
+No hosted M1 or custody behavior PASS follows from static checks. Earlier harness cases below are historical/currently unselected; custody
+requirements and authentic prior failures remain unchanged.
+
 Current ROOT14238 continuation after original42160211291/1 follows the [run-status evidence contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#current-run-status-evidence-correction--thr327seq96--root14238). It supersedes stale checkpoint facts below: FOUR counted spent / ZERO reserved / TWO remaining, FIVE physical publications/runs; only42124081991/1 excluded. A000054 has ONE identifiable hosted admission refusal; rejected status/conclusion were NOT RETAINED and remain UNKNOWN. No queued/caching diagnosis is claimed. Existing anonymous GETs request Cache-Control:no-cache revalidation, with unchanged endpoint/order/count/auth and strict in_progress/null-conclusion admission. A closed private predicate records expected/observed status/conclusion at the rejecting source with explicit missing/invalid/unknown/unsafe/truncated states; actual status/fallback copies and independent upload preserve it within existing caps. No retry or new allowed state. Next-before Hprime110e5d7/tree5a10ea6e is separate from historical E87fa5d9/product base and unchanged actual productc0e79999/tree721f4d26; historical product/composition/accounting slices remain exact, with a new five-file admission slice. F1 raw acquisition closure, own-unit mounts, explicit edges/properties/auth/image/whole-boot retention stay intact. All shipping acceptance UNMET; source/static only, independent full review then separate scoped QA and manager assessment still required before manager effects. Required Source Boundary Lint + Web Lint(Node24) are static only; Python units RETIRED, suspended proofs NOT RUN, general integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342; no ad hoc E2E. Leaf effects/spend/reserve0, seq87 metadata hold/LRA1 HIGH deferred/unprobed/custody UNKNOWN persist. Earlier current/checkpoint prose remains historical.
 
 

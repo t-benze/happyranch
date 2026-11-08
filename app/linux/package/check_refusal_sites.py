@@ -43,6 +43,8 @@ def main() -> None:
     for delimiter in ('PYGUARD', 'PYTREE'):
         # Inspect the actual shipped heredocs, without importing/executing them.
         marker = "<<'" + delimiter + "'"
+        if marker not in workflow:
+            continue  # M1 removed these admission heredocs; product scan remains.
         start = workflow.index('\n', workflow.index(marker)) + 1
         end = workflow.index('          ' + delimiter + '\n', start)
         source = '\n'.join(line[10:] for line in workflow[start:end].splitlines())

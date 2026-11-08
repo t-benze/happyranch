@@ -134,6 +134,28 @@ _LOADED_SENSITIVE = frozenset(('Environment', 'EnvironmentFiles', 'PassEnvironme
                              'ExecStop', 'ExecStopPost'))
 
 
+def dependency_refusal_stderr(code: str, unit: str, prop: str, expected: str | None,
+                              observed: str | None, context: dict[str, str], *,
+                              missing: set[str] | None, unexpected: set[str] | None) -> None:
+    """Add full SAME-observation dependency facts; keep bounded receipts unchanged."""
+    # Only these refusal sites and dependency properties can disclose values.
+    # ascii() escapes control characters without clipping any unit/property text.
+    if code not in ("P000261", "P000262") or prop not in LOADED_CONTEXT + (
+            "DefaultDependencies", "StopWhenUnneeded", "RefuseManualStart", "RefuseManualStop"):
+        return
+    facts = {"expected": expected, "observed": observed,
+             "missing": None if missing is None else " ".join(sorted(missing)),
+             "unexpected": None if unexpected is None else " ".join(sorted(unexpected))}
+    facts.update((name, context[name]) for name in LOADED_CONTEXT if name in context)
+    try:
+        for name, value in facts.items():
+            sys.stderr.write(f"{code} {unit} {prop} {name}={ascii(value)}\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        # A diagnostic sink failure must not replace the original refusal.
+        pass
+
+
 def loaded_projection(value: object) -> list:
     if type(value) is not list or len(value) not in (13, 16):
         raise ValueError('private_loaded_invalid')

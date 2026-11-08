@@ -1,3 +1,15 @@
+Current ROOT14460 / Founder THR327seq131 selects the plain M1 hosted workflow
+in `.github/workflows/ci.yml` and `app/linux/package/m1_install_ready_uninstall.sh`.
+Only its job-level push/TASK-6475/after-SHA/attempt1 condition admits execution.
+No embedded API readmission, D1 custody proof, budget or N3 evidence accounting
+is invoked. Install/start/Type=notify READY/uninstall precede strict residue
+checks; documented whole-boot images are listed/shape/process-checked and retained.
+Fixture account/group/configs are separately attributed and removed afterward.
+P000261/P000262 add full SAME-observation dependency stderr; bounded diagnostics,
+security checks and image custody remain unchanged beyond Founder115 policy.
+PR lint/static and daily E2E are unchanged. Hosted M1 behavior NOT RUN here.
+Earlier checkpoint descriptions below are historical for current CI invocation.
+
 Founder THR327seq115 dependency policy: P000261 retains the exact explicit
 HappyRanch graph; P000262 rejects unexpected HappyRanch namespace/self/
 additional units and binding edges while permitting unrelated housekeeping.

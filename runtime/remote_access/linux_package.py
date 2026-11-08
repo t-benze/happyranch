@@ -9,6 +9,7 @@ from runtime.remote_access.package_diagnostics import (
     exception_refusal,
     exception_loaded,
     loaded_observation,
+    dependency_refusal_stderr,
     loaded_projection,
 )
 
@@ -3552,6 +3553,11 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
     def loaded_error(error: BaseException, prop: str, expected: str | None,
                      observed: str | None, relation: str = "equal", *, context=None,
                      missing=None, unexpected=None) -> BaseException:
+        refusal = exception_refusal(error)
+        if refusal is not None and refusal[1] in ("P000261", "P000262"):
+            dependency_refusal_stderr(refusal[1], unit, prop, expected, observed,
+                                      base if context is None else context,
+                                      missing=missing, unexpected=unexpected)
         if exception_loaded(error) is None:
             error._managed_package_loaded = loaded_observation(UNITS.index(unit), prop, relation,
                                                               expected, observed, base if context is None else context,
