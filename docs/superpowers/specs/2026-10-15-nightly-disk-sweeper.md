@@ -91,9 +91,21 @@ identities, canonical unique reciprocal pointers and literal task-root reconcili
 prove attribution and containment. An unreadable ordinary index, missing HEAD or
 changed/disappeared auxiliary file retains that proven registration with the exact
 metadata path and native cause; independently validated same-repository peers can
-progress. Missing mapping/entry/enumeration, aliases/hardlinks/special objects,
-conflicts and unknown descendant location retain the shared scope BEFORE Git;
-unexplained Git output discrepancies also refuse shared scope. Missing optional
+progress. Under Founder THR307seq285–290, a safe literal admin entry with final
+`gitdir` ENOENT may instead remain an unmapped residue after exhaustive census,
+stable identities and conventional-root reconciliation. An empty entry qualifies;
+a nonempty entry requires valid commondir and strict checks of every remaining
+object. Ancestor loss, non-ENOENT, unsafe metadata, conflicts and present
+unregistered conventional TASK roots still refuse the shared scope. The residue
+scope is its literal admin path with candidate_count=0 and the exact native
+`unknown_git_metadata:<gitdir>: <ENOENT>` cause. No W, candidate, HEAD, branch,
+linked row or allocation is inferred; zero counts known candidates only, leaving
+location/allocation unknown. Discovery remains partial and outcome incomplete.
+Residue and local errors latch for the attempt; healing never grants clearance.
+No residue repair, metadata cleanup or repository-wide prune is allowed. Git rows
+must still exactly equal the primary plus independently proven linked paths;
+only actual residue omissions are explained. Other discrepancies refuse shared scope.
+Missing optional
 `task-tmp`/`repos` directories
 are absent; inaccessible or invalid ones are unknown.
 
@@ -249,7 +261,8 @@ primary-root ownership, ordinary no-follow primary `.git`, and a complete
 `.git/worktrees` inventory reconciled with Git output and literal task-worktree
 roots. The common/admin/entry directories and exhaustive file/name census must
 be ordinary and unaliased, with canonical unique matching `gitdir`, `commondir`
-and worktree `.git` backlinks. Unknown mapping or unsafe metadata refuses the
+and worktree `.git` backlinks, apart from the safe unmapped gitdir-ENOENT
+residues described above. Other unknown mapping or unsafe metadata refuses the
 shared scope before Git; unexplained Git output differences also refuse shared
 scope. With this proof, ordinary
 local read/change errors protect only their proven registration. A missing HEAD's
@@ -272,8 +285,21 @@ reciprocal census, including locally uncertain registrations, is consumed with
 the existing deadline; discovery's selected
 task-root subset is insufficient. Literal path components define ancestry, self
 is excluded and siblings such as TASK-1/TASK-10 do not contain one another.
-Other Git-ignored contents inside an admitted tree are disposable.
-“Re-creatable” refers to committed contents only.
+Rule4-prime is unconditional across repositories and orgs, even with no residue
+anywhere: either completed existing admission snapshot containing a non-root
+entry named exactly `.git` retains the worktree. Files, directories, live and
+dangling symlinks at any depth match, including ignored paths. Only the candidate's
+own relative root `.git` is exempt. The latched reason is
+`possible_nested_worktree:<first sorted literal absolute .git path>` without
+resolving links or reading nested content. Existing linked_descendant retains
+precedence. Check both snapshots at every initial, fresh pre-removal, pre-repair
+and pre-retry admission, before generic snapshot mismatch can mask the reason.
+No subsequent removal/repair/retry starts; a prior begun effect remains
+partial_or_unknown with its authentic error and earlier allocation if measured.
+This consumes existing snapshots only: no scan, provenance input or cross-org
+pre-pass. Earlier orgs are therefore protected before any later residue census.
+Scratch seq194 is unchanged. Other Git-ignored contents inside an admitted tree
+are disposable. “Re-creatable” refers to committed contents only.
 
 Use `git worktree remove` without `--force`; keep branches. After ordinary failure
 there is at most one contained permission repair and retry, each with full fresh

@@ -1649,9 +1649,222 @@ def registration_local_peers():
     return observations
 
 
+def residue_input(f, repo, path, *, empty=False, name=None, keep=False):
+    """Fixture input only; no historical location is passed to the sweeper."""
+    entry = repo / '.git/worktrees' / path.name
+    if not keep:
+        shutil.rmtree(path)
+    if empty:
+        for child in entry.iterdir():
+            if child.is_dir(): shutil.rmtree(child)
+            else: child.unlink()
+    else:
+        (entry / 'gitdir').unlink()
+    if name:
+        entry.rename(entry.with_name(name)); entry = entry.with_name(name)
+    return entry
+
+
+def residue_scope(report, entry):
+    scopes = [s for s in report['discovery_scopes'] if s['path'] == str(entry)]
+    import errno
+    cause = str(FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), 'gitdir'))
+    assert scopes == [dict(path=str(entry), candidate_count=0,
+                           reason=f'unknown_git_metadata:{entry / "gitdir"}: {cause}')], report
+    assert scopes[0] in report['unknown_scope']['discovery_scopes']
+    assert all(c['path'] != str(entry) for c in report['candidates']), report
+
+
+def counted(report, n, r=0, u=0, m=0, *, partial=True):
+    expected = dict(known_candidate_count=n, known_unreached_count=0, retained_count=r,
+                    partial_unknown_count=u, retained_allocation_unknown_count=m,
+                    physical_freed_bytes=None, discovery='partial' if partial else 'complete',
+                    outcome='error' if u else 'incomplete' if partial else 'complete',
+                    unreached=None if partial else 0)
+    assert {k: report[k] for k in expected} == expected, (expected, report)
+    if partial: assert report.get('prune_retained', []) == [], report
+
+
+def residue_cases(*, unsafe=False):
+    """C19 residue table: accepted cases1-15/17/18; real filesystem/Git only."""
+    observations, failures = [], []
+    positive = ('empty', 'valid', 'renamed', 'multiple', 'local_index', 'local_head', 'outside')
+    negative = ('present_dir', 'present_file', 'present_live', 'present_dangling',
+                'other_dir', 'other_file', 'other_live', 'other_dangling',
+                'gitdir_denied', 'gitdir_live', 'gitdir_dangling', 'gitdir_hardlink',
+                'gitdir_dir', 'gitdir_fifo', 'gitdir_socket',
+                'commondir_missing', 'commondir_denied', 'commondir_bad',
+                'commondir_live', 'commondir_hardlink', 'commondir_fifo',
+                'aux_denied', 'aux_live', 'aux_hardlink', 'aux_fifo', 'head_dir', 'index_dir',
+                'prefix_alias', 'prefix_denied', 'root_denied', 'entry_race', 'names_race',
+                'ancestor_loss', 'leaf_replaced', 'git_omit', 'git_add', 'git_duplicate',
+                'git_duplicate_field', 'git_alter', 'head_zero', 'head_bad')
+    unsafe_rows = tuple(k for k in negative if k.startswith(('gitdir_live','gitdir_dangling','gitdir_hardlink','gitdir_dir','gitdir_fifo','gitdir_socket','commondir_live','commondir_hardlink','commondir_fifo','aux_live','aux_hardlink','aux_fifo','head_dir','index_dir')))
+    selected = unsafe_rows if unsafe else (*positive, *(k for k in negative if k not in unsafe_rows))
+    for kind in selected:
+        for preview in (False, True):
+            label = f'C19-residue:{kind}:{preview}'
+            try:
+                with fixture() as f, ExitStack() as stack:
+                    repo, w = f.worktree('TASK-12087', 'a-project')
+                    _, b = f.worktree('TASK-12088', 'a-project')
+                    # Reach healthy admission before applying any fixture damage.
+                    d = time.monotonic() + 12
+                    ds.admit(dict(path=str(b), repo=str(repo), workspace=str(f.workspace), phase='worktree'),
+                             ds.Evidence(f.org, d), d, now=NOW)
+                    second = f.worktree('TASK-12086', 'a-project')[1] if kind == 'multiple' else None
+                    e = residue_input(f, repo, w, empty=kind in ('empty', 'multiple'),
+                                      name='safe-non-task' if kind == 'renamed' else None,
+                                      keep=kind == 'outside' or kind.startswith('present_'))
+                    if kind == 'outside':
+                        outside = f.base / 'outside-every-candidate'; w.rename(outside)
+                    entries = [e]
+                    if kind == 'multiple':
+                        entries.append(residue_input(f, repo, second, empty=True))
+                    if kind in ('local_index', 'local_head', 'head_zero', 'head_bad'):
+                        _, q = f.worktree('TASK-12089', 'a-project')
+                        qe = repo / '.git/worktrees' / q.name
+                        if kind.startswith('local_'):
+                            stack.enter_context(damaged_registration(f, repo, q,
+                                                'unreadable_index' if kind == 'local_index' else 'missing_head'))
+                        else: (qe / 'HEAD').write_text('0' * 40 + '\n' if kind == 'head_zero' else 'bad\n')
+                    x = z = None
+                    if kind in negative:
+                        x = f.scratch('TASK-1'); safe, z = f.worktree('TASK-2', 'z-safe')
+                    sentinel = f.base / 'outside-sentinel'; sentinel.write_bytes(b'keep')
+                    if kind.startswith(('present_', 'other_')):
+                        target = w if kind.startswith('present_') else w.with_name('TASK-12090')
+                        form = kind.split('_')[1]
+                        if os.path.lexists(target): shutil.rmtree(target)
+                        if form == 'dir': target.mkdir()
+                        elif form == 'file': target.write_text('unregistered')
+                        else: target.symlink_to(sentinel if form == 'live' else sentinel.with_name('absent'))
+                    elif kind.startswith(('gitdir_', 'commondir_', 'aux_')):
+                        category, form = kind.split('_')
+                        target = e / ('gitdir' if category == 'gitdir' else 'commondir' if category == 'commondir' else 'note')
+                        if os.path.lexists(target): target.unlink()
+                        if form in ('denied', 'bad', 'hardlink'):
+                            target.write_text('bad\n' if form == 'bad' else '../..\n')
+                            if form == 'denied':
+                                target.chmod(0)
+                                try: target.read_bytes()
+                                except PermissionError as exc: assert exc.errno == 13
+                                else: raise AssertionError('ordinary UID EACCES not reached')
+                            if form == 'hardlink': os.link(target, f.base / 'alias')
+                        elif form in ('live', 'dangling'): target.symlink_to(sentinel if form == 'live' else sentinel.with_name('absent'))
+                        elif form == 'dir': target.mkdir()
+                        elif form == 'fifo': os.mkfifo(target)
+                        elif form == 'socket':
+                            endpoint = socket.socket(socket.AF_UNIX)
+                            fd = os.open(e, os.O_RDONLY | os.O_DIRECTORY)
+                            try: endpoint.bind(f'/proc/self/fd/{fd}/' + target.name)
+                            finally: os.close(fd)
+                            stack.callback(endpoint.close)
+                    elif kind in ('head_dir', 'index_dir'):
+                        target = e / kind.split('_')[0].upper() if kind == 'head_dir' else e / 'index'
+                        target.unlink(); target.mkdir()
+                    elif kind == 'prefix_alias':
+                        prefix = repo / '.claude'; held = f.base / 'held-prefix'; prefix.rename(held); prefix.symlink_to(held)
+                    elif kind in ('prefix_denied', 'root_denied'):
+                        target = repo / ('.claude' if kind == 'prefix_denied' else '.claude/worktrees')
+                        target.chmod(0)
+                    # Independent preservation oracle; no-follow snapshot also
+                    # records exact times/nlink/inodes, but never reads endpoints.
+                    def residue_bytes():
+                        return (fs.snapshot(e, time.monotonic() + 12), candidate_contents(e))
+                    before = residue_bytes() if kind in positive else None
+                    refs = f.git(repo, 'show-ref'); calls = []; events = []
+                    realgit, realmeta, realsnap, realfile = ds.git, ds._registration_metadata, ds.snapshot, ds._metadata_file
+                    def metadata(root, deadline):
+                        value = realmeta(root, deadline)
+                        if root == repo:
+                            events.append('census')
+                            if kind == 'entry_race' and events.count('census') == 1:
+                                e.rename(e.with_name('renamed-entry'))
+                        return value
+                    def snap(path, deadline, **kw):
+                        value = realsnap(path, deadline, **kw)
+                        if Path(path) == repo / '.git/worktrees' and not events and kind == 'names_race':
+                            (repo / '.git/worktrees/new-entry').mkdir(); events.append('names changed')
+                        return value
+                    def read(path, deadline, **kw):
+                        if Path(path) == e / 'gitdir' and not events:
+                            if kind == 'ancestor_loss': e.rename(e.with_name('lost')); events.append('parent lost')
+                            if kind == 'leaf_replaced': (e / 'gitdir').symlink_to(sentinel); events.append('leaf replaced')
+                        return realfile(path, deadline, **kw)
+                    def git(root, deadline, *args):
+                        calls.append((str(root), args)); raw = realgit(root, deadline, *args)
+                        if root == repo and args[:2] == ('worktree', 'list') and kind.startswith('git_'):
+                            blocks = raw.strip('\0').split('\0\0')
+                            peer = next(v for v in blocks if v.startswith('worktree ' + str(b) + '\0'))
+                            if kind == 'git_omit': blocks.remove(peer)
+                            elif kind == 'git_duplicate': blocks.append(peer)
+                            elif kind == 'git_duplicate_field': blocks[blocks.index(peer)] = peer + '\0HEAD ' + 'a' * 40
+                            elif kind == 'git_add': blocks.append(peer.replace(str(b), str(w)))
+                            elif kind == 'git_alter': blocks[blocks.index(peer)] = peer.replace(str(b), str(w))
+                            raw = '\0\0'.join(blocks) + '\0\0'; events.append('captured-wire fault')
+                        return raw
+                    with patch.object(ds, 'git', git), patch.object(ds, '_registration_metadata', metadata), \
+                            patch.object(ds, 'snapshot', snap), patch.object(ds, '_metadata_file', read):
+                        if preview:
+                            with refuse_mutations(), no_endpoint_io(): report = f.sweep('dry_run', seconds=20)
+                        else:
+                            with no_endpoint_io(): report = f.sweep(seconds=20)
+                    if kind in ('prefix_denied','root_denied'):
+                        assert stat.S_IMODE(target.stat().st_mode) == 0
+                        target.chmod(0o755)  # fixture-only restoration for physical postconditions
+                        assert any('Permission denied' in v['reason'] for v in report['discovery_scopes']), report
+                    if kind in positive:
+                        local = kind in ('local_index', 'local_head')
+                        counted(report, 2 if local else 1, int(local), m=int(local))
+                        for entry in entries: residue_scope(report, entry)
+                        assert row(report, b)['state'] == ('eligible' if preview else 'removed'), report
+                        if not preview:
+                            assert not os.path.lexists(b) and row(report, b)['removed_attributable_bytes'] > 0
+                        if local:
+                            retained(report, q, str(qe / ('index' if kind == 'local_index' else 'HEAD')))
+                        after = residue_bytes()
+                        assert before[1] == after[1] and all(fs.signature(before[0][k]) == fs.signature(after[0][k]) for k in before[0])
+                        current = ds.registrations(repo, time.monotonic() + 12)
+                        assert all(str(entry) not in current.linked for entry in entries)
+                        expected = {str(repo)} | ({str(b)} if preview else set()) | ({str(q)} if local else set())
+                        assert set(current) == expected and set(current.linked) == expected - {str(repo)}
+                        if kind == 'outside': assert outside.exists() and (outside / '.git').is_file()
+                    else:
+                        counted(report, 2, partial=True)
+                        assert not any(c.get('repo') == str(repo) for c in report['candidates']), report
+                        assert b.exists() and row(report, z)['state'] == ('eligible' if preview else 'removed')
+                        assert row(report, x)['state'] == ('eligible' if preview else 'removed')
+                        scope = next(v for v in report['discovery_scopes'] if v['path'] == str(repo))
+                        assert scope['candidate_count'] is None, scope
+                        if kind.startswith(('present_', 'other_')): assert 'unknown_unregistered_task_worktree:' in scope['reason'], scope
+                        if kind.endswith(('_fifo','_socket')):
+                            # The existing complete snapshot reports this native
+                            # category before the file census can emit a leaf path.
+                            assert scope['reason'] == f'unknown_git_registrations:{e.parent}: unknown_special_entry', scope
+                        elif kind.startswith(('gitdir_', 'commondir_', 'aux_')):
+                            assert str(target) in scope['reason'], scope
+                            if kind.endswith('_denied'): assert 'Permission denied' in scope['reason'], scope
+                        if kind in ('head_dir','index_dir'): assert 'nonregular_registration_metadata:' + str(target) in scope['reason'], scope
+                        if kind == 'head_bad': assert 'malformed_head:' + str(qe / 'HEAD') in scope['reason'], scope
+                        if kind.startswith('git_'):
+                            category = 'duplicate_git_registration_field:' if kind == 'git_duplicate_field' else 'unknown_git_registration:' if kind == 'git_duplicate' else 'unknown_git_registration_inventory:'
+                            assert category in scope['reason'] and 'captured-wire fault' in events, scope
+                        elif kind == 'head_zero': assert 'unknown_git_registration_head:' in scope['reason'], scope
+                        else: assert not any(root == str(repo) for root, _ in calls), calls
+                    assert not any(args[:2] == ('worktree', 'prune') for _, args in calls), calls
+                    assert sentinel.read_bytes() == b'keep' and refs == f.git(repo, 'show-ref')
+                    observations.append(dict(row=label, result='PASS', events=events, report_counts={k:report[k] for k in ('known_candidate_count','retained_count','partial_unknown_count')}))
+            except Exception as exc:
+                failures.append(dict(row=label, error=str(exc)))
+    for failure in failures: print(json.dumps(dict(regression=failure)), flush=True)
+    assert not failures, failures
+    return observations
+
+
 def c19():
     """Git exit0 omissions must not create empty/complete inventories."""
-    observed=[registration_lock_peer(), *registration_local_peers()]
+    observed=[registration_lock_peer(), *registration_local_peers(), *residue_cases()]
     for kind in ('unreadable_admin','unreadable_entry','unreadable_gitdir','missing_admin','missing_entry','missing_gitdir','missing_commondir','malformed_head','malformed_gitdir','extra_entry'):
         with fixture() as f:
             p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2','a-uncertain')
@@ -1725,7 +1938,7 @@ def target_mode(repo,path,kind):
 
 def c20():
     """Valid alias escape and pointer conflicts stop BEFORE Git consumes them."""
-    observed=[]
+    observed=residue_cases(unsafe=True)
     for kind in ('admin_alias','entry_alias','gitdir_alias','commondir_alias','backlink_alias','conflicting_backlink','pointer_hardlink','index_hardlink','duplicate_target'):
         with fixture() as f:
             p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2')
@@ -1939,15 +2152,17 @@ def uncertain_descendants():
                             assert not os.path.lexists(sibling) and not os.path.lexists(repo / '.git/worktrees' / sibling.name)
                             assert str(sibling) not in f.git(repo, 'worktree', 'list', '--porcelain', '-z')
                     else:
-                        assert not any(root == str(repo) for root, _ in calls), calls
-                        assert outer.exists() and sibling.exists()
-                        assert any(scope['path'] == str(repo) for scope in report['discovery_scopes']), report
+                        counted(report, 2, 1, m=1)
+                        residue_scope(report, entry)
+                        retained(report, outer, 'possible_nested_worktree:' + str(baseline / '.git'))
+                        assert row(report, sibling)['state'] == ('eligible' if preview else 'removed'), report
+                        assert sibling.exists() is preview and outer.exists()
                     assert not any(args[:2] == ('worktree', 'prune') for _, args in calls), calls
                     assert baseline.exists()
                 assert before == candidate_contents(outer, repo / '.git/worktrees' / outer.name, entry)
                 assert refs == f.git(repo, 'show-ref')
                 observations.append(dict(case='C21-N', kind=kind, preview=preview, canonical_descendant=str(baseline),
-                                         sibling='protected/shared' if kind == 'missing_gitdir' else 'eligible' if preview else 'removed'))
+                                         sibling='eligible' if preview else 'removed'))
     return observations
 
 
@@ -2076,10 +2291,225 @@ def local_registration_transitions():
     return observations
 
 
+def nested_input(f, repo, outer, kind='file'):
+    """Literal ignored names; no contents are needed by production's guard."""
+    d = outer / 'ignored/a/deep/.git'; d.parent.mkdir(parents=True, exist_ok=True)
+    if kind == 'file': d.write_text('untrusted git pointer\n')
+    elif kind == 'dir': d.mkdir(); (d / 'keep').write_text('nested metadata')
+    elif kind in ('live', 'dangling'):
+        d.symlink_to(outer / 'source' if kind == 'live' else outer / 'absent')
+    else: raise AssertionError(kind)
+    return d
+
+
+def nested_cases():
+    """C21 extended snapshot/transition table, accepted16/18/21/22/23."""
+    observations, failures = [], []
+    table = [(scope, when, form) for scope in ('same', 'cross', 'none')
+             for when in ('initial', 'shallow', 'fresh', 'repair', 'retry', 'second_snapshot', 'heal')
+             for form in (('file', 'dir', 'live', 'dangling') if when in ('initial', 'shallow') else ('file','dir','dangling') if when in ('fresh','repair','retry') else ('file',))]
+    for scope, when, form in table:
+        label = f'C21-nested:{scope}:{when}:{form}'
+        try:
+            with fixture() as f:
+                repo, c = f.worktree('TASK-1', 'a-container')
+                _, q = f.worktree('TASK-2', 'a-container')
+                e = None
+                if scope != 'none':
+                    p = repo if scope == 'same' else f.worktree('TASK-3', 'z-residue')[0]
+                    if scope == 'same': _, w = f.worktree('TASK-3', 'a-container')
+                    else: w = p / '.claude/worktrees/TASK-3'
+                    e = residue_input(f, p, w)
+                # Actual first admission is clean; make every later fixture
+                # change at an existing production observation/action boundary.
+                (c / 'ignored').mkdir()
+                (c / 'ignored/readonly').mkdir(); (c / 'ignored/readonly').chmod(0o555)
+                refs = f.git(repo, 'show-ref'); events = []; calls = []; repairs = []; seen = []; preserved = []
+                d = c / ('ignored/.git' if when == 'shallow' else 'ignored/a/deep/.git')
+                realadmit, realsnap, realgit, realmutate = ds.admit, ds.snapshot, ds.git, ds.mutate
+                def add():
+                    # Reverse creation order still selects the lexical first.
+                    other = c / 'ignored/z/.git'; other.parent.mkdir(); other.write_text('other')
+                    actual = nested_input(f, repo, c, form)
+                    if when == 'shallow': actual.rename(d)
+                    else: assert actual == d
+                    preserved.append(candidate_contents(c, repo / '.git/worktrees' / c.name))
+                    events.append('introduced literal nested .git')
+                if when in ('initial', 'shallow', 'heal'): add()
+                os.utime(c, (time.time() - 7200, time.time() - 7200))
+                snapshots = []
+                def snap(path, deadline, **kw):
+                    value = realsnap(path, deadline, **kw)
+                    if Path(path) == c:
+                        snapshots.append(value)
+                        if when == 'second_snapshot' and len(snapshots) == 1: add()
+                        if any(k != '.git' and Path(k).name == '.git' for k in value): seen.append('completed match')
+                    return value
+                def admit(candidate, evidence, deadline, **kw):
+                    if candidate['path'] == str(c) and when == 'fresh' and 'first admitted' in events:
+                        add()
+                    value = realadmit(candidate, evidence, deadline, **kw)
+                    if candidate['path'] == str(c): events.append('first admitted')
+                    if candidate['path'] == str(q) and when == 'heal' and 'fixture healed' not in events:
+                        # The explicit fixture change occurs AFTER C's actual
+                        # retained checkpoint; later Q admission cannot clear it.
+                        assert seen and d.exists(); d.unlink(); events.append('fixture healed')
+                    return value
+                def git(root, deadline, *args):
+                    calls.append((str(root), args))
+                    if args[:2] == ('worktree', 'remove') and args[-1] == str(c) and when in ('repair', 'retry'):
+                        # Genuine exit129 before mutation, not a permission failure.
+                        try: return realgit(root, deadline, 'worktree', 'remove', '--invalid-fixture-option', str(c))
+                        finally:
+                            events.append('real Git exit129')
+                            if when == 'repair': add()
+                    return realgit(root, deadline, *args)
+                def mutate(path, tree, deadline, **kw):
+                    value = realmutate(path, tree, deadline, **kw)
+                    if path == c:
+                        assert kw.get('remove') is False and value, value
+                        repairs.append(value)
+                        if when == 'retry': add()
+                    return value
+                with patch.object(ds, 'admit', admit), patch.object(ds, 'snapshot', snap), \
+                        patch.object(ds, 'git', git), patch.object(ds, 'mutate', mutate):
+                    report = f.sweep(seconds=25)
+                prior = when in ('repair', 'retry')
+                counted(report, 2, 0 if prior else 1, int(prior), int(when in ('initial','shallow','heal','second_snapshot')), partial=scope != 'none')
+                r = row(report, c)
+                assert r['state'] == ('partial_or_unknown' if prior else 'retained'), r
+                assert r['reason'] == 'possible_nested_worktree:' + str(d), r
+                assert report['retained_reasons'] == {'possible_nested_worktree': 1}, report
+                assert seen and c.exists() and row(report, q)['state'] == 'removed' and not q.exists()
+                assert r.get('removed_attributable_bytes') is None and not r.get('retry_count'), r
+                attempts = [args for _,args in calls if args[:2] == ('worktree','remove') and args[-1] == str(c)]
+                assert len(attempts) == int(prior) and len(repairs) == int(when == 'retry'), (calls, repairs)
+                assert bool(r.get('first_remove_error')) == prior
+                if e: residue_scope(report, e)
+                else:
+                    assert report['discovery_scopes'] == [] and report.get('prune_retained') == [str(repo)], report
+                if when != 'heal': assert preserved[-1] == candidate_contents(c, repo / '.git/worktrees' / c.name)
+                else: assert 'fixture healed' in events and not d.exists()
+                assert refs == f.git(repo, 'show-ref')
+                assert not any(args[:2] == ('worktree','prune') for _,args in calls), calls
+                observations.append(dict(row=label, events=events, snapshots=len(snapshots), result='PASS', reason=r['reason']))
+        except Exception as exc: failures.append(dict(row=label, error=str(exc)))
+    for failure in failures: print(json.dumps(dict(regression=failure)), flush=True)
+    assert not failures, failures
+    # Real cross-repository P/W inside Z/C: P alone loses its pointer.
+    for preview in (False, True):
+        with fixture() as f:
+            z, c = f.worktree('TASK-1', 'a-Z'); _, q = f.worktree('TASK-2', 'a-Z')
+            p, original = f.worktree('TASK-3', 'z-P')
+            f.git(p, 'worktree', 'remove', str(original))
+            w = c / 'ignored/nested'; w.parent.mkdir()
+            f.git(p, 'worktree', 'add', '--detach', str(w), 'HEAD')
+            e = p / '.git/worktrees/nested'; (e / 'gitdir').unlink()
+            before = candidate_contents(c, e); refs = f.git(p,'show-ref')
+            with refuse_mutations() if preview else ExitStack(): report = f.sweep('dry_run' if preview else 'on')
+            counted(report,2,1,m=1); residue_scope(report,e)
+            retained(report,c,'possible_nested_worktree:'+str(w/'.git'))
+            assert row(report,q)['state'] == ('eligible' if preview else 'removed')
+            assert before == candidate_contents(c,e) and refs == f.git(p,'show-ref')
+            observations.append(dict(row='C21-real-P-Z',preview=preview,result='PASS'))
+    return observations
+
+
+def residue_topology_transitions():
+    """Existing pre/post-Git censuses must include unmapped entry identity."""
+    observations=[]
+    for when in ('pre_git','post_git'):
+        for kind in ('add','remove','rename','restore_pointer','unregistered_root','replace_inode'):
+            with fixture() as f:
+                repo,w=f.worktree('TASK-1','a-unknown');_,b=f.worktree('TASK-2','a-unknown')
+                e=residue_input(f,repo,w); x=f.scratch('TASK-3');_,z=f.worktree('TASK-4','z-safe')
+                refs=f.git(repo,'show-ref');events=[];calls=[]
+                realmeta,realgit=ds._registration_metadata,ds.git
+                def change():
+                    if kind=='add': (e.parent/'new-empty').mkdir()
+                    elif kind=='remove': shutil.rmtree(e)
+                    elif kind=='rename': e.rename(e.with_name('renamed'))
+                    elif kind=='restore_pointer': (e/'gitdir').write_text(str(w/'.git')+'\n')
+                    elif kind=='unregistered_root': w.mkdir()
+                    else:
+                        e.rename(e.with_name('held'));e.mkdir()
+                    events.append(kind)
+                def metadata(root,deadline):
+                    value=realmeta(root,deadline)
+                    if root==repo and not events and when=='pre_git': change()
+                    return value
+                def git(root,deadline,*args):
+                    calls.append((str(root),args));value=realgit(root,deadline,*args)
+                    if root==repo and args[:2]==('worktree','list') and not events and when=='post_git': change()
+                    return value
+                with patch.object(ds,'_registration_metadata',metadata),patch.object(ds,'git',git):report=f.sweep()
+                counted(report,2)
+                assert events==[kind] and b.exists(),(events,report)
+                assert row(report,x)['state']==row(report,z)['state']=='removed'
+                assert not any(c.get('repo')==str(repo) for c in report['candidates']),report
+                assert any(v['path']==str(repo) and v['candidate_count'] is None for v in report['discovery_scopes']),report
+                assert not any(root==str(repo) and args[:2] in (('worktree','remove'),('worktree','prune')) for root,args in calls)
+                assert refs==f.git(repo,'show-ref')
+                observations.append(dict(row='C21-residue-topology',when=when,kind=kind,result='PASS'))
+    return observations
+
+
+def residue_transitions():
+    observations = []
+    for kind in ('post_empty', 'post_valid', 'post_own', 'post_bad', 'post_root', 'healed', 'removed', 'replaced'):
+        with fixture() as f:
+            repo, b = f.worktree('TASK-1')
+            entry = None
+            if not kind.startswith('post_'):
+                _, w = f.worktree('TASK-2'); entry = residue_input(f,repo,w)
+            refs = f.git(repo,'show-ref'); calls = []; changed = []; preserved = []
+            realdiscover, realgit = ds.discover, ds.git
+            def discover(*args, **kw):
+                value = realdiscover(*args, **kw)
+                if not kind.startswith('post_'):
+                    residue_scope(kw['inventory'], entry) if 'unknown_scope' in kw['inventory'] else None
+                    if kind == 'healed': (entry/'gitdir').write_text(str(w/'.git')+'\n')
+                    elif kind == 'removed': shutil.rmtree(entry)
+                    else:
+                        entry.rename(entry.with_name('held')); entry.mkdir()
+                    changed.append(True)
+                return value
+            def git(root, deadline, *args):
+                calls.append(args); result = realgit(root,deadline,*args)
+                if kind.startswith('post_') and args[:2] == ('worktree','remove') and args[-1] == str(b):
+                    assert not os.path.lexists(b)
+                    e = repo/'.git/worktrees'/('TASK-1' if kind == 'post_own' else 'new-residue')
+                    e.mkdir(parents=True)
+                    if kind in ('post_valid','post_bad'):
+                        (e/'commondir').write_text('../..\n' if kind == 'post_valid' else 'bad\n')
+                        (e/'note').write_text('ordinary')
+                    if kind == 'post_root': b.mkdir()  # actual post-success fixture input
+                    preserved.append((e,candidate_contents(e))); changed.append(True)
+                return result
+            with patch.object(ds,'discover',discover), patch.object(ds,'git',git): report=f.sweep()
+            assert changed and report['discovery']=='partial' and report['unreached'] is None,report
+            assert not any(args[:2]==('worktree','prune') for args in calls)
+            if kind.startswith('post_'):
+                e,before=preserved[0]; assert before==candidate_contents(e)
+                if kind not in ('post_bad','post_root'):
+                    counted(report,1);residue_scope(report,e)
+                    assert row(report,b)['state']=='removed' and row(report,b)['removed_attributable_bytes']>0,report
+                else:
+                    counted(report,1,u=1);assert row(report,b)['state']=='partial_or_unknown'
+                    assert not row(report,b).get('removed_attributable_bytes')
+            else:
+                counted(report,1,1,m=1)
+                assert b.exists() and row(report,b)['state']=='retained'
+                assert any(v['path']==str(entry) and v['candidate_count']==0 for v in report['discovery_scopes'])
+            assert refs==f.git(repo,'show-ref')
+            observations.append(dict(row='C21-residue-transition',kind=kind,result='PASS'))
+    return observations
+
+
 def c21():
     """Transitions wrap actual shipping boundaries, with real Git failures."""
     from contextlib import ExitStack
-    observations=[*descendant_cases(), *uncertain_descendants(), *local_registration_transitions()]
+    observations=[*descendant_cases(), *uncertain_descendants(), *local_registration_transitions(), *nested_cases(), *residue_topology_transitions(), *residue_transitions()]
     for when in ('after_discovery','after_failure','after_repair','partial_failure'):
         for kind in ('admin_alias','unreadable_admin','conflicting_backlink'):
             with fixture() as f, ExitStack() as changes:
@@ -2162,6 +2592,16 @@ def c21():
 
 def c22():
     """Primary-only absent-admin control and metadata enumeration deadline."""
+    for empty in (False, True):
+        with fixture() as f:
+            repo,w=f.worktree('TASK-1');e=residue_input(f,repo,w,empty=empty)
+            before=candidate_contents(e);calls=[];real=ds.git
+            def git(root,deadline,*args):calls.append(args);return real(root,deadline,*args)
+            with patch.object(ds,'git',git):report=f.sweep()
+            counted(report,0);residue_scope(report,e)
+            assert report['candidates']==[] and before==candidate_contents(e)
+            assert all(v['measured_allocated_bytes']==v['removed_attributable_bytes']==0 for v in report['phases'].values())
+            assert not any(args[:2]==('worktree','prune') for args in calls)
     with fixture() as f:
         repo,q=f.worktree('TASK-1');f.git(repo,'worktree','remove',str(q))
         admin=repo/'.git/worktrees'
@@ -2459,6 +2899,67 @@ def correction_policy():
                 discovery='missing-file org discovered through actual runtime wrapper; no OrgState admission claim')
 
 
+def projection_input(f, kind, c=None):
+    """Extend existing preview/scheduled fixtures, never production admission."""
+    if c is None: repo, c = f.worktree('TASK-2')
+    else: repo = c.parent.parent.parent
+    e = d = q = None
+    if kind != 'root' and kind != 'none':
+        p, w = f.worktree('TASK-3', 'z-P' if kind == 'cross' else repo.name)
+        if kind == 'cross':
+            f.git(p,'worktree','remove',str(w))
+            w = c/'ignored/foreign'; w.parent.mkdir()
+            f.git(p,'worktree','add','--detach',str(w),'HEAD')
+            e=p/'.git/worktrees/foreign'; (e/'gitdir').unlink(); d=w/'.git'
+        else: e = residue_input(f,p,w)
+    if kind in ('same','none'): d = nested_input(f,repo,c)
+    if kind == 'root':
+        (c/'ignored').mkdir(); (c/'ignored/.gitignore').write_text('ordinary name')
+    if kind in ('same','cross','none','local'):
+        _,q=f.worktree('TASK-4',repo.name)
+    if kind=='local':
+        (repo/'.git/worktrees'/c.name/'index').chmod(0)
+    return repo,c,q,e,d
+
+
+def projection_assert(report, repo, c, q, e, d, *, preview, scratch=0):
+    held = q is not None
+    counted(report, 1 + int(held) + scratch, int(held), m=int(held), partial=e is not None)
+    if e: residue_scope(report,e)
+    if held:
+        retained(report,c, 'possible_nested_worktree:'+str(d) if d else str(repo/'.git/worktrees'/c.name/'index'))
+    else: assert row(report,c)['state']==('eligible' if preview else 'removed'),report
+    if q: assert row(report,q)['state']==('eligible' if preview else 'removed'),report
+    if d:
+        assert row(report,c)['reason']=='possible_nested_worktree:'+str(d),report
+        assert report['retained_reasons']=={'possible_nested_worktree':1},report
+
+
+def residue_preview():
+    observations=[]
+    for kind in ('residue','local','same','cross','none','root'):
+        with fixture() as f:
+            repo,c,q,e,d=projection_input(f,kind)
+            # Real unreadable-index bytes cannot be read by the preservation
+            # oracle. Capture its ordinary mode separately after the run.
+            before=candidate_contents(c, *([e] if e else [])) if kind!='local' else None
+            refs=f.git(repo,'show-ref'); calls=[];real=ds.git
+            def git(root,deadline,*args): calls.append(args);return real(root,deadline,*args)
+            with patch.object(ds,'git',git),refuse_mutations():
+                batch,summary=policy_sweep(f,dry_run=True)
+                ds._manual_audit(batch,[str(f.org)],summary)
+            report=batch['orgs'][0]
+            projection_assert(report,repo,c,q,e,d,preview=True)
+            saved=f.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+            assert len(saved)==1 and saved[0][:2]==('', 'daemon')
+            assert json.loads(saved[0][2])['org']==report and json.loads(summary.read_text())==batch
+            assert not any(args[:2] in (('worktree','remove'),('worktree','prune')) for args in calls)
+            if before: assert before==candidate_contents(c,*([e] if e else []))
+            assert refs==f.git(repo,'show-ref')
+            observations.append(dict(row='correction5-residue',kind=kind,result='PASS'))
+    return observations
+
+
 def correction_preview():
     observations = []
     for label, text in POLICY_CONFIGS:
@@ -2501,7 +3002,7 @@ def correction_preview():
             assert f.git(repo, 'worktree', 'list', '--porcelain') == registrations
             assert f.git(repo, 'show-ref', '--heads') == branches
             observations.append(dict(config=label, report=report, audit=json.loads(saved[0][2]), mutations=0))
-    return dict(variants=observations, cli='legacy off inventories; no dry-run flag refuses exit2',
+    return dict(variants=observations, residues=residue_preview(), cli='legacy off inventories; no dry-run flag refuses exit2',
                 limits='child CLI uses real clock; in-process preview uses synthetic old-ctime clock')
 
 
@@ -2715,6 +3216,67 @@ def assert_suspended(report, reason, summary):
     assert payload['scheduled_admission'] == admission and payload['outcome'] == 'suspended' and payload['org'] is None, payload
 
 
+def residue_scheduled():
+    observations=[]
+    for kind in ('residue','local','same','cross','none','root','earlier_org'):
+        with scheduled_fixture() as (f,orgs,state,stop,summary,paths,refs):
+            later=orgs[0]
+            if kind=='earlier_org':
+                early=orgs[1]; z=paths[5].parent.parent.parent; c=paths[5]
+                p=refs[0][0]; _,w=later.worktree('TASK-3',p.name)
+                later.git(p,'worktree','remove',str(w))
+                w=c/'ignored/foreign';w.parent.mkdir()
+                later.git(p,'worktree','add','--detach',str(w),'HEAD')
+                e=p/'.git/worktrees/foreign';(e/'gitdir').unlink();d=w/'.git'
+                q=None; repo=z
+            else: repo,c,q,e,d=projection_input(later,kind,paths[1])
+            events=[];calls=[]; realmeta,realgit=ds._registration_metadata,ds.git
+            def metadata(root,deadline):
+                value=realmeta(root,deadline)
+                if kind=='earlier_org' and root==p and getattr(value, 'residues', {}):
+                    events.append('later residue census')
+                return value
+            realatomic=ds.atomic_json
+            def atomic(path,value):
+                realatomic(path,value)
+                if kind=='earlier_org':
+                    for item in value.get('orgs',[]):
+                        if item.get('org')==early.org.name and any(x['path']==str(c) and x.get('reason')=='possible_nested_worktree:'+str(d) for x in item.get('candidates',[])):
+                            events.append('earlier retained checkpoint')
+            def git(root,deadline,*args):
+                calls.append((str(root),args));return realgit(root,deadline,*args)
+            before=candidate_contents(c,*([e] if e else [])) if kind!='local' else None
+            with patch.object(ds,'_registration_metadata',metadata),patch.object(ds,'atomic_json',atomic),patch.object(ds,'git',git):
+                batch,supervision=scheduled_attempt(state,summary)
+            if kind=='earlier_org':
+                report=next(x for x in batch['orgs'] if x['org']==early.org.name)
+                counted(report,2,1,m=1,partial=False)
+                retained(report,c,'possible_nested_worktree:'+str(d))
+                assert report['discovery_scopes']==[] and report.get('prune_retained')==[str(z)]
+                late=next(x for x in batch['orgs'] if x['org']==later.org.name)
+                counted(late,2);residue_scope(late,e)
+                assert row(late,paths[1])['state']=='removed'
+                assert events.index('earlier retained checkpoint')<events.index('later residue census'),events
+                assert not any(root in (str(p),str(z)) and args[:2]==('worktree','prune') for root,args in calls)
+            else:
+                report=next(x for x in batch['orgs'] if x['org']==later.org.name)
+                projection_assert(report,repo,c,q,e,d,preview=False,scratch=1)
+                assert not any(root==str(repo) and args[:2]==('worktree','prune') for root,args in calls) if q or e else True
+            assert batch['outcome']==('incomplete' if e else 'complete'),batch
+            assert json.loads(summary.read_text())==batch and 'SIMULATED' in batch['worker_group_stop']
+            # Use the actual existing audit writer with the scheduled payload;
+            # this does not claim a scheduler-loop or supervision witness.
+            for g in orgs:
+                item=next(x for x in batch['orgs'] if x['org']==g.org.name)
+                state.orgs[g.org.name].db.insert_audit_log('', 'daemon','disk_sweep_summary',ds._audit_payload(batch,item,summary))
+                saved=g.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+                assert len(saved)==1 and saved[0][:2]==('','daemon') and json.loads(saved[0][2])['org']==item
+            if before: assert before==candidate_contents(c,*([e] if e else [])) if q or d else not c.exists()
+            assert supervision==['reservation']*3+['worker']
+            observations.append(dict(row='correction8-residue',kind=kind,result='PASS',events=events,supervision='SIMULATED'))
+    return observations
+
+
 def correction_stop_default():
     observations = []
     for control in (None, '{"stop":false}'):
@@ -2726,7 +3288,7 @@ def correction_stop_default():
             assert all(g.git(repo, 'show-ref', '--heads') == branches for g, (repo, branches, _) in zip(orgs, refs))
             assert all(paths[n+2].joinpath('keep').read_text() == 'durable' and paths[n+3].exists() for n in range(0, len(paths), 4))
             observations.append(dict(control=control, outcome=report['outcome'], calls=calls, org_modes=[o['mode'] for o in report['orgs']], supervision='SIMULATED'))
-    return dict(attempts=observations)
+    return dict(attempts=observations, residues=residue_scheduled())
 
 
 def correction_stop_true():
