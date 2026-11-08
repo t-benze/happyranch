@@ -1,4 +1,4 @@
-"""Admission-only, selected pre-COMMIT validation for the inert U3b writer.
+"""Selected pre-COMMIT validation for inert U3b/U3c writers.
 
 The complete reader remains the offline oracle, including older-row tampering.
 This incremental validator never acquires earlier result/output payloads.
@@ -14,8 +14,9 @@ from runtime.infrastructure.workflow_sequential_ownership import (
     SEQUENTIAL_OWNERSHIP_DDL, read_sequential_owner, sequential_binding_view_ddl,
 )
 from runtime.workflows.coding_authority_history import _Budget, _bounded_rows
-from runtime.workflows.sequential_contracts import Limits
-from runtime.workflows.sequential_definition import CompiledDefinition, parse_start, validate_start
+from runtime.workflows.sequential_contracts import Counters, Limits, NextEdge, OutputRef, TerminalEdge
+from runtime.workflows.sequential_definition import CompiledDefinition, parse_result, parse_start, parse_transition, validate_start
+from runtime.workflows.sequential_reducer import ActiveVisit, AuthenticatedResult, RunState, reduce_result
 from runtime.workflows.sequential_history import (
     StorageSettings, _ReadBudget, _auxiliary, _bytes, _decode, _definitions,
     _event_payload, _hashed, _native_contract, _native_rows, _parse, _record,
@@ -225,14 +226,18 @@ def _ownership(conn: sqlite3.Connection, metadata: dict, *, org_slug: str, run: 
 
 
 def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str, run_id: str,
-                                      scope: str, evidence_ids: tuple[str, ...] = ()) -> _ReadBudget:
-    """Validate admission writes in the caller transaction; return charged work.
+                                      scope: str, evidence_ids: tuple[str, ...] = (),
+                                      visit_id: str | None = None, event_id: str | None = None) -> _ReadBudget:
+    """Validate selected writes in the caller transaction; return charged work.
 
-    Other writer scopes deliberately refuse. The returned original budget is
+    Replay selectors name the original accepted visit or transition event.
+    The returned original budget is
     diagnostic accounting, not authority, behavioral proof or a new allowance.
     """
     _require(conn.in_transaction, 'validation_requires_transaction')
-    _require(scope == 'admission', 'validation_scope_unavailable')
+    if scope != 'admission':
+        return _validate_lifecycle(conn, org_slug=org_slug, run_id=run_id, scope=scope, evidence_ids=evidence_ids,
+                                   visit_id=visit_id, event_id=event_id)
     _require(type(org_slug) is str and bool(org_slug) and type(run_id) is str and bool(run_id), 'identity_invalid')
     _require(type(evidence_ids) is tuple and len(evidence_ids) <= 8192
              and len(set(evidence_ids)) == len(evidence_ids)
@@ -289,5 +294,271 @@ def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str
                  'run_history_conflict')
         _auxiliary(conn, data, {run_id: run}, {visit['id']: visit}, {event['id']: event}, budget)
         _ownership(conn, metadata, org_slug=org_slug, run=run, visit=visit, budget=budget)
+        budget.check()
+    return budget
+
+
+def _metadata_outputs(conn: sqlite3.Connection, metadata: dict, visits: list[dict],
+                      budget: _ReadBudget) -> dict[str, tuple[OutputRef, ...]]:
+    outputs = {}
+    for visit in visits:
+        rows = _read_selected(conn, metadata, 'workflow_seq_outputs', budget, 'visit_id=?', (visit['id'],),
+                              omit=('content_bytes', 'recipients_bytes'))
+        refs = []
+        for row in rows:
+            _require((row['run_id'], row['task_id'], row['session_id'], row['result_id'], row['epoch']) ==
+                     (visit['run_id'], visit['task_id'], visit['session_id'], visit['result_id'], visit['epoch']),
+                     'output_result_conflict')
+            refs.append(OutputRef(slot=row['slot'], contract=row['contract'], epoch=row['epoch'],
+                producer_visit=visit['id'], task_id=row['task_id'], session_id=row['session_id'],
+                result_id=row['result_id'], digest=row['content_digest']))
+        outputs[visit['id']] = tuple(refs)
+    return outputs
+
+
+def _prior_state(run: dict, compiled: CompiledDefinition, start: object, original: Limits,
+                 visits: list[dict], events: list[dict], outputs: dict[str, tuple[OutputRef, ...]],
+                 budget: _ReadBudget) -> tuple[Counters, tuple[OutputRef, ...]]:
+    """Reconstruct only counters and selected refs, without old result/content bytes.
+
+    Only previously validated immutable transitions are trusted by this incremental
+    reader. Complete authentication of older history remains the offline oracle.
+    Findings and receipts do not affect the persisted reducer decision fields.
+    """
+    counters = Counters(epoch=1, content_returns=0, visits=1, events=0)
+    selections: tuple[OutputRef, ...] = ()
+    for event in events:
+        if event['kind'] != 'transition':
+            continue
+        record = _parse(_hashed(event['event_bytes'], event['event_digest']), parse_transition, budget)
+        _require(record.run_id == run['id'] and record.definition_digest == compiled.pin.definition_digest
+                 and record.before == counters and record.prior_cas == event['sequence'] - 2
+                 and record.prior_event_digest == event['prior_digest'], 'transition_anchor_conflict')
+        refs = outputs.get(record.source_visit, ())
+        if refs:
+            slots = {ref.slot for ref in refs}
+            selections = tuple(ref for ref in selections if ref.slot not in slots) + refs
+        retired = set(record.invalidated)
+        selections = tuple(ref for ref in selections if ref not in retired)
+        counters = record.after
+    return counters, selections
+
+
+def _accepted(conn: sqlite3.Connection, metadata: dict, run: dict, visit: dict,
+              compiled: CompiledDefinition, budget: _ReadBudget, *, content: bool) -> AuthenticatedResult:
+    from runtime.workflows.sequential_engine import check_output_size, _check_output_length
+
+    rows = _read_selected(conn, metadata, 'workflow_seq_visits', budget, 'id=?', (visit['id'],))
+    _require(len(rows) == 1, 'visit_missing')
+    row = rows[0]
+    node = next(node for node in compiled.definition.nodes if node.id == row['node_id'])
+    if content:
+        # Check the raw length before the generic 1 MiB cell guard can refuse
+        # payload acquisition with a less specific error on a document output.
+        cursor = conn.execute('SELECT typeof(content_bytes),length(CAST(content_bytes AS BLOB)) '
+                              'FROM workflow_seq_outputs WHERE visit_id=?', (row['id'],))
+        try:
+            for size in cursor:
+                budget.step()
+                budget.candidate()
+                budget.reserve(32)
+                _require(size[0] == 'blob' and type(size[1]) is int, 'output_content_invalid')
+                _check_output_length(node.output_contract.type, size[1])
+        finally:
+            cursor.close()
+    outputs = _read_selected(conn, metadata, 'workflow_seq_outputs', budget, 'visit_id=?', (row['id'],),
+                             omit=() if content else ('content_bytes', 'recipients_bytes'))
+    if content:
+        # Repeat the raw gate before any output decode, including _outputs below.
+        for output in outputs:
+            check_output_size(node.output_contract.type, output['content_bytes'])
+    _result(conn, row['result_id'], row['task_id'], row['principal'], row['session_id'], budget)
+    envelope = _parse(_hashed(row['result_bytes'], row['result_digest']), parse_result, budget)
+    checks = _decode(row['verified_checks_bytes'], budget)
+    _require(set(checks) == {'checks'}, 'verified_checks_invalid')
+    authenticated = AuthenticatedResult(task_id=row['task_id'], session_id=row['session_id'],
+        result_id=row['result_id'], envelope=envelope, verified_checks=checks['checks'])
+    _require((envelope.run_id, envelope.visit_id, envelope.definition_digest, envelope.input_selection_digest) ==
+             (run['id'], row['id'], compiled.pin.definition_digest, row['input_selection_digest']),
+             'result_envelope_conflict')
+    if content:
+        from runtime.workflows.sequential_history import _outputs
+        actual = _outputs({'workflow_seq_outputs': outputs}, {row['id']: row}, {run['id']: run},
+                          {run['definition_id']: compiled}, budget).get(row['id'], [])
+    else:
+        actual = [dict(slot=o['slot'], contract=o['contract'], epoch=o['epoch'], producer_visit=row['id'],
+            task_id=o['task_id'], session_id=o['session_id'], result_id=o['result_id'], digest=o['content_digest'])
+            for o in outputs]
+    _require(sorted(actual, key=lambda item: item['slot']) ==
+             sorted((ref.model_dump() for ref in envelope.outputs), key=lambda item: item['slot']),
+             'output_envelope_conflict')
+    _require(len(outputs) <= 1 and all(output['slot'] == node.output_contract.slot
+             and output['contract'] == node.output_contract.type for output in outputs), 'output_contract_conflict')
+    return authenticated
+
+
+def _validate_lifecycle(conn: sqlite3.Connection, *, org_slug: str, run_id: str, scope: str,
+                        evidence_ids: tuple[str, ...], visit_id: str | None, event_id: str | None) -> _ReadBudget:
+    _require(scope in ('session', 'accept', 'transition', 'return', 'cancel', 'evidence'),
+             'validation_scope_unavailable')
+    _require(type(org_slug) is str and bool(org_slug) and type(run_id) is str and bool(run_id), 'identity_invalid')
+    _require(type(evidence_ids) is tuple and len(evidence_ids) <= 8192
+             and len(set(evidence_ids)) == len(evidence_ids)
+             and all(type(key) is str and key and '\x00' not in key for key in evidence_ids), 'evidence_identity_invalid')
+    _require(scope == 'evidence' or not evidence_ids, 'evidence_scope_invalid')
+    if scope == 'evidence':
+        from runtime.workflows.sequential_engine import SequentialRefusal
+        if len(evidence_ids) > 2:
+            raise SequentialRefusal('sequential_evidence_limit_exceeded')
+    budget = _ReadBudget()
+    with _sql_budget(conn, budget), _schema_snapshot(conn):
+        metadata = _selected_layout(conn, budget)
+        runs = _read_selected(conn, metadata, 'workflow_seq_runs', budget, 'id=?', (run_id,))
+        _require(len(runs) == 1 and runs[0]['org_slug'] == org_slug, 'run_missing')
+        run = runs[0]
+        compiled, settings, snapshot = _pins(conn, metadata, org_slug=org_slug,
+            definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
+        start = _parse(_hashed(run['start_bytes'], run['start_digest']), parse_start, budget)
+        original = Limits.model_validate(_decode(run['original_limits_bytes'], budget))
+        limits = validate_start(start, compiled, original_limits=original)
+        _require(start.operation_key == run['start_operation_key'] and start.bindings == snapshot.bindings
+                 and start.settings.generation == settings['generation']
+                 and start.settings.snapshot_digest == settings['snapshot_digest'] and snapshot.admission == 'Allowed',
+                 'admission_pin_conflict')
+        visits = _read_selected(conn, metadata, 'workflow_seq_visits', budget, 'run_id=?', (run_id,),
+                                omit=('result_bytes', 'verified_checks_bytes'))
+        events = _read_selected(conn, metadata, 'workflow_seq_events', budget, 'run_id=?', (run_id,))
+        visits.sort(key=lambda row: row['ordinal'])
+        events.sort(key=lambda row: row['sequence'])
+        _types({'runs': runs, 'visits': visits, 'events': events}, budget)
+        _require([row['ordinal'] for row in visits] == list(range(1, len(visits) + 1))
+                 and 0 < len(visits) <= limits.max_visits
+                 and [row['sequence'] for row in events] == list(range(1, len(events) + 1))
+                 and 0 < len(events) <= limits.max_events, 'run_order_invalid')
+        by_id = {row['id']: row for row in visits}
+        selected = [row['id'] for row in visits if row['selected']]
+        _require(selected == ([] if run['active_visit_id'] is None else [run['active_visit_id']])
+                 and run['cas'] == run['event_count'] - 1 == len(events) - 1
+                 and run['visit_count'] == len(visits) and run['last_event_id'] == events[-1]['id'],
+                 'run_history_conflict')
+        prior = '0' * 64
+        outbox = []
+        for event in events:
+            _require(event['run_id'] == run_id and event['prior_digest'] == prior, 'event_chain_invalid')
+            _hashed(event['event_bytes'], event['event_digest'])
+            if event['kind'] != 'transition':
+                _event_payload(event, budget)
+            prior = event['event_digest']
+            outbox.extend(_read_selected(conn, metadata, 'workflow_seq_outbox', budget, 'event_id=?', (event['id'],)))
+        _require(events[0]['kind'] == 'admitted', 'admitted_event_invalid')
+        outputs = _metadata_outputs(conn, metadata, visits, budget)
+        counters, _ = _prior_state(run, compiled, start, original, visits, events, outputs, budget)
+        _require((run['epoch'], run['content_returns'], run['visit_count']) ==
+                 (counters.epoch, counters.content_returns, counters.visits), 'run_counter_conflict')
+        bindings = {binding.role: binding.principal for binding in start.bindings}
+        nodes = {node.id: node for node in compiled.definition.nodes}
+        first = visits[0]
+        _require(first['node_id'] == compiled.definition.entry_node and first['predecessor_event_id'] is None
+                 and first['epoch'] == 1 and not _selection(first, budget), 'entry_visit_invalid')
+        for visit in visits:
+            _require(visit['node_id'] in nodes and visit['principal'] == bindings[nodes[visit['node_id']].role],
+                     'visit_binding_conflict')
+        active = by_id.get(run['active_visit_id'])
+        if run['state'] in ('active', 'held'):
+            _require(active is not None and active['epoch'] == counters.epoch
+                     and active['state'] in (('held',) if run['state'] == 'held' else ('queued', 'running', 'waiting')),
+                     'active_visit_invalid')
+        else:
+            _require(active is None, 'active_pointer_conflict')
+        touched = [active] if active is not None else []
+        if scope == 'session':
+            _require(active is not None and active['state'] == 'running' and active['session_id'] is not None
+                     and active['result_id'] is None, 'session_binding_conflict')
+        elif scope == 'accept':
+            accepted_visit = by_id.get(visit_id) if visit_id is not None else active
+            _require(accepted_visit is not None and accepted_visit['result_id'] is not None,
+                     'accept_visit_conflict')
+            _accepted(conn, metadata, run, accepted_visit, compiled, budget, content=True)
+            touched.append(accepted_visit)
+        elif scope == 'transition':
+            event = next((row for row in events if row['id'] == event_id), None) if event_id else events[-1]
+            _require(event is not None and event['kind'] == 'transition' and event['source_visit_id'] in by_id, 'transition_missing')
+            source = by_id[event['source_visit_id']]
+            accepted = _accepted(conn, metadata, run, source, compiled, budget, content=False)
+            before, selections = _prior_state(run, compiled, start, original, visits, events[:event['sequence'] - 1], outputs, budget)
+            current = ActiveVisit(node=source['node_id'], visit_id=source['id'], task_id=source['task_id'],
+                session_id=source['session_id'], epoch=source['epoch'], input_selection_digest=source['input_selection_digest'])
+            decision = reduce_result(compiled, RunState(run_id=run_id, definition_digest=compiled.pin.definition_digest,
+                original_limits=original, lower_limits=start.lower_limits, counters=before, active_visit=current,
+                selections=selections, findings=(), receipts=()), accepted)
+            record = _parse(event['event_bytes'], parse_transition, budget)
+            _require((record.source_result, record.result_digest, record.node, record.outcome, record.before,
+                      record.after, record.invalidated, record.edge, record.output_digest) ==
+                     (accepted.result_id, decision.result_digest, source['node_id'], decision.outcome,
+                      decision.before, decision.after, decision.invalidated, decision.edge,
+                      accepted.envelope.outputs[0].digest if accepted.envelope.outputs else None),
+                     'transition_reducer_conflict')
+            if isinstance(decision.edge, NextEdge):
+                successor = record.successor
+                target = by_id.get(successor.visit_id) if successor is not None else None
+                _require(successor is not None and target is not None and decision.activation is not None
+                         and (target['id'], target['task_id'], target['node_id'], target['predecessor_event_id']) ==
+                         (successor.visit_id, successor.task_id, successor.node, event['id'])
+                         and _selection(target, budget) == decision.activation.inputs,
+                         'successor_conflict')
+                touched.append(target)
+                if event is events[-1]:
+                    _require(active is target and source['state'] == 'completed'
+                             and source['selected'] == 0 and run['state'] == 'active',
+                         'successor_conflict')
+            else:
+                expected = ('completed' if isinstance(decision.edge, TerminalEdge) else
+                            'failed' if decision.edge.action == 'fail' else 'held')
+                if event is events[-1]:
+                    _require(run['state'] == source['state'] == expected
+                             and source['selected'] == int(expected == 'held'), 'transition_state_conflict')
+            touched.append(source)
+        elif scope == 'return':
+            _require(run['state'] == 'completed' and events[-1]['kind'] == 'returned'
+                     and len(events) >= 3 and events[-2]['kind'] == 'transition'
+                     and isinstance(_parse(events[-2]['event_bytes'], parse_transition, budget).edge, TerminalEdge),
+                     'return_conflict')
+        elif scope == 'cancel':
+            _require(run['state'] == 'cancelled' and events[-1]['kind'] == 'cancelled'
+                     and visits[-1]['state'] == 'cancelled' and not visits[-1]['selected'], 'cancellation_conflict')
+            touched.append(visits[-1])
+        if scope == 'evidence':
+            from runtime.workflows.sequential_engine import EVIDENCE_CONTENT_LIMIT, SequentialRefusal
+            # Fetch only length by the declared primary key, before content is
+            # acquired, digested or decoded by the unchanged _auxiliary.
+            for key in evidence_ids:
+                budget.step()
+                size = conn.execute('SELECT typeof(evidence_bytes),length(CAST(evidence_bytes AS BLOB)) '
+                                    'FROM workflow_seq_evidence WHERE id=?', (key,)).fetchone()
+                _require(size is not None, 'evidence_missing')
+                budget.candidate()
+                budget.reserve(32)
+                _require(size[0] == 'blob' and type(size[1]) is int, 'evidence_content_invalid')
+                if size[1] > EVIDENCE_CONTENT_LIMIT:
+                    raise SequentialRefusal('sequential_evidence_limit_exceeded')
+        evidence = (_read_selected(conn, metadata, 'workflow_seq_evidence', budget,
+            'id IN (' + ','.join('?' for _ in evidence_ids) + ')', evidence_ids) if evidence_ids else [])
+        _require({row['id'] for row in evidence} == set(evidence_ids), 'evidence_missing')
+        _auxiliary(conn, {'workflow_seq_evidence': evidence, 'workflow_seq_outbox': outbox},
+                   {run_id: run}, by_id, {row['id']: row for row in events}, budget)
+        # Lifecycle ownership checks are independent of admission's pristine rule.
+        for task, kind, owner, state in (
+            (run['source_task_id'], 'seq_source_waiting', run_id, run['state']),
+            (run['carrier_task_id'], 'seq_carrier', run_id, run['state']),
+            *((visit['task_id'], 'seq_visit', visit['id'], visit['state']) for visit in touched),
+        ):
+            _require(read_sequential_owner(conn, task_id=task, org_slug=org_slug) == (kind, owner, state),
+                     'ownership_relation_conflict')
+        for visit in touched:
+            native = _native_rows(conn, 'tasks', ('parent_task_id', 'assigned_agent', 'current_session_id',
+                'active_chain', 'active_fanout'), (('text',), ('text',), ('text', 'null'), ('null',), ('null',)),
+                visit['task_id'], budget)
+            _require(native == [(run['carrier_task_id'], visit['principal'], visit['session_id'], None, None)],
+                     'ownership_native_conflict')
         budget.check()
     return budget
