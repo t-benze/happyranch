@@ -52,6 +52,20 @@ for that worker's stop. Physical resource closure is counted separately from
 parser errors, which still fail transport checks. E07 checks the actual accepted
 admission and reconstructs checkpoint/product state; equality among copied
 admission dictionaries is not an additional product assertion.
+E05 counts only message articles with a direct header and `.gl-prose`, leaving
+held typing indicators visible and retaining exact message count/content checks.
+E07 authenticates exact first48/first53 prefix membership and count independently
+of manifest reporting order; the frozen completion sequence and E07 suffix stay
+exact. Manifest/JUnit order and scenario execution are unchanged.
+Relay failures in ordinary assertions/controller logs include method, query-free
+path, relay/native request IDs, upstream/downstream write/flush operation,
+original monotonic failure time and exception class, without headers or bodies.
+A downstream write/flush BrokenPipe/ConnectionReset is client cancellation only
+for a unique GET target and native Request with exactly one `net::ERR_ABORTED`
+terminal, a completed finite upstream exchange and clean owner teardown. Repeated
+or ambiguous targets, unjoined failures, upstream errors and other exceptions
+remain failures. Worker/listener/socket closure and all original budgets remain
+mandatory; physical closure alone never supplies cancellation evidence.
 This source change makes no full56 or native behavior claim.
 
 Launcher TERM on Python3.12 and INT on Python3.14 are separate `diagnostic`

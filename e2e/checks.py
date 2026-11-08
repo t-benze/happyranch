@@ -1461,6 +1461,33 @@ def validate_e05_safety(observations: dict, events: list[dict]) -> None:
               and type(proxied.get('failure_at')) in (int, float)
               and proxied['entered'] <= proxied.get('failure_at', -1) <= proxied['closed'],
               'R2 literal original failure/time, never a later cleanup timestamp')
+        if failure in {'BrokenPipeError','ConnectionResetError'}:
+            # Independently join the native terminal, not a relay classification
+            # Boolean. All framing, operation and positive owner checks above
+            # still apply. Duplicate targets cannot establish request identity.
+            issued = [e for e in native_requests
+                      if e['method'] == proxied['method'] and e['url'] == origin+proxied['target']]
+            peers = [p for p in observations['thread_proxy']
+                     if (p['method'],p['target']) == (proxied['method'],proxied['target'])]
+            terminals = [e for e in events if e['event'] in {'request-failed','request-finished'}
+                         and e['request_id'] == proxied.get('browser_request_id')]
+            check(len(issued) == len(peers) == len(terminals) == 1
+                  and issued[0]['request_id'] == proxied.get('browser_request_id')
+                  and terminals[0]['event'] == 'request-failed' and terminals[0].get('failure') == 'net::ERR_ABORTED'
+                  and issued[0]['at'] <= proxied['entered'] <= terminals[0]['at'] <= closure[0]['finished']
+                  and proxied.get('failure_operation') in {'downstream-write','downstream-flush'}
+                  and proxied['method'] == 'GET' and proxied['ordinal'] is None and 'io_owner' in proxied
+                  and not any(k in proxied for k in ('stop_intent','stop_ack','browser_abort','delivered'))
+                  and response is not None and proxied['streaming'] is False
+                  and operation is not None and operation.get('outcome') == 'returned'
+                  and (operation['kind'] == 'getresponse' and response['length'] == 0
+                       or operation['kind'] == 'read' and operation['result']['closed'] is True
+                       and operation['result']['remaining_after'] in (None,0))
+                  and operation['finished'] <= proxied['failure_at'] <= proxied['io_owner']['finished']
+                  and issued[0]['request_id'] not in used_aborts,
+                  'R2 downstream cancellation requires one unambiguous native abort and complete clean upstream')
+            used_aborts.add(issued[0]['request_id'])
+            continue
         check('io_owner' in proxied and failure == 'Stopped' and 'stop_intent' in proxied,
               'R2 only original worker-acknowledged controlled stop is exempt')
     # Cached assets/documents and requests cancelled before HTTP dispatch have
@@ -2473,7 +2500,9 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     check(case == observations["e07"] == row["e07"], "actual raw/observations/scenario export equality")
     check(case["launch_record_failures"] == [], "missing/malformed/incomplete/unexpected private launch record")
     variants = ["E07.cancel-cascade-browser","E07.cancel-terminal-unchanged","E07.cancelled-late-cli"]
-    check(case["variants"] == variants and case["prefix"]["variants"] in (MANIFEST['variants'][:48],MANIFEST['variants'][:53])
+    prefix = case["prefix"]["variants"]
+    check(case["variants"] == variants and len(prefix) in (48,53)
+          and Counter(prefix) == Counter(MANIFEST['variants'][:len(prefix)])
           and list(row["variants"]) == case["prefix"]["variants"] + variants
           and case["source_sha"] == row["source_sha"], "exact C manifest/design/source/preserved53")
     for name in variants:

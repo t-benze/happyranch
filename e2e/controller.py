@@ -889,7 +889,7 @@ class Controller:
                 self.browser_relay_closed = not (closure['workers_alive'] or closure['listener_alive'] or closure['connections'])
                 self.durable.append(dict(thread_proxy_closure=closure))
                 if closure["workers_alive"] or closure["listener_alive"] or closure["connections"] or closure["errors"]:
-                    self.record_error("thread-proxy-closure", RuntimeError("proxy closure/transport failure"))
+                    self.record_error("thread-proxy-closure", RuntimeError(f"proxy closure/transport failure: {closure!r}"))
         if self.late_transport:
             closure = self._attempt("late-transport-close", lambda: self.late_transport.close(self.effective_end()))
             if closure is not None:

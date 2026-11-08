@@ -1730,7 +1730,7 @@ class Browser:
                       url=page.url, response_url=received.value.url, method=received.value.request.method,
                       status=received.value.status, messages_body=messages_body, messages_url=messages.value.url,
                       messages_status=messages.value.status, messages_method=messages.value.request.method,
-                      rendered_messages=main.locator("article").evaluate_all("""articles => articles.map(article => ({
+                      rendered_messages=main.locator("article:has(> header):has(.gl-prose)").evaluate_all("""articles => articles.map(article => ({
                         header: article.querySelector('header')?.innerText,
                         body: article.querySelector('.gl-prose')?.innerText,
                         visible: article.getClientRects().length > 0

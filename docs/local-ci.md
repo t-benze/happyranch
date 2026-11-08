@@ -26,6 +26,15 @@ reads accepted state and product checkpoints rather than comparing copied
 dictionaries. Failure diagnostics require a nonempty trace ZIP and screenshot
 PNG, accepting `threads.zip` and existing E05 view screenshots without requiring
 an extra `main.zip` or closed-page recapture.
+E05 selects delivered message articles by their direct header and `.gl-prose`,
+without waiting away held typing indicators. Exact count/content assertions
+remain. E07 checks exact first48/first53 membership/count while preserving the
+frozen completion order plus its suffix; manifest/JUnit order stays unchanged.
+Ordinary relay failure messages retain safe request/path/operation/original-time
+attribution. Only one unambiguous native `net::ERR_ABORTED` GET can excuse a
+downstream write/flush BrokenPipe/ConnectionReset after complete finite upstream
+I/O and clean owner teardown. Repeated targets, upstream/unjoined/ambiguous
+failures and other exceptions remain red; physical closure and budgets still apply.
 JUnit always uploads; missing reports fail. Known synthetic tokens receive literal
 scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
 Historical records below preserve actual failures and holds; their removed
