@@ -8,6 +8,9 @@ supervisor from every shipping producer and consumer. No closure-complete flag,
 mandatory evidence token, per-byte emitted proof or IPC replaces them.
 Historical source/originals/failures are preserved below and in Git history.
 
+For CI build/retrieval and local signing/notarization, follow the
+[Mac release handbook](../docs/runbooks/mac-release-handbook.md).
+
 For a standalone freeze, use a fresh disposable source checkout:
 
 ```sh

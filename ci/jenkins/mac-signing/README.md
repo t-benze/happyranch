@@ -1,4 +1,13 @@
-# Attended HappyRanch macOS signing source
+# Superseded Jenkins Mac signing source
+
+Use the [Mac release handbook](../../../docs/runbooks/mac-release-handbook.md)
+for the current GitHub Actions build and owner-local signing flow. The Jenkins
+signing job stays disabled; no Jenkins app-build job is installed. The following
+attended setup, grants and commands are preserved historical source notes and
+must not be followed as current release instructions.
+
+<details>
+<summary>Historical attended signing source — superseded, not operational instructions</summary>
 
 Original delivery TASK-14158 continues under sole current manager root TASK-14353
 and Founder THR-104 seq612 (seq609 retains the Jenkins choice).
@@ -398,3 +407,5 @@ remain separately authorized steps.
 Actual Mac/Jenkins/native/Apple execution, signed final bytes, Finder/install,
 independently downloaded quarantine behavior, macOS14 and public release remain
 NOT RUN/open. Source delivery grants no live enablement or native-stage authority.
+
+</details>

@@ -1,5 +1,9 @@
 # Internal Mac workflow time limits and diagnostics
 
+For CI dispatch, artifact retrieval/verification and local signing, use the
+[Mac release handbook](mac-release-handbook.md). This page covers workflow
+budgets and diagnostics only.
+
 `.github/workflows/build-mac-app.yml` is an internal unsigned candidate venue.
 Its workflow definition ref and digest are separate from the explicitly reviewed
 checkout SHA and tree. Record both identities before a confirmation run.
