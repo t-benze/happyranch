@@ -44,7 +44,10 @@ The corpus covers every typed discriminator, incomplete/duplicate/escaped
 members, UTF8/16/32 envelopes, invalid UTF8 TEXT, BLOB/NULL/numeric storage,
 size/depth/integer-digit bounds and benign near-misses. It also compares
 accepted built-in history, shared budgets and committed/joined/refused watermark
-publication. Local before/after timings cover both sparse and wider flat rows;
+publication. Read-only refused scans retain their tracebacks across connection close
+and then collect garbage, asserting zero unraisable cleanup exceptions in both
+standalone and complete-coding candidate paths. Local before/after timings cover
+both sparse and wider flat rows;
 they do not predict a serving-daemon restart saving. No daemon/worker starts,
 retired unit selection, general integration, E2E or CI trigger is added.
 

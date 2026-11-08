@@ -6,6 +6,7 @@ uv run --frozen --python 3.14 python - <<'PY'
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
+import gc
 import json
 import io
 import logging
@@ -199,7 +200,55 @@ def check_corpus(conn, *, scoped):
           'cases; exact exceptions, budget counters and collected watermarks')
 
 
+def refused_scan_finalization(path, *, scoped):
+    # Keep the real refusal traceback alive across connection teardown, as an
+    # org-startup error collector does. Capture delayed generator cleanup too.
+    errors, retained = [], []
+    original_hook = sys.unraisablehook
+    gc.collect()
+    conn = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+    sys.unraisablehook = lambda error: errors.append((type(error.exc_value).__name__, str(error.exc_value)))
+    try:
+        try:
+            coding._read_coding_data(conn, layout='F', expected_org_slug='scratch' if scoped else None)
+        except ValueError as exc:
+            expected = COMPLETE.replace('audit_log.payload', 'task_results.decision_json') if scoped else COMPLETE
+            assert str(exc) == expected, (scoped, str(exc))
+            retained.append(exc)
+        else:
+            raise AssertionError((scoped, 'coding-format row was not refused'))
+        finally:
+            conn.close()
+        retained.clear()
+        gc.collect()
+    finally:
+        retained.clear()
+        gc.collect()
+        sys.unraisablehook = original_hook
+    return errors
+
+
 with tempfile.TemporaryDirectory(prefix='coding-prefilter-') as scratch:
+    finalization_errors = {}
+    for scoped in (False, True):
+        path = Path(scratch) / ('finalization-' + str(scoped) + '.db')
+        db = Database(path)
+        try:
+            if scoped:
+                install_or_recover(db, expected_org_slug='scratch')
+                # Exercise a bounded candidate yielded back to the complete
+                # reader, whose refusal must close both suspended iterators.
+                db._conn.execute('INSERT INTO task_results (task_id,agent,session_id,created_at,decision_json) VALUES (?,?,?,?,?)',
+                                 ('TASK-1', 'synthetic', 'synthetic', '2026-11-08T00:00:00Z', '{"format":"workflow-coding-x"}'))
+            else:
+                insert(db._conn, 'ordinary', '{"format":"workflow-coding-x"}')
+            db._conn.commit()
+        finally:
+            db.close()
+        finalization_errors[str(scoped)] = refused_scan_finalization(path, scoped=scoped)
+    assert all(not errors for errors in finalization_errors.values()), ('unraisable errors after refused scan connection close', finalization_errors)
+    print('PASS refused scan finalization: unscoped/scoped real readers, retained traceback, read-only connection close then gc; zero unraisable errors')
+
     conn = sqlite3.connect(':memory:')
     conn.execute('CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT,timestamp,agent,task_id,action,payload)')
     check_corpus(conn, scoped=False)
