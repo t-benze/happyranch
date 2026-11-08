@@ -143,16 +143,22 @@ def after_thread_invocations_commit(scope: str) -> Callable:
     returns (including a post-COMMIT error), inspect those actual receipts.
     Never notify from an enclosing uncommitted transaction. Recovery/raw startup
     writers that precede org loop wiring are covered by the startup sweep.
-    Global exchange commit owners also observe the last held-row release, which
-    can settle without a new invocation terminal (the existing grace reaper).
+    Also observe final live delivery/held-deferral cleanup in the same scope;
+    these obligations can settle without a new invocation terminal.
     """
     def decorate(method: Callable) -> Callable:
         signature = inspect.signature(method)
+        live_delivery_sql = (
+            "SELECT d.thread_id FROM thread_reply_delivery_state d WHERE "
+            "(d.queued_invocation_token IS NOT NULL OR d.running_invocation_token IS NOT NULL "
+            "OR d.required_through_seq > d.acknowledged_through_seq)"
+        )
 
         @wraps(method)
         def observed(db: Any, *args: Any, **kwargs: Any) -> Any:
             before: dict[str, str] = {}
             held_before: set[str] = set()
+            delivery_before: set[str] = set()
             notify = getattr(db, "_thread_archive_notify", None)
             if notify is not None:
                 try:
@@ -161,14 +167,27 @@ def after_thread_invocations_commit(scope: str) -> Callable:
                     if scope in {"token", "thread_id", "agent_name"}:
                         column = "invocation_token" if scope == "token" else scope
                         where, params = f" AND i.{column} = ?", (bound[scope],)
+                    state_where = ""
+                    if scope == "token":
+                        state_where = (
+                            " AND d.thread_id IN (SELECT thread_id FROM thread_invocations WHERE invocation_token=?1 "
+                            "UNION SELECT thread_id FROM thread_reply_delivery_state "
+                            "WHERE queued_invocation_token=?1 OR running_invocation_token=?1)"
+                        )
+                    elif scope in {"thread_id", "agent_name"}:
+                        state_where = f" AND d.{scope} = ?"
                     with db._lock:
-                        if scope == "all":
-                            held_before = {r["thread_id"] for r in db._conn.execute(
-                                "SELECT DISTINCT d.thread_id FROM thread_exchange_deferrals d "
-                                "JOIN thread_reply_exchange e ON e.thread_id=d.thread_id AND e.exchange_id=d.exchange_id "
-                                "JOIN threads t ON t.id=d.thread_id WHERE d.state='held' AND e.state='open' "
-                                "AND t.status='open' AND t.resolved_seq IS NOT NULL",
-                            )}
+                        held_before = {r["thread_id"] for r in db._conn.execute(
+                            "SELECT DISTINCT d.thread_id FROM thread_exchange_deferrals d "
+                            "JOIN thread_reply_exchange e ON e.thread_id=d.thread_id AND e.exchange_id=d.exchange_id "
+                            "JOIN threads t ON t.id=d.thread_id WHERE d.state='held' AND e.state='open' "
+                            "AND t.status='open' AND t.resolved_seq IS NOT NULL" + state_where, params,
+                        )}
+                        delivery_before = {r["thread_id"] for r in db._conn.execute(
+                            live_delivery_sql + " AND d.thread_id IN "
+                            "(SELECT id FROM threads WHERE status='open' AND resolved_seq IS NOT NULL)"
+                            + state_where, params,
+                        )}
                         before = {r["invocation_token"]: r["thread_id"] for r in db._conn.execute(
                             "SELECT i.invocation_token, i.thread_id FROM thread_invocations i "
                             "JOIN threads t ON t.id=i.thread_id WHERE i.status='pending' "
@@ -179,12 +198,18 @@ def after_thread_invocations_commit(scope: str) -> Callable:
             try:
                 return method(db, *args, **kwargs)
             finally:
-                if before or held_before:
+                if before or held_before or delivery_before:
                     try:
                         terminal_threads: set[str] = set()
                         released_threads: set[str] = set()
+                        delivered_threads: set[str] = set()
                         with db._lock:
                             if not db._conn.in_transaction:
+                                for thread_id in delivery_before:
+                                    if db._conn.execute(
+                                        live_delivery_sql + " AND d.thread_id=? LIMIT 1", (thread_id,),
+                                    ).fetchone() is None:
+                                        delivered_threads.add(thread_id)
                                 for thread_id in held_before:
                                     if db._conn.execute(
                                         "SELECT 1 FROM thread_exchange_deferrals d JOIN thread_reply_exchange e "
@@ -205,6 +230,8 @@ def after_thread_invocations_commit(scope: str) -> Callable:
                             notify(thread_id, "invocation_terminal")
                         for thread_id in released_threads - terminal_threads:
                             notify(thread_id, "exchange_settled")
+                        for thread_id in delivered_threads - terminal_threads - released_threads:
+                            notify(thread_id, "delivery_settled")
                     except Exception:
                         logger.exception("Auto-archive terminal observation failed after %s", method.__name__)
         return observed
