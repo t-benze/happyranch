@@ -2708,7 +2708,7 @@ Contract (founder-approved in THR-028, refined in THR-078):
    ASGI/listener startup records serving; the early listening log does not.
    Six runtime/count/memory/timing/speed cases remain NOT RUN, sensitivity PROOF
    NOT RUN under ROOT14157's accepted source gap; prior-root evidence remains
-   historical. No restart, new proof framework or inert skipping follows.
+   historical. That ROOT14157 checkpoint grants no restart, new proof framework or inert skipping. Later THR308seq366/367 standing B closes independently authenticated terminal-root inert attempts after the loop on every boot; it requires the widened CHECK/readers and compatible-code rollback, with activation pinned to the merge commit. See [the current B contract](contracts/authority-policy.md#standing-startup-inert-closure-thr-308-seq366367-task-14648) for first/second-boot spans, counters and startup_partition.
    Attributable later exact/refusal failures quarantine the root before bounded
    logging, skipping all later same-root work; pending also excludes siblings.
    Ambiguous attribution fails task recovery globally. No early diagnostic append is added and local

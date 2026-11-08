@@ -1558,7 +1558,7 @@ class AuthorityPolicyV2InertCloseAudit(BaseModel):
 
     @field_validator("attempt_id", "root_task_id", "manager_agent", "manager_session_id", "boot_id")
     @classmethod
-    def _inert_close_identity(cls, value: str, info) -> str:
+    def _inert_close_identity(cls, value: str, info: Any) -> str:
         return _validate_authority_policy_v2_text(value, info.field_name, 128)
 
 

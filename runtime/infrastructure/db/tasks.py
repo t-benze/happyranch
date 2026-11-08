@@ -506,7 +506,7 @@ def repository_preparation_closed(events: list[dict]) -> bool:
     return complete
 
 
-def _decode_task_result_row(row) -> dict:
+def _decode_task_result_row(row: sqlite3.Row | dict[str, Any]) -> dict:
     """The shared SELECT * representation used by readers and startup closure."""
     decoded = dict(row)
     if decoded.get("risks_flagged"):

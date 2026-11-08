@@ -55,8 +55,8 @@ def _v2_attempt_schema_preflight(conn: sqlite3.Connection) -> str:
 def _v2_attempt_schema_kind(conn: sqlite3.Connection) -> str:
     # Refuse remnants in either schema, including reserved replacement tables.
     for schema in ("main", "temp"):
-        for kind, name in conn.execute(f"SELECT type,name FROM {schema}.sqlite_schema"):
-            if name == _V2_ATTEMPTS_STAGE or (
+        for kind, name, owner in conn.execute(f"SELECT type,name,tbl_name FROM {schema}.sqlite_schema"):
+            if (schema == "temp" and owner == _V2_ATTEMPTS_TABLE) or name == _V2_ATTEMPTS_STAGE or (
                 kind in ("table", "view")
                 and name.startswith(_V2_ATTEMPTS_TABLE + "_")
             ):
@@ -69,7 +69,7 @@ def _v2_attempt_schema_kind(conn: sqlite3.Connection) -> str:
     for (name,) in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'"):
         quoted = '"' + name.replace('"', '""') + '"'
         for fk in conn.execute(f"PRAGMA foreign_key_list({quoted})"):
-            if fk[2] == _V2_ATTEMPTS_TABLE:
+            if fk[2].casefold() == _V2_ATTEMPTS_TABLE.casefold():
                 inbound.add(name)
     if not objects:
         if inbound or any(conn.execute(
@@ -2737,7 +2737,12 @@ class SchemaMixin:
                 # Cleanup cannot certify whether an unacknowledged COMMIT won.
                 primary.add_note("v2 attempt schema COMMIT attempted; durable outcome uncertain")
         finally:
-            if ended or (not commit_attempted and not conn.in_transaction):
+            if not ended and not commit_attempted:
+                try:
+                    ended = conn.in_transaction is False
+                except BaseException as failure:
+                    cleanup.append(failure)
+            if ended:
                 try:
                     conn.execute(f"PRAGMA legacy_alter_table={legacy}")
                     conn.execute("PRAGMA foreign_keys=ON")

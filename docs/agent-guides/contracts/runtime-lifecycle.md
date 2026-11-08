@@ -446,7 +446,7 @@ Fresh projections retain optional authenticated immutable scalar anchors for
 exclusion. An anchored exact/read/refusal failure quarantines its root before
 bounded logging; pending also excludes later same-root attempts. Missing attribution fails task recovery
 globally. Readable inert admissions still use the shipping completion/parser,
-including legacy fallback, with zero writes/fence; absent admission proof alone
+including legacy fallback, with zero classification writes/fence; standing B below may close independently authenticated terminal-root candidates after the loop. Absent admission proof alone
 is no new eligibility rule. The existing refusal writer independently authenticates
 current ownership, and only fresh committed `refused` owns its existing tails.
 No early diagnostic append/replacement writer is added; local exclusion/logs are
@@ -559,7 +559,26 @@ exception dumps, no per-attempt log stream or extra evidence scans. Clock/log
 failure cannot replace startup/cleanup outcomes. Later normal operator startup
 may observe success metrics; it cannot prove all six failure/equivalence cases
 or establish historical/under10s improvement. Source delivery authorizes no
-restart/deployment, inert skipping/checkpoint, finalization or history deletion.
+restart/deployment, a checkpoint or history deletion. Standing B (THR308seq366/367) separately authorizes source for terminal-root inert closure as described below.
+
+**Standing B startup closure (THR308seq366/367).** On every boot, after the
+exact loop and within its open Database-owned reader, eligible authenticated
+inert terminal-root attempts close to admitted/`inert_closed`/NULL. The exact
+CHECK/guard initializer rebuild preserves retained bytes/FKs; compatible code is
+required at the schema boundary and after B runs. Live/escalated, fenced/failed,
+obligation-bearing, owner-present/unavailable or changed-result candidates skip.
+At most 256 rows/transaction, SAVEPOINT per row, a separate strict inert-close
+audit and read-back before COMMIT add no task/Q/thread/deletion effect. Only
+confirmed clean pre-COMMIT rollback plus post-writer checks continue; uncertain
+BEGIN/COMMIT, cleanup/SAVEPOINT or connection outcomes abort as sticky unsafe
+(`inert_close_transaction` for writer custody failure), suppressing the entire
+finally worktree batch. Earlier commits survive; an uncertain batch is unknown.
+The existing aggregate adds `inert_closed`, `inert_close_skipped:<category>` and
+`inert_close_batches`, without per-row logs. Activation uses the merge commit;
+a separately authorized operator reads first/second-boot authority_discovery/
+authority_exact spans, these counters and startup_partition. Second boot should
+find no newly closable rows absent new eligibility. No latency/savings or under10s
+claim is proven. See [the strict contract](authority-policy.md#standing-startup-inert-closure-thr-308-seq366367-task-14648).
 
 **Task-scoped audit lookup (THR-278).** Generic `Database` initialization installs
 the nonunique, nonpartial `idx_audit_log_task_id` on `audit_log(task_id)` for fresh

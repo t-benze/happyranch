@@ -939,6 +939,11 @@ class AuthorityV2ContinuationMixin:
             return _pending("identity_mismatch")
         attempt_row = dict(row)
 
+        if attempt.finalization_state == "inert_closed":
+            if (not self._authenticate_v2_attempt_admission_audit_uncommitted(attempt_row)
+                    or not self._authenticate_v2_inert_close_uncommitted(attempt)):
+                return _pending("identity_mismatch")
+            return _pending("already_finalized")
         if attempt.finalization_state == "continued":
             return self._finalize_v2_continuation_replay_uncommitted(
                 attempt, attempt_row,
@@ -5755,11 +5760,6 @@ class AuthorityV2ContinuationMixin:
             attempt = self._authority_policy_v2_attempt_from_row(row)
         except ValueError:
             return False
-        if attempt.finalization_state == "inert_closed":
-            if (not self._authenticate_v2_attempt_admission_audit_uncommitted(attempt_row)
-                    or not self._authenticate_v2_inert_close_uncommitted(attempt)):
-                return _pending("identity_mismatch")
-            return _pending("already_finalized")
         if attempt.finalization_state == "inert_closed":
             return False  # Closure is neither a continuation nor a refusal receipt.
         if attempt.finalization_state == "continued":
