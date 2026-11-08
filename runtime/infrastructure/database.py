@@ -580,6 +580,8 @@ class Database(
                 self._conn,
                 stage_hook=getattr(self, "_remote_identity_schema_stage_hook", None),
             )
+            # THR-308 T2: inspect before IF NOT EXISTS can heal a partial bundle.
+            attempt_schema = self._retrofit_v2_attempts_inert_closed()
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._migrate_jobs_table_if_needed()
             self._migrate_drop_talk_surface_if_needed()
@@ -588,6 +590,7 @@ class Database(
             self._migrate_remote_job_schema()
             self._migrate_dark_authority_activation_seal_if_needed()
             self._create_authority_tables()
+            self._validate_v2_attempts_inert_closed(fresh=attempt_schema == "absent")
             self._retrofit_authority_policy_activation_trigger_if_needed()
             self._retrofit_authority_audit_fk_if_needed()
             self._retrofit_authority_lifecycle_trigger_if_needed()

@@ -1043,7 +1043,7 @@ AUTHORITY_POLICY_V2_ATTEMPT_STAGE_TRANSITIONS = {
         AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
 }
 AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES = frozenset({
-    "unfinalized", "continued", "refused", "owner_lost",
+    "unfinalized", "continued", "refused", "owner_lost", "inert_closed",
 })
 AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION = "authority_policy_v2_result_stage"
 # THR-229 C3c correction: the ONE accepted manager decision action that the v2
@@ -1513,6 +1513,10 @@ class AuthorityPolicyV2Attempt(BaseModel):
             raise ValueError("contract_digest does not match the v2 contract")
         if not self.release_id.startswith("APV2-"):
             raise ValueError("release_id is not a v2 release reference")
+        if self.finalization_state == "inert_closed" and (
+            self.stage != "admitted" or self.refusal_code is not None
+        ):
+            raise ValueError("inert_closed requires admitted stage and no refusal code")
         if self.finalization_state in (
             AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
             AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,

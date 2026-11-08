@@ -983,6 +983,10 @@ class AuthorityV2AttemptsMixin:
                 raise ValueError("authority v2 attempt column/preimage mismatch")
         if row["finalization_state"] != attempt.finalization_state:
             raise ValueError("authority v2 attempt finalization mismatch")
+        if row["finalization_state"] == "inert_closed" and (
+            row["stage"] != "admitted" or row["refusal_code"] is not None
+        ):
+            raise ValueError("inert_closed attempt requires admitted/NULL")
         return attempt
 
     @_synchronized
