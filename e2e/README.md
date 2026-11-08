@@ -46,11 +46,13 @@ Body-read failures name the query-free Response path, HTTP status, request
 method and consumption role (selected view or `thread_bodies` sweep), without
 native exception text that could contain credentials. A returned ordinary
 Playwright body RPC error keeps screenshot/trace teardown available only while
-the original bridge task is complete, the dispatcher/connection remain healthy,
-the original end has not expired and the controller is uninterrupted. Native
+the original bridge task is complete, no owned listener fault has been latched,
+the dispatcher/connection remain healthy, the original end has not expired and the controller is uninterrupted. Native
 timeout/closed-target subclasses, listener faults, cancellation and uncertain
-ownership still poison native state and refuse native teardown. Standard failure
-artifacts use the existing literal-token scrub and upload paths.
+ownership still poison native state and refuse native teardown. Owned page,
+context and raw navigation callbacks latch exceptions before Playwright can
+consume and clear its transient connection error on a later API call; the latch
+is never reset. Standard failure artifacts use the existing literal-token scrub and upload paths.
 The sweep remains strict: the independent content reader consumes every required
 Response body, including automatic detail/message refreshes.
 Detail/message-page JSON, public/durable content and DOM assertions remain.
