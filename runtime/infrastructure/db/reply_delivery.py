@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from runtime.infrastructure.thread_archive import after_thread_invocations_commit
+
 import uuid
 import time
 from datetime import datetime, timedelta, timezone
@@ -100,6 +102,7 @@ class ReplyDeliveryMixin:
             raise ReleaseUnavailable(exc.code, committed=None,
                 settings_restored=exc.settings_restored) from None
 
+    @after_thread_invocations_commit("all")
     def release_exact_thread_delivery(self, raw: str) -> dict:
         """SOLE transaction owner, bound to actual private C1b serving work.
 
@@ -747,6 +750,7 @@ class ReplyDeliveryMixin:
         )
         return token
 
+    @after_thread_invocations_commit("thread_id")
     @_synchronized
     def cutover_thread_reply_delivery_state(
         self, thread_id: str,
@@ -897,6 +901,7 @@ class ReplyDeliveryMixin:
             return "running_missing_start_evidence_on_recovery"
         return "invalid_running_token_on_recovery"
 
+    @after_thread_invocations_commit("all")
     @_synchronized
     def recover_reply_delivery_state(self) -> list[ThreadReplyRecoveryEntry]:
         """Durable reply-delivery recovery (Slice A ships it UNHOOKED).
@@ -1880,6 +1885,7 @@ class ReplyDeliveryMixin:
             exchange_held=exchange_held,
         )
 
+    @after_thread_invocations_commit("token")
     @_synchronized
     def settle_conversational_reply(
         self,
@@ -1907,6 +1913,7 @@ class ReplyDeliveryMixin:
             raise
         return settlement
 
+    @after_thread_invocations_commit("token")
     @_synchronized
     def settle_conversational_reply_with_breaker_failure(
         self, *, token: str, outcome: str, decline_reason: str,
@@ -1993,6 +2000,7 @@ class ReplyDeliveryMixin:
             self._conn.rollback()
             raise
 
+    @after_thread_invocations_commit("token")
     @_synchronized
     def settle_conversational_reply_with_exchange(
         self,
@@ -2034,6 +2042,7 @@ class ReplyDeliveryMixin:
         return settlement, arrivals
 
     @classify_message_write
+    @after_thread_invocations_commit("token")
     @_synchronized
     def reply_conversational(
         self,
@@ -2299,6 +2308,7 @@ class ReplyDeliveryMixin:
             running_through_seq=running_through,
         )
 
+    @after_thread_invocations_commit("thread_id")
     @_synchronized
     def discard_reply_delivery(
         self,

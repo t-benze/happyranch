@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from runtime.infrastructure.thread_archive import after_thread_invocations_commit
+
 import base64
 import binascii
 import json
@@ -67,6 +69,26 @@ def _thread_page_cursor(
         return key
     except (ValueError, TypeError, UnicodeError, binascii.Error, RecursionError) as exc:
         raise ValueError("invalid_thread_cursor") from exc
+
+
+# The complete archive-owner relation, shared by move admission and automatic
+# settlement admission. Breaker history is an owner, never a live obligation.
+_THREAD_ARCHIVE_OWNERS_SQL = """
+    SELECT agent_name, 'invocation' AS source, purpose, 1 AS live
+    FROM thread_invocations WHERE thread_id=:thread_id AND status='pending'
+    UNION ALL
+    SELECT agent_name, 'delivery', NULL,
+        queued_invocation_token IS NOT NULL OR running_invocation_token IS NOT NULL
+        OR required_through_seq > acknowledged_through_seq
+    FROM thread_reply_delivery_state WHERE thread_id=:thread_id
+    UNION ALL
+    SELECT agent_name, 'breaker', NULL, 0
+    FROM thread_reply_breaker_episodes WHERE thread_id=:thread_id
+    UNION ALL
+    SELECT d.agent_name, 'deferral', NULL, 1 FROM thread_exchange_deferrals d
+    JOIN thread_reply_exchange e ON e.thread_id=d.thread_id AND e.exchange_id=d.exchange_id
+    WHERE d.thread_id=:thread_id AND d.state='held' AND e.state='open'
+"""
 
 
 class ThreadResolutionError(ValueError):
@@ -442,6 +464,7 @@ class ThreadsMixin:
         self._conn.commit()
         return cursor.rowcount == 1
 
+    @after_thread_invocations_commit("thread_id")
     @_synchronized
     def archive_thread_and_reset_sessions(
         self,
@@ -451,6 +474,8 @@ class ThreadsMixin:
         audit_scope_id: str,
         audit_agent: str,
         append_archive_message: bool = False,
+        archive_message_speaker: str = "founder",
+        auto_archive_trigger: str | None = None,
     ) -> int | None:
         """Own the complete native archive transaction, including admission.
 
@@ -467,21 +492,27 @@ class ThreadsMixin:
             if thread is not None and thread.status is ThreadStatus.ARCHIVED:
                 self._conn.commit()
                 return None
+            if auto_archive_trigger is not None and (
+                thread is None or thread.status is not ThreadStatus.OPEN
+                or thread.resolved_seq is None or thread.composed_from_task_id is None
+                or thread.composed_by == "founder" or thread.composed_from_dream_id is not None
+                or self._conn.execute(
+                    "SELECT 1 FROM (" + _THREAD_ARCHIVE_OWNERS_SQL + ") WHERE live LIMIT 1",
+                    {"thread_id": thread_id},
+                ).fetchone() is not None
+                or self._thread_has_founder_hold_uncommitted(thread_id)
+            ):
+                self._conn.commit()
+                return None
             move = getattr(self, "_team_move_coordinator", None)
             if move is not None:
                 # Include durable owners touched by discard even if a legacy
                 # obligation no longer has a current participant row.
                 owners = self._conn.execute(
-                    "SELECT agent_name FROM thread_participants WHERE thread_id=? "
-                    "UNION SELECT agent_name FROM thread_invocations WHERE thread_id=? "
-                    "AND status='pending' AND purpose IN ('reply','bootstrap') "
-                    "UNION SELECT agent_name FROM thread_reply_delivery_state WHERE thread_id=? "
-                    "UNION SELECT agent_name FROM thread_reply_breaker_episodes WHERE thread_id=? "
-                    "UNION SELECT d.agent_name FROM thread_exchange_deferrals d "
-                    "JOIN thread_reply_exchange e ON e.thread_id=d.thread_id "
-                    "AND e.exchange_id=d.exchange_id WHERE d.thread_id=? "
-                    "AND d.state='held' AND e.state='open'",
-                    (thread_id,) * 5,
+                    "SELECT agent_name FROM thread_participants WHERE thread_id=:thread_id "
+                    "UNION SELECT agent_name FROM (" + _THREAD_ARCHIVE_OWNERS_SQL + ") "
+                    "WHERE source!='invocation' OR purpose IN ('reply','bootstrap')",
+                    {"thread_id": thread_id},
                 ).fetchall()
                 for owner in owners:
                     move.threads.participant_write_uncommitted(owner["agent_name"])
@@ -504,8 +535,16 @@ class ThreadsMixin:
             seq = None
             if append_archive_message:
                 seq = self._append_thread_message_uncommitted(
-                    thread_id=thread_id, speaker="founder", kind=ThreadMessageKind.SYSTEM,
+                    thread_id=thread_id, speaker=archive_message_speaker, kind=ThreadMessageKind.SYSTEM,
                     system_payload={"kind_tag": "archived", "summary": summary},
+                )
+            if auto_archive_trigger is not None:
+                from runtime.infrastructure.audit_logger import AuditLogger
+                AuditLogger(self).log_thread_archived(
+                    thread_id, turns_used=thread.turns_used, agent=audit_agent,
+                    extra_payload={"trigger": auto_archive_trigger,
+                                   "resolved_by": thread.resolved_by, "resolved_seq": thread.resolved_seq},
+                    uncommitted=True,
                 )
             self._conn.commit()
             return seq
@@ -725,6 +764,7 @@ class ThreadsMixin:
             decline_reason=row["decline_reason"],
         )
 
+    @after_thread_invocations_commit("token")
     @_synchronized
     def mark_invocation_declined(
         self, token: str, *, decline_reason: str | None = None
@@ -886,6 +926,12 @@ class ThreadsMixin:
             (thread_id,),
         ).fetchone()
         return int(row["tail"])
+
+    @_synchronized
+    def list_open_resolved_thread_ids(self) -> list[str]:
+        return [r["id"] for r in self._conn.execute(
+            "SELECT id FROM threads WHERE status='open' AND resolved_seq IS NOT NULL",
+        )]
 
     @_synchronized
     def list_open_thread_ids(self) -> list[str]:

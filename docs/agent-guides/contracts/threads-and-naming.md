@@ -253,6 +253,30 @@ See the [current naming contract](../../superpowers/specs/2026-10-09-identity-na
 
 **Thread reply provider breaker (THR-200 PR B).** One durable continuity per `(thread, agent, executor/model/policy)` opens after exactly three consecutive structured final provider-execution failures. Threshold 3 and cooldown 900 seconds are fixed policy constants, not environment/config settings, so restart cannot fork continuity or bypass an OPEN episode. Only a process proven launched and ending as provider nonzero, provider timeout, or post-launch contract failure qualifies; pre-launch/admission/host refusal, interruption/cancellation, canonical transcript gap fallback, exact eviction itself, successful eviction fallback, and a successful no-callback nudge do not. A failed eviction fallback counts exactly once. OPEN retains/coalesces the delivery range and launches nothing. After exactly 900 seconds the daemon scheduler atomically mints one HALF_OPEN probe; every tick also republishes a committed pending probe token through a process queue whose deduplication ownership spans queued and in-flight delivery. Worker success acknowledges that ownership, while a pre-claim exception or cancellation releases it for a later tick; the durable claim CAS preserves exactly-once provider launch. A recovered ownerless gap with no episode follows the same cooldown-probe path, never ordinary CLOSED admission. Held deferrals in an OPEN exchange remain held and excluded even when the breaker is otherwise recoverable. Probe success settles and closes; probe failure rearms 900 seconds. Episode/receipt/audit writes are idempotent and redacted; stale callbacks cannot close newer continuity. No API/OpenAPI/web projection or manual action is added by PR B.
 
+## Explicit resolution and automatic archive (THR-339)
+
+The opener or its current executable team manager can resolve a task-composed
+thread in a substantive send from an active task session. Automatic archive
+requires open + explicitly resolved + task-composed (neither founder-created nor
+dream-composed), no pending invocation of any purpose, no live reply-delivery
+range/slot or held deferral on an open exchange, and no unanswered founder
+address. The archive transaction rechecks the shared owner relation and PR1's
+founder-hold predicate; settled rows and historical mentions already answered by
+the founder do not block. Later MESSAGE rows clear resolution.
+
+Post-commit checks follow resolving sends, invocation terminals, composing-task
+terminals (including subtasks), startup recovery and final exchange-hold release.
+Task termination only triggers cleanup: unresolved requests stay open with their
+composer visible. Silence, decline and elapsed time never resolve. Text-only
+promises are untracked in v1; leave resolution unset while work remains.
+Automatic `thread_archived` uses `agent='orchestrator'`, `task_id=<thread_id>` and
+`{turns_used, trigger, resolved_by, resolved_seq}`, with an orchestrator system
+message and the existing transcript/SSE. Founder manual archive retains the
+exact founder actor and `{turns_used}` payload. Founder-created/dream-composed
+threads stay manual; the founder can inspect and resume any archived thread,
+which clears resolution. No route, schema or lifecycle value is added in PR2.
+See the current `2026-11-08-thread-resolution-auto-archive-design.md` spec.
+
 ## Functional naming UI and API contract
 
 The existing org surface has an independent human-founder name editor. Active

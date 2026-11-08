@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from runtime.infrastructure.thread_archive import after_thread_invocations_commit
+
 import json
 from datetime import datetime, timezone
 
@@ -643,6 +645,7 @@ class ReplyExchangeMixin:
                 )
         return arrivals
 
+    @after_thread_invocations_commit("all")
     @_synchronized
     def reconcile_reply_exchanges(self) -> list[ThreadReplyArrival]:
         """U5 — startup exchange reconcile (daemon step 6e). One transaction:
@@ -664,6 +667,7 @@ class ReplyExchangeMixin:
             raise
         return arrivals
 
+    @after_thread_invocations_commit("all")
     @_synchronized
     def reaper_sweep_reply_exchanges(self) -> list[ThreadReplyArrival]:
         """U4 — reaper tick over every OPEN exchange (fail-open backstop).
