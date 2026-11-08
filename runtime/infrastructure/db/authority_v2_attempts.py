@@ -93,6 +93,24 @@ def _v2_result_row_digest(decoded: dict) -> str:
     ).encode("utf-8")).hexdigest()
 
 
+def _v2_inert_result_family(orchestrator: Any, root: str, result: dict, manager: str) -> str | None:
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+    report = completion_report_from_result_row(root, result, fallback_agent=manager)
+    if report.status == "blocked":
+        return "blocked"
+    action = orchestrator._parse_next_step(report).action
+    if action == "escalate":
+        return None
+    return action if action in ("delegate", "done", "fanout", "supersede", "workflow_start") else "other_non_escalate"
+
+
+@dataclass(frozen=True)
+class _V2InertCloseCandidate:
+    target: AuthorityPolicyV2HousekeepingTarget
+    decision_family: str
+    result_row_digest: str
+
+
 class _V2StartupConnectionUnsafe(RuntimeError):
     """Private startup abort; causes are retained, never formatted into logs."""
 
@@ -176,7 +194,7 @@ class _V2StartupReads:
 
     def count(self, name: str, amount: int = 1) -> None:
         try:
-            key = self.phase + "_" + name
+            key = name if name.startswith("inert_close") else self.phase + "_" + name
             self.counts[key] = self.counts.get(key, 0) + amount
         except BaseException:
             pass  # Observation cannot replace any evidence/cleanup disposition.
@@ -608,6 +626,48 @@ class _V2StartupReads:
             if error is not None:
                 raise error.with_traceback(error.__traceback__)
             return outcome
+
+    def close_inert(
+        self, batch: list[_V2InertCloseCandidate], *, orchestrator: Any,
+        excluded_roots: set[str],
+    ) -> None:
+        """Post-loop custody: only confirmed clean pre-COMMIT failures continue."""
+        phases = _V2StartupRefusalPhases()
+        error = None
+        outcome: dict[str, int] = {}
+        with self.db._lock:
+            try:
+                self.invalidate()
+                self.check()
+                outcome = self.db._close_v2_inert_attempts_on_startup(
+                    batch, orchestrator=orchestrator, excluded_roots=excluded_roots,
+                    phases=phases,
+                )
+            except BaseException as exc:
+                error = exc
+            if (
+                phases.cleanup_errors
+                or (phases.commit_attempted and not phases.committed)
+                or (phases.begin_attempted and not (phases.committed or phases.rolled_back))
+                or (error is not None and not (
+                    phases.began and phases.rolled_back and not phases.commit_attempted
+                ))
+            ):
+                self._abort("inert_close_transaction", *(() if error is None else (error,)),
+                            *phases.cleanup_errors)
+            try:
+                self.check()
+            except _V2StartupConnectionUnsafe as unsafe:
+                if error is not None:
+                    unsafe.causes = (error, *unsafe.causes)
+                raise
+            if phases.began:
+                self.count("inert_close_batches")
+            if error is not None:
+                self.count("inert_close_skipped:batch_failure", len(batch))
+                return
+            for category, amount in outcome.items():
+                self.count(category, amount)
 
 
 class AuthorityV2AttemptsMixin:
@@ -4053,7 +4113,7 @@ class AuthorityV2AttemptsMixin:
     def _update_v2_attempt_finalization_uncommitted(
         self, attempt: AuthorityPolicyV2Attempt, finalization_state: str,
         refusal_code: str | None,
-    ) -> None:
+    ) -> bool:
         """CAS the attempt to a terminal finalization, retaining its stage."""
         if attempt.finalization_state != "unfinalized":
             raise ValueError("v2 attempt is already finalized")
@@ -4061,9 +4121,13 @@ class AuthorityV2AttemptsMixin:
             AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
             AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
             "continued",
+            "inert_closed",
         ):
             raise ValueError("illegal v2 attempt finalization")
-        if finalization_state == "continued":
+        if finalization_state == "inert_closed":
+            if attempt.stage != "admitted" or refusal_code is not None:
+                raise ValueError("inert closure requires admitted/NULL")
+        elif finalization_state == "continued":
             refusal_code = None
         elif refusal_code not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
             raise ValueError("finalized v2 attempt requires a closed refusal code")
@@ -4081,7 +4145,165 @@ class AuthorityV2AttemptsMixin:
             ),
         )
         if cursor.rowcount != 1:
+            if finalization_state == "inert_closed":
+                return False
             raise ValueError("v2 attempt finalization CAS lost")
+        return True
+
+    def _close_v2_inert_attempt_uncommitted(
+        self, candidate: _V2InertCloseCandidate, *, orchestrator: Any,
+        excluded_roots: set[str],
+    ) -> str | None:
+        """None means closed; a bounded category means this row must roll back."""
+        from runtime.infrastructure.db.tasks import _decode_task_result_row
+        target = candidate.target
+        if target.root_task_id in excluded_roots:
+            return "root_fenced"
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts WHERE root_task_id=?
+               AND manager_agent=? AND manager_session_id=? AND result_id=?""",
+            (target.root_task_id, target.manager_agent, target.manager_session_id, target.result_id),
+        ).fetchone()
+        if row is None:
+            return "attempt_missing"
+        try:
+            attempt = self._authority_policy_v2_attempt_from_row(row)
+        except ValueError:
+            return "canonical"
+        if attempt.finalization_state != "unfinalized" or attempt.stage != "admitted":
+            return "attempt_changed"
+        if any(getattr(attempt, key) != getattr(target, key) for key in (
+            "attempt_id", "team", "root_task_id", "manager_agent", "manager_session_id",
+            "result_id", "origin_boot_id", "owner_attempt_id",
+        )):
+            return "identity_changed"
+        # Four independent checks. A startup anchor is never writer authority.
+        if not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row)):
+            return "admission_audit"
+        try:
+            binding = self.get_authority_policy_v2_session_binding(
+                root_task_id=attempt.root_task_id, manager_agent=attempt.manager_agent,
+                manager_session_id=attempt.manager_session_id,
+            )
+            if binding is None:
+                return "binding_missing"
+            if any(getattr(binding, key) != getattr(attempt, key) for key in (
+                "binding_id", "team", "root_task_id", "manager_agent", "manager_session_id",
+                "contract_id", "contract_version", "contract_digest", "release_id",
+                "activation_id", "activation_epoch", "selector_id",
+            )):
+                return "binding_mismatch"
+            # This authenticator's normal None return means SUCCESS.
+            self._authenticate_v2_session_binding_uncommitted(binding)
+        except ValueError:
+            return "binding_authentication"
+        root = self._conn.execute(
+            "SELECT status FROM tasks WHERE id=?", (attempt.root_task_id,),
+        ).fetchone()
+        if root is None or root["status"] not in ("completed", "failed", "cancelled", "superseded"):
+            return "root_not_terminal"
+        for obligation in self._conn.execute(
+            "SELECT payload FROM audit_log WHERE task_id=? AND agent=? AND action=?",
+            (attempt.root_task_id, attempt.manager_agent,
+             AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION),
+        ):
+            try:
+                payload = json.loads(obligation["payload"])
+            except (ValueError, TypeError):
+                return "obligation_unattributable"
+            if not isinstance(payload, dict) or not isinstance(payload.get("attempt_id"), str):
+                return "obligation_unattributable"
+            if payload["attempt_id"] == attempt.attempt_id:
+                return "obligation_present"
+        try:
+            live = self._v2_live_attempt_owners
+            failed = self._v2_refusal_failed_owners
+            if type(live) is not dict or type(failed) is not dict:
+                return "owner_unavailable"
+            if attempt.attempt_id in live or attempt.attempt_id in failed:
+                return "owner_present"
+        except Exception:
+            return "owner_unavailable"
+        boot_id = self._v2_process_boot_id
+        if not isinstance(boot_id, str) or not boot_id:
+            return "boot_unavailable"
+        result = self._conn.execute(
+            "SELECT * FROM task_results WHERE id=?", (attempt.result_id,),
+        ).fetchone()
+        if result is None or (result["task_id"], result["agent"], result["session_id"]) != (
+            attempt.root_task_id, attempt.manager_agent, attempt.manager_session_id,
+        ):
+            return "result_identity"
+        try:
+            decoded = _decode_task_result_row(result)
+            if _v2_result_row_digest(decoded) != candidate.result_row_digest:
+                return "result_changed"
+            family = _v2_inert_result_family(orchestrator, attempt.root_task_id, decoded, attempt.manager_agent)
+        except (ValueError, TypeError):
+            return "result_unreadable"
+        if family is None or family != candidate.decision_family:
+            return "decision_changed"
+        audit = AuthorityPolicyV2InertCloseAudit(
+            format="authority-policy-v2-attempt-inert-closed@1",
+            attempt_id=attempt.attempt_id, root_task_id=attempt.root_task_id,
+            manager_agent=attempt.manager_agent, manager_session_id=attempt.manager_session_id,
+            result_id=attempt.result_id, stage="admitted", finalization_state="inert_closed",
+            closure="startup_terminal_inert", decision_family=family,
+            result_row_digest=candidate.result_row_digest,
+            root_status_at_close=root["status"], boot_id=boot_id,
+        )
+        self.insert_audit_log_uncommitted(
+            attempt.root_task_id, attempt.manager_agent, AUTHORITY_POLICY_V2_INERT_CLOSE_ACTION,
+            audit.model_dump(mode="json"),
+        )
+        if not self._update_v2_attempt_finalization_uncommitted(attempt, "inert_closed", None):
+            return "cas_lost"
+        if self.get_authority_policy_v2_attempt(
+            root_task_id=attempt.root_task_id, manager_agent=attempt.manager_agent,
+            manager_session_id=attempt.manager_session_id, result_id=attempt.result_id,
+        ) is None:
+            return "readback"
+        return None
+
+    def _close_v2_inert_attempts_on_startup(
+        self, batch: list[_V2InertCloseCandidate], *, orchestrator: Any,
+        excluded_roots: set[str], phases: _V2StartupRefusalPhases,
+    ) -> dict[str, int]:
+        """Only the open startup reader invokes this bounded transaction owner."""
+        conn = self._conn
+        if not 1 <= len(batch) <= 256 or type(conn.in_transaction) is not bool or conn.in_transaction:
+            raise ValueError("inert close requires a bounded batch and idle connection")
+        counts: dict[str, int] = {}
+
+        def cleanup(sql: str) -> None:
+            try:
+                conn.execute(sql)
+            except BaseException as error:
+                phases.cleanup_errors.append(error)
+                raise
+
+        try:
+            phases.begin_attempted = True
+            conn.execute("BEGIN IMMEDIATE")
+            phases.began = True
+            for candidate in batch:
+                conn.execute("SAVEPOINT v2_inert_close_row")
+                category = self._close_v2_inert_attempt_uncommitted(
+                    candidate, orchestrator=orchestrator, excluded_roots=excluded_roots,
+                )
+                if category is not None:
+                    cleanup("ROLLBACK TO v2_inert_close_row")
+                cleanup("RELEASE v2_inert_close_row")
+                key = "inert_closed" if category is None else "inert_close_skipped:" + category
+                counts[key] = counts.get(key, 0) + 1
+            phases.commit(conn)
+            return counts
+        except BaseException as primary:
+            try:
+                phases.rollback(conn)
+            except BaseException:
+                raise primary
+            raise
 
     def _settle_v2_exact_receipt_uncommitted(
         self, receipt_row, *, root_task_id: str, manager_agent: str,
@@ -4741,7 +4963,10 @@ class AuthorityV2AttemptsMixin:
         self, row, *, obligation_code: str | None,
     ) -> AuthorityPolicyV2HousekeepingTarget:
         attempt = self._authority_policy_v2_attempt_from_row(row)
-        if attempt.finalization_state == "inert_closed" and not self._authenticate_v2_inert_close_uncommitted(attempt):
+        if attempt.finalization_state == "inert_closed" and (
+            not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row))
+            or not self._authenticate_v2_inert_close_uncommitted(attempt)
+        ):
             raise ValueError("v2 inert closure evidence mismatch")
         candidate_row = self._conn.execute(
             "SELECT candidate_id FROM authority_policy_v2_candidates WHERE result_id=?",

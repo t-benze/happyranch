@@ -5756,7 +5756,8 @@ class AuthorityV2ContinuationMixin:
         except ValueError:
             return False
         if attempt.finalization_state == "inert_closed":
-            if not self._authenticate_v2_inert_close_uncommitted(attempt):
+            if (not self._authenticate_v2_attempt_admission_audit_uncommitted(attempt_row)
+                    or not self._authenticate_v2_inert_close_uncommitted(attempt)):
                 return _pending("identity_mismatch")
             return _pending("already_finalized")
         if attempt.finalization_state == "inert_closed":

@@ -3629,6 +3629,9 @@ def refuse_authority_policy_v2_pre_final_on_startup(
     from runtime.infrastructure.db.authority_v2_attempts import (
         _V2StartupConnectionUnsafe,
         _V2StartupEvidenceUnavailable,
+        _V2InertCloseCandidate,
+        _v2_inert_result_family,
+        _v2_result_row_digest,
     )
 
     from runtime.daemon.__main__ import _startup_span
@@ -3654,6 +3657,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
         with _startup_span("authority_exact"):
             fenced_roots: set[str] = set()
             failed_roots: set[str] = set()
+            inert_candidates: list[_V2InertCloseCandidate] = []
             for discovered, anchor in targets:
                 reads.phase = "exact"
                 reads.count("processed")
@@ -3695,9 +3699,6 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                             continue
                         if target.stage == "admitted" and orchestrator is not None:
                             try:
-                                from runtime.orchestrator.orchestrator import (
-                                    completion_report_from_result_row,
-                                )
                                 reads.count("result_list_calls")
                                 result_rows = db.get_task_results(target.root_task_id)
                                 reads.count("result_list_successes")
@@ -3713,16 +3714,11 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                                 )
                                 if result is None:
                                     raise ValueError("causal result is missing")
-                                report = completion_report_from_result_row(
-                                    target.root_task_id,
-                                    result,
-                                    fallback_agent=target.manager_agent,
+                                decision_family = _v2_inert_result_family(
+                                    orchestrator, target.root_task_id, result, target.manager_agent,
                                 )
                                 del result_rows
-                                non_escalate = (
-                                    report.status == "blocked"
-                                    or orchestrator._parse_next_step(report).action != "escalate"
-                                )
+                                non_escalate = decision_family is not None
                             except _V2StartupConnectionUnsafe:
                                 raise
                             except Exception as primary:
@@ -3738,9 +3734,16 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                                     raise primary
                             if non_escalate:
                                 reads.count("inert")
-                                # D2-B': the admission is inert residue.  Do not touch J,
-                                # Q, audits, or the task, and do not fence later branches.
+                                # Classification stays read-only. Standing B writes
+                                # only after this entire exact loop has completed.
                                 reads.check()
+                                try:
+                                    inert_candidates.append(_V2InertCloseCandidate(
+                                        target=target, decision_family=decision_family,
+                                        result_row_digest=_v2_result_row_digest(result),
+                                    ))
+                                except Exception:
+                                    reads.count("inert_close_skipped:snapshot_unavailable")
                                 continue
                         # orchestrator=None cannot reproduce shipping parsing semantics and
                         # therefore fails closed to the existing refusal path (M4).
@@ -3917,6 +3920,13 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                             pass
                         # Let the pending primary resume unchanged, including
                         # its traceback and original explicit/implicit causes.
+            # The reader remains open; no mid-loop catalogue churn or write.
+            if orchestrator is not None:
+                for offset in range(0, len(inert_candidates), 256):
+                    reads.close_inert(
+                        inert_candidates[offset:offset + 256], orchestrator=orchestrator,
+                        excluded_roots=fenced_roots | failed_roots,
+                    )
             return fenced_roots
 
 
