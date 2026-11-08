@@ -317,8 +317,12 @@ Local unknowns are reported against their proven worktree and exact metadata
 cause, including non-task descendants; discovery stays partial, uncertain totals
 and physical freed space stay null, and only known reached/unreached counts are
 reported. Any partial/unknown/shared scope or remaining registration prohibits
-repository-wide prune. Post-remove credit requires independently confirmed root
-and registration/admin absence; a sibling's new local error cannot erase verified
+repository-wide prune. Post-remove credit requires independently confirmed
+worktree-root absence and absence of the actual Git registration row, while an
+independently retained unmapped safe admin residue, including one at the former
+admin pathname, neither blocks nor erases that credit and keeps its unknown
+worktree location/allocation, E scope with candidate_count=0 and exact native
+gitdir ENOENT reason, partial/incomplete outcome and zero repository-wide prune; a sibling's new local error cannot erase verified
 credit, while shared confirmation uncertainty preserves the physical partial effect
 without unverified credit. Earlier verified effects retain their actual accounting.
 This Git version
