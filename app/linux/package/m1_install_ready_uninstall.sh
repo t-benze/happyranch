@@ -133,13 +133,44 @@ package_operation() {
   sudo "$M1_PYTHON" - "$operation" "$M1_PACKAGE" \
     > >(tee "$M1_LOGS/installer-$operation.stdout") \
     2> >(tee "$M1_LOGS/installer-$operation.stderr" >&2) <<'PY'
+import json
 import sys
 from pathlib import Path
-from runtime.remote_access.linux_package import install_linux_package, uninstall_linux_package
-if sys.argv[1] == 'install':
-    print(install_linux_package(Path(sys.argv[2]), Path('/'), system_service=True))
-else:
-    uninstall_linux_package(Path('/'))
+from runtime.remote_access.linux_package import (
+    install_linux_package, uninstall_linux_package, _MANAGED_PACKAGE_DIAGNOSTIC,
+    _empty_managed_package_diagnostic, _managed_package_diagnostic_projection,
+)
+
+def without_loaded_context(value: object) -> object:
+    # Even bounded loaded facts can contain mount/credential-source paths (F1).
+    if isinstance(value, dict):
+        return {key: without_loaded_context(item) for key, item in value.items() if key != 'loaded'}
+    if isinstance(value, list):
+        return [without_loaded_context(item) for item in value]
+    return value
+
+facts = _empty_managed_package_diagnostic()
+token = _MANAGED_PACKAGE_DIAGNOSTIC.set(facts)
+try:
+    if sys.argv[1] == 'install':
+        print(install_linux_package(Path(sys.argv[2]), Path('/'), system_service=True))
+    else:
+        uninstall_linux_package(Path('/'))
+except BaseException:
+    # Existing stderr tee/upload retains ONLY the closed validated projection.
+    # No raw facts, child stderr, exception text, identities or environment.
+    try:
+        source = {key: value for key, value in facts.items() if key not in ('identities', '_initiating')}
+        diagnostic = without_loaded_context(_managed_package_diagnostic_projection(source))
+        print('M1 managed-package diagnostic: ' + json.dumps(diagnostic, separators=(',', ':')), file=sys.stderr, flush=True)
+    except Exception:
+        try:
+            print('M1 managed-package diagnostic: unavailable', file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass  # A failed diagnostic sink must preserve the original refusal.
+    raise
+finally:
+    _MANAGED_PACKAGE_DIAGNOSTIC.reset(token)
 PY
 }
 ready() {
