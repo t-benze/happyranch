@@ -18,3 +18,11 @@ and the §3 single cumulative bounded-reader allowance. The maintained guide
 above owns the corrected contract. No existing DDL, startup path, frozen grammar,
 producer or installation authority changes; structural observations do not
 supply populated-history or native acceptance.
+
+TASK-14565 corrects TASK14556-F1 on the same PR: legacy-only validation uses a
+genuine retained `_Budget` seeded from the outer counters and the unchanged
+native connection, then folds counters back before the outer success checks.
+The same SQLite progress/deadline handler covers retained unbudgeted queries.
+Retained byte acquisition uses its original per-call caps plus that shared bound,
+not pre-reservation against the outer 64 MiB cap; unbudgeted retained query bytes
+are not charged to that outer counter. Original guards and refusals are unchanged.

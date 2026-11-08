@@ -296,12 +296,12 @@ engine readiness, business admission, current authority or authentic native
 settlement. Stored verified-check arrays remain adapter assertions for U3 to
 authenticate; content/capability policy remains with U4/U5.
 
-TASK-14552 bounds that entire call using the retained
+The sequential acquisition path uses the retained
 `coding_authority_history._Budget` / `_bounded_rows` / `_decoded` model and
 `workflow_schema._candidate_structure` / `_structure_cells` metadata acquisition.
 SQL `typeof`/byte-length gates withhold wrong-class or oversized cells before
 payload fetch. The original allowance covers candidate and independent reference
-metadata, native links, ownership inventory, retained rows, every decoded/model
+metadata, native links, new ownership inventory, sequential rows, every decoded/model
 copy and per-run replay. Each sequential table is acquired once; visits/events
 are grouped once instead of rescanning all history for every run. The rowid-less
 ownership view uses a complete bounded scalar preflight and reserves its payload
@@ -317,6 +317,17 @@ Callers must exclusively own the connection and its progress hook during the
 call. Checks occur before success, including unavailable/empty results;
 exhaustion raises a refusal, never validates a subset or reports empty success.
 These are cooperative limits, not hard RSS or OS-I/O timing guarantees.
+
+Legacy-only complete validation receives the unchanged native connection and an
+exact retained `_Budget`, seeded with the outer consumed-byte, accepted-row and
+traversal counters. Its counters fold back by maximum, then the outer byte/work/
+deadline checks run before an unavailable result; no allowance is replenished.
+Retained readers keep their original per-call caps and may refuse earlier.
+Their byte acquisition is bounded by those retained caps plus the same outer
+SQLite progress/deadline bound, **not pre-reservation against the outer 64 MiB
+cap**. Retained document/ownership queries without a budget argument remain
+under that progress handler; their bytes are not added to the outer counter.
+Any retained-reader refusal propagates unchanged.
 
 The separate `workflow_sequential_ownership.py` companion reference keeps all
 original columns and v1 kinds, and adds explicit v2 `seq_source_waiting`,

@@ -60,8 +60,16 @@ startup change or permission to run an admission writer.
 
 Standalone inspection uses the [finite reader contract](../agent-guides/contracts/reusable-workflows.md#u2a-storage-and-standalone-reader-boundary):
 one original row/raw/decoded/copy/work/deadline allowance includes independent
-schema references and complete ownership inventory. Exhaustion refuses; an
+schema references and new companion ownership inventory. Exhaustion refuses; an
 operator cannot substitute a subset or call exhaustion empty/unavailable data.
 The connection and its SQLite progress hook are exclusively owned for the call.
 TASK-14552's disposable AST/SQLite observations are structural evidence only;
 no populated-history, installer, native or migration behavior is established.
+
+Legacy-only validation passes an exact retained `_Budget` seeded from the outer
+counters through the unchanged native connection, inside the same snapshot and
+SQL progress/deadline context. Counters fold back without replenishment before
+outer success checks; retained refusals propagate unchanged. Retained byte
+acquisition uses its original per-call caps plus the shared SQL-step/deadline
+bound, not pre-reservation against the outer 64 MiB cap. Unbudgeted retained
+document/ownership query bytes are not included in the outer byte counter.

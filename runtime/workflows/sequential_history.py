@@ -586,7 +586,21 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str)
         layout = _read_layout(conn, budget)
         if not layout.sequential:
             if layout.document is not None:
-                _read_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+                # Retained readers require the exact base type and native conn.
+                # Keep their original caps without replenishing prior consumption;
+                # the enclosing progress handler also bounds unbudgeted SQL.
+                legacy_budget = _Budget(consumed=budget.consumed,
+                                        accepted_rows=budget.accepted_rows,
+                                        traversed=budget.traversed)
+                try:
+                    _read_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=legacy_budget)
+                finally:
+                    # Seeded counters already include the outer work. Do not add
+                    # it twice, and do not mask a retained reader's refusal.
+                    budget.consumed = max(budget.consumed, legacy_budget.consumed)
+                    budget.accepted_rows = max(budget.accepted_rows, legacy_budget.accepted_rows)
+                    budget.traversed = max(budget.traversed, legacy_budget.traversed)
+                budget.reserve(0)  # Recheck cumulative bytes, work and deadline.
             budget.check()
             return SequentialHistory(layout, 'new-engine unavailable', (), ())
         _native_contract(conn, budget)
