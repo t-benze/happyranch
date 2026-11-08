@@ -1173,10 +1173,10 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         )
     from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
     ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
-    workflow_draft = ownership.kind in {"draft", "f5", "coding_attempt"}
-    workflow_owner = (org.workflow_coding_dispatch if ownership.kind == "coding_attempt" else org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
-    if (ownership.kind in SEQUENTIAL_HELD_KINDS
-            or ownership.kind not in {"legacy", "draft", "f5", "coding_attempt", "coding_source_waiting"}):
+    workflow_draft = ownership.kind in {"draft", "f5", "coding_attempt", "seq_visit"}
+    workflow_owner = (org.workflow_sequential_dispatch if ownership.kind == "seq_visit" else org.workflow_coding_dispatch if ownership.kind == "coding_attempt" else org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
+    if (ownership.kind in SEQUENTIAL_HELD_KINDS - {"seq_visit"}
+            or ownership.kind not in {"legacy", "draft", "f5", "coding_attempt", "coding_source_waiting", "seq_visit"}):
         raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
     draft_prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id) if workflow_draft else None
     # Task-active gate runs BEFORE session ownership (see _require_task_active).
@@ -1458,7 +1458,9 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
     local_ci_json = _json.dumps(local_ci.model_dump()) if local_ci is not None else None
     decision_json = _json.dumps(decision_payload) if decision_payload is not None else None
     from runtime.workflows.coding_start import CodingStartError
-    coding_owner = org.workflow_coding_dispatch if ownership.kind == 'coding_attempt' else None
+    from runtime.workflows.sequential_engine import SequentialRefusal
+    sequential_owner = org.workflow_sequential_dispatch if ownership.kind == 'seq_visit' else None
+    coding_owner = sequential_owner or (org.workflow_coding_dispatch if ownership.kind == 'coding_attempt' else None)
     try:
         admission_context = coding_owner.callback_admission(task_id) if coding_owner is not None else nullcontext(None)
         async with admission_context as coding_capture:
@@ -1519,6 +1521,10 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                             status_code=status.HTTP_409_CONFLICT,
                             detail={"code": "recovery_callback_not_admissible"},
                         )
+    except SequentialRefusal as exc:
+        if sequential_owner is None:
+            raise
+        raise HTTPException(status_code=409, detail={'code': exc.code}) from None
     except CodingStartError as exc:
         if coding_owner is None:
             raise

@@ -1,24 +1,603 @@
-"""U3a sequential ownership attachment: all ports refuse or hold, without effects."""
+"""U3d-1 callback and original-owner settlement consumer; queue stays disabled.
+
+Native summaries retain the carrier. Only a post-outer current-authority writer
+may supply explicit bytes to U3c. Claims never issue domain/access witnesses.
+"""
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+import base64
+import binascii
+import hashlib
+import json
+import re
+import sqlite3
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from dataclasses import asdict
+from datetime import datetime, timezone
+from typing import Any, get_args
+
+from runtime.infrastructure.database import completion_result_payload_matches
+from runtime.infrastructure.workflow_task_ownership import selected_owner
+from runtime.models import TaskRecord
+from runtime.platform.session_backend import CleanupStatus, TerminalReason
+from runtime.workflows.sequential_contracts import Check, NextEdge, SETTLEMENT_CHECK, TerminalEdge
+from runtime.workflows.sequential_definition import CompiledDefinition, _json, compile_definition, parse_result, parse_start, parse_transition
+from runtime.workflows.sequential_engine import (
+    SequentialRefusal, _bound_agents, _engine_rows, accept_result_uncommitted, check_evidence_size,
+    check_output_size, return_uncommitted, transition_uncommitted,
+)
+from runtime.workflows.sequential_history import _ReadBudget, _bytes, _sql_budget
+from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
+
+CARRIER_LIMIT = 1414488
+CARRIER_METADATA_LIMIT = 16384
+_SUCCESS = ('produced', 'APPROVE', 'PASS', 'merged')
+_TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', re.ASCII)
+_DIGEST = re.compile(r'[0-9a-f]{64}', re.ASCII)
+_RESULT_COLUMNS = ('id', 'task_id', 'agent', 'session_id', 'status', 'output_summary',
+                   'decision_json', 'confidence_score', 'risks_flagged', 'output_dir',
+                   'waiting_on_job_ids', 'verdict', 'local_ci')
+
+
+def _check(value: bool, code: str = 'sequential_carrier_identity_conflict') -> None:
+    if not value:
+        raise SequentialRefusal(code)
+
+
+def _unique(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        _check(key not in result, 'sequential_carrier_invalid')
+        result[key] = value
+    return result
+
+
+def _no_number(value: str) -> None:
+    raise SequentialRefusal('sequential_carrier_invalid')
+
+
+def _carrier(summary: str, *, contract: str, checks: tuple[str, ...],
+             status: str, verdict: str | None) -> tuple[dict, bytes]:
+    """Transport decode -> imported ACTUAL-byte gate -> domain decode/hash.
+
+    Base64 characters are not JSON nodes. Never feed this wrapper to a retained
+    full-reader decoder or to parse_result's independent 64KiB envelope parser.
+    """
+    invalid = 'sequential_carrier_invalid'
+    try:
+        _check(type(summary) is str, invalid)
+        _check(len(summary) <= CARRIER_LIMIT, 'sequential_carrier_limit_exceeded')
+        raw = summary.encode('utf8')
+        _check(len(raw) <= CARRIER_LIMIT, 'sequential_carrier_limit_exceeded')
+        depth = 0
+        quoted = escaped = False
+        containers = 0
+        for byte in raw:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif byte == 92:
+                    escaped = True
+                elif byte == 34:
+                    quoted = False
+            elif byte == 34:
+                quoted = True
+            elif byte in (91, 123):
+                depth += 1
+                containers += 1
+                _check(depth <= 4 and containers <= 11, invalid)
+            elif byte in (93, 125):
+                depth -= 1
+                _check(depth >= 0, invalid)
+        value = json.loads(raw.decode('utf8'), object_pairs_hook=_unique,
+                           parse_int=_no_number, parse_float=_no_number, parse_constant=_no_number)
+        _check(type(value) is dict and value.keys() == {
+            'format', 'outcome', 'content_base64', 'findings', 'capability_claims'}, invalid)
+        _check(value['format'] == 'workflow-sequential-callback@1'
+               and type(value['outcome']) is str and _TOKEN.fullmatch(value['outcome']) is not None
+               and type(value['content_base64']) is str, invalid)
+        findings, claims = value['findings'], value['capability_claims']
+        _check(type(findings) is list and len(findings) <= 32
+               and type(claims) is list and len(claims) <= 8, invalid)
+        for text in findings:
+            _check(type(text) is str and bool(text.strip()) and '\x00' not in text
+                   and len(text.encode('utf8')) <= CARRIER_METADATA_LIMIT, invalid)
+        declared = []
+        for claim in claims:
+            _check(type(claim) is dict and claim.keys() == {'check', 'evidence_digest'}, invalid)
+            _check(type(claim['check']) is str and claim['check'] in get_args(Check)
+                   and type(claim['evidence_digest']) is str
+                   and _DIGEST.fullmatch(claim['evidence_digest']) is not None, invalid)
+            declared.append(claim['check'])
+        _check(len(set(declared)) == len(declared)
+               and declared == [check for check in checks if check in declared], invalid)
+        metadata = _bytes({**value, 'content_base64': ''})
+        _check(len(metadata) <= CARRIER_METADATA_LIMIT, 'sequential_carrier_limit_exceeded')
+        _check(_bytes(value) == raw, invalid)
+        content = base64.b64decode(value['content_base64'], validate=True)
+        _check(base64.b64encode(content).decode('ascii') == value['content_base64'], invalid)
+        check_output_size(contract, content)  # Must precede any domain decoding/hash/INSERT.
+        success = value['outcome'] in _SUCCESS
+        _check(status in ('completed', 'failed', 'blocked')
+               and (status == 'completed' or not success)
+               and (verdict is None or verdict == value['outcome']), invalid)
+        _check(bool(content) if success else not content and bool(findings) and not claims, invalid)
+        if success:
+            content.decode('utf8', errors='strict') if contract == 'immutable-document@1' else _json(content, 49152)
+        return value, content
+    except SequentialRefusal:
+        raise
+    except (ValueError, TypeError, UnicodeError, RecursionError, binascii.Error):
+        raise SequentialRefusal(invalid) from None
+
+
+def _native_metadata(task_id: str, agent: str, session_id: str, payload: dict) -> int:
+    # Bound encoding work before constructing the aggregate canonical buffer.
+    pending = [task_id, agent, session_id, {key: value for key, value in payload.items() if key != 'output_summary'}]
+    minimum = 0
+    while pending:
+        value = pending.pop()
+        minimum += 1
+        if type(value) is str:
+            _check(len(value) <= CARRIER_METADATA_LIMIT, 'sequential_carrier_limit_exceeded')
+            try:
+                minimum += len(value.encode('utf8')) + 2
+            except UnicodeError:
+                raise SequentialRefusal('sequential_carrier_invalid') from None
+        elif type(value) is dict:
+            _check(len(value) <= CARRIER_METADATA_LIMIT, 'sequential_carrier_limit_exceeded')
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif type(value) in (list, tuple):
+            _check(len(value) <= CARRIER_METADATA_LIMIT, 'sequential_carrier_limit_exceeded')
+            pending.extend(value)
+        _check(minimum <= CARRIER_METADATA_LIMIT, 'sequential_carrier_limit_exceeded')
+    try:
+        persisted = {key: value for key, value in payload.items() if key != 'output_summary'}
+        for key in ('risks_flagged', 'waiting_on_job_ids'):
+            if persisted.get(key) is not None:
+                persisted[key] = json.dumps(persisted[key])  # Exact native cell serialization.
+        size = len(_bytes(dict(task_id=task_id, agent=agent, session_id=session_id, **persisted)))
+    except (ValueError, TypeError, UnicodeError):
+        raise SequentialRefusal('sequential_carrier_invalid') from None
+    _check(size <= CARRIER_METADATA_LIMIT, 'sequential_carrier_limit_exceeded')
+    return size
+
+
+def _native_result(conn: sqlite3.Connection, result_id: int) -> dict:
+    """Only the original PK, with scalar type/raw byte preflight before exposure."""
+    _check(type(result_id) is int and result_id > 0)
+    scalar = ','.join(f'typeof({column}),length(CAST({column} AS BLOB))' for column in _RESULT_COLUMNS)
+    sizes = conn.execute('SELECT ' + scalar + ' FROM task_results WHERE id=?', (result_id,)).fetchone()
+    _check(sizes is not None)
+    for column, kind, size in zip(_RESULT_COLUMNS, sizes[::2], sizes[1::2], strict=True):
+        allowed = ('integer',) if column in ('id', 'confidence_score') else ('text', 'null')
+        limit = CARRIER_LIMIT if column == 'output_summary' else CARRIER_METADATA_LIMIT
+        _check(kind in allowed and (kind == 'null' or type(size) is int and size <= limit))
+    row = conn.execute('SELECT ' + ','.join(_RESULT_COLUMNS) + ' FROM task_results WHERE id=?', (result_id,)).fetchone()
+    _check(row is not None)
+    result = dict(zip(_RESULT_COLUMNS, row, strict=True))
+    _check(type(result['output_summary']) is str)
+    return result
+
+
+def _native_task(conn: sqlite3.Connection, task_id: str) -> dict:
+    columns = ('assigned_agent', 'current_session_id', 'status', 'cancelled_at', 'completed_at')
+    scalar = ','.join(f'typeof({column}),length(CAST({column} AS BLOB))' for column in columns)
+    sizes = conn.execute('SELECT ' + scalar + ' FROM tasks WHERE id=?', (task_id,)).fetchone()
+    _check(sizes is not None and all(kind in ('text', 'null') and
+        (kind == 'null' or type(size) is int and size <= CARRIER_METADATA_LIMIT)
+        for kind, size in zip(sizes[::2], sizes[1::2], strict=True)))
+    row = conn.execute('SELECT ' + ','.join(columns) + ' FROM tasks WHERE id=?', (task_id,)).fetchone()
+    _check(row is not None)
+    return dict(zip(columns, row, strict=True))
+
+
+def _cancelled(conn: sqlite3.Connection, run: dict, visit: dict) -> bool:
+    return run['state'] == 'cancelled' or any(
+        task['cancelled_at'] is not None or task['status'] == 'cancelled'
+        for task in (_native_task(conn, key) for key in
+            (run['source_task_id'], run['carrier_task_id'], visit['task_id'])))
+
+
+def _discover_result(conn: sqlite3.Connection, visit: dict) -> dict | None:
+    # idx_cleanup_results_task_agent_id already owns this bounded discovery.
+    ids = conn.execute('SELECT id FROM task_results WHERE task_id=? AND agent=? ORDER BY id DESC LIMIT 2',
+                       (visit['task_id'], visit['principal'])).fetchall()
+    _check(len(ids) <= 1)
+    if not ids:
+        return None
+    result = _native_result(conn, ids[0][0])
+    _check((result['task_id'], result['agent'], result['session_id']) ==
+           (visit['task_id'], visit['principal'], visit['session_id']))
+    return result
+
+
+def _callback_identity(result: dict | None) -> dict | None:
+    if result is None:
+        return None
+    return dict(task_id=result['task_id'], principal=result['agent'], session_id=result['session_id'],
+                result_id=result['id'], status=result['status'],
+                carrier_digest=hashlib.sha256(result['output_summary'].encode('utf8')).hexdigest())
+
+
+def _evidence_id(run_id: str, visit_id: str, kind: str) -> str:
+    return hashlib.sha256(_bytes(dict(format='workflow-sequential-evidence-id@1',
+        run_id=run_id, visit_id=visit_id, kind=kind))).hexdigest()
+
+
+def _evidence(conn: sqlite3.Connection, run_id: str, visit_id: str, kind: str,
+              body: dict | None = None) -> dict | None:
+    key = _evidence_id(run_id, visit_id, kind)
+    size = conn.execute('SELECT typeof(evidence_bytes),length(CAST(evidence_bytes AS BLOB)) '
+                        'FROM workflow_seq_evidence WHERE id=?', (key,)).fetchone()
+    if size is not None:
+        _check(size[0] == 'blob' and type(size[1]) is int and size[1] <= 16384)
+        row = conn.execute('SELECT run_id,visit_id,kind,task_id,principal,session_id,result_id,evidence_bytes,evidence_digest '
+                           'FROM workflow_seq_evidence WHERE id=?', (key,)).fetchone()
+        _check(tuple(row[:7]) == (run_id, visit_id, kind, None, None, None, None))
+        raw = row[7]
+        check_evidence_size(raw)
+        _check(hashlib.sha256(raw).hexdigest() == row[8])
+        value = _json(raw, 16384)
+        _check(body is None or raw == _bytes(body))
+        return value
+    if body is None:
+        return None
+    raw = _bytes(body)
+    check_evidence_size(raw)
+    conn.execute('INSERT INTO workflow_seq_evidence(id,run_id,visit_id,kind,evidence_bytes,evidence_digest) '
+                 'VALUES(?,?,?,?,?,?)', (key, run_id, visit_id, kind, raw, hashlib.sha256(raw).hexdigest()))
+    return body
 
 
 class SequentialDispatcher:
-    """Recognize a same-org owner without admitting or producing sequential work."""
+    """Consumer ports only. Native launch/access/capability producers are absent."""
 
     def __init__(self, org: Any) -> None:
         self.org = org
+
+    @contextmanager
+    def _writer(self) -> Iterator[sqlite3.Connection]:
+        with self.org.db._lock:
+            conn = self.org.db._conn
+            _check(not conn.in_transaction)
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                yield conn
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+
+    @contextmanager
+    def _reader(self) -> Iterator[sqlite3.Connection]:
+        with self.org.db._lock:
+            conn = self.org.db._conn
+            own = not conn.in_transaction
+            if own:
+                conn.execute('BEGIN')
+            try:
+                yield conn
+            finally:
+                if own:
+                    conn.rollback()  # Read-only snapshot; never commits business data.
+
+    def _on_loop(self, coroutine: Any) -> Any:
+        loop = self.org.orchestrator._main_loop
+        if loop is None or not loop.is_running():
+            coroutine.close()
+            raise SequentialRefusal('sequential_host_unavailable')
+        return asyncio.run_coroutine_threadsafe(coroutine, loop).result()
+
+    def _entry(self, conn: sqlite3.Connection, task_id: str, *, budget: _ReadBudget | None = None) -> tuple[dict, dict, CompiledDefinition]:
+        kind, visit_id, _ = selected_owner(conn, task_id, self.org.slug)
+        _check(kind == 'seq_visit')
+        budget = _ReadBudget() if budget is None else budget
+        with _sql_budget(conn, budget):
+            visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?', (visit_id,))
+            _check(len(visits) == 1)
+            visit = visits[0]
+            runs = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (visit['run_id'],))
+            _check(len(runs) == 1 and runs[0]['org_slug'] == self.org.slug and visit['task_id'] == task_id)
+            run = runs[0]
+            native = _native_task(conn, task_id)
+            _check((native['assigned_agent'], native['current_session_id']) == (visit['principal'], visit['session_id']))
+            definitions = _engine_rows(conn, 'workflow_seq_definitions', budget, 'id=?', (run['definition_id'],))
+            _check(len(definitions) == 1)
+            definition = definitions[0]
+            compiled = compile_definition(definition['definition_bytes'], source_digest=definition['source_digest'])
+            _check(compiled.pin.definition_digest == definition['definition_digest'])
+        return run, visit, compiled
+
+    def _invocation(self, task_id: str, session_id: str) -> Any:
+        from runtime.orchestrator.task_pause import current_invocation
+        invocation = current_invocation()
+        _check(invocation is not None and invocation.owner == 'sequential' and invocation.workflow_dispatcher is self
+               and invocation.task.id == task_id and invocation.session_id == session_id
+               and invocation is invocation.store._live.get(invocation.identity))
+        return invocation
+
+    @asynccontextmanager
+    async def callback_admission(self, task_id: str) -> AsyncIterator[Any]:
+        with self._reader() as conn:
+            _, visit, _ = self._entry(conn, task_id)
+            prior = _discover_result(conn, visit)
+        if prior is not None:
+            async with self.org.db_lock:
+                yield None
+            return
+        capture = self.org.workflow_authority.capture_admission()
+        async with self.org.workflow_authority._async_writer_lock:
+            async with self.org.teams_lock:
+                async with self.org.db_lock:
+                    with self.org.workflow_authority._admission_ownership(capture):
+                        yield capture  # The route must not await inside this ownership.
 
     def queue_admission_allowed(self, task_id: str) -> bool:
         return False
 
     def callback_uncommitted(self, *, task_id: str, agent: str, session_id: str,
                              payload: dict, capture: Any = None, budget: Any = None) -> bool:
-        return False
+        conn = self.org.db._conn
+        _check(conn.in_transaction)
+        run, visit, compiled = self._entry(conn, task_id)
+        prior = _discover_result(conn, visit)
+        if prior is not None:
+            return ((prior['task_id'], prior['agent'], prior['session_id']) == (task_id, agent, session_id)
+                    and completion_result_payload_matches(prior, **payload))
+        task = _native_task(conn, task_id)
+        if (run['state'] != 'active' or run['active_visit_id'] != visit['id']
+                or visit['state'] != 'running' or visit['selected'] != 1
+                or (visit['principal'], visit['session_id']) != (agent, session_id)
+                or _cancelled(conn, run, visit) or task['status'] != 'in_progress'
+                or (task['assigned_agent'], task['current_session_id']) != (agent, session_id)
+                or payload['decision_json'] is not None or payload['waiting_on_job_ids'] is not None
+                or payload['status'] not in ('completed', 'failed', 'blocked')):
+            return False
+        store = getattr(self.org.db, '_task_pause_store', None)
+        live = [] if store is None else [inv for inv in store._live.values()
+            if inv.owner == 'sequential' and inv.workflow_dispatcher is self and inv.task.id == task_id
+            and inv.agent == agent and inv.session_id == session_id]
+        if len(live) != 1 or capture is None:
+            return False
+        self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
+        node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+        metadata = _native_metadata(task_id, agent, session_id, payload)
+        value, content = _carrier(payload['output_summary'], contract=node.output_contract.type,
+            checks=node.completion_checks, status=payload['status'], verdict=payload['verdict'])
+        del value, content
+        needed = len(payload['output_summary'].encode('utf8')) + metadata + 4096
+        _check(needed <= conn.getlimit(sqlite3.SQLITE_LIMIT_LENGTH), 'sequential_carrier_storage_unavailable')
+        self.org.db._insert_task_result(task_id=task_id, agent=agent, session_id=session_id, **payload)
+        result_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        result = _native_result(conn, result_id)
+        _check((result['task_id'], result['agent'], result['session_id']) == (task_id, agent, session_id)
+               and completion_result_payload_matches(result, **payload))
+        return True  # Native COMMIT belongs to Database; NO seq accepted fields here.
 
     def callback_replay(self, *, task_id: str, agent: str, session_id: str, payload: dict) -> bool:
-        return False
+        with self._reader() as conn:
+            _, visit, _ = self._entry(conn, task_id)
+            result = _discover_result(conn, visit)
+            return bool(result is not None and (result['task_id'], result['agent'], result['session_id']) ==
+                        (task_id, agent, session_id) and completion_result_payload_matches(result, **payload))
+
+    def terminal(self, task_id: str, agent: str, session_id: str, outcome: Any, *, expected_request: Any = None) -> None:
+        invocation = self._invocation(task_id, session_id)
+        _check(invocation.agent == agent)
+        request = getattr(invocation, 'coding_request', None)
+        running = getattr(invocation, 'coding_running', None)
+        # D6: same original request/attempt gate and line-parallel safe predicate.
+        _check(request is not None and outcome is not None and outcome.request is expected_request
+               and expected_request is request and outcome.attempt == 0)
+        receipt = None if outcome.receipt is None else json.loads(_bytes(asdict(outcome.receipt)))
+        _check(receipt is None or receipt['terminal_reason'] == outcome.terminal_reason.value)
+        host = dict(handle_id=None if running is None else running.token,
+                    backend=None if running is None else running.backend)
+        safe = (receipt is not None and host['handle_id'] is not None and receipt['backend'] == host['backend']
+                and type(receipt['backend']) is str
+                and receipt['backend'] in ('linux-systemd-cgroup-v2', 'macos-process-group')
+                and type(receipt['terminal_reason']) is str
+                and receipt['terminal_reason'] in tuple(reason.value for reason in TerminalReason)
+                and receipt['quiescent'] is True and type(receipt['cleanup_status']) is str
+                and receipt['cleanup_status'] in (CleanupStatus.CLEAN.value, CleanupStatus.TERM.value, CleanupStatus.KILL.value)
+                and receipt['survivors'] == [] and outcome.cleanup_error is None)
+        if not safe:
+            return  # D9: native owner retains uncertainty; never fabricate a held result.
+        _check(running.request_id == request.logical_id and request.org == self.org.slug
+               and request.agent_id == agent and request.retry_attempt == 0)
+        with self._writer() as conn:
+            run, visit, _ = self._entry(conn, task_id)
+            if _cancelled(conn, run, visit):
+                return
+            _check((visit['principal'], visit['session_id']) == (agent, session_id))
+            result = _discover_result(conn, visit)
+            classification = ('success' if receipt['terminal_reason'] == 'success' and result is not None and result['status'] == 'completed'
+                else 'failed' if result is not None and result['status'] == 'failed'
+                else 'blocked' if result is not None and result['status'] == 'blocked' else 'unknown')
+            body = dict(format='workflow-sequential-terminal@1', invocation_id=invocation.identity,
+                task_id=task_id, principal=agent, session_id=session_id, classification=classification,
+                request=dict(org=request.org, logical_id=request.logical_id, agent_id=request.agent_id,
+                             retry_attempt=request.retry_attempt),
+                handle_digest=hashlib.sha256(_bytes(dict(token=running.token, request_id=running.request_id,
+                                                        backend=running.backend))).hexdigest(),
+                receipt={key: receipt[key] for key in ('backend', 'terminal_reason', 'cleanup_status',
+                    'quiescent', 'survivors')}, callback=_callback_identity(result))
+            existing = _evidence(conn, run['id'], visit['id'], 'terminal')
+            if existing is not None:
+                _check(existing == body)
+                return
+            if classification in ('success', 'failed'):
+                now = datetime.now(timezone.utc).isoformat()
+                conn.execute('UPDATE tasks SET status=?,completed_at=?,updated_at=?,block_kind=NULL,final_output_summary=?,final_output_dir=? WHERE id=?',
+                    ('completed' if classification == 'success' else 'failed', now, now,
+                     result['output_summary'], result['output_dir'], task_id))
+            _evidence(conn, run['id'], visit['id'], 'terminal', body)
+            validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence',
+                evidence_ids=(_evidence_id(run['id'], visit['id'], 'terminal'),))
+
+    def outer_settled(self, invocation: Any, *, failed: bool, cleanup: Any, native_entry: dict | None,
+                      close_disposition: dict | None, release_disposition: dict | None) -> None:
+        if invocation.owner != 'sequential' or invocation.workflow_dispatcher is not self:
+            return
+        # Original close/release arguments belong to TaskInvocation.settle's finally.
+        safe = (not failed and cleanup is not None and cleanup.kind == 'safe'
+                and not cleanup.processes and not invocation.unsettled
+                and native_entry is not None and not native_entry['context'].get('execution_unknown')
+                and native_entry['phase'] == 'result_processing'
+                and close_disposition is not None and close_disposition['removed'] is True
+                and release_disposition is not None and release_disposition['removed'] is True
+                and release_disposition['owner_id'] == invocation.identity
+                and not release_disposition['owner_live'] and not release_disposition['cleanup_failed']
+                and (not release_disposition['possible_launch'] or release_disposition['quiescent']))
+        tracker_clear = self.org.sessions.get_active(invocation.task.id, invocation.agent) is None
+        safe = safe and tracker_clear
+        if not safe:
+            return
+        _check(native_entry['id'] == invocation.identity and native_entry['task_id'] == invocation.task.id
+               and native_entry['agent'] == invocation.agent and native_entry['session_id'] == invocation.session_id
+               and native_entry['owner'] == invocation.owner)
+        result_id = None
+        with self._writer() as conn:
+            run, visit, _ = self._entry(conn, invocation.task.id)
+            if _cancelled(conn, run, visit):
+                return
+            terminal = _evidence(conn, run['id'], visit['id'], 'terminal')
+            if terminal is None:
+                return
+            _check(terminal['invocation_id'] == invocation.identity
+                   and (terminal['task_id'], terminal['principal'], terminal['session_id']) ==
+                       (invocation.task.id, invocation.agent, invocation.session_id))
+            body = dict(format='workflow-sequential-outer@1', invocation_id=invocation.identity,
+                task_id=invocation.task.id, principal=invocation.agent, session_id=invocation.session_id,
+                callback=terminal['callback'], positive=True, tracker_clear=tracker_clear,
+                native_phase=native_entry['phase'], close_removed=True, release_removed=True,
+                release_owner=release_disposition['owner_id'], execution_unknown=False)
+            _evidence(conn, run['id'], visit['id'], 'outer', body)
+            validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence',
+                evidence_ids=(_evidence_id(run['id'], visit['id'], 'outer'),))
+            if terminal['classification'] == 'success' and terminal['callback'] is not None:
+                result_id = terminal['callback']['result_id']
+        # The positive outer COMMIT is complete BEFORE capturing fresh authority.
+        if result_id is not None:
+            self._advance(run['id'], visit_id=visit['id'], result_id=result_id)
+
+    def _compose(self, run: dict, visit: dict, compiled: CompiledDefinition,
+                 result: dict) -> tuple[bytes, bytes, tuple[str, ...], tuple[str, ...]]:
+        node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+        value, content = _carrier(result['output_summary'], contract=node.output_contract.type,
+            checks=node.completion_checks, status=result['status'], verdict=result['verdict'])
+        outputs = []
+        recipients: tuple[str, ...] = ()
+        if value['outcome'] in _SUCCESS:
+            # Candidate roles are derived from immutable data, never author input.
+            candidates = tuple(sorted({node.role, *(consumer.role for consumer in compiled.definition.nodes
+                if any(item.source == 'current.' + node.output_contract.slot for item in consumer.inputs))}))
+            outputs = [dict(slot=node.output_contract.slot, contract=node.output_contract.type, epoch=visit['epoch'],
+                producer_visit=visit['id'], task_id=visit['task_id'], session_id=visit['session_id'],
+                result_id=result['id'], digest=hashlib.sha256(content).hexdigest())]
+            # U5 supplies neither trusted current-subject capability witnesses nor
+            # access proof yet. Candidates/claims cannot stand in for either.
+            _check(not candidates, 'sequential_output_access_unavailable')
+        _check(not value['capability_claims'], 'sequential_capability_unavailable')
+        envelope = _bytes(dict(format='workflow-sequential-result@1', run_id=run['id'], visit_id=visit['id'],
+            definition_digest=compiled.pin.definition_digest, input_selection_digest=visit['input_selection_digest'],
+            outcome=value['outcome'], outputs=outputs,
+            findings=[dict(source_visit=visit['id'], source_result=result['id'], text=text) for text in value['findings']],
+            capability_receipts=[]))
+        parse_result(envelope)
+        return envelope, content, recipients, (SETTLEMENT_CHECK,)
+
+    def _advance(self, run_id: str, *, visit_id: str, result_id: int) -> Any:
+        async def advance() -> Any:
+            capture = self.org.workflow_authority.capture_admission()
+            async with self.org.workflow_authority._async_writer_lock:
+                async with self.org.teams_lock:
+                    async with self.org.db_lock:
+                        with self.org.workflow_authority.admission_writer(capture) as conn:
+                            budget = _ReadBudget()
+                            visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?', (visit_id,))
+                            _check(len(visits) == 1 and visits[0]['run_id'] == run_id)
+                            run, visit, compiled = self._entry(conn, visits[0]['task_id'], budget=budget)
+                            with _sql_budget(conn, budget):
+                                _check((run['id'], visit['id']) == (run_id, visit_id))
+                                task = _native_task(conn, visit['task_id'])
+                                if _cancelled(conn, run, visit):
+                                    return None
+                                terminal = _evidence(conn, run_id, visit_id, 'terminal')
+                                outer = _evidence(conn, run_id, visit_id, 'outer')
+                                _check(terminal is not None and outer is not None and outer['positive'] is True
+                                       and terminal['classification'] == 'success'
+                                       and terminal['invocation_id'] == outer['invocation_id'])
+                                result = _native_result(conn, result_id)
+                                identity = _callback_identity(result)
+                                _check(terminal['callback'] == outer['callback'] == identity
+                                       and result['status'] == 'completed'
+                                       and (result['task_id'], result['agent'], result['session_id']) ==
+                                           (visit['task_id'], visit['principal'], visit['session_id']))
+                                source = hashlib.sha256(_bytes(dict(format='workflow-sequential-advance-id@1',
+                                    run_id=run_id, visit_id=visit_id, result_id=result_id))).hexdigest()
+                                transition_key, return_key = 'seq-advance-transition-' + source, 'seq-advance-return-' + source
+                                events = [_engine_rows(conn, 'workflow_seq_events', budget, 'run_id=? AND operation_key=?',
+                                    (run_id, key)) for key in (transition_key, return_key)]
+                                transition, returned = (rows[0] if rows else None for rows in events)
+                                c = run['cas']
+                                terminal_edge = False
+                                if transition is None:
+                                    _check(returned is None and run['state'] == 'active'
+                                           and run['active_visit_id'] == visit_id and visit['state'] == 'running')
+                                else:
+                                    _check(transition['kind'] == 'transition'
+                                           and hashlib.sha256(transition['event_bytes']).hexdigest() == transition['event_digest'])
+                                    record = parse_transition(transition['event_bytes'])
+                                    _check((record.source_visit, record.source_result) == (visit_id, result_id))
+                                    c = record.prior_cas
+                                    terminal_edge = isinstance(record.edge, TerminalEdge)
+                                    _check((returned is not None) == terminal_edge)
+                                    if returned is not None:
+                                        expected = dict(format='workflow-sequential-storage-event@1', kind='returned',
+                                            run_id=run_id, sequence=c + 3, operation_key=return_key,
+                                            prior_digest=transition['event_digest'])
+                                        _check(returned['kind'] == 'returned' and returned['sequence'] == (c + 1) + 2
+                                               and returned['event_bytes'] == _bytes(expected)
+                                               and hashlib.sha256(returned['event_bytes']).hexdigest() == returned['event_digest'])
+                                envelope, content, recipients, checks = self._compose(run, visit, compiled, result)
+                                contract = next(node.output_contract.type for node in compiled.definition.nodes if node.id == visit['node_id'])
+                                # Release the large retained-summary Python copy before engine scopes.
+                                del result
+                            common = dict(org_slug=self.org.slug, run_id=run_id, compiled=compiled,
+                                          authority=self.org.workflow_authority, capture=capture)
+                            successor = None
+                            if transition is None:
+                                node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+                                edge = dict(node.outcomes).get(parse_result(envelope).outcome)
+                                if isinstance(edge, NextEdge):
+                                    target = next(node for node in compiled.definition.nodes if node.id == edge.node)
+                                    bound = _bound_agents(compiled, parse_start(run['start_bytes']), capture)[target.role]
+                                    successor = TaskRecord(id='TASK-SEQ-' + source, parent_task_id=run['carrier_task_id'],
+                                        assigned_agent=bound['name'], team=bound['team'], task_type='subtask',
+                                        brief='Sequential node ' + target.id + '; follow only the bound node brief and domain supplement.')
+                            accept_result_uncommitted(conn, self.org.db, **common, visit_id=visit_id,
+                                task_id=visit['task_id'], principal=visit['principal'], session_id=visit['session_id'],
+                                result_id=result_id, envelope_bytes=envelope, verified_checks=checks,
+                                content=content, contract=contract, recipients=recipients)
+                            del content, envelope
+                            moved = transition_uncommitted(conn, self.org.db, **common, visit_id=visit_id,
+                                result_id=result_id, operation_key=transition_key, expected_cas=c, successor_task=successor)
+                            if transition is None:
+                                row = conn.execute('SELECT event_bytes FROM workflow_seq_events WHERE id=?', (moved.event_id,)).fetchone()
+                                terminal_edge = isinstance(parse_transition(row[0]).edge, TerminalEdge)
+                            if terminal_edge:
+                                return_uncommitted(conn, self.org.db, **common, operation_key=return_key,
+                                    expected_cas=c + 1, completed_at=task['completed_at'])
+                        # Sole sequential COMMIT precedes notification; no caller notification.
+                        if moved.visit_task_id is not None:
+                            self.notify_queued(moved.visit_task_id, self.org.orchestrator._queue)
+                        return moved
+        return self._on_loop(advance())
 
     def heartbeat(self, task_id: str, identity: Any = None) -> None:
         pass

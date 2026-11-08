@@ -945,6 +945,16 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
                         raise
                     active_error.add_note(f"Coding tail observation failed for {invocation.identity}: {exc!r}")
                     logging.getLogger(__name__).exception("coding tail observation failed; original error preserved")
+            sequential = getattr(invocation.orch, "_workflow_sequential_dispatch", None)
+            if sequential is not None:
+                try:
+                    sequential.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
+                        close_disposition=close_disposition, release_disposition=release_disposition)
+                except BaseException as exc:
+                    if active_error is None:
+                        raise
+                    active_error.add_note(f"Sequential tail observation failed for {invocation.identity}: {exc!r}")
+                    logging.getLogger(__name__).exception("sequential tail observation failed; original error preserved")
 
 
 def pause_deferred_owner(db: Any, task_id: str) -> bool:

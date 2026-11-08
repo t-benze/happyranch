@@ -282,3 +282,32 @@ callback, launcher, recovery or return caller is added. Admission's selected
 validator is admission-only; the unchanged full reader remains the offline
 oracle with its known small-org scale limit. See [U3b contract](reusable-workflows.md#u3b-inert-admission-and-first-activation-thr336-msg8595).
 Disposable observations are not V3 behavioral acceptance or live enablement.
+
+
+## Sequential visit callback consumer (U3d-1)
+
+Only selected seq_visit joins workflow callback admission/replay. The existing
+order remains404, classify, local409, task-active, v2, session, exact idempotency,
+callback_admission, locked owner/task/session recheck, native writer. Source/carrier
+and cancellation still409; recovery.SEQUENTIAL_HELD_KINDS is unchanged. D5 reuses
+the existing coding_admission keyword for sequential capture, without a Database
+signature change or Coding budget reuse. Sequential typed refusals map409 at the
+CodingStartError position. Legacy/Coding/document projections retain their meanings.
+
+Summary is the exact canonical workflow-sequential-callback@1 JSON STRING described
+in reusable-workflows.md, not an agent-authored result envelope. Actual decoded
+JSON/document byte limits are49152/1048576; over-limit gives409
+sequential_output_limit_exceeded with zero new native/seq DML. Metadata/native
+aggregate bounds are16384; summary1414488. Other categorical409 codes are
+sequential_carrier_limit_exceeded, sequential_carrier_invalid,
+sequential_carrier_storage_unavailable and sequential_carrier_identity_conflict.
+Do not echo content. Earlier explicit empty waiting_on_job_ids remains400.
+
+A manually corrected zero-write refusal can use the same still-live SID before
+any result committed. After uncertain transport preserve the exact body; no
+automatic retry/new SID/result. Exact stored full-projection callback replay stays
+read-only after tracker removal; changed payload gives workflow_callback_payload_mismatch.
+Fresh ended/foreign sessions cannot author output. Native summaries retain their
+existing audience; role recipients are no private-custody guarantee. Claims supply
+no capability/access or settlement proof. Missing U5 proof leaves advancement
+unavailable. No queued native launch, caller notification or live enablement follows.
