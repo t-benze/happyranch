@@ -226,6 +226,9 @@ and v1 marks and allows version2 only for `seq_source_waiting`, `seq_carrier`,
 `seq_visit`; its literal view appends relations without changing old branches.
 Selected v1 marks use the existing scalar reader. New marks require complete
 matching run/visit/native task relations; absent marks never mean ordinary.
+Complete companion validation uses bounded binding/native-task/mark acquisition
+and cached run/visit relations on the history call’s original allowance, without
+per-task inventory rescans. This does not change the existing v1 scalar reader.
 No writer, adoption, allocation or execution permission is implemented here.
 Native TaskRecord/SELECT-* encodings, results, chains and audit scopes stay
 unchanged. Combined old-history reader integration precedes the U2b operator

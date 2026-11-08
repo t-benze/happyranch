@@ -47,3 +47,21 @@ settings owner while retaining compatible historical readers, dispatch and
 settlement. Do not drop tables, down-convert, rewrite pins/events/marks or reset
 source/carrier tasks. A DB restore is separate operational recovery and cannot
 undo remote effects. Leave uncertain original effects with their owners.
+
+The new-table admission contract also reserves `(org_slug, source_principal,
+start_operation_key)` uniquely, retaining exact original source/result/request
+binding. For future U3 run-first admission, only the new run's `last_event_id`
+foreign key is `DEFERRABLE INITIALLY DEFERRED`. Within the existing owning
+`BEGIN IMMEDIATE`, keep `foreign_keys=1` and `defer_foreign_keys=0`, insert the
+provisional run with a null active pointer, then visit/task/mark/event and final
+pointers, and validate complete target/history/FKs before COMMIT. An unresolved
+event is a commit failure. This is a new-table dependency contract, not a
+startup change or permission to run an admission writer.
+
+Standalone inspection uses the [finite reader contract](../agent-guides/contracts/reusable-workflows.md#u2a-storage-and-standalone-reader-boundary):
+one original row/raw/decoded/copy/work/deadline allowance includes independent
+schema references and complete ownership inventory. Exhaustion refuses; an
+operator cannot substitute a subset or call exhaustion empty/unavailable data.
+The connection and its SQLite progress hook are exclusively owned for the call.
+TASK-14552's disposable AST/SQLite observations are structural evidence only;
+no populated-history, installer, native or migration behavior is established.

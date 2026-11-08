@@ -75,10 +75,11 @@ CREATE TABLE workflow_seq_runs (
   visit_count INTEGER NOT NULL CHECK(typeof(visit_count)='integer' AND visit_count BETWEEN 1 AND 64),
   event_count INTEGER NOT NULL CHECK(typeof(event_count)='integer' AND event_count BETWEEN 1 AND 4096),
   cas INTEGER NOT NULL CHECK(typeof(cas)='integer' AND cas>=0),
-  last_event_id TEXT NOT NULL REFERENCES workflow_seq_events(id),
+  last_event_id TEXT NOT NULL REFERENCES workflow_seq_events(id) DEFERRABLE INITIALLY DEFERRED,
   CHECK(source_task_id!=carrier_task_id),
   CHECK(epoch=content_returns+1),
-  UNIQUE(source_task_id,source_result_id,start_operation_key)
+  UNIQUE(source_task_id,source_result_id,start_operation_key),
+  UNIQUE(org_slug,source_principal,start_operation_key)
 );
 CREATE TABLE workflow_seq_visits (
   id TEXT NOT NULL PRIMARY KEY,

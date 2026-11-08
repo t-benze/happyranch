@@ -11,3 +11,10 @@ Installation/backout: [UNVERIFIED draft](../../runbooks/sequential-workflow-stor
 No production importer or writer is attached. Complete combined old-history
 integration remains a follow-up U2a boundary; U2b installation and V3 have not
 run. U3 source adoption and all U4–U9 holds remain separate.
+
+TASK-14552 fixes TASK14548-F1/F2/F3 within the same source boundary: the §4
+org/principal/start-key invariant, the §8 deferred run-first bootstrap dependency,
+and the §3 single cumulative bounded-reader allowance. The maintained guide
+above owns the corrected contract. No existing DDL, startup path, frozen grammar,
+producer or installation authority changes; structural observations do not
+supply populated-history or native acceptance.

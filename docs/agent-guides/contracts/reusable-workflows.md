@@ -265,11 +265,20 @@ UPDATE/DELETE refusal triggers. Runs retain immutable admission pins; visits
 retain immutable node/task/input pins and an accepted result cannot be replaced.
 Current lifecycle fields remain with their future writer. All result references
 are genuine positive INTEGER native identities, never operation IDs. Unique
-source/result/start, visit ordinal/predecessor and accepted source visit/result
-constraints select one operation; a partial unique index permits one selected
-visit per run. The complete reader additionally checks the active pointer and
-rejects committed provisional runs. No table extends frozen document/Coding
-state grammar. No index is placed in an existing startup executescript block.
+org/initiating-principal/start-key and source/result/start constraints retain
+the exact original source task/session/INTEGER-result and canonical request
+binding. A new source task/result cannot reuse the same principal/key to create
+another run; the complete reader also refuses cross-run start-key conflicts.
+Visit ordinal/predecessor and accepted source visit/result constraints select
+one operation; a partial unique index permits one selected visit per run. The complete reader additionally checks the active pointer and
+rejects committed provisional runs. Only the new run `last_event_id` FK is
+`DEFERRABLE INITIALLY DEFERRED`: the future owning `BEGIN IMMEDIATE` transaction
+keeps foreign keys enabled and connection-wide deferral off, inserts the
+provisional run with a null active pointer, then the visit/task/mark and event,
+and finalizes pointers. Complete target/history/FK validation must succeed
+before COMMIT; a missing deferred event still refuses at COMMIT. No existing
+table or transaction/startup owner is changed. No table extends frozen
+document/Coding state grammar. No index is placed in an existing startup executescript block.
 
 `runtime/workflows/sequential_history.py` compares the whole owned schema with
 independently constructed F/E/G/H/I/J references, Coding absent/present, owner
@@ -286,6 +295,28 @@ interval. Empty/absent new storage says `new-engine unavailable`. A populated
 engine readiness, business admission, current authority or authentic native
 settlement. Stored verified-check arrays remain adapter assertions for U3 to
 authenticate; content/capability policy remains with U4/U5.
+
+TASK-14552 bounds that entire call using the retained
+`coding_authority_history._Budget` / `_bounded_rows` / `_decoded` model and
+`workflow_schema._candidate_structure` / `_structure_cells` metadata acquisition.
+SQL `typeof`/byte-length gates withhold wrong-class or oversized cells before
+payload fetch. The original allowance covers candidate and independent reference
+metadata, native links, ownership inventory, retained rows, every decoded/model
+copy and per-run replay. Each sequential table is acquired once; visits/events
+are grouped once instead of rescanning all history for every run. The rowid-less
+ownership view uses a complete bounded scalar preflight and reserves its payload
+before its one payload traversal, on the same snapshot and allowance.
+
+This standalone call permits at most 8192 acquired rows (including schema and
+reference acquisitions), 64 MiB aggregate raw/decoded/copy reservations, 65536
+traversal/replay steps, a cooperative five-second original deadline and two
+million SQLite progress steps. Individual cells remain at most 1 MiB; the
+existing definition/result limits also apply. The copy/work allowance includes
+both whole schema references; it does not replenish between phases or runs.
+Callers must exclusively own the connection and its progress hook during the
+call. Checks occur before success, including unavailable/empty results;
+exhaustion raises a refusal, never validates a subset or reports empty success.
+These are cooperative limits, not hard RSS or OS-I/O timing guarantees.
 
 The separate `workflow_sequential_ownership.py` companion reference keeps all
 original columns and v1 kinds, and adds explicit v2 `seq_source_waiting`,

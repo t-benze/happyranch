@@ -642,6 +642,9 @@ TASK-14536 adds separate sequential tables and a standalone reader; it changes
 no F/E/G/H/I/J DDL, historical bytes, compiler contracts, r1/r2 semantics or
 startup/migration behavior. Whole-schema references compare the document layout,
 Coding, owner indexes, ownership companion and new storage independently.
+New-table start-key uniqueness and run-first deferred bootstrap do not alter
+any document table. Complete new-history, reference and ownership acquisition
+share the finite reader allowance described in the reusable storage guide.
 Combined **old-history reader integration is still outstanding**; production
 readers refuse the extension and no installation is authorized by source delivery.
 See [the reusable storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary)
