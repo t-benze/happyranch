@@ -207,7 +207,7 @@ def later_retry(db):
     assert db.admit_task_completion_callback(**kwargs)
 
 
-def lineage_case(db, name):
+def lineage_case(db, name, decision=None):
     causal = continuation(db)
     orch = object.__new__(Orchestrator)
     orch._db, orch._audit = db, AuditLogger(db)
@@ -224,11 +224,12 @@ def lineage_case(db, name):
         generation_id=publication.generation_id, next_session_id='scratch-session')
     assert settled.status in {'settled', 'already_settled_exact'}, settled
     # Real DB reservation and settlement only; no session/process is launched.
-    body, admission, kwargs, row = admit(db, ORDINARY[name], status='blocked' if name == 'blocked' else 'completed')
+    body, admission, kwargs, row = admit(db, ORDINARY[name] if decision is None else decision, status='blocked' if name == 'blocked' else 'completed')
     persisted_attempt(db, row)
     assert db.authority_policy_v2_completion_dispatch_context(root_task_id='TASK-1', result_row_id=row['id']).kind == 'reserved'
     assert db.admit_task_completion_callback(**kwargs)
-    assert replay(db, body) == {'ok': True}
+    if name != 'workflow_start':
+        assert replay(db, body) == {'ok': True}
     if name == 'done':
         orch = SimpleNamespace(_parse_next_step=partial(Orchestrator._parse_next_step, None))
         stats = refuse_authority_policy_v2_pre_final_on_startup(db, orchestrator=orch)
@@ -390,7 +391,7 @@ def exception_case(db, seam):
 with tempfile.TemporaryDirectory(prefix='authority-omission-') as scratch:
     cases = []
     cases += [('ordinary/' + name, partial(ordinary_case, name=name)) for name in ORDINARY]
-    cases += [('retained/' + name, partial(retained_case, decision=decision, **options)) for name, decision, options in (
+    retained_cases = (
         ('escalate', {'action': 'escalate', 'reason': 'Synthetic'}, {}),
         ('blocked-escalate', {'action': 'escalate', 'reason': 'Synthetic'}, {'status': 'blocked'}),
         ('prose', None, {}), ('malformed', {'action': 'unknown'}, {}), ('missing', None, {'summary': ''}),
@@ -404,8 +405,10 @@ with tempfile.TemporaryDirectory(prefix='authority-omission-') as scratch:
                 definition_digest='6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8'),
             mapping=dict(id='scratch', generation=1, digest='a' * 64), implementer_override=None,
             work=dict(brief='Synthetic', repository_id='workflow-repository:' + 'a' * 64, object_format='sha1', base='a' * 40, paths=['runtime']))}, {}),
-    )]
+    )
+    cases += [('retained/' + name, partial(retained_case, decision=decision, **options)) for name, decision, options in retained_cases]
     cases += [('lineage/' + name, partial(lineage_case, name=name)) for name in ORDINARY]
+    cases += [('lineage/' + name, partial(lineage_case, name=name, decision=decision)) for name, decision, options in retained_cases if name in {'escalate', 'supersede', 'workflow_start'}]
     cases += [('replay/later-v2-live', later_retry)]
     cases += [('changed/' + field, partial(changed_case, field=field)) for field in (
         'carrier', 'summary', 'status', 'confidence', 'verdict', 'risks', 'output', 'decision', 'wait_ids', 'local_ci')]
