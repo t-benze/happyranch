@@ -327,6 +327,24 @@ class OrgState:
         from runtime.infrastructure.thread_archive import bind_thread_archive_notifications
         bind_thread_archive_notifications(self)
 
+    def start_dashboard_projection(self, loop: asyncio.AbstractEventLoop | None = None) -> asyncio.Task:
+        """Load the last good snapshot and start one refresh task on this loop."""
+        mgr = self.dashboard_projection
+        if mgr._refresh_task is not None and not mgr._refresh_task.done():
+            return mgr._refresh_task
+        from runtime.infrastructure.kb_store import KBStore
+        persisted = mgr.load_from_disk()
+        if persisted is not None:
+            mgr._projection = persisted
+            logging.getLogger("happyranch.daemon").info(
+                "dashboard projection loaded from disk for org %s (generated_at=%s)",
+                self.slug, persisted.generated_at.isoformat(),
+            )
+        return mgr.start_scheduler(
+            db=self.db, kb_store=KBStore(self.root / "kb"), teams=self.teams,
+            loop=loop, initial_warm=True,
+        )
+
     def memory_collection_observation(self) -> dict:
         """Read this serving org; observation failure never changes launch state."""
         try:

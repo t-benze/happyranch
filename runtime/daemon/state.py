@@ -574,6 +574,7 @@ class DaemonState:
                 raise _OrgBusyError("attachment_retiring")
             current = self.orgs_snapshot().get(slug)
             if current is not None:
+                current.start_dashboard_projection()
                 return current
             if any(owner.get("slug") == slug for owner in self._attachment_owners.values()):
                 raise _OrgBusyError("attachment_native_in_flight_or_unsafe")
@@ -613,7 +614,6 @@ class DaemonState:
                 self.broken_orgs.pop(slug, None)
                 if owner["profiles"] is not None:
                     getattr(owner["profiles"], "_move_diagnostic_orgs", {}).pop(slug, None)
-                return org
             except BaseException as exc:
                 primary = exc
                 owner["primary"] = exc
@@ -652,6 +652,11 @@ class DaemonState:
                     if safe:
                         with self._org_map_lock:
                             del self._attachment_owners[token]
+            # All native intervals, queue handoffs and lifetime retirement have
+            # completed successfully. A failed/cancelled attachment never starts
+            # a refresh; the shielded attachment still owns caller disconnects.
+            org.start_dashboard_projection()
+            return org
 
     def _load_attachment(self, owner: dict) -> None:
         slug, root = owner["slug"], owner["root"]
@@ -741,7 +746,21 @@ class DaemonState:
             self._assert_attachments_unchanged(captured)
             current = self._assert_can_remove_org(slug)
             if current is not None:
-                self._close_attachments((current,))
+                current.dashboard_projection.cancel_scheduler()
+                await current.dashboard_projection.reap_scheduler()
+                try:
+                    # Reaping yields: renew the original preflight before close.
+                    self._assert_attachments_unchanged(captured)
+                    self._assert_can_remove_org(slug)
+                    self._close_attachments((current,))
+                except BaseException:
+                    # Reader/preflight refusals leave the original org usable.
+                    # Failed closes retain their existing retirement fence.
+                    if (self.orgs_snapshot().get(slug) is current
+                            and id(current) not in self._retiring_orgs
+                            and not self._runner_shutdown):
+                        current.start_dashboard_projection()
+                    raise
                 with self._org_map_lock:
                     self.orgs.pop(slug)
                     self._attachment_closes.pop(id(current))
@@ -770,6 +789,10 @@ class DaemonState:
                 org._assert_runners_idle()
                 org._assert_cleanup_diagnostics_idle()
             orgs = tuple(self._all_orgs_snapshot().values())
+            for org in orgs:
+                org.dashboard_projection.cancel_scheduler()
+            for org in orgs:
+                await org.dashboard_projection.reap_scheduler()
             self._close_attachments(orgs)
             with self._org_map_lock:
                 self.orgs.clear()
