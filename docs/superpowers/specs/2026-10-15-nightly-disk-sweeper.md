@@ -95,16 +95,28 @@ progress. Under Founder THR307seq285–290, a safe literal admin entry with fina
 `gitdir` ENOENT may instead remain an unmapped residue after exhaustive census,
 stable identities and conventional-root reconciliation. An empty entry qualifies;
 a nonempty entry requires valid commondir and strict checks of every remaining
-object. Ancestor loss, non-ENOENT, unsafe metadata, conflicts and present
-unregistered conventional TASK roots still refuse the shared scope. The residue
+object. A literal unregistered conventional TASK directory without a `.git`
+pointer instead retains only that path with
+`unknown_unregistered_task_worktree:<exact path>`, latched for the attempt.
+Additive TASK roots and new canonical reciprocal TASK-folder/admin-entry pairs
+across either census comparison or Git listing retain only the arriving task with
+that same reason; a new pair's admin name must also be a TASK name. Existing
+identities and pointers remain exact. Missing/changed existing entries or mappings,
+non-TASK additions, ancestor loss, non-ENOENT, unsafe aliases/hardlinks/special
+objects, conflicting backlinks and unknown descendant locations still refuse
+the shared scope. These local paths protect containing trees at every final
+remove/repair/retry boundary and make discovery partial, prohibiting prune.
+The unmapped admin residue
 scope is its literal admin path with candidate_count=0 and the exact native
 `unknown_git_metadata:<gitdir>: <ENOENT>` cause. No W, candidate, HEAD, branch,
 linked row or allocation is inferred; zero counts known candidates only, leaving
 location/allocation unknown. Discovery remains partial and outcome incomplete.
 Residue and local errors latch for the attempt; healing never grants clearance.
 No residue repair, metadata cleanup or repository-wide prune is allowed. Git rows
-must still exactly equal the primary plus independently proven linked paths;
-only actual residue omissions are explained. Other discrepancies refuse shared scope.
+must still equal the primary plus independently proven linked paths, except
+captured-list omissions of newly arriving validated TASK pairs, which remain
+locally retained. Only actual unmapped admin residue omissions are otherwise
+explained. Other discrepancies refuse shared scope.
 Missing optional
 `task-tmp`/`repos` directories
 are absent; inaccessible or invalid ones are unknown.
@@ -262,7 +274,8 @@ primary-root ownership, ordinary no-follow primary `.git`, and a complete
 roots. The common/admin/entry directories and exhaustive file/name census must
 be ordinary and unaliased, with canonical unique matching `gitdir`, `commondir`
 and worktree `.git` backlinks, apart from the safe unmapped gitdir-ENOENT
-residues described above. Other unknown mapping or unsafe metadata refuses the
+residues and locally retained additive TASK arrivals described above. Other
+unknown mapping or unsafe metadata refuses the
 shared scope before Git; unexplained Git output differences also refuse shared
 scope. With this proof, ordinary
 local read/change errors protect only their proven registration. A missing HEAD's

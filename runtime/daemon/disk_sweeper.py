@@ -132,18 +132,19 @@ class _Registrations(dict):
         self.metadata = {}
         self.errors = {}
         self.residues = {}
+        self.unregistered = set()
         self.missing_heads = set()
 
     def owner(self, path: str) -> tuple:
         if path in self.residues:
-            return path, self.topology[path], None
+            return path, self.topology[path], self.topology[path] if path in self.unregistered else None
         entry = self.linked[path]
         return str(entry), self.topology[str(entry)], self.topology[path]
 
     def require(self, path: Path, deadline: float) -> None:
         _retain_linked_descendants(path, self, deadline)
-        if str(path) in self.errors:
-            raise Retain(self.errors[str(path)])
+        if str(path) in self.errors or str(path) in self.residues:
+            raise Retain((self.errors | self.residues)[str(path)])
         row = self.get(str(path))
         if row is None or 'locked' in row or 'prunable' in row:
             raise Retain('git_unregistered_locked_or_prunable')
@@ -154,9 +155,10 @@ class _Registrations(dict):
 def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
     """Prove the entire literal mapping and safe file census BEFORE Git.
 
-    Only ordinary I/O/change errors after that proof can be registration-local.
+    Ordinary I/O/change errors after that proof can be registration-local.
     Only a final missing gitdir in an otherwise safe entry can be an unmapped
-    residue. Enumeration, unsafe metadata and unreconciled task roots stay shared.
+    residue. Literal unregistered TASK directories are protected local paths;
+    unsafe objects, conflicting pointers and unknown locations stay shared.
     """
     common = repo / '.git'
     admin = common / 'worktrees'
@@ -276,8 +278,27 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
         topology['task_roots'] = None if roots is None else tuple(roots)
         for name in roots or ():
             check(deadline)
-            if TASK.fullmatch(name) and str(prefix / name) not in result.linked:
-                raise Retain(f'unknown_unregistered_task_worktree:{prefix / name}')
+            path = prefix / name
+            if TASK.fullmatch(name) and str(path) not in result.linked:
+                # A literal directory without a pointer has a known location,
+                # even though it supplies no registration or deletion authority.
+                with directory(prefix, deadline) as pfd:
+                    observed = os.stat(name, dir_fd=pfd, follow_symlinks=False)
+                    if not stat.S_ISDIR(observed.st_mode):
+                        raise Retain(f'unknown_unregistered_task_worktree:{path}')
+                with directory(path, deadline) as fd:
+                    topology[str(path)] = identity(os.fstat(fd))
+                    if topology[str(path)] in mapped_inodes:
+                        raise Retain(f'aliased_worktree_target:{path}')
+                    mapped_inodes.add(topology[str(path)])
+                    try:
+                        os.stat('.git', dir_fd=fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise Retain(f'unknown_unregistered_task_worktree:{path}:unreconciled_backlink')
+                result.residues[str(path)] = f'unknown_unregistered_task_worktree:{path}'
+                result.unregistered.add(str(path))
         # All paths/containment and initial object types are now accounted for.
         # Keep pointers in shared topology; only auxiliary/HEAD reads may fail
         # locally, and only with a still ordinary or genuinely missing leaf.
@@ -332,13 +353,70 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
         raise _RegistrationUnknown(f'unknown_git_registrations:{admin}: {exc}') from exc
 
 
+def _registration_additions(before: _Registrations, after: _Registrations, repo: Path, deadline: float) -> set[str]:
+    """Allow only additive, fully attributed conventional TASK roots/pairs.
+
+    Existing identities/pointers/residues must remain exact. A new unmapped
+    admin entry, non-TASK name or unknown descendant cannot be attributed here.
+    """
+    prefix, admin = repo / '.claude/worktrees', repo / '.git/worktrees'
+    failure = f'git_mapping_changed_during_inventory:{repo}'
+    old_roots = set(before.topology['task_roots'] or ())
+    new_roots = set(after.topology['task_roots'] or ())
+    old_entries, new_entries = set(before.topology['entries']), set(after.topology['entries'])
+    if not old_roots <= new_roots or not old_entries <= new_entries:
+        raise _RegistrationUnknown(failure)
+    additions = set()
+    allowed_keys = set()
+    entries = set()
+    for name in new_roots - old_roots:
+        check(deadline)
+        path = str(prefix / name)
+        if not TASK.fullmatch(name):
+            raise _RegistrationUnknown(failure)
+        additions.add(path)
+        allowed_keys.add(path)
+        entry = after.linked.get(path)
+        if entry is not None:
+            if not TASK.fullmatch(entry.name) or entry.name in old_entries:
+                raise _RegistrationUnknown(failure)
+            entries.add(entry.name)
+            allowed_keys.update((str(entry), str(entry / 'gitdir'), str(entry / 'commondir'), str(Path(path) / '.git')))
+        elif path not in after.residues:
+            raise _RegistrationUnknown(failure)
+    if entries != new_entries - old_entries:
+        raise _RegistrationUnknown(failure)
+    if {p: e for p, e in after.linked.items() if p not in additions} != before.linked:
+        raise _RegistrationUnknown(failure)
+    if set(after.residues) - additions != set(before.residues):
+        raise _RegistrationUnknown(failure)
+    if after.unregistered - additions != before.unregistered:
+        raise _RegistrationUnknown(failure)
+    # Parent identity creation is safe only for the first attributed addition;
+    # replacement of an existing parent remains a shared refusal.
+    for parent in (prefix, admin):
+        key = str(parent)
+        if additions and before.topology.get(key) is None and after.topology.get(key) is not None:
+            allowed_keys.add(key)
+    for key in before.topology.keys() | after.topology.keys():
+        check(deadline)
+        if key in ('entries', 'task_roots'):
+            if not additions and before.topology[key] != after.topology[key]:
+                raise _RegistrationUnknown(failure)
+        elif key in allowed_keys:
+            if key in before.topology and before.topology[key] is not None:
+                raise _RegistrationUnknown(failure)
+        elif before.topology.get(key) != after.topology.get(key):
+            raise _RegistrationUnknown(failure)
+    return additions
+
+
 def registrations(repo: Path, deadline: float, *, retained: dict | None = None) -> _Registrations:
     before = _registration_metadata(repo, deadline)
     # A second literal census before Git catches mapping/type changes during
     # ordinary reads. Local churn protects its owner without poisoning peers.
     after = _registration_metadata(repo, deadline)
-    if before.linked != after.linked or before.topology != after.topology:
-        raise _RegistrationUnknown(f'git_mapping_changed_during_inventory:{repo}')
+    additions = _registration_additions(before, after, repo, deadline)
     errors = dict(before.errors)
     for path, error in after.errors.items():
         errors.setdefault(path, error)
@@ -356,10 +434,6 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None) 
             check(deadline)
             if (path not in before.linked and path not in before.residues) or before.owner(path) != owner:
                 raise _RegistrationUnknown(f'local_registration_attribution_lost:{repo}:{path}')
-        for path, error in (errors | before.residues).items():
-            latched.setdefault(path, (error, before.owner(path)))
-        errors = {path: value[0] for path, value in latched.items() if path in before.linked}
-        after.residues = {path: latched[path][0] for path in after.residues}
     try:
         raw = git(repo, deadline, 'worktree', 'list', '--porcelain', '-z')
     except (Retain, UnicodeError) as exc:
@@ -375,16 +449,21 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None) 
         if not path or path in after:
             raise _RegistrationUnknown(f'unknown_git_registration:{repo}')
         after[path] = row
-    if set(after) != {str(repo), *after.linked}:
+    final = _registration_metadata(repo, deadline)
+    additions |= _registration_additions(after, final, repo, deadline)
+    # Git's list can precede or follow an additive TASK arrival. Only those
+    # newly proven paths may be absent from the captured list; every extra row
+    # still needs a complete final reciprocal mapping.
+    expected = {str(repo), *final.linked}
+    if set(after) - expected or expected - set(after) - additions:
         raise _RegistrationUnknown(f'unknown_git_registration_inventory:{repo / ".git/worktrees"}')
-    for path in after.linked:
+    for path in final.linked:
+        if path not in after:
+            continue
         head = after[path].get('HEAD', '')
         if not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', head) or set(head) == {'0'}:
-            if not (path in after.missing_heads and set(head) == {'0'} and 'detached' in after[path]):
-                raise _RegistrationUnknown(f'unknown_git_registration_head:{after.linked[path]}')
-    final = _registration_metadata(repo, deadline)
-    if final.linked != after.linked or final.topology != after.topology:
-        raise _RegistrationUnknown(f'git_mapping_changed_during_inventory:{repo}')
+            if not (path in after.missing_heads | final.missing_heads and set(head) == {'0'} and 'detached' in after[path]):
+                raise _RegistrationUnknown(f'unknown_git_registration_head:{final.linked[path]}')
     for path in after.linked:
         if path in final.errors:
             errors.setdefault(path, final.errors[path])
@@ -394,12 +473,18 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None) 
                 errors.setdefault(path, f'metadata_changed:{target}' + _signature_change(
                     'post_git_census', after.metadata[path].get(target), final.metadata[path].get(target),
                 ))
+    for path in additions:
+        if path in final.linked:
+            errors.setdefault(path, f'unknown_unregistered_task_worktree:{path}')
+    errors.update({p: e for p, e in final.errors.items() if p not in errors})
     if retained is not None:
-        for path, error in errors.items():
-            retained[str(repo)].setdefault(path, (error, after.owner(path)))
-    after.errors = errors
-    after.metadata = final.metadata
-    return after
+        for path, error in (errors | before.residues | after.residues | final.residues).items():
+            latched.setdefault(path, (error, final.owner(path)))
+        errors = {path: value[0] for path, value in latched.items() if path in final.linked}
+        final.residues = {path: latched[path][0] for path in final.residues}
+    final.update(after)
+    final.errors = errors
+    return final
 
 
 def read_json(path: Path, deadline: float, limit: int = 65536):
@@ -510,7 +595,7 @@ class Evidence:
 
 def _retain_linked_descendants(path: Path, rows: dict[str, dict], deadline: float) -> None:
     """A complete reciprocal census protects every different linked descendant."""
-    for registered in rows.linked:
+    for registered in rows.linked.keys() | rows.residues.keys():
         check(deadline)
         descendant = Path(registered)
         if descendant != path and path in descendant.parents:
@@ -671,13 +756,13 @@ def discover(org: Path, deadline: float, *, inventory: dict | None = None, check
                                 pass
                             rows = registrations(repo, deadline, retained=retained)
                             for path, error in rows.residues.items():
-                                inventory['discovery_scopes'].append(dict(path=path, reason=error, candidate_count=0))
+                                inventory['discovery_scopes'].append(dict(path=path, reason=error, candidate_count=None if path in rows.unregistered else 0))
                             for path, error in rows.errors.items():
                                 inventory['discovery_scopes'].append(dict(path=path, reason=error, candidate_count=None))
                             if str(repo) not in rows:
                                 raise Retain('unknown_git_primary_registration')
                             prefix = repo / '.claude/worktrees'
-                            for literal in rows.linked:
+                            for literal in rows.linked.keys() | rows.residues.keys():
                                 check(deadline)
                                 path = Path(literal)
                                 if path.parent != prefix or not TASK.fullmatch(path.name):
@@ -807,6 +892,9 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
             try:
                 if candidate.get('repo') in uncertain_repos:
                     raise _RegistrationUnknown('unknown_repository_registration_scope')
+                local = retained.get(candidate.get('repo'), {}).get(candidate['path'])
+                if local:
+                    raise Retain(local[0])
                 tree = admit(candidate, evidence, deadline, now=now, retained=retained)
                 amount, _ = allocated(tree, measured_inodes)
                 phase['measured_allocated_bytes'] += amount
