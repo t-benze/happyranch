@@ -4812,7 +4812,31 @@ and `memory_collection_seal`. Agent-scoped memory read/update/promotion/lifecycl
 rows are outside this task history; collection acceptance/invalidation controls
 are not informational recovery exemptions. The exact native launch/refusal
 observation `task_native_launch_boundary` is also informational; it does not
-select or consume the recovery result. Unknown actions, including a
+select or consume the recovery result. Session starts accept exactly the native
+five required keys, optionally with a nonempty string `reasoning_effort`.
+Job audits are separately authenticated, never informational: `job_submitted`
+accepts the exact legacy shape or journal shape with `submit_session_id` and
+`submission_digest`; `job_auto_started`, `job_run_started`, `job_run_completed`
+and `job_run_failed` accept only their exact native shapes and an existing jobs
+row owned by this task and worker. Any recorded submit session must be the
+original or selected recovery session. Submission metadata must match the job;
+the journal digest must equal the native submission producer's SHA256 over the
+persisted submission fields, including script bytes and creation time. Every
+accepted action requires a consistent persisted lifecycle with aware, ordered
+creation/review/start/finish timestamps as applicable. Start audits require an
+actual start and a running, completed or failed row, with matching recorded
+runner, working directory, timeout and interpreter. Pending rows cannot carry
+launch or terminal metadata; running rows cannot carry terminal metadata.
+Submission and automatic-start actors are the worker. Legacy internal
+`job_run_started` uses `founder` as both actor and recorded reviewer; terminal
+actors match the recorded runner (worker or founder). Terminal audits require
+the matching completed/failed status and finish timestamp, plus a start/reviewer
+and output paths for launched runs. Completed rows require integer exit/duration
+and no failure reason. A native prelaunch `spawn_failed` refusal is worker-authored:
+no start, review, working directory or output paths, false review requirement,
+NULL exit, zero duration and a finish at or after creation. Terminal exit,
+duration and failure reason must match the job row. Foreign ownership,
+malformed shapes and extra keys refuse. Unknown actions, including a
 dictionary-payload `memory_unrecognized_transition`, refuse as
 `ambiguous_history` before failure, review, marker, job or parent effects.
 Selected result/session/owner, review ordering and replay fences are unchanged.
