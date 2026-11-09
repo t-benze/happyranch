@@ -361,6 +361,13 @@ kind, timezone, and next fire time.  Let them know:
 
 **Founder management (separate from agent create):** The Todos surface provides list, show/id detail, pause, cancel, and edit (timing/recurrence/timezone only) operations.  Do NOT use `todos create` — agent creation is `schedules create`.
 
+Pause requires an armed Todo; re-pausing a paused Todo is idempotent. Cancel
+and edit require armed or paused status. Pause/cancel refuse a concurrent status
+change, and edit also refuses a changed occurrence (`fire_at`/`fire_count`), using
+the existing 409 `state_conflict` response without a management audit entry.
+Terminal transitions clear `active`, including one-shot failure/timeout and
+daemon-restart recovery.
+
 ## Examples
 
 ### Example 1 — Follow up in 48 hours (one-shot)
