@@ -48,9 +48,10 @@ def validate_report(path: Path, expected: dict, *, signal_name: str | None = Non
         elif not set(HOUSEKEEPING) <= set(names):
             raise ValueError("Missing setup or cleanup cases")
         for case in cases:
-            if case.get("classname") != suite_name or list(case):
-                # Own reports use no testcase children on pass. In particular,
-                # failure/error/skipped cannot hide behind declared zero totals.
+            if (case.get("classname") != suite_name or len(case) > 1
+                    or any(child.tag != "system-out" or child.attrib or list(child) for child in case)):
+                # A single plain diagnostic system-out is allowed on pass.
+                # Failure/error/skipped still cannot hide behind zero totals.
                 raise ValueError("Failed, errored, skipped or malformed case: " + str(case.get("name")))
         if suite.get("tests") != str(len(cases)) or any(suite.get(key) != "0" for key in ("failures", "errors", "skipped")):
             raise ValueError("Inconsistent JUnit totals")

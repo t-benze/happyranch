@@ -41,7 +41,21 @@ and at least five fresh full frames over the same complete one-second window.
 The first frame starts exactly at window entry and the last starts at or after
 its end; every acquired frame still checks full content, witnesses, no launch,
 host state and product closure. Original phase/deadline bounds are unchanged.
-Failures report actual intervals, frame durations and coverage endpoints.
+Both PASS and FAIL reports record measured timings as JSON in the first E04
+and first E07 product testcase's `system-out`, preserved through the controller
+handoff into each uploaded `e2e-3.12` / `e2e-3.14` `junit.xml`. E04 records observer
+sample count, min/max/p95 inter-sample gaps, first/last monotonic sample times
+and every observed barrier's named entry/completion endpoints. E07 records
+frame count, min/max/p95 start intervals, maximum frame duration, window entry/end,
+first/last start offsets from entry and last start/finish offsets from the end.
+All durations/offsets are seconds; p95 uses nearest rank (`ceil(0.95 * n)`),
+without interpolation. Timings are collected before content validation, including
+partial failed windows; unavailable measurements are null (counts can be zero).
+An absent controller report remains a harness error, with no invented timings.
+Health allows diagnostic `system-out` while still rejecting failures/errors/skips.
+No numeric bound changes with this reporting addition. Measurements in future
+green artifacts allow the existing limits to be judged; they do not justify them
+in advance.
 Run42501816137 saved neither sampler's timestamps, so its timing cause remains
 unresolved. The revised harness limits allow for sequential SQL, nine HTTP
 reads and closure work on a shared runner; they are not product timing claims.
