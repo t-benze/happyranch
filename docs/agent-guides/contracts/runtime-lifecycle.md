@@ -561,6 +561,15 @@ may observe success metrics; it cannot prove all six failure/equivalence cases
 or establish historical/under10s improvement. Source delivery authorizes no
 restart/deployment, a checkpoint or history deletion. Standing B (THR308seq366/367) separately authorizes source for terminal-root inert closure as described below.
 
+**Ordinary callback omission (THR308seq384 T-0).** New clearly ordinary
+callbacks on `no_v2` ordinary tasks omit attempts, admitted audits and owner
+tokens, retaining an immutable result marker for authenticated exact replay.
+Generic audit streams have no `admitted` event for those decisions. Startup and
+crash recovery retain their existing rules and simply do not sweep absent rows;
+existing attempts, the broader inert classifier and B capture stay unchanged,
+including done-R2 on live continuation roots. See the
+[admission/replay and narrowed downgrade contract](authority-policy.md#ordinary-callback-omission-thr-308-seq384-d-t0-r2).
+
 **Standing B startup closure (THR308seq366/367).** On every boot, after the
 exact loop and within its open Database-owned reader, eligible authenticated
 inert terminal-root attempts close to admitted/`inert_closed`/NULL. The exact

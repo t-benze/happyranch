@@ -244,7 +244,7 @@ One line per area; read the linked contract before changing it.
 
 - **Coding workflow** (disabled by default; built-in definition, Founder settings at `/orgs/:slug/settings/coding`, `scripts/setup_coding.py`): [coding-workflow.md](docs/agent-guides/contracts/coding-workflow.md)
 - **Workflow schema, activation and document review** (F–J layouts, explicit migration scripts only): [document-workflows.md](docs/agent-guides/contracts/document-workflows.md)
-- **Escalation authority policy** (THR-181/229/277/279): [authority-policy.md](docs/agent-guides/contracts/authority-policy.md)
+- **Escalation authority policy** (THR-181/229/277/279; THR308 T-0 ordinary callbacks omit attempt/admitted audit/token, retained escalation and lineage admission): [authority-policy.md](docs/agent-guides/contracts/authority-policy.md)
 - **Task orchestration** (attachments, retries, root Pause/Resume, creation-time ownership marks): [task-orchestration.md](docs/agent-guides/contracts/task-orchestration.md)
 - **Launch, preparation and daemon lifecycle** (repository refresh, preparation recovery, startup safety, shutdown): [runtime-lifecycle.md](docs/agent-guides/contracts/runtime-lifecycle.md)
 - **Teams, online team move and org admin**: [teams-and-org-admin.md](docs/agent-guides/contracts/teams-and-org-admin.md), runbook `docs/runbooks/online-team-move.md`
