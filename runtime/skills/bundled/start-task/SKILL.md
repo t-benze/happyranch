@@ -399,8 +399,8 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
 
    If the task produces a standalone document (report, plan, analysis), write its files under `output/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `output/TASK-001`) and include it as `output_dir` in your completion payload so future sessions can retrieve it via `happyranch recall --org {ORG_SLUG} <task_id>`.
 
-   **Task output hygiene (Founder THR-326 seq13).** These are agent obligations,
-   not daemon auto-expiry:
+   **Task output hygiene (Founder THR-326 seq13 and seq35/seq39).** These are
+   agent obligations, not daemon auto-expiry:
 
    - Gzip any file over 1 MB at write time in `output/` (e.g. `.json.gz`, `.log.gz`).
    - Keep scratch trees, caches, `node_modules`, `.venv`, build directories,
@@ -412,9 +412,17 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
      run `du -sh output/<task_id>/`; exceeding the cap needs a stated reason
      in the completion summary.
    - For your **own terminal tasks only**, after 14 days remove regenerable
-     leftovers; after 60 days shrink uncited task directories to summary and
-     completion files. Never delete or compress a file cited by a task brief,
-     thread message or PR body.
+     leftovers. Delete log, JSON and stdout/stderr files over 1 MB (including
+     `.gz` variants) once the whole task tree that wrote them has been terminal
+     for at least 14 days, unless a currently running or queued task, or a task
+     that failed or escalated in the last 14 days, names the file or an ancestor
+     folder (a retry may read it). Keep handoff, completion, summary, verdict,
+     receipt and manifest files under 1 MB regardless of age. Delete rather
+     than compress or archive; never chmod/chown or follow symlinks. Older
+     brief, thread or PR citations no longer protect those large files. For
+     other content, after 60 days shrink uncited task directories to summary
+     and completion files. Never delete or compress other content cited by a
+     task brief, thread message or PR body.
 
    If during the task you realize you need async input from another agent
    (and you're not yet blocked), use the delivered `thread` skill selected
