@@ -2506,7 +2506,10 @@ Agents self-report `status="completed"|"blocked"` via `happyranch report-complet
 Job-wait parking, out-of-scope delegate/fan-out feedback, and missing-reviewer-
 expectation feedback require the original decision claim to remain current and
 uncancelled. The Database lock and writer transaction cover that recheck and
-the parking write. A lost claim leaves the current row untouched, emits no
+the parking write. The UPDATE checks the claimed status and block_kind plus
+cancelled_at IS NULL; anything other than one affected row loses the claim.
+Feedback rolls back its entire transaction on that loss, including its result
+and audit inserts. A lost claim leaves the current row untouched, emits no
 parking audit or synthetic feedback result, and performs no enqueue or immediate
 job-resume check. Feedback results and their feedback audit commit with PENDING;
 the earlier audit of the submitted decision remains as history even if parking

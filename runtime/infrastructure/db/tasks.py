@@ -2253,6 +2253,9 @@ class TasksMixin:
                 self._conn.rollback()
                 return LostClaim()
             pending = self._retry_feedback_uncommitted(expected_claim, feedback)
+            if isinstance(pending, LostClaim):
+                self._conn.rollback()
+                return pending
             self._conn.commit()
             return pending
         except BaseException:
@@ -2261,8 +2264,8 @@ class TasksMixin:
 
     def _retry_feedback_uncommitted(
         self, expected_claim: RetryClaim, feedback: str, correction: dict | None = None,
-    ) -> PendingRetry:
-        """Caller owns BEGIN/claim/commit; generic feedback defaults stay literal."""
+    ) -> PendingRetry | LostClaim:
+        """Caller owns BEGIN/claim/commit and rollback on LostClaim."""
         self._insert_task_result(
             task_id=expected_claim.task_id, agent=expected_claim.assigned_agent,
             session_id="", status="completed", confidence_score=0,
@@ -2276,10 +2279,15 @@ class TasksMixin:
                      **({"attachment_correction": {**correction, "feedback_result_id": result_id}}
                         if correction is not None else {})},
         )
-        self._conn.execute(
-            "UPDATE tasks SET status = 'pending', block_kind = NULL, updated_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), expected_claim.task_id),
+        cursor = self._conn.execute(
+            """UPDATE tasks SET status = 'pending', block_kind = NULL, updated_at = ?
+               WHERE id = ? AND status = ? AND block_kind IS ?
+                   AND cancelled_at IS NULL""",
+            (datetime.now(timezone.utc).isoformat(), expected_claim.task_id,
+             expected_claim.status.value, expected_claim.block_kind),
         )
+        if cursor.rowcount != 1:
+            return LostClaim()
         return PendingRetry(expected_claim, result_id, feedback)
 
     def _attachment_correction_rows_txn(self, task_id: str) -> list:
@@ -2422,6 +2430,9 @@ class TasksMixin:
                     "accepted_result_id": accepted["id"], "accepted_session_id": accepted["session_id"],
                     "error_code": attachment_error,
                 })
+                if isinstance(pending, LostClaim):
+                    self._conn.rollback()
+                    return pending
                 self._conn.commit()
                 return pending
             # Count2 never writes a third feedback or enters B.
