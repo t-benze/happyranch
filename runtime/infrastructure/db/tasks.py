@@ -3579,16 +3579,67 @@ class TasksMixin:
                         or job_row["persistent"] not in (0, 1)
                         or job_row["review_required"] not in (0, 1)):
                     return "ambiguous_history", None
+                # Validate the persisted lifecycle for every action, including
+                # submissions read after a run. An audit cannot prove a launch
+                # when the native running/terminal writers left no such state.
+                stamps = {}
+                try:
+                    for field in ("created_at", "reviewed_at", "started_at", "finished_at"):
+                        value = getattr(job, field)
+                        stamp = None if value is None else datetime.fromisoformat(value)
+                        if stamp is not None and stamp.utcoffset() is None:
+                            return "ambiguous_history", None
+                        stamps[field] = stamp
+                except (ValueError, TypeError):
+                    return "ambiguous_history", None
+                if (stamps["created_at"] is None or job.reject_reason is not None
+                        or (job_row["exit_code"] is not None and type(job_row["exit_code"]) is not int)
+                        or (job_row["duration_ms"] is not None and (
+                            type(job_row["duration_ms"]) is not int or job_row["duration_ms"] < 0))):
+                    return "ambiguous_history", None
+                prelaunch_failure = (job.status.value == "failed" and job.reason == "spawn_failed"
+                    and job.started_at is None and job.reviewed_by is None and job.reviewed_at is None
+                    and not job.review_required and job.exit_code is None and job.duration_ms == 0
+                    and job.cwd_resolved is None and job.stdout_path is None and job.stderr_path is None
+                    and stamps["finished_at"] is not None
+                    and stamps["finished_at"] >= stamps["created_at"])
+                if job.status.value == "pending" or prelaunch_failure:
+                    if (job.started_at is not None or job.reviewed_at is not None or job.reviewed_by is not None
+                            or job.cwd_resolved is not None or job.stdout_path is not None or job.stderr_path is not None
+                            or job.exit_code is not None
+                            or (not prelaunch_failure and (
+                                job.finished_at is not None or job.duration_ms is not None or job.reason is not None))):
+                        return "ambiguous_history", None
+                else:
+                    if (job.status.value not in {"running", "completed", "failed"}
+                            or job.reviewed_by not in (agent, "founder")
+                            or stamps["reviewed_at"] is None or stamps["started_at"] is None
+                            or not stamps["created_at"] <= stamps["reviewed_at"] <= stamps["started_at"]
+                            or any(not isinstance(value, str) or not value for value in (
+                                job.cwd_resolved, job.stdout_path, job.stderr_path))):
+                        return "ambiguous_history", None
+                    if job.status.value == "running":
+                        if (job.finished_at is not None or job.exit_code is not None
+                                or job.duration_ms is not None or job.reason is not None):
+                            return "ambiguous_history", None
+                    elif (stamps["finished_at"] is None or stamps["finished_at"] < stamps["started_at"]
+                            or (job.status.value == "completed" and (
+                                job.reason is not None or type(job.exit_code) is not int or type(job.duration_ms) is not int))
+                            or (job.status.value == "failed" and (not isinstance(job.reason, str) or not job.reason))):
+                        return "ambiguous_history", None
                 if action == "job_submitted":
                     expected = {"script_request_id": job_id, "title": job.title,
                                 "interpreter": job.interpreter.value, "cwd_hint": job.cwd_hint,
                                 "byte_size": len(job.script_text.encode("utf-8")),
                                 "line_count": job.script_text.count("\n") + 1}
                     if "submit_session_id" in payload:
-                        digest = payload.get("submission_digest")
-                        if (not isinstance(digest, str) or len(digest) != 64
-                                or any(c not in "0123456789abcdef" for c in digest)):
-                            return "ambiguous_history", None
+                        # Match routes/jobs.py:_job_submission_digest using
+                        # persisted submission fields, never the audit's claim.
+                        fields = ("id", "task_id", "agent_name", "title", "rationale", "script_text", "interpreter",
+                                  "cwd_hint", "review_required", "persistent", "max_runtime_seconds", "created_at")
+                        value = job.model_dump(mode="json")
+                        digest = hashlib.sha256(json.dumps({key: value[key] for key in fields},
+                            sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
                         expected.update(submit_session_id=payload["submit_session_id"], submission_digest=digest)
                     if (log["agent"] != agent or payload != expected
                             or type(payload["byte_size"]) is not int or type(payload["line_count"]) is not int):
@@ -3603,7 +3654,8 @@ class TasksMixin:
                         expected.update(agent=runner, persistent=job.persistent)
                     else:
                         expected["reviewer"] = runner
-                    if (log["agent"] != runner or job.reviewed_by != runner or payload != expected
+                    if (job.started_at is None or job.status.value not in {"running", "completed", "failed"}
+                            or log["agent"] != runner or job.reviewed_by != runner or payload != expected
                             or not isinstance(payload["cwd_resolved"], str) or not payload["cwd_resolved"]
                             or (payload["timeout_seconds"] is not None and (
                                 type(payload["timeout_seconds"]) is not int or not 0 < payload["timeout_seconds"] <= 86400))
@@ -3613,8 +3665,7 @@ class TasksMixin:
                     # The same runner publishes both terminal shapes. A native
                     # prelaunch spawn refusal has no reviewer and uses the worker.
                     runner = job.reviewed_by
-                    if (action == "job_run_failed" and runner is None and job.started_at is None
-                            and job.reason == "spawn_failed" and job.exit_code is None and job.duration_ms == 0):
+                    if action == "job_run_failed" and prelaunch_failure:
                         runner = agent
                     expected = {"script_request_id": job_id, "exit_code": job.exit_code,
                                 "duration_ms": job.duration_ms}
