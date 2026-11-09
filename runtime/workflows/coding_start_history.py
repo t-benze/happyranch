@@ -96,7 +96,8 @@ def _reserved_rows(conn, table, column, budget, *, where, args=()):
             yield from rows(conn, table, budget, where='rowid=?', args=(rowid,), maximum=1)
 
 
-def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: Any, imported: Any) -> QueuedStorage:
+def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: Any, imported: Any,
+                *, sequential: dict | None = None) -> QueuedStorage:
     from runtime.infrastructure.workflow_schema import _coding_document_exclusions
     optional = _coding_document_exclusions(conn)
     storage = QueuedStorage()
@@ -115,7 +116,17 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         if type(envelope) is not dict or envelope.get('action') != 'workflow_start':
             continue
         _decoded(envelope, budget)
-        decision = parse_native_decision(raw.encode('utf8'))
+        try:
+            decision = parse_native_decision(raw.encode('utf8'))
+        except ValueError as exc:
+            if str(exc) != 'coding_saved_record_invalid':
+                raise
+            from runtime.infrastructure.workflow_coding_schema import _coding_scalar
+            from runtime.workflows.sequential_start_metadata import recognized_start
+            if recognized_start(raw, location='task_results.decision_json', result_id=row['id'],
+                                sequential=sequential, budget=budget, reserved=_coding_scalar):
+                continue
+            raise
         if decision['workflow']['format'] == 'workflow-coding-start@2':
             _resolve_start(decision['workflow'], mappings, imported, budget)
         _integer(row['id'], 1)

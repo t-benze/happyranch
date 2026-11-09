@@ -2852,6 +2852,18 @@ def _consume_completion_report(
     # production owner refuses missing downstream readiness with zero mutation.
     decision = orch._parse_next_step(report) if task.task_type == "task" else None
     if decision is not None and decision.action == "workflow_start":
+        if decision.workflow.get('format') == 'workflow-sequential-start@1':
+            from runtime.workflows.sequential_engine import SequentialRefusal
+            from runtime.workflows.sequential_start import consume_start
+            sequential = getattr(orch, '_workflow_sequential_dispatch', None)
+            if sequential is None:
+                logger.warning("sequential start unavailable for %s", task_id)
+                return
+            try:
+                consume_start(sequential, RetryClaim.from_task(task, result_row_id=resolved_row_id), decision, report)
+            except SequentialRefusal as exc:
+                logger.warning("sequential start held for %s: %s", task_id, exc.code)
+            return
         from runtime.workflows.coding_start import CodingStartError
         coding = getattr(orch, "_workflow_coding_start", None)
         if coding is None:

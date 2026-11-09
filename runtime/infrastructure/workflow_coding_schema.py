@@ -317,44 +317,57 @@ def _malformed_coding_value(text: str, budget: _Budget | None) -> bool:
     return False
 
 
-def _refuse_coding_metadata(raw: object, *, location: str, budget: _Budget | None) -> None:
-    # None is ordinary discrimination, independent of mapping/queued enrollment.
-    # Selected coding rows pass their enclosing budget unchanged, including fallback.
-    if not isinstance(raw, (bytes, str)):
-        return  # Existing retained-family readers check their required types.
-    if len(raw) > 16777216:
-        raise ValueError(f'workflow_coding_boundary_scan_bound: {location}')
-    try:
-        # Check EVERY duplicate-key value; later document values cannot erase
-        # a reserved value even when the outer object subsequently truncates.
-        def pairs(items: list[tuple[str, object]]) -> dict:
-            if budget is not None:
-                budget.step()  # also account for empty objects
-            result = {}
-            for key, value in items:
+def _refuse_coding_metadata(raw: object, *, location: str, budget: _Budget | None,
+                           sequential: dict | None = None, result_id: int | None = None,
+                           recognition_budget: _Budget | None = None) -> None:
+    def original() -> None:
+        # None is ordinary discrimination, independent of mapping/queued enrollment.
+        # Selected coding rows pass their enclosing budget unchanged, including fallback.
+        if not isinstance(raw, (bytes, str)):
+            return  # Existing retained-family readers check their required types.
+        if len(raw) > 16777216:
+            raise ValueError(f'workflow_coding_boundary_scan_bound: {location}')
+        try:
+            # Check EVERY duplicate-key value; later document values cannot erase
+            # a reserved value even when the outer object subsequently truncates.
+            def pairs(items: list[tuple[str, object]]) -> dict:
                 if budget is not None:
-                    budget.step()  # duplicate members and dict construction
-                    for text in (key, value):
-                        if isinstance(text, str):
-                            for _ in text:
-                                budget.step()
-                if _coding_scalar(key, value) or _coding_value(value, budget):
-                    raise ValueError(f'workflow_coding_data_unsupported: {location}; complete family reader required')
-                result[key] = value
-            return result
-        value = json.loads(raw, object_pairs_hook=pairs)
-        if _coding_value(value, budget):
-            raise ValueError(f'workflow_coding_data_unsupported: {location}; complete family reader required')
-    except (UnicodeError, json.JSONDecodeError):
-        # Mirror JSON's supported UTF8/16/32 input encodings even when the
-        # envelope truncates. A malformed byte envelope cannot lose its family
-        # merely because the successful decoder would recognize its encoding.
-        text = raw.decode(json.detect_encoding(raw), errors='replace') if isinstance(raw, bytes) else raw
-        if _malformed_coding_value(text, budget):
-            raise ValueError(f'workflow_coding_data_unsupported: {location}; malformed coding metadata') from None
-        return  # Family discrimination only, never a legacy validity PASS.
-    except RecursionError as exc:
-        raise ValueError(f'workflow_coding_boundary_scan_bound: {location}') from exc
+                    budget.step()  # also account for empty objects
+                result = {}
+                for key, value in items:
+                    if budget is not None:
+                        budget.step()  # duplicate members and dict construction
+                        for text in (key, value):
+                            if isinstance(text, str):
+                                for _ in text:
+                                    budget.step()
+                    if _coding_scalar(key, value) or _coding_value(value, budget):
+                        raise ValueError(f'workflow_coding_data_unsupported: {location}; complete family reader required')
+                    result[key] = value
+                return result
+            value = json.loads(raw, object_pairs_hook=pairs)
+            if _coding_value(value, budget):
+                raise ValueError(f'workflow_coding_data_unsupported: {location}; complete family reader required')
+        except (UnicodeError, json.JSONDecodeError):
+            # Mirror JSON's supported UTF8/16/32 input encodings even when the
+            # envelope truncates. A malformed byte envelope cannot lose its family
+            # merely because the successful decoder would recognize its encoding.
+            text = raw.decode(json.detect_encoding(raw), errors='replace') if isinstance(raw, bytes) else raw
+            if _malformed_coding_value(text, budget):
+                raise ValueError(f'workflow_coding_data_unsupported: {location}; malformed coding metadata') from None
+            return  # Family discrimination only, never a legacy validity PASS.
+        except RecursionError as exc:
+            raise ValueError(f'workflow_coding_boundary_scan_bound: {location}') from exc
+    try:
+        original()
+    except ValueError as exc:
+        if not str(exc).startswith('workflow_coding_data_unsupported:'):
+            raise
+        from runtime.workflows.sequential_start_metadata import recognized_start
+        if recognized_start(raw, location=location, result_id=result_id, sequential=sequential,
+                            budget=recognition_budget if budget is None else budget, reserved=_coding_scalar):
+            return None
+        raise
 
 
 @dataclass(frozen=True)
@@ -545,6 +558,9 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     mapping_rows = {}
     queued = None
     coding_present = has_coding_schema_objects(conn)
+    from runtime.infrastructure.workflow_schema import _sequential_validated_rows
+    sequential = _sequential_validated_rows(conn)
+    enclosing_budget = budget
     if coding_present:
         from runtime.infrastructure.workflow_schema import _read_structure
         _read_structure(conn)
@@ -578,7 +594,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         if mappings is not None and release is None:
             raise ValueError('workflow_coding_mapping_release_missing')
         from runtime.workflows.coding_start_history import read_queued
-        queued = read_queued(conn, expected_org_slug, budget, mappings, release)
+        queued = read_queued(conn, expected_org_slug, budget, mappings, release, sequential=sequential)
     else:
         # A canonical settings pointer is a coding-family fact even without J
         # mappings/audits. Earlier layouts cannot silently treat it as absent.
@@ -609,9 +625,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     # Empty J is still a complete coding read: absence must not replenish or
     # bypass the allowance for the subsequent native typed-row discrimination.
     bounded_coding = budget is not None
-    from runtime.infrastructure.workflow_schema import _sequential_validated_rows
     from runtime.infrastructure.workflow_sequential_schema import SEQUENTIAL_TABLES
-    sequential = _sequential_validated_rows(conn)
     for table in CODING_TABLES:
         if table not in tables:
             if coding_present:
@@ -799,8 +813,12 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                         if _coding_scalar(column, raw):
                             raise ValueError(f'workflow_coding_data_unsupported: {table}.{column}; coding reader required')
                     else:
+                        native_decision = table == 'task_results' and column == 'decision_json'
                         _refuse_coding_metadata(raw, location=f'{table}.{column}',
-                                                budget=budget if table_bounded else None)
+                            budget=budget if table_bounded else None,
+                            recognition_budget=enclosing_budget if native_decision else None,
+                            sequential=sequential if native_decision else None,
+                            result_id=rowid if native_decision else None)
         if file_key is not None:
             if advances is not None:
                 advances.append((file_key, last_id))  # applied after the owned snapshot ends
