@@ -1621,22 +1621,24 @@ Use this checklist in the existing case record and PR template:
   Chinese layout requires `REQUEST_CHANGES`; automation establishes only its
   supported structural/completeness boundaries.
 
-Run ordinary Web lint plus the real-config `lint-owned-copy.test.ts` and actual
-source `coverage.test.ts` guards. The Node-only source inventory validates the
-shipping HTML entry/static aliases and distinguishes declarations/imports from
+Run ordinary Web lint. The real-config `lint-owned-copy.test.ts` and source
+`coverage.test.ts` guards were retired by founder decision THR-343; web behavior
+belongs to Product E2E. Historically, the Node-only source inventory validated the
+shipping HTML entry/static aliases and distinguished declarations/imports from
 supported JSX/render-return mounts. Named/namespace router imports and reexports
-retain route and parent identity. Additional createRoot renders in reachable
+retained route and parent identity. Additional createRoot renders in reachable
 static runtime imports/reexports, including side-effect imports and transitive/
-cyclic module graphs, discover direct JSX or statically bound JSX constants.
-Unhandled arguments refuse with their source. Type-only edges are excluded;
-evaluating an imported module does not mount its unused JSX declarations or
-enter uncalled functions/classes. New mounted owners require
-source-qualified route/dialog classification; index/wildcard cannot borrow another owner's
-status, and full release rejects every english-only namespace. Unsupported
-entry/config/computed shapes and fixture promotion refuse with the source to
-review. Exact path/declaration/slot/literal/reason exceptions preserve reviewed
-raw values and shared defaults; they never exempt neighboring owned copy.
-See `web/ARCHITECTURE.md` for the scanner's finite supported shapes and limits.
+cyclic module graphs, discovered direct JSX or statically bound JSX constants.
+Unhandled arguments refused with their source. Type-only edges were excluded;
+evaluating an imported module did not mount its unused JSX declarations or
+enter uncalled functions/classes. New mounted owners required
+source-qualified route/dialog classification; index/wildcard could not borrow another owner's
+status, and full release rejected every english-only namespace. Unsupported
+entry/config/computed shapes and fixture promotion refused with the source to
+review. Exact path/declaration/slot/literal/reason exceptions preserved reviewed
+raw values and shared defaults; they never exempted neighboring owned copy.
+See `web/ARCHITECTURE.md` for the retained scanner's finite supported shapes and limits;
+retaining the scanner does not restore the retired guards.
 
 Current W5b browser contract: English and Simplified Chinese are available. The
 entry selects full mode synchronously before the first React text and hands its
@@ -1669,8 +1671,8 @@ delegate to it, and `formatCount` takes an optional locale (omitting it keeps
 the legacy host-default behaviour). An unexpected catalog gap renders the
 English message with English plural grammar, never a raw key.
 
-**W5a copy repair:** the mounted Jobs Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
-**W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts remain owned by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx; screenshots alone do not prove writes.
+**W5a copy repair:** the mounted Jobs Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Historical pending-import assertions lived in Markdown.loading.test.tsx; Markdown.test.tsx SVG/error cases used an independent lazy-module instance to avoid cross-file import dependencies. Both files were retired under THR-343; web behavior belongs to Product E2E.
+**W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts were checked by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx before their THR-343 retirement. Current write evidence requires Product E2E; screenshots alone do not prove writes.
 
 
 **W2a** translated the mounted shell — AppBar page titles and controls, Sidebar
@@ -1742,9 +1744,9 @@ language defaulting; W5b supersedes the unset/invalid-English default.
 
 **W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills and W4d-1 KB/Artifacts shipped; Usage presentation W4d-2).
 
-**W4b** translated the mounted Todos (`features/todos/**`: list, detail, status pills, rows, recurrence/timezone presentation, Confirm/Edit dialogs), Work Hours (`features/work-hours-config/**`: overview, wakes, agent detail, TierEditorDialog; plus the Work Hours-owned `shared/work-hours/EligibilityEditorDialog.tsx` that Settings ▸ Organization mounts and its `ErrorPanel`) and Audit (`features/audit/**`: page, timeline, filters and the narrative, whose sentences are catalog templates with interpolation) route families. Agent names, task/schedule IDs, actions, timezones, cron/recurrence values and raw payload/error values stay verbatim; every visible date/time goes through `lib/i18n/format.ts` (`formatDateShapeFor` named shapes; feature-local `Intl.DateTimeFormat('en-US' | 'en-CA')` remains only for timezone-conversion parsing and `<input>` values, enforced by a `format.test.ts` source scan). Count-bearing Todos/Audit copy uses per-locale plural objects selected by a numeric `count`, and the two Work Hours dialogs pass `closeLabel={t('common.close')}`. Error sites use the same F1 boundary through feature-local `strings.ts` classifiers. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
+**W4b** translated the mounted Todos (`features/todos/**`: list, detail, status pills, rows, recurrence/timezone presentation, Confirm/Edit dialogs), Work Hours (`features/work-hours-config/**`: overview, wakes, agent detail, TierEditorDialog; plus the Work Hours-owned `shared/work-hours/EligibilityEditorDialog.tsx` that Settings ▸ Organization mounts and its `ErrorPanel`) and Audit (`features/audit/**`: page, timeline, filters and the narrative, whose sentences are catalog templates with interpolation) route families. Agent names, task/schedule IDs, actions, timezones, cron/recurrence values and raw payload/error values stay verbatim; every visible date/time goes through `lib/i18n/format.ts` (`formatDateShapeFor` named shapes; feature-local `Intl.DateTimeFormat('en-US' | 'en-CA')` remains only for timezone-conversion parsing and `<input>` values, historically checked by a `format.test.ts` source scan retired under THR-343). Count-bearing Todos/Audit copy uses per-locale plural objects selected by a numeric `count`, and the two Work Hours dialogs pass `closeLabel={t('common.close')}`. Error sites use the same F1 boundary through feature-local `strings.ts` classifiers. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
 
-**W4c** translated the mounted Agents (`features/agents/**`: roster list, agent detail pane/drawer, pending enrollments, AddAgentDialog, TeamEscalationPolicyPage/Card) and Skills (`features/skills/**`: catalog, validation, skill detail + assignment panel, custom-skill list/create/detail) route families. User/daemon values (agent names, roles and team identifiers without translation or title-casing, team-policy bodies, contract ids, digests, skill names/slugs/descriptions/SKILL.md bodies, versions, provenance values) stay verbatim; visible dates/times, including policy release/activation history and custom-skill purge completion, use named shapes in `lib/i18n/format.ts` (`dateTime` for those timestamps; en/zh-CN rendered-state regressions complement the source scan, which rejects direct locale-formatting calls), count-bearing copy uses plural objects, in-scope dialogs pass `closeLabel={t('common.close')}`, and error sites use the F1 boundary through `classifyAgentError` / `classifySkillError`. Below `md` the Agents roster stacks above the detail pane (height-capped, internally scrolling) instead of a fixed 244px rail, so the detail is not squeezed at 390px. The detail main pane uses `max-md:min-h-0` only below `md`; at `md` and up its base computed min-height remains `auto`. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
+**W4c** translated the mounted Agents (`features/agents/**`: roster list, agent detail pane/drawer, pending enrollments, AddAgentDialog, TeamEscalationPolicyPage/Card) and Skills (`features/skills/**`: catalog, validation, skill detail + assignment panel, custom-skill list/create/detail) route families. User/daemon values (agent names, roles and team identifiers without translation or title-casing, team-policy bodies, contract ids, digests, skill names/slugs/descriptions/SKILL.md bodies, versions, provenance values) stay verbatim; visible dates/times, including policy release/activation history and custom-skill purge completion, use named shapes in `lib/i18n/format.ts` (`dateTime` for those timestamps; historical en/zh-CN rendered-state regressions complemented the source scan, which rejected direct locale-formatting calls before the THR-343 test retirement; current web behavior evidence belongs to Product E2E), count-bearing copy uses plural objects, in-scope dialogs pass `closeLabel={t('common.close')}`, and error sites use the F1 boundary through `classifyAgentError` / `classifySkillError`. Below `md` the Agents roster stacks above the detail pane (height-capped, internally scrolling) instead of a fixed 244px rail, so the detail is not squeezed at 390px. The detail main pane uses `max-md:min-h-0` only below `md`; at `md` and up its base computed min-height remains `auto`. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
 
 **W4d-1** translates KB and Artifacts chrome, including list/detail/candidates,
 search/filter/breadcrumb/empty/loading/error/Retry, gated KB Compose labels and
@@ -1840,10 +1842,10 @@ Current contract:
 
 Layer rules, boundary rules, and agent-callback omissions live in `web/ARCHITECTURE.md`. Full design: `docs/superpowers/specs/2026-05-14-web-ui-design.md`.
 
-Every browser-callable daemon route maps to one TypeScript function in `web/src/lib/api/`. The maintained snapshot and coverage consumer are:
+Every browser-callable daemon route maps to one TypeScript function in `web/src/lib/api/`. The maintained contract sources are:
 
 - Snapshot: `tests/contract/openapi.json`; its Python unit test is retired. Regenerate intentional changes with `uv run python scripts/generate_openapi_snapshot.py --write`.
-- TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
+- TypeScript mirrors: `web/src/lib/api/`; browser inclusions and justified exclusions: `tests/contract/route-classification.json`. Review their parity with the snapshot; the retired web coverage test no longer checks it automatically.
 
 ### Tasks list
 
@@ -1993,8 +1995,9 @@ hidden (`sr-only`) text inside page content needs a positioned ancestor within
 that scroller (Usage sections are `relative`); otherwise it extends the document
 and the window scrolls the whole shell, leaving a blank band below it.
 
-`Sidebar.test.tsx` covers navigation/footer behavior and the overflow structure;
-jsdom does not verify layout. For browser verification, use the supported
+`Sidebar.test.tsx` historically checked navigation/footer behavior and the overflow
+structure before its THR-343 retirement; jsdom did not verify layout. Web behavior
+belongs to Product E2E. For browser verification, use the supported
 workflow in `web/scripts/screenshot-harness/README.md` with the real routed app
 and valid local fixtures. Compare a short-window baseline with the correction;
 check internal navigation scrolling, reachable footer controls, keyboard focus,
@@ -2211,8 +2214,8 @@ flags only from `web/src/config/features.ts`.
 - `scripts/build_web.sh` defaults to `npm run build:local`. Like `npm run dev`,
   it uses development defaults, then the local file, then an explicit
   `VITE_ENABLE_KB_COMPOSE`.
-- Vitest uses development defaults plus that explicit input, and ignores the
-  local file.
+- The legacy test-profile environment selector uses development defaults plus
+  that explicit input, and ignores the local file.
 - `VITE_ENABLE_KB_COMPOSE` accepts only the literal `true` or `false`; empty
   or unset means no opinion. Any other value now fails startup, where it used
   to mean off silently.
@@ -3184,13 +3187,14 @@ not full JSON Schema. Its four entries were originally authored from source;
 the supported standalone generator and genuine served-schema comparison verify
 that summary independently. Source-pinned schema/frontend/browser receipts live
 in the maker handoff; final-candidate independent review and behavioral QA remain
-separate requirements. The shipping-page MSW assertions in
-`web/src/test/identity-names.test.tsx` add UI portions of scenarios2/3/4/5/8/10;
-API assertions are `web/src/lib/api/identities.test.ts`; scenario9 also exercises
+separate requirements. Historically, shipping-page MSW assertions in
+`web/src/test/identity-names.test.tsx` added UI portions of scenarios2/3/4/5/8/10;
+API assertions lived in `web/src/lib/api/identities.test.ts`; scenario9 also exercised
 canonical skill-row attributes and stable row identity during label refresh.
-These provider/component tests use frontend mocks. Source-specific commands,
-red/keeper results and actual execution status belong in the maker handoff;
-frontend results do not establish daemon/DB end-to-end behavior. Existing
+These provider/component tests used frontend mocks and were retired under THR-343;
+web behavior belongs to Product E2E. Historical source-specific commands,
+red/keeper results and actual execution status remain in the maker handoff;
+those frontend results do not establish current daemon/DB end-to-end behavior. Existing
 twelve-scenario integration bodies/fixtures are preserved. Python units remain RETIRED under THR-291 seq40;
 general integration remains SKIPPED THR243seq42. Published source and maker verification do not establish independent acceptance,
 merge, deployment or whole-feature completion.

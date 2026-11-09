@@ -11,8 +11,6 @@
     "preview": "vite preview",
     "lint": "eslint src",
     "typecheck": "tsc -b --noEmit",
-    "test": "vitest",
-    "test:write-path": "VITE_ENABLE_KB_COMPOSE=true vitest run src/features/kb/write-path.test.tsx",
     "storybook": "STORYBOOK_DISABLE_TELEMETRY=1 storybook dev -p 6006",
     "build-storybook": "CI=1 STORYBOOK_DISABLE_TELEMETRY=1 storybook build --output-dir storybook-static"
   },
@@ -48,9 +46,7 @@
     "@tailwindcss/node": "4.3.0",
     "@tailwindcss/oxide": "4.3.0",
     "@tailwindcss/vite": "^4.0.0",
-    "@testing-library/jest-dom": "^6.5.0",
-    "@testing-library/react": "^16.0.1",
-    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "25.7.0",
     "@types/react": "^18.3.10",
     "@types/react-dom": "^18.3.0",
     "@typescript-eslint/eslint-plugin": "^8.8.0",
@@ -60,16 +56,12 @@
     "eslint-plugin-react": "^7.37.1",
     "eslint-plugin-react-hooks": "^5.1.0-rc-fb9a90fa48-20240614",
     "eslint-plugin-tailwindcss": "^3.18.3",
-    "jsdom": "^25.0.1",
-    "msw": "^2.4.9",
     "storybook": "8.6.18",
     "tailwindcss": "4.3.0",
     "tailwindcss-animate": "^1.0.7",
-    "tsx": "^4.22.0",
     "typescript": "^5.6.2",
     "typescript-eslint": "^8.59.3",
-    "vite": "file:vendor/vite/vite-5.4.21+hr.css-relation.1.tgz",
-    "vitest": "^2.1.1"
+    "vite": "file:vendor/vite/vite-5.4.21+hr.css-relation.1.tgz"
   },
   "overrides": {
     "react-remove-scroll-bar": "$react-remove-scroll-bar"

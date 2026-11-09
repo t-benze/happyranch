@@ -334,13 +334,14 @@ not full JSON Schema. Its four entries were originally authored from source;
 the supported standalone generator and genuine served-schema comparison verify
 that summary independently. Source-pinned schema/frontend/browser receipts live
 in the maker handoff; final-candidate independent review and behavioral QA remain
-separate requirements. The shipping-page MSW assertions in
-`web/src/test/identity-names.test.tsx` add UI portions of scenarios2/3/4/5/8/10;
-API assertions are `web/src/lib/api/identities.test.ts`; scenario9 also exercises
+separate requirements. Historically, shipping-page MSW assertions in
+`web/src/test/identity-names.test.tsx` added UI portions of scenarios2/3/4/5/8/10;
+API assertions lived in `web/src/lib/api/identities.test.ts`; scenario9 also exercised
 canonical skill-row attributes and stable row identity during label refresh.
-These provider/component tests use frontend mocks. Source-specific commands,
-red/keeper results and actual execution status belong in the maker handoff;
-frontend results do not establish daemon/DB end-to-end behavior. Existing
+These provider/component tests used frontend mocks and were retired under THR-343;
+web behavior belongs to Product E2E. Historical source-specific commands,
+red/keeper results and actual execution status remain in the maker handoff;
+those frontend results do not establish current daemon/DB end-to-end behavior. Existing
 twelve-scenario integration bodies/fixtures are preserved. Python units remain RETIRED under THR-291 seq40;
 general integration remains SKIPPED THR243seq42. Published source and maker verification do not establish independent acceptance,
 merge, deployment or whole-feature completion.

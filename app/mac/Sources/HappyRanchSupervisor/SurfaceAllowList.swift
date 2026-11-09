@@ -9,8 +9,8 @@ import Foundation
 /// auth-bootstrap/registration-token routes are DENIED on BOTH prefixed
 /// (`/api/v1/...`) and unprefixed forms.
 ///
-/// The AUTHORITATIVE exclusion list is the ``EXCLUDED_PATHS`` map in
-/// ``web/src/test/openapi-coverage.test.ts`` (mirrored exactly below).
+/// The exclusion list was originally mirrored from the ``EXCLUDED_PATHS`` map in
+/// ``web/src/test/openapi-coverage.test.ts`` (retired under THR-343).
 ///
 /// Policy: **deny-by-default for sensitive routes, allow for normal SPA routes.**
 /// The deny gate is method-aware — a route may be denied for POST but allowed
@@ -51,7 +51,8 @@ public struct SurfaceAllowList: Sendable {
 
     /// The authoritative v2 remote-surface deny gate.
     ///
-    /// All EXCLUDED_PATHS from openapi-coverage.test.ts are denied on
+    /// Routes from the former EXCLUDED_PATHS in openapi-coverage.test.ts
+    /// (retired under THR-343) are denied on
     /// BOTH prefixed and unprefixed forms, plus auth bootstrap,
     /// registration-token, and --as-founder surfaces.
     public static let `default`: SurfaceAllowList = {

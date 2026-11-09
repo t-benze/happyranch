@@ -4,12 +4,9 @@
  * Consumed by `PrototypeProvider`, and therefore reachable from every
  * Storybook story that decorates with that provider (for example
  * `design-system/TasksList.stories.tsx`). Because this module ships to the
- * browser it must stay free of test-runner imports: an earlier `vi.fn()` spy
- * dependency on `vitest` crashed the Storybook preview with "Vitest failed to
- * access its internal state". The mutation hooks below resolve ordinary typed
- * fixture values instead; tests that need call assertions supply their own
- * spies (see `src/features/settings/SettingsDialog.test.tsx`). The fixture
- * remains read-only and makes no backend calls.
+ * browser it must stay free of test-runner imports. The mutation hooks below
+ * resolve ordinary typed fixture values. The fixture remains read-only and
+ * makes no backend calls.
  */
 import type { SettingsApi, QueryLike } from './DataContext';
 import type { CapacityQueryLike } from './_capacity-ordering';

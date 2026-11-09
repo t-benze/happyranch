@@ -173,8 +173,9 @@ Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
 
 Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
-under THR-243 seq42, never PASS. Web Vitest, native/platform, integration,
-the named actual CLI callback and their isolation fences retain their sources.
+under THR-243 seq42, never PASS. Native/platform, integration, the named actual
+CLI callback and their isolation fences retain their sources. See the
+[repository verification status](../AGENTS.md#verification-status) for retired suites.
 Docs Manual build and the real tenant-isolation harness retain manual-only
 workflows, outside PR/main. Manual/tag macOS packaging is a separate release
 activity and invokes no fresh E2E. Legacy nightly integration remains separate
@@ -436,8 +437,7 @@ scripts/local_ci.sh boundary-lint # source-only lint + bounded synthetic validat
 scripts/local_ci.sh python        # RETIRED exit2
 scripts/local_ci.sh e2e           # REFUSED exit2: hosted admission only
 scripts/local_ci.sh help
-# Optional retained Web source, separately selected outside merge CI:
-(cd web && npx vitest run)
+# Optional Web builds, separately selected outside merge CI:
 (cd web && npm run build)        # production UI flag profile
 (cd web && npm run build:local)  # local UI flag profile (development + local override)
 (cd web && npm run build-storybook)
@@ -2486,11 +2486,11 @@ SKIPPED24342. Genuine final-head executable QA/live-manager action stays root-ow
 
 ### R2 canonical coding settings source
 
-The existing focused `cd web && npm test -- --run src/lib/api/settings.test.ts
-src/test/openapi-coverage.test.ts` observes actual shared-client canonical request
-bytes, one-send behavior (401/503), explicit original-key GET and W1 route shape.
-It does not prove backend persistence, human authority, CAS, interruption,
-concurrency or native execution. Existing `uv run --python 3.14 python
+The retired focused web tests covered shared-client canonical request bytes,
+one-send behavior (401/503), explicit original-key GET and W1 route shape.
+Their historical receipts do not establish current coverage or prove backend
+persistence, human authority, CAS, interruption, concurrency or native execution.
+Existing `uv run --python 3.14 python
 scripts/generate_openapi_snapshot.py --check` compares the served summary only.
 Required clean committed-head `scripts/local_ci.sh all` remains a durable-job,
 lint/static-only check. Missing stateful/native venue proof is honestly NOT RUN;
@@ -2502,18 +2502,17 @@ campaign, proof framework or new merge check is introduced.
 
 ### Founder coding settings page — TASK12632
 
-`cd web && CI=1 npm test -- --run src/features/settings/sections/CodingSection.test.tsx`
-renders the real route/provider/client over MSW: E0/refusal/populated states,
-complete canonical save, disabled-retain, distinctness, 409 retention, uncertain
+The retired coding-settings page tests rendered the real route/provider/client
+over MSW: E0/refusal/populated states, complete canonical save, disabled-retain, distinctness, 409 retention, uncertain
 lock plus original-key GET (committed; 404/error/repeat stay locked with one PUT),
 fields locked during a pending save, same-org late-read ordering (resolve and
 reject), send ownership across A→B→A during/after the PUT, org A→B isolation and
-en↔zh-CN with no requests (TASK12642). It is UI/transport evidence
-only; it is not a required merge check and proves no backend persistence,
+en↔zh-CN with no requests (TASK12642). Historical results are UI/transport evidence
+only; they are not current verification and prove no backend persistence,
 authority or native behavior. Screenshots/browser runs are separate evidence.
 
-TASK12651 extends the same F6/F8-R2 record/runners for dedicated options and
-explicit first save: E0 complete/missing/foreign/unsafe options, required format,
+TASK12651 historically extended the same F6/F8-R2 record/runners for dedicated
+options and explicit first save: E0 complete/missing/foreign/unsafe options, required format,
 advanced-authority adoption with409 draft retention, options revocation with exact
 disabled-retain/original fence, and late org options isolation. Client cases
 check same-bearer/no-query GET and refuse malformed/unsafe/foreign/duplicate

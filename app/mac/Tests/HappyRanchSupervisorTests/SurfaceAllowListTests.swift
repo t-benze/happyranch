@@ -548,8 +548,8 @@ struct SurfaceAllowListTests {
 
     // MARK: - FINDING 2 [CRITICAL] — method-aware deny gate
 
-    /// The authoritative set of excluded routes from web/src/test/openapi-coverage.test.ts
-    /// EXCLUDED_PATHS.  Tested with concrete values for template placeholders.
+    /// Excluded routes originally mirrored from web/src/test/openapi-coverage.test.ts
+    /// EXCLUDED_PATHS (retired under THR-343). Tested with concrete template values.
     private static let excludedRoutes: [(method: String, path: String)] = [
         ("POST", "/workflows/revisions/revision-1/submissions"),
         ("POST", "/workflows/release-templates/coding/1/import"),

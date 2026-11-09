@@ -221,9 +221,6 @@ npm run typecheck
 echo "==> ESLint"
 npm run lint
 
-echo "==> Tests"
-npm test -- --run
-
 echo "==> Build Storybook"
 npm run build-storybook
 

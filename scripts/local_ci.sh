@@ -391,7 +391,7 @@ show_help() {
   echo "  - Integration requires an authorized disposable venue; never the live daemon host."
   echo "  - Hosted E2E admits the daily 19:00 UTC schedule or main-only workflow_dispatch."
   echo "    THR291seq247 allocates ONE manual run to root TASK-11897; no local target."
-  echo "  - Retained Web tests/builds are optional separate commands, outside all/hooks."
+  echo "  - Web builds are optional separate commands, outside all/hooks."
   echo "  - uv sync --frozen ensures lockfile parity; run 'uv lock' first if"
   echo "    you've changed pyproject.toml."
   echo "  - integration creates a fresh pytest --basetemp under the"

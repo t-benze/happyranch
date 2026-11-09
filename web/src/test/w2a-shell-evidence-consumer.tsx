@@ -6,7 +6,7 @@
  * `main.tsx -> App -> createBrowserRouter -> AppShell -> I18nProvider`
  * composition, and injects `<ShellErrorTrigger />` inside the real
  * `AppShellErrorBoundary` wrapper, and only when `I18N_W2A_EVIDENCE` is set.
- * Every ordinary build, Storybook, Vitest and CI run leaves that variable
+ * Every ordinary build, Storybook and CI run leaves that variable
  * unset, so this module is absent.
  *
  * W2a review R3: the record is now the **actual first committed Sidebar/AppBar

@@ -21,8 +21,8 @@
 /**
  * Compact, locale-aware token/sum formatter: `346_100 → "346.1K"`,
  * `3_707_054 → "3.7M"`. Below 1000 it returns `String(n)` verbatim (the
- * canonical winner over the folded locals' `toLocaleString()` — locked by
- * lib/format.test.ts).
+ * canonical winner over the folded locals' `toLocaleString()`, historically
+ * checked by lib/format.test.ts before its THR-343 retirement).
  */
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

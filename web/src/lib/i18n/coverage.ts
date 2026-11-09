@@ -32,8 +32,8 @@
  * Fallback English is never treated as coverage.
  * Redirect-only/catch-all
  * tokens are `not-applicable`. The marker is explicit machine-readable data
- * and the accompanying test fails when a newly mounted route token is not
- * classified here.
+ * and the former test rejected newly mounted route tokens not classified
+ * here before its THR-343 retirement.
  *
  * `routeTokens` are the literal `path="..."` values declared in
  * `src/routes.tsx`, `src/prototypes/index.tsx` and the settings sub-route tree;
@@ -41,8 +41,8 @@
  * documents reachable shared dialogs/overlays that belong to the namespace
  * (they are inspected in the W2-W4 migration, not discovered by the
  * route-token scan). Dialog/overlay names are the ACTUAL mounted component
- * names, and `coverage.test.ts` anchors them to the real consumer sources —
- * an invented name fails the test.
+ * names; `coverage.test.ts` historically anchored them to the real consumer
+ * sources and rejected invented names before its THR-343 retirement.
  *
  * ### Colliding tokens (qualified identities)
  *
@@ -473,8 +473,9 @@ export function describeCoverage(locale: Locale, status: CoverageStatus): string
 /**
  * Source-scan helper: extract the literal route tokens from a route module's
  * source. `path="..."` values are returned verbatim; a bare `<Route index>`
- * contributes the literal token `index`. Used by `coverage.test.ts` against
- * `routes.tsx`, `prototypes/index.tsx` and `SettingsPage.tsx`.
+ * contributes the literal token `index`. Formerly used by `coverage.test.ts`
+ * (retired under THR-343) against `routes.tsx`, `prototypes/index.tsx` and
+ * `SettingsPage.tsx`.
  */
 export function extractRouteTokens(source: string): string[] {
   const tokens: string[] = [];

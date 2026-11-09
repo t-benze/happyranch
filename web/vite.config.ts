@@ -1,4 +1,3 @@
-/// <reference types="vitest" />
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { createHash } from 'node:crypto';
@@ -19,7 +18,7 @@ import path from 'node:path';
 //   * `npm run build:local`                    -> local (marker + lifecycle, see
 //                                                 scripts/build-local.mjs)
 //   * `vite` serve (dev, Storybook dev)        -> local
-//   * serve under Vitest                       -> test
+//   * serve with the legacy test-profile flag -> test
 //   * `vite preview`                           -> no resolution (serves dist)
 // Production never reads the local file or the KB compatibility input.
 
@@ -69,7 +68,7 @@ export function selectFeatureProfile({
   }
   if (isPreview) return 'preview';
   if (command === 'build') return 'production';
-  return env.VITEST ? 'test' : 'local';
+  return env.VITEST ? 'test' : 'local'; // Retired runner flag kept for profile compatibility (THR-343).
 }
 
 function readFeatureJson(file: string, label: string): unknown {
@@ -256,7 +255,7 @@ const W2A_ROUTES_OUTLET_ANCHOR = '            <Outlet />';
  * Evidence-only build instrumentation for the THR-118 W1 browser harness.
  *
  * It is a NO-OP unless `I18N_BROWSER_EVIDENCE` is set. The default (`unset`),
- * every ordinary `npm run build`, `build-storybook`, Vitest run and CI build
+ * every ordinary `npm run build`, `build-storybook` and CI build
  * therefore produce the shipping bytes untouched.
  *
  * When enabled it injects the test-only `I18nEvidenceConsumer` adjacent to
@@ -394,12 +393,6 @@ export default defineConfig(async ({ command, mode, isPreview }) => {
     build: {
       outDir: 'dist',
       sourcemap: true,
-    },
-    test: {
-      globals: true,
-      environment: 'jsdom',
-      setupFiles: ['./vitest.setup.ts'],
-      css: false,
     },
   };
 });

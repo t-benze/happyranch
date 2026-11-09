@@ -254,12 +254,6 @@ export function capacityObservation(slug: string): CapacityObservation | null {
   return capacityLedger(slug).observation;
 }
 
-/** Test-only reset so each mounted case starts from a clean ordering ledger. */
-export function resetCapacityOrdering(): void {
-  ledgers.clear();
-  seqCounter = 0;
-}
-
 // ---------------------------------------------------------------------------
 // Capacity semantic / representation classification
 // ---------------------------------------------------------------------------
