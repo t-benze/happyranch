@@ -133,6 +133,33 @@ def check_cleanup_pins(pins: list[dict], cleanup: dict, report: Report) -> None:
         raise AssertionError("Outer owned census join failed")
 
 
+def record_owned_diagnostics(owner: Owned | None, report: Report) -> None:
+    """Join launcher observations to controller failure clocks in existing JUnit."""
+    if owner is None:
+        return
+    key = "harness", "owned-processes"
+    try:
+        if owner.registration_error is not None:
+            report.outputs[key] = json.dumps(dict(
+                diagnostic="owned-registration-error", first_error=owner.registration_error,
+                first_non_disappearance_error=(owner.registration_fault
+                    if owner.registration_fault is not owner.registration_error else None),
+                observer=owner.diagnostic_snapshot(time.monotonic())), allow_nan=False)
+        e07_key = "product", "E07.cancel-terminal-unchanged"
+        key = e07_key
+        if e07_key in report.outputs:
+            row = json.loads(report.outputs[e07_key])
+            if row.get("diagnostic") == "E07-closure-failure":
+                row["owned_observer"] = owner.diagnostic_snapshot(row["failed_at"])
+                for sample in row["observations"]:
+                    sample["owned_observer"] = owner.diagnostic_snapshot(sample["sampled"])
+                report.outputs[e07_key] = json.dumps(row, allow_nan=False)
+    except Exception as exc:
+        # No change to any case outcome, original exception or cleanup decision.
+        report.outputs[key] = report.outputs.get(key, "") + "\n" + json.dumps(dict(
+            diagnostic="owned-diagnostic-unavailable", error=type(exc).__name__))
+
+
 def prepare_diagnostics(root: Path, output: Path, report: Report, check: Callable[[], None], *, failed: bool) -> None:
     """Only standard logs, PNGs and Playwright ZIPs leave private scratch."""
     for name in ("logs", "traces", "screenshots"):
@@ -368,6 +395,7 @@ def main() -> int:
                     (handoff / "result.json").write_text(json.dumps(row))
             (output / "logs").mkdir(parents=True, exist_ok=True)
             (output / "logs/harness.log").write_text("\n".join(f"{'FAIL' if case['kind'] else 'PASS'} {suite}.{name}" for (suite, name), case in report.cases.items()) + "\n")
+            record_owned_diagnostics(owner, report)
             report.write(output / "reports/junit.xml")
             report.console()
     return 0 if row["status"] == "PASS" else 1

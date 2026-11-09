@@ -28,7 +28,18 @@ and continues to reject every failure/error/skip. No numeric bound changes;
 future green artifacts supply data for evaluating the existing limits.
 Historical run42501816137 timing attribution is unresolved from its artifacts.
 Failure capture precedes E05 teardown.
-Optional Owned/E07 process diagnostics are removed; real cleanup is mandatory.
+The bounded Owned registration-error and E07 closure-failure diagnostics now
+travel in existing JUnit `system-out` in both Python lanes. They retain safe
+PID/generation/state/parent and cgroup metadata, observer error/stop clocks and
+recent reap receipts; see [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659)
+for caps, race/truncation limits and the artifact location. Environment/argv
+contents are excluded. Diagnostic stat and closure recording re-raise TimeoutError
+and RuntimeError unchanged, including controller alarms/interruptions; closure
+recording also re-raises when the controller is marked interrupted. Other optional
+metadata/formatting failures stay best-effort; failure-only recording preserves
+its existing outgoing cause. Ownership, closure predicates and deadlines remain;
+this is diagnostic-only, not a fix for the3.14 red. Former
+optional ownership/export protocols remain removed; real cleanup is mandatory.
 Browser/transport original-body archives, framing/segment hashes and publication
 member/byte/fact budgets are removed. Actual Playwright Response JSON supplies
 E05 browser/public/DOM equality. The native HTTP/SSE forwarding and GET-owner

@@ -56,6 +56,42 @@ Health allows diagnostic `system-out` while still rejecting failures/errors/skip
 No numeric bound changes with this reporting addition. Measurements in future
 green artifacts allow the existing limits to be judged; they do not justify them
 in advance.
+The launcher's `harness.owned-processes` JUnit `system-out` retains the first
+provider registration/read error and, if different, the first non-disappearance
+error. Each includes monotonic time, registered first PID, failing read/PID,
+captured stat generation/parent/state, proven-owned generation, first/marked
+ancestor/unmarked ancestor/unknown classification and marker status. Bounded
+later stat/UID/comm/cgroup observations carry per-field errors and truncation;
+metadata has its own interval and stat bookends, without a same-generation
+claim across the reads. The exception stack excludes locals and is capped at
+8192 characters. Metadata reads cap stat at4096B, status at8192B (only `Uid:`
+is emitted), comm at256B and cgroup at4096B. Environment contents, argv and
+credentials are never added to diagnostics. Existing literal-token scrubbing
+applies. A benign vanished-PID read can be reported without changing its existing
+handling; other registration exceptions still propagate and keep Health red.
+
+On an E07 action failure, `product.E07.cancel-terminal-unchanged` `system-out`
+retains the last eight closure observations, including each original pinned and
+observed generation, whether that pin was present, a separate later stat
+generation/state/parent observation and cgroup membership. Each sample caps
+processes at32, groups at8, group names at4096 characters and members at64 per
+group, with explicit truncation flags. After the ordinary controller JUnit
+handoff, the launcher joins its observer error/stop times against each sample
+and failure time, plus up to16 retained successful reap receipts no later than
+that time. Truncated reap history is explicit; an empty tail never proves no
+earlier reaps. These are same-host monotonic clock observations, not proof of
+causation, adoption or closure. Original closure identity/group reads and all
+predicates/deadlines remain authoritative. Diagnostic stat and closure recording
+re-raise TimeoutError and RuntimeError unchanged, including controller alarms
+and interruptions; closure recording also re-raises when the controller is marked
+interrupted. Other optional metadata/formatting failures remain best-effort,
+and failure-only recording preserves its existing outgoing cause.
+The existing always-uploaded JUnit in BOTH
+`e2e-3.12` and `e2e-3.14` carries this output even when private scratch is deleted;
+no upload rules or new diagnostic files are needed. A missing controller report
+still means missing E07 evidence. This is diagnostic-only and does not claim to
+fix the Python3.14 red.
+
 Run42501816137 saved neither sampler's timestamps, so its timing cause remains
 unresolved. The revised harness limits allow for sequential SQL, nine HTTP
 reads and closure work on a shared runner; they are not product timing claims.
@@ -193,9 +229,12 @@ not dispatch E2E. Required merge checks remain Source Boundary Lint and Web Lint
 (Node24), with independent review/scoped QA, normal hooks and manager guarded
 merge. Python units remain RETIRED; integration SKIPPED THR-243 seq42.
 Historical failures, protected proof holds, abrupt-restart and jobs-cap/Stop work
-remain unresolved. Slice 2 removes private state/completion publication and optional Owned/E07
-process annotations, keeping real PID-generation, cgroup, reaper, process/port/
-socket/data cleanup and every product predicate. The E07 prefix is frozen in
+remain unresolved. Historically, slice 2 removed private state/completion publication
+and optional Owned/E07 process annotations, keeping real PID-generation, cgroup,
+reaper, process/port/socket/data cleanup and every product predicate. Bounded
+registration/read-error and closure-sample diagnostics now use the scrubbed
+per-case JUnit `system-out` described above; ownership/export protocols remain
+removed and real cleanup is mandatory. The E07 prefix is frozen in
 memory before allocation; its witness and checkpoint/first-cause joins remain.
 Native launch identity comes from the original provider socket acknowledgement,
 not a published launch file. Slice 3 removes the remaining relay-original archive,
