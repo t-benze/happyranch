@@ -1018,6 +1018,10 @@ to charge or bound it on the reader budget. Paired B/candidate observations
 must show identical `_entry` invocations and unchanged evidence/entry counters;
 U3f adds no compile, compiled-tree clone, snapshot copy or uncharged parse.
 That condition permits publication, not a PASS of compile accounting.
+Document binding context uses the charged start parser and reuses the resulting
+bindings. Non-document advancement leaves context empty before composition and
+retains B's start parse only for a fresh NextEdge successor after composition.
+The non-document input-rendering parse retains its original pre-selection condition.
 
 Inline bytes retain the native task-result audience; recipients promise no
 role-private custody. Stronger custody needs a separately approved design.

@@ -503,6 +503,9 @@ receive their registered typed checks. Reviewers differ from every selected
 DOCUMENT producer; a prior contextual review may share the reviewer principal.
 Nonempty capability_claims and repository/mixed graphs remain held. Current
 authority vetoes without changing deterministic original witness bytes.
+Document start context is charged. Non-document advancement preserves the original
+lazy start parse at fresh NextEdge successor selection, after composition; held
+output, terminal and replay paths gain no eager start parse.
 
 Original callback replay remains read-only. Original c/c+1 transition/return,
 purpose-separated keys, prior-CAS replay, no incomplete-pair repair and

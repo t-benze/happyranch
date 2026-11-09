@@ -598,7 +598,7 @@ class SequentialDispatcher:
                                 if document_only(compiled, budget):
                                     start, bound = document_binding_context(run, visit, compiled, capture, budget)
                                 else:
-                                    start, bound = parse_start(run['start_bytes']), None
+                                    start, bound = None, None
                                 envelope, content, recipients, checks = self._compose(run, visit, compiled, result,
                                     bound=bound, budget=budget, carrier_digest=identity['carrier_digest'],
                                     terminal_digest=hashlib.sha256(_bytes(terminal)).hexdigest(),
@@ -615,7 +615,7 @@ class SequentialDispatcher:
                                 edge = dict(node.outcomes).get(parse_result(envelope).outcome)
                                 if isinstance(edge, NextEdge):
                                     target = next(node for node in compiled.definition.nodes if node.id == edge.node)
-                                    bound = (bound if bound is not None else _bound_agents(compiled, start, capture))[target.role]
+                                    bound = (bound if bound is not None else _bound_agents(compiled, parse_start(run['start_bytes']), capture))[target.role]
                                     successor = TaskRecord(id='TASK-SEQ-' + source, parent_task_id=run['carrier_task_id'],
                                         assigned_agent=bound['name'], team=bound['team'], task_type='subtask',
                                         brief='Sequential node ' + target.id + '; follow only the bound node brief and domain supplement.')

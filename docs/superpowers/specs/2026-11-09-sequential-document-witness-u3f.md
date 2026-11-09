@@ -44,9 +44,11 @@ Recipients are lexical distinct producer plus declared current-consumer roles.
 Only original admitted fixed bindings identify their actual principals. The
 unchanged authority owner revalidates a fresh capture under existing locks and
 ownership, with actual active/executable/eligible members and declared independence.
-No await/file/network occurs in its writer. The compiled object and once-parsed
-start are reused; no new compile, compiled-tree clone or snapshot copy occurs.
-Existing authority decoding and bounded definition/start/input walks are charged.
+No await/file/network occurs in its writer. The compiled object and charged
+document start context are reused; no new compile, compiled-tree clone or snapshot
+copy occurs. Document authority decoding and definition/start/input walks are charged.
+Non-document advancement keeps context empty until composition and retains the
+original conditional start parse at fresh NextEdge successor selection.
 
 Selected input refs are immutable engine-authenticated selections. Disclosure
 compares original native provenance, stored content/digest and exact recipients,
@@ -162,3 +164,47 @@ UNVERIFIED/held. TASK14869 STOP, JOB6184/6186 FAIL, TASK14835 BLOCK, TASK14807 a
 all failures/storage/UNRESOLVED markers/spent allowances remain history. PR1252
 stays held. Original V3 window remains 2026-11-09T08:48:38.832252Z through
 2026-11-23T08:48:38.832252Z. Merged source is not deployed or enabled acceptance.
+
+
+## TASK-14928 correction of TASK-14921 R1
+
+The TASK-14915 global no-new-uncharged-parse conclusion at 8d2ff156 was
+incorrect: its document-only constituent observations did not exercise the new
+non-document pre-composition start parse. Preserve that historical report and
+REQUEST_CHANGES. The correction leaves non-document context empty and restores
+the original parse expression only at fresh NextEdge successor selection after
+composition. No charged wrapper, U1/entry/reader/cap or protected-source change
+is introduced. Node instruction retains the inherited non-document start parse
+after the original run/visit/cancel checks and before node/selection parsing;
+document context uses the existing charged `_parse`. All eight direct
+parse_start/parse_result/parse_transition sites have B counterparts with the same
+expressions and branch conditions (the renderer adds document selection/current
+authority vetoes); the adapter's two parser operations are charged. Existing
+result/envelope/transition validators remain at their original sites; enabling
+document positives does not add another validator call.
+
+Paired actual `_advance` calls use ONE copied repository fixture with SEED
+result/terminal/outer rows, unchanged production constructors/writers, and a
+joined local asyncio loop only; no daemon, executor or host service runs. Valid
+repository success refuses sequential_output_access_unavailable at B, 8d2ff156
+and the correction. Start parses are respectively 0, 1 uncharged, 0. Whole
+charged counters are B 850702 bytes / 174 rows / 346 steps and corrected
+850702 / 174 / 348: the two extra steps are U3f's already-present charged
+document classification, not parser charges. Do not claim full-counter equality
+for that successful-carrier hold. Entry is identical at 724702 / 134 / 280
+with one invocation. A foreign-result negative `_advance` on the SAME repository
+fixture refuses sequential_carrier_identity_conflict before composition at
+identical full B/corrected counters 724702 / 134 / 280 and zero parser calls.
+All observation transactions leave fixture SQL unchanged.
+
+Fresh paired B/corrected late16 evidence, composition and original-transition
+scopes retain the counters above, including identical evidence 15040621 /
+1567 / 27972 and transition replay 15884996 / 1670 / 13241. Corrected
+composition/accept with live output is 26031716 / 1669 / 21329. Refreshed v1,
+v2 second_read, dense49152 and max-document fixture scopes fit their own
+half-caps. Detailed actual source hashes, per-budget contributions, elapsed
+times, AST/call-site table and limitations are in TASK-14928 output. F-U3f-ENTRY
+remains pre-existing uncharged, not a PASS of compile accounting. These
+structural observations do not establish genuine callbacks, live rendering,
+M1/V3 or the full repository negative matrix. Independent full review, same-head
+scoped QA and ROOT guarded merge remain required.

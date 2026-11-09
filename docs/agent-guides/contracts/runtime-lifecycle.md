@@ -846,9 +846,12 @@ The original native callback, successful/quiescent terminal and positive outer
 COMMIT precede document witness composition. A fresh authority capture precedes
 ownership; existing authority writer → teams → DB locks and admission_writer
 validate current fixed principals without await, file or network work inside the
-writer. The compiled definition is reused. Original start/current binding context
-is parsed once, with its actual definition-walk/authority-decoder reservations
-charged; no compiled-tree clone or extra authority snapshot is introduced.
+writer. The compiled definition is reused. Document start/current binding context
+is parsed once through the charged parser, with its actual definition-walk/authority-decoder
+reservations charged; no compiled-tree clone or extra authority snapshot is introduced.
+Non-document advancement prepares no start context before composition. Its original
+start parse remains conditional on a fresh NextEdge successor after composition;
+unsupported success, terminal and replay paths gain no start parse.
 
 The document adapter uses immutable original input/native/content/recipient and
 terminal/outer identities for only the registered document checks. Parser/native
