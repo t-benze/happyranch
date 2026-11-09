@@ -86,11 +86,20 @@ that amendment. The existing installed disabled job remains unchanged until a
 separate exact live configuration permission.
 
 The selected existing GUI owner remains unknown. No historical UID, username,
-M4 mapping, macOS26.5, Xcode or private-key access is asserted. The owner's
-reported selector is `C9C7371D6FBFDB86BB847CC1DE181EAF2E3A4BD9`, Team `LS2C558RKS`,
-Developer ID Application: Shenzhen Danze Internet Information Service Co., Ltd
-(LS2C558RKS), expiry2027-12-05. Existing login Keychain and `HappyRanch-notary`
-remain the proposed custody, with per-operation owner-controlled prompts.
+M4 mapping, macOS26.5, Xcode or private-key access is asserted.
+
+Signing metadata is private: `HAPPYRANCH_SIGN_IDENTITY_SHA1`,
+`HAPPYRANCH_SIGN_IDENTITY_NAME`, `HAPPYRANCH_SIGN_TEAM_ID` and
+`HAPPYRANCH_NOTARY_PROFILE` come from the owner-only
+`$HOME/.config/happyranch/mac-signing.env`. Follow the one-time setup in the
+[Mac release handbook](../../../docs/runbooks/mac-release-handbook.md#one-time-private-signing-configuration).
+The scripts parse plain data, never shell code, and reject missing/invalid keys,
+unknown/duplicate keys, wrong ownership or permissions broader than 600.
+Individual environment values are ignored. Direct script invocations may select
+another private file with `HAPPYRANCH_MAC_SIGNING_ENV`; the owner session and
+Jenkins stage preserve this path selector through their environment cleanup.
+The existing login Keychain and configured existing notary profile retain
+per-operation owner-controlled prompts.
 
 After the merged package is supplied and **local nonsecret inspection alone is
 separately permitted**, this exact command in the active owner's Mac Terminal
@@ -245,7 +254,7 @@ The optional existing-profile check is a separately authorized native operation.
 Root uses the same grant command with action `profile-check`, RUN `-`, BUILD `-`
 and fresh request. In the attended Terminal owner enters `profile REQUEST_UUID`.
 Only then does the source perform bounded120s `xcrun notarytool history
---keychain-profile HappyRanch-notary --keychain "$HOME/Library/Keychains/login.keychain-db"
+--keychain-profile "<EXISTING_NOTARY_PROFILE>" --keychain "$HOME/Library/Keychains/login.keychain-db"
 --output-format json`. Complete exit0/settlement produces the current local
 profile prerequisite; raw history stays private. No profile/password creation,
 secret extraction, signing or new submission occurs. Apple stages continue to

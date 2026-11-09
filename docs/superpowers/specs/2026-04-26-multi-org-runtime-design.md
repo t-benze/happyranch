@@ -429,8 +429,8 @@ roll a skill change.
 $ opc tasks
 error: --org <slug> is required
 registered orgs:
-  hk-tourism    /Users/tangbz/runtimes/hk-tourism
-  internal-org  /Users/tangbz/runtimes/internal
+  hk-tourism    /Users/<you>/runtimes/hk-tourism
+  internal-org  /Users/<you>/runtimes/internal
 ```
 
 Same hint on every per-org subcommand.

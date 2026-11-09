@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-05-18-threads-markdown-composer-upgrade-design.md`. The plan assumes the spec; it does not restate scope. Anywhere a step references a long CSS block, code sketch, or behavior list that is documented verbatim in the spec, the step says "see spec §X.Y" — copy from there, do not paraphrase.
 
-**Working directory for every step:** `web/` (commands shown rooted there). Git commands run from the repo root (`/Users/tangbz/projects/my-opc`).
+**Working directory for every step:** `web/` (commands shown rooted there). Git commands run from the repo root (`$HOME/projects/my-opc`).
 
 ---
 

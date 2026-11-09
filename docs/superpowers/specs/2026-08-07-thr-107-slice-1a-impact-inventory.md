@@ -17,7 +17,7 @@ The one permitted command was run once in this exact worktree:
 
 ```text
 $ gitnexus analyze
-Analysis failed: EPERM: operation not permitted, open '/Users/tangbz/.gitnexus/registry.json'
+Analysis failed: EPERM: operation not permitted, open '/Users/<you>/.gitnexus/registry.json'
 ```
 
 No workaround, alternate index, or retry was used. This manual `rg` /

@@ -41,10 +41,10 @@ The daemon stores its own state under `~/.opc/`:
 `runtimes.yaml`:
 
 ```yaml
-active: /Users/tangbz/opc-runtime
+active: /Users/<you>/opc-runtime
 registered:
-  - /Users/tangbz/opc-runtime
-  - /Users/tangbz/opc-staging
+  - /Users/<you>/opc-runtime
+  - /Users/<you>/opc-staging
 ```
 
 **Why `~/.opc/` and not inside a runtime dir:** daemon lifetime is decoupled from any one runtime. Switching runtimes must not require restarting the daemon; pid/port files inside a runtime would be orphaned on switch.

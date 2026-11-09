@@ -73,7 +73,7 @@ Files **not touched**:
 - [ ] **Step 1: Run unit tests**
 
 ```bash
-cd /Users/tangbz/projects/my-opc
+cd $HOME/projects/my-opc
 uv run pytest tests/ -v 2>&1 | tail -20
 ```
 
@@ -82,7 +82,7 @@ Expected: all tests PASSED (no failures). If any fail, stop and fix before proce
 - [ ] **Step 2: Run web tests**
 
 ```bash
-cd /Users/tangbz/projects/my-opc/web
+cd $HOME/projects/my-opc/web
 npm test -- --run 2>&1 | tail -20
 ```
 
@@ -104,7 +104,7 @@ Create `/tmp/rename_happyranch.py`:
 import sys
 from pathlib import Path
 
-REPO = Path("/Users/tangbz/projects/my-opc")
+REPO = Path("/Users/<you>/projects/my-opc")
 
 # Apply in this exact order — longer/more-specific patterns first
 REPLACEMENTS = [
@@ -177,7 +177,7 @@ Do not proceed if the output looks wrong (e.g., modifying files that should be s
 The script writes in-place. Run it:
 
 ```bash
-cd /Users/tangbz/projects/my-opc
+cd $HOME/projects/my-opc
 python3 /tmp/rename_happyranch.py
 ```
 
@@ -193,7 +193,7 @@ Expected output: a list of ~140–160 changed files. Verify the list includes:
 - [ ] **Step 4: Verify pyproject.toml entry point**
 
 ```bash
-grep -A2 "\[project.scripts\]" /Users/tangbz/projects/my-opc/pyproject.toml
+grep -A2 "\[project.scripts\]" $HOME/projects/my-opc/pyproject.toml
 ```
 
 Expected output:
@@ -205,7 +205,7 @@ happyranch = "src.cli:main"
 - [ ] **Step 5: Verify env prefix in config.py**
 
 ```bash
-grep "env_prefix" /Users/tangbz/projects/my-opc/src/config.py
+grep "env_prefix" $HOME/projects/my-opc/src/config.py
 ```
 
 Expected: `env_prefix="HAPPYRANCH_",`
@@ -213,7 +213,7 @@ Expected: `env_prefix="HAPPYRANCH_",`
 - [ ] **Step 6: Verify daemon home path**
 
 ```bash
-grep "_DEFAULT_HOME\|HAPPYRANCH\|happyranch" /Users/tangbz/projects/my-opc/src/daemon/paths.py | head -5
+grep "_DEFAULT_HOME\|HAPPYRANCH\|happyranch" $HOME/projects/my-opc/src/daemon/paths.py | head -5
 ```
 
 Expected: `_DEFAULT_HOME = Path.home() / ".happyranch"`
@@ -221,7 +221,7 @@ Expected: `_DEFAULT_HOME = Path.home() / ".happyranch"`
 - [ ] **Step 7: Verify web sessionStorage key**
 
 ```bash
-grep "STORAGE_KEY\|token" /Users/tangbz/projects/my-opc/web/src/lib/auth.ts | head -3
+grep "STORAGE_KEY\|token" $HOME/projects/my-opc/web/src/lib/auth.ts | head -3
 ```
 
 Expected: `const STORAGE_KEY = 'happyranch.token';`
@@ -229,7 +229,7 @@ Expected: `const STORAGE_KEY = 'happyranch.token';`
 - [ ] **Step 8: Run unit tests to confirm no breakage**
 
 ```bash
-cd /Users/tangbz/projects/my-opc
+cd $HOME/projects/my-opc
 uv run pytest tests/ -v 2>&1 | tail -20
 ```
 
@@ -238,7 +238,7 @@ Expected: all tests PASSED.
 - [ ] **Step 9: Run web tests**
 
 ```bash
-cd /Users/tangbz/projects/my-opc/web
+cd $HOME/projects/my-opc/web
 npm test -- --run 2>&1 | tail -20
 ```
 
@@ -247,7 +247,7 @@ Expected: all tests PASSED.
 - [ ] **Step 10: Commit**
 
 ```bash
-cd /Users/tangbz/projects/my-opc
+cd $HOME/projects/my-opc
 git add -u
 git commit -m "refactor: rename HappyRanch → HappyRanch, CLI happyranch → happyranch
 
@@ -268,21 +268,21 @@ The bulk script already updated `skills/happyranch/SKILL.md` content. Now we ren
 - [ ] **Step 1: Rename the skills directory**
 
 ```bash
-mv /Users/tangbz/projects/my-opc/skills/happyranch /Users/tangbz/projects/my-opc/skills/happyranch
+mv $HOME/projects/my-opc/skills/happyranch $HOME/projects/my-opc/skills/happyranch
 ```
 
 - [ ] **Step 2: Rename the shim script**
 
 ```bash
-mv /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch \
-   /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch
-chmod +x /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch
+mv $HOME/projects/my-opc/skills/happyranch/scripts/happyranch \
+   $HOME/projects/my-opc/skills/happyranch/scripts/happyranch
+chmod +x $HOME/projects/my-opc/skills/happyranch/scripts/happyranch
 ```
 
 - [ ] **Step 3: Verify shim content**
 
 ```bash
-cat /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch
+cat $HOME/projects/my-opc/skills/happyranch/scripts/happyranch
 ```
 
 Expected content (the bulk script already replaced strings inside it):
@@ -305,25 +305,25 @@ exec uv --project "${HAPPYRANCH_PROJECT_DIR:-$DEFAULT_PROJECT_DIR}" run happyran
 If the `exec uv ... run` line still says `happyranch`, fix it manually:
 ```bash
 sed -i '' 's/run happyranch/run happyranch/g' \
-    /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch
+    $HOME/projects/my-opc/skills/happyranch/scripts/happyranch
 sed -i '' 's/HAPPYRANCH_PROJECT_DIR/HAPPYRANCH_PROJECT_DIR/g' \
-    /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch
+    $HOME/projects/my-opc/skills/happyranch/scripts/happyranch
 ```
 
 - [ ] **Step 4: Update the ~/.claude/skills/ symlink**
 
 ```bash
 rm ~/.claude/skills/happyranch
-ln -s /Users/tangbz/projects/my-opc/skills/happyranch ~/.claude/skills/happyranch
+ln -s $HOME/projects/my-opc/skills/happyranch ~/.claude/skills/happyranch
 ls -la ~/.claude/skills/happyranch
 ```
 
-Expected: `~/.claude/skills/happyranch -> /Users/tangbz/projects/my-opc/skills/happyranch`
+Expected: `~/.claude/skills/happyranch -> $HOME/projects/my-opc/skills/happyranch`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/tangbz/projects/my-opc
+cd $HOME/projects/my-opc
 git add skills/
 git commit -m "refactor: rename skills/happyranch → skills/happyranch, update shim
 
@@ -353,7 +353,7 @@ REPLACEMENTS = [
     ("HAPPYRANCH",   "HAPPYRANCH"),
 ]
 
-p = Path("/Users/tangbz/projects/my-opc/CLAUDE.md")
+p = Path("/Users/<you>/projects/my-opc/CLAUDE.md")
 text = p.read_text()
 for old, new in REPLACEMENTS:
     text = text.replace(old, new)
@@ -365,7 +365,7 @@ EOF
 - [ ] **Step 2: Verify a key line changed**
 
 ```bash
-grep "Multi-Agent\|happyranch\|HappyRanch" /Users/tangbz/projects/my-opc/CLAUDE.md | head -5
+grep "Multi-Agent\|happyranch\|HappyRanch" $HOME/projects/my-opc/CLAUDE.md | head -5
 ```
 
 Expected: The header line should now say `HappyRanch — Multi-Agent Org Runtime` and CLI references should say `happyranch`.
@@ -373,7 +373,7 @@ Expected: The header line should now say `HappyRanch — Multi-Agent Org Runtime
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/tangbz/projects/my-opc
+cd $HOME/projects/my-opc
 git add CLAUDE.md
 git commit -m "docs(CLAUDE.md): rename HappyRanch → HappyRanch throughout
 
@@ -410,7 +410,7 @@ Expected: lists `daemon.token`, `daemon.port` (if it exists), `runtimes.yaml`, a
 - [ ] **Step 3: Reinstall to register the new CLI entry point**
 
 ```bash
-cd /Users/tangbz/projects/my-opc
+cd $HOME/projects/my-opc
 uv pip install -e .
 ```
 
@@ -441,7 +441,7 @@ Expected: `OK: happyranch binary removed`
 - [ ] **Step 1: Run full unit test suite**
 
 ```bash
-cd /Users/tangbz/projects/my-opc
+cd $HOME/projects/my-opc
 uv run pytest tests/ -v 2>&1 | tail -30
 ```
 
@@ -450,7 +450,7 @@ Expected: all tests PASSED.
 - [ ] **Step 2: Run web test suite**
 
 ```bash
-cd /Users/tangbz/projects/my-opc/web
+cd $HOME/projects/my-opc/web
 npm test -- --run 2>&1 | tail -20
 ```
 
@@ -460,11 +460,11 @@ Expected: all tests PASSED.
 
 ```bash
 grep -rn "happyranch\|HAPPYRANCH\|HappyRanch" \
-    /Users/tangbz/projects/my-opc/src \
-    /Users/tangbz/projects/my-opc/tests \
-    /Users/tangbz/projects/my-opc/web/src \
-    /Users/tangbz/projects/my-opc/scripts \
-    /Users/tangbz/projects/my-opc/pyproject.toml \
+    $HOME/projects/my-opc/src \
+    $HOME/projects/my-opc/tests \
+    $HOME/projects/my-opc/web/src \
+    $HOME/projects/my-opc/scripts \
+    $HOME/projects/my-opc/pyproject.toml \
     --include="*.py" --include="*.ts" --include="*.tsx" --include="*.sh" --include="*.toml" \
     2>/dev/null | grep -v "Binary\|#" | head -20
 ```
@@ -474,7 +474,7 @@ Expected: **no output** (zero residual references). If any appear, fix them manu
 - [ ] **Step 4: Start daemon and confirm it uses the new home**
 
 ```bash
-cd /Users/tangbz/projects/my-opc
+cd $HOME/projects/my-opc
 scripts/daemon.sh start
 sleep 2
 scripts/daemon.sh status

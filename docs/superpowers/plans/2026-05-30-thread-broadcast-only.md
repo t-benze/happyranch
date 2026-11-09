@@ -1302,7 +1302,7 @@ cd web && npm run build
 
 - [ ] **Step 7: Commit.**
   ```bash
-  cd /Users/tangbz/projects/my-opc/.claude/worktrees/worktree-thread-broadcast-only
+  cd $HOME/projects/my-opc/.claude/worktrees/worktree-thread-broadcast-only
   git add web/src/lib/api/ web/src/design-system/providers/_mock-threads.ts web/src/mocks/messages.ts web/src/lib/api/threads.test.ts
   git commit -m "$(cat <<'EOF'
   refactor(web): drop addressed_to from API client and mocks
@@ -1559,7 +1559,7 @@ cd web && npm run build
 
 - [ ] **Step 5: Commit.**
   ```bash
-  cd /Users/tangbz/projects/my-opc/.claude/worktrees/worktree-thread-broadcast-only
+  cd $HOME/projects/my-opc/.claude/worktrees/worktree-thread-broadcast-only
   git add CLAUDE.md protocol/skills/thread/SKILL.md docs/superpowers/specs/2026-05-13-threads-design.md
   git commit -m "$(cat <<'EOF'
   docs(threads): broadcast-only model — CLAUDE.md, skill, spec pointer
