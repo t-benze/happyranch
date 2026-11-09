@@ -336,8 +336,9 @@ automatic retry/new SID/result. Exact stored full-projection callback replay sta
 read-only after tracker removal; changed payload gives workflow_callback_payload_mismatch.
 Fresh ended/foreign sessions cannot author output. Native summaries retain their
 existing audience; role recipients are no private-custody guarantee. Claims supply
-no capability/access or settlement proof. Missing U5 proof leaves advancement
-unavailable. No queued native launch, caller notification or live enablement follows.
+no capability/access or settlement proof. U3f supplies document-only
+recipient and typed witnesses after actual native/outer proof; missing repository
+U5 proof still leaves advancement unavailable. Source presence grants no live enablement.
 
 
 ## Sequential native queue owner (U3d-2)
@@ -451,11 +452,11 @@ This unit publishes no queue item and has no source-outer producer. The admitted
 first visit remains ineligible: `queue_admission_allowed` stays false without the
 positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
 producer and manager skill instructions. Existing U3e-1a cancellation, U3e-2
-caller return, default Disabled admission, U5 access/successful-output hold,
+caller return, default Disabled admission, repository/mixed U5 successful-output hold,
 Pause backout and stale-settings limits remain controlling. Marker removal
 refuses the next fresh start; it grants no continuation/activation authority.
 Structural fixtures and static lint are not genuine callback/host/launch,
-restart, cancellation, return or two-template acceptance. V3/V3-0b/U5 remain
+restart, cancellation, return or two-template acceptance. V3/V3-0b/U5 remainder remain
 UNVERIFIED; no live install/settings/admission/deploy/restart is authorized.
 
 ### Complete-reader recognition and native carrier preflight
@@ -509,3 +510,51 @@ settlement remain UNVERIFIED; labelled fixtures do not close those gaps.
 A genuine executable team manager may use its own final completion decision `workflow_start` with the unchanged `workflow-sequential-start@1` StartCommand, exact pins, stable key and actual remaining limits. Unavailable venue is a refusal, never setup authority. Thread-originated and nested sources remain refused by the inert adapter; no other callback/route/CLI contract changes.
 
 Admission alone cannot publish the first visit. After the original native invocation settles, the source producer reselects the retained source/run/current first visit and actual completed INTEGER result, authenticates the saved command and checks cancellation inside the existing evidence writer. It uses the existing null-visit outer identity and exact source callback identity. One positive evidence COMMIT precedes the existing notify_queued port; exact replay is a no-op and conflicts roll back. Carrier and source gain no result/SID. Existing visit settlement is unchanged; report-completion remains FINAL.
+
+
+## U3f document-only task evidence and disclosure
+
+For an all-document immutable definition, U3f derives sorted producer/current-
+consumer recipients from definition data and maps them through the original
+fixed bindings under fresh current authority. Before rendering, exact selected
+refs, native provenance, stored recipients and content hashes must match and be
+addressed to the actual selected principal. Native summaries keep their existing
+audience; this is no private-custody promise or repository entitlement.
+
+Only settled original produced documents (null verdict) and APPROVE document
+reviews (matching verdict, canonical JSON object and selected document subject)
+receive their registered typed checks. Reviewers differ from every selected
+DOCUMENT producer; a prior contextual review may share the reviewer principal.
+Nonempty capability_claims and repository/mixed graphs remain held. Current
+authority vetoes without changing deterministic original witness bytes.
+Document start context is charged. Non-document advancement preserves the original
+lazy start parse at fresh NextEdge successor selection, after composition; held
+output, terminal and replay paths gain no eager start parse.
+
+Original callback replay remains read-only. Original c/c+1 transition/return,
+purpose-separated keys, prior-CAS replay, no incomplete-pair repair and
+post-COMMIT publication remain unchanged. A new sequential refusal preserves
+prior native/terminal/outer commits and emits no newly accepted output. No new
+callback route, completion DTO, skill staging command or native identity exists.
+The bundled skill adds one document paragraph; the carrier stays unchanged.
+
+The [current U3f contract](reusable-workflows.md#u3f--u5a-document-witnesses-and-addressed-delivery)
+and [source record](../../superpowers/specs/2026-11-09-sequential-document-witness-u3f.md)
+cover per-scope SB-5 and the separate open F-U3f-ENTRY, F-U3f-AUTH and
+F-U3f-MOVE follow-ups.
+Under R-U3f-SB5-2, node_instruction starts its original reader budget before
+fresh capture, charges four snapshot JSON decodes/token walks and captured
+profile-mirror/digest-map work, and carries the same allowance/deadline through
+admission_writer, `_entry` and document/non-document rendering. Protected capture
+configuration parsing remains uncharged (F-U3f-AUTH, owner ROOT
+engineering_manager), an existing shared-dispatcher class rather than accounting
+PASS. R-U3f-SB5-3 keeps the design-mandated native team-move guard unchanged;
+its MoveRequest/task-closure parsing is classified F-U3f-MOVE, OPEN, owner ROOT
+engineering_manager, the existing uncharged class shared by native writers.
+C1 uses document-only digest deferral: terminal/outer serialization occurs only
+in the document branch, each prepaid at `48 * 16384 + 512` bytes and one step
+on the original budget. Non-document hold/foreign-result scopes have zero such
+serializations, matching B. No duplicate configuration acquisition is added;
+any NEW uncharged work outside the three disclosed classes requires STOP to ROOT.
+Structural SEEDS are not genuine
+callbacks or M1/V3 behavior; Coding/U4/U5 remainder/native recovery remain held.

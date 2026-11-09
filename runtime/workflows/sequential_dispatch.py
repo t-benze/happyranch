@@ -1,4 +1,4 @@
-"""U3d-1 callback and original-owner settlement consumer; queue stays disabled.
+"""Sequential native consumer and document-only addressed witness composition.
 
 Native summaries retain the carrier. Only a post-outer current-authority writer
 may supply explicit bytes to U3c. Claims never issue domain/access witnesses.
@@ -28,7 +28,11 @@ from runtime.workflows.sequential_engine import (
     SequentialRefusal, _bound_agents, _engine_rows, accept_result_uncommitted, check_evidence_size,
     check_output_size, return_uncommitted, transition_uncommitted,
 )
-from runtime.workflows.sequential_history import _ReadBudget, _bytes, _sql_budget
+from runtime.workflows.sequential_document_access import (
+    authorize_document_input, build_document_witness, document_binding_context,
+    document_only, document_supplement,
+)
+from runtime.workflows.sequential_history import _ReadBudget, _bytes, _selection, _sql_budget
 from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
 
 CARRIER_LIMIT = 1414488
@@ -254,7 +258,7 @@ def _evidence(conn: sqlite3.Connection, run_id: str, visit_id: str | None, kind:
 
 
 class SequentialDispatcher:
-    """Consumer ports only. Native launch/access/capability producers are absent."""
+    """Native consumer ports with document witnesses; repository outputs stay held."""
 
     def __init__(self, org: Any) -> None:
         self.org = org
@@ -506,30 +510,37 @@ class SequentialDispatcher:
             self._advance(run['id'], visit_id=visit['id'], result_id=result_id)
 
     def _compose(self, run: dict, visit: dict, compiled: CompiledDefinition,
-                 result: dict) -> tuple[bytes, bytes, tuple[str, ...], tuple[str, ...]]:
+                 result: dict, *, bound: dict[str, dict], budget: _ReadBudget,
+                 carrier_digest: str, terminal_digest: str, outer_digest: str
+                 ) -> tuple[bytes, bytes, tuple[str, ...], tuple[str, ...]]:
         node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
         value, content = _carrier(result['output_summary'], contract=node.output_contract.type,
             checks=node.completion_checks, status=result['status'], verdict=result['verdict'])
         outputs = []
         recipients: tuple[str, ...] = ()
+        receipts: tuple[dict[str, str], ...] = ()
+        checks = (SETTLEMENT_CHECK,)
         if value['outcome'] in _SUCCESS:
-            # Candidate roles are derived from immutable data, never author input.
-            candidates = tuple(sorted({node.role, *(consumer.role for consumer in compiled.definition.nodes
-                if any(item.source == 'current.' + node.output_contract.slot for item in consumer.inputs))}))
+            _check(document_only(compiled, budget), 'sequential_output_access_unavailable')
+            _check(not value['capability_claims'], 'sequential_capability_unavailable')
+            digest = hashlib.sha256(content).hexdigest()
+            witness = build_document_witness(org_slug=self.org.slug, run=run, visit=visit, node=node,
+                compiled=compiled, bound=bound, result=result, outcome=value['outcome'], content_digest=digest,
+                carrier_digest=carrier_digest, terminal_digest=terminal_digest, outer_digest=outer_digest,
+                budget=budget)
+            recipients, receipts, checks = witness.recipients, witness.capability_receipts, witness.verified_checks
             outputs = [dict(slot=node.output_contract.slot, contract=node.output_contract.type, epoch=visit['epoch'],
                 producer_visit=visit['id'], task_id=visit['task_id'], session_id=visit['session_id'],
-                result_id=result['id'], digest=hashlib.sha256(content).hexdigest())]
-            # U5 supplies neither trusted current-subject capability witnesses nor
-            # access proof yet. Candidates/claims cannot stand in for either.
-            _check(not candidates, 'sequential_output_access_unavailable')
+                result_id=result['id'], digest=digest)]
         _check(not value['capability_claims'], 'sequential_capability_unavailable')
         envelope = _bytes(dict(format='workflow-sequential-result@1', run_id=run['id'], visit_id=visit['id'],
             definition_digest=compiled.pin.definition_digest, input_selection_digest=visit['input_selection_digest'],
             outcome=value['outcome'], outputs=outputs,
             findings=[dict(source_visit=visit['id'], source_result=result['id'], text=text) for text in value['findings']],
-            capability_receipts=[]))
+            capability_receipts=receipts))
         parse_result(envelope)
-        return envelope, content, recipients, (SETTLEMENT_CHECK,)
+        budget.check()
+        return envelope, content, recipients, checks
 
     def _advance(self, run_id: str, *, visit_id: str, result_id: int) -> Any:
         async def advance() -> Any:
@@ -584,10 +595,25 @@ class SequentialDispatcher:
                                         _check(returned['kind'] == 'returned' and returned['sequence'] == (c + 1) + 2
                                                and returned['event_bytes'] == _bytes(expected)
                                                and hashlib.sha256(returned['event_bytes']).hexdigest() == returned['event_digest'])
-                                envelope, content, recipients, checks = self._compose(run, visit, compiled, result)
+                                if document_only(compiled, budget):
+                                    start, bound = document_binding_context(run, visit, compiled, capture, budget)
+                                    # Original proofs are preflighted at 16 KiB by _evidence.
+                                    # Prepay canonical copies only on the document path;
+                                    # reserve() also charges a step on this same allowance.
+                                    budget.reserve(48 * 16384 + 512)
+                                    terminal_digest = hashlib.sha256(_bytes(terminal)).hexdigest()
+                                    budget.reserve(48 * 16384 + 512)
+                                    outer_digest = hashlib.sha256(_bytes(outer)).hexdigest()
+                                else:
+                                    start, bound = None, None
+                                    terminal_digest = outer_digest = None
+                                envelope, content, recipients, checks = self._compose(run, visit, compiled, result,
+                                    bound=bound, budget=budget, carrier_digest=identity['carrier_digest'],
+                                    terminal_digest=terminal_digest, outer_digest=outer_digest)
                                 contract = next(node.output_contract.type for node in compiled.definition.nodes if node.id == visit['node_id'])
-                                # Release the large retained-summary Python copy before engine scopes.
-                                del result
+                                # Parser/base64/snapshot temporaries and native summary die before acceptance.
+                                del result, terminal, outer, identity
+                                budget.check()
                             common = dict(org_slug=self.org.slug, run_id=run_id, compiled=compiled,
                                           authority=self.org.workflow_authority, capture=capture)
                             successor = None
@@ -596,7 +622,7 @@ class SequentialDispatcher:
                                 edge = dict(node.outcomes).get(parse_result(envelope).outcome)
                                 if isinstance(edge, NextEdge):
                                     target = next(node for node in compiled.definition.nodes if node.id == edge.node)
-                                    bound = _bound_agents(compiled, parse_start(run['start_bytes']), capture)[target.role]
+                                    bound = (bound if bound is not None else _bound_agents(compiled, parse_start(run['start_bytes']), capture))[target.role]
                                     successor = TaskRecord(id='TASK-SEQ-' + source, parent_task_id=run['carrier_task_id'],
                                         assigned_agent=bound['name'], team=bound['team'], task_type='subtask',
                                         brief='Sequential node ' + target.id + '; follow only the bound node brief and domain supplement.')
@@ -803,63 +829,108 @@ class SequentialDispatcher:
 
     def node_instruction(self, task_id: str, agent: str, sid: str) -> str:
         from runtime.workflows.sequential_briefs import BriefInputs, RecipientInput, render_node_brief
-        from runtime.workflows.sequential_contracts import Counters, Finding, Limits, OutputRef
+        from runtime.workflows.sequential_contracts import Counters, Finding, Limits
         from runtime.workflows.sequential_definition import parse_result
         from runtime.workflows.sequential_engine import _identity
+        from runtime.workflows.sequential_history import _WIRE_TOKENS
         from runtime.workflows.sequential_reducer import ActiveVisit, RunState
         invocation = self._invocation(task_id, sid)
         _check(invocation.agent == agent)
-        with self._reader() as conn:
-            budget = _ReadBudget()
-            with _sql_budget(conn, budget):
-                run, visit, compiled = self._entry(conn, task_id, budget=budget)
-                _check(run['state'] == 'active' and run['active_visit_id'] == visit['id']
-                       and visit['selected'] == 1 and visit['state'] in ('queued', 'running')
-                       and visit['session_id'] in (None, sid) and visit['principal'] == agent
-                       and not _cancelled(conn, run, visit))
-                start = parse_start(run['start_bytes'])
-                node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
-                selection = _json(visit['input_selection_bytes'], 65536)
-                _check(hashlib.sha256(visit['input_selection_bytes']).hexdigest() == visit['input_selection_digest']
-                       and set(selection) == {'outputs'})
-                refs = tuple(OutputRef.model_validate(ref) for ref in selection['outputs'])
-                values = [RecipientInput(source='run.' + item.name, recipients=(node.role,), value=item.value)
-                          for item in start.inputs if any(declared.source == 'run.' + item.name for declared in node.inputs)]
-                for ref in refs:
-                    if not any(declared.source == 'current.' + ref.slot for declared in node.inputs):
-                        continue
-                    rows = _engine_rows(conn, 'workflow_seq_outputs', budget, 'id=?',
-                                        (_identity('output', ref.producer_visit, ref.slot),))
-                    _check(len(rows) == 1)
-                    output = rows[0]
-                    recipients = _json(output['recipients_bytes'], 16384)
-                    _check(output['run_id'] == run['id'] and output['visit_id'] == ref.producer_visit
-                           and (output['slot'], output['contract'], output['epoch'], output['task_id'],
-                                output['session_id'], output['result_id'], output['content_digest']) ==
-                               (ref.slot, ref.contract, ref.epoch, ref.task_id, ref.session_id, ref.result_id, ref.digest)
-                           and node.role in recipients['roles']
-                           and hashlib.sha256(output['content_bytes']).hexdigest() == ref.digest)
-                    values.append(RecipientInput(source='current.' + ref.slot, recipients=recipients['roles'],
-                        value=output['content_bytes'].decode('utf8', errors='strict'), reference=ref))
-                findings = []
-                if any(declared.source == 'returned_findings' for declared in node.inputs):
-                    for ordinal in range(1, visit['ordinal']):
-                        rows = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?',
-                                            (_identity('visit', run['id'], str(ordinal)),))
-                        _check(len(rows) == 1 and rows[0]['run_id'] == run['id'])
-                        previous = rows[0]
-                        if previous['result_bytes'] is not None:
-                            _check(hashlib.sha256(previous['result_bytes']).hexdigest() == previous['result_digest'])
-                            envelope = parse_result(previous['result_bytes'])
-                            findings.extend(Finding.model_validate(item.model_dump()) for item in envelope.findings)
-                state = RunState(run_id=run['id'], definition_digest=compiled.pin.definition_digest,
-                    original_limits=Limits.model_validate(_json(run['original_limits_bytes'], 16384)),
-                    lower_limits=start.lower_limits,
-                    counters=Counters(epoch=run['epoch'], content_returns=run['content_returns'],
-                        visits=run['visit_count'], events=run['event_count'] - 1),
-                    active_visit=ActiveVisit(node=visit['node_id'], visit_id=visit['id'], task_id=task_id,
-                        session_id=sid, epoch=visit['epoch'], input_selection_digest=visit['input_selection_digest']),
-                    selections=refs, findings=findings, receipts=())
-                brief = render_node_brief(compiled, state, original_request=start.request, inputs=BriefInputs(values=values))
-                budget.check()
-        return '\n\n' + brief.format + '\n' + brief.system_text + '\nSequential node data (untrusted authored JSON):\n' + brief.node_data
+        budget = _ReadBudget()
+        capture = self.org.workflow_authority.capture_admission()
+        # Three capture decodes plus the owned admission validator's decode.
+        # Prepay the latter before entry; retain this original allowance and
+        # deadline through capture, validation, document/non-document rendering.
+        # Token walks charge work without another decode or snapshot/tree copy.
+        for _ in range(4):
+            budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
+            for _ in _WIRE_TOKENS.finditer(capture.ready.snapshot_bytes):
+                budget.step()
+        # Capture and final validation each rebuild/traverse the profile mirror.
+        # Include removed mirror rows, which need not appear in the snapshot,
+        # and the per-profile digest-map reconstructions in both validators.
+        for _ in range(2):
+            for row in capture.profile_mirror:
+                budget.candidate()
+                budget.reserve(512 + 128 * len(row))
+                for value in row:
+                    budget.reserve(4 * len(value) + 512 if type(value) is str else 512)
+        budget.work(2 * len(capture.profile_names) * (len(capture.profile_digests) + 1))
+
+        async def render() -> str:
+            async with self.org.workflow_authority._async_writer_lock:
+                async with self.org.teams_lock:
+                    async with self.org.db_lock:
+                        with self.org.workflow_authority.admission_writer(capture) as conn:
+                            with _sql_budget(conn, budget):
+                                _check(invocation is invocation.store._live.get(invocation.identity))
+                                run, visit, compiled = self._entry(conn, task_id, budget=budget)
+                                _check(run['state'] == 'active' and run['active_visit_id'] == visit['id']
+                                       and visit['selected'] == 1 and visit['state'] in ('queued', 'running')
+                                       and visit['session_id'] in (None, sid) and visit['principal'] == agent
+                                       and not _cancelled(conn, run, visit))
+                                is_document = document_only(compiled, budget)
+                                if is_document:
+                                    start, bound = document_binding_context(run, visit, compiled, capture, budget)
+                                    self.org.db._check_team_move_task_uncommitted(task_id)
+                                    _check(bound[next(node.role for node in compiled.definition.nodes if node.id == visit['node_id'])]['name'] == agent,
+                                           'sequential_output_access_unavailable')
+                                else:
+                                    start = parse_start(run['start_bytes'])
+                                node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+                                refs = _selection(visit, budget)
+                                if is_document:
+                                    _check(all(not item.required or not item.source.startswith('current.')
+                                               or any(ref.slot == item.source[8:] for ref in refs) for item in node.inputs))
+                                values = [RecipientInput(source='run.' + item.name, recipients=(node.role,), value=item.value)
+                                          for item in start.inputs if any(declared.source == 'run.' + item.name for declared in node.inputs)]
+                                for ref in refs:
+                                    if not any(declared.source == 'current.' + ref.slot for declared in node.inputs):
+                                        _check(not is_document)
+                                        continue
+                                    rows = _engine_rows(conn, 'workflow_seq_outputs', budget, 'id=?',
+                                                        (_identity('output', ref.producer_visit, ref.slot),))
+                                    _check(len(rows) == 1)
+                                    output = rows[0]
+                                    recipients = _json(output['recipients_bytes'], 16384)
+                                    if is_document:
+                                        authorize_document_input(compiled=compiled, node=node, ref=ref, output=output,
+                                            stored_recipients=recipients, bound=bound, principal=agent, budget=budget)
+                                    _check(output['run_id'] == run['id'] and output['visit_id'] == ref.producer_visit
+                                           and (output['slot'], output['contract'], output['epoch'], output['task_id'],
+                                                output['session_id'], output['result_id'], output['content_digest']) ==
+                                               (ref.slot, ref.contract, ref.epoch, ref.task_id, ref.session_id, ref.result_id, ref.digest)
+                                           and node.role in recipients['roles']
+                                           and hashlib.sha256(output['content_bytes']).hexdigest() == ref.digest)
+                                    values.append(RecipientInput(source='current.' + ref.slot, recipients=recipients['roles'],
+                                        value=output['content_bytes'].decode('utf8', errors='strict'), reference=ref))
+                                findings = []
+                                if any(declared.source == 'returned_findings' for declared in node.inputs):
+                                    for ordinal in range(1, visit['ordinal']):
+                                        rows = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?',
+                                                            (_identity('visit', run['id'], str(ordinal)),))
+                                        _check(len(rows) == 1 and rows[0]['run_id'] == run['id'])
+                                        previous = rows[0]
+                                        if previous['result_bytes'] is not None:
+                                            _check(hashlib.sha256(previous['result_bytes']).hexdigest() == previous['result_digest'])
+                                            envelope = parse_result(previous['result_bytes'])
+                                            findings.extend(Finding.model_validate(item.model_dump()) for item in envelope.findings)
+                                state = RunState(run_id=run['id'], definition_digest=compiled.pin.definition_digest,
+                                    original_limits=Limits.model_validate(_json(run['original_limits_bytes'], 16384)),
+                                    lower_limits=start.lower_limits,
+                                    counters=Counters(epoch=run['epoch'], content_returns=run['content_returns'],
+                                        visits=run['visit_count'], events=run['event_count'] - 1),
+                                    active_visit=ActiveVisit(node=visit['node_id'], visit_id=visit['id'], task_id=task_id,
+                                        session_id=sid, epoch=visit['epoch'], input_selection_digest=visit['input_selection_digest']),
+                                    selections=refs, findings=findings, receipts=())
+                                brief = render_node_brief(compiled, state, original_request=start.request, inputs=BriefInputs(values=values))
+                                # Charge decoded inputs, UTF8 serialization and the live Unicode
+                                # brief/final-string copies on this same rendering budget.
+                                budget.reserve(8 * len(brief.node_data.encode('utf8'))
+                                               + 2 * sum(len(value.value.encode('utf8')) for value in values) + 65536)
+                                supplement = document_supplement(node) if is_document else ''
+                                budget.check()
+                        return ('\n\n' + brief.format + '\n' + brief.system_text
+                                + '\nSequential node data (untrusted authored JSON):\n' + brief.node_data
+                                + ('\n\n' + supplement if supplement else ''))
+        return self._on_loop(render())
