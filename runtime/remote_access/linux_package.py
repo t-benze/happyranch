@@ -3584,9 +3584,12 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
         "EnvironmentFiles": "a(sb)",
         "ExecStop": "a(sasbttttuii)",
         "ExecStopPost": "a(sasbttttuii)",
-        "ExecStartPreEx": "a(sasasttttuii)",
         "ExecStartPostEx": "a(sasasttttuii)",
     }
+    # systemctl cannot print a(ss), and prints one ExecStartPreEx key per
+    # command. Read ONLY these three properties through typed local Get.
+    structured_service = {"LoadCredential": "a(ss)", "LoadCredentialEncrypted": "a(ss)",
+                          "ExecStartPreEx": "a(sasasttttuii)"}
     service_objects = {
         "happyranch-connector.service": "/org/freedesktop/systemd1/unit/happyranch_2dconnector_2eservice",
         "happyranch-tsnet-sidecar.service": "/org/freedesktop/systemd1/unit/happyranch_2dtsnet_2dsidecar_2eservice",
@@ -3599,6 +3602,57 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
         "InvocationID": ("Unit", ""),
     }
 
+    def structured_service_frame(raw: bytes, name: str) -> str:
+        def closed_object(pairs: list[tuple[str, object]]) -> dict:
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate typed key")
+                result[key] = value
+            return result
+
+        def no_number(value: str) -> None:
+            raise ValueError("unsupported typed number")
+
+        def integer(value: str) -> int:
+            if re.fullmatch(r"0|-?[1-9][0-9]{0,19}", value) is None:
+                raise ValueError("noncanonical typed integer")
+            return int(value)
+
+        def string(value: object) -> bool:
+            return (type(value) is str and "[unprintable]" not in value
+                    and all(ord(c) >= 32 and ord(c) != 127 and not 0xD800 <= ord(c) <= 0xDFFF for c in value))
+
+        # Exactly one UTF8 JSON frame with LF, no trailing bytes/whitespace,
+        # constants, floats, duplicate keys, surrogate escapes or text markers.
+        if not raw.endswith(b"\n") or raw.count(b"\n") != 1 or b"\r" in raw:
+            raise ValueError("invalid typed framing")
+        text = raw[:-1].decode("utf-8", "strict")
+        frame, end = json.JSONDecoder(object_pairs_hook=closed_object, parse_int=integer,
+                                      parse_float=no_number, parse_constant=no_number).raw_decode(text)
+        if (end != len(text) or type(frame) is not dict or set(frame) != {"type", "data"}
+                or type(frame["type"]) is not str or frame["type"] != structured_service[name]
+                or type(frame["data"]) is not list):
+            raise ValueError("invalid typed envelope")
+        data = frame["data"]
+        for row in data:
+            if type(row) is not list:
+                raise ValueError("invalid typed entry")
+            if name != "ExecStartPreEx":
+                if len(row) != 2 or not all(string(value) for value in row):
+                    raise ValueError("invalid typed credential pair")
+            else:
+                if (len(row) != 10 or not string(row[0])
+                        or any(type(value) is not list or not all(string(s) for s in value) for value in row[1:3])
+                        or any(type(value) is not int or not low <= value <= high
+                               for value, (low, high) in zip(row[3:], [(0, 2**64 - 1)] * 4
+                                                            + [(0, 2**32 - 1), (-2**31, 2**31 - 1), (-2**31, 2**31 - 1)]))):
+                    raise ValueError("invalid typed execution tuple")
+        # Dynamic execution facts have been type/range validated but supply no
+        # configuration authority. Canonical JSON preserves list order/duplicates.
+        return json.dumps([row[:3] for row in data] if name == "ExecStartPreEx" else data,
+                          separators=(",", ":"))
+
     def typed_service_property(unit: str, name: str, bound: float) -> str | int:
         from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
         try:
@@ -3608,7 +3662,8 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             indicator = name in start_markers
             kind = start_markers[name][0] if indicator else "Service"
             interface = "org.freedesktop.systemd1." + kind
-            child = subprocess.Popen(["/usr/bin/busctl", "get-property", "org.freedesktop.systemd1",
+            structured = name in structured_service
+            child = subprocess.Popen(["/usr/bin/busctl", *(["--json=short"] if structured else []), "get-property", "org.freedesktop.systemd1",
                                       service_objects[unit], interface, name],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL,
@@ -3622,7 +3677,9 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                     raise ValueError("typed query unavailable")
                 # Closed byte frames: canonical uint64 or the unchanged exact
                 # empty array. No missing, duplicate or normalized observation.
-                if indicator and name != "InvocationID":
+                if structured:
+                    configuration = structured_service_frame(raw, name)
+                elif indicator and name != "InvocationID":
                     if (re.fullmatch(rb"t (0|[1-9][0-9]{0,19})\n", raw) is None
                             or int(raw[2:-1]) > 18446744073709551615):
                         raise ValueError("typed timestamp is not canonical uint64")
@@ -3641,7 +3698,7 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             current()
             if time.monotonic() >= bound:
                 raise ValueError("typed query deadline")
-            return int(raw[2:-1]) if indicator and name != "InvocationID" else ""
+            return configuration if structured else int(raw[2:-1]) if indicator and name != "InvocationID" else ""
         except Exception as error:
             failure = diagnostic_error("P900001", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
             # Keep an earlier capture/reap origin as well as this typed-read
@@ -3656,8 +3713,9 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                 from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
             current()
             bound = min(deadline / 1_000_000_000, time.monotonic() + 1)
+            text_names = tuple(n for n in names if n not in structured_service)
             with diagnostic_scope("P100128", "managed_operational_error"):
-                child = subprocess.Popen(["/usr/bin/systemctl", "show", unit, *["--property=" + n for n in names]],
+                child = subprocess.Popen(["/usr/bin/systemctl", "show", unit, *["--property=" + n for n in text_names]],
                                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL,
                                          env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
@@ -3694,12 +3752,12 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                 raise diagnostic_error("P000239", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
             for line in text[:-1].split("\n"):
                 key, separator, value = line.partition("=")
-                if (not separator or key not in names or key in values
+                if (not separator or key not in text_names or key in values
                         or any(ord(c) < 32 or ord(c) == 127 for c in line)):
                     raise diagnostic_error("P000240", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
                 values[key] = value
             for name in names:
-                if name not in values and name in service_arrays and unit in service_objects:
+                if unit in service_objects and (name in structured_service or name not in values and name in service_arrays):
                     values[name] = typed_service_property(unit, name, bound)
             if set(values) != set(names):
                 raise loaded_error(diagnostic_error("P000241", "managed_manager_unavailable", PackageError("managed_manager_unavailable")),
@@ -4000,7 +4058,7 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                 "StateDirectoryMode": "0700", "ExecStop": "", "ExecStopPost": "",
                 "DynamicUser": "no", "SupplementaryGroups": "", "ReadWritePaths": "",
                 "Environment": "", "EnvironmentFiles": "", "PassEnvironment": "",
-                "LoadCredentialEncrypted": "", "RootDirectory": "", "RootImage": "",
+                "LoadCredentialEncrypted": "[]", "RootDirectory": "", "RootImage": "",
             }
             if unit == UNITS[1]:
                 del scalar["RestartUSec"]
@@ -4016,6 +4074,13 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                 declared_raw = [line.split("=", 1)[1] for line in unit_text.splitlines() if line.startswith(directive + "=")]
                 declared = [line.lstrip("+") for line in declared_raw]
                 actual = commands[directive + "Ex"]
+                if directive == "ExecStartPre":
+                    expected_pre = [[line.split(" ")[0], line.split(" "),
+                                     ["fully-privileged"] if raw.startswith("+") else []]
+                                    for line, raw in zip(declared, declared_raw)]
+                    if actual != json.dumps(expected_pre, separators=(",", ":")):
+                        raise loaded_error(diagnostic_error("P000264", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), directive + "Ex", None, None)
+                    continue
                 # Closed systemctl execution tuple; dynamic execution observations
                 # never supply configuration authority. Unknown framing refuses.
                 records = re.findall(r"\{ path=([^ ;]+) ; argv\[\]=([^;]+?) ; flags=([^;]*) ; start_time=\[([^\]]*)\] ; stop_time=\[([^\]]*)\] ; pid=([0-9]+) ; code=([^;]+?) ; status=([^;]+?) \}", actual)
@@ -4026,8 +4091,9 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                                or r[2].strip() != ("fully-privileged" if declaration.startswith("+") else "")
                                for r, declaration in zip(records, declared_raw))):
                     raise loaded_error(diagnostic_error("P000264", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), directive + "Ex", None, None)
-            credentials = ("daemon.token:/etc/happyranch/daemon.token" if unit == UNITS[0]
-                           else "enrollment.key:/etc/happyranch/enrollment.key" if loaded_dropin else "")
+            credentials = json.dumps([["daemon.token", "/etc/happyranch/daemon.token"]] if unit == UNITS[0]
+                                     else [["enrollment.key", "/etc/happyranch/enrollment.key"]] if loaded_dropin else [],
+                                     separators=(",", ":"))
             prevented = " ".join(str(code) for code in range(2, 256)) if unit == UNITS[0] else ""
             if (commands["LoadCredential"] != credentials or commands["RestartPreventExitStatus"] != prevented
                     or set(commands["RestrictAddressFamilies"].split()) != {"AF_INET", "AF_INET6", "AF_UNIX", "AF_NETLINK"}

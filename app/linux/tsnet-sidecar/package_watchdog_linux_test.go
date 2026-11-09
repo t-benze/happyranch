@@ -74,7 +74,7 @@ def record_capture(child, bound):
     bounds.append(bound)
     if queries[-1][0] == "/usr/bin/systemctl" and "--property=WatchdogUSec" in queries[-1]:
         scalar_bound[0] = bound
-    if queries[-1][0] == "/usr/bin/busctl":
+    if queries[-1][0] == "/usr/bin/busctl" and queries[-1][-1] in markers:
         assert bound == scalar_bound[0], (bound, scalar_bound)
     assert bound <= deadline / 1_000_000_000, (bound, deadline)
     return capture(child, bound)
@@ -90,6 +90,11 @@ def observation(argv, **kwargs):
     else:
         fixed = "/org/freedesktop/systemd1/unit/" + ("happyranch_2dconnector_2eservice" if connector else "happyranch_2dtsnet_2dsidecar_2eservice")
         marker = argv[-1]
+        if marker in structured:
+            assert argv == ["/usr/bin/busctl", "--json=short", "get-property", "org.freedesktop.systemd1", fixed, "org.freedesktop.systemd1.Service", marker]
+            child = popen([sys.executable, "-c", "import os,sys; os.write(1,bytes.fromhex(sys.argv[1]))", structured_frame(marker).hex()], **kwargs)
+            children.append(child)
+            return child
         assert marker in markers, argv
         interface = "Service" if marker == "ExecMainStartTimestampMonotonic" else "Unit"
         assert argv == ["/usr/bin/busctl", "get-property", "org.freedesktop.systemd1", fixed,
@@ -139,7 +144,7 @@ with patch.object(package.os, "geteuid", return_value=0), \
         assert accepted, ("unexpected acceptance", unit, state, value, frame, selected_marker)
         assert result == {"dropin_mode": 0o644, "dropin_directory_mode": 0o755}, result
         print("ACCEPTED", unit, state, repr(value), frame)
-    typed = [q[-1] for q in queries if q[0] == "/usr/bin/busctl"]
+    typed = [q[-1] for q in queries if q[0] == "/usr/bin/busctl" and q[-1] in markers]
     if accepted and value == "infinity":
         assert typed == markers, typed
     if value != "infinity":

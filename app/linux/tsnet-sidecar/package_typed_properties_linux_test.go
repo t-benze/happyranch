@@ -39,6 +39,7 @@ func TestServiceSettingsTypedEmptyArrays(t *testing.T) {
 }
 
 const serviceSettingsTypedFixture = `
+import json
 import subprocess
 import sys
 import time
@@ -94,8 +95,23 @@ commands = {
     "RestrictAddressFamilies": "AF_INET AF_INET6 AF_UNIX AF_NETLINK", "SystemCallArchitectures": "native",
 }
 context = {**base, **scalar, **commands}
+context["ExecStartPreEx"] = pre.replace(" } { ", " }\nExecStartPreEx={ ")
+context["LoadCredential"] = context["LoadCredentialEncrypted"] = "[unprintable]"
+structured = {"LoadCredential": "a(ss)", "LoadCredentialEncrypted": "a(ss)",
+              "ExecStartPreEx": "a(sasasttttuii)"}
+# Fixed external observations, independent of the production renderer/parser.
+def structured_data(name):
+    if name == "LoadCredential":
+        return [["daemon.token", "/etc/happyranch/daemon.token"]] if connector else []
+    if name == "LoadCredentialEncrypted":
+        return []
+    import re
+    return [[path, argv.split(" "), flags.split() if flags else [], 0, 0, 0, 0, 0, 0, 0]
+            for path, argv, flags in re.findall(r"\{ path=([^ ;]+) ; argv\[\]=([^;]+?) ; flags=([^;]*) ;", pre)]
+def structured_frame(name, data=None):
+    return (json.dumps({"type": structured[name], "data": structured_data(name) if data is None else data}, separators=(",", ":")) + "\n").encode()
 signatures = {"EnvironmentFiles": "a(sb)", "ExecStop": "a(sasbttttuii)",
-              "ExecStopPost": "a(sasbttttuii)", "ExecStartPreEx": "a(sasasttttuii)",
+              "ExecStopPost": "a(sasbttttuii)",
               "ExecStartPostEx": "a(sasasttttuii)"}
 omitted = {name for name in signatures if context[name] == ""}
 nonempty_property = {"nonempty": "ExecStop", "nonempty-env": "EnvironmentFiles",
@@ -148,10 +164,18 @@ def observation(argv, **kwargs):
                 if scenario == "shared-bound": delay = 0.2
     else:
         fixed_path = "/org/freedesktop/systemd1/unit/" + ("happyranch_2dconnector_2eservice" if connector else "happyranch_2dtsnet_2dsidecar_2eservice")
-        assert argv[:-1] == ["/usr/bin/busctl", "get-property", "org.freedesktop.systemd1", fixed_path, "org.freedesktop.systemd1.Service"]
-        assert argv[-1] in omitted & signatures.keys()
-        raw = (signatures[argv[-1]] + " 0\n").encode()
-        if nonempty_property:
+        assert argv[:-1] == ["/usr/bin/busctl", *(["--json=short"] if argv[-1] in structured else []), "get-property", "org.freedesktop.systemd1", fixed_path, "org.freedesktop.systemd1.Service"]
+        assert argv[-1] in structured or argv[-1] in omitted & signatures.keys()
+        if argv[-1] in structured:
+            data = structured_data(argv[-1])
+            if argv[-1] == "ExecStartPreEx":
+                if scenario in ("nonempty-pre", "printed-command-mismatch"):
+                    data = [["/bin/false", ["/bin/false"], [], 0, 0, 0, 0, 0, 0, 0]]
+                if scenario == "omit-pre": data = []
+            raw = structured_frame(argv[-1], data)
+        else:
+            raw = (signatures[argv[-1]] + " 0\n").encode()
+        if nonempty_property and argv[-1] not in structured:
             record = ('1 "/unexpected" false' if argv[-1] == "EnvironmentFiles" else
                       '1 "/bin/false" 1 "/bin/false" 0 0 0 0 0 0 0 0' if argv[-1].endswith("Ex") else
                       '1 "/bin/false" 1 "/bin/false" false 0 0 0 0 0 0 0')
@@ -182,7 +206,7 @@ elif scenario in ("missing-scalar", "missing-command"):
     expected = ("managed_manager_unavailable", "P000241")
 elif scenario == "printed-nonempty":
     expected = ("managed_loaded_contract_mismatch", "P000263")
-elif scenario == "printed-command-mismatch" or not connector and scenario in ("omit-pre", "omit-post"):
+elif scenario in ("printed-command-mismatch", "nonempty-pre") or not connector and scenario in ("omit-pre", "omit-post"):
     expected = ("managed_loaded_contract_mismatch", "P000264")
 elif scenario in ("duplicate", "unknown", "malformed-show", "control-show"):
     expected = ("managed_manager_unavailable", "P000240")
@@ -202,7 +226,7 @@ with patch.object(package.os, "geteuid", return_value=0), \
             assert error._managed_package_boundary == ("managed_manager_unavailable", "P900001")
         if scenario in ("missing-scalar", "missing-command"):
             assert exception_loaded(error) is not None
-            assert not any(q[0] == "/usr/bin/busctl" for q in queries)
+            assert not any(q[0] == "/usr/bin/busctl" and q[-1] not in structured for q in queries)
         print("refused", actual)
     else:
         assert expected is None, (scenario, "unexpected acceptance")
@@ -221,8 +245,8 @@ if scenario == "shared-bound":
         else:
             assert bound == systemctl_bound, (bound, systemctl_bound)
             typed += 1
-    assert typed == len(omitted), (typed, omitted)
+    assert typed == len(omitted) + len(structured), (typed, omitted)
 if scenario in ("printed-empty", "printed-nonempty", "printed-command-mismatch"):
-    assert not any(q[0] == "/usr/bin/busctl" for q in queries)
+    assert not any(q[0] == "/usr/bin/busctl" and q[-1] not in structured for q in queries)
 print("children reaped; elapsed=", elapsed)
 `

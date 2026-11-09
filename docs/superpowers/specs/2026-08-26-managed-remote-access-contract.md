@@ -19,30 +19,67 @@ proof and installed eligibility preflight. Infinity has no post-start exception.
 Source delivery/fake-observation tests do not establish hosted M1 acceptance or
 authorize a service action, base-branch publication, hosted trigger or deployment.
 
-# Positive typed empty-array observation — Founder THR327seq146 / ROOT14561
+# Current typed service observations — Founder THR327seq169 / ROOT14851
 
-In the existing installed service-settings check only, retain the complete
-systemctl query, all requested keys, framing/duplicate/control/unknown checks,
-exact values, output bounds and original deadlines. Supplement a requested
-omitted EnvironmentFiles (`a(sb)`), ExecStop/ExecStopPost (`a(sasbttttuii)`) or
-ExecStartPreEx/ExecStartPostEx (`a(sasasttttuii)`) through read-only typed Get on
-org.freedesktop.systemd1.Service. This closed rule applies to both fixed services;
-their object paths and `/usr/bin/busctl` are literal, with no general escaping
-or arbitrary service/property access. Connector pre/post-start arrays render
-empty; sidecar commands remain required by the unchanged command comparison.
+Founder THR327seq169 selects typed exact reads for `LoadCredential` and
+`LoadCredentialEncrypted` (`a(ss)`) and `ExecStartPreEx` (`a(sasasttttuii)`)
+on BOTH fixed managed service objects. These three names are excluded from the
+`systemctl show` text query: systemd255/259 prints credential arrays as
+`[unprintable]` even when empty, and emits a separate ExecStartPreEx named line
+for each command. The text parser still refuses duplicate keys at P000240;
+`[unprintable]` never constitutes a valid observation.
 
-Every supplemental child uses the existing sanitized environment, fd discipline,
-bounded capture/overflow refusal and owned close/reap under the SAME original
-systemctl absolute query bound and enclosing operation deadline. The closed
-byte parser accepts only exact `SIGNATURE 0\n`, mapping proven present+empty
-to `""` for the existing exact comparison. A typed nonempty array, wrong
-signature, trailing/extra bytes, invalid UTF8, controls, nonzero exit, timeout or
-overflow refuses as managed_manager_unavailable at P900001. Earlier capture/reap
-origins remain primary with the typed boundary retained; P900002 records a
-suppressed cleanup loss. No missing-as-empty rule exists. Other missing names
-still reach P000241 with its fixed-unit/missing-name diagnostic; printed values
-still use the original parser and comparisons. No security expectation, original
-deadline, service configuration, credential, permission or hosted trigger changes.
+Each selected read uses `/usr/bin/busctl --json=short get-property
+org.freedesktop.systemd1 FIXED_OBJECT org.freedesktop.systemd1.Service NAME`,
+with the existing literal service object paths, sanitized C locale/PATH, lock
+fd discipline, 4096-byte capture cap plus one sentinel and owned close/reap.
+All selected reads share the ORIGINAL text-query absolute bound (at most one
+second), capped by the unchanged overall deadline. There is no renewal or retry.
+
+A frame must be one strict UTF8 JSON object followed by one LF, with exactly
+`type` and `data`, the exact signature and a list of correctly typed entries.
+Duplicate/extra/missing keys, bool-as-int, floats/NaN, malformed quoting/escapes,
+unpaired surrogates, controls, trailing bytes/whitespace, missing LF, wrong
+signatures/types, missing/unavailable reads, overflow, nonzero exit and timeout
+refuse at the existing P900001 typed boundary. Earlier capture/reap origins stay
+primary and suppressed cleanup loss retains P900002. Missing never means empty.
+
+Expected configuration remains EXACT ordered list equality:
+
+- Connector LoadCredential: exactly `[["daemon.token","/etc/happyranch/daemon.token"]]`.
+- Sidecar LoadCredential: exactly `[["enrollment.key","/etc/happyranch/enrollment.key"]]`
+  iff the current loaded drop-in is present; otherwise exactly `[]`.
+- LoadCredentialEncrypted: exactly `[]` for both services.
+- Connector ExecStartPreEx: exactly `[]`. Sidecar: exactly two entries in the
+  rendered unit's declared order. Each path equals argv[0]; argv equals the
+  declared command split on single spaces. The commands are:
+
+```text
++/opt/happyranch/bin/happyranch-connector reconcile-enrollment-retirement --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
+/opt/happyranch/bin/happyranch-connector credential-capability --name enrollment.key --unit happyranch-tsnet-sidecar.service --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed
+```
+
+The first entry's flags are exactly `["fully-privileged"]`, and the second's
+exactly `[]`. Each tuple's four timestamps are uint64, pid uint32, and code and
+status int32 (exact Python integers within those ranges). These dynamic fields
+supply no configuration authority and are not compared. Duplicated, extra,
+missing, reordered or altered configuration entries refuse. Credential mismatch
+remains P000265 naming LoadCredential; encrypted mismatch P000263 naming
+LoadCredentialEncrypted; pre-command mismatch P000264. Existing sensitive
+loaded diagnostics withhold expected/actual values for all three properties.
+
+ExecStartEx and ExecStartPostEx retain their text comparison paths. The remaining
+seq146 positive-empty supplements are EnvironmentFiles `a(sb)`, ExecStop and
+ExecStopPost `a(sasbttttuii)`, and ExecStartPostEx `a(sasasttttuii)`: only an
+omitted requested name triggers a typed read, whose exact byte frame must be
+`SIGNATURE 0\n`. Their bounds, refusal codes and comparisons are unchanged.
+All other properties retain their existing paths and exact checks.
+
+Format evidence: systemd [v255 busctl JSON variant/array conversion and Get](https://github.com/systemd/systemd/blob/v255/src/busctl/busctl.c#L1695)
+and [v255 JSON escaping/framing](https://github.com/systemd/systemd/blob/v255/src/shared/json.c#L1525),
+corroborated by read-only `cron.service` observations on local systemd
+259.5-0ubuntu3.4. This is source/fake-observation evidence, not hosted M1
+install/READY/uninstall acceptance or authorization for host service actions.
 
 # Approved loaded dependency policy — Founder THR327seq115
 
