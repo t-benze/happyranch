@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema_load import read_org_layout
 from runtime.infrastructure.workflow_schema import (
     _CUTOVER_POLICY,
     _CUTOVER_STATES,
@@ -65,8 +66,9 @@ class WorkflowCutoverStore:
                 from runtime.infrastructure.workflow_schema_load import read_installed_for_org_load
                 validated = read_installed_for_org_load(conn, expected_org_slug=self._org_slug, budget=budget)
             else:
-                validated = _read_installed(conn, expected_org_slug=self._org_slug,
-                                            validate_data=False, budget=budget)
+                validated = read_org_layout(conn, expected_org_slug=self._org_slug, budget=budget,
+                    legacy=lambda: _read_installed(conn, expected_org_slug=self._org_slug,
+                                                   validate_data=False, budget=budget))
             marker, events = _validate_cutover_data(conn, expected_org_slug=self._org_slug)
             return marker, events, validated
         except (ValueError, sqlite3.DatabaseError) as exc:
@@ -182,7 +184,8 @@ class WorkflowCutoverStore:
 
     def _projection(self, conn: sqlite3.Connection, marker: dict, events: list[dict], *, _validated=None) -> dict:
         if _validated is None:
-            _validated = _read_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
+            _validated = read_org_layout(conn, expected_org_slug=self._org_slug,
+                legacy=lambda: _read_installed(conn, expected_org_slug=self._org_slug, validate_data=False))
         if marker["state"] in ("enable_requested", "compatibility_verified"):
             blockers = self._compatibility_blockers(conn, _validated=_validated)
         elif marker["state"] in ("disable_requested", "draining", "drained"):
@@ -222,7 +225,8 @@ class WorkflowCutoverStore:
 
     def _draft_readiness_blockers(self, conn: sqlite3.Connection, *, _validated=None) -> list[dict]:
         if _validated is None:
-            _validated = _read_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
+            _validated = read_org_layout(conn, expected_org_slug=self._org_slug,
+                legacy=lambda: _read_installed(conn, expected_org_slug=self._org_slug, validate_data=False))
         layout, coding = _validated
         if layout in ("E", "G", "H", "I", "J"):
             if coding is not None:
@@ -273,7 +277,8 @@ class WorkflowCutoverStore:
         # pointers, including metadata paths. Setup/import/mapping history has no
         # run/host tail to drain; source/run/attempt/event/receipt families refuse.
         if _validated is None:
-            _validated = _read_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
+            _validated = read_org_layout(conn, expected_org_slug=self._org_slug,
+                legacy=lambda: _read_installed(conn, expected_org_slug=self._org_slug, validate_data=False))
         blockers = self._draft_readiness_blockers(conn, _validated=_validated) + self._integrity_blockers(conn)
         if _validated[1] is not None:
             saved = _validated[1].queued

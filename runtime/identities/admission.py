@@ -166,7 +166,9 @@ def validate_naming_install_admission(
             from runtime.infrastructure.workflow_schema_load import read_workflow_schema_for_org_load
             read_workflow_schema_for_org_load(conn, expected_org_slug=org_slug, writer_source=True)
         else:
-            validate_workflow_schema(conn, expected_org_slug=org_slug)
+            from runtime.infrastructure.workflow_schema_load import read_org_layout
+            read_org_layout(conn, expected_org_slug=org_slug,
+                            legacy=lambda: validate_workflow_schema(conn, expected_org_slug=org_slug))
         validate_pause_schema(conn, org_slug=org_slug, allow_absent=True)
         validate_team_move_schema(conn, org_slug=org_slug)
         return validate_names(conn, org_slug=org_slug)

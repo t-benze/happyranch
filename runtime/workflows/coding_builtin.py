@@ -320,6 +320,7 @@ class CodingBuiltinStore:
     def ensure_registered(self) -> None:
         """One safe attempt; no retries, repair, authority recovery or takeover."""
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
+        from runtime.infrastructure.workflow_schema_load import read_org_layout
         from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
         budget, census, states, after = _Budget(), _NativeCensusBudget(), {}, 0
         authority = self.org.workflow_authority
@@ -374,8 +375,10 @@ class CodingBuiltinStore:
                             try:
                                 after = self._native_suffix(conn, census, states, after)
                                 self._safety(conn, admission, states, census, own=writer.writer_id)
-                                _, inventory = _read_workflow_schema(conn, expected_org_slug=self.org.slug,
-                                                                    budget=budget, advances=advances)
+                                _, inventory = read_org_layout(conn, expected_org_slug=self.org.slug,
+                                    budget=budget, advances=advances,
+                                    legacy=lambda: _read_workflow_schema(conn, expected_org_slug=self.org.slug,
+                                                                         budget=budget, advances=advances))
                                 if inventory is None:
                                     raise ValueError('coding_builtin_storage_required')
                                 if inventory.release is None:
@@ -393,8 +396,10 @@ class CodingBuiltinStore:
                                                      f'VALUES ({",".join("?" for _ in row)})', tuple(row.values()))
                                     # Reconstruct complete target rows/FKs before this owner's COMMIT.
                                     del inventory
-                                    _, target = _read_workflow_schema(conn, expected_org_slug=self.org.slug,
-                                                                     budget=budget, advances=advances)
+                                    _, target = read_org_layout(conn, expected_org_slug=self.org.slug,
+                                        budget=budget, advances=advances,
+                                        legacy=lambda: _read_workflow_schema(conn, expected_org_slug=self.org.slug,
+                                                                             budget=budget, advances=advances))
                                     if target is None or target.release is None:
                                         raise ValueError('coding_builtin_target_invalid')
                                 after = self._native_suffix(conn, census, states, after)

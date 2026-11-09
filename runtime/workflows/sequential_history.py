@@ -1,9 +1,9 @@
 """Standalone U2a complete sequential-history and combined-structure reader.
 
-No normal startup, allocator, route or producer imports this module. The result
-is storage integrity, not current authorization, native settlement or engine
-availability. Retained family data readers compose through an explicit scope;
-U2b installation/reopen and U3 adapter authentication remain separate.
+Selected startup readers compose this complete reader. The result is storage
+integrity, not current authorization, native settlement or engine availability.
+Retained family data readers compose through an explicit scope; U2b installation
+and U3 adapter authentication remain separate.
 """
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, TypeVar
+from typing import Annotated, Literal, TypeVar, TYPE_CHECKING
 
 from pydantic import BeforeValidator, Field
 
 from runtime.infrastructure.workflow_schema import (
     _candidate_structure, _canonical_connection, _execute_ddl, _read_workflow_schema,
-    _read_sequential_legacy_data,
+    _sequential_legacy_read,
     _schema_snapshot, _structure_cells,
 )
 from runtime.infrastructure.workflow_sequential_ownership import (
@@ -46,6 +46,9 @@ from runtime.workflows.sequential_definition import (
 from runtime.workflows.sequential_reducer import (
     ActiveVisit, AuthenticatedResult, Decision, RunState, reduce_result,
 )
+
+if TYPE_CHECKING:
+    from runtime.infrastructure.workflow_coding_schema import _CodingInventory
 
 
 class StorageSettings(Closed):
@@ -73,6 +76,7 @@ class SequentialHistory:
     status: Literal['new-engine unavailable', 'storage readable']
     definition_ids: tuple[str, ...]
     run_ids: tuple[str, ...]
+    retained: tuple[str, _CodingInventory | None] | None = None
 
 
 def _require(condition: bool, code: str) -> None:
@@ -697,28 +701,46 @@ def _auxiliary(conn: sqlite3.Connection, data: dict[str, list[dict]], runs: dict
 
 
 def _legacy_history(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget,
-                    sequential_rows: dict[str, list[dict]] | None = None) -> None:
+                    sequential_rows: dict[str, list[dict]] | None = None, *,
+                    retained_budget: _Budget | None = None,
+                    advances: list[tuple[tuple[int, int], int]] | None = None,
+                    ) -> tuple[str, _CodingInventory | None]:
     # Exact retained budget/native connection and original per-call caps. The
     # new reader's schema/copy work has wider limits, so it cannot be seeded
     # into the retained narrower counters. Keep the outer totals intact and
     # charge this phase's consumption on both success and refusal below.
-    legacy_budget = _Budget()
+    legacy_budget = _Budget() if retained_budget is None else retained_budget
+    opening = legacy_budget.consumed, legacy_budget.accepted_rows, legacy_budget.traversed
     try:
         if sequential_rows is None:
-            _read_workflow_schema(conn, expected_org_slug=org_slug, budget=legacy_budget)
+            retained = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=legacy_budget,
+                                             advances=advances)
         else:
-            _read_sequential_legacy_data(conn, expected_org_slug=org_slug, budget=legacy_budget,
-                                         sequential_rows=sequential_rows)
+            # Same one-read context as workflow_schema:863-878, with the actual
+            # caller budget and provisional advances output preserved.
+            if not conn.in_transaction or _sequential_legacy_read.get() is not None:
+                raise ValueError('workflow_seq_legacy_reader_requires_snapshot')
+            token = _sequential_legacy_read.set((conn, sequential_rows))
+            try:
+                retained = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=legacy_budget,
+                                                 advances=advances)
+            finally:
+                _sequential_legacy_read.reset(token)
     finally:
-        # Preserve original refusals; the outer allowance never replenishes.
-        budget.consumed += legacy_budget.consumed
-        budget.accepted_rows += legacy_budget.accepted_rows
-        budget.traversed += legacy_budget.traversed
+        # Charge only this call's deltas, even on refusal. Source and changed
+        # target keep the SAME cumulative retained budget, without double charge.
+        budget.consumed += legacy_budget.consumed - opening[0]
+        budget.accepted_rows += legacy_budget.accepted_rows - opening[1]
+        budget.traversed += legacy_budget.traversed - opening[2]
     _require(budget.accepted_rows <= _CALL_ROW_LIMIT, 'read_rows_exhausted')
     budget.reserve(0)
+    return retained
 
 
-def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str) -> SequentialHistory:
+def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
+                            retained_budget: _Budget | None = None,
+                            advances: list[tuple[tuple[int, int], int]] | None = None,
+                            deadline: float | None = None) -> SequentialHistory:
     """Validate all sequential rows and complete combined schema in one snapshot.
 
     Empty/absent storage is explicitly unavailable. A readable inventory is not
@@ -728,18 +750,20 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str)
     complete combined references only inside the explicit new-reader scope.
     """
     _require(type(expected_org_slug) is str and bool(expected_org_slug), 'org_required')
-    observed = _ReadBudget()
+    observed = _ReadBudget() if deadline is None else _ReadBudget(deadline=deadline)
     reference = _ReadBudget(deadline=observed.deadline)
     budget = _ReadBudget(deadline=observed.deadline)
     legacy = _ReadBudget(deadline=observed.deadline, sql_limit=32000000)
+    collected: list[tuple[tuple[int, int], int]] = []
     with _schema_snapshot(conn):
         layout, metadata = _read_layout(conn, observed, reference, budget)
         if not layout.sequential:
+            retained = None
             if layout.document is not None:
                 with _sql_budget(conn, legacy):
-                    _legacy_history(conn, expected_org_slug, budget)
+                    retained = _legacy_history(conn, expected_org_slug, budget, retained_budget=retained_budget)
             budget.check()
-            return SequentialHistory(layout, 'new-engine unavailable', (), ())
+            return SequentialHistory(layout, 'new-engine unavailable', (), (), retained)
         with _sql_budget(conn, observed):
             _native_contract(conn, observed)
         with _sql_budget(conn, budget):
@@ -795,8 +819,15 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str)
         with _sql_budget(conn, legacy):
             if layout.ownership:
                 validate_sequential_ownership_guards(conn, budget=budget)
-            _legacy_history(conn, expected_org_slug, budget, data)
+            retained = _legacy_history(conn, expected_org_slug, budget, data,
+                                       retained_budget=retained_budget, advances=collected)
         budget.check()
         ready = bool(definitions and settings and layout.ownership == 2)
-        return SequentialHistory(layout, 'storage readable' if ready else 'new-engine unavailable',
-                                 tuple(sorted(definitions)), tuple(sorted(runs)))
+        result = SequentialHistory(layout, 'storage readable' if ready else 'new-engine unavailable',
+                                   tuple(sorted(definitions)), tuple(sorted(runs)), retained)
+    # No incomplete validation, interruption or failed snapshot exit publishes.
+    # Historical absent callers above keep their original early-return behavior.
+    budget.check()
+    if advances is not None:
+        advances.extend(collected)
+    return result
