@@ -5242,14 +5242,17 @@ def _advance_chain_for_completed_child(
     orch: "Orchestrator",
     parent_task_id: str,
     child_task_id: str,
+    expected_active_chain_json: str,
     report=None,
 ) -> str:
     """Inspect the parent's active_chain against the just-completed subtask's
-    report. Either spawn the next leg ("advance") or clear the chain so the
-    caller falls through to the normal parent-wake path ("wake").
+    report, distinguishing a normal wake from failed next-leg admission.
 
-    Returns "advance" or "wake". When "advance" is returned, the parent is
-    NOT re-enqueued and orchestration_step_count is NOT bumped.
+    Returns "advance", "wake", "admission_failed" or "lost_race". Failed
+    next-leg admission clears the current chain and must fail a carrier.
+    A lost race leaves the parent untouched and must not wake or terminate it.
+    When "advance" is returned, the parent is NOT re-enqueued and
+    orchestration_step_count is NOT bumped.
 
     Only called when child.status == COMPLETED — FAILED subtasks are handled
     by the bounded-wake logic in _enqueue_parent_if_waiting (TASK-573).
@@ -5273,8 +5276,19 @@ def _advance_chain_for_completed_child(
     )
 
     parent = orch._db.get_task(parent_task_id)
-    if parent is None or parent.active_chain is None:
-        return "wake"
+    if (
+        parent is None
+        or parent.status != TaskStatus.IN_PROGRESS
+        or parent.block_kind != BlockKind.DELEGATED
+        or parent.cancelled_at is not None
+        or parent.active_chain != expected_active_chain_json
+    ):
+        return "lost_race"
+
+    def clear_chain(outcome: str) -> str:
+        if orch._db.try_clear_chain(parent_task_id, expected_active_chain_json):
+            return outcome
+        return "lost_race"
 
     chain = ChainState.deserialize(parent.active_chain)
     if report is _NO_AUTHENTICATED_REPORT:
@@ -5282,13 +5296,11 @@ def _advance_chain_for_completed_child(
         # report is missing/unacceptable — fail closed.  Never consult the
         # task-wide newest-row read: a wrong-agent/wrong-session (or any
         # unrelated) row must not gate chain advancement.
-        orch._db.update_task_active_chain(parent_task_id, None)
-        return "wake"
+        return clear_chain("wake")
     if report is None:
         report = orch._db.get_latest_completion_report(child_task_id)
     if report is None:
-        orch._db.update_task_active_chain(parent_task_id, None)
-        return "wake"
+        return clear_chain("wake")
 
     completed_child = orch._db.get_task(child_task_id)
     completed_agent = completed_child.assigned_agent if completed_child is not None else None
@@ -5299,11 +5311,10 @@ def _advance_chain_for_completed_child(
         reviewer_agents=_reviewer_agents_for(orch),
     )
     if action.kind == "wake":
-        orch._db.update_task_active_chain(parent_task_id, None)
-        return "wake"
+        return clear_chain("wake")
 
     # THR-109: validate attachments FIRST, before any state change.
-    # If validation fails the chain is cleared and parent wakes — no
+    # If validation fails the chain is cleared and admission fails — no
     # child, no link/audit, no queue entry, no advanced active_chain.
     prior_context = build_prior_leg_context(
         child_task_id=child_task_id, report=report,
@@ -5325,9 +5336,8 @@ def _advance_chain_for_completed_child(
                 chain_att_params = _prepare_attachment_params(orch, prevalidated)
         except ValueError:
             # Attachment validation failed — do NOT spawn the leg.
-            # Clear the chain so the parent can wake and handle the failure.
-            orch._db.update_task_active_chain(parent_task_id, None)
-            return "wake"
+            # A carrier must fail; a manager wakes to handle the failure.
+            return clear_chain("admission_failed")
 
     # Atomic chain advance: update parent active_chain + insert next child +
     # attachment links/audit in a single transaction. A crash or write failure
@@ -5347,16 +5357,20 @@ def _advance_chain_for_completed_child(
         session_timeout_seconds=parent.session_timeout_seconds,
         task_type="subtask",
     )
-    if not orch._db.try_advance_chain(
+    advanced = orch._db.try_advance_chain(
         parent_id=parent_task_id,
         active_chain_json=chain_json,
         next_child=next_child,
+        expected_active_chain_json=expected_active_chain_json,
         attachments=chain_att_params,
         uploaded_by="orchestrator",
-    ):
+    )
+    if advanced is None:
+        return "lost_race"
+    if not advanced:
         # Chain advance + child insert failed — transaction rolled back.
-        # No partial state remains; parent wakes normally.
-        return "wake"
+        # Clear only the same chain; a concurrent cancellation/change wins.
+        return clear_chain("admission_failed")
 
     orch._audit.log_chain_auto_advance(
         parent_task_id=parent_task_id,
@@ -5450,9 +5464,9 @@ def _carrier_fail_on_verdict_mismatch(
 
 def _carrier_fail_immediate(
     orch: "Orchestrator", parent: "TaskRecord",
-    child_task_id: str,
+    child_task_id: str, *, note: str | None = None,
 ) -> bool:
-    """A carrier's chain leg failed: fail the whole carrier immediately
+    """A carrier's chain leg or next-leg admission failed: fail it immediately
     (fail-closed at carrier).  Returns True if the carrier was failed,
     False for non-carriers."""
     if not _is_carrier(orch, parent):
@@ -5469,7 +5483,7 @@ def _carrier_fail_immediate(
     _fail(
         orch,
         parent.id,
-        note=(
+        note=note or (
             f"carrier chain leg {child_task_id} failed; "
             f"causal_leaf_id={child_task_id}; causal_status="
             f"{child.status.value if child is not None else '(unknown)'}; "
@@ -5808,19 +5822,27 @@ def _enqueue_parent_if_waiting(
                 chain_snapshot = parent.active_chain
                 outcome = _advance_chain_for_completed_child(
                     orch=orch, parent_task_id=parent.id, child_task_id=task_id,
+                    expected_active_chain_json=chain_snapshot,
                     report=authenticated_report,
                 )
-                if outcome == "advance":
-                    return  # next leg spawned; parent stays in_progress(delegated)
-                # outcome == "wake" → chain cleared; carrier fail-closed?
-                if _carrier_fail_on_verdict_mismatch(
+                if outcome in ("advance", "lost_race"):
+                    return  # spawned next leg, or parent ownership/state changed
+                if outcome == "admission_failed":
+                    if _carrier_fail_immediate(
+                        orch, parent, task_id,
+                        note=(f"carrier next-leg admission failed after {task_id}; "
+                              "no next leg created"),
+                    ):
+                        return  # failure feeds the fan-out barrier once
+                    # Manager parent: chain cleared; normal wake below.
+                elif _carrier_fail_on_verdict_mismatch(
                     orch, parent, task_id, chain_snapshot,
                     report=authenticated_report,
                 ):
                     return  # carrier failed; outer _enqueue_parent_if_waiting skipped
                 # Chain complete + verdict matched → carrier auto-completes
                 # directly (no _run_agent session, no manager-wake).
-                if _carrier_complete_on_chain_complete(orch, parent):
+                elif _carrier_complete_on_chain_complete(orch, parent):
                     return  # carrier completed; outer _enqueue_parent_if_waiting skipped
             # Stale re-trigger for a leg the chain already advanced past, or a
             # non-newest child: fall through to sibling-check + parent-wake.
