@@ -2092,10 +2092,35 @@ async def resolve_escalation_from_thread(
         thread_id=thread_id,
         resolution_path="thread_manual_supersede",
     )
-    # Consume the invocation token to prevent replay — mirrors the reply
-    # route's token lifecycle. A single invocation can perform at most one
-    # state-changing resolution.
-    org.db.consume_invocation(body.invocation_token)
+    # Resolve first so a rejected resolution leaves the invocation pending.
+    # Then acknowledge the REPLY's claimed coverage and release its slot in
+    # the same transaction that consumes the invocation.
+    tokens_to_enqueue: list[str] = []
+    async with org.db_lock:
+        if org.db.get_pending_invocation(body.invocation_token) is None:
+            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+        if invocation.purpose is ThreadInvocationPurpose.REPLY:
+            settlement, catch_up = org.db.settle_conversational_reply_with_exchange(
+                token=body.invocation_token,
+                outcome="reply",
+            )
+            if settlement is None:
+                # Legacy/stale pending REPLY not owned by delivery state.
+                ok = org.db.consume_invocation(body.invocation_token)
+            else:
+                ok = True
+                if settlement.follow_on_token is not None:
+                    tokens_to_enqueue.append(settlement.follow_on_token)
+                tokens_to_enqueue.extend(
+                    a.invocation_token for a in catch_up
+                    if a.invocation_token is not None
+                )
+        else:
+            ok = org.db.consume_invocation(body.invocation_token)
+        if not ok:
+            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
     return {"ok": True, "task_id": body.task_id, "new_status": new_status}
 def _task_in_thread_lineage(org, task_id: str, thread_id: str) -> bool:
     """True if task_id is dispatched from thread_id, or has an ancestor
