@@ -41,7 +41,7 @@ def validate_report(path: Path, expected: dict, *, signal_name: str | None = Non
         suite_name = suite.get("name")
         if suite_name == "product":
             if Counter(names) != Counter(MANIFEST["variants"]):
-                raise ValueError("Product cases differ from exact 56-name manifest")
+                raise ValueError(f"Product cases differ from exact {len(MANIFEST['variants'])}-name manifest")
         elif suite_name == "diagnostic":
             if set(names) != {*HOUSEKEEPING, "launcher." + signal_name}:
                 raise ValueError("Missing or unexpected launcher/setup/cleanup cases")
@@ -96,7 +96,8 @@ def main() -> int:
             errors.append(artifact + ": " + str(exc))
             print("FAIL " + artifact)
     status = "FAIL" if errors else "PASS"
-    lines = [f"## Product E2E Health: {status}", "", f"Product cases: {product}/112",
+    expected_product = len(MANIFEST["variants"]) * len(MANIFEST["daily_python"])
+    lines = [f"## Product E2E Health: {status}", "", f"Product cases: {product}/{expected_product}",
              f"Launcher diagnostics: {diagnostics}/2", "Setup/cleanup: " + ("FAIL or unavailable" if errors else "PASS"),
              f"Source: `{args.source}`; event: `{args.event}`; run: `{identity.get('run_id', 'UNKNOWN')}`; attempt: `{identity.get('run_attempt', 'UNKNOWN')}`.",
              "", "JUnit uses GitHub default artifact retention. Health does not block merging."]

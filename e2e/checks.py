@@ -2423,7 +2423,7 @@ def validate_e07_failures(row: dict, observations: dict, archive: dict, trace: o
           and group['first_error_ref'] is None and prior_group['state'] == 'running'
           and prior_group['first_error_ref'] is None and prior_group['end'] is None
           and same(prior_group['begin'],group['begin'])
-          and prior_group['variants'] == group['variants'] == MANIFEST['variants'][53:],
+          and prior_group['variants'] == group['variants'] == MANIFEST['variants'][53:56],
           'original running E07 and completed error-free group')
     cutoff = archive['observer_state']['cutoff']
     times = (group['begin'], admission['entered'], cutoff, admission['finished'],
@@ -3096,3 +3096,115 @@ def validate_groups(result: dict, observations: dict, selected: str | None = Non
             raise ValueError('group first original error unavailable')
         if group['state'] == 'reported_pass' and (ref is not None or group['begin'] is None or group['end'] is None):
             raise ValueError('group pass conflicts with original error/interval')
+
+
+def validate_j1(observations: dict, prefix: dict, source: Path, variant: str) -> None:
+    """Read J1's actual suffix independently of scenario/fixture expectations."""
+    from collections import Counter
+
+    def check(ok: bool, label: str) -> None:
+        if not ok:
+            raise ValueError("J1 content: " + label)
+
+    case = observations["j1"]
+    start = case["start"]
+    check(prefix and observations["starts"] == prefix["starts"] + [start]
+          and observations["commands"] == prefix["commands"]
+          and observations["thread_commands"] == prefix["thread_commands"]
+          and observations["e07_commands"] == prefix["e07_commands"], "exact original streams plus one J1 provider")
+    check(start["org"] == "alpha" and start["agent"] == "case_manager" and start["pid_start"] is not None,
+          "genuine alpha task binding")
+    commands = observations["provider_commands"][len(prefix["provider_commands"]):]
+    check(observations["provider_commands"][:len(prefix["provider_commands"])] == prefix["provider_commands"]
+          and [c["action"] for c in commands] == ["j1-kb-add", "j1-artifacts-put", "j1-final"], "closed three-CLI suffix")
+    attempts = observations["provider_attempts"][len(prefix["provider_attempts"]):]
+    check(observations["provider_attempts"][:len(prefix["provider_attempts"])] == prefix["provider_attempts"]
+          and len(attempts) == 3 and all(a["provider"] == start and a["command_index"] == len(prefix["provider_commands"]) + i
+              and a["instruction"]["action"] == command["action"] for i, (a, command) in enumerate(zip(attempts, commands))),
+          "all suffix command attempts accounted")
+    manifest = next(d["executable_manifest"] for d in observations["durable"] if "executable_manifest" in d)
+    expected_argv = [
+        [manifest["callback"], "kb", "add", "--from-file", str(source / "e2e/fixtures/j1-entry.md"), "--org", "alpha", "--agent", "case_manager"],
+        [manifest["callback"], "artifacts", "put", str(source / "e2e/fixtures/j1-artifact.txt"), "--name", "j1-artifact.txt", "--org", "alpha", "--agent", "case_manager"],
+    ]
+    raw = observations["witness_data"].encode()
+    old_raw = prefix["witness_data"].encode()
+    check(raw.startswith(old_raw) and raw.endswith(b"\n") and len(raw) == observations["witness_bytes"]
+          and hashlib.sha256(raw).hexdigest() == observations["witness_sha256"]
+          and observations["witness_incomplete_line"] is False, "complete unchanged witness prefix")
+    suffix = [json.loads(line) for line in raw[len(old_raw):].splitlines()]
+    check(Counter(w["kind"] for w in suffix) == {"stub": 1, "callback": 3}
+          and all(w["source_sha"] == manifest["revision"] for w in suffix), "every J1 suffix executable accounted")
+    stub, = [w for w in suffix if w["kind"] == "stub"]
+    check(stub["provider"] == "claude" and stub["stub_sha256"] == manifest["stubs"]["claude"]["sha256"], "real registered provider stub")
+    for index, command in enumerate(commands):
+        check(command["exit"] == 0 and command["timed_out"] is False
+              and command["child_parent"] == start["pid"] and command["child_start"] is not None
+              and command["provider"] == {k: start[k] for k in ("task", "session", "agent", "org", "pid")}
+              and command["python"] == manifest["python"] and command["source_sha"] == manifest["revision"]
+              and command["callback_sha256"] == manifest["callback_sha256"]
+              and case["entered"] <= command["entered"] <= command["finished"] < command["execution_deadline"], "actual child/source/exit/deadline")
+        if index < 2:
+            check(command["argv"] == expected_argv[index], "shipping write argv")
+        matches = [w for w in suffix if w["kind"] == "callback" and w["pid"] == command["child_pid"]
+                   and w["ppid"] == start["pid"] and w["argv_sha256"] == hashlib.sha256(json.dumps(command["argv"][1:]).encode()).hexdigest()
+                   and w["cli_sha256"] == hashlib.sha256((source / "cli/main.py").read_bytes()).hexdigest()]
+        check(len(matches) == 1, "independent real child CLI witness")
+    completion = case["completion"]
+    task, = completion["tasks"]
+    result, = completion["results"]
+    final_payload = dict(task_id=start["task"], session_id=start["session"], agent="case_manager", status="completed", confidence=90,
+                        summary="J1 knowledge and artifact published", decision=dict(action="done", summary="J1 knowledge and artifact published"))
+    final_raw = json.dumps(final_payload, sort_keys=True).encode()
+    final_path = str(Path(manifest["root"]) / "coord" / (hashlib.sha256(final_raw).hexdigest() + ".json"))
+    check(commands[2]["argv"] == [manifest["callback"], "report-completion", "--org", "alpha", "--from-file", final_path]
+          and commands[2]["payload"] == final_payload, "actual final CLI and original-SID payload")
+    check(task["id"] == start["task"] and task["status"] == "completed" and task["current_session_id"] == start["session"]
+          and result["task_id"] == start["task"] and result["session_id"] == start["session"]
+          and result["agent"] == "case_manager" and result["status"] == "completed"
+          and result["output_summary"] == "J1 knowledge and artifact published", "actual original-SID final result/task")
+    slug, name = "j1-agent-knowledge", "j1-artifact.txt"
+    content = "J1 artifact from the real agent CLI.\nExact bytes: alpha → founder; 中文 café.\n".encode()
+    if variant == "J1.agent-cli-publish":
+        check(commands[0]["stdout"] == "ok: added j1-agent-knowledge\n"
+              and commands[1]["stdout"] == f"uploaded {name} ({len(content)}B)\n", "actual write CLI outputs")
+        for command, path in zip(commands[:2], ("/kb", "/artifacts")):
+            wire = [r for r in command["wire"] if r["method"] == "POST" and r["path"].split("?", 1)[0] == "/api/v1/orgs/alpha" + path]
+            check(len(wire) == 1 and wire[0]["status"] == 200 and wire[0]["dropped"] is False, "real successful write HTTP")
+    elif variant == "J1.api-content":
+        api = case["api"]
+        check({k: api["kb"][k] for k in ("slug", "title", "body", "authored_by")} == dict(
+            slug=slug, title="J1 agent knowledge", authored_by="case_manager",
+            body="J1 knowledge from the real agent CLI.\n\nExact content: alpha → founder; 中文 café.\n"), "exact public KB identity/content")
+        info, = [a for a in api["artifacts"]["artifacts"] if a["name"] == name]
+        check(info["size_bytes"] == len(content) and bool(info["modified_at"])
+              and api["artifact"]["status"] == 200 and api["artifact"]["bytes"] == len(content)
+              and bytes.fromhex(api["artifact"]["body_hex"]) == content, "exact public artifact metadata/bytes")
+    elif variant == "J1.browser-kb":
+        check(case["browser_kb"] == dict(slug=slug, title="J1 agent knowledge", paragraphs=[
+            "J1 knowledge from the real agent CLI.", "Exact content: alpha → founder; 中文 café."]), "real rendered KB paragraphs")
+    elif variant == "J1.browser-artifact-download":
+        browser = case["browser_artifact"]
+        check(browser["name"] == browser["filename"] == name and browser["size"] == f"{len(content)} B"
+              and browser["modified"] == browser["expected_modified"] and browser["modified"].startswith("Modified ")
+              and bytes.fromhex(browser["body_hex"]) == content
+              and (Path(manifest["root"]) / "raw/j1-download.txt").read_bytes() == content,
+              "actual card metadata and Download bytes")
+    elif variant in {"J1.bearer-absent", "J1.bearer-wrong"}:
+        label = variant.rsplit("-", 1)[1]
+        reads = case["denials"][label]
+        check([r["path"] for r in reads] == ["/api/v1/orgs/alpha/kb", "/api/v1/orgs/alpha/kb/" + slug,
+              "/api/v1/orgs/alpha/artifacts", "/api/v1/orgs/alpha/artifacts/" + name], "all positive-existing targets reached")
+        detail = "missing bearer token" if label == "absent" else "bad token"
+        check(all(r["status"] == 401 and json.loads(bytes.fromhex(r["body_hex"])) == {"detail": detail} for r in reads)
+              and case["denial_state"][label]["before"] == case["denial_state"][label]["after"], "exact denials/unchanged protected content")
+    elif variant == "J1.cross-org-isolation":
+        beta = case["beta"]
+        check(all(e["slug"] != slug for e in beta["kb"]["entries"])
+              and all(a["name"] != name for a in beta["artifacts"]["artifacts"])
+              and beta["entry"]["status"] == beta["artifact"]["status"] == 404
+              and json.loads(bytes.fromhex(beta["entry"]["body_hex"])) == {"detail": dict(code="not_found", slug=slug)}
+              and json.loads(bytes.fromhex(beta["artifact"]["body_hex"])) == {"detail": dict(code="artifact_not_found", name=name)}
+              and case["ownership_state"]["before"] == case["ownership_state"]["after"], "no cross-org content or read effects")
+    else:
+        raise ValueError("unknown J1 variant")

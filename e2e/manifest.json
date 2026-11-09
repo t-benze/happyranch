@@ -63,7 +63,14 @@
     "E05.nonparticipant-task-send",
     "E07.cancel-cascade-browser",
     "E07.cancel-terminal-unchanged",
-    "E07.cancelled-late-cli"
+    "E07.cancelled-late-cli",
+    "J1.agent-cli-publish",
+    "J1.api-content",
+    "J1.browser-kb",
+    "J1.browser-artifact-download",
+    "J1.bearer-absent",
+    "J1.bearer-wrong",
+    "J1.cross-org-isolation"
   ],
   "event": "schedule",
   "cron": "0 19 * * *",

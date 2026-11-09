@@ -1,0 +1,2 @@
+J1 artifact from the real agent CLI.
+Exact bytes: alpha → founder; 中文 café.

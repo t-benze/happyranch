@@ -91,6 +91,8 @@ class Controller:
             self.report.expect("product", MANIFEST["variants"])
         self.cleanup_pins: list[dict] = []
         self.e07_prefix: dict = {}
+        self.j1_prefix: dict = {}
+        self.j1: dict = {}
         self.commands: list[dict] = []
         self.http: list[dict] = []
         self.durable: list[dict] = []
@@ -203,7 +205,7 @@ class Controller:
             require(len(submitted) == 1 and submitted[0]["status"] == 201
                     and submitted[0]["response"] == json.loads(receipt["stdout"]) and not submitted[0]["dropped"],
                     "actual submit HTTP201 and returned identity", submitted)
-        if action in {"jobs-block", "jobs-final"}:
+        if action in {"jobs-block", "jobs-final", "j1-final"}:
             payload = receipt["payload"]
             expected = f"/api/v1/orgs/{start['org']}/tasks/{start['task']}/completion"
             callbacks = [r for r in receipt["wire"] if r["path"] == expected and r["method"] == "POST"]
@@ -952,6 +954,7 @@ class Controller:
             launches, failures = self.collect_e07_launches()
             self.e07.update(partial_launches=launches, launch_record_failures=failures)
         rows.update(e07=self.e07, e07_commands=self.e07_commands, boots=self.boots)
+        rows.update(j1=self.j1)
         thread_proxy = []
         if self.browser_relay:
             with self.browser_relay.lock:
@@ -977,15 +980,24 @@ class Controller:
         return json.loads(self.sanitize(json.dumps(rows)))
 
     def check_content(self) -> None:
-        from checks import validate_e04, validate_e05, validate_e07, validate_groups
+        from checks import validate_e04, validate_e05, validate_e07, validate_groups, validate_j1
         self.report.record_sampler_timings(list(self.observer), self.durable, self.e07.get("window", {}))
         observations = self.observations()
         observations["cleanup_pins"] = self.cleanup_pins
+        complete = observations
+        if self.j1_prefix:
+            # The old readers own the exact completed pre-J1 streams. Final
+            # resource closure remains current; J1 independently owns ALL suffix
+            # starts/commands/witness bytes, never silently ignored extras.
+            observations = dict(complete)
+            for key in ("starts", "commands", "provider_commands", "provider_attempts", "variants",
+                        "witness_data", "witness_bytes", "witness_sha256", "witness_incomplete_line", "launch_witnesses"):
+                observations[key] = self.j1_prefix[key]
         row = dict(observations, source_sha=self.revision, python=os.environ.get("E2E_PYTHON"),
                    phases=[dict(name="scenarios", deadline=self.deadline)])
         readers = (([name for name in MANIFEST["variants"] if name.startswith("E04.")], "E04", lambda: validate_e04(row, observations, observations["browser_events"], self.root / "raw")),
                    (MANIFEST["variants"][48:53], "E05", lambda: validate_e05(row, observations, self.root / "raw")),
-                   (MANIFEST["variants"][53:], "E07", lambda: validate_e07(row, observations, self.root / "raw")))
+                   (MANIFEST["variants"][53:56], "E07", lambda: validate_e07(row, observations, self.root / "raw")))
         for name in MANIFEST["variants"]:
             if name not in self.results and self.report.cases["product", name].get("pending"):
                 self.report.record("product", name, RuntimeError("Prerequisite ERROR: case did not reach its required closure"))
@@ -1007,6 +1019,16 @@ class Controller:
                     if name in self.results:
                         self.report.record("product", name, exc)
                 self.report.record("harness", "content:" + group, exc)
+        for name in MANIFEST["variants"][56:]:
+            if name in self.results:
+                try:
+                    validate_j1(complete, self.j1_prefix, self.source, name)
+                except Exception as exc:
+                    self.report.record("product", name, exc)
+        if self.j1:
+            self.report.outputs["product", "J1.agent-cli-publish"] = json.dumps(dict(
+                diagnostic="J1-timing", entered=self.j1["entered"], finished=self.j1["finished"],
+                seconds=(self.j1["finished"] - self.j1["entered"] if self.j1["finished"] is not None else None)))
         if self.failures:
             self.report.record("harness", "controller", AssertionError("Controller action or cleanup failed"))
 
@@ -1111,6 +1133,8 @@ def main() -> None:
                     controller.groups['E07']['state'] = 'reported_pass'
                 finally:
                     controller.groups['E07']['end'] = time.monotonic()
+                from scenarios import knowledge
+                controller.run_group(MANIFEST["variants"][56:], lambda: knowledge(controller))
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException as exc:

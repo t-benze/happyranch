@@ -104,6 +104,20 @@ class Store:
             "audit": self.query(f"SELECT * FROM audit_log WHERE task_id IN ({marks}) ORDER BY id", tuple(ids)),
         }
 
+    def knowledge(self) -> dict:
+        """Read org KB/artifact bytes and SQL effects around public read denials."""
+        files = []
+        for name in ("kb", "artifacts"):
+            directory = self.path.parent / name
+            for path in sorted(directory.rglob("*")) if directory.exists() else []:
+                require(not path.is_symlink(), "unexpected J1 product file symlink")
+                if path.is_file():
+                    raw = path.read_bytes()
+                    files.append(dict(path=str(path.relative_to(self.path.parent)), bytes=len(raw),
+                                      sha256=hashlib.sha256(raw).hexdigest()))
+        return dict(files=files, sql=self.snapshot(), audit=self.query("SELECT * FROM audit_log ORDER BY id"),
+                    views=self.query("SELECT * FROM kb_views ORDER BY slug"))
+
     def jobs(self, task: str) -> dict:
         snapshot = self.snapshot(task)
         snapshot["jobs"] = self.query(
