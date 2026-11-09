@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -189,6 +190,62 @@ def _decode(raw: bytes, budget: _ReadBudget) -> dict:
     value = _json(raw, 1048576)
     _decoded(value, budget)
     return value
+
+
+_OUTPUT_STRINGS = re.compile(rb'"(?:[^"\\]++|\\[\s\S])*+"')
+_OUTPUT_LEAVES = re.compile(rb'\[[^][{}]*\]|\{[^][{}]*\}')
+_OUTPUT_DELIMITERS = re.compile(rb'[][{}]')
+_OUTPUT_LONG_INTEGER = re.compile(rb'[0-9]{20}')
+_OUTPUT_FLOAT = re.compile(rb'[0-9][.eE]')
+
+
+def _output_json(raw: bytes, budget: _ReadBudget) -> None:
+    """Prove output integrity without a discarded Python node/byte walk.
+
+    _outputs has already gated length/type/SHA. The original caller allowance
+    (complete history or selected accept before COMMIT) covers native JSON
+    decoding/canonical encoding plus all transient topology copies. Compiled
+    scans mask strings and remove innermost containers in at most 24 rounds;
+    Python work is bounded by depth, independently of scalar/member density.
+    CPython's accelerated JSON path performs the actual parse/encode work.
+    Suspect input uses the strict old decoder on this SAME budget, preserving
+    refusal categories without making a digest an attestation of valid JSON.
+    """
+    budget.reserve(24 * len(raw) + 512)
+    budget.reserve(4 * len(raw) + 512)
+    budget.step()
+    tokens = _OUTPUT_STRINGS.sub(b'""', raw)
+    budget.step()
+    if _OUTPUT_LONG_INTEGER.search(tokens):
+        _decode(raw, budget)
+        return
+    topology = tokens
+    for _ in range(24):
+        budget.step()
+        reduced = _OUTPUT_LEAVES.sub(b'', topology)
+        if reduced == topology:
+            break
+        topology = reduced
+    budget.step()
+    if _OUTPUT_DELIMITERS.search(topology):
+        _decode(raw, budget)
+        return
+    budget.step()
+    try:
+        value = json.loads(raw.decode('utf8'))
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        _decode(raw, budget)
+        return
+    budget.step()
+    try:
+        canonical = _bytes(value)
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        _decode(raw, budget)
+        return
+    budget.step()
+    if type(value) is not dict or raw != canonical or _OUTPUT_FLOAT.search(tokens):
+        _decode(raw, budget)
+    budget.check()
 
 
 def _parse(raw: bytes, parser: Callable[..., _Parsed], budget: _ReadBudget,
@@ -379,7 +436,7 @@ def _outputs(data: dict[str, list[dict]], visits: dict[str, dict], runs: dict[st
         else:
             # Domain content integrity only; capability and repository semantics
             # are checked by the future trusted U5 adapter, not unsigned bytes.
-            _decode(row['content_bytes'], budget)
+            _output_json(row['content_bytes'], budget)
         selected.setdefault(visit['id'], []).append(dict(slot=row['slot'], contract=row['contract'],
             epoch=row['epoch'], producer_visit=visit['id'], task_id=row['task_id'], session_id=row['session_id'],
             result_id=row['result_id'], digest=row['content_digest']))
