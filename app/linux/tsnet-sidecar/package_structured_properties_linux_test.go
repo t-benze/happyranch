@@ -24,7 +24,7 @@ func TestLoadedStructuredProperties(t *testing.T) {
 				}
 			}
 			if prop == "ExecStartPreEx" {
-				cases = append(cases, "wrong-order", "extra", "duplicate", "zero", "missing-entry", "wrong-argv", "wrong-path", "wrong-flags", "extra-flags", "duplicate-flags", "tuple-extra", "argv-type", "flags-type", "dynamic-limits", "bool-int", "negative-unsigned", "timestamp-overflow", "pid-overflow", "code-underflow", "status-overflow", "signed-negative-zero")
+				cases = append(cases, "wrong-order", "extra", "duplicate", "zero", "missing-entry", "wrong-argv", "wrong-path", "wrong-flags", "obsolete-flags", "unprefixed-flag", "extra-flags", "duplicate-flags", "tuple-extra", "argv-type", "flags-type", "dynamic-limits", "bool-int", "negative-unsigned", "timestamp-overflow", "pid-overflow", "code-underflow", "status-overflow", "signed-negative-zero")
 			}
 			for _, scenario := range cases {
 				t.Run(unit+"/"+prop+"/"+scenario, func(t *testing.T) {
@@ -34,6 +34,91 @@ func TestLoadedStructuredProperties(t *testing.T) {
 		}
 	}
 }
+
+// The plus connector case exercises the shared text comparator with an explicit
+// test-side declaration. The shipping connector start has no plus; its plain
+// case independently requires empty flags. No production test seam is added.
+func TestLoadedTextExecutionFlags(t *testing.T) {
+	root, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := strings.Replace(serviceSettingsTypedFixture[:strings.Index(serviceSettingsTypedFixture, "popen = package.subprocess.Popen")], "unit, scenario = sys.argv[1:]", "unit, scenario = sys.argv[1:3]", 1)
+	for _, target := range []struct{ unit, prop, declaration string }{
+		{"happyranch-connector.service", "ExecStartEx", "plain"},
+		{"happyranch-connector.service", "ExecStartEx", "plus"},
+		{"happyranch-tsnet-sidecar.service", "ExecStartEx", "plain"},
+		{"happyranch-tsnet-sidecar.service", "ExecStartPostEx", "plus"},
+	} {
+		cases := []string{"exact-unstarted", "exact-exited", "obsolete", "extra", "duplicate"}
+		if target.declaration == "plus" {
+			cases = append(cases, "missing")
+		} else {
+			cases = append(cases, "unexpected")
+		}
+		for _, scenario := range cases {
+			t.Run(target.unit+"/"+target.prop+"/"+target.declaration+"/"+scenario, func(t *testing.T) {
+				runWatchdogPython(t, root, setup+loadedTextExecutionFlagsFixture, target.unit, scenario, target.prop, target.declaration)
+			})
+		}
+	}
+}
+
+const loadedTextExecutionFlagsFixture = `
+prop, declaration = sys.argv[3:]
+# Oracle: v255 exec-util.c437-490 and systemctl-show.c1370-1406;
+# independently observed man-db.service plus/plain typed+text, and sssd's
+# unstarted code=(null), status=0/0. Never read expected flags from the checker.
+flags = "privileged" if declaration == "plus" else ""
+if scenario == "obsolete": flags = "fully-privileged"
+if scenario == "extra": flags = (flags + " ignore-failure").strip()
+if scenario == "duplicate": flags = "privileged privileged"
+if scenario == "missing": flags = ""
+if scenario == "unexpected": flags = "privileged"
+argv = start if prop == "ExecStartEx" else "/opt/happyranch/bin/happyranch-connector retire-enrollment-source --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf"
+context[prop] = execution(argv, flags).replace("start_time=[]", "start_time=[n/a]").replace("stop_time=[]", "stop_time=[n/a]")
+if scenario == "exact-exited":
+    context[prop] = context[prop].replace("[n/a]", "[Mon 2026-11-09 11:09:53 CST]").replace("pid=0", "pid=4020237").replace("code=(null) ; status=0/0", "code=exited ; status=0")
+render = package.render_composite_units
+def declarations():
+    units = render()
+    if connector and declaration == "plus":
+        units[unit] = units[unit].replace("ExecStart=", "ExecStart=+", 1)
+    return units
+popen = package.subprocess.Popen
+children = []
+def observation(args, **kwargs):
+    if args[0] == "/usr/bin/systemctl":
+        names = [arg.removeprefix("--property=") for arg in args[3:]]
+        if args[2] == unit:
+            raw = "".join(name + "=" + context[name] + "\n" for name in names).encode()
+        else:
+            raw = "".join(name + "=" + ("not-found" if name == "LoadState" else "no" if name == "NeedDaemonReload" else "") + "\n" for name in names).encode()
+    else:
+        assert args[-1] in structured
+        raw = structured_frame(args[-1])
+    child = popen([sys.executable, "-c", "import os,sys; os.write(1,bytes.fromhex(sys.argv[1]))", raw.hex()], **kwargs)
+    children.append(child)
+    return child
+with patch.object(package.os, "geteuid", return_value=0), \
+     patch.object(package, "_package_managed_history", return_value=(None, {}, None, True)), \
+     patch.object(Path, "exists", return_value=False), \
+     patch.object(package, "render_composite_units", side_effect=declarations), \
+     patch.object(package.subprocess, "Popen", side_effect=observation):
+    try:
+        package._installed_managed_contract(_package=True)
+    except package.PackageError as error:
+        actual = exception_refusal(error)
+        assert not scenario.startswith("exact-"), ("expected acceptance", unit, prop, declaration, scenario, actual, exception_loaded(error))
+        assert actual == ("managed_loaded_contract_mismatch", "P000264"), actual
+        loaded = exception_loaded(error)
+        assert loaded[1] == prop and loaded[3:5] == ["!", "!"], loaded
+        print("REFUSED", unit, prop, declaration, scenario, actual)
+    else:
+        assert scenario.startswith("exact-"), ("unexpected acceptance", unit, prop, declaration, scenario)
+        print("ACCEPTED", unit, prop, declaration, scenario)
+assert all(child.poll() is not None and child.stdout.closed for child in children)
+`
 
 const loadedStructuredFixture = `
 import copy
@@ -59,16 +144,18 @@ if scenario in ("extra", "duplicate"): data.append(copy.deepcopy(data[0] if data
 if scenario == "zero": data = []
 if scenario == "wrong-order": data = list(reversed(data)) if data else [sample]
 if scenario == "missing-entry": data = data[:-1] if data else [sample]
-if prop.endswith("Ex") and scenario in ("wrong-argv", "wrong-path", "wrong-flags", "extra-flags", "duplicate-flags", "tuple-extra", "argv-type", "flags-type", "dynamic-limits", "bool-int", "negative-unsigned", "timestamp-overflow", "pid-overflow", "code-underflow", "status-overflow", "signed-negative-zero"):
+if prop.endswith("Ex") and scenario in ("wrong-argv", "wrong-path", "wrong-flags", "obsolete-flags", "unprefixed-flag", "extra-flags", "duplicate-flags", "tuple-extra", "argv-type", "flags-type", "dynamic-limits", "bool-int", "negative-unsigned", "timestamp-overflow", "pid-overflow", "code-underflow", "status-overflow", "signed-negative-zero"):
     data = data or [copy.deepcopy(sample)]
     if scenario == "wrong-argv": data[0][1].append("SENTINEL")
     if scenario == "wrong-path": data[0][0] = "/private/SENTINEL"
-    if scenario == "wrong-flags": data[0][2] = [] if data[0][2] else ["fully-privileged"]
+    if scenario == "wrong-flags": data[0][2] = [] if data[0][2] else ["privileged"]
+    if scenario == "obsolete-flags": data[0][2] = ["fully-privileged"]
+    if scenario == "unprefixed-flag": data[-1][2] = ["privileged"]
     if scenario == "extra-flags": data[0][2].append("ignore-failure")
-    if scenario == "duplicate-flags": data[0][2] = ["fully-privileged", "fully-privileged"]
+    if scenario == "duplicate-flags": data[0][2] = ["privileged", "privileged"]
     if scenario == "tuple-extra": data[0].append(0)
     if scenario == "argv-type": data[0][1] = "SENTINEL"
-    if scenario == "flags-type": data[0][2] = "fully-privileged"
+    if scenario == "flags-type": data[0][2] = "privileged"
     if scenario == "dynamic-limits":
         if connector: data = []
         else:
@@ -104,7 +191,7 @@ if scenario == "signed-negative-zero": frame = frame.replace(b",0", b",-0", 1)
 if scenario == "unprintable": frame = b"[unprintable]\n"
 if scenario == "oversize": frame = b"x" * 8192
 accepted = scenario in ("exact", "loaded-dropin", "real-framed-pre", "dynamic-limits", "shared-bound") or scenario == "zero" and not connector and not loaded_dropin and prop == "LoadCredential" or scenario == "zero" and connector and prop == "ExecStartPreEx"
-mismatch = scenario in ("nonempty", "wrong-id", "wrong-path", "extra", "duplicate", "zero", "wrong-order", "missing-entry", "wrong-argv", "wrong-flags", "extra-flags", "duplicate-flags")
+mismatch = scenario in ("nonempty", "wrong-id", "wrong-path", "extra", "duplicate", "zero", "wrong-order", "missing-entry", "wrong-argv", "wrong-flags", "obsolete-flags", "unprefixed-flag", "extra-flags", "duplicate-flags")
 expected_code = "P000264" if prop.endswith("Ex") else "P000263" if prop == "LoadCredentialEncrypted" else "P000265"
 popen = package.subprocess.Popen
 capture = cli._capture_bounded_query_output

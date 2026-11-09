@@ -79,6 +79,8 @@ base = {
 }
 if connector:
     base["Wants"] += " happyranch-tsnet-sidecar.service"
+# Flag spelling oracle: systemd v255 src/shared/exec-util.c exec_command_strings
+# (not the checker); local259.5 man-db.service ExecStartEx typed+text agrees.
 def execution(argv, flags=""):
     return "{ path=" + argv.split()[0] + " ; argv[]=" + argv + " ; flags=" + flags + " ; start_time=[] ; stop_time=[] ; pid=0 ; code=(null) ; status=0/0 }"
 if connector:
@@ -86,8 +88,8 @@ if connector:
     pre, post = "", ""
 else:
     start = "/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json"
-    pre = execution("/opt/happyranch/bin/happyranch-connector reconcile-enrollment-retirement --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf", "fully-privileged") + " " + execution("/opt/happyranch/bin/happyranch-connector credential-capability --name enrollment.key --unit happyranch-tsnet-sidecar.service --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed")
-    post = execution("/opt/happyranch/bin/happyranch-connector retire-enrollment-source --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf", "fully-privileged")
+    pre = execution("/opt/happyranch/bin/happyranch-connector reconcile-enrollment-retirement --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf", "privileged") + " " + execution("/opt/happyranch/bin/happyranch-connector credential-capability --name enrollment.key --unit happyranch-tsnet-sidecar.service --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed")
+    post = execution("/opt/happyranch/bin/happyranch-connector retire-enrollment-source --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf", "privileged")
 commands = {
     "ExecStartEx": execution(start), "ExecStartPreEx": pre, "ExecStartPostEx": post,
     "LoadCredential": "daemon.token:/etc/happyranch/daemon.token" if connector else "",

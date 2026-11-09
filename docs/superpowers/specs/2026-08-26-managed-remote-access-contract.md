@@ -59,7 +59,7 @@ Expected configuration remains EXACT ordered list equality:
 /opt/happyranch/bin/happyranch-connector credential-capability --name enrollment.key --unit happyranch-tsnet-sidecar.service --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed
 ```
 
-The first entry's flags are exactly `["fully-privileged"]`, and the second's
+The first entry's flags are exactly `["privileged"]`, and the second's
 exactly `[]`. Each tuple's four timestamps are uint64, pid uint32, and code and
 status int32 (exact Python integers within those ranges). These dynamic fields
 supply no configuration authority and are not compared. Duplicated, extra,
@@ -68,7 +68,17 @@ remains P000265 naming LoadCredential; encrypted mismatch P000263 naming
 LoadCredentialEncrypted; pre-command mismatch P000264. Existing sensitive
 loaded diagnostics withhold expected/actual values for all three properties.
 
-ExecStartEx and ExecStartPostEx retain their text comparison paths. The remaining
+ExecStartEx and ExecStartPostEx retain their text comparison paths. A `+`
+declaration requires exactly `flags=privileged`; an entry without `+` requires
+empty flags. This covers the sidecar ExecStartPost; the connector's current
+ExecStart has no `+` and requires empty flags. The obsolete spelling
+`fully-privileged`, additional flags and duplicates refuse.
+
+Flag spelling comes from systemd [v255 exec_command_strings and conversion](https://github.com/systemd/systemd/blob/v255/src/shared/exec-util.c#L437)
+and its [shared Exec text formatter](https://github.com/systemd/systemd/blob/v255/src/systemctl/systemctl-show.c#L1370),
+corroborated by local259.5 `man-db.service` typed and text ExecStartEx: its
+`+` command reports `["privileged"]` / `flags=privileged`, and its ordinary
+command reports `[]` / empty flags. These are read-only observations. The remaining
 seq146 positive-empty supplements are EnvironmentFiles `a(sb)`, ExecStop and
 ExecStopPost `a(sasbttttuii)`, and ExecStartPostEx `a(sasasttttuii)`: only an
 omitted requested name triggers a typed read, whose exact byte frame must be

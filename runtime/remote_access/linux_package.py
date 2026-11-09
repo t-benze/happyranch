@@ -4076,7 +4076,7 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                 actual = commands[directive + "Ex"]
                 if directive == "ExecStartPre":
                     expected_pre = [[line.split(" ")[0], line.split(" "),
-                                     ["fully-privileged"] if raw.startswith("+") else []]
+                                     ["privileged"] if raw.startswith("+") else []]
                                     for line, raw in zip(declared, declared_raw)]
                     if actual != json.dumps(expected_pre, separators=(",", ":")):
                         raise loaded_error(diagnostic_error("P000264", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), directive + "Ex", None, None)
@@ -4088,7 +4088,7 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                         or " ".join(match.group(0) for match in re.finditer(r"\{[^{}]*\}", actual)) != actual
                         or [r[1] for r in records] != declared
                         or any(r[0] != r[1].split(" ", 1)[0]
-                               or r[2].strip() != ("fully-privileged" if declaration.startswith("+") else "")
+                               or r[2].strip() != ("privileged" if declaration.startswith("+") else "")
                                for r, declaration in zip(records, declared_raw))):
                     raise loaded_error(diagnostic_error("P000264", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), directive + "Ex", None, None)
             credentials = json.dumps([["daemon.token", "/etc/happyranch/daemon.token"]] if unit == UNITS[0]
