@@ -96,7 +96,8 @@ def main() -> int:
             errors.append(artifact + ": " + str(exc))
             print("FAIL " + artifact)
     status = "FAIL" if errors else "PASS"
-    lines = [f"## Product E2E Health: {status}", "", f"Product cases: {product}/112",
+    expected_product = len(MANIFEST["variants"]) * len(MANIFEST["daily_python"])
+    lines = [f"## Product E2E Health: {status}", "", f"Product cases: {product}/{expected_product}",
              f"Launcher diagnostics: {diagnostics}/2", "Setup/cleanup: " + ("FAIL or unavailable" if errors else "PASS"),
              f"Source: `{args.source}`; event: `{args.event}`; run: `{identity.get('run_id', 'UNKNOWN')}`; attempt: `{identity.get('run_attempt', 'UNKNOWN')}`.",
              "", "JUnit uses GitHub default artifact retention. Health does not block merging."]
