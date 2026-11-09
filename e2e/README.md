@@ -68,7 +68,12 @@ claim across the reads. The exception stack excludes locals and is capped at
 is emitted), comm at256B and cgroup at4096B. Environment contents, argv and
 credentials are never added to diagnostics. Existing literal-token scrubbing
 applies. A benign vanished-PID read can be reported without changing its existing
-handling; other registration exceptions still propagate and keep Health red.
+handling; rejected ownership reads still propagate and keep Health red.
+The same output is written for an observer failure even without a registration
+error. Observer snapshots retain the first exception/stack (last8192 characters,
+explicit truncation), scrubbed by the existing JUnit writer, so a later cleanup
+exception cannot hide the earlier cause. Its timestamp remains separate from
+later registration errors and closure observations.
 
 On an E07 action failure, `product.E07.cancel-terminal-unchanged` `system-out`
 retains the last eight closure observations, including each original pinned and
@@ -89,8 +94,8 @@ and failure-only recording preserves its existing outgoing cause.
 The existing always-uploaded JUnit in BOTH
 `e2e-3.12` and `e2e-3.14` carries this output even when private scratch is deleted;
 no upload rules or new diagnostic files are needed. A missing controller report
-still means missing E07 evidence. This is diagnostic-only and does not claim to
-fix the Python3.14 red.
+still means missing E07 evidence. These diagnostics alone do not establish a
+failure cause or a subsequent hosted pass.
 
 Run42501816137 saved neither sampler's timestamps, so its timing cause remains
 unresolved. The revised harness limits allow for sequential SQL, nine HTTP
@@ -203,8 +208,16 @@ still fails diagnostics.
 Other collection failures remain harness errors, never fabricated artifacts.
 A registered exact process generation retains its existing Popen, descendant
 or private-marker ownership proof: provider registration stops its environment
-and ancestry walk there, including across exec. New generations still require
-the private marker; unreadable environments and unknown ownership fail closed.
+and ancestry walk there, including across exec. New live generations still require
+the private marker. On environment EACCES only, registration rechecks stat: the
+same generation must be an exited, unreaped zombie (stateZ) with unchanged parent.
+That parent's already-proven generation (or the original launcher generation)
+must match before and after a second same-generation/state/parent check. This
+independent descendant evidence registers the exited child for the existing
+reaper; no marker is inferred. Unknown parents, non-zombies, generation/parent
+changes and other denied reads fail closed. Existing pidfd/waitid reap custody,
+direct-child Popen ownership and closure's requirement for actual PID absence
+remain unchanged. The pre-cancellation E07 live-tree marker assertion stays strict.
 Marker and cgroup reads are bracketed by generation checks. No EACCES is
 interpreted as foreign ownership or absence. If cleanup supplies no usable PID
 census, every case with an actual cleanup pin receives its own ERROR before

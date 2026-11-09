@@ -139,7 +139,7 @@ def record_owned_diagnostics(owner: Owned | None, report: Report) -> None:
         return
     key = "harness", "owned-processes"
     try:
-        if owner.registration_error is not None:
+        if owner.registration_error is not None or owner.observer_error_at is not None:
             report.outputs[key] = json.dumps(dict(
                 diagnostic="owned-registration-error", first_error=owner.registration_error,
                 first_non_disappearance_error=(owner.registration_fault

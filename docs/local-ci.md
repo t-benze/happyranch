@@ -31,14 +31,24 @@ Failure capture precedes E05 teardown.
 The bounded Owned registration-error and E07 closure-failure diagnostics now
 travel in existing JUnit `system-out` in both Python lanes. They retain safe
 PID/generation/state/parent and cgroup metadata, observer error/stop clocks and
-recent reap receipts; see [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659)
+recent reap receipts. Observer snapshots also retain the first exception/stack
+(last8192 characters, explicit truncation); its JUnit diagnostic is emitted even
+without a registration error, so cleanup failure cannot discard that cause.
+See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659)
 for caps, race/truncation limits and the artifact location. Environment/argv
 contents are excluded. Diagnostic stat and closure recording re-raise TimeoutError
 and RuntimeError unchanged, including controller alarms/interruptions; closure
 recording also re-raises when the controller is marked interrupted. Other optional
 metadata/formatting failures stay best-effort; failure-only recording preserves
-its existing outgoing cause. Ownership, closure predicates and deadlines remain;
-this is diagnostic-only, not a fix for the3.14 red. Former
+its existing outgoing cause. Environment EACCES is accepted only for a freshly
+rechecked same-generation zombie with unchanged parent, independently proven by
+that parent's already-owned generation (or original launcher), bracketed around
+a second child generation/state/parent check. It registers an exited descendant
+for the existing reaper, without inventing a marker. Unknown parents, non-zombies,
+generation/parent changes and other denied reads still fail closed. Reap custody,
+live E07 tree assertions, actual generation-absence closure and deadlines remain.
+Historical observer180.896 failure in run42609202490 is unrecoverable from its
+artifacts; neither its cause nor a subsequent hosted pass is claimed. Former
 optional ownership/export protocols remain removed; real cleanup is mandatory.
 Browser/transport original-body archives, framing/segment hashes and publication
 member/byte/fact budgets are removed. Actual Playwright Response JSON supplies
