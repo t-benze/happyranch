@@ -85,6 +85,15 @@ and waits for known in-flight required Requests to reach native terminals. This
 keeps departure from overtaking the eager body RPCs; the final sweep still
 checks every required Response, including newly discovered automatic refreshes. A missing, failed or
 incomplete browser body fails the case; relay JSON never substitutes for it.
+After the final C view, E05 drains required bodies and navigates the same page
+to the existing same-origin health JSON document. It waits for departing reads
+to close before N/D CLI work, so C's long-lived SSE readers do not outlive their
+original C deadline. The D view still uses the same page/context and all three
+view/content assertions remain. In final4, the final body sweep, context close
+and proxy close precede SQL, witness and metrics snapshots. All final evidence
+must still finish within four seconds; closure still requires no transport
+errors, workers, listener or connections. Every GET owner retains its original
+deadline and strict native abort/acknowledgement checks. No numeric bound changes.
 Body-read failures name the query-free Response path, HTTP status, request
 method and consumption role (selected view or `thread_bodies` sweep), without
 native exception text that could contain credentials. A returned ordinary

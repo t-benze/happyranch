@@ -403,6 +403,7 @@ def exercise(c: Controller) -> None:
         group["settled"] = settled_thread(c, C, "E05 compose race", [(1,"founder","message",OPENING),(2,"case_manager","message",REPLY)], group["providers"], 2)
         checkpoint('C', previous)
         group["view"] = browser.thread_view(C, "E05 compose race", ["E05 opening", "literal beta", "E05 reply", "@case_worker received"], "reply")
+        browser.park_threads()
         group["finished"] = time.monotonic()
 
         begin = time.monotonic()
@@ -477,6 +478,19 @@ def exercise(c: Controller) -> None:
         if c.browser_relay:
             c.browser_relay.deadline = c.effective_end()
         record["final_deadline"] = c.case_deadline
+        # Settle the final view's original GET owners before slower SQL,
+        # witness and metrics snapshots, inside the unchanged final4.
+        browser.thread_bodies()
+        if any(e.get('browser_copy') != 'measured-browser' for e in browser.thread_events
+               if e['event'] in {'compose-response', 'thread-response', 'thread-view'}):
+            c.groups['E05']['state'] = 'unknown'
+            raise ValueError('E05 mandatory independent browser-copy evidence unavailable')
+        browser.close_threads_context()
+        closure = proxy.close(c.effective_end())
+        c.browser_relay_closed = not (closure['workers_alive'] or closure['listener_alive'] or closure['connections'])
+        c.durable.append(dict(thread_proxy_closure=closure))
+        require(not closure['errors'] and not closure['workers_alive'] and not closure['listener_alive']
+                and not closure['connections'], 'E05 original-budget browser/proxy closure', closure)
         record["final"] = stable_frame(c)
         beta = c.stores["beta"].thread_frame()
         c.durable.append(dict(threads_beta=beta))
@@ -491,21 +505,6 @@ def exercise(c: Controller) -> None:
         require(sum(r["kind"] == "stub" for r in rows) == 36 and sum(r["kind"] == "callback" for r in rows)
                 == len(c.commands)+len(c.provider_commands)+len(c.thread_commands), "all E05 CLI/provider witnesses accounted")
         record.update(witnesses=rows, final_anchor=anchor(c,"E05:final",24,previous))
-        # This context owns long-lived SSE reads. Settle it and its proxy in
-        # the existing final4, before E07 can leave their original ends behind.
-        # Acquire every actual browser JSON before context teardown, including
-        # automatic detail refreshes; failure never borrows a relay body.
-        browser.thread_bodies()
-        if any(e.get('browser_copy') != 'measured-browser' for e in browser.thread_events
-               if e['event'] in {'compose-response', 'thread-response', 'thread-view'}):
-            c.groups['E05']['state'] = 'unknown'
-            raise ValueError('E05 mandatory independent browser-copy evidence unavailable')
-        browser.close_threads_context()
-        closure = proxy.close(c.effective_end())
-        c.browser_relay_closed = not (closure['workers_alive'] or closure['listener_alive'] or closure['connections'])
-        c.durable.append(dict(thread_proxy_closure=closure))
-        require(not closure['errors'] and not closure['workers_alive'] and not closure['listener_alive']
-                and not closure['connections'], 'E05 original-budget browser/proxy closure', closure)
         record["finished"] = time.monotonic()
         require(record["finished"] <= c.case_deadline, "E05 final evidence stays within shared allowance")
         for variant in VARIANTS:

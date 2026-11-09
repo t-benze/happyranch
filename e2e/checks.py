@@ -2057,9 +2057,9 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
             navigation.append(('navigation', event['url'], event['new_document']))
             entries.append(event)
     expected_navigation = [('navigation',inbox,True), ('navigation',detail,False)]
-    for target in (inbox, detail, detail, origin + f"/orgs/alpha/threads/{D['thread']}"):
+    for target in (inbox, detail, detail, origin + '/api/v1/health', origin + f"/orgs/alpha/threads/{D['thread']}"):
         expected_navigation += [('deliberate-revisit',target,None), ('navigation',target,True)]
-    check(navigation == expected_navigation, 'R2 one automatic detail entry and four explicitly paired later revisits; no extras')
+    check(navigation == expected_navigation, 'R2 one automatic detail entry and five explicitly paired later revisits including C stream departure; no extras')
     check(not any(e['at'] < wire['release_observed'] and (e['event'] == 'compose-response'
                   or (e['event'] == 'navigation' and e['url'] != inbox)) for e in events),
           'R2 zero held response/detail navigation recomputed from full ledger')
