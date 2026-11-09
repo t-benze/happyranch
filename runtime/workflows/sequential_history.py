@@ -36,11 +36,11 @@ from runtime.infrastructure.workflow_task_ownership import (
 )
 from runtime.workflows.coding_authority_history import _Budget, _CALL_ROW_LIMIT, _bounded_rows, _decoded
 from runtime.workflows.sequential_contracts import (
-    BindingClaim, Closed, Counters, DefinitionPin, Limits, NextEdge, OutputRef,
-    TerminalEdge, _array,
+    DEFINITION_LIMIT, RESULT_LIMIT, BindingClaim, Closed, Counters, DefinitionPin,
+    Limits, NextEdge, OutputRef, ResultEnvelope, StartCommand, TerminalEdge, _array,
 )
 from runtime.workflows.sequential_definition import (
-    CompiledDefinition, _json, compile_definition, parse_result, parse_start,
+    CompiledDefinition, _json, _record as _closed_record, compile_definition, parse_result, parse_start,
     parse_transition, validate_start,
 )
 from runtime.workflows.sequential_reducer import (
@@ -164,9 +164,7 @@ def _rows(conn: sqlite3.Connection, table: str, metadata: tuple[tuple, ...],
     allowed = tuple((kinds[row[2]],) + (() if row[3] else ('null',)) for row in metadata)
     for row in _bounded_rows(conn, table, names, allowed, budget):
         values = row[:len(names)]
-        budget.reserve(512 + 128 * len(names) + 2 * sum(
-            len(value.encode('utf8')) if type(value) is str else len(value)
-            for value in values if type(value) in (str, bytes)))
+        budget.reserve(512 + 128 * len(names))
         yield dict(zip(names, values, strict=True))
 
 
@@ -470,10 +468,58 @@ def _selection(visit: dict, budget: _ReadBudget) -> tuple[OutputRef, ...]:
     return result
 
 
+_WIRE_TOKENS = re.compile(rb'"(?:[^"\\]++|\\[\s\S])*+"|[][{},:]')
+
+
+_WireRecord = TypeVar('_WireRecord', StartCommand, ResultEnvelope)
+
+
+def _wire_record(raw: bytes, parser: Callable[[bytes], _WireRecord],
+                 model: type[_WireRecord], maximum: int, budget: _ReadBudget) -> _WireRecord:
+    # No speculative scan on a nearly spent original allowance. 1024 bounds
+    # the decoded walk of either VALID closed model; <=2048 tokens follow.
+    # Malformed inputs may have any density, so the planner itself stops at
+    # 2048 tokens and invokes the original strict parser on this SAME budget.
+    original = 48 * len(raw) + 512
+    buffers = 20 * len(raw) + 512
+    planning = 256 * 2049
+    if (65536 - budget.traversed < 4096
+            or budget.remaining_bytes < original + buffers + planning):
+        return _parse(raw, parser, budget)
+    # Charge buffers/matcher before the first native scan, and every token
+    # before creating its match. Nothing is reset, refunded or scanned free.
+    budget.reserve(buffers)
+    if _OUTPUT_STRING_STRUCTURE.fullmatch(raw) is None:
+        return _parse(raw, parser, budget)
+    depth = tokens = containers = 0
+    matches = _WIRE_TOKENS.finditer(raw)
+    while True:
+        budget.reserve(256)
+        match = next(matches, None)
+        if match is None:
+            break
+        tokens += 1
+        char = raw[match.start()]
+        if char in (91, 123):
+            depth += 1
+            containers += 1
+        elif char in (93, 125):
+            depth -= 1
+        if (depth < 0 or depth > 24 or tokens >= 2048
+                or 20 * len(raw) + 4096 * containers + 256 * tokens > 48 * len(raw)):
+            return _parse(raw, parser, budget)
+    budget.reserve(4096 * containers + 512)
+    value = _json(raw, maximum)
+    result = _closed_record(model, value)
+    _decoded(value, budget)
+    return result
+
+
 def _run_history(conn: sqlite3.Connection, run: dict, compiled: CompiledDefinition,
                  settings: dict, snapshot: StorageSettings, visits: list[dict],
                  events: list[dict], outputs: dict[str, list[dict]], budget: _ReadBudget) -> None:
-    start = _parse(_hashed(run['start_bytes'], run['start_digest']), parse_start, budget)
+    start = _wire_record(_hashed(run['start_bytes'], run['start_digest']),
+                         parse_start, StartCommand, DEFINITION_LIMIT, budget)
     original = Limits.model_validate(_decode(run['original_limits_bytes'], budget))
     limits = validate_start(start, compiled, original_limits=original)
     _require(start.operation_key == run['start_operation_key']
@@ -495,6 +541,8 @@ def _run_history(conn: sqlite3.Connection, run: dict, compiled: CompiledDefiniti
     nodes = {node.id: node for node in compiled.definition.nodes}
     bindings = {binding.role: binding.principal for binding in start.bindings}
     by_id = {visit['id']: visit for visit in visits}
+    authenticated: dict[str, AuthenticatedResult] = {}
+    budget.reserve(512 + 128 * len(visits))
     for visit in visits:
         budget.step()
         node = nodes.get(visit['node_id'])
@@ -505,10 +553,11 @@ def _run_history(conn: sqlite3.Connection, run: dict, compiled: CompiledDefiniti
         _selection(visit, budget)
         if visit['result_id'] is not None:
             _result(conn, visit['result_id'], visit['task_id'], visit['principal'], visit['session_id'], budget)
-            envelope = _parse(_hashed(visit['result_bytes'], visit['result_digest']), parse_result, budget)
+            envelope = _wire_record(_hashed(visit['result_bytes'], visit['result_digest']),
+                                    parse_result, ResultEnvelope, RESULT_LIMIT, budget)
             checks = _decode(visit['verified_checks_bytes'], budget)
             _require(set(checks) == {'checks'}, 'verified_checks_invalid')
-            AuthenticatedResult(task_id=visit['task_id'], session_id=visit['session_id'],
+            authenticated[visit['id']] = AuthenticatedResult(task_id=visit['task_id'], session_id=visit['session_id'],
                 result_id=visit['result_id'], envelope=envelope, verified_checks=checks['checks'])
             actual_outputs = sorted(outputs.get(visit['id'], []), key=lambda item: item['slot'])
             _require(actual_outputs == sorted((item.model_dump() for item in envelope.outputs),
@@ -534,13 +583,10 @@ def _run_history(conn: sqlite3.Connection, run: dict, compiled: CompiledDefiniti
                      and event['source_visit_id'] == active['id']
                      and event['source_result_id'] == active['result_id'], 'transition_source_invalid')
             transition = _parse(event['event_bytes'], parse_transition, budget)
-            envelope = _parse(active['result_bytes'], parse_result, budget)
-            checks = _decode(active['verified_checks_bytes'], budget)
-            _require(set(checks) == {'checks'}, 'verified_checks_invalid')
+            result = authenticated[active['id']]
+            envelope = result.envelope
             current = ActiveVisit(node=active['node_id'], visit_id=active['id'], task_id=active['task_id'],
                 session_id=active['session_id'], epoch=active['epoch'], input_selection_digest=active['input_selection_digest'])
-            result = AuthenticatedResult(task_id=active['task_id'], session_id=active['session_id'],
-                result_id=active['result_id'], envelope=envelope, verified_checks=checks['checks'])
             budget.work(len(receipts) + len(selections) + len(findings))
             budget.reserve(256 * (len(receipts) + len(selections) + len(findings)))
             decision: Decision = reduce_result(compiled, RunState(run_id=run['id'],
