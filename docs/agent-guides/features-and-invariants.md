@@ -3283,6 +3283,17 @@ Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole co
 
 ## Retired autonomous thread continuation
 
+Successful thread-side escalation supersession consumes its invocation. For a
+conversational REPLY, it atomically acknowledges the claimed range and clears
+the reply-delivery slot, then enqueues any follow-on and exchange catch-up
+tokens after commit. BOOTSTRAP and legacy REPLY tokens without delivery-state
+ownership retain plain consumption. Resolution still precedes invocation
+settlement; a rejected resolution does not consume the invocation. An already
+terminal token is rejected before resolution. If another terminal path wins
+during resolution, the applied success result is returned without settling the
+invocation again. This operation does not append a reply message or set
+`reply_message_seq`.
+
 Both served resolution contracts — `POST /tasks/{task_id}/resolve-escalation`
 and `POST /threads/{thread_id}/resolve-escalation` — return the stable `410`
 error code `retired_autonomous_continuation` when a former THR-166 envelope is

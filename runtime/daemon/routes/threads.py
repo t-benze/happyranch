@@ -2092,10 +2092,33 @@ async def resolve_escalation_from_thread(
         thread_id=thread_id,
         resolution_path="thread_manual_supersede",
     )
-    # Consume the invocation token to prevent replay — mirrors the reply
-    # route's token lifecycle. A single invocation can perform at most one
-    # state-changing resolution.
-    org.db.consume_invocation(body.invocation_token)
+    # Resolve first so a rejected resolution does not consume the invocation.
+    # Then acknowledge the REPLY's claimed coverage and release its slot in
+    # the same transaction that consumes the invocation.
+    tokens_to_enqueue: list[str] = []
+    async with org.db_lock:
+        # Another terminal path may win while resolution awaits its tail.
+        # Preserve that settlement and the already-applied resolution result.
+        if org.db.get_pending_invocation(body.invocation_token) is not None:
+            if invocation.purpose is ThreadInvocationPurpose.REPLY:
+                settlement, catch_up = org.db.settle_conversational_reply_with_exchange(
+                    token=body.invocation_token,
+                    outcome="reply",
+                )
+                if settlement is None:
+                    # Legacy/stale pending REPLY not owned by delivery state.
+                    org.db.consume_invocation(body.invocation_token)
+                else:
+                    if settlement.follow_on_token is not None:
+                        tokens_to_enqueue.append(settlement.follow_on_token)
+                    tokens_to_enqueue.extend(
+                        a.invocation_token for a in catch_up
+                        if a.invocation_token is not None
+                    )
+            else:
+                org.db.consume_invocation(body.invocation_token)
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
     return {"ok": True, "task_id": body.task_id, "new_status": new_status}
 def _task_in_thread_lineage(org, task_id: str, thread_id: str) -> bool:
     """True if task_id is dispatched from thread_id, or has an ancestor
