@@ -538,6 +538,38 @@ def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
                 yield from ((row[0], False, *row[1:len(columns) + 1]) for row in candidates)
 
 
+def _coding_column_masks(table: str, selected_columns: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+    # Bind the unchanged specialized storage classes to canonical names. The
+    # discriminator and full native comparison can select different projections.
+    contracts = {
+        'workflow_coding_mappings': {
+            'id': ('text',), 'org_slug': ('text',), 'release_identity': ('text',),
+            'generation': ('integer',), 'principal': ('text',), 'operation_key': ('text',),
+            'request_digest': ('text',), 'mapping_bytes': ('blob',),
+            'mapping_digest': ('text',), 'created_at': ('text',),
+        },
+        'workflow_authorization_revisions': {
+            'id': ('text',), 'namespace': ('text',), 'revision': ('integer',),
+            'authority_bytes': ('blob',), 'authority_digest': ('text',),
+            'source_pin': ('text',), 'created_at': ('text',),
+        },
+        'workflow_admission_records': {
+            'id': ('text',), 'namespace': ('text',), 'generation': ('integer',),
+            'request_digest': ('text',), 'admitted_by': ('text',),
+        },
+        'audit_log': {
+            'id': ('integer',), 'task_id': ('text',), 'agent': ('text',),
+            'action': ('text',), 'payload': ('null', 'text'), 'timestamp': ('text',),
+        },
+    }
+    if table not in contracts:
+        return (('text', 'blob', 'integer', 'real', 'null'),) * len(selected_columns)
+    try:
+        return tuple(contracts[table][column] for column in selected_columns)
+    except KeyError as exc:
+        raise ValueError('workflow_coding_specialized_column_unknown') from exc
+
+
 def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                           expected_org_slug: str | None,
                           advances: list[tuple[tuple[int, int], int]] | None = None,
@@ -683,15 +715,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         # scan (including nested candidate acquisition) before leaving this read.
         with ExitStack() as scans:
             if table_bounded:
-                types = {
-                    'workflow_coding_mappings': (('text',), ('text',), ('text',), ('integer',),
-                        ('text',), ('text',), ('text',), ('blob',), ('text',), ('text',)),
-                    'workflow_authorization_revisions': (('text',), ('text',), ('integer',), ('blob',),
-                        ('text',), ('text',), ('text',)),
-                    'workflow_admission_records': (('text',), ('text',), ('integer',), ('text',), ('text',)),
-                    'audit_log': (('integer',), ('text',), ('text',), ('text',), ('null', 'text'), ('text',)),
-                }.get(table)
-                allowed = types or (('text', 'blob', 'integer', 'real', 'null'),) * len(selected_columns)
+                allowed = _coding_column_masks(table, selected_columns)
                 if table in CODING_TABLES:
                     bounded = _bounded_rows(conn, table, tuple(selected_columns), allowed, budget, with_rowid=True,
                                             value_limit=16777216 if table == 'workflow_coding_events' else 1048576)

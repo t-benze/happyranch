@@ -471,16 +471,26 @@ UNVERIFIED; no live install/settings/admission/deploy/restart is authorized.
 
 ### Complete-reader recognition and native carrier preflight
 
-The complete same-snapshot reader recognizes only the entire closed sequential
+The complete same-snapshot reader recognizes the entire closed sequential
 callback in `task_results.decision_json`. In `workflow_coding_schema.py`,
 `_validate_coding_data` passes its already validated sequential inventory and
-original retained budget into `_refuse_coding_metadata`; in
-`coding_start_history.py`, `read_queued` applies the same recognition before
-excluding a sequential callback from Coding parsing. Each original discriminator
-runs first. Failed strict recognition raises that exact original first error
-with every charge retained. Successful recognition continues through unchanged
-validators: independent corruption reports its own first owning validator.
-There is no suppressed-refusal receipt or enclosing-reader exception.
+original retained budget into `_refuse_coding_metadata`; its specialized type
+masks follow canonical column names in the selected projection. In
+`coding_start_history.py`, `read_queued` excludes recognized sequential sources
+from Coding callbacks/runs/owners and retains only a separate local proof inventory.
+Its existing native completion-audit acquisition additionally recognizes a strict,
+duplicate-free full report matching exactly one such original result and its
+actual task/agent, including any existing INTEGER-result/SID attribution. Native
+self-evaluation and every non-decision member retain their residual marker checks.
+Matched audits still pass full typed row equality; failed matches remain for the
+original discriminator and its first refusal, with all charges retained on the
+same budget. There is no general audit-location exemption or synthesized audit
+field. Coding returned-only discovery composes `read_org_layout` on its original
+connection/budget with the original legacy fallback, before selecting any returns;
+notification ownership, routing and queues are unchanged. Successful recognition
+continues through unchanged validators: independent corruption reports its own
+first owning validator. There is no suppressed-refusal receipt or enclosing-reader
+exception, and this additional readability supplies no admission or authority.
 
 The command must match exactly one complete definition pin and historical
 settings generation/digest/bindings in that snapshot; a referenced run must
