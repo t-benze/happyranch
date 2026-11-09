@@ -192,8 +192,9 @@ def _decode(raw: bytes, budget: _ReadBudget) -> dict:
     return value
 
 
+_OUTPUT_STRING_STRUCTURE = re.compile(rb'(?:[^"]++|"(?:[^"\\]++|\\[\s\S])*+")*+')
 _OUTPUT_STRINGS = re.compile(rb'"(?:[^"\\]++|\\[\s\S])*+"')
-_OUTPUT_LEAVES = re.compile(rb'\[[^][{}]*\]|\{[^][{}]*\}')
+_OUTPUT_LEAVES = re.compile(rb'\[[^][{}]*+\]|\{[^][{}]*+\}')
 _OUTPUT_DELIMITERS = re.compile(rb'[][{}]')
 _OUTPUT_LONG_INTEGER = re.compile(rb'[0-9]{20}')
 _OUTPUT_FLOAT = re.compile(rb'[0-9][.eE]')
@@ -214,12 +215,22 @@ def _output_json(raw: bytes, budget: _ReadBudget) -> None:
     budget.reserve(24 * len(raw) + 512)
     budget.reserve(4 * len(raw) + 512)
     budget.step()
+    # Anchored, disjoint, possessive branches visit each byte at most once.
+    # Only proven strings reach sub: every candidate then consumes a complete
+    # string, so it cannot restart at escaped quotes in an unterminated suffix.
+    if _OUTPUT_STRING_STRUCTURE.fullmatch(raw) is None:
+        _decode(raw, budget)
+        return
+    budget.step()
     tokens = _OUTPUT_STRINGS.sub(b'""', raw)
     budget.step()
     if _OUTPUT_LONG_INTEGER.search(tokens):
         _decode(raw, budget)
         return
     topology = tokens
+    # Each leaf candidate stops at the next delimiter: candidates cannot scan
+    # overlapping interiors, even on malformed brackets. Each round is O(n),
+    # at most 24 rounds. Integer/float/delimiter searches have fixed width.
     for _ in range(24):
         budget.step()
         reduced = _OUTPUT_LEAVES.sub(b'', topology)
