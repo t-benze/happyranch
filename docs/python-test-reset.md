@@ -2,7 +2,7 @@
 
 Founder THR-291 seq659 slice 3 uses standard per-case JUnit and explicit
 failure-only trace/screenshot/log artifacts with GitHub default retention.
-Both lanes must report the exact56 once each, both launcher diagnostics and all
+Both lanes must report the exact63 once each, both launcher diagnostics and all
 setup/cleanup checks must pass. Health checks reports and identity only; former
 aggregate product predicates run privately in-lane before data deletion.
 Controller SQL/state JSON and completed-case publication are removed. Product
