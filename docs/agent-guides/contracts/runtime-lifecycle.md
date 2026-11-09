@@ -656,8 +656,9 @@ event sequences c+2/c+3, final CAS c+2. Original replay recovers transition.prio
 never later current CAS, and performs no replacement allocation or partial-pair
 repair. Cancellation precedes both paths. Native/terminal/outer commits survive a
 later sequential refusal. Engine scopes remain separate; no redundant validator.
-Current authorized capability/access witnesses are unavailable U5 dependencies;
-unsigned carrier claims confer none. Existing native-summary visibility applies.
+U3f supplies the current document-only capability/recipient witnesses described
+below; repository/mixed graphs remain unavailable U4/U5 dependencies. Unsigned
+carrier claims confer none. Existing native-summary visibility applies.
 No actual callback/terminal/outer/advance or V3 behavioral acceptance is claimed.
 
 
@@ -705,7 +706,7 @@ but queue insertion is not durable delivery/execution acknowledgement. Outbox
 bytes remain immutable and are never marked consumed. Thread follow-up/SYSTEM/
 invocation minting are not invoked, including for retained partial thread rows.
 No native visit recovery or original host settlement is inferred. Existing
-unknown-owner rules, U5 hold, settings-generation limitation and the rule to
+unknown-owner rules, repository/mixed U5 hold, settings-generation limitation and the rule to
 roll back only with no nonterminal sequential Pause entries remain unchanged.
 
 
@@ -779,11 +780,11 @@ This unit publishes no queue item and has no source-outer producer. The admitted
 first visit remains ineligible: `queue_admission_allowed` stays false without the
 positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
 producer and manager skill instructions. Existing U3e-1a cancellation, U3e-2
-caller return, default Disabled admission, U5 access/successful-output hold,
+caller return, default Disabled admission, repository/mixed U5 successful-output hold,
 Pause backout and stale-settings limits remain controlling. Marker removal
 refuses the next fresh start; it grants no continuation/activation authority.
 Structural fixtures and static lint are not genuine callback/host/launch,
-restart, cancellation, return or two-template acceptance. V3/V3-0b/U5 remain
+restart, cancellation, return or two-template acceptance. V3/V3-0b/U5 remainder remain
 UNVERIFIED; no live install/settings/admission/deploy/restart is authorized.
 
 ### Complete-reader recognition and native carrier preflight
@@ -836,4 +837,37 @@ settlement remain UNVERIFIED; labelled fixtures do not close those gaps.
 
 The existing settle_live finally path reaches a new early original-source-only branch in SequentialDispatcher.outer_settled. It reads the same TaskInvocation/native terminal observation and committed close/release dispositions: same org/task/agent/SID/owner, successful supported containment, Boolean True quiescence, no survivors/cleanup error, safe cleanup, result_processing, no execution_unknown, tracker clear, and positive original-owner removal/release with no live/failed cleanup ownership. Ordinary final retry ordinal is retained rather than forced to zero.
 
-Inside the existing writer, cancellation/result/command pins are rechecked and the existing null-visit outer evidence is selected by PK, inserted and validated. The first-visit queue notification occurs after COMMIT only. An exact re-observation is a no-op; divergent evidence refuses and rolls back. Neither ended SID nor process/tracker absence reconstructs proof. Missing evidence after a crash stays a native recovery hold. Returned-only rediscovery, unknown-owner handling and the no-nonterminal-sequential-Pause rollback rule remain unchanged. Real host settlement, launch and restart/races remain UNVERIFIED(V3); U5 remains open.
+Inside the existing writer, cancellation/result/command pins are rechecked and the existing null-visit outer evidence is selected by PK, inserted and validated. The first-visit queue notification occurs after COMMIT only. An exact re-observation is a no-op; divergent evidence refuses and rolls back. Neither ended SID nor process/tracker absence reconstructs proof. Missing evidence after a crash stays a native recovery hold. Returned-only rediscovery, unknown-owner handling and the no-nonterminal-sequential-Pause rollback rule remain unchanged. Real host settlement, launch and restart/races remain UNVERIFIED(V3); U5 remainder remains open.
+
+
+## U3f post-outer document composition and input lifetime
+
+The original native callback, successful/quiescent terminal and positive outer
+COMMIT precede document witness composition. A fresh authority capture precedes
+ownership; existing authority writer → teams → DB locks and admission_writer
+validate current fixed principals without await, file or network work inside the
+writer. The compiled definition is reused. Original start/current binding context
+is parsed once, with its actual definition-walk/authority-decoder reservations
+charged; no compiled-tree clone or extra authority snapshot is introduced.
+
+The document adapter uses immutable original input/native/content/recipient and
+terminal/outer identities for only the registered document checks. Parser/native
+summary temporaries die before accept; content/envelope die before transition.
+Fresh authority is a veto, excluded from stable witness digests. Addressed input
+rendering reuses acquired selected rows, verifies exact bytes/recipients before
+disclosure and charges decoded/Unicode/final-string copies to its original
+budget. The existing 16 KiB input-value bound can refuse a 1 MiB output.
+
+No callback/native settlement/recovery/queue/Pause/cancel/team-move semantics,
+keys, CAS, storage or engine reader changes follow. Post-outer refusal rolls
+back this sequential transaction only; original evidence remains. Stronger
+private custody, repository/Coding capability and native recovery remain held.
+Source observations do not prove genuine host progression, M1 or V3 acceptance.
+
+R-U3f-SB5-1 judges each scope's own charged counters, never cross-scope or lexical
+projection sums. The required paired 32-node/16-role/late16 evidence case must
+preserve `_entry` invocations and unchanged evidence/entry counters. Pre-existing
+uncharged `_entry` compilation stays open as F-U3f-ENTRY, not a PASS of compiler
+accounting. No cap, unit, product byte limit or protected radius changes.
+See [the current contract](reusable-workflows.md#u3f--u5a-document-witnesses-and-addressed-delivery)
+and [U3f source record](../../superpowers/specs/2026-11-09-sequential-document-witness-u3f.md).

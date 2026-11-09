@@ -306,7 +306,8 @@ interval. Empty/absent new storage says `new-engine unavailable`. A populated
 `storage readable` inventory establishes new-record consistency only, never
 engine readiness, business admission, current authority or authentic native
 settlement. Stored verified-check arrays remain adapter assertions for U3 to
-authenticate; content/capability policy remains with U4/U5.
+authenticate; document-only content/capability policy is supplied by U3f below,
+while repository policy remains with U4/U5 remainder.
 
 The sequential acquisition path uses the retained
 `coding_authority_history._Budget` / `_bounded_rows` / `_decoded` model and
@@ -701,13 +702,14 @@ belongs to product_lead / THR341 and is not edited or certified here.
 [U3c source spec](../../superpowers/specs/2026-11-08-sequential-engine-u3c.md).
 
 
-## U3d-1 native carrier and settlement consumer (THR336 msg85/102)
+## U3d-1 native carrier and settlement consumer (historical source checkpoint; THR336 msg85/102)
 
 TASK-14721 implements accepted TASK-14718 rev2 under ROOT TASK-14640. This
 section supplies the caller missing from the historical U3c record above: U3c
 still receives explicit content and never extracts a summary. Queue admission
 remains unconditionally False. Launch/instructions/Pause ownership are U3d-2;
-caller notification is U3e; actual domain/access witnesses are U5. No live
+caller notification is U3e; U3f below now supplies document-only witnesses,
+with repository domain/access witnesses held for U4/U5 remainder. No live
 installation, restart, admission or V3 execution follows from source delivery.
 
 For a genuinely bound visit, the existing completion file's summary is a STRING
@@ -751,8 +753,10 @@ Positive original outer COMMIT precedes a fresh authority capture/writer and
 `_advance(run_id,visit_id,result_id)`. The daemon composes U1 findings/refs with
 real identity and exact content digest, retaining distinct carrier/envelope/content
 digests and separate content/envelope arguments to U3c. Current-subject capability
-and recipient access require genuine authorized witnesses. None is issued by this
-unit: positive output currently refuses `sequential_output_access_unavailable`;
+and recipient access require genuine authorized witnesses. At this historical
+checkpoint every positive output refused `sequential_output_access_unavailable`;
+the current U3f document-only exception is specified below. Repository/mixed
+graphs retain that refusal;
 unsigned claims never populate verified checks/receipts. Negative reports may carry
 only the independently proven native-and-outer settlement check. Missing proof
 means dependency/no advance, never behavioral success.
@@ -801,9 +805,10 @@ without task stamps or audit rows. No sequential retry or native recovery exists
 selected input refs, addressed stored inputs and attributed returned findings.
 The fixed safety text remains separate from labelled untrusted node JSON; saved
 refs/recipients do not grant new access or capabilities. Unavailable/oversized
-brief inputs refuse under the existing renderer bounds. U5 trusted domain and
-access witnesses remain separate prerequisites. The existing bundled sequential
-callback paragraph is unchanged. Actual launch, handle, PID, callback, terminal
+brief inputs refuse under the existing renderer bounds. U3f below supplies
+document-only addressed delivery and trusted witnesses; repository capability
+stays held for U4/U5 remainder. The original bundled sequential callback
+paragraph is unchanged, with one additive document paragraph. Actual launch, handle, PID, callback, terminal
 and outer settlement through the host remain UNVERIFIED (V3).
 
 ### U3e-2 caller return consumer (source checkpoint)
@@ -826,7 +831,8 @@ never resumes a sequential visit or mutates/acknowledges the outbox. The guarant
 is one immutable workflow return; queue insertion is not a durable caller
 execution acknowledgement. Thread follow-up/SYSTEM/invocation minting are not
 invoked. No fresh-start producer, public command or bundled skill change ships
-in U3e-2. Existing U5 successful-output, native recovery, venue/settings and Pause
+in U3e-2. U3f supplies the document-only successful-output exception below;
+repository U5 remainder, native recovery, venue/settings and Pause
 backout holds remain. Source/static delivery supplies no V3 or restart proof.
 
 
@@ -905,11 +911,11 @@ This unit publishes no queue item and has no source-outer producer. The admitted
 first visit remains ineligible: `queue_admission_allowed` stays false without the
 positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
 producer and manager skill instructions. Existing U3e-1a cancellation, U3e-2
-caller return, default Disabled admission, U5 access/successful-output hold,
+caller return, default Disabled admission, repository/mixed U5 successful-output hold,
 Pause backout and stale-settings limits remain controlling. Marker removal
 refuses the next fresh start; it grants no continuation/activation authority.
 Structural fixtures and static lint are not genuine callback/host/launch,
-restart, cancellation, return or two-template acceptance. V3/V3-0b/U5 remain
+restart, cancellation, return or two-template acceptance. V3/V3-0b/U5 remainder remain
 UNVERIFIED; no live install/settings/admission/deploy/restart is authorized.
 
 ### Complete-reader recognition and native carrier preflight
@@ -962,4 +968,60 @@ settlement remain UNVERIFIED; labelled fixtures do not close those gaps.
 
 The original ordinary/v2 source TaskInvocation now supplies the null-visit `outer@1` evidence through `sequential_start.source_outer_settled`. The unchanged StartCommand, admission pins and parked source quartet remain authoritative. Only native success with supported containment, Boolean quiescence, no survivors/cleanup error, safe outer cleanup, a clear tracker and positive original-owner close/release can qualify. Missing or uncertain observations never imply removal.
 
-The existing evidence ID/body and PK conflict rules apply: exact re-observation adds nothing; divergent bytes refuse with rollback. The existing selected evidence validator runs in the writer, and the positive evidence commits before notification of the admitted first visit. Queue admission independently checks that row. Cancellation supplies no row or publication; source/carrier receive no synthetic result or session. Genuine host settlement, first launch, restart/races and U5 remain UNVERIFIED(V3).
+The existing evidence ID/body and PK conflict rules apply: exact re-observation adds nothing; divergent bytes refuse with rollback. The existing selected evidence validator runs in the writer, and the positive evidence commits before notification of the admitted first visit. Queue admission independently checks that row. Cancellation supplies no row or publication; source/carrier receive no synthetic result or session. Genuine host settlement, first launch, restart/races and U5 remainder remain UNVERIFIED(V3).
+
+## U3f / U5a document witnesses and addressed delivery
+
+U3f supplies source support for document-only recipient and capability witnesses
+before M1. This supersedes earlier blanket U5 witness-dependency statements for
+this subset only. Every node in the immutable definition must select
+`immutable-document@1` or `document-review@1` with its registered completion check.
+Repository contracts, mixed graphs and every nonempty `capability_claims` stay
+held; JSON, references and URLs confer no repository capability or effect.
+
+Recipients are the sorted, distinct producer role plus declared current-consumer
+roles, derived from immutable definition data. Original admitted fixed bindings
+map those roles to actual principals. A fresh current authority capture is
+validated under existing ownership, with active/executable/eligible principals
+and declared independence. Role names and stored recipient arrays alone are
+insufficient. Before rendering, selected refs must match the original stored
+native provenance, exact content hash and recipient set and be addressed to the
+actual invocation principal. No latest-output adoption occurs. The unchanged
+renderer still refuses individual input values over 16 KiB, even though authored
+document outputs may be accepted up to 1 MiB; acceptance does not guarantee a
+later brief can disclose the entire value.
+
+After original successful native terminal and positive outer COMMIT, composition
+uses the already compiled definition, original start/input selection and actual
+task/principal/SID/INTEGER. Produced documents require completed status and null
+verdict. Document review APPROVE requires matching verdict, canonical JSON object
+bytes and at least one selected immutable-document subject. The reviewer must
+differ from every selected document producer and satisfy declared independence;
+a contextual prior review may share its reviewer, including v2 second_read.
+Only `immutable-document@1` and `independent-document-review@1` checks are issued.
+They establish provenance and independent addressed judgment, not semantic truth.
+
+The deterministic witness binds original run/definition/start, visit/node/epoch,
+native quartet/carrier, input selection, content, sorted recipient-to-principal
+map and terminal/outer digests. It uses the existing 16 KiB evidence-size gate
+and existing envelope receipts/checks, without a new evidence row or signature.
+Current authority is a fresh veto; time/generation never changes receipt content.
+Original-source keys, c/c+1 atomic transition/return and read-only exact callback
+replay remain unchanged. A post-outer refusal rolls back only new sequential
+work; prior native/evidence commits remain. No partial-pair repair is allowed.
+
+SB-5 uses each scope's own charged bytes/rows/steps/time under
+33,554,432 / 4096 / 32768 / 2.5 seconds, without resets or cross-scope sums.
+R-U3f-SB5-1 retains the required 32-node/16-role/late16 case. Protected `_entry`
+has pre-existing uncharged definition compilation: **F-U3f-ENTRY remains open**
+to charge or bound it on the reader budget. Paired B/candidate observations
+must show identical `_entry` invocations and unchanged evidence/entry counters;
+U3f adds no compile, compiled-tree clone, snapshot copy or uncharged parse.
+That condition permits publication, not a PASS of compile accounting.
+
+Inline bytes retain the native task-result audience; recipients promise no
+role-private custody. Stronger custody needs a separately approved design.
+Source/SEED observations do not close M1 or prove native callbacks, settlement,
+return/races or V3. Coding/U4/U5 remainder/native recovery remain held.
+No live installation, settings, roles, admission, deploy or restart follows.
+See the [U3f source record](../../superpowers/specs/2026-11-09-sequential-document-witness-u3f.md).
