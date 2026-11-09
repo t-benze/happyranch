@@ -2,7 +2,7 @@
 
 Founder THR-291 seq659 slice 3 uses standard per-case JUnit and explicit
 failure-only trace/screenshot/log artifacts with GitHub default retention.
-Both lanes must report the exact63 once each, both launcher diagnostics and all
+Both lanes must report the exact69 once each, both launcher diagnostics and all
 setup/cleanup checks must pass. Health checks reports and identity only; former
 aggregate product predicates run privately in-lane before data deletion.
 Controller SQL/state JSON and completed-case publication are removed. Product
@@ -167,7 +167,9 @@ units, general integration or Product E2E. Live-daemon/Product-E2E proof is NOT
 RUN; owned workflow callbacks requiring genuine host launch/terminal evidence
 remain outside this no-launch observation.
 
-J1 adds seven KB/artifact variants after the preserved56 prefix: **63 product cases per lane**, 126 across Python3.12/3.14. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
+J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
+
+J2 appends six custom-skill cases: **69 product cases per lane**, 138 across Python3.12/3.14. It covers genuine session CLI creation, default-hidden visibility, refused nonfounder eligibility writes, founder If-Match eligibility, exact next-session materialized marker reads and the founder Skills card. See the J2 section in the same E2E contract.
 
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
@@ -177,7 +179,7 @@ on demand after concrete reviewed corrections, without per-run approval or a
 nightly wait. Reconcile active owners/runs first; no blind same-source retry loop.
 Manual admission requires actual `refs/heads/main`, default branch `main`, and
 matching repository/workflow/run/source identity. Historical seq247's ONE-run
-allocation to TASK-11897 and its receipts remain history. Baseline63 variants
+allocation to TASK-11897 and its receipts remain history. Baseline69 variants
 EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
 exactly four execution artifacts and the original bounds. `Daily Product E2E
 Health` remains outside merge checks and reports the actual event, run/attempt,

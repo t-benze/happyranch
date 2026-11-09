@@ -344,3 +344,94 @@ def knowledge(c: Controller) -> None:
     require(c.get(kb_path) == api["kb"] and knowledge_read(c, artifact_path) == api["artifact"], "J1 alpha content retained")
     c.mark("J1.cross-org-isolation")
     record["finished"] = time.monotonic()
+
+
+def skills(c: Controller) -> None:
+    """J2 uses session-bound B2 creation, founder policy, then a fresh spawn."""
+    c.j2_prefix = c.observations()
+    record = c.j2 = dict(entered=time.monotonic(), finished=None, denials=[])
+    slug = "e2e-j2-marker"
+    task = c.create("alpha", "J2 create custom marker skill through the supported session CLI")
+    start = record["creator"] = c.start("alpha", task, "case_manager")
+    created = record["create"] = c.provider_cli(start, "j2-create")
+    skill, = [s for s in c.get("/api/v1/orgs/alpha/custom-skills/catalog")["skills"] if s["slug"] == slug]
+    record["skill"] = skill
+    require(skill["validation_state"] == "valid" and skill["origin_kind"] == "agent"
+            and skill["origin_agent"] == start["agent"], "J2 valid agent-created B2 skill", skill)
+    c.mark("J2.agent-cli-create")
+    base = "/api/v1/orgs/alpha/custom-skills/" + skill["id"]
+    record["hidden"] = c.get(base + "/eligibility/explain?agent=case_manager")
+    record["hidden_files"] = c.stores["alpha"].skill_files("case_manager", slug)
+    require(record["hidden"]["visible"] is False and record["hidden"]["hidden_reason"] == "no_eligibility_policy"
+            and all(not f["exists"] for f in created["workspace_skill"] + record["hidden_files"]), "J2 hidden before eligibility")
+    c.mark("J2.hidden-before-eligibility")
+    final = c.provider_cli(start, "j2-final", payload=dict(status="completed", confidence=90,
+        summary="J2 custom skill created", decision=done("J2 custom skill created")))
+    c.stores["alpha"].result(final["payload"])
+    c.release(start)
+    c.finish("alpha", task)
+    record["creator_completion"] = c.stores["alpha"].snapshot(task)
+    policy = record["initial_policy"] = c.get(base + "/eligibility")
+    rules = [dict(scope_type="agent", scope_target="case_manager", effect="allow")]
+
+    def put(bearer: str | None) -> dict:
+        headers = {"Content-Type": "application/json", "If-Match": str(policy["revision"])}
+        if bearer is not None:
+            headers["Authorization"] = "Bearer " + (c.token if bearer == "valid" else bearer)
+        with c.bounded(c.effective_end()):
+            connection = http.client.HTTPConnection("127.0.0.1", c.port, timeout=c.remaining())
+            try:
+                connection.request("PUT", base + "/eligibility", json.dumps(rules), headers)
+                upstream = connection.sock
+                response = connection.getresponse()
+                upstream.settimeout(c.remaining())
+                body = json.loads(response.read())
+                c.remaining()
+                return dict(status=response.status, body=body, path=base + "/eligibility",
+                            if_match=str(policy["revision"]), rules=rules)
+            finally:
+                connection.close()
+
+    def protected_skills() -> dict:
+        return dict(stores={org: store.skills() for org, store in c.stores.items()}, starts=list(c.starts))
+
+    protected_before = protected_skills()
+    def unchanged_skills() -> None:
+        require(protected_skills() == protected_before, "J2 refused policy write leaves both orgs unchanged")
+
+    with c.case("J2.nonfounder-eligibility", unchanged_skills):
+        for bearer, detail in ((None, "missing bearer token"), ("j2-agent-without-founder-authority", "bad token")):
+            before = protected_skills()
+            denied = put(bearer)
+            after = protected_skills()
+            record["denials"].append(dict(response=denied, before=before, after=after))
+            require(denied["status"] == 401 and denied["body"] == {"detail": detail} and before == after,
+                    "J2 nonfounder policy write refused without effects", denied)
+        require(c.get(base + "/eligibility") == policy, "J2 denied writes retain original policy")
+        c.mark("J2.nonfounder-eligibility")
+    record["put"] = put("valid")
+    require(record["put"]["status"] == 200, "J2 founder If-Match eligibility PUT", record["put"])
+    record["policy"] = c.get(base + "/eligibility")
+    record["detail"] = c.get(base)
+    record["visible"] = c.get(base + "/eligibility/explain?agent=case_manager")
+    record["other_agent"] = c.get(base + "/eligibility/explain?agent=case_worker")
+    require(record["visible"]["visible"] is True and record["other_agent"]["visible"] is False
+            and record["detail"]["slug"] == record["detail"]["name"] == slug, "J2 exact public detail and agent visibility")
+    c.mark("J2.founder-eligibility")
+
+    next_task = c.create("alpha", "J2 fresh session reads its materialized skill marker and reports it")
+    next_start = record["reader"] = c.start("alpha", next_task, "case_manager")
+    read = record["read"] = c.provider_cli(next_start, "j2-read-final")
+    record["materialized_files"] = c.stores["alpha"].skill_files("case_manager", slug)
+    require(next_start["session"] != start["session"]
+            and read["payload"]["summary"] == "J2 skill marker: E2E-J2-SKILL-MARKER-alpha-2026"
+            and read["workspace_skill"] == record["materialized_files"], "J2 fresh agent emitted its actual marker", read)
+    c.stores["alpha"].result(read["payload"])
+    c.release(next_start)
+    c.finish("alpha", next_task)
+    record["reader_completion"] = c.stores["alpha"].snapshot(next_task)
+    c.mark("J2.next-session-marker")
+    record["browser"] = c.browser.custom_skill(slug)
+    require(record["browser"] == dict(name=slug, skill_id=skill["id"]), "J2 exact founder skill card")
+    c.mark("J2.browser-skill")
+    record["finished"] = time.monotonic()

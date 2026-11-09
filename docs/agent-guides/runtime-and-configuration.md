@@ -2889,7 +2889,9 @@ Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.
 
-J1 adds seven KB/artifact variants after the preserved56 prefix: **63 product cases per lane**, 126 across Python3.12/3.14. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
+J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
+
+J2 appends six custom-skill cases: **69 product cases per lane**, 138 across Python3.12/3.14. It covers genuine session CLI creation, default-hidden visibility, refused nonfounder eligibility writes, founder If-Match eligibility, exact next-session materialized marker reads and the founder Skills card. See the J2 section in the same E2E contract.
 
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
@@ -2897,7 +2899,7 @@ THR291seq247 additionally authorizes **ONE** immediate full main execution under
 sole root TASK-11897 through the reviewed `workflow_dispatch` entry. Manual
 admission requires actual `refs/heads/main`, default branch `main`, and matching
 repository/workflow/run/source identity. This entry is not standing execution
-authority. Baseline63 variants EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
+authority. Baseline69 variants EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
 exactly four execution artifacts and the original bounds. `Daily Product E2E
 Health` remains outside merge checks and reports the actual event, run/attempt,
 SHA and checkout tree; manual receipts are never labeled scheduled.
