@@ -41,7 +41,7 @@ def validate_report(path: Path, expected: dict, *, signal_name: str | None = Non
         suite_name = suite.get("name")
         if suite_name == "product":
             if Counter(names) != Counter(MANIFEST["variants"]):
-                raise ValueError("Product cases differ from exact 56-name manifest")
+                raise ValueError(f"Product cases differ from exact {len(MANIFEST['variants'])}-name manifest")
         elif suite_name == "diagnostic":
             if set(names) != {*HOUSEKEEPING, "launcher." + signal_name}:
                 raise ValueError("Missing or unexpected launcher/setup/cleanup cases")

@@ -1,7 +1,9 @@
 """Eight accepted cases, with every negative/positive variant attributable."""
 from __future__ import annotations
 
+import http.client
 import json
+import time
 import uuid
 from typing import TYPE_CHECKING
 
@@ -247,3 +249,98 @@ def exercise(c: Controller) -> None:
     require(len(recent) == 9 and all(row["quiescent"] and row["survivors_count"] == 0 for row in recent),
             "real production session cleanup receipts", host)
     c.durable.append(dict(final_metrics=metrics, launch_witnesses=rows))
+
+
+def knowledge_read(c: Controller, path: str, bearer: str | None = "valid") -> dict:
+    """Observe complete HTTP bytes, including binary artifact responses."""
+    headers = {} if bearer is None else {"Authorization": "Bearer " + (c.token if bearer == "valid" else bearer)}
+    with c.bounded(c.effective_end()):
+        connection = http.client.HTTPConnection("127.0.0.1", c.port, timeout=c.remaining())
+        try:
+            connection.request("GET", path, headers=headers)
+            upstream = connection.sock
+            response = connection.getresponse()
+            upstream.settimeout(c.remaining())
+            raw = response.read()
+            c.remaining()
+            return dict(path=path, status=response.status, bytes=len(raw), body_hex=raw.hex())
+        finally:
+            connection.close()
+
+
+def knowledge(c: Controller) -> None:
+    """J1 appends only after the complete original E07 execution prefix."""
+    c.j1_prefix = c.observations()
+    # E05's JSON-only request capture has finished. Artifact upload is multipart;
+    # retain the ordinary relay response/digest witness for this suffix.
+    c.relay.capture_e05 = False
+    record = c.j1 = dict(entered=time.monotonic(), finished=None, api={}, denials={}, denial_state={})
+    slug, name = "j1-agent-knowledge", "j1-artifact.txt"
+    body = "J1 knowledge from the real agent CLI.\n\nExact content: alpha → founder; 中文 café.\n"
+    content = "J1 artifact from the real agent CLI.\nExact bytes: alpha → founder; 中文 café.\n".encode()
+    task = c.create("alpha", "J1 publish knowledge and artifact")
+    start = record["start"] = c.start("alpha", task, "case_manager")
+    for action in ("j1-kb-add", "j1-artifacts-put"):
+        c.provider_cli(start, action)
+    summary = "J1 knowledge and artifact published"
+    final = c.provider_cli(start, "j1-final", payload=dict(status="completed", confidence=90,
+        summary=summary, decision=done(summary)))
+    c.stores["alpha"].result(final["payload"])
+    c.release(start)
+    c.finish("alpha", task)
+    record["completion"] = c.stores["alpha"].snapshot(task)
+    c.mark("J1.agent-cli-publish")
+
+    kb_path, artifact_path = f"/api/v1/orgs/alpha/kb/{slug}", f"/api/v1/orgs/alpha/artifacts/{name}"
+    api = record["api"]
+    api["kb"] = c.get(kb_path)
+    api["artifacts"] = c.get("/api/v1/orgs/alpha/artifacts")
+    api["artifact"] = knowledge_read(c, artifact_path)
+    require({k: api["kb"][k] for k in ("slug", "title", "body", "authored_by")} == dict(
+        slug=slug, title="J1 agent knowledge", body=body, authored_by=start["agent"]), "J1 exact API KB content")
+    info, = [a for a in api["artifacts"]["artifacts"] if a["name"] == name]
+    require(info["size_bytes"] == len(content) and info["modified_at"]
+            and api["artifact"]["status"] == 200 and bytes.fromhex(api["artifact"]["body_hex"]) == content,
+            "J1 exact API artifact metadata and bytes")
+    c.mark("J1.api-content")
+
+    record["browser_kb"] = c.browser.knowledge_entry(slug)
+    require(record["browser_kb"] == dict(slug=slug, title="J1 agent knowledge", paragraphs=[
+        "J1 knowledge from the real agent CLI.", "Exact content: alpha → founder; 中文 café."]), "J1 exact rendered KB")
+    c.mark("J1.browser-kb")
+    record["browser_artifact"] = c.browser.knowledge_artifact(name, info["modified_at"])
+    browser = record["browser_artifact"]
+    require(browser["name"] == browser["filename"] == name and browser["size"] == f"{len(content)} B"
+            and browser["modified"].startswith("Modified ") and "unavailable" not in browser["modified"].lower()
+            and bytes.fromhex(browser["body_hex"]) == content, "J1 page Download exact bytes and metadata", browser)
+    c.mark("J1.browser-artifact-download")
+
+    def protected_knowledge() -> dict:
+        return dict(stores={org: store.knowledge() for org, store in c.stores.items()}, starts=list(c.starts))
+
+    paths = ["/api/v1/orgs/alpha/kb", kb_path, "/api/v1/orgs/alpha/artifacts", artifact_path]
+    for token, label, detail in ((None, "absent", "missing bearer token"), ("j1-wrong-bearer", "wrong", "bad token")):
+        before = protected_knowledge()
+        def unchanged_knowledge() -> None:
+            require(protected_knowledge() == before, "J1 refused read leaves both orgs unchanged")
+        with c.case("J1.bearer-" + label, unchanged_knowledge):
+            reads = record["denials"][label] = [knowledge_read(c, path, token) for path in paths]
+            require(all(r["status"] == 401 and json.loads(bytes.fromhex(r["body_hex"])) == {"detail": detail}
+                        for r in reads), "J1 exact KB/artifact bearer refusals", reads)
+            unchanged_knowledge()
+            record["denial_state"][label] = dict(before=before, after=protected_knowledge())
+            c.mark("J1.bearer-" + label)
+
+    before = protected_knowledge()
+    beta = record["beta"] = dict(kb=c.get("/api/v1/orgs/beta/kb"), artifacts=c.get("/api/v1/orgs/beta/artifacts"),
+        entry=knowledge_read(c, f"/api/v1/orgs/beta/kb/{slug}"), artifact=knowledge_read(c, f"/api/v1/orgs/beta/artifacts/{name}"))
+    require(all(e["slug"] != slug for e in beta["kb"]["entries"])
+            and all(a["name"] != name for a in beta["artifacts"]["artifacts"]), "J1 no alpha content in beta lists")
+    for key, detail in (("entry", dict(code="not_found", slug=slug)), ("artifact", dict(code="artifact_not_found", name=name))):
+        require(beta[key]["status"] == 404 and json.loads(bytes.fromhex(beta[key]["body_hex"])) == {"detail": detail},
+                "J1 exact org-local missing content", beta[key])
+    require(protected_knowledge() == before, "J1 ownership reads are read-only in both orgs")
+    record["ownership_state"] = dict(before=before, after=protected_knowledge())
+    require(c.get(kb_path) == api["kb"] and knowledge_read(c, artifact_path) == api["artifact"], "J1 alpha content retained")
+    c.mark("J1.cross-org-isolation")
+    record["finished"] = time.monotonic()

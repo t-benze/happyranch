@@ -32,7 +32,16 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
     action = instruction["action"]
     if "expected_exit" in instruction:
         raise RuntimeError("caller-selected jobs exits forbidden")
-    if action in {"jobs-submit", "jobs-refuse-review", "jobs-block", "jobs-final"}:
+    if action in {"j1-kb-add", "j1-artifacts-put"}:
+        if binding["org"] != "alpha" or binding["agent"] != "case_manager":
+            raise RuntimeError("J1 requires its genuine alpha task provider")
+        fixture = Path(manifest["source"]) / "e2e/fixtures"
+        args = (["kb", "add", "--from-file", str(fixture / "j1-entry.md")]
+                if action == "j1-kb-add" else
+                ["artifacts", "put", str(fixture / "j1-artifact.txt"), "--name", "j1-artifact.txt"])
+        args += ["--org", binding["org"], "--agent", binding["agent"]]
+        payload = None
+    elif action in {"jobs-submit", "jobs-refuse-review", "jobs-block", "jobs-final", "j1-final"}:
         payload = dict(instruction["payload"], task_id=binding["task"], session_id=binding["session"])
         if action not in {"jobs-submit", "jobs-refuse-review"}:
             payload["agent"] = binding["agent"]
@@ -116,11 +125,14 @@ def main() -> None:
         atexit.register(lambda: [path.unlink(missing_ok=True) for path in thread_files.values()])
         command_mode = None
         jobs_actions: list[str] = []
+        j1_actions: list[str] = []
         while True:
             connection.settimeout(remaining(root))
             instruction = json.loads(stream.readline(131072))
             remaining(root)
             if instruction == {"action": "exit"}:
+                if j1_actions and j1_actions != ["j1-kb-add", "j1-artifacts-put", "j1-final"]:
+                    raise RuntimeError("incomplete J1 provider protocol")
                 if jobs_actions and jobs_actions[0] == "jobs-refuse-review" and jobs_actions != ["jobs-refuse-review", "jobs-final"]:
                     raise RuntimeError("incomplete review refusal protocol")
                 for path in thread_files.values():
@@ -137,6 +149,7 @@ def main() -> None:
             if final:
                 raise RuntimeError("callback must be the provider's final CLI action")
             selected_mode = ("e07" if instruction["action"].startswith("e07-") else
+                             "j1" if instruction["action"].startswith("j1-") else
                              "thread" if instruction["action"].startswith("thread-") else "jobs")
             if command_mode is not None and selected_mode != command_mode:
                 raise RuntimeError("provider command modes cannot be mixed")
@@ -156,7 +169,18 @@ def main() -> None:
                 final = True
                 continue
             refusal_content_ok = True
-            if instruction["action"].startswith("thread-"):
+            if selected_mode == "j1":
+                expected = ["j1-kb-add", "j1-artifacts-put", "j1-final"]
+                if len(j1_actions) >= 3 or instruction["action"] != expected[len(j1_actions)]:
+                    raise RuntimeError("unexpected J1 action/order")
+                if instruction["action"] == "j1-final" and instruction["payload"] != dict(
+                        status="completed", confidence=90, summary="J1 knowledge and artifact published",
+                        decision=dict(action="done", summary="J1 knowledge and artifact published")):
+                    raise RuntimeError("unexpected J1 completion")
+                receipt = jobs_command(instruction, row)
+                j1_actions.append(instruction["action"])
+                expected_exit = 0
+            elif instruction["action"].startswith("thread-"):
                 sys.path.insert(0, str(Path(__file__).resolve().parent))
                 from thread_provider import command
                 expected = "thread-task-send" if not thread_actions else "thread-task-final"
@@ -200,7 +224,7 @@ def main() -> None:
                 for path in thread_files.values():
                     path.unlink(missing_ok=True)
                 raise RuntimeError("real provider CLI failed")
-            final = instruction["action"] in {"jobs-block", "jobs-final", "thread-task-final"}
+            final = instruction["action"] in {"jobs-block", "jobs-final", "thread-task-final", "j1-final"}
 
 
 if __name__ == "__main__":

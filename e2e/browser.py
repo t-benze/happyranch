@@ -2133,6 +2133,63 @@ class Browser:
             return views
 
 
+    def knowledge_entry(self, slug: str) -> dict:
+        """Read the shipping KB drawer using the existing native deadline owner."""
+        from playwright.async_api import Page as AsyncPage
+        c = self.controller
+        end = min(c.effective_end(), time.monotonic() + self.page_timeout)
+
+        async def read() -> dict:
+            page = AsyncPage(self.page._impl_obj)
+            await page.goto(f"{self.base}/orgs/alpha/kb/{slug}", timeout=c.remaining(15)*1000)
+            drawer = page.get_by_role("dialog")
+            await drawer.get_by_text(slug, exact=True).wait_for(state="visible", timeout=c.remaining(10)*1000)
+            title = drawer.get_by_role("heading", name="J1 agent knowledge", exact=True)
+            await title.wait_for(state="visible", timeout=c.remaining(10)*1000)
+            prose = drawer.locator(".gl-prose")
+            await prose.wait_for(state="visible", timeout=c.remaining(10)*1000)
+            require(page.url == f"{self.base}/orgs/alpha/kb/{slug}", "J1 current KB document")
+            return dict(slug=await drawer.get_by_text(slug, exact=True).inner_text(), title=await title.inner_text(),
+                        paragraphs=await prose.locator("p").all_inner_texts())
+
+        return self._native(read, end)
+
+    def knowledge_artifact(self, name: str, modified_at: str) -> dict:
+        """Use the page's Download action; API reads cannot supply its bytes."""
+        from playwright.async_api import Page as AsyncPage
+        c = self.controller
+        end = min(c.effective_end(), time.monotonic() + self.page_timeout)
+
+        async def read() -> dict:
+            page = AsyncPage(self.page._impl_obj)
+            await page.goto(f"{self.base}/orgs/alpha/artifacts", timeout=c.remaining(15)*1000)
+            locale = await page.locator("html").get_attribute("lang")
+            require(locale in {"en", "zh-CN"}, "J1 known browser locale")
+            if locale != "en":
+                await page.get_by_role("combobox", name="语言", exact=True).click(timeout=c.remaining(5)*1000)
+                await page.get_by_role("option", name="English", exact=True).click(timeout=c.remaining(5)*1000)
+            card = page.locator("article").filter(has=page.locator(f'h3[title="{name}"]'))
+            await card.get_by_role("heading", name=name, exact=True).wait_for(state="visible", timeout=c.remaining(10)*1000)
+            require(await card.count() == 1, "J1 one exact artifact card")
+            size = await card.locator("span.font-mono").inner_text()
+            modified = await card.locator("p").filter(has_text="Modified ").inner_text()
+            expected_modified = await page.evaluate("""stamp => 'Modified ' + new Intl.DateTimeFormat('en-US', {
+                year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+            }).format(new Date(stamp))""", modified_at)
+            require(modified == expected_modified, "J1 exact API modification time rendered", modified)
+            async with page.expect_download(timeout=c.remaining(10)*1000) as event:
+                await card.get_by_role("button", name="Download", exact=True).click(timeout=c.remaining(5)*1000)
+            download = await event.value
+            target = c.root / "raw/j1-download.txt"
+            await download.save_as(target)
+            require(await download.failure() is None, "J1 successful native download")
+            require(page.url == f"{self.base}/orgs/alpha/artifacts", "J1 current artifacts document")
+            return dict(name=await card.locator("h3").get_attribute("title"), size=size, modified=modified,
+                        expected_modified=expected_modified,
+                        filename=download.suggested_filename, body_hex=target.read_bytes().hex())
+
+        return self._native(read, end)
+
     def _terminal_stop(self) -> None:
         """ONE exit; sticky expiry leaves ONE successor across loop phases.
 

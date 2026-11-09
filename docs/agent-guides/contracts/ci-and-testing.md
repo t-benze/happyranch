@@ -84,12 +84,12 @@ content/public/SQL/files/witness/source joins and a full50s remaining
 in ORIGINAL480 work are mandatory; unsafe/unknown/expired/poisoned states refuse
 before allocation, without reset or borrowed reserve. Separate producer groups
 and independent scoped readers preserve the first E05 error and later errors;
-full56/Health remains strict FAIL for failed/missing observations. Slice3 removes
+full63/Health remains strict FAIL for failed/missing observations. Slice3 removes
 original-body/hash/length publication proof and reads exact native browser JSON
 within the original time/closure rules. Full detail/message/public/DOM equality
 remains mandatory; relay/public/SQL/DOM copies cannot supply missing browser JSON.
-Source delivery does not establish healthy E05/full56.
-All56 BOTH3.12/3.14,31s/full1s/BOTH50ms/GC/content assertions, original budgets,
+Source delivery does not establish healthy E05/full63.
+All63 BOTH3.12/3.14,31s/full1s/BOTH50ms/GC/content assertions, original budgets,
 TERM/INT/four JUnit reports/daily19UTC and lint-only checks remain. See e2e/README.md
 for the maintained current contract,26 cases/keeper/four-answer records and actual
 source/control evidence; historical observations and execution holds remain.
@@ -116,6 +116,8 @@ Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.
 
+J1 adds seven KB/artifact variants after the preserved56 prefix: **63 product cases per lane**, 126 across Python3.12/3.14. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
+
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
 THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12445
@@ -124,7 +126,7 @@ on demand after concrete reviewed corrections, without per-run approval or a
 nightly wait. Reconcile active owners/runs first; no blind same-source retry loop.
 Manual admission requires actual `refs/heads/main`, default branch `main`, and
 matching repository/workflow/run/source identity. Historical seq247's ONE-run
-allocation to TASK-11897 and its receipts remain history. Baseline56 variants
+allocation to TASK-11897 and its receipts remain history. Baseline63 variants
 EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
 exactly four execution artifacts (`e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM`,
 `e2e-cancel-INT`) and the original bounds. Product Python support is unchanged.

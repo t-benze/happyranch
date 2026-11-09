@@ -4,7 +4,7 @@
 
 The standalone harness uses stdlib `xml.etree.ElementTree`, without pytest or
 new dependencies. Each Python lane writes `reports/junit.xml`: a `product` suite
-with exactly the 56 names in `e2e/manifest.json`, once each, and a `harness` suite
+with exactly the 63 names in `e2e/manifest.json`, once each, and a `harness` suite
 for setup, controller/finalization, owned processes, registered ports, sockets
 and data cleanup. Assertion failures produce failures; unavailable prerequisites
 or unfinished cases produce errors. No skips or inferred success are allowed.
@@ -174,7 +174,7 @@ terminal, a completed finite upstream exchange and clean owner teardown. Repeate
 or ambiguous targets, unjoined failures, upstream errors and other exceptions
 remain failures. Worker/listener/socket closure and all original budgets remain
 mandatory; physical closure alone never supplies cancellation evidence.
-This source change makes no full56 or native behavior claim.
+This source change makes no full63 or native behavior claim.
 
 Launcher TERM on Python3.12 and INT on Python3.14 are separate `diagnostic`
 suites: `launcher.TERM` or `launcher.INT`, plus setup/process/port/socket/data
@@ -186,11 +186,11 @@ abrupt-restart coverage.
 
 Health downloads exactly `e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM` and
 `e2e-cancel-INT`, each containing `junit.xml`. It parses actual testcase children
-and requires both jobs successful, exactly 56 distinct expected product names
+and requires both jobs successful, exactly 63 distinct expected product names
 per lane with no failures/errors/skips, both diagnostics and all setup/cleanup
 checks passed, and matching Python/source/event/run/attempt/exercise properties.
 It never reopens SQL, snapshots or completion ledgers. `GITHUB_STEP_SUMMARY`
-reports product112, diagnostics2, cleanup status and source/event/run errors.
+reports product126, diagnostics2, cleanup status and source/event/run errors.
 
 JUnit uploads use `if: always()` and `if-no-files-found: error`. Failure-only
 artifacts use `if: failure()` and explicit lane-root paths: `traces/*.zip`,
@@ -266,6 +266,53 @@ trace ZIP content before upload. ZIP paths and standard trace/network/resource
 formats are preserved; no context-validation/member-ledger publisher is rebuilt.
 Readability and absence of literals require attributable trace checks; synthetic
 proof does not establish full Product E2E or supported hosted browser behavior.
+
+## J1: agent KB and shared artifacts (THR-343)
+
+The product suite now contains **63 variants per Python lane**: the preserved
+56-case prefix followed by these seven names:
+
+- `J1.agent-cli-publish`
+- `J1.api-content`
+- `J1.browser-kb`
+- `J1.browser-artifact-download`
+- `J1.bearer-absent`
+- `J1.bearer-wrong`
+- `J1.cross-org-isolation`
+
+After E07, a genuine alpha task provider runs the real `kb add --from-file` and
+`artifacts put` CLI commands, then its original-session final callback. Exact
+argv/source/parent-PID witnesses and successful HTTP writes are required. API
+reads compare KB slug/title/body and artifact name/size/exact UTF8 bytes against
+independent literals. The browser opens the real KB drawer and checks its full
+paragraphs; the Artifacts card must show the exact name, size and API modification
+time. Its own Download button must emit a Playwright download with the exact
+filename and byte-identical content. Metadata alone is insufficient.
+
+Both missing and incorrect bearer reads of the existing list/detail/blob paths
+must return the precise401 response without changing either org's files or SQL.
+The seeded beta org must omit alpha's entry/artifact and return the precise404
+responses for their detail paths; authenticated alpha reads still return the
+original content. These are bearer/org boundaries, without a per-session write
+authorization claim. No production test seam or product change is used.
+
+The old readers consume their exact completed execution prefix, plus current
+resource finalization. The independent J1 reader accounts for the entire suffix
+(one provider, three actual CLI children), including every new witness record;
+E04/E05/E07 cardinalities stay exact. The original56 membership, historical run
+counts and superseded publication limits below retain their historical meaning.
+Health derives current membership from the63-name manifest (126 across both
+lanes). `J1.agent-cli-publish` JUnit `system-out` records measured J1 elapsed time,
+including partial/unavailable completion. Budgets remain target600/hard900,
+scenario480/actions720/cleanup60; no schedule, trigger or required-check changes.
+
+TASK-14936's explicitly authorized local evidence uses an uncommitted task-tmp
+driver with the launcher's isolated setup, then the ordinary baseline controller
+on committed/pushed source for Python3.12 and3.14. Its metadata says
+`local-evidence` / `local` / attempt1, with the real source tree and interpreter.
+This is local evidence, never a scheduled/Actions Health receipt. `run.py` retains
+its Actions-only admission and gains no local mode. Long runs use persistent jobs;
+submission and static checks do not establish passing execution or budget fit.
 
 <details>
 <summary>Historical implementation, case, failure and hold records</summary>
