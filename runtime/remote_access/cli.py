@@ -517,6 +517,17 @@ def _main(args: argparse.Namespace, entry_ns: int) -> int:
             return _run_ceremony(args, supervisor)
     except (ConnectorConfigError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        if args.command == "start" and getattr(args, "_managed_routed", False):
+            # Publish only the existing validated site, never private loaded
+            # facts or child stderr. A native nonzero exit may identify only
+            # the parent boundary; it does not identify the child's predicate.
+            from runtime.remote_access.package_diagnostics import exception_refusal
+            refusal = exception_refusal(exc)
+            if refusal is not None:
+                try:
+                    print("managed lifecycle refusal site: " + refusal[1], file=sys.stderr)
+                except (OSError, ValueError):
+                    pass  # Preserve the original failed start and exit status.
         return 1
     return 1
 

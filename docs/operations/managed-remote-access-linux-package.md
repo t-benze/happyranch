@@ -16,6 +16,24 @@ additionally printed to refusing Python stderr, prefixed by the refusal code.
 The existing 96/240-byte diagnostics and Go carrier stay unchanged; stderr output
 does not certify delivery through those bounded carriers.
 
+On a failed managed `happyranch-connector start`, the CLI retains its original
+error line and exit status and appends `managed lifecycle refusal site: P...`
+when the exception has an existing allowlisted diagnostic identity. It emits
+no loaded values or child stderr. An unmarked or invalid identity emits no
+site line. `P000052` identifies a nonzero/late native helper exit at the parent
+boundary; it does not identify an inner admission predicate. The native
+lifecycle helper and eligibility reader still discard their internal stderr.
+Unit status/journal evidence and the site line alone may therefore leave the
+READY root cause unknown. This diagnostic does not change any service check,
+operation deadline, stream bound or startup behavior.
+
+The focused native regression command is
+`cd app/linux/tsnet-sidecar && go test -run '^TestManagedLifecycleCLIRefusalSite$' -count=1 -v .`.
+It exercises the shipping CLI with supplied native-boundary observations,
+including invalid/unmarked identities, implicit exception context, private
+observation canaries and successful routing. It does not execute a service or
+establish hosted READY acceptance.
+
 P000241 retains the fixed unit identity and missing requested property names in
 the existing bounded loaded delta. The M1 plain log projects only these names,
 their count and completeness, suppressing all loaded values and contexts. A
