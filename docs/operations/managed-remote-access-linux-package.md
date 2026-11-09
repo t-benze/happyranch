@@ -35,7 +35,23 @@ with one registered name: `request_open`, `stopped_current`,
 `managed lifecycle native origin:` carries a validated registered G code when
 available. Preflight (including preflight during reply) can also carry
 `managed lifecycle eligibility origin:` with the SAME eligibility invocation's
-validated registered P/G code. These are source identities, not property values
+validated registered P/G code. For that same preflight, an optional
+`managed lifecycle eligibility disposition:` line has exactly one name:
+`spawn_failed`, `exit_nonzero`, `signaled`, `context_done`, `deadline_elapsed`.
+The SAME `cmd.Run` error is classified first; only a nil result permits the
+original context check, then (only with nil context error) the original time
+check. A signaled child is an observed result, not proof of why it was signaled;
+no error text or numeric exit/signal is carried, and no predicate is resampled.
+
+When `exception_refusal` returns None, the last entered Python step selects a
+registered coarse `managed_operational_error` site, P900010..P900017 in order:
+`installed_contract`, `config`, `supervisor`, `trust_metadata`, `trust_load`,
+`configured_identity`, `policy`, `metadata_bookend`. The canonical eligibility
+frame remains exactly category/site. At the public sink those fallback sites
+also render `managed lifecycle eligibility step: <name>`. A valid existing P/G
+identity is preserved byte-for-byte and never replaced by a fallback; it does
+not claim a fallback step. Before any listed step, no fallback is emitted.
+Success stays silent. These are source identities, not property values
 or a second evaluation. The helper uses its existing stdout channel; eligibility
 stdout contains only its closed identity on failure. Both still discard raw
 internal stderr. The optional canonical frame is at most512 bytes within the
@@ -53,7 +69,7 @@ no service check, evaluation order, operation deadline, cap, reap or startup
 behavior and does not establish READY acceptance.
 
 The focused native regression command is
-`cd app/linux/tsnet-sidecar && go test -run '^Test(ManagedLifecycle(CLIRefusalSite|StartDiagnostic)|ManagedEligibilityRefusalIdentity|LifecycleStartDiagnosticCarrier)$' -count=1 -v .`.
+`cd app/linux/tsnet-sidecar && go test -run '^Test(ManagedLifecycle(CLIRefusalSite|StartDiagnostic)|ManagedEligibilityRefusalIdentity|LifecycleStartDiagnosticCarrier|LifecycleEligibilityChildDisposition)$' -count=1 -v .`.
 It exercises the shipping CLI with supplied native-boundary observations,
 including unknown sites paired with null categories, newline/control/private-path/
 long canaries, non-string fields, invalid/unmarked identities, implicit exception

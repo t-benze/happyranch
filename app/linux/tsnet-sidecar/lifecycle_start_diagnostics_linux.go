@@ -4,10 +4,13 @@ package sidecar
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // Closed public start-branch registry, mirrored by lifecycle_diagnostics.py.
@@ -15,6 +18,27 @@ var lifecycleStartBranches = map[string]string{
 	"request_open": "managed_lifecycle_refused", "stopped_current": "managed_lifecycle_refused",
 	"eligibility_preflight": "managed_lifecycle_refused", "policy_write": "managed_lifecycle_refused",
 	"manager_start": "managed_lifecycle_refused", "reply": "managed_lifecycle_refused",
+}
+
+// Closed observation of the SAME cmd.Run error. Never sample context/time again.
+func lifecycleEligibilityChildDisposition(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return "deadline_elapsed"
+	}
+	if errors.Is(cause, context.Canceled) {
+		return "context_done"
+	}
+	var exited *exec.ExitError
+	if errors.As(cause, &exited) {
+		if status, ok := exited.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			return "signaled"
+		}
+		return "exit_nonzero"
+	}
+	return "spawn_failed"
 }
 
 func lifecycleStartOriginValid(origin *lifecyclePackageRefusalDiagnostic, native bool) bool {
@@ -38,9 +62,13 @@ func writeLifecycleStartRefusal(output io.Writer, branch string, cause error) {
 		frame["origin"] = origin
 	}
 	var failure *lifecycleDiagnosticFailure
-	if (branch == "eligibility_preflight" || branch == "reply") && errors.As(cause, &failure) &&
-		lifecycleStartOriginValid(failure.eligibility, false) {
-		frame["eligibility"] = failure.eligibility
+	if (branch == "eligibility_preflight" || branch == "reply") && errors.As(cause, &failure) {
+		if lifecycleStartOriginValid(failure.eligibility, false) {
+			frame["eligibility"] = failure.eligibility
+		}
+		if lifecycleOneOf(failure.eligibilityDisposition, "spawn_failed", "exit_nonzero", "signaled", "context_done", "deadline_elapsed") {
+			frame["disposition"] = failure.eligibilityDisposition
+		}
 	}
 	raw, err := json.Marshal(frame)
 	if err == nil && len(raw)+1 <= 512 {

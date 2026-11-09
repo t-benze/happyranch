@@ -96,10 +96,11 @@ func lifecycleDiagnosticLoss(site string, cause error) {
 // Diagnostic errors preserve the original error language and unwrap identity.
 // Neither the site nor the wrapper changes any admission decision.
 type lifecycleDiagnosticFailure struct {
-	site        string
-	origin      string
-	cause       error
-	eligibility *lifecyclePackageRefusalDiagnostic
+	site                   string
+	origin                 string
+	cause                  error
+	eligibility            *lifecyclePackageRefusalDiagnostic
+	eligibilityDisposition string
 }
 
 func (e *lifecycleDiagnosticFailure) Error() string { return e.cause.Error() }

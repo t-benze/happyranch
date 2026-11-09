@@ -544,6 +544,12 @@ def _main(args: argparse.Namespace, entry_ns: int) -> int:
                             if name in detail:
                                 label = "native" if name == "origin" else "eligibility"
                                 print("managed lifecycle " + label + " origin: " + detail[name]["site"], file=sys.stderr)
+                        if "disposition" in detail:
+                            print("managed lifecycle eligibility disposition: " + detail["disposition"], file=sys.stderr)
+                        from runtime.remote_access.lifecycle_diagnostics import ELIGIBILITY_SITE_STEPS
+                        eligibility = detail.get("eligibility")
+                        if eligibility is not None and eligibility["site"] in ELIGIBILITY_SITE_STEPS:
+                            print("managed lifecycle eligibility step: " + ELIGIBILITY_SITE_STEPS[eligibility["site"]], file=sys.stderr)
                 except (OSError, ValueError):
                     pass
         return 1

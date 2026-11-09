@@ -1394,9 +1394,27 @@ func RunLifecyclePreflight(ctx context.Context) error {
 	if ctx.Err() != nil || !time.Now().Before(deadline) {
 		return lifecycleDiagnosticError("G000149", ErrLifecycle)
 	}
-	if cmd.Run() != nil || ctx.Err() != nil || !time.Now().Before(deadline) {
-		failure := lifecycleDiagnosticError("G000150", ErrLifecycle)
-		failure.(*lifecycleDiagnosticFailure).eligibility = diagnostic.origin()
+	// Retain each observation only when the original short-circuit evaluated it.
+	// Diagnostic classification never decides whether the original guard refuses.
+	runError := cmd.Run()
+	var contextError error
+	deadlineElapsed := false
+	if runError == nil {
+		contextError = ctx.Err()
+		if contextError == nil {
+			deadlineElapsed = !time.Now().Before(deadline)
+		}
+	}
+	if runError != nil || contextError != nil || deadlineElapsed {
+		failure := lifecycleDiagnosticError("G000150", ErrLifecycle).(*lifecycleDiagnosticFailure)
+		failure.eligibility = diagnostic.origin()
+		failure.eligibilityDisposition = lifecycleEligibilityChildDisposition(runError)
+		if runError == nil {
+			failure.eligibilityDisposition = "context_done"
+			if deadlineElapsed || errors.Is(contextError, context.DeadlineExceeded) {
+				failure.eligibilityDisposition = "deadline_elapsed"
+			}
+		}
 		return failure
 	}
 	return nil

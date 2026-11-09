@@ -4140,6 +4140,7 @@ def managed_private_entry(operation: str) -> int:
             from runtime.remote_access.supervisor import (
                 ConnectorConfig, ConnectorConfigError, ConnectorSupervisor, PolicyLoadError,
             )
+        step = None
         try:
             with diagnostic_scope("P100148", "managed_operational_error"):
                 import errno
@@ -4154,17 +4155,21 @@ def managed_private_entry(operation: str) -> int:
                 if time.monotonic_ns() >= deadline:
                     raise diagnostic_error("P000268", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
             current()
+            step = "installed_contract"
             _installed_managed_contract(deadline_ns=deadline)
             current()
+            step = "config"
             config = ConnectorConfig.from_file(Path("/etc/happyranch/connector.json"))
             current()
             if config.managed is None or config.unit_name != UNITS[0] or not config.system:
                 raise diagnostic_error("P000269", "managed_configuration_invalid", PackageError("managed_configuration_invalid"))
+            step = "supervisor"
             supervisor = ConnectorSupervisor(config=config)
             current()
             # Observe the SAME expanded targets as the unchanged store. Only
             # positive ENOENT observations permit its configured default, at
             # every call; absence says nothing about former trust history.
+            step = "trust_metadata"
             state_path = Path(config.state_path).expanduser()
             anchor_path = Path(str(state_path) + ".anchor")
 
@@ -4214,12 +4219,16 @@ def managed_private_entry(operation: str) -> int:
             if before[0][0] != before[1][0]:
                 raise diagnostic_error("P000272", "managed_identity_missing", PackageError("managed_identity_missing"))
             current()
+            step = "trust_load"
             state = supervisor.state_store.load()
             current()
+            step = "configured_identity"
             if state.connector_identity != supervisor._configured_identity():
                 raise diagnostic_error("P000273", "managed_identity_invalid", PackageError("managed_identity_invalid"))
+            step = "policy"
             supervisor.load_policy()
             current()
+            step = "metadata_bookend"
             after = (trust_metadata(state_path), trust_metadata(anchor_path))
             if after != before:
                 raise diagnostic_error("P000274", "managed_identity_invalid", PackageError("managed_identity_invalid"))
@@ -4230,7 +4239,7 @@ def managed_private_entry(operation: str) -> int:
         except (OSError, RuntimeError, ValueError, AttributeError,
                 StateStoreError, ConnectorConfigError, PolicyLoadError) as exc:
             from runtime.remote_access.lifecycle_diagnostics import write_eligibility_refusal
-            write_eligibility_refusal(exc)
+            write_eligibility_refusal(exc, step)
             return 78
         finally:
             if "token" in locals():

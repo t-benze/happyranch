@@ -16,6 +16,17 @@ HELPER_OUTCOME_CATEGORIES = dict.fromkeys((
 ), "managed_lifecycle_refused")
 
 
+ELIGIBILITY_DISPOSITION_CATEGORIES = dict.fromkeys((
+    "spawn_failed", "exit_nonzero", "signaled", "context_done", "deadline_elapsed",
+), "managed_lifecycle_refused")
+ELIGIBILITY_STEP_SITES = {
+    "installed_contract": "P900010", "config": "P900011", "supervisor": "P900012",
+    "trust_metadata": "P900013", "trust_load": "P900014", "configured_identity": "P900015",
+    "policy": "P900016", "metadata_bookend": "P900017",
+}
+ELIGIBILITY_SITE_STEPS = {site: step for step, site in ELIGIBILITY_STEP_SITES.items()}
+
+
 def registered_origin(value: object, prefixes: tuple[str, ...]) -> dict[str, str] | None:
     if type(value) is not dict or set(value) != {"category", "site"}:
         return None
@@ -28,7 +39,7 @@ def registered_origin(value: object, prefixes: tuple[str, ...]) -> dict[str, str
 
 def start_refusal_projection(value: object) -> dict[str, object] | None:
     if (type(value) is not dict or not {"version", "branch"} <= set(value)
-            or set(value) - {"version", "branch", "origin", "eligibility"}
+            or set(value) - {"version", "branch", "origin", "eligibility", "disposition"}
             or type(value["version"]) is not int or value["version"] != 1):
         return None
     branch = value["branch"]
@@ -42,6 +53,13 @@ def start_refusal_projection(value: object) -> dict[str, object] | None:
             if origin is None or name == "eligibility" and branch not in ("eligibility_preflight", "reply"):
                 return None
             result[name] = origin
+    if "disposition" in value:
+        disposition = value["disposition"]
+        if (branch not in ("eligibility_preflight", "reply") or type(disposition) is not str
+                or disposition not in ELIGIBILITY_DISPOSITION_CATEGORIES
+                or ELIGIBILITY_DISPOSITION_CATEGORIES[disposition] != "managed_lifecycle_refused"):
+            return None
+        result["disposition"] = disposition
     return result
 
 
@@ -79,10 +97,12 @@ def exception_start_observation(error: BaseException) -> tuple[str, dict[str, ob
     return None
 
 
-def write_eligibility_refusal(error: BaseException) -> None:
+def write_eligibility_refusal(error: BaseException, step: object = None) -> None:
     refusal = exception_refusal(error)
     if refusal is None:
-        return
+        if type(step) is not str or step not in ELIGIBILITY_STEP_SITES:
+            return
+        refusal = ("managed_operational_error", ELIGIBILITY_STEP_SITES[step])
     category, site = refusal
     origin = registered_origin({"category": category, "site": site}, ("P", "G"))
     if origin is not None:

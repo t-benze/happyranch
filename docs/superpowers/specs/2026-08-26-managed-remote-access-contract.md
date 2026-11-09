@@ -701,6 +701,19 @@ nonzero, elapsed deadline and both. A timely nonzero reply may carry exactly one
 registered start branch (request_open, stopped_current, eligibility_preflight,
 policy_write, manager_start, reply), a validated native G origin, and, for
 preflight or reply, the same eligibility invocation's validated P/G origin.
+TASK14963 adds the SAME eligibility child disposition (spawn_failed,
+exit_nonzero, signaled, context_done, deadline_elapsed), without carrying error
+text or numeric exit/signal. Original short-circuit order is retained: cmd.Run,
+then context only if it succeeded, then time only if context is still nil.
+No context/time resample or causal signal attribution occurs. Unmarked caught
+Python exceptions (exception_refusal returns None) select the last entered step
+from installed_contract, config, supervisor, trust_metadata, trust_load,
+configured_identity, policy, metadata_bookend. Registered P900010..P900017
+(coarse managed_operational_error) carry that step through the unchanged
+canonical two-field category/site frame; the public sink prints the step name
+only for those fallback sites. Valid existing P/G stays exact and is never
+replaced. Before the first step no fallback is supplied; success stays silent.
+
 The optional canonical frame uses existing stdout, at most512 bytes inside the
 existing4096-byte cap; raw stderr remains discarded. Registry membership,
 exact types and matching non-None categories are required again at the public

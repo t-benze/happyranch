@@ -1,6 +1,16 @@
 """Closed private transport vocabulary. Producers own literal allocations, never coordinates."""
 
 SITE_CATEGORIES = {
+# Same-invocation unmarked eligibility fallback; no underlying cause claim.
+'P900010': 'managed_operational_error',
+'P900011': 'managed_operational_error',
+'P900012': 'managed_operational_error',
+'P900013': 'managed_operational_error',
+'P900014': 'managed_operational_error',
+'P900015': 'managed_operational_error',
+'P900016': 'managed_operational_error',
+'P900017': 'managed_operational_error',
+
 'P900001': 'managed_manager_unavailable',
 'P900002': 'managed_operational_error',
 # P000262 supplementary clauses: each triple is connector, sidecar, target.

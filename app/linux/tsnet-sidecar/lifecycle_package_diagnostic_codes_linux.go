@@ -4,6 +4,16 @@ package sidecar
 
 // Closed private vocabulary includes native sites carried back through Python.
 var lifecyclePackagePrivateSites = map[string]string{
+	// Same-invocation unmarked eligibility fallback, mirrored by Python.
+	"P900010": "managed_operational_error",
+	"P900011": "managed_operational_error",
+	"P900012": "managed_operational_error",
+	"P900013": "managed_operational_error",
+	"P900014": "managed_operational_error",
+	"P900015": "managed_operational_error",
+	"P900016": "managed_operational_error",
+	"P900017": "managed_operational_error",
+
 	// P000262 details: each property triple is connector, sidecar, target.
 	"P800001": "managed_loaded_contract_mismatch",
 	"P800002": "managed_loaded_contract_mismatch",

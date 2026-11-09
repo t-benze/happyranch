@@ -20,7 +20,15 @@ func TestManagedLifecycleStartDiagnostic(t *testing.T) {
 	}
 	for _, scenario := range []string{
 		"request_open", "stopped_current", "eligibility_preflight", "policy_write", "manager_start", "reply",
-		"eligibility-origin", "native-request", "unknown-branch", "null-category", "unknown-origin",
+		"eligibility-origin", "native-request",
+		"spawn_failed", "exit_nonzero", "signaled", "context_done", "deadline_elapsed",
+		"step-installed_contract", "step-config", "step-supervisor", "step-trust_metadata",
+		"step-trust_load", "step-configured_identity", "step-policy", "step-metadata_bookend",
+		"disposition-unknown", "disposition-none", "disposition-control", "disposition-newline",
+		"disposition-path", "disposition-long", "disposition-type", "disposition-duplicate",
+		"disposition-wrong-branch",
+		"step-unknown", "step-none-category", "step-none-site", "step-control", "step-newline",
+		"step-path", "step-long", "step-type", "step-duplicate", "unknown-branch", "null-category", "unknown-origin",
 		"newline", "control", "path", "long", "wrong-type", "duplicate", "malformed", "oversize",
 		"extra-output", "unregistered-category", "deadline", "nonzero-deadline", "legacy",
 	} {
@@ -69,7 +77,9 @@ func TestManagedEligibilityRefusalIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"registered-p", "registered-g", "unknown", "null-category", "newline", "control", "path", "long", "unmarked"} {
+	for _, scenario := range []string{"registered-p", "registered-g", "unknown", "null-category", "newline", "control", "path", "long", "unmarked",
+		"fallback-installed_contract", "fallback-config", "fallback-supervisor", "fallback-trust_metadata",
+		"fallback-trust_load", "fallback-configured_identity", "fallback-policy", "fallback-metadata_bookend", "success"} {
 		t.Run(scenario, func(t *testing.T) {
 			cmd := exec.Command("python3", "-I", "-c", eligibilityRefusalFixture, root, scenario)
 			cmd.Dir = root
@@ -91,7 +101,7 @@ import sys
 import time
 from unittest.mock import patch
 sys.path.insert(0, sys.argv[1])
-from runtime.remote_access import linux_package as package
+from runtime.remote_access import cli, linux_package as package
 
 scenario = sys.argv[2]
 identity = {
@@ -111,15 +121,54 @@ def observation(fd, raw):
     assert fd == 1
     writes.append(raw)
     return len(raw)
-with patch.dict(os.environ, {"HAPPYRANCH_LIFECYCLE_DEADLINE_NS": str(time.monotonic_ns() + 45_000_000_000)}), \
-     patch.object(package, "_installed_managed_contract", side_effect=failure) as contract, \
-     patch.object(os, "write", side_effect=observation), \
-     contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-    result = package.managed_private_entry("eligibility")
-assert result == 78 and contract.call_count == 1
+# Supply external observations only. Each injected error is thrown by the actual
+# entered reader/call; all preceding shipping eligibility code still executes.
+from contextlib import ExitStack
+from types import SimpleNamespace
+from pathlib import Path
+steps = ("installed_contract", "config", "supervisor", "trust_metadata", "trust_load", "configured_identity", "policy", "metadata_bookend")
+selected = scenario.removeprefix("fallback-") if scenario.startswith("fallback-") else "installed_contract"
+calls = []
+def entered(step, result=None):
+    calls.append(step)
+    if step == selected and scenario != "success": raise failure
+    return result
+config = SimpleNamespace(managed={}, unit_name=package.UNITS[0], system=True, state_path="/fixture/state")
+metadata_calls = [0]
+def metadata(path):
+    raise FileNotFoundError(2, "SENTINEL")
+def absolute(path):
+    metadata_calls[0] += 1
+    entered("trust_metadata" if metadata_calls[0] <= 2 else "metadata_bookend")
+    return True
+class Supervisor:
+    def __init__(self, **kwargs):
+        entered("supervisor")
+        self.state_store = SimpleNamespace(load=lambda: entered("trust_load", SimpleNamespace(connector_identity="fixture")))
+    def _configured_identity(self): return entered("configured_identity", "fixture")
+    def load_policy(self): return entered("policy")
+from runtime.remote_access import supervisor as supervisor_module
+with ExitStack() as stack:
+    stack.enter_context(patch.dict(os.environ, {"HAPPYRANCH_LIFECYCLE_DEADLINE_NS": str(time.monotonic_ns() + 45_000_000_000)}))
+    contract = stack.enter_context(patch.object(package, "_installed_managed_contract", side_effect=lambda **kwargs: entered("installed_contract")))
+    stack.enter_context(patch.object(supervisor_module.ConnectorConfig, "from_file", side_effect=lambda path: entered("config", config)))
+    stack.enter_context(patch.object(supervisor_module, "ConnectorSupervisor", Supervisor))
+    stack.enter_context(patch.object(Path, "lstat", metadata))
+    stack.enter_context(patch.object(Path, "is_absolute", absolute))
+    stack.enter_context(patch.object(os, "write", side_effect=observation))
+    stack.enter_context(contextlib.redirect_stdout(stdout))
+    stack.enter_context(contextlib.redirect_stderr(stderr))
+    result = cli.main(["managed-private", "eligibility"])
+assert result == (0 if scenario == "success" else 78) and contract.call_count == 1
 expected = b""
 if scenario in ("registered-p", "registered-g"):
     expected = (json.dumps({"category": identity[0], "site": identity[1]}, sort_keys=True, separators=(",", ":")) + "\n").encode()
+elif scenario.startswith("fallback-") or scenario in ("unknown", "null-category", "unmarked"):
+    site = "P9000" + str(10 + steps.index(selected))
+    expected = (json.dumps({"category": "managed_operational_error", "site": site}, sort_keys=True, separators=(",", ":")) + "\n").encode()
+expected_calls = list(steps[:3]) + ["trust_metadata"] * 2 + list(steps[4:7]) + ["metadata_bookend"] * 2
+if scenario != "success": expected_calls = expected_calls[:expected_calls.index(selected)+1]
+assert calls == expected_calls, calls
 assert b"".join(writes) == expected, (scenario, writes, expected)
 assert stdout.getvalue() == stderr.getvalue() == ""
 assert package._MANAGED_DEADLINE.get() is None
@@ -143,6 +192,24 @@ helper, scenario = sys.argv[2:]
 branches = ("request_open", "stopped_current", "eligibility_preflight", "policy_write", "manager_start", "reply")
 record = {"version": 1, "branch": scenario if scenario in branches else "eligibility_preflight",
           "origin": {"category": "managed_lifecycle_refused", "site": "G000150"}}
+dispositions = ("spawn_failed", "exit_nonzero", "signaled", "context_done", "deadline_elapsed")
+steps = ("installed_contract", "config", "supervisor", "trust_metadata", "trust_load", "configured_identity", "policy", "metadata_bookend")
+if scenario in dispositions: record["disposition"] = scenario
+if scenario.startswith("step-") and scenario[5:] in steps:
+    record["eligibility"] = {"category": "managed_operational_error", "site": "P9000" + str(10 + steps.index(scenario[5:]))}
+invalid_steps = {"step-unknown": "P999999", "step-none-site": None,
+    "step-control": "P900010\x1bSENTINEL", "step-newline": "P900010\nSENTINEL",
+    "step-path": "/private/SENTINEL", "step-long": "SENTINEL" * 128, "step-type": ["P900010"]}
+if scenario in invalid_steps:
+    record["eligibility"] = {"category": "managed_operational_error", "site": invalid_steps[scenario]}
+if scenario == "step-none-category": record["eligibility"] = {"category": None, "site": "P900010"}
+if scenario == "step-duplicate": record["eligibility"] = {"category": "managed_operational_error", "site": "P900010"}
+invalid_dispositions = {"disposition-unknown": "SENTINEL", "disposition-none": None,
+    "disposition-control": "exit_nonzero\x1bSENTINEL", "disposition-newline": "exit_nonzero\nSENTINEL",
+    "disposition-path": "/private/SENTINEL", "disposition-long": "SENTINEL" * 128,
+    "disposition-type": ["exit_nonzero"], "disposition-duplicate": "exit_nonzero", "disposition-wrong-branch": "exit_nonzero"}
+if scenario in invalid_dispositions: record["disposition"] = invalid_dispositions[scenario]
+if scenario == "disposition-wrong-branch": record["branch"] = "manager_start"
 if scenario == "eligibility-origin":
     record["eligibility"] = {"category": "managed_loaded_contract_mismatch", "site": "P000263"}
 if scenario == "unknown-branch": record["branch"] = "UNREGISTERED_SENTINEL"
@@ -155,6 +222,8 @@ for name, value in {"newline": "reply\nSENTINEL", "control": "reply\x1bSENTINEL"
     if scenario == name: record["branch"] = value
 raw = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
 if scenario == "duplicate": raw = raw.replace('"version":1', '"version":1,"version":1')
+if scenario == "step-duplicate": raw = raw.replace('"site":"P900010"', '"site":"P900010","site":"P900010"')
+if scenario == "disposition-duplicate": raw = raw.replace('"disposition":"exit_nonzero"', '"disposition":"exit_nonzero","disposition":"exit_nonzero"')
 if scenario == "malformed": raw = '{"branch":'
 if scenario == "oversize": raw = "SENTINEL" * 600
 if scenario == "extra-output": raw += "SENTINEL\n"
@@ -201,13 +270,18 @@ with tempfile.TemporaryDirectory() as temporary:
     else:
         outcome = {"deadline": "deadline_elapsed", "nonzero-deadline": "nonzero_deadline_elapsed"}.get(scenario, "nonzero")
         expected += "managed lifecycle helper outcome: " + outcome + "\n"
-        if scenario in branches or scenario in ("eligibility-origin", "native-request"):
+        if scenario in branches or scenario in ("eligibility-origin", "native-request") or scenario in dispositions or scenario.startswith("step-") and scenario[5:] in steps:
             branch = "request_open" if scenario == "native-request" else record["branch"]
             expected += "managed lifecycle start branch: " + branch + "\n"
             if scenario != "native-request":
                 expected += "managed lifecycle native origin: G000150\n"
             if scenario == "eligibility-origin":
                 expected += "managed lifecycle eligibility origin: P000263\n"
+            if scenario in dispositions:
+                expected += "managed lifecycle eligibility disposition: " + scenario + "\n"
+            if scenario.startswith("step-") and scenario[5:] in steps:
+                expected += "managed lifecycle eligibility origin: " + record["eligibility"]["site"] + "\n"
+                expected += "managed lifecycle eligibility step: " + scenario[5:] + "\n"
     assert result == 1, result
     assert stdout.getvalue() == "", stdout.getvalue()
     assert stderr.getvalue() == expected, (scenario, stderr.getvalue(), expected)
