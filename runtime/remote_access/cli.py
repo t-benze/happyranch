@@ -518,16 +518,20 @@ def _main(args: argparse.Namespace, entry_ns: int) -> int:
     except (ConnectorConfigError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         if args.command == "start" and getattr(args, "_managed_routed", False):
-            # Publish only the existing validated site, never private loaded
-            # facts or child stderr. A native nonzero exit may identify only
-            # the parent boundary; it does not identify the child's predicate.
+            # Validate the public site against the closed table. Never print
+            # private loaded facts or child stderr. A native nonzero exit may
+            # identify only the parent boundary, not the child's predicate.
+            from runtime.remote_access.package_diagnostic_codes import SITE_CATEGORIES
             from runtime.remote_access.package_diagnostics import exception_refusal
             refusal = exception_refusal(exc)
             if refusal is not None:
-                try:
-                    print("managed lifecycle refusal site: " + refusal[1], file=sys.stderr)
-                except (OSError, ValueError):
-                    pass  # Preserve the original failed start and exit status.
+                category, site = refusal
+                if (type(category) is str and type(site) is str
+                        and site in SITE_CATEGORIES and SITE_CATEGORIES[site] == category):
+                    try:
+                        print("managed lifecycle refusal site: " + site, file=sys.stderr)
+                    except (OSError, ValueError):
+                        pass  # Preserve the original failed start and exit status.
         return 1
     return 1
 

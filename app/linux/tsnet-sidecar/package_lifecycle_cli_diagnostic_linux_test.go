@@ -14,7 +14,11 @@ func TestManagedLifecycleCLIRefusalSite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"native-exit", "spawn-error", "unmarked", "unknown-site", "wrong-category", "implicit-context", "success"} {
+	for _, scenario := range []string{
+		"native-exit", "spawn-error", "unmarked", "unknown-site", "wrong-category", "implicit-context", "success",
+		"null-category-unknown-site", "newline-site", "control-site", "private-path-site", "long-site",
+		"non-string-site", "null-category-known-site", "non-string-category",
+	} {
 		t.Run(scenario, func(t *testing.T) {
 			command := exec.Command("python3", "-I", "-c", lifecycleCLIRefusalFixture, root, scenario)
 			command.Dir = root
@@ -47,6 +51,18 @@ if site:
     diagnostic_error(site, "managed_lifecycle_refused", failure)
 if scenario == "unknown-site":
     failure._managed_package_refusal = ("managed_lifecycle_refused", "P999999/private/SENTINEL")
+malformed = {
+    "null-category-unknown-site": (None, "P999999"),
+    "newline-site": (None, "P000052\nINJECTED_SENTINEL"),
+    "control-site": (None, "P000052\x1b[31mSENTINEL"),
+    "private-path-site": (None, "/private/SENTINEL/daemon.token"),
+    "long-site": (None, "P999999" + "SENTINEL" * 128),
+    "non-string-site": (None, ["P000052"]),
+    "null-category-known-site": (None, "P000052"),
+    "non-string-category": (["managed_lifecycle_refused"], "P000052"),
+}
+if scenario in malformed:
+    failure._managed_package_refusal = malformed[scenario]
 if scenario == "wrong-category":
     failure._managed_package_refusal = ("SENTINEL", "P000052")
 if scenario == "implicit-context":
