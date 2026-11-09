@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from late_transport import LateTransport, process_record, public_stream
 from oracles import require
-from owned import identity
+from owned import diagnostic_stat, identity
 
 if TYPE_CHECKING:
     from controller import Controller
@@ -160,6 +160,22 @@ def closure(c: Controller, tree: dict, cli: dict) -> dict:
                     groups[group] = dict(exists=directory.exists(), pids=sorted(set(members)))
     snapshot = dict(processes=rows, groups=groups, sampled=time.monotonic(),
                     pending=bool(select.select([c.server], [], [], 0)[0]))
+    # Keep diagnostics separate from the original closure oracle. A later stat
+    # has its own generation/time; it never replaces observed_start above.
+    try:
+        tail = c.e07.setdefault("closure_diagnostics", [])
+        tail.append(dict(sampled=snapshot["sampled"], inspected_at=time.monotonic(),
+                         processes=[dict(p, pinned_present=p["start"] == p["observed_start"],
+                                         stat=diagnostic_stat(p["pid"])) for p in rows[:32]],
+                         processes_truncated=len(rows) > 32,
+                         groups=[dict(group=group[:4096], group_truncated=len(group) > 4096,
+                                      exists=g["exists"], pids=g["pids"][:64],
+                                      members_truncated=len(g["pids"]) > 64)
+                                 for group, g in list(groups.items())[:8]],
+                         groups_truncated=len(groups) > 8))
+        del tail[:-8]
+    except Exception as exc:
+        c.e07["closure_diagnostic_error"] = type(exc).__name__
     c.remaining()
     return snapshot
 
@@ -849,6 +865,15 @@ def exercise(c: Controller) -> None:
     except BaseException as exc:
         # The SAME outgoing cause survives local recording and resource release.
         outgoing, outgoing_tb = exc, exc.__traceback__
+        try:
+            # The first E07 case already carries sampler timings. The second
+            # carries the bounded failure tail through ordinary Report.merge.
+            c.report.outputs["product", VARIANTS[1]] = json.dumps(dict(
+                diagnostic="E07-closure-failure", failed_at=time.monotonic(),
+                observations=c.e07.get("closure_diagnostics", []), tail_limit=8,
+                diagnostic_error=c.e07.get("closure_diagnostic_error")), allow_nan=False)
+        except Exception:
+            pass  # Optional diagnostics must never replace the outgoing cause.
         for variant in VARIANTS:
             c.report.record("product", variant, exc)
         try:
