@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 from runtime.config import Settings
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.db.authority_v2_admission import authenticated_omitted_result
 from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.models import (
     CompletionReport,
@@ -70,9 +71,9 @@ def completion_report_from_result_row(
 ) -> CompletionReport:
     """Reconstruct the authenticated completion carrier from one result row.
 
-    All normal and recovery consumers must remove the reserved self-evaluation
-    carrier before strict ``NextStep`` parsing, while preserving it unchanged
-    for the authority hook's server-bound validation.
+    All normal and recovery consumers remove the reserved self-evaluation
+    and admission carriers before strict ``NextStep`` parsing, preserving the
+    self-evaluation unchanged for the authority hook's bound validation.
     """
     decision: NextStep | None = None
     manager_self_evaluation = None
@@ -84,6 +85,7 @@ def completion_report_from_result_row(
                 manager_self_evaluation = parsed.pop(
                     "_manager_self_evaluation", None
                 )
+                parsed.pop("_authority_v2_admission", None)
                 decision = NextStep(**parsed)
         except (json.JSONDecodeError, TypeError, ValueError, ValidationError):
             decision = None
@@ -1962,8 +1964,8 @@ class Orchestrator:
     ) -> None:
         if report is None:
             return
-        # THR-229 C3d2 correction: a v2 manager result carries an admitted
-        # attempt bound to the immutable ``task_results`` row.  Attribute the
+        # A v2 manager result carries an admitted attempt or THR308 T-0
+        # omission evidence bound to the immutable result. Attribute the
         # ordinary completion audit to that exact result/session so the later
         # settlement authenticates the CURRENT event instead of counting all
         # manager history.  The v1/legacy path is byte-identical (no
@@ -1978,6 +1980,15 @@ class Orchestrator:
                     "_result_row_id": result_row_id,
                     "_result_session_id": attempt.manager_session_id,
                 }
+            else:
+                stored = authenticated_omitted_result(
+                    self._db, result_id=result_row_id, task_id=task_id, agent=report.agent,
+                )
+                if stored is not None:
+                    attribution = {
+                        "_result_row_id": result_row_id,
+                        "_result_session_id": stored["session_id"],
+                    }
         if attribution:
             self._db.insert_audit_log(
                 task_id=task_id,

@@ -117,6 +117,18 @@ both sparse and wider flat rows;
 they do not predict a serving-daemon restart saving. No daemon/worker starts,
 retired unit selection, general integration, E2E or CI trigger is added.
 
+Focused ordinary-authority omission observation (THR308seq384 T-0): run
+`bash scripts/test-authority-v2-ordinary-omission.sh` locally with frozen
+Python3.14. Disposable SQLite/org fixtures drive real Database callback admission
+and replay, in-process completion-route evidence/replay, continuation stage
+writers, startup inert classification and `_log_step_result` attribution. The
+cases observe attempt/audit/token absence, server markers, full-payload refusal,
+later-lineage retries and fail-closed hook escalation. It starts no daemon,
+worker or session, adds no CI selection/trigger, and runs no retired Python
+units, general integration or Product E2E. Live-daemon/Product-E2E proof is NOT
+RUN; owned workflow callbacks requiring genuine host launch/terminal evidence
+remain outside this no-launch observation.
+
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
 THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12445

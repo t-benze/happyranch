@@ -3766,6 +3766,18 @@ CHECK/guard rebuild and whole release references require compatible code even
 before B writes; old binaries reject the new typed rows. See the maintained
 [standing B contract](contracts/authority-policy.md#standing-startup-inert-closure-thr-308-seq366367-task-14648).
 
+THR308seq384 T-0 now omits new ordinary callback attempts, admission audits
+and live-owner tokens under the [narrow admission contract](contracts/authority-policy.md#ordinary-callback-omission-thr-308-seq384-d-t0-r2).
+Replay uses the immutable server omission marker and original binding/digest/full
+payload, plus raw attempt/audit absence, even after later continuation. Audit
+attribution uses the stored result session; census calls and v1/legacy payloads
+are unchanged. Generic audit streams have no `admitted` event for these results.
+Startup's broader inert definition below and B candidate capture are unchanged:
+a done-R2 on a live continuation root stays inert if interrupted before consumption.
+Absent rows are not swept; old attempts remain historical evidence. Downgrading
+may produce harmless `409 v2_attempt_missing` on exact transport retry, without
+lost/duplicated work; no full backward compatibility is claimed.
+
 The next serial checkpoint wires startup pre-final refusal discovery and the
 zombie reaper's exact v2 completion effects without changing the existing v1 or
 no-policy paths. `_sweep_on_startup` performs authenticated unfinalized-attempt

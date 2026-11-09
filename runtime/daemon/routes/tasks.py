@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from runtime.infrastructure.memory_collection import CensusReadUnavailable
+from runtime.infrastructure.db.authority_v2_admission import omitted_completion_replay_matches
 
 import asyncio
 import json as _json
@@ -1191,6 +1192,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         # Server-reserved carrier key: a client-injected value is never
         # authority and is discarded here.
         decision_payload.pop("_manager_self_evaluation", None)
+        decision_payload.pop("_authority_v2_admission", None)
     if decision_payload is not None and decision_payload.get('action') == 'workflow_start':
         from runtime.workflows.coding_start_records import CodingStartDecision
         try:
@@ -1307,9 +1309,20 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             # after the tracker cleared.
             try:
                 admitted = org.db.get_authority_policy_v2_attempt_for_result(prior["id"])
-            except ValueError:
+            except (ValueError, TypeError, sqlite3.DatabaseError):
                 admitted = None
             if admitted is None:
+                if not workflow_draft and omitted_completion_replay_matches(
+                    org.db, prior, admission=v2_admission,
+                    output_summary=body.output_summary, confidence_score=body.confidence, status=body.status,
+                    risks_flagged=body.risks_flagged, output_dir=body.output_dir,
+                    decision_json=_json.dumps(decision_payload) if decision_payload is not None else None,
+                    waiting_on_job_ids=(sorted(set(body.waiting_on_job_ids)) or None
+                                        if "waiting_on_job_ids" in body.model_fields_set else body.waiting_on_job_ids or None),
+                    verdict=body.verdict,
+                    local_ci_json=_json.dumps(body.local_ci) if body.local_ci is not None else None,
+                ):
+                    return {"ok": True}
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={"code": "v2_attempt_missing", "task_id": task_id},

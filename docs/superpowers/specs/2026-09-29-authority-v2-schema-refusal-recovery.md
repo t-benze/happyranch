@@ -258,3 +258,19 @@ accepts organic schema structure for the v2 decision path without mutating it;
 it does not weaken permission or other non-schema fences. Neither change
 performs a live database, daemon, policy-release, authentication, permission,
 dependency, cancellation, or task-reset action.
+
+## THR-308 seq384 T-0 admission supplement
+
+Current callback admission is narrower than this historical spec's startup
+inert classification. Clearly ordinary structured delegate/done/fanout/parallel
+(including blocked) callbacks on ordinary `no_v2` tasks omit the attempt,
+admitted audit and live-owner token. Escalate, missing/unreadable/malformed,
+supersede/workflow_start, workflow-owned tasks, envelope/dispatch roots and
+classification errors retain admission. The server's immutable decision carrier
+marker, original binding/carrier digest/full payload and physical attempt/audit
+absence authenticate replay regardless of later lineage. Generic audit streams
+therefore have no `admitted` stage event for new ordinary decisions. Stored
+result-session attribution preserves census calls. Startup/B and existing rows
+stay unchanged; absent attempts are not swept. Downgraded exact retries may get
+harmless `409 v2_attempt_missing` without lost/duplicated work, not full backward
+compatibility. See the [current authority contract](../../agent-guides/contracts/authority-policy.md#ordinary-callback-omission-thr-308-seq384-d-t0-r2).

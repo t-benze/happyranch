@@ -16,6 +16,7 @@ from runtime.infrastructure.thread_archive import after_thread_invocations_commi
 # - db/schema.py: schema bootstrap, migrations, and their module-level closure
 # - db/authority_v1.py: v1 authority claims, fences, and continue envelopes
 # - db/authority_policy.py: authority policy release, activation, selector, and session binding
+# - db/authority_v2_admission.py: ordinary callback omission evidence and replay
 # - db/authority_v2_attempts.py: v2 attempts, candidates, refusal, and finalization
 # - db/authority_v2_continuation.py: v2 continuation, settlement, publication, generation, spend, decision dispatch, and zombie consumption
 # - db/tasks.py: task core CRUD, queries, severity, lineage, recall, and retry/delegation, claim/supersession, chain advance, state queries, recovery-ledger lifecycle, and completion-result readers/projection, atomic task/attachment admission, and task-followup replacement, and agent termination cleanup
@@ -56,6 +57,11 @@ from runtime.infrastructure.db.authority_policy import (
     AuthorityPolicyMixin,
     _AUTHORITY_POLICY_SELECTOR_SESSION_BINDING_ACTION,
     _AUTHORITY_POLICY_SESSION_BINDING_ACTION,
+)
+from runtime.infrastructure.db.authority_v2_admission import (
+    omitted_completion_replay_matches,
+    omission_decision_json,
+    ordinary_completion_omission,
 )
 from runtime.infrastructure.db.authority_v2_attempts import (
     AuthorityV2AttemptsMixin,
@@ -1919,9 +1925,10 @@ class Database(
         versioned evidence for a v2-bound manager session: the exact launch
         binding identity, the v2 contract/family references, the sanitized
         assessment digest and the owning daemon-process boot UUID.  When
-        supplied, the immutable result, the admitted attempt journal row and
-        the ``authority_policy_v2_result_stage`` admission audit are inserted in
-        the SAME transaction as the existing result/receipt writes, so any
+        supplied, the immutable result and either a server-owned ordinary
+        omission marker or the admitted attempt journal row and
+        ``authority_policy_v2_result_stage`` audit are inserted in the SAME
+        transaction as the existing result/receipt writes, so any
         failure rolls back every newly admitted result/attempt/audit/receipt
         change.  An exact transport retry compares the admitted assessment
         digest and never allocates a second result/attempt/audit; a changed
@@ -2093,15 +2100,25 @@ class Database(
                 # summary/decision/status/confidence/verdict/risks/output
                 # path/wait-ID/local-CI field, refuses rather than silently
                 # acknowledging a changed completion result.
-                admitted_row = self._conn.execute(
-                    """SELECT * FROM authority_policy_v2_attempts
-                       WHERE root_task_id=? AND manager_agent=?
-                         AND manager_session_id=? AND result_id=?""",
-                    (task_id, agent, session_id, existing["id"]),
-                ).fetchone()
-                if admitted_row is None:
+                try:
+                    admitted_row = self._conn.execute(
+                        """SELECT * FROM authority_policy_v2_attempts
+                           WHERE root_task_id=? AND manager_agent=?
+                             AND manager_session_id=? AND result_id=?""",
+                        (task_id, agent, session_id, existing["id"]),
+                    ).fetchone()
+                except (sqlite3.DatabaseError, ValueError):
                     self._conn.rollback()
                     return False
+                if admitted_row is None:
+                    matched = omitted_completion_replay_matches(
+                        self, dict(existing), admission=v2_admission,
+                        output_summary=output_summary, confidence_score=confidence_score, status=status,
+                        risks_flagged=risks_flagged, output_dir=output_dir, decision_json=decision_json,
+                        waiting_on_job_ids=waiting_on_job_ids, verdict=verdict, local_ci_json=local_ci_json,
+                    )
+                    self._conn.rollback()
+                    return matched
                 try:
                     admitted = self._authority_policy_v2_attempt_from_row(admitted_row)
                 except ValueError:
@@ -2142,6 +2159,16 @@ class Database(
                     return False
                 self._conn.rollback()
                 return True
+            omit_attempt = False
+            if v2_admission is not None:
+                omit_attempt = ordinary_completion_omission(self, task_id=task_id, row={
+                    "agent": agent, "status": status, "output_summary": output_summary,
+                    "confidence_score": confidence_score, "decision_json": decision_json,
+                    "risks_flagged": risks_flagged, "output_dir": output_dir,
+                    "waiting_on_job_ids": waiting_on_job_ids, "verdict": verdict, "local_ci": local_ci_json,
+                })
+                if omit_attempt:
+                    decision_json = omission_decision_json(decision_json, v2_admission)
             self._insert_task_result(
                 task_id=task_id, agent=agent, session_id=session_id,
                 output_summary=output_summary, confidence_score=confidence_score,
@@ -2158,7 +2185,7 @@ class Database(
                 (accepted_result_id, session_id, now, task_id, agent, session_id),
             )
             admitted_attempt = None
-            if v2_admission is not None:
+            if v2_admission is not None and not omit_attempt:
                 admitted_attempt = self._insert_authority_policy_v2_attempt_uncommitted(
                     task_id=task_id, agent=agent, session_id=session_id,
                     result_id=accepted_result_id, admission=v2_admission, now=now,
