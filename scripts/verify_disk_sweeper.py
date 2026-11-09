@@ -1814,7 +1814,18 @@ def residue_cases(*, unsafe=False):
                         assert stat.S_IMODE(target.stat().st_mode) == 0
                         target.chmod(0o755)  # fixture-only restoration for physical postconditions
                         assert any('Permission denied' in v['reason'] for v in report['discovery_scopes']), report
-                    if kind in positive:
+                    if kind in ('present_dir', 'other_dir'):
+                        # A literal TASK directory has a location even when
+                        # the old admin entry is an independent unmapped residue.
+                        unknown = w if kind == 'present_dir' else w.with_name('TASK-12090')
+                        counted(report, 4, r=1, m=1)
+                        residue_scope(report, e)
+                        retained(report, unknown, 'unknown_unregistered_task_worktree:' + str(unknown))
+                        assert not any(s['path'] == str(repo) for s in report['discovery_scopes']), report
+                        assert row(report, b)['state'] == ('eligible' if preview else 'removed'), report
+                        assert row(report, z)['state'] == ('eligible' if preview else 'removed'), report
+                        assert row(report, x)['state'] == ('eligible' if preview else 'removed'), report
+                    elif kind in positive:
                         local = kind in ('local_index', 'local_head')
                         counted(report, 2 if local else 1, int(local), m=int(local))
                         for entry in entries: residue_scope(report, entry)
@@ -1860,6 +1871,83 @@ def residue_cases(*, unsafe=False):
     for failure in failures: print(json.dumps(dict(regression=failure)), flush=True)
     assert not failures, failures
     return observations
+
+
+def registration_arrival(seam: str, preview: bool) -> dict:
+    """Drive the real census/list seams using only disposable real Git inputs."""
+    with fixture() as f:
+        repo, peer = f.worktree('TASK-1')
+        new = peer.with_name('TASK-2')
+        calls, events = [], []
+        realgit, realmeta = ds.git, ds._registration_metadata
+        def introduce():
+            if events: return
+            if seam.startswith('plain'):
+                new.mkdir(); (new / 'keep').write_text('unregistered payload')
+            elif seam == 'non_task':
+                (repo / '.git/worktrees/non-task').mkdir()
+            elif seam == 'existing':
+                entry = repo / '.git/worktrees' / peer.name
+                entry.rename(entry.with_name('changed-entry'))
+                (peer / '.git').write_text('gitdir: ' + str(entry.with_name('changed-entry')) + '\n')
+            else:
+                _, made = f.worktree(new.name)
+                assert made == new
+            events.append(seam)
+        if seam == 'plain': introduce()
+        before = candidate_contents(peer, repo / '.git', *([new] if new.exists() else []))
+        census = []
+        def metadata(root, deadline):
+            value = realmeta(root, deadline)
+            if root == repo:
+                census.append(True)
+                if len(census) == 1 and seam in ('pre_git', 'plain_pre_git', 'non_task', 'existing'): introduce()
+            return value
+        def git(root, deadline, *args):
+            calls.append(args)
+            if root == repo and args[:2] == ('worktree', 'list') and seam == 'list_before': introduce()
+            value = realgit(root, deadline, *args)
+            if root == repo and args[:2] == ('worktree', 'list') and seam in ('list_after', 'plain_list_after'): introduce()
+            return value
+        with patch.object(ds, 'git', git), patch.object(ds, '_registration_metadata', metadata):
+            if preview:
+                with refuse_mutations(): report = f.sweep('dry_run')
+            else: report = f.sweep()
+        assert events == [seam], events
+        if seam in ('non_task', 'existing'):
+            assert peer.exists() and not any(c.get('repo') == str(repo) for c in report['candidates']), report
+            assert any(s['path'] == str(repo) and 'git_mapping_changed_during_inventory' in s['reason'] for s in report['discovery_scopes']), report
+        else:
+            reason = 'unknown_unregistered_task_worktree:' + str(new)
+            assert new.exists(), report
+            assert any(s['path'] == str(new) and s['reason'] == reason for s in report['discovery_scopes']), report
+            assert not any(s['path'] == str(repo) for s in report['discovery_scopes']), report
+            assert row(report, peer)['state'] == ('eligible' if preview else 'removed'), report
+            if any(c['path'] == str(new) for c in report['candidates']): retained(report, new, reason)
+            assert report['discovery'] == 'partial' and report['outcome'] == 'incomplete', report
+            if preview:
+                after = candidate_contents(peer, repo / '.git', *([new] if seam == 'plain' else []))
+                # The injected real add owns new admin bytes; all old files stay byte/mode exact.
+                assert all(after.get(k) == v for k, v in before.items()), (seam, before, after)
+                if seam == 'plain':
+                    command = [sys.executable, '-m', 'runtime.daemon.disk_sweeper', '--dry-run',
+                               '--runtime-root', str(f.base / 'runtime')]
+                    result = subprocess.run(command, capture_output=True, text=True, timeout=8, check=False)
+                    assert result.returncode == 1, (result.stdout, result.stderr)
+                    manual = json.loads(result.stdout)['report']['orgs'][0]
+                    retained(manual, new, reason)
+                    retained(manual, peer, 'changed_within_hour')
+                    assert before == candidate_contents(peer, repo / '.git', new)
+        assert not any(a[:2] == ('worktree', 'prune') for a in calls), calls
+        if preview: assert not any(a[:2] == ('worktree', 'remove') for a in calls), calls
+        return {'seam': seam, 'preview': preview, 'result': 'PASS'}
+
+
+def c23():
+    """Additive TASK arrivals are local; changes to existing mappings stay shared."""
+    seams = ('list_after', 'plain', 'plain_pre_git', 'plain_list_after',
+             'pre_git', 'list_before', 'non_task', 'existing')
+    return [registration_arrival(seam, preview) for seam in seams for preview in (False, True)]
 
 
 def c19():
@@ -2443,12 +2531,20 @@ def residue_topology_transitions():
                     if root==repo and args[:2]==('worktree','list') and not events and when=='post_git': change()
                     return value
                 with patch.object(ds,'_registration_metadata',metadata),patch.object(ds,'git',git):report=f.sweep()
-                counted(report,2)
-                assert events==[kind] and b.exists(),(events,report)
+                if kind == 'unregistered_root':
+                    counted(report, 4, r=1, m=1)
+                    retained(report, w, 'unknown_unregistered_task_worktree:' + str(w))
+                    assert row(report, b)['state'] == 'removed' and not b.exists(), report
+                    assert not any(v['path'] == str(repo) for v in report['discovery_scopes']), report
+                else:
+                    counted(report,2)
+                    assert b.exists(), report
+                    assert not any(c.get('repo')==str(repo) for c in report['candidates']),report
+                    assert any(v['path']==str(repo) and v['candidate_count'] is None for v in report['discovery_scopes']),report
+                    assert not any(root==str(repo) and args[:2] in (('worktree','remove'),('worktree','prune')) for root,args in calls)
+                assert events==[kind],(events,report)
                 assert row(report,x)['state']==row(report,z)['state']=='removed'
-                assert not any(c.get('repo')==str(repo) for c in report['candidates']),report
-                assert any(v['path']==str(repo) and v['candidate_count'] is None for v in report['discovery_scopes']),report
-                assert not any(root==str(repo) and args[:2] in (('worktree','remove'),('worktree','prune')) for root,args in calls)
+                assert not any(args[:2] == ('worktree','prune') for _,args in calls), calls
                 assert refs==f.git(repo,'show-ref')
                 observations.append(dict(row='C21-residue-topology',when=when,kind=kind,result='PASS'))
     return observations
@@ -3614,7 +3710,7 @@ if __name__=='__main__':
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,23))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,24))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -3634,7 +3730,8 @@ if __name__=='__main__':
         else:
             config_checks()
             purposes=('Terminal owned root and attribution','Nonterminal and invalid lineage','Real process cwd/root/exe/fd','Real TMPDIR/TMP/TEMP and alias','Readonly handling and bounded Git retry','Link/ancestor and actual mounted boundaries','Dirty/untracked and ignored Git contents','Nonmutating function and public CLI dry run','Missing/denied evidence and all job lineage','Jobs both phases and fresh retry change','Nested recent writes','Partial removal, deadline, shutdown and event loop','Detached commit retained refs','Same-night progress after refusals and exhaustion','Partial discovery with protected non-Git siblings','Narrow unreadable/broken/alias discovery scopes','Global deadline during partial discovery','Progress after many uncertain subtrees','Complete unreadable/missing registration census','No metadata alias or conflicting backlink traversal','Fresh registration gates and truthful partial effects','Primary-only control and metadata enumeration deadline')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22),purposes),1):
+            purposes += ('Additive TASK registration arrivals and shared mapping changes',)
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

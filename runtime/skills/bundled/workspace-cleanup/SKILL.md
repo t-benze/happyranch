@@ -234,8 +234,15 @@ exhaustive literal no-follow names, fresh common/admin/entry identities, canonic
 unique reciprocal mappings and task-root/containment reconciliation before Git.
 An ordinary index/HEAD/auxiliary read/change error retains its proven worktree with
 its exact metadata path/native cause; independently validated same-repository peers
-can progress. Missing mapping/enumeration/entry, unsafe alias/hardlink/special
-objects, conflict or unknown descendant location retains the shared scope.
+can progress. A literal unregistered conventional TASK directory without a `.git`
+pointer retains only that path as `unknown_unregistered_task_worktree:<exact path>`.
+Additive TASK roots and new canonical reciprocal TASK-folder/admin-entry pairs
+across censuses or Git listing retain only the arriving task with that same reason;
+existing identities/pointers stay exact and new admin names are TASK names.
+These paths protect containing trees and latch partial discovery with no prune.
+Other missing or changed mapping/enumeration/entry, non-TASK additions, unsafe
+alias/hardlink/special objects, conflict or unknown descendant location retains
+the shared scope.
 All proven paths, including locally uncertain non-task descendants, protect
 containing trees at every final remove/repair/retry boundary. Retention is latched
 for the attempt, never clearance; own metadata and shared topology stay fresh.
