@@ -439,6 +439,16 @@ the writer from the exact pinned settings snapshot; native allowances are never
 replenished or converted. Native v2 spend/claim/ack uses only existing uncommitted
 APIs and rolls back with the unchanged U3b admission/activation graph.
 
+The source must still be the same live, admitted and attempt-committed ordinary
+or v2 invocation after positive `host_terminal`: `unsettled` is False, its journal
+phase is `result_processing`, and its bounded native terminal observation records
+`success` with no cleanup error. Pause generation, pre-step count and brief digest
+must still match, with no execution uncertainty or recovery deadline. Running
+before host terminal, unknown, passthrough, non-quiescent, survivor, cleanup-failed,
+missing-observation, foreign/stale-owner, paused/cancelled and continuation-envelope
+states refuse before graph, native-action or journal writes. This admission check
+does not supply the separate original source-outer settlement proof.
+
 Run identity stays U3b's identity of org/source principal/operation key. Carrier
 and first visit use `TASK-SEQ-` plus SHA256 of canonical `[run_id,"carrier"]` and
 `[run_id,"visit",1]` respectively; collisions refuse. The single business COMMIT
