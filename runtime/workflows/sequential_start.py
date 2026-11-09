@@ -157,7 +157,7 @@ def _source(conn: sqlite3.Connection, org: Any, claim: RetryClaim, invocation: A
     _check(invocation is not None and invocation.orch is org.orchestrator
            and store._live.get(invocation.identity) is invocation
            and invocation.owner in ('ordinary', 'v2') and invocation.admitted
-           and invocation.attempt_committed and invocation.unsettled
+           and invocation.attempt_committed and invocation.unsettled is False
            and invocation.recovery_deadline is None
            and (invocation.task.id, invocation.agent, invocation.session_id) ==
                (claim.task_id, claim.assigned_agent, claim.current_session_id))
@@ -176,10 +176,20 @@ def _source(conn: sqlite3.Connection, org: Any, claim: RetryClaim, invocation: A
     root, pause = store.held_uncommitted(claim.task_id)
     _check(pause is not None and not pause['held'] and root['id'] == ancestor['id'])
     entry = invocation._entry(pause)
-    _check(entry['phase'] == 'running' and entry['generation'] == pause['generation']
+    _check(entry['phase'] == 'result_processing' and entry['generation'] == pause['generation']
            and not entry['context'].get('execution_unknown')
            and entry['fingerprint']['count'] + 1 == claim.step
            and entry['fingerprint']['brief_digest'] == hashlib.sha256(source['brief'].encode('utf8')).hexdigest())
+    # host_terminal precedes this consumer; only its positive original owner
+    # may admit a graph. Running or uncertain native attempts remain held.
+    from runtime.workflows.sequential_dispatch import _native_metadata
+    terminal = getattr(invocation, 'native_terminal_observation', None)
+    _check(type(terminal) is dict)
+    try:
+        _native_metadata(invocation.task.id, invocation.agent, invocation.session_id, terminal)
+    except SequentialRefusal:
+        raise SequentialRefusal('sequential_start_unavailable') from None
+    _check(terminal.get('terminal_reason') == 'success' and terminal.get('cleanup_error') is None)
     for task_id in seen:
         org.db._check_team_move_task_uncommitted(task_id)
     for child in _engine_rows(conn, 'tasks', budget, 'parent_task_id=?', (claim.task_id,)):

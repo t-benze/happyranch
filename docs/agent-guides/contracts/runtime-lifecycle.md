@@ -761,7 +761,15 @@ The consumer authenticates the actual INTEGER callback before another fresh
 venue/read-only precheck and authority capture. Authority → teams → database
 locks precede the sole admission writer. It revalidates the RetryClaim, actual
 native invocation, current executable manager, noncancelled ordinary ancestry,
-absence of chain/fanout/job wait and independent bindings. Thread-originated or
+absence of chain/fanout/job wait and independent bindings. The same live admitted
+ordinary/v2 invocation must already have a positive `host_terminal`: unsettled
+is False, its Pause entry is `result_processing` at the current generation with
+no execution uncertainty, and its bounded native observation reports `success`
+with no cleanup error. Task/agent/SID, committed attempt, absent recovery deadline
+and the original count/brief fingerprint must still match. Running, unknown,
+passthrough, non-quiescent, survivor, cleanup-failed or missing-terminal states
+refuse before graph/action/journal writes; Pause, cancellation and native
+continuation-envelope fences remain unchanged. Thread-originated or
 sequential-owned sources/ancestors refuse. D1 original limits are computed inside
 the writer from the exact pinned settings snapshot; native allowances are never
 replenished or converted. Native v2 spend/claim/ack uses only existing uncommitted
