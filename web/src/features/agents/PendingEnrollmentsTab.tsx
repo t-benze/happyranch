@@ -10,7 +10,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * The list only renders when `status=pending`; approved enrollments
  * live in the Active tab's main roster table.
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -33,10 +33,15 @@ export function PendingEnrollmentsTab(): JSX.Element {
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [pendingName, setPendingName] = useState<string | null>(null);
-  // Failed Approve/Reject attempts stay visible (THR-347): the Approve error is
-  // bound to its row; the Reject error lives inside the still-open dialog.
-  const [approveError, setApproveError] = useState<{ name: string; view: AgentErrorView } | null>(null);
+  // Failed Approve/Reject attempts stay visible (THR-347): each Approve error is
+  // keyed by its own row; the Reject error lives inside the still-open dialog.
+  const [approveErrors, setApproveErrors] = useState<Record<string, AgentErrorView>>({});
   const [rejectError, setRejectError] = useState<AgentErrorView | null>(null);
+  // Identity of the current reject dialog/attempt. Opening, dismissing or
+  // submitting advances it, so a late settlement from an earlier dialog (e.g.
+  // A fails after the founder has moved on to B) is ignored instead of being
+  // shown in — or closing — another enrollment's dialog.
+  const rejectAttempt = useRef(0);
 
   if (enrollments.isLoading) {
     return <p className="text-text-muted p-4 text-sm">{t('agents.common.loading')}</p>;
@@ -59,34 +64,57 @@ export function PendingEnrollmentsTab(): JSX.Element {
     );
   }
 
+  const clearPending = (name: string) => setPendingName((p) => (p === name ? null : p));
+
   const onApprove = async (name: string) => {
     setPendingName(name);
-    setApproveError(null);
+    setApproveErrors(({ [name]: _cleared, ...rest }) => rest);
     try {
       await approve.mutateAsync(name);
     } catch (err) {
-      setApproveError({ name, view: classifyAgentError(err, 'agents.pending.approveFailed') });
+      const view = classifyAgentError(err, 'agents.pending.approveFailed');
+      setApproveErrors((prev) => ({ ...prev, [name]: view }));
     } finally {
-      setPendingName(null);
+      clearPending(name);
     }
+  };
+
+  const openReject = (name: string) => {
+    rejectAttempt.current += 1;
+    setRejecting(name);
+    setReason('');
+    setRejectError(null);
+  };
+
+  const closeReject = () => {
+    rejectAttempt.current += 1;
+    setRejecting(null);
+    setRejectError(null);
   };
 
   const onReject = async () => {
     if (!rejecting) return;
-    setPendingName(rejecting);
+    const name = rejecting;
+    const attempt = ++rejectAttempt.current;
+    setPendingName(name);
     setRejectError(null);
     try {
       await reject.mutateAsync({
-        agentName: rejecting,
+        agentName: name,
         body: reason.trim() ? { reason: reason.trim() } : undefined,
       });
-      setRejecting(null);
-      setReason('');
+      if (rejectAttempt.current === attempt) {
+        setRejecting(null);
+        setReason('');
+      }
     } catch (err) {
-      // Keep the dialog open with the typed reason so the founder can retry.
-      setRejectError(classifyAgentError(err, 'agents.pending.rejectFailed'));
+      // Keep the dialog open with the typed reason so the founder can retry —
+      // but only if it is still this attempt's dialog.
+      if (rejectAttempt.current === attempt) {
+        setRejectError(classifyAgentError(err, 'agents.pending.rejectFailed'));
+      }
     } finally {
-      setPendingName(null);
+      clearPending(name);
     }
   };
 
@@ -133,19 +161,15 @@ export function PendingEnrollmentsTab(): JSX.Element {
                   size="sm"
                   variant="ghost"
                   disabled={pendingName === e.name}
-                  onClick={() => {
-                    setRejecting(e.name);
-                    setReason('');
-                    setRejectError(null);
-                  }}
+                  onClick={() => openReject(e.name)}
                 >
                   {t('agents.pending.reject')}
                 </Button>
               </div>
             </div>
-            {approveError?.name === e.name && (
+            {approveErrors[e.name] && (
               <p role="alert" className="text-tier-red mt-2 text-sm">
-                {renderAgentError(approveError.view, t)}
+                {renderAgentError(approveErrors[e.name], t)}
               </p>
             )}
             <div className="mt-3"><AddressableNameEditor canonicalId={e.name} /></div>
@@ -157,10 +181,7 @@ export function PendingEnrollmentsTab(): JSX.Element {
         <Dialog
           open
           onOpenChange={(o) => {
-            if (!o) {
-              setRejecting(null);
-              setRejectError(null);
-            }
+            if (!o) closeReject();
           }}
         >
           <DialogContent closeLabel={t('common.close')}>
@@ -184,10 +205,7 @@ export function PendingEnrollmentsTab(): JSX.Element {
             <DialogFooter>
               <Button
                 variant="ghost"
-                onClick={() => {
-                  setRejecting(null);
-                  setRejectError(null);
-                }}
+                onClick={closeReject}
               >
                 {t('common.cancel')}
               </Button>
