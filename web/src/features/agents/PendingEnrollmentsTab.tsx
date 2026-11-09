@@ -23,7 +23,7 @@ import { Textarea } from '@/design-system/primitives/Textarea';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useApproveAgent, useEnrollmentsList, useRejectAgent } from '@/hooks/agents';
 import { useTranslation } from '@/hooks/i18n';
-import { classifyAgentError, renderAgentError } from './strings';
+import { classifyAgentError, renderAgentError, type AgentErrorView } from './strings';
 
 export function PendingEnrollmentsTab(): JSX.Element {
   const { t } = useTranslation();
@@ -33,6 +33,10 @@ export function PendingEnrollmentsTab(): JSX.Element {
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [pendingName, setPendingName] = useState<string | null>(null);
+  // Failed Approve/Reject attempts stay visible (THR-347): the Approve error is
+  // bound to its row; the Reject error lives inside the still-open dialog.
+  const [approveError, setApproveError] = useState<{ name: string; view: AgentErrorView } | null>(null);
+  const [rejectError, setRejectError] = useState<AgentErrorView | null>(null);
 
   if (enrollments.isLoading) {
     return <p className="text-text-muted p-4 text-sm">{t('agents.common.loading')}</p>;
@@ -57,8 +61,11 @@ export function PendingEnrollmentsTab(): JSX.Element {
 
   const onApprove = async (name: string) => {
     setPendingName(name);
+    setApproveError(null);
     try {
       await approve.mutateAsync(name);
+    } catch (err) {
+      setApproveError({ name, view: classifyAgentError(err, 'agents.pending.approveFailed') });
     } finally {
       setPendingName(null);
     }
@@ -67,6 +74,7 @@ export function PendingEnrollmentsTab(): JSX.Element {
   const onReject = async () => {
     if (!rejecting) return;
     setPendingName(rejecting);
+    setRejectError(null);
     try {
       await reject.mutateAsync({
         agentName: rejecting,
@@ -74,6 +82,9 @@ export function PendingEnrollmentsTab(): JSX.Element {
       });
       setRejecting(null);
       setReason('');
+    } catch (err) {
+      // Keep the dialog open with the typed reason so the founder can retry.
+      setRejectError(classifyAgentError(err, 'agents.pending.rejectFailed'));
     } finally {
       setPendingName(null);
     }
@@ -125,19 +136,33 @@ export function PendingEnrollmentsTab(): JSX.Element {
                   onClick={() => {
                     setRejecting(e.name);
                     setReason('');
+                    setRejectError(null);
                   }}
                 >
                   {t('agents.pending.reject')}
                 </Button>
               </div>
             </div>
+            {approveError?.name === e.name && (
+              <p role="alert" className="text-tier-red mt-2 text-sm">
+                {renderAgentError(approveError.view, t)}
+              </p>
+            )}
             <div className="mt-3"><AddressableNameEditor canonicalId={e.name} /></div>
           </li>
         ))}
       </ul>
 
       {rejecting && (
-        <Dialog open onOpenChange={(o) => !o && setRejecting(null)}>
+        <Dialog
+          open
+          onOpenChange={(o) => {
+            if (!o) {
+              setRejecting(null);
+              setRejectError(null);
+            }
+          }}
+        >
           <DialogContent closeLabel={t('common.close')}>
             <DialogHeader>
               <DialogTitle>{t('agents.pending.rejectTitle', { name: rejecting })}</DialogTitle>
@@ -151,8 +176,19 @@ export function PendingEnrollmentsTab(): JSX.Element {
               rows={3}
               placeholder={t('agents.pending.reasonPlaceholder')}
             />
+            {rejectError && (
+              <p role="alert" className="text-tier-red text-sm">
+                {renderAgentError(rejectError, t)}
+              </p>
+            )}
             <DialogFooter>
-              <Button variant="ghost" onClick={() => setRejecting(null)}>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setRejecting(null);
+                  setRejectError(null);
+                }}
+              >
                 {t('common.cancel')}
               </Button>
               <Button

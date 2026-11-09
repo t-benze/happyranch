@@ -2498,6 +2498,8 @@ export const en = {
   'agents.pending.rejectBody':
     'The pending enrollment file will be removed and the agent dropped from teams.yaml. The reason is logged in the audit trail (optional).',
   'agents.pending.reasonPlaceholder': 'Reason (optional)',
+  'agents.pending.approveFailed': 'Could not approve this enrollment.',
+  'agents.pending.rejectFailed': 'Could not reject this enrollment.',
   'agents.add.title': 'New agent',
   'agents.add.name': 'Name',
   'agents.add.namePlaceholder': 'e.g. alpha_worker_1',
