@@ -133,7 +133,10 @@ def rediscover_returned(coding: Any, *, queue: Any = None, sequential: bool = Fa
         if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
             return
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
-        _, inventory = _read_workflow_schema(conn, expected_org_slug=coding.org.slug, budget=_Budget())
+        from runtime.infrastructure.workflow_schema_load import read_org_layout
+        budget = _Budget()
+        _, inventory = read_org_layout(conn, expected_org_slug=coding.org.slug, budget=budget,
+            legacy=lambda: _read_workflow_schema(conn, expected_org_slug=coding.org.slug, budget=budget))
         if inventory is None:
             return
         returned = tuple(key for key, entry in inventory.queued.runs.items() if entry['native'].get('returned'))

@@ -96,11 +96,59 @@ def _reserved_rows(conn, table, column, budget, *, where, args=()):
             yield from rows(conn, table, budget, where='rowid=?', args=(rowid,), maximum=1)
 
 
+def _sequential_completion_audit(audit: dict, sources: dict[int, dict], budget: _Budget) -> bool:
+    """Match only the original native report of one already recognized source.
+
+    Failure leaves the raw row to its original discriminator. No Coding callback
+    or graph membership follows from this local proof, even on an exact match.
+    """
+    from runtime.infrastructure.workflow_coding_schema import _coding_scalar
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+    from runtime.workflows import sequential_start_metadata as guard
+    try:
+        body = guard._json(audit['payload'], budget)
+        if type(body.get('decision')) is not dict or body['decision'].get('action') != 'workflow_start':
+            return False
+        for key, value in body.items():
+            guard._step(budget)
+            if key == 'decision':
+                continue  # Exact equality below binds the already recognized decision.
+            guard._reserve(budget, 512)
+            if key == 'manager_self_evaluation' and value is not None:
+                guard._carrier(value, budget)
+            if not guard._residual({key: value}, budget, _coding_scalar):
+                return False
+        matches = 0
+        for source in sources.values():
+            guard._step(budget)
+            # Prepay the original model/parse and full typed equality workspace.
+            # Failed work retains its charge on the same enclosing allowance.
+            size = 0
+            for value in source.values():
+                guard._step(budget)
+                if type(value) in (str, bytes):
+                    size += len(value)
+            guard._reserve(budget, 80 * size + 32768)
+            expected = completion_report_from_result_row(source['task_id'], source).model_dump()
+            if '_result_row_id' in body or '_result_session_id' in body:
+                expected.update(_result_row_id=source['id'], _result_session_id=source['session_id'])
+            _decoded(expected, budget)
+            _decoded(body, budget)
+            guard._step(budget)
+            if ((audit['task_id'], audit['agent']) == (source['task_id'], source['agent'])
+                    and same(expected, body)):
+                matches += 1
+        return matches == 1
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        return False
+
+
 def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: Any, imported: Any,
                 *, sequential: dict | None = None) -> QueuedStorage:
     from runtime.infrastructure.workflow_schema import _coding_document_exclusions
     optional = _coding_document_exclusions(conn)
     storage = QueuedStorage()
+    sequential_sources = {}
     # Discriminate ordinary decision prose before native acquisition. The same
     # lexical/decoded inventory retains escaped, duplicate and malformed reserved
     # candidates; central closure still refuses unsupported envelopes.
@@ -125,6 +173,9 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             from runtime.workflows.sequential_start_metadata import recognized_start
             if recognized_start(raw, location='task_results.decision_json', result_id=row['id'],
                                 sequential=sequential, budget=budget, reserved=_coding_scalar):
+                from runtime.workflows.sequential_start_metadata import _reserve
+                _reserve(budget, 512)
+                sequential_sources[row['id']] = row
                 continue
             raise
         if decision['workflow']['format'] == 'workflow-coding-start@2':
@@ -137,11 +188,26 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         _check(native._text('task_type') == 'task')
         storage.callbacks[row['id']] = (row, decision)
         storage.add('task_results', row)
-    if storage.callbacks:
+    if storage.callbacks or sequential_sources:
         from runtime.orchestrator.orchestrator import completion_report_from_result_row
-        task_ids = tuple(sorted({r['task_id'] for r, _ in storage.callbacks.values()}))
+        coding_tasks = {r['task_id'] for r, _ in storage.callbacks.values()}
+        sequential_tasks = set()
+        if sequential_sources:
+            from runtime.workflows.sequential_start_metadata import _reserve, _step
+            _reserve(budget, 512 * len(sequential_sources))
+            for source in sequential_sources.values():
+                _step(budget)
+                sequential_tasks.add(source['task_id'])
+        task_ids = tuple(sorted(coding_tasks | sequential_tasks))
         selection = "action='completion_report' AND task_id IN (" + ','.join('?' for _ in task_ids) + ')'
         for audit in _reserved_rows(conn, 'audit_log', 'payload', budget, where=selection, args=task_ids):
+            if audit['task_id'] in sequential_tasks and _sequential_completion_audit(audit, sequential_sources, budget):
+                # Keep this full typed row in the existing equality pass only.
+                _reserve(budget, 40 * sum(len(v) for v in audit.values() if type(v) in (str, bytes)) + 8192)
+                storage.add('audit_log', audit)
+                continue
+            if audit['task_id'] not in coding_tasks:
+                continue  # Failed recognition retains the original central refusal.
             if audit['payload'] is None:
                 continue
             try:
