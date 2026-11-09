@@ -2190,6 +2190,25 @@ class Browser:
 
         return self._native(read, end)
 
+    def custom_skill(self, slug: str) -> dict:
+        """Read the founder's shipping custom Skills page, on the native loop."""
+        from playwright.async_api import Page as AsyncPage
+        c = self.controller
+        end = min(c.effective_end(), time.monotonic() + self.page_timeout)
+
+        async def read() -> dict:
+            page = AsyncPage(self.page._impl_obj)
+            await page.goto(f"{self.base}/orgs/alpha/skills/custom", timeout=c.remaining(15)*1000)
+            card = page.locator('article[data-source="custom"]').filter(
+                has=page.get_by_role("heading", name=slug, exact=True))
+            await card.get_by_role("heading", name=slug, exact=True).wait_for(state="visible", timeout=c.remaining(10)*1000)
+            require(await card.count() == 1, "J2 one exact custom skill card")
+            require(page.url == f"{self.base}/orgs/alpha/skills/custom", "J2 founder Skills document")
+            return dict(name=await card.get_by_role("heading", name=slug, exact=True).inner_text(),
+                        skill_id=await card.get_attribute("data-skill-id"))
+
+        return self._native(read, end)
+
     def _terminal_stop(self) -> None:
         """ONE exit; sticky expiry leaves ONE successor across loop phases.
 

@@ -104,6 +104,23 @@ class Store:
             "audit": self.query(f"SELECT * FROM audit_log WHERE task_id IN ({marks}) ORDER BY id", tuple(ids)),
         }
 
+    def skills(self) -> dict:
+        """Independent B2 rows/audit snapshot around refused eligibility writes."""
+        tables = [row["name"] for row in self.query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'custom_skill*' ORDER BY name")]
+        return dict(tables={name: self.query(f'SELECT * FROM "{name}" ORDER BY rowid') for name in tables},
+                    audit=self.query("SELECT * FROM audit_log ORDER BY id"))
+
+    def skill_files(self, agent: str, slug: str) -> list[dict]:
+        """Read materialized files independently of the external agent process."""
+        workspace = self.path.parent / "workspaces" / agent
+        files = []
+        for directory in (".agents", ".claude"):
+            path = workspace / directory / "skills" / slug / "SKILL.md"
+            files.append(dict(path=str(path), exists=path.exists(), target=str(path.resolve()),
+                              text=path.read_text() if path.exists() else None))
+        return files
+
     def knowledge(self) -> dict:
         """Read org KB/artifact bytes and SQL effects around public read denials."""
         files = []

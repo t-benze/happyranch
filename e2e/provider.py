@@ -32,7 +32,21 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
     action = instruction["action"]
     if "expected_exit" in instruction:
         raise RuntimeError("caller-selected jobs exits forbidden")
-    if action in {"j1-kb-add", "j1-artifacts-put"}:
+    workspace_skill = None
+    if action.startswith("j2-"):
+        if binding["org"] != "alpha" or binding["agent"] != "case_manager":
+            raise RuntimeError("J2 requires its genuine alpha task provider")
+        workspace_skill = []
+        for directory in (".agents", ".claude"):
+            path = Path.cwd() / directory / "skills/e2e-j2-marker/SKILL.md"
+            raw = path.read_bytes() if path.exists() else None
+            workspace_skill.append(dict(path=str(path), exists=raw is not None,
+                target=str(path.resolve()), text=raw.decode("utf-8") if raw is not None else None))
+    if action == "j2-create":
+        args = ["skills", "create", "--from-file", str(Path(manifest["source"]) / "e2e/fixtures/j2-skill.json"),
+                "--session-id", binding["session"], "--org", binding["org"]]
+        payload = None
+    elif action in {"j1-kb-add", "j1-artifacts-put"}:
         if binding["org"] != "alpha" or binding["agent"] != "case_manager":
             raise RuntimeError("J1 requires its genuine alpha task provider")
         fixture = Path(manifest["source"]) / "e2e/fixtures"
@@ -41,8 +55,16 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
                 ["artifacts", "put", str(fixture / "j1-artifact.txt"), "--name", "j1-artifact.txt"])
         args += ["--org", binding["org"], "--agent", binding["agent"]]
         payload = None
-    elif action in {"jobs-submit", "jobs-refuse-review", "jobs-block", "jobs-final", "j1-final"}:
-        payload = dict(instruction["payload"], task_id=binding["task"], session_id=binding["session"])
+    elif action in {"jobs-submit", "jobs-refuse-review", "jobs-block", "jobs-final", "j1-final", "j2-final", "j2-read-final"}:
+        if action == "j2-read-final":
+            if not all(row["exists"] for row in workspace_skill) or workspace_skill[0]["text"] != workspace_skill[1]["text"]:
+                raise RuntimeError("J2 next session requires the same materialized skill in both roots")
+            # Derive the emitted marker from this session's actual file read.
+            summary = "J2 skill marker: " + workspace_skill[0]["text"].strip().splitlines()[-1]
+            authored = dict(status="completed", confidence=90, summary=summary, decision=dict(action="done", summary=summary))
+        else:
+            authored = instruction["payload"]
+        payload = dict(authored, task_id=binding["task"], session_id=binding["session"])
         if action not in {"jobs-submit", "jobs-refuse-review"}:
             payload["agent"] = binding["agent"]
         path = root / "coord" / (hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest() + ".json")
@@ -98,7 +120,8 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
                 timed_out=timed_out, execution_deadline=instruction["execution_deadline"],
                 provider=binding, child_pid=process.pid, child_start=child_start,
                 child_parent=int(child_fields[1]), child_stat=child_stat,
-                python=sys.executable, source_sha=manifest["revision"], callback_sha256=manifest["callback_sha256"])
+                python=sys.executable, source_sha=manifest["revision"], callback_sha256=manifest["callback_sha256"],
+                **({"workspace_skill": workspace_skill} if workspace_skill is not None else {}))
 
 
 def main() -> None:
@@ -126,11 +149,14 @@ def main() -> None:
         command_mode = None
         jobs_actions: list[str] = []
         j1_actions: list[str] = []
+        j2_actions: list[str] = []
         while True:
             connection.settimeout(remaining(root))
             instruction = json.loads(stream.readline(131072))
             remaining(root)
             if instruction == {"action": "exit"}:
+                if j2_actions and j2_actions not in (["j2-create", "j2-final"], ["j2-read-final"]):
+                    raise RuntimeError("incomplete J2 provider protocol")
                 if j1_actions and j1_actions != ["j1-kb-add", "j1-artifacts-put", "j1-final"]:
                     raise RuntimeError("incomplete J1 provider protocol")
                 if jobs_actions and jobs_actions[0] == "jobs-refuse-review" and jobs_actions != ["jobs-refuse-review", "jobs-final"]:
@@ -149,6 +175,7 @@ def main() -> None:
             if final:
                 raise RuntimeError("callback must be the provider's final CLI action")
             selected_mode = ("e07" if instruction["action"].startswith("e07-") else
+                             "j2" if instruction["action"].startswith("j2-") else
                              "j1" if instruction["action"].startswith("j1-") else
                              "thread" if instruction["action"].startswith("thread-") else "jobs")
             if command_mode is not None and selected_mode != command_mode:
@@ -169,7 +196,19 @@ def main() -> None:
                 final = True
                 continue
             refusal_content_ok = True
-            if selected_mode == "j1":
+            if selected_mode == "j2":
+                expected = "j2-final" if j2_actions == ["j2-create"] else None
+                if (j2_actions and instruction["action"] != expected
+                        or not j2_actions and instruction["action"] not in {"j2-create", "j2-read-final"}):
+                    raise RuntimeError("unexpected J2 action/order")
+                if instruction["action"] == "j2-final" and instruction["payload"] != dict(
+                        status="completed", confidence=90, summary="J2 custom skill created",
+                        decision=dict(action="done", summary="J2 custom skill created")):
+                    raise RuntimeError("unexpected J2 creator completion")
+                receipt = jobs_command(instruction, row)
+                j2_actions.append(instruction["action"])
+                expected_exit = 0
+            elif selected_mode == "j1":
                 expected = ["j1-kb-add", "j1-artifacts-put", "j1-final"]
                 if len(j1_actions) >= 3 or instruction["action"] != expected[len(j1_actions)]:
                     raise RuntimeError("unexpected J1 action/order")
@@ -224,7 +263,7 @@ def main() -> None:
                 for path in thread_files.values():
                     path.unlink(missing_ok=True)
                 raise RuntimeError("real provider CLI failed")
-            final = instruction["action"] in {"jobs-block", "jobs-final", "thread-task-final", "j1-final"}
+            final = instruction["action"] in {"jobs-block", "jobs-final", "thread-task-final", "j1-final", "j2-final", "j2-read-final"}
 
 
 if __name__ == "__main__":

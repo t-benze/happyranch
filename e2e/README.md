@@ -4,7 +4,7 @@
 
 The standalone harness uses stdlib `xml.etree.ElementTree`, without pytest or
 new dependencies. Each Python lane writes `reports/junit.xml`: a `product` suite
-with exactly the 63 names in `e2e/manifest.json`, once each, and a `harness` suite
+with exactly the 69 names in `e2e/manifest.json`, once each, and a `harness` suite
 for setup, controller/finalization, owned processes, registered ports, sockets
 and data cleanup. Assertion failures produce failures; unavailable prerequisites
 or unfinished cases produce errors. No skips or inferred success are allowed.
@@ -186,11 +186,11 @@ abrupt-restart coverage.
 
 Health downloads exactly `e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM` and
 `e2e-cancel-INT`, each containing `junit.xml`. It parses actual testcase children
-and requires both jobs successful, exactly 63 distinct expected product names
+and requires both jobs successful, exactly 69 distinct expected product names
 per lane with no failures/errors/skips, both diagnostics and all setup/cleanup
 checks passed, and matching Python/source/event/run/attempt/exercise properties.
 It never reopens SQL, snapshots or completion ledgers. `GITHUB_STEP_SUMMARY`
-reports product126, diagnostics2, cleanup status and source/event/run errors.
+reports product138, diagnostics2, cleanup status and source/event/run errors.
 
 JUnit uploads use `if: always()` and `if-no-files-found: error`. Failure-only
 artifacts use `if: failure()` and explicit lane-root paths: `traces/*.zip`,
@@ -269,7 +269,7 @@ proof does not establish full Product E2E or supported hosted browser behavior.
 
 ## J1: agent KB and shared artifacts (THR-343)
 
-The product suite now contains **63 variants per Python lane**: the preserved
+J1 extended the product suite to **63 variants per Python lane**, before J2: the preserved
 56-case prefix followed by these seven names:
 
 - `J1.agent-cli-publish`
@@ -301,8 +301,7 @@ resource finalization. The independent J1 reader accounts for the entire suffix
 (one provider, three actual CLI children), including every new witness record;
 E04/E05/E07 cardinalities stay exact. The original56 membership, historical run
 counts and superseded publication limits below retain their historical meaning.
-Health derives current membership from the63-name manifest (126 across both
-lanes). `J1.agent-cli-publish` JUnit `system-out` records measured J1 elapsed time,
+Health derives current membership and denominators from the manifest. `J1.agent-cli-publish` JUnit `system-out` records measured J1 elapsed time,
 including partial/unavailable completion. Budgets remain target600/hard900,
 scenario480/actions720/cleanup60; no schedule, trigger or required-check changes.
 
@@ -313,6 +312,54 @@ on committed/pushed source for Python3.12 and3.14. Its metadata says
 This is local evidence, never a scheduled/Actions Health receipt. `run.py` retains
 its Actions-only admission and gains no local mode. Long runs use persistent jobs;
 submission and static checks do not establish passing execution or budget fit.
+
+## J2: agent custom skills (THR-343)
+
+The current product suite has **69 variants per Python lane**, 138 across both
+lanes. These six names append after the unchanged original63, in order:
+
+- `J2.agent-cli-create`
+- `J2.hidden-before-eligibility`
+- `J2.nonfounder-eligibility`
+- `J2.founder-eligibility`
+- `J2.next-session-marker`
+- `J2.browser-skill`
+
+A genuine alpha agent task provider invokes `happyranch skills create
+--from-file ... --session-id CURRENT --org alpha` with the unique non-shipped
+slug/name `e2e-j2-marker`. The B2 response must be valid and carry the actual
+server-verified org/task/session/agent provenance. Before eligibility, explain
+must report `visible=false` and neither workspace skill root may contain it.
+Both absent and incorrect bearer PUTs must return exact401 responses and leave
+both orgs' B2 rows and audit history unchanged. These are bearer denials; the
+runtime has no separate agent credential for this founder route.
+
+The harness acts as founder using `PUT /custom-skills/{id}/eligibility` with
+`If-Match` from the current eligibility GET. It grants only `case_manager`;
+public detail and explain must agree, while `case_worker` stays invisible.
+A fresh task/session then reads the actual SKILL.md through both `.agents/skills`
+and `.claude/skills`, emits its final body marker in its genuine completion CLI,
+and reaches a persisted terminal result under its original SID. An independent
+reader checks exact file bytes, canonical targets and the persisted marker.
+The founder's shipping `/skills/custom` page must render one card with the exact
+slug/name and B2 skill identity. No config or database write substitutes for the
+founder route, and no skill is manually copied into a workspace.
+
+J2 owns its entire suffix: two admitted providers and three real CLI children.
+The J1 reader receives its completed prefix; its seven checks and the original56
+retain their exact cardinalities. Current resource closure remains observed.
+`J2.agent-cli-create` JUnit `system-out` records J2 wall time, including partial
+completion. The unchanged600s target/900s hard budget, triggers, schedule,
+aggregate derived denominator and lint/static-only required checks remain.
+
+TASK-14975's bounded local evidence uses the J1 throwaway driver method, with
+`local-evidence` / `local` / attempt1 identity and actual source tree. Only the
+uncommitted driver sets `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64` for
+browser installation and execution on Ubuntu26.04; this is not hosted parity.
+The Step0 throwaway probe establishes the existing create/eligibility/spawn path
+before journey edits; complete frozen Python3.12/3.14 lanes and expected-value
+failure/restoration evidence are reported separately with their actual outcomes.
+No product source or production seam is added.
 
 <details>
 <summary>Historical implementation, case, failure and hold records</summary>

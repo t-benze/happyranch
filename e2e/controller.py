@@ -93,6 +93,8 @@ class Controller:
         self.e07_prefix: dict = {}
         self.j1_prefix: dict = {}
         self.j1: dict = {}
+        self.j2_prefix: dict = {}
+        self.j2: dict = {}
         self.commands: list[dict] = []
         self.http: list[dict] = []
         self.durable: list[dict] = []
@@ -205,7 +207,7 @@ class Controller:
             require(len(submitted) == 1 and submitted[0]["status"] == 201
                     and submitted[0]["response"] == json.loads(receipt["stdout"]) and not submitted[0]["dropped"],
                     "actual submit HTTP201 and returned identity", submitted)
-        if action in {"jobs-block", "jobs-final", "j1-final"}:
+        if action in {"jobs-block", "jobs-final", "j1-final", "j2-final", "j2-read-final"}:
             payload = receipt["payload"]
             expected = f"/api/v1/orgs/{start['org']}/tasks/{start['task']}/completion"
             callbacks = [r for r in receipt["wire"] if r["path"] == expected and r["method"] == "POST"]
@@ -954,7 +956,7 @@ class Controller:
             launches, failures = self.collect_e07_launches()
             self.e07.update(partial_launches=launches, launch_record_failures=failures)
         rows.update(e07=self.e07, e07_commands=self.e07_commands, boots=self.boots)
-        rows.update(j1=self.j1)
+        rows.update(j1=self.j1, j2=self.j2)
         thread_proxy = []
         if self.browser_relay:
             with self.browser_relay.lock:
@@ -980,7 +982,7 @@ class Controller:
         return json.loads(self.sanitize(json.dumps(rows)))
 
     def check_content(self) -> None:
-        from checks import validate_e04, validate_e05, validate_e07, validate_groups, validate_j1
+        from checks import validate_e04, validate_e05, validate_e07, validate_groups, validate_j1, validate_j2
         self.report.record_sampler_timings(list(self.observer), self.durable, self.e07.get("window", {}))
         observations = self.observations()
         observations["cleanup_pins"] = self.cleanup_pins
@@ -1019,16 +1021,32 @@ class Controller:
                     if name in self.results:
                         self.report.record("product", name, exc)
                 self.report.record("harness", "content:" + group, exc)
-        for name in MANIFEST["variants"][56:]:
+        j1_observations = complete
+        if self.j2_prefix:
+            j1_observations = dict(complete)
+            for key in ("starts", "commands", "provider_commands", "provider_attempts", "variants",
+                        "witness_data", "witness_bytes", "witness_sha256", "witness_incomplete_line", "launch_witnesses"):
+                j1_observations[key] = self.j2_prefix[key]
+        for name in MANIFEST["variants"][56:63]:
             if name in self.results:
                 try:
-                    validate_j1(complete, self.j1_prefix, self.source, name)
+                    validate_j1(j1_observations, self.j1_prefix, self.source, name)
                 except Exception as exc:
                     self.report.record("product", name, exc)
         if self.j1:
             self.report.outputs["product", "J1.agent-cli-publish"] = json.dumps(dict(
                 diagnostic="J1-timing", entered=self.j1["entered"], finished=self.j1["finished"],
                 seconds=(self.j1["finished"] - self.j1["entered"] if self.j1["finished"] is not None else None)))
+        for name in MANIFEST["variants"][63:]:
+            if name in self.results:
+                try:
+                    validate_j2(complete, self.j2_prefix, self.source, name)
+                except Exception as exc:
+                    self.report.record("product", name, exc)
+        if self.j2:
+            self.report.outputs["product", "J2.agent-cli-create"] = json.dumps(dict(
+                diagnostic="J2-timing", entered=self.j2["entered"], finished=self.j2["finished"],
+                seconds=(self.j2["finished"] - self.j2["entered"] if self.j2["finished"] is not None else None)))
         if self.failures:
             self.report.record("harness", "controller", AssertionError("Controller action or cleanup failed"))
 
@@ -1133,8 +1151,9 @@ def main() -> None:
                     controller.groups['E07']['state'] = 'reported_pass'
                 finally:
                     controller.groups['E07']['end'] = time.monotonic()
-                from scenarios import knowledge
-                controller.run_group(MANIFEST["variants"][56:], lambda: knowledge(controller))
+                from scenarios import knowledge, skills
+                j1_ready = controller.run_group(MANIFEST["variants"][56:63], lambda: knowledge(controller))
+                controller.run_group(MANIFEST["variants"][63:], lambda: skills(controller), ready=j1_ready)
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException as exc:

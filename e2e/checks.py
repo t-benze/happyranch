@@ -3208,3 +3208,115 @@ def validate_j1(observations: dict, prefix: dict, source: Path, variant: str) ->
               and case["ownership_state"]["before"] == case["ownership_state"]["after"], "no cross-org content or read effects")
     else:
         raise ValueError("unknown J1 variant")
+
+
+def validate_j2(observations: dict, prefix: dict, source: Path, variant: str) -> None:
+    """Independently own the full post-J1 skill lifecycle and executable suffix."""
+    from collections import Counter
+
+    def check(ok: bool, label: str) -> None:
+        if not ok:
+            raise ValueError("J2 content: " + label)
+
+    case = observations["j2"]
+    creator, reader = case["creator"], case["reader"]
+    check(prefix and observations["starts"] == prefix["starts"] + [creator, reader]
+          and observations["commands"] == prefix["commands"]
+          and observations["thread_commands"] == prefix["thread_commands"]
+          and observations["e07_commands"] == prefix["e07_commands"], "exact J1 prefix plus two J2 sessions")
+    check(creator["org"] == reader["org"] == "alpha" and creator["agent"] == reader["agent"] == "case_manager"
+          and creator["session"] != reader["session"] and creator["task"] != reader["task"], "fresh genuine task/session")
+    commands = observations["provider_commands"][len(prefix["provider_commands"]):]
+    check(observations["provider_commands"][:len(prefix["provider_commands"])] == prefix["provider_commands"]
+          and [r["action"] for r in commands] == ["j2-create", "j2-final", "j2-read-final"], "closed three CLI suffix")
+    attempts = observations["provider_attempts"][len(prefix["provider_attempts"]):]
+    check(observations["provider_attempts"][:len(prefix["provider_attempts"])] == prefix["provider_attempts"]
+          and len(attempts) == 3 and all(a["provider"] == start
+              and a["command_index"] == len(prefix["provider_commands"]) + i
+              and a["instruction"]["action"] == command["action"]
+              for i, (a, command, start) in enumerate(zip(attempts, commands, (creator, creator, reader)))),
+          "every J2 attempt accounted")
+    manifest = next(d["executable_manifest"] for d in observations["durable"] if "executable_manifest" in d)
+    raw, old_raw = observations["witness_data"].encode(), prefix["witness_data"].encode()
+    check(raw.startswith(old_raw) and raw.endswith(b"\n") and len(raw) == observations["witness_bytes"]
+          and hashlib.sha256(raw).hexdigest() == observations["witness_sha256"]
+          and observations["witness_incomplete_line"] is False, "complete unchanged witness prefix")
+    suffix = [json.loads(line) for line in raw[len(old_raw):].splitlines()]
+    check(Counter(w["kind"] for w in suffix) == {"stub": 2, "callback": 3}
+          and all(w["source_sha"] == manifest["revision"] for w in suffix), "entire executable suffix accounted")
+    check(all(w["provider"] == "claude" and w["stub_sha256"] == manifest["stubs"]["claude"]["sha256"]
+              for w in suffix if w["kind"] == "stub"), "real registered providers")
+    for command, start in zip(commands, (creator, creator, reader)):
+        check(command["exit"] == 0 and command["timed_out"] is False
+              and command["child_parent"] == start["pid"] and command["child_start"] is not None
+              and command["provider"] == {k: start[k] for k in ("task", "session", "agent", "org", "pid")}
+              and command["python"] == manifest["python"] and command["source_sha"] == manifest["revision"]
+              and command["callback_sha256"] == manifest["callback_sha256"]
+              and case["entered"] <= command["entered"] <= command["finished"] < command["execution_deadline"],
+              "real provider child/source/exit/deadline")
+        check(len([w for w in suffix if w["kind"] == "callback" and w["pid"] == command["child_pid"]
+                   and w["ppid"] == start["pid"] and w["argv_sha256"] == hashlib.sha256(json.dumps(command["argv"][1:]).encode()).hexdigest()
+                   and w["cli_sha256"] == hashlib.sha256((source / "cli/main.py").read_bytes()).hexdigest()]) == 1,
+              "independent actual CLI witness")
+    slug = "e2e-j2-marker"
+    marker = "E2E-J2-SKILL-MARKER-alpha-2026"
+    text = "---\nname: e2e-j2-marker\ndescription: Read the journey marker when asked about this custom guidance.\n---\n\nE2E-J2-SKILL-MARKER-alpha-2026\n"
+    skill = case["skill"]
+    for command, start, key, summary in ((commands[1], creator, "creator_completion", "J2 custom skill created"),
+                                        (commands[2], reader, "reader_completion", "J2 skill marker: " + marker)):
+        payload = dict(task_id=start["task"], session_id=start["session"], agent="case_manager", status="completed",
+            confidence=90, summary=summary, decision=dict(action="done", summary=summary))
+        payload_raw = json.dumps(payload, sort_keys=True).encode()
+        path = str(Path(manifest["root"]) / "coord" / (hashlib.sha256(payload_raw).hexdigest() + ".json"))
+        task, = case[key]["tasks"]
+        result, = case[key]["results"]
+        check(command["payload"] == payload and command["argv"] == [manifest["callback"], "report-completion", "--org", "alpha", "--from-file", path]
+              and task["status"] == "completed" and task["id"] == result["task_id"] == start["task"]
+              and task["current_session_id"] == result["session_id"] == start["session"]
+              and result["agent"] == "case_manager" and result["output_summary"] == summary,
+              "original SID actual callback and persisted outcome")
+    if variant == "J2.agent-cli-create":
+        check(commands[0]["argv"] == [manifest["callback"], "skills", "create", "--from-file",
+              str(source / "e2e/fixtures/j2-skill.json"), "--session-id", creator["session"], "--org", "alpha"], "supported B2 create argv")
+        wire, = [r for r in commands[0]["wire"] if r["method"] == "POST"]
+        check(wire["path"] == f"/api/v1/orgs/alpha/skills/agent?session_id={creator['session']}"
+              and wire["status"] == 201 and wire["dropped"] is False, "real session create HTTP201")
+        response = wire["response"]
+        check(response["provenance"]["task_id"] == creator["task"]
+              and response["provenance"]["session_id"] == creator["session"]
+              and response["provenance"]["agent_name"] == "case_manager"
+              and response["provenance"]["verified_org"] == "alpha"
+              and response["provenance"]["task_brief_digest"]
+              and response["version"]["validation_state"] == "valid"
+              and response["skill"]["id"] == skill["id"] and skill["slug"] == skill["name"] == slug
+              and "validation_state: valid\n" in commands[0]["stdout"], "server-verified B2 identity/provenance/validation")
+    elif variant == "J2.hidden-before-eligibility":
+        check(case["hidden"]["visible"] is False and case["hidden"]["hidden_reason"] == "no_eligibility_policy"
+              and all(not f["exists"] and f["text"] is None for f in commands[0]["workspace_skill"] + commands[1]["workspace_skill"] + case["hidden_files"])
+              and case["initial_policy"]["rules"] == [], "default hidden and absent in agent workspace")
+    elif variant == "J2.nonfounder-eligibility":
+        check(len(case["denials"]) == 2 and all(d["response"]["status"] == 401
+              and d["response"]["body"] == {"detail": detail} and d["before"] == d["after"]
+              for d, detail in zip(case["denials"], ("missing bearer token", "bad token"))), "exact unauthorized PUTs leave both orgs unchanged")
+    elif variant == "J2.founder-eligibility":
+        rule = dict(scope_type="agent", scope_target="case_manager", effect="allow")
+        check(case["put"]["status"] == 200 and case["put"]["if_match"] == str(case["initial_policy"]["revision"])
+              and case["put"]["rules"] == [rule] and case["put"]["body"]["newly_visible"] == ["case_manager"]
+              and [{k:r[k] for k in rule} for r in case["policy"]["rules"]] == [rule]
+              and case["visible"] == dict(visible=True, hidden_reason="agent_allow", winning_rule=rule)
+              and case["other_agent"]["visible"] is False and case["detail"]["id"] == skill["id"]
+              and case["detail"]["slug"] == case["detail"]["name"] == slug
+              and case["detail"]["origin_kind"] == "agent" and case["detail"]["origin_agent"] == "case_manager", "founder policy/current public detail/explain")
+    elif variant == "J2.next-session-marker":
+        files = commands[2]["workspace_skill"]
+        check(files == case["materialized_files"] and len(files) == 2
+              and all(f["exists"] and f["text"] == text for f in files)
+              and [f["path"] for f in files] == [str(Path(manifest["root"]) / "runtime/orgs/alpha/workspaces/case_manager" / root / "skills" / slug / "SKILL.md") for root in (".agents", ".claude")]
+              and files[0]["target"] == files[1]["target"]
+              and Path(files[0]["target"]).read_text() == text
+              and commands[2]["payload"]["summary"] == "J2 skill marker: " + marker,
+              "fresh agent reads both canonical skill links and persists exact marker")
+    elif variant == "J2.browser-skill":
+        check(case["browser"] == dict(name=slug, skill_id=skill["id"]), "actual founder Skills card exact name/identity")
+    else:
+        raise ValueError("unknown J2 variant")

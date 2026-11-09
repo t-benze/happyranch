@@ -70,7 +70,13 @@
     "J1.browser-artifact-download",
     "J1.bearer-absent",
     "J1.bearer-wrong",
-    "J1.cross-org-isolation"
+    "J1.cross-org-isolation",
+    "J2.agent-cli-create",
+    "J2.hidden-before-eligibility",
+    "J2.nonfounder-eligibility",
+    "J2.founder-eligibility",
+    "J2.next-session-marker",
+    "J2.browser-skill"
   ],
   "event": "schedule",
   "cron": "0 19 * * *",

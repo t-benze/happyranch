@@ -1,0 +1,6 @@
+{
+  "slug": "e2e-j2-marker",
+  "name": "e2e-j2-marker",
+  "policy_class": "standard_operational",
+  "skill_md": "---\nname: e2e-j2-marker\ndescription: Read the journey marker when asked about this custom guidance.\n---\n\nE2E-J2-SKILL-MARKER-alpha-2026\n"
+}
