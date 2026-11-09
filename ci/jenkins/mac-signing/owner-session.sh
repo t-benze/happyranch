@@ -30,12 +30,54 @@ my %budget=(preflight=>180,sign=>900,submit=>600,status=>300,finalize=>900,test=
 my @files=qw(run-stage.sh mac-sign.sh code-inventory.tsv bounded-run.pl keychain-state.swift owner-session.sh);
 my ($mode,@args)=@ARGV;
 my $home=$ENV{HOME};
-%ENV=(HOME=>$home//'',PATH=>'/usr/bin:/bin:/usr/sbin:/sbin',LC_ALL=>'C');
+my $signing_env=$ENV{HAPPYRANCH_MAC_SIGNING_ENV}||"$home/.config/happyranch/mac-signing.env";
+%ENV=(HOME=>$home//'',HAPPYRANCH_MAC_SIGNING_ENV=>$signing_env,PATH=>'/usr/bin:/bin:/usr/sbin:/sbin',LC_ALL=>'C');
 umask 0077;
 my $cancel=0;
 my $window_end;
 $SIG{$_}=sub {$cancel=1} for qw(TERM INT HUP QUIT);
 $SIG{PIPE}='IGNORE';
+
+# Same file-only grammar and four-key validation as mac-sign.sh. Never eval it.
+sub signing_profile {
+    my $setup='Follow the private signing configuration setup in docs/runbooks/mac-release-handbook.md.';
+    my $bad=sub {die "REFUSED: $_[0]. $setup\n"};
+    my $path=$signing_env;
+    sysopen(my $fh,$path,O_RDONLY|O_NOFOLLOW|O_NONBLOCK)
+        or $bad->('HAPPYRANCH_MAC_SIGNING_ENV: need a readable regular file owned by the current user (no symlink)');
+    my @st=stat($fh);
+    @st&&-f $fh&&$st[4]==$> or $bad->('HAPPYRANCH_MAC_SIGNING_ENV: need a regular file owned by the current user');
+    ($st[2]&07777&~0600)==0 or $bad->('HAPPYRANCH_MAC_SIGNING_ENV: require mode 600 or stricter; run chmod 600 on the private file');
+    my %known=map {$_=>1} qw(HAPPYRANCH_SIGN_IDENTITY_SHA1 HAPPYRANCH_SIGN_IDENTITY_NAME HAPPYRANCH_SIGN_TEAM_ID HAPPYRANCH_NOTARY_PROFILE);
+    my (%values,$number);
+    while (my $line=<$fh>) {
+        ++$number;chomp $line;
+        $line!~/\x00/ or $bad->('Bad NUL byte in HAPPYRANCH_MAC_SIGNING_ENV');
+        $line=~s/\A[ \t]+|[ \t]+\z//g;
+        next if $line eq ''||$line=~/\A#/;
+        $line=~/\A([^=]+)=(.*)\z/ or $bad->("HAPPYRANCH_MAC_SIGNING_ENV: expected KEY=VALUE at line $number");
+        my ($key,$value)=($1,$2);$key=~s/[ \t]+\z//;$value=~s/\A[ \t]+//;
+        $known{$key} or $bad->("Unknown signing key $key at line $number");
+        !exists($values{$key}) or $bad->("Duplicate signing key $key");
+        if ($value=~/\A(["'])/) {
+            my $quote=$1;
+            length($value)>=2&&substr($value,-1) eq $quote or $bad->("Bad quotes for $key");
+            $value=substr($value,1,-1);
+        } elsif ($value=~/["']\z/) {$bad->("Bad quotes for $key")}
+        $value!~/[\x00-\x1f\x7f]/ or $bad->("Bad control character for $key");
+        $values{$key}=$value;
+    }
+    eof($fh) or $bad->('HAPPYRANCH_MAC_SIGNING_ENV: cannot read file');
+    close($fh) or $bad->('HAPPYRANCH_MAC_SIGNING_ENV: cannot close file');
+    for my $key (qw(HAPPYRANCH_SIGN_IDENTITY_SHA1 HAPPYRANCH_SIGN_IDENTITY_NAME HAPPYRANCH_SIGN_TEAM_ID HAPPYRANCH_NOTARY_PROFILE)) {
+        defined($values{$key})&&length($values{$key}) or $bad->("Missing or empty $key");
+    }
+    $values{HAPPYRANCH_SIGN_IDENTITY_SHA1}=~/\A[0-9A-Fa-f]{40}\z/ or $bad->('Bad HAPPYRANCH_SIGN_IDENTITY_SHA1: need 40 hex characters');
+    my $team=$values{HAPPYRANCH_SIGN_TEAM_ID};
+    $team=~/\A[A-Z0-9]{10}\z/ or $bad->('Bad HAPPYRANCH_SIGN_TEAM_ID: need 10 uppercase alphanumerics');
+    $values{HAPPYRANCH_SIGN_IDENTITY_NAME}=~/\(\Q$team\E\)\z/ or $bad->('Bad HAPPYRANCH_SIGN_IDENTITY_NAME: must end with the configured HAPPYRANCH_SIGN_TEAM_ID in parentheses');
+    return $values{HAPPYRANCH_NOTARY_PROFILE};
+}
 
 # Bounded fixed-command observation, with no raw stderr/argv publication. The
 # caller owns every child; no external PID is ever signalled. No secret uses it.
@@ -341,15 +383,16 @@ sub refresh {
 
 my $ok=eval {
 if (($mode//'') eq 'inspect'&&@args==0) {
-    my $c=local_context();my %tools;
+    my $profile=signing_profile();my $c=local_context();my %tools;
     for my $tool (qw(/usr/bin/sw_vers /usr/bin/xcodebuild /usr/bin/xcrun /usr/bin/codesign /usr/bin/ditto /usr/bin/security /usr/bin/syspolicy_check /usr/sbin/spctl /usr/bin/ssh /usr/bin/perl)) {my $present=eval {plain($tool);-x $tool};$tools{$tool}=$present?'present; execution/access unverified':'UNAVAILABLE'}
     $c->{tools}=\%tools;$c->{os}=line(5,2048,'/usr/bin/sw_vers');$c->{xcode}=eval {line(5,2048,'/usr/bin/xcodebuild','-version')}//'UNAVAILABLE';
-    $c->{keychain}="$home/Library/Keychains/login.keychain-db";$c->{profile}='HappyRanch-notary';
+    $c->{keychain}="$home/Library/Keychains/login.keychain-db";$c->{profile}=$profile;
     $c->{controller_candidate}='benze@192.168.18.174:22; mapping/login/host trust UNVERIFIED';
     $c->{tunnel}='Mac127.0.0.1:18081 -> controller127.0.0.1:8081';
     print $json->encode($c)."\n";
 } elsif (($mode//'') eq 'attend'&&@args==3) {
     my ($source,$root,$sid)=@args;id_args($source,$root,$sid);
+    my $profile=signing_profile();
     my $ctx=local_context();my $base=$ctx->{root};
     need($here eq "$base/release/$source",'fixed native merged release');private_dir($here);
     # Create only named private directories after checking every existing parent.
@@ -410,7 +453,7 @@ if (($mode//'') eq 'inspect'&&@args==0) {
                     release($source,$proof->{pins});owned_java($agent);
                     my $keychain="$home/Library/Keychains/login.keychain-db";regular($keychain,undef);
                     local $ENV{HR_DEADLINE}=$end-10;
-                    need(command('profile-check',120,262144,"$base/SESSION/profile-$request",'/usr/bin/xcrun','notarytool','history','--keychain-profile','HappyRanch-notary','--keychain',$keychain,'--output-format','json')==0,'actual existing-profile bounded check');
+                    need(command('profile-check',120,262144,"$base/SESSION/profile-$request",'/usr/bin/xcrun','notarytool','history','--keychain-profile',$profile,'--keychain',$keychain,'--output-format','json')==0,'actual existing-profile bounded check');
                     # Retain private response, publish no history/credentials.
                     my $record_lock=session_record_lock($base);
                     my $current=read_control("$base/owner-session.json");

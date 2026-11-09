@@ -266,7 +266,7 @@ def test_task_step_creation():
 
 - [ ] **Step 5: Run test to verify it fails**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_models.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_models.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.models'`
 
 - [ ] **Step 6: Create `src/models.py`**
@@ -351,7 +351,7 @@ class TaskStep(BaseModel):
 
 - [ ] **Step 7: Run tests to verify they pass**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_models.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_models.py -v`
 Expected: All 8 tests PASS
 
 - [ ] **Step 8: Create `tests/conftest.py`**
@@ -553,7 +553,7 @@ def test_next_task_id(test_settings):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_database.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_database.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.infrastructure.database'`
 
 - [ ] **Step 3: Implement `src/infrastructure/database.py`**
@@ -844,7 +844,7 @@ class Database:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_database.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_database.py -v`
 Expected: All 10 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -960,7 +960,7 @@ def test_log_cross_audit_stub(test_settings):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_audit_logger.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_audit_logger.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
 - [ ] **Step 3: Implement `src/infrastructure/audit_logger.py`**
@@ -1069,7 +1069,7 @@ class AuditLogger:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_audit_logger.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_audit_logger.py -v`
 Expected: All 6 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -1193,7 +1193,7 @@ def test_step_actions_are_descriptive():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_task_router.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_task_router.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
 - [ ] **Step 3: Implement `src/orchestrator/task_router.py`**
@@ -1402,7 +1402,7 @@ def _payment_change_chain(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_task_router.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_task_router.py -v`
 Expected: All 7 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -1500,7 +1500,7 @@ def test_revise_past_max_rounds_escalates():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_revision_loop.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_revision_loop.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
 - [ ] **Step 3: Implement `src/orchestrator/revision_loop.py`**
@@ -1551,7 +1551,7 @@ def decide_next_action(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_revision_loop.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_revision_loop.py -v`
 Expected: All 6 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -1680,7 +1680,7 @@ def test_get_all_tiers(test_settings):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_performance_tracker.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_performance_tracker.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
 - [ ] **Step 3: Implement `src/orchestrator/performance_tracker.py`**
@@ -1824,7 +1824,7 @@ Add this method right after the existing `get_audit_logs` method in `src/infrast
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_performance_tracker.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_performance_tracker.py -v`
 Expected: All 7 tests PASS
 
 - [ ] **Step 6: Commit**
@@ -1947,7 +1947,7 @@ def test_initialize_workspace_does_not_overwrite_existing_learnings(test_setting
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_context_builder.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_context_builder.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
 - [ ] **Step 3: Implement `src/orchestrator/context_builder.py`**
@@ -2060,7 +2060,7 @@ class ContextBuilder:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_context_builder.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_context_builder.py -v`
 Expected: All 6 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -2252,7 +2252,7 @@ def test_run_cleans_old_report_before_session(mock_subprocess, tmp_path):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_executor.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_executor.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
 - [ ] **Step 3: Implement `src/orchestrator/executor.py`**
@@ -2357,7 +2357,7 @@ class AgentExecutor:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_executor.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_executor.py -v`
 Expected: All 8 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -2580,7 +2580,7 @@ def test_payment_change_logs_cross_audit_stub(mock_run_step, orchestrator, test_
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_orchestrator.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_orchestrator.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
 - [ ] **Step 3: Implement `src/orchestrator/orchestrator.py`**
@@ -2847,7 +2847,7 @@ class Orchestrator:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_orchestrator.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_orchestrator.py -v`
 Expected: All 6 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -2906,7 +2906,7 @@ def test_parse_args_bug_fix():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_cli.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_cli.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
 - [ ] **Step 3: Create `scripts/run_product_team.py`**
@@ -2999,7 +2999,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_cli.py -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/test_cli.py -v`
 Expected: All 2 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -3018,7 +3018,7 @@ git commit -m "feat: CLI entry point for running Product & Engineering Team task
 
 - [ ] **Step 1: Run the full test suite**
 
-Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/ -v`
+Run: `cd $HOME/projects/my-opc && python -m pytest tests/ -v`
 Expected: All tests PASS (approximately 42 tests across 8 test files)
 
 - [ ] **Step 2: Fix any failures**
@@ -3027,7 +3027,7 @@ If any tests fail, fix them before proceeding.
 
 - [ ] **Step 3: Run the CLI with `--help` to verify it's wired up**
 
-Run: `cd /Users/tangbz/projects/my-opc && python scripts/run_product_team.py --help`
+Run: `cd $HOME/projects/my-opc && python scripts/run_product_team.py --help`
 Expected: Help text showing `--task`, `--brief`, `--db`, and `--verbose` options.
 
 - [ ] **Step 4: Final commit if any fixes were needed**

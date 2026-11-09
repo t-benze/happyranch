@@ -57,18 +57,18 @@
 
 - [ ] **Step 1: Inspect what's uncommitted**
 
-Run: `git -C /Users/tangbz/projects/my-opc/.worktrees/content-team status --short`
+Run: `git -C $HOME/projects/my-opc/.worktrees/content-team status --short`
 Expected: a list of modified/added files — at minimum the new spec under `docs/superpowers/specs/` and edits in `protocol/`.
 
 - [ ] **Step 2: Run the existing test suite baseline**
 
-Run: `cd /Users/tangbz/projects/my-opc/.worktrees/content-team && uv run pytest tests/ -q`
+Run: `cd $HOME/projects/my-opc/.worktrees/content-team && uv run pytest tests/ -q`
 Expected: all unit tests pass on `main`'s current behavior. Record any pre-existing failures — these are not regressions from this plan and should not be "fixed" as part of a plan task.
 
 - [ ] **Step 3: Commit the snapshot**
 
 ```bash
-cd /Users/tangbz/projects/my-opc/.worktrees/content-team
+cd $HOME/projects/my-opc/.worktrees/content-team
 git add docs/superpowers/specs/2026-04-24-content-team-design.md protocol/
 git commit -m "chore(protocol): drop agent-tools/feishu scope, add content-team design spec"
 ```

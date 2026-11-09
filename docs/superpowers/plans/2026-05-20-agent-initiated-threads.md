@@ -1902,7 +1902,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/tangbz/projects/my-opc/.claude/worktrees/agent-threads
+cd $HOME/projects/my-opc/.claude/worktrees/agent-threads
 git add tests/contract/openapi.json web/src/test/openapi-coverage.test.ts
 git commit -m "test(contract): pin compose-as-agent route in OpenAPI snapshot"
 ```

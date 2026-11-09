@@ -4078,7 +4078,7 @@ errors/pending/null cutoff. Missing/null/int0/bool/object and malformed rows, ev
 a bad tail after valid rows, refuse without coercion/filter/deduplication. Closed
 identity validation precedes projections; missing/malformed identity and every
 boot/cutoff/source/runtime/org/error check remain mandatory. Family epoch and
-Danze profile errors are independent holds, not fixed by workflow coverage.
+signing-profile errors are independent holds, not fixed by workflow coverage.
 
 Under ROOT12912 / Founder THR320seq177–178, historical job/receipt/launch
 uncertainty alone is not a migration-maintenance refusal. Preserve all original

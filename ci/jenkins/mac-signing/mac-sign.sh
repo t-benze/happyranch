@@ -9,14 +9,60 @@ umask 077
 INPUT_SHA=85b96655a1d072328872fa8797e16ad0087e0e05aa30b8dda2a8bc78b60ac243
 INPUT_SIZE=49089611
 LAYOUT_SHA=75ae7de3fb835fc88112f8cf188340dcc7ca54a6094eacede5fa4232e648064a
-IDENTITY=C9C7371D6FBFDB86BB847CC1DE181EAF2E3A4BD9
-PUBLIC_NAME='Developer ID Application: Shenzhen Danze Internet Information Service Co., Ltd (LS2C558RKS)'
-TEAM=LS2C558RKS
-PROFILE=HappyRanch-notary
 BUNDLE=ai.happyranch.HappyRanchApp
 SOURCE=21c63d8c1ec520764945d7b0bafb4bfe668ab81d
 SOURCE_TREE=b2af3a4c8e0cb1c6b58796030085dfb31680b374
 fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+# File-only configuration: ambient signing values never override this file.
+# Keep this loader identical in the local and Jenkins signing scripts.
+load_signing_config() {
+    local config=${HAPPYRANCH_MAC_SIGNING_ENV:-"$HOME/.config/happyranch/mac-signing.env"}
+    local setup='Follow the private signing configuration setup in docs/runbooks/mac-release-handbook.md.'
+    local mode line key value seen='' number=0
+    [ -f "$config" ] && [ ! -L "$config" ] && [ -O "$config" ] && [ -r "$config" ] || fail "HAPPYRANCH_MAC_SIGNING_ENV: need a readable regular file owned by the current user (no symlink). $setup"
+    mode=$(stat -f '%Lp' "$config") || fail "HAPPYRANCH_MAC_SIGNING_ENV: cannot inspect file mode. $setup"
+    [[ $mode =~ ^[0-7]{3,4}$ ]] || fail "HAPPYRANCH_MAC_SIGNING_ENV: invalid file mode. $setup"
+    [ "$((8#$mode & ~0600))" -eq 0 ] || fail "HAPPYRANCH_MAC_SIGNING_ENV: require mode 600 or stricter; run chmod 600 on the private file. $setup"
+    tr -d '\000' < "$config" | cmp -s "$config" - || fail "Bad NUL byte or unreadable HAPPYRANCH_MAC_SIGNING_ENV. $setup"
+    IDENTITY=''; PUBLIC_NAME=''; TEAM=''; PROFILE=''
+    while IFS= read -r line || [ -n "$line" ]; do
+        number=$((number+1))
+        # Trim spaces/tabs only; no expansions, escapes or inline comments.
+        line="${line#"${line%%[!$' \t']*}"}"
+        line="${line%"${line##*[!$' \t']}"}"
+        case "$line" in ''|\#*) continue ;; esac
+        case "$line" in *=*) ;; *) fail "HAPPYRANCH_MAC_SIGNING_ENV: expected KEY=VALUE at line $number. $setup" ;; esac
+        key=${line%%=*}; value=${line#*=}
+        key="${key%"${key##*[!$' \t']}"}"
+        value="${value#"${value%%[!$' \t']*}"}"
+        case "$key" in
+            HAPPYRANCH_SIGN_IDENTITY_SHA1|HAPPYRANCH_SIGN_IDENTITY_NAME|HAPPYRANCH_SIGN_TEAM_ID|HAPPYRANCH_NOTARY_PROFILE) ;;
+            *) fail "Unknown signing key $key at line $number. $setup" ;;
+        esac
+        case " $seen " in *" $key "*) fail "Duplicate signing key $key. $setup" ;; esac
+        seen="$seen $key"
+        case "$value" in
+            \"*) [ "${#value}" -ge 2 ] && [ "${value%\"}" != "$value" ] || fail "Bad quotes for $key. $setup"; value=${value#\"}; value=${value%\"} ;;
+            \'*) [ "${#value}" -ge 2 ] && [ "${value%\'}" != "$value" ] || fail "Bad quotes for $key. $setup"; value=${value#\'}; value=${value%\'} ;;
+            *\"|*\') fail "Bad quotes for $key. $setup" ;;
+        esac
+        [[ ! $value =~ [[:cntrl:]] ]] || fail "Bad control character for $key. $setup"
+        case "$key" in
+            HAPPYRANCH_SIGN_IDENTITY_SHA1) IDENTITY=$value ;;
+            HAPPYRANCH_SIGN_IDENTITY_NAME) PUBLIC_NAME=$value ;;
+            HAPPYRANCH_SIGN_TEAM_ID) TEAM=$value ;;
+            HAPPYRANCH_NOTARY_PROFILE) PROFILE=$value ;;
+        esac
+    done < "$config"
+    [ -n "$IDENTITY" ] || fail "Missing or empty HAPPYRANCH_SIGN_IDENTITY_SHA1. $setup"
+    [ -n "$PUBLIC_NAME" ] || fail "Missing or empty HAPPYRANCH_SIGN_IDENTITY_NAME. $setup"
+    [ -n "$TEAM" ] || fail "Missing or empty HAPPYRANCH_SIGN_TEAM_ID. $setup"
+    [ -n "$PROFILE" ] || fail "Missing or empty HAPPYRANCH_NOTARY_PROFILE. $setup"
+    [[ $IDENTITY =~ ^[0-9A-Fa-f]{40}$ ]] || fail "Bad HAPPYRANCH_SIGN_IDENTITY_SHA1: need 40 hex characters. $setup"
+    IDENTITY=$(printf '%s' "$IDENTITY" | tr '[:lower:]' '[:upper:]')
+    [[ $TEAM =~ ^[A-Z0-9]{10}$ ]] || fail "Bad HAPPYRANCH_SIGN_TEAM_ID: need 10 uppercase alphanumerics. $setup"
+    case "$PUBLIC_NAME" in *"($TEAM)") ;; *) fail "Bad HAPPYRANCH_SIGN_IDENTITY_NAME: must end with the configured HAPPYRANCH_SIGN_TEAM_ID in parentheses. $setup" ;; esac
+}
 usage() {
     cat <<'EOF'
 Internal native stages (only the checked run-stage.sh context may invoke):
@@ -45,6 +91,7 @@ esac
 HERE=$(cd "$(dirname "$0")" && pwd -P)
 [ -n "${HR_STAGE_DIR:-}" ] && [ "${ACTION:-}" = "$STAGE" ] || fail 'Missing checked stage context.'
 /usr/bin/perl "$HERE/bounded-run.pl" --gate
+load_signing_config
 [ "$(uname -s)" = Darwin ] || fail 'macOS required; no work performed.'
 [ "$(uname -m)" = arm64 ] || fail 'Native arm64 shell required; do not run through Rosetta.'
 [ "$(id -u)" -ne 0 ] || fail 'Use your own login account, without sudo.'

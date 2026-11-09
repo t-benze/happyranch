@@ -8,7 +8,7 @@ Signing is not publication. Never create a public release or upload here.
 
 ## Prerequisites
 
-Use the ordinary owner login (`tangbz`, `/Users/tangbz`) in a native arm64 shell,
+Use your ordinary owner login and its `$HOME` in a native arm64 shell,
 not root or Rosetta. Run the commands in a Bash shell with tracing off; restore
 the documented path variables when starting a new shell. Owner-reported tools are
 **macOS 26.5 (25F71) / Xcode 26.5
@@ -17,16 +17,68 @@ the documented path variables when starting a new shell. Owner-reported tools ar
 
 | Item | Value |
 | --- | --- |
-| Team ID | `LS2C558RKS` |
-| Public codesign identity selector | `C9C7371D6FBFDB86BB847CC1DE181EAF2E3A4BD9` |
-| Identity name | `Developer ID Application: Shenzhen Danze Internet Information Service Co., Ltd (LS2C558RKS)` |
-| notarytool profile | `HappyRanch-notary` |
-| Login keychain | `/Users/tangbz/Library/Keychains/login.keychain-db` |
+| Team ID | `HAPPYRANCH_SIGN_TEAM_ID` (`<TEAM_ID>`) |
+| Public codesign identity selector | `HAPPYRANCH_SIGN_IDENTITY_SHA1` (`<40_HEX_SHA1>`) |
+| Identity name | `HAPPYRANCH_SIGN_IDENTITY_NAME` (`Developer ID Application: <LEGAL_NAME> (<TEAM_ID>)`) |
+| notarytool profile | `HAPPYRANCH_NOTARY_PROFILE` (`<EXISTING_NOTARY_PROFILE>`) |
+| Login keychain | `$HOME/Library/Keychains/login.keychain-db` |
 
 The selector is public, not a private key. Do not repeat credential setup.
 The owner handles OS/Keychain prompts directly, never by pasting secrets into
 chat. Unexpected prompts, locked Keychain or denied access: stop for the owner;
 do not choose persistent Always Allow or change policy.
+
+### One-time private signing configuration
+
+Keep these values outside every checkout and public report. In the owner's
+Terminal, find the existing valid identity's SHA1 and full name (the final
+parenthesized suffix supplies its Team ID):
+
+```sh
+set +x
+/usr/bin/security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db"
+```
+
+Ask the owner for the **existing** notarytool Keychain profile name; this file
+holds its name only, never a password or private key. Do not create a replacement
+profile or repeat credential setup. Replace every placeholder in the following
+literal template locally before running it. If the file already exists, inspect
+and update it privately instead of overwriting it with this block:
+
+```sh
+(
+  set -eC
+  umask 077
+  /bin/mkdir -p "$HOME/.config/happyranch"
+  cat > "$HOME/.config/happyranch/mac-signing.env" <<'SIGNING_CONFIG'
+HAPPYRANCH_SIGN_IDENTITY_SHA1=<40_HEX_SHA1>
+HAPPYRANCH_SIGN_IDENTITY_NAME="Developer ID Application: <LEGAL_NAME> (<TEAM_ID>)"
+HAPPYRANCH_SIGN_TEAM_ID=<TEAM_ID>
+HAPPYRANCH_NOTARY_PROFILE="<EXISTING_NOTARY_PROFILE>"
+SIGNING_CONFIG
+  /bin/chmod 600 "$HOME/.config/happyranch/mac-signing.env"
+)
+```
+
+Both signing scripts and the owner-session wrapper require this private regular
+file, owned by the current user with mode 600 or stricter (400 is accepted;
+symlinks and group/world access are refused). The file is the sole source of
+all four required values: individual environment values are ignored. Direct
+invocations can override its path with `HAPPYRANCH_MAC_SIGNING_ENV`; restore that
+variable in every new shell if used. The owner session and Jenkins stage preserve
+this path selector through environment cleanup. The login Keychain always
+derives from `$HOME`.
+
+The parser accepts only those four `KEY=VALUE` keys, once each. Blank lines and
+whole-line `#` comments are allowed; surrounding spaces/tabs and one pair of
+single or double quotes are optional. Values are literal: no shell expansion,
+escape processing or inline comments. Never `source` this file. Missing/empty,
+unknown or duplicate keys, malformed quotes/control characters, a SHA1 other
+than 40 hex characters, a Team ID other than 10 uppercase alphanumerics or an
+identity name without the matching `(TEAM_ID)` suffix stop the scripts with
+setup guidance. SHA1 letter case is normalized for the existing identity check.
+Keep the same configuration throughout a retained signing run. This setup does
+not query Apple, unlock a Keychain or change credential policy.
 
 ## Step 1 — Build in CI, only when a new build is needed
 
@@ -108,7 +160,7 @@ Set ZIP to the selected **inner** file (the accepted existing download is shown)
 
 ```sh
 set +x
-ZIP="/Users/tangbz/Downloads/HappyRanch-1.0.1-1.0.1-arm64.zip"
+ZIP="$HOME/Downloads/HappyRanch-1.0.1-1.0.1-arm64.zip"
 /usr/bin/stat -f '%z %N' "$ZIP"
 /usr/bin/shasum -a 256 "$ZIP"
 ```
@@ -135,15 +187,15 @@ so no separate owner package or instructions are needed.
 
 ```sh
 REPO="$(pwd -P)"
-PKG="/Users/tangbz/HappyRanch-signing/tools-1.0.1"
-RUN="/Users/tangbz/HappyRanch-signing/first-1.0.1"
+PKG="$HOME/HappyRanch-signing/tools-1.0.1"
+RUN="$HOME/HappyRanch-signing/first-1.0.1"
 ```
 
 Inspect any existing signing parent: it must be an ordinary owner-owned mode0700
 directory with plain ancestors. **Only if absent**, create it once:
 
 ```sh
-/bin/mkdir -m 700 /Users/tangbz/HappyRanch-signing
+/bin/mkdir -m 700 "$HOME/HappyRanch-signing"
 ```
 
 If PKG already exists, verify its two hashes below and reuse only matching bytes;
@@ -177,7 +229,7 @@ Verify both files before any stage:
 /usr/bin/shasum -a 256 "$PKG/mac-sign.sh" "$PKG/code-inventory.tsv"
 ```
 
-Require script `f65b0e9833e246c2a4617ac8250388728ae239b436874f03b204d3c5f1eb6780`
+Require script `5f5359a0998f1601b0ff314c9dc9d921a5f68fd26cd4913cb17e312a91cecdef`
 and inventory `16ee1fd168286ca9bbfe0ed7ea683ed98df0d8470b7916ad57de7b0907538af3`.
 Keep these identical tools for every resumed stage. Restore REPO/PKG/ZIP/RUN
 variables in each new shell and inspect retained state before proceeding.

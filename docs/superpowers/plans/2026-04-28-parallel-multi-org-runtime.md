@@ -2789,26 +2789,26 @@ Expected: PASS (including the two-orgs-concurrent and migration tests).
 ```bash
 # Fresh container
 mkdir -p /tmp/opc-smoke && cd /tmp/opc-smoke
-uv run --project /Users/tangbz/projects/my-opc opc init /tmp/opc-smoke/runtime
+uv run --project $HOME/projects/my-opc opc init /tmp/opc-smoke/runtime
 
 # Two orgs from the example tree
-uv run --project /Users/tangbz/projects/my-opc opc orgs init hk \
-  --from /Users/tangbz/projects/my-opc/examples/orgs/hk-macau-tourism
-uv run --project /Users/tangbz/projects/my-opc opc orgs init lisbon \
-  --from /Users/tangbz/projects/my-opc/examples/orgs/hk-macau-tourism
+uv run --project $HOME/projects/my-opc opc orgs init hk \
+  --from $HOME/projects/my-opc/examples/orgs/hk-macau-tourism
+uv run --project $HOME/projects/my-opc opc orgs init lisbon \
+  --from $HOME/projects/my-opc/examples/orgs/hk-macau-tourism
 
 # Bootstrap workspaces in each
-uv run --project /Users/tangbz/projects/my-opc opc init-agent --org hk
-uv run --project /Users/tangbz/projects/my-opc opc init-agent --org lisbon
+uv run --project $HOME/projects/my-opc opc init-agent --org hk
+uv run --project $HOME/projects/my-opc opc init-agent --org lisbon
 
 # Submit a task to each in parallel
-uv run --project /Users/tangbz/projects/my-opc opc run --org hk --brief "explore" &
-uv run --project /Users/tangbz/projects/my-opc opc run --org lisbon --brief "explore" &
+uv run --project $HOME/projects/my-opc opc run --org hk --brief "explore" &
+uv run --project $HOME/projects/my-opc opc run --org lisbon --brief "explore" &
 wait
 
 # Watch them
-uv run --project /Users/tangbz/projects/my-opc opc tasks --org hk
-uv run --project /Users/tangbz/projects/my-opc opc tasks --org lisbon
+uv run --project $HOME/projects/my-opc opc tasks --org hk
+uv run --project $HOME/projects/my-opc opc tasks --org lisbon
 ```
 
 Expected: both tasks make progress; `opc tasks --org hk` does NOT show lisbon's task; vice versa.

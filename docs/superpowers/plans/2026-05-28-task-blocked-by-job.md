@@ -10,7 +10,7 @@
 
 **Reference spec:** `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. When in doubt, the spec is authoritative.
 
-**Working directory:** Run all commands from `/Users/tangbz/projects/my-opc/.claude/worktrees/task-blocked-by-job/` (the worktree). Tests: `uv run pytest tests/...`. Lint/type check: this project has no enforced linter — match existing style.
+**Working directory:** Run all commands from `$HOME/projects/my-opc/.claude/worktrees/task-blocked-by-job/` (the worktree). Tests: `uv run pytest tests/...`. Lint/type check: this project has no enforced linter — match existing style.
 
 ---
 

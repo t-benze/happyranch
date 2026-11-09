@@ -450,7 +450,7 @@ sub stage {
     need((stat($ws))[0] == (stat($root))[0], 'workspace/durable state on checked volume');
     my $deadline = mono() + $BUDGET{$action};
     # Strip launch/credential/shell injection environment; keep only consumed data.
-    my %keep; for (qw(HOME ACTION REQUEST_ID RUN_ID RECOVER_ID REVIEWED_LOG_SHA256 NODE_NAME JOB_NAME BUILD_NUMBER QUEUE_ID WORKSPACE ORIGINAL_ZIP)) {
+    my %keep; for (qw(HOME HAPPYRANCH_MAC_SIGNING_ENV ACTION REQUEST_ID RUN_ID RECOVER_ID REVIEWED_LOG_SHA256 NODE_NAME JOB_NAME BUILD_NUMBER QUEUE_ID WORKSPACE ORIGINAL_ZIP)) {
         $keep{$_} = $ENV{$_} if defined $ENV{$_};
     }
     %ENV = (%keep, PATH=>'/usr/bin:/bin:/usr/sbin:/sbin', LC_ALL=>'C', HR_SOURCE=>$source, HR_DEADLINE=>$deadline, HR_ID_SEQUENCE=>0);
