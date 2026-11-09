@@ -2772,6 +2772,12 @@ writer fence or hostile same-UID guarantee. Actual installed canary acceptance
 and operational H-v1 duties remain separately gated.
 
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
+Content updates, including slug changes, preserve the edited entry's lifecycle,
+salience, provenance, scope and `last_verified` from storage under the write lock.
+Editing an evicted or superseded entry keeps that state; restoration uses the
+explicit lifecycle route. Promoted entries remain locked against content edits
+(HTTP 409). A supplied `supersedes` still marks its target through the existing
+supersession path.
 Runtime-owned task children automatically forward their actual invocation
 session as a private CLI hint for get/search attribution. The route still
 derives org, agent, and task from `SessionTracker`; nonempty explicit CLI session
