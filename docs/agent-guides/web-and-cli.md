@@ -1545,6 +1545,8 @@ behavioral acceptance or deployment. See [the owner/evidence contract](orchestra
 last-known-good projection. `runtime/orchestrator/dashboard_projection.py`
 owns coalesced background refresh and atomic `dashboard_projection.json`
 publication; the HTTP route never composes the summary under its request lock.
+Projection refresh starts when an org is attached (at boot or at runtime) and
+stops when it is removed or at shutdown.
 A valid persisted projection serves after restart. Without one, the route
 returns 503 until background warm-up succeeds. A refresh failure retains prior
 data; `generated_at` describes that data's age and `server_now` is response time.

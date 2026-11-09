@@ -384,28 +384,9 @@ async def _lifespan(app: FastAPI):
         # NOT await a DB compose before yielding — the initial warm runs in
         # the background. Cache-only GET /dashboard/summary returns 503 until
         # the first warm completes.
-        from runtime.infrastructure.kb_store import KBStore
         _dashboard_tasks: list[asyncio.Task] = []
         for org in state.orgs_snapshot().values():
-            mgr = org.dashboard_projection
-            # Load persisted snapshot from disk synchronously (no-op if missing).
-            # This is a fast filesystem read — no DB access, no event-loop block.
-            persisted = mgr.load_from_disk()
-            if persisted is not None:
-                mgr._projection = persisted
-                _logger.info(
-                    "dashboard projection loaded from disk for org %s (generated_at=%s)",
-                    org.slug, persisted.generated_at.isoformat(),
-                )
-            # Start the bootstrap-then-schedule task. The initial warm runs
-            # asynchronously — the lifespan yields immediately. The route
-            # returns 503 until warm completes (cache-only, never synchronous).
-            kb_store = KBStore(org.root / "kb")
-            task = mgr.start_scheduler(
-                db=org.db, kb_store=kb_store, teams=org.teams,
-                loop=_main_loop, initial_warm=True,
-            )
-            _dashboard_tasks.append(task)
+            _dashboard_tasks.append(org.start_dashboard_projection(_main_loop))
 
     try:
         yield
