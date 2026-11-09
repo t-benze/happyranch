@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "HappyRanch founder console — localhost SPA.",
+  "description": "HappyRanch founder console \u2014 localhost SPA.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
