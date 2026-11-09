@@ -1451,6 +1451,12 @@ def managed_lifecycle(operation: str, *, expected_installation: str | None = Non
             raise diagnostic_error("P000073", "managed_lifecycle_response_invalid", PackageError("managed_lifecycle_response_invalid"))
         if time.monotonic_ns() >= deadline:
             raise diagnostic_error("P000074", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
+        if report["state"] == "ready":
+            token = _MANAGED_DEADLINE.set(deadline)
+            try:
+                CompositeServiceManager()._require_ready()
+            finally:
+                _MANAGED_DEADLINE.reset(token)
         return report
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         raise diagnostic_error("P000075", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused")) from exc
@@ -1598,14 +1604,21 @@ class CompositeServiceManager:
             report = managed_lifecycle("start")
             if report["state"] != "ready":
                 raise diagnostic_error("P000079", "service_not_ready", PackageError("service_not_ready"))
-            for unit in UNITS[:2]:
-                result = self._call("show", unit, "--property=ActiveState", "--value")
-                if result.stdout.strip() != "active":
-                    raise diagnostic_error("P000080", "service_not_ready", PackageError("service_not_ready"))
+            self._require_ready()
             if time.monotonic_ns() >= deadline:
                 raise diagnostic_error("P000081", "managed_lifecycle_deadline", PackageError("managed_lifecycle_deadline"))
         finally:
             _MANAGED_DEADLINE.reset(token)
+
+    def _require_ready(self) -> None:
+        # First observe BOTH active units, then require their effective watchdog
+        # contracts. _call consumes the caller's original absolute deadline.
+        for prop, expected in (("ActiveState", "active"), ("WatchdogUSec", "30s")):
+            for unit in UNITS[:2]:
+                result = self._call("show", unit, "--property=" + prop, "--value")
+                actual = result.stdout.strip() if prop == "ActiveState" else result.stdout.removesuffix("\n")
+                if actual != expected:
+                    raise diagnostic_error("P000080", "service_not_ready", PackageError("service_not_ready"))
 
     def stop(self) -> None:
         managed_lifecycle("stop")
@@ -3578,15 +3591,25 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
         "happyranch-connector.service": "/org/freedesktop/systemd1/unit/happyranch_2dconnector_2eservice",
         "happyranch-tsnet-sidecar.service": "/org/freedesktop/systemd1/unit/happyranch_2dtsnet_2dsidecar_2eservice",
     }
+    never_started: dict[str, bool] = {}
+    start_markers = {
+        "StateChangeTimestampMonotonic": ("Unit", 0),
+        "InactiveExitTimestampMonotonic": ("Unit", 0),
+        "ExecMainStartTimestampMonotonic": ("Service", 0),
+        "InvocationID": ("Unit", ""),
+    }
 
-    def typed_empty_array(unit: str, name: str, bound: float) -> str:
+    def typed_service_property(unit: str, name: str, bound: float) -> str | int:
         from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
         try:
             current()
             if time.monotonic() >= bound:
                 raise ValueError("typed query deadline")
+            indicator = name in start_markers
+            kind = start_markers[name][0] if indicator else "Service"
+            interface = "org.freedesktop.systemd1." + kind
             child = subprocess.Popen(["/usr/bin/busctl", "get-property", "org.freedesktop.systemd1",
-                                      service_objects[unit], "org.freedesktop.systemd1.Service", name],
+                                      service_objects[unit], interface, name],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL,
                                      env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
@@ -3597,10 +3620,13 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                 remaining = bound - time.monotonic()
                 if overflow or remaining <= 0 or child.wait(timeout=remaining) != 0:
                     raise ValueError("typed query unavailable")
-                # Closed byte parser: exact signature, zero count and single LF.
-                # Equality with this short ASCII frame also rejects non-UTF8,
-                # controls, alternate framing, nonempty arrays and extra bytes.
-                if raw != (service_arrays[name] + " 0\n").encode("ascii"):
+                # Closed byte frames: canonical uint64 or the unchanged exact
+                # empty array. No missing, duplicate or normalized observation.
+                if indicator and name != "InvocationID":
+                    if (re.fullmatch(rb"t (0|[1-9][0-9]{0,19})\n", raw) is None
+                            or int(raw[2:-1]) > 18446744073709551615):
+                        raise ValueError("typed timestamp is not canonical uint64")
+                elif raw != (("ay" if name == "InvocationID" else service_arrays[name]) + " 0\n").encode("ascii"):
                     raise ValueError("typed array is not exactly empty")
             except BaseException as error:
                 initiating = error
@@ -3615,7 +3641,7 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             current()
             if time.monotonic() >= bound:
                 raise ValueError("typed query deadline")
-            return ""
+            return int(raw[2:-1]) if indicator and name != "InvocationID" else ""
         except Exception as error:
             failure = diagnostic_error("P900001", "managed_manager_unavailable", PackageError("managed_manager_unavailable"))
             # Keep an earlier capture/reap origin as well as this typed-read
@@ -3674,11 +3700,17 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
                 values[key] = value
             for name in names:
                 if name not in values and name in service_arrays and unit in service_objects:
-                    values[name] = typed_empty_array(unit, name, bound)
+                    values[name] = typed_service_property(unit, name, bound)
             if set(values) != set(names):
                 raise loaded_error(diagnostic_error("P000241", "managed_manager_unavailable", PackageError("managed_manager_unavailable")),
                                    "Query", None, None, "query", context={},
                                    missing=set(names) - set(values), unexpected=set())
+            if values.get("WatchdogUSec") == "infinity":
+                # CURRENT loaded object only: GC/reload may reset these markers.
+                # All four positive typed observations share this query's bound;
+                # missing/ambiguous reads never imply zero/empty or renew time.
+                never_started[unit] = all(typed_service_property(unit, name, bound) == expected
+                                          for name, (_, expected) in start_markers.items())
             return values
         except Exception as error:
             loaded_error(error, "Query", "complete", None, "query", context={**base, **values})
@@ -3973,6 +4005,8 @@ def _installed_managed_contract(*, deadline_ns: int | None = None, _package: boo
             if unit == UNITS[1]:
                 del scalar["RestartUSec"]
             actual_scalar = properties(unit, tuple(scalar))
+            if never_started.get(unit, False):
+                scalar["WatchdogUSec"] = "infinity"
             if actual_scalar != scalar:
                 prop = next(k for k in scalar if actual_scalar[k] != scalar[k])
                 raise loaded_error(diagnostic_error("P000263", "managed_loaded_contract_mismatch", PackageError("managed_loaded_contract_mismatch")), prop, scalar[prop], actual_scalar[prop])

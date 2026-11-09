@@ -57,6 +57,33 @@ capture/reap origin remains primary, and suppressed reap loss uses P900002.
 Missing names outside the allowlist still reach unchanged P000241. A printed
 systemctl value never invokes this fallback and retains its exact validation.
 
+Founder THR327seq156/162 C+(a) permits one pre-start exception for BOTH
+services: loaded `WatchdogUSec=infinity` is accepted only when ALL FOUR typed
+observations are exact: Unit `StateChangeTimestampMonotonic=0`, Unit
+`InactiveExitTimestampMonotonic=0`, Service `ExecMainStartTimestampMonotonic=0`
+(each canonical uint64 `t 0\n`), and Unit `InvocationID` is the typed empty byte
+array `ay 0\n`. All use the fixed busctl objects and the existing capture/reap
+ownership under the ORIGINAL scalar-query bound, with no per-marker renewal.
+Nonzero timestamps retain P000263; nonempty InvocationID refuses at the
+exact-empty typed boundary. Missing, duplicate, malformed,
+noncanonical, overflowing, unavailable or late typed reads refuse at P900001
+(or the earlier original capture/reap diagnostic). Every other watchdog value
+still requires exactly `30s`; that value needs no marker reads.
+
+“Never started” means only that the CURRENTLY LOADED systemd unit has never
+started. GC followed by reload may reset these markers; no historical proof or
+installer start-history record is required or created. systemd 255/259 exposes
+the runtime watchdog copied in `service_start()`, rather than the configured
+value before that call. These observations do not prove past manager-lifetime
+history or execute any service action.
+
+After BOTH ActiveState checks pass, `CompositeServiceManager.start_ready()`
+requires exactly `30s` for both services. The shared `managed_lifecycle()` result
+boundary performs the same check before returning ANY `ready` report, including
+start/restart/status/reconcile and other verbs. These checks consume the original
+caller deadline without renewal. Infinity has no post-start exception. These
+source checks do not establish hosted M1 acceptance or authorize service actions.
+
 After uninstall, all installer residue must be absent except the documented
 volatile `/run/happyranch-connector-images` namespace. M1 prints its full listing,
 checks only `.allocation.lock` and current-boot/operation/fixed-site `image`

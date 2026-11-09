@@ -1,3 +1,24 @@
+# Current loaded watchdog contract — Founder THR327seq156/162 / ROOT14816
+
+C+(a) applies to BOTH managed services. The only pre-start alternative to exact
+`WatchdogUSec=30s` is exact `infinity` accompanied by ALL FOUR typed observations:
+Unit StateChangeTimestampMonotonic and InactiveExitTimestampMonotonic, Service
+ExecMainStartTimestampMonotonic, each canonical uint64 `t 0\n`, plus Unit
+InvocationID exactly the empty byte array `ay 0\n`. Missing, duplicate, malformed,
+noncanonical, overflowing, nonzero/nonempty, unavailable or late markers refuse.
+Reads use the fixed objects, unchanged capture/reap discipline and ORIGINAL
+scalar-query bound; there is no per-property timeout renewal. Other watchdog
+values and every other loaded-contract expectation remain unchanged.
+
+“Never started” refers to the CURRENTLY LOADED unit only. GC/reload may re-zero
+these markers; no historical proof or installer-written history record is used.
+After both services are active, Python start_ready and every managed_lifecycle
+ready-return require exact30s for BOTH services under the original deadline.
+Native initial/qualification readiness retains its current-invocation/process
+proof and installed eligibility preflight. Infinity has no post-start exception.
+Source delivery/fake-observation tests do not establish hosted M1 acceptance or
+authorize a service action, base-branch publication, hosted trigger or deployment.
+
 # Positive typed empty-array observation — Founder THR327seq146 / ROOT14561
 
 In the existing installed service-settings check only, retain the complete
