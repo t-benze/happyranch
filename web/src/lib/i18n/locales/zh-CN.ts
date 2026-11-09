@@ -2373,6 +2373,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'agents.pending.rejectBody':
     '待审批的登记文件将被删除，该智能体也将从 teams.yaml 中移除。原因会记录在审计日志中（可选）。',
   'agents.pending.reasonPlaceholder': '原因（可选）',
+  'agents.pending.approveFailed': '无法批准该登记。',
+  'agents.pending.rejectFailed': '无法拒绝该登记。',
   'agents.add.title': '新建智能体',
   'agents.add.name': '名称',
   'agents.add.namePlaceholder': '例如 alpha_worker_1',
