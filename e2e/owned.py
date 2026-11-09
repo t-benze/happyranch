@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import signal
 import subprocess
@@ -184,7 +185,28 @@ class Owned:
                         raise RuntimeError("provider generation changed")
                     break
                 context.update(read="environ")
-                env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+                try:
+                    env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+                except PermissionError as exc:
+                    if exc.errno != errno.EACCES:
+                        raise
+                    # Exited children have no readable environment. Prove this
+                    # exact zombie through an independently owned parent, as
+                    # descendant sampling does; the registry is not evidence.
+                    context.update(read="stat_after_environ_denied")
+                    exited = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                    if (exited[19] != start or exited[0] != "Z" or exited[1] != stat[1]):
+                        raise
+                    parent = int(exited[1])
+                    parent_start = self.launcher[1] if parent == self.launcher[0] else self.pids.get(parent)
+                    if parent_start is None or identity(parent) != parent_start:
+                        raise
+                    confirmed = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                    if ((confirmed[19], confirmed[0], confirmed[1]) != (start, "Z", exited[1])
+                            or identity(parent) != parent_start):
+                        raise
+                    self.pids[pid] = start
+                    break
                 context.update(read="identity_after_marker")
                 if identity(pid) != start:
                     raise RuntimeError("provider generation changed during marker read")
@@ -337,10 +359,13 @@ class Owned:
         """Join earlier controller clocks after handoff; no extra IPC or waits."""
         tail = list(self.reap_tail.copy())
         stopped, error = self.observer_stopped_at, self.observer_error_at
+        failure = self.errors[0] if self.errors else ""
         return dict(at=at, inspected_at=time.monotonic(),
                     observer_stopped=stopped is not None and stopped <= at,
                     observer_stopped_at=stopped, observer_error_at=error,
                     observer_failed=error is not None and error <= at,
+                    observer_exception=failure[-8192:] if failure else None,
+                    observer_exception_truncated=len(failure) > 8192,
                     last_reaps=[dict(at=r["at"], **r["receipt"]) for r in tail if r["at"] <= at],
                     reap_tail_limit=16, reaps_seen=self.reap_count,
                     reap_history_truncated=self.reap_count > len(tail))
