@@ -317,6 +317,55 @@ class ScheduleStore:
             )
             self._conn.commit()
 
+    def update_if(
+        self,
+        schedule_id: str,
+        *,
+        expected_status: ScheduleStatus,
+        expected_fields: dict[str, object] | None = None,
+        **fields: object,
+    ) -> bool:
+        """Update only the status/occurrence observed by a management caller."""
+        expected_fields = expected_fields or {}
+        bad = (set(fields) | set(expected_fields)) - _UPDATABLE
+        if bad:
+            raise ValueError(f"unsupported schedule fields: {sorted(bad)}")
+        if not fields:
+            return False
+        fields.setdefault("updated_at", _now())
+
+        def serialize(key: str, value: object) -> object:
+            if key in ("recurrence", "spawned_task_ids"):
+                return json.dumps(value)
+            if hasattr(value, "value"):
+                return value.value
+            if hasattr(value, "isoformat"):
+                if key in ("fire_at", "expires_at", "last_fired_at") and isinstance(value, datetime):
+                    value = self._utc(value)
+                return value.isoformat()
+            return value
+
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        predicates = ["id = ?", "status = ?"]
+        values = [serialize(key, value) for key, value in fields.items()]
+        values.extend((schedule_id, expected_status.value))
+        for key, value in expected_fields.items():
+            predicates.append(f"{key} = ?")
+            values.append(serialize(key, value))
+        with self._lock:
+            admission = native_owner_uncommitted(self._db)
+            if admission is not None and set(fields).intersection(('fire_at', 'recurrence', 'timezone', 'expires_at', 'indefinite')):
+                row = self._conn.execute('SELECT agent_name,status FROM schedules WHERE id=?', (schedule_id,)).fetchone()
+                if row is not None and row['status'] != 'firing':
+                    admission.check_uncommitted(agents=(row['agent_name'],))
+            cursor = self._conn.execute(
+                f"UPDATE schedules SET {assignments} WHERE {' AND '.join(predicates)}",
+                values,
+            )
+            updated = cursor.rowcount == 1
+            self._conn.commit()
+        return updated
+
     def recover_firing(self) -> list[tuple[str, str]]:
         """Mark stale ``firing`` rows ``failed`` after a daemon restart.
 
@@ -338,6 +387,7 @@ class ScheduleStore:
                     self.update(
                         record.id,
                         status=ScheduleStatus.FAILED,
+                        active=0,
                         error="daemon_restart",
                         updated_at=_now(),
                     )

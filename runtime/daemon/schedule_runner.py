@@ -63,7 +63,7 @@ def _failure_transition(store, record, now: datetime, error: str) -> None:
     ``fire_count``. One-shots retain their established terminal failure state.
     """
     if record.kind not in (ScheduleKind.WEEKLY, ScheduleKind.RECURRING):
-        store.update(record.id, status=ScheduleStatus.FAILED, error=error, updated_at=now)
+        store.update(record.id, status=ScheduleStatus.FAILED, active=0, error=error, updated_at=now)
         return
     next_fire = next_schedule_occurrence(record.kind.value, record.recurrence, after=now)
     if next_fire is None and recurrence_until_exhausted(record.recurrence):
@@ -82,7 +82,7 @@ def _failure_transition(store, record, now: datetime, error: str) -> None:
 def _timeout_transition(store, record, now: datetime, error: str) -> None:
     """Keep one-shot timeout semantics while repeating schedules continue."""
     if record.kind == ScheduleKind.ONE_SHOT:
-        store.update(record.id, status=ScheduleStatus.TIMEOUT, error=error, updated_at=now)
+        store.update(record.id, status=ScheduleStatus.TIMEOUT, active=0, error=error, updated_at=now)
         return
     _failure_transition(store, record, now, error)
 

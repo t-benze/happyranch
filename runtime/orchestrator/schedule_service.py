@@ -251,11 +251,13 @@ class ScheduleService:
                 f"can only pause armed schedules; {schedule_id} is {record.status.value}"
             )
 
-        self._db.schedules.update(
+        if not self._db.schedules.update_if(
             schedule_id,
+            expected_status=ScheduleStatus.ARMED,
             status=ScheduleStatus.PAUSED,
             active=0,
-        )
+        ):
+            raise ScheduleServiceError(f"cannot pause {schedule_id}: schedule changed")
         self._db.insert_audit_log(
             task_id=schedule_id,
             agent=agent_name,
@@ -281,11 +283,13 @@ class ScheduleService:
                 f"is not armed or paused"
             )
 
-        self._db.schedules.update(
+        if not self._db.schedules.update_if(
             schedule_id,
+            expected_status=record.status,
             status=ScheduleStatus.CANCELLED,
             active=0,
-        )
+        ):
+            raise ScheduleServiceError(f"cannot cancel {schedule_id}: schedule changed")
         self._db.insert_audit_log(
             task_id=schedule_id,
             agent=agent_name,
@@ -522,7 +526,13 @@ class ScheduleService:
             )
 
         audit_start_date = fields.pop("start_date", None)
-        self._db.schedules.update(schedule_id, **fields)
+        if not self._db.schedules.update_if(
+            schedule_id,
+            expected_status=record.status,
+            expected_fields={"fire_at": record.fire_at, "fire_count": record.fire_count},
+            **fields,
+        ):
+            raise ScheduleServiceError(f"cannot edit {schedule_id}: schedule changed")
         self._db.insert_audit_log(
             task_id=schedule_id,
             agent=agent_name,
