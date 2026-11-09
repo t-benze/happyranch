@@ -137,20 +137,37 @@ class Owned:
                     os.close(descriptor)
 
     def register_provider(self, pid: int) -> dict:
-        # A socket peer is not authority to signal arbitrary processes. Verify
-        # the private run marker on that exact PID and each admitted ancestor.
+        # A socket peer is not authority to signal arbitrary processes. New
+        # generations need the private marker; an already owned generation
+        # retains its independent Popen/descendant/marker proof across exec.
         first = pid
         while pid != os.getpid() and pid > 1:
+            stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            start = stat[19]
+            prior = self.pids.get(pid)
+            if prior is not None:
+                if prior != start:
+                    self.add(pid)  # Record the collision; never adopt its replacement.
+                    raise RuntimeError("provider generation changed")
+                break
             env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+            if identity(pid) != start:
+                raise RuntimeError("provider generation changed during marker read")
             if f"E2E_ROOT={self.root}".encode() not in env:
                 break
-            self.add(pid)
-            stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            # Store the generation whose marker was read, never a later PID user.
+            self.pids[pid] = start
             pid = int(stat[1])
         if first not in self.pids:
             raise RuntimeError("unowned provider PID")
-        self.providers.add(first)
+        start = self.pids[first]
+        if identity(first) != start:
+            raise RuntimeError("provider generation changed before cgroup read")
         cgroup = Path(f"/proc/{first}/cgroup").read_text()
+        pgid = os.getpgid(first)
+        if identity(first) != start:
+            raise RuntimeError("provider generation changed during cgroup read")
+        self.providers.add(first)
         for line in cgroup.splitlines():
             if line.startswith("0::"):
                 path = line[3:]
@@ -160,7 +177,7 @@ class Owned:
                 if leaf.startswith("happyranch-") and leaf.endswith((".service", ".scope")):
                     self.units.add(leaf)
                     self.groups.add(path)
-        return dict(pid=first, start=self.pids[first], pgid=os.getpgid(first), cgroup=cgroup)
+        return dict(pid=first, start=start, pgid=pgid, cgroup=cgroup)
 
     def sample(self) -> None:
         with self.lock:

@@ -165,6 +165,14 @@ Existing `e05-*.png` selected-view screenshots are also copied from private scra
 for failure upload, so closed-page recapture is unnecessary. Missing either kind
 still fails diagnostics.
 Other collection failures remain harness errors, never fabricated artifacts.
+A registered exact process generation retains its existing Popen, descendant
+or private-marker ownership proof: provider registration stops its environment
+and ancestry walk there, including across exec. New generations still require
+the private marker; unreadable environments and unknown ownership fail closed.
+Marker and cgroup reads are bracketed by generation checks. No EACCES is
+interpreted as foreign ownership or absence. If cleanup supplies no usable PID
+census, every case with an actual cleanup pin receives its own ERROR before
+the shared cleanup-identities ERROR; prior failures remain sticky and Health red.
 A failure before browser startup can provide logs only. All artifacts use GitHub
 default retention; no override.
 No raw runtime, database, payload, configuration, token file, controller snapshot,
