@@ -118,7 +118,12 @@ def daily_admission(source: Path) -> dict:
 
 def check_cleanup_pins(pins: list[dict], cleanup: dict, report: Report) -> None:
     """Owned uses integer PID keys; normalize once at this process boundary."""
-    identities = {int(pid): start for pid, start in cleanup["identities"].items()}
+    try:
+        identities = {int(pid): start for pid, start in cleanup["identities"].items()}
+    except (KeyError, AttributeError, TypeError, ValueError) as exc:
+        for pin in pins:
+            report.record("product", pin["variant"], RuntimeError("Outer owned census unavailable; generation not verified"))
+        raise RuntimeError("Outer owned census unavailable") from exc
     failed = False
     for pin in pins:
         if identities.get(pin["pid"]) != pin["start"]:
