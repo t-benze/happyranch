@@ -29,6 +29,9 @@ def diagnostic_stat(pid: int) -> dict:
             return dict(error="stat exceeds diagnostic limit")
         fields = raw.decode(errors="replace").rsplit(")", 1)[1].split()
         return dict(generation=fields[19], parent=int(fields[1]), state=fields[0])
+    except (TimeoutError, RuntimeError):
+        # Controller alarms/interruptions are control flow, not failed metadata.
+        raise
     except Exception as exc:
         return dict(error=type(exc).__name__, errno=getattr(exc, "errno", None))
 

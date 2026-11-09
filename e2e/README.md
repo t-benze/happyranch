@@ -81,8 +81,12 @@ and failure time, plus up to16 retained successful reap receipts no later than
 that time. Truncated reap history is explicit; an empty tail never proves no
 earlier reaps. These are same-host monotonic clock observations, not proof of
 causation, adoption or closure. Original closure identity/group reads and all
-predicates/deadlines remain authoritative; optional diagnostic read failures do
-not replace the outgoing error. The existing always-uploaded JUnit in BOTH
+predicates/deadlines remain authoritative. Diagnostic stat and closure recording
+re-raise TimeoutError and RuntimeError unchanged, including controller alarms
+and interruptions; closure recording also re-raises when the controller is marked
+interrupted. Other optional metadata/formatting failures remain best-effort,
+and failure-only recording preserves its existing outgoing cause.
+The existing always-uploaded JUnit in BOTH
 `e2e-3.12` and `e2e-3.14` carries this output even when private scratch is deleted;
 no upload rules or new diagnostic files are needed. A missing controller report
 still means missing E07 evidence. This is diagnostic-only and does not claim to

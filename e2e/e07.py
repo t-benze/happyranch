@@ -174,7 +174,12 @@ def closure(c: Controller, tree: dict, cli: dict) -> dict:
                                  for group, g in list(groups.items())[:8]],
                          groups_truncated=len(groups) > 8))
         del tail[:-8]
+    except (TimeoutError, RuntimeError):
+        # Preserve the controller's signal-handler exception through both layers.
+        raise
     except Exception as exc:
+        if c.interrupted:
+            raise
         c.e07["closure_diagnostic_error"] = type(exc).__name__
     c.remaining()
     return snapshot
