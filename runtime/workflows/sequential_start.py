@@ -306,3 +306,147 @@ def source_callback_replay(org: Any, run_id: str, prior: dict) -> bool:
                and run_id == _identity('run', org.slug, prior['agent'], command.operation_key))
         budget.check()
         return True
+
+
+def _source_outer_positive(dispatcher: Any, invocation: Any, *, failed: bool, cleanup: Any,
+                           native_entry: dict | None, close_disposition: dict | None,
+                           release_disposition: dict | None) -> bool:
+    """Read the original native observations; absence never proves removal."""
+    from runtime.workflows.sequential_dispatch import _native_metadata
+
+    org = dispatcher.org
+    terminal = getattr(invocation, 'native_terminal_observation', None)
+    if not (failed is False and cleanup is not None and cleanup.kind == 'safe'
+            and not cleanup.processes and invocation.unsettled is False
+            and type(terminal) is dict and type(native_entry) is dict
+            and type(close_disposition) is dict and type(release_disposition) is dict):
+        return False
+    # Bound native terminal encoding BEFORE projecting/copying any of its data.
+    _native_metadata(invocation.task.id, invocation.agent, invocation.session_id, terminal)
+    request, receipt = terminal.get('request'), terminal.get('receipt')
+    context = native_entry.get('context')
+    if not (type(request) is dict and type(receipt) is dict and type(context) is dict
+            and terminal.get('terminal_reason') == 'success' and terminal.get('cleanup_error') is None
+            and receipt.get('terminal_reason') == 'success'
+            and receipt.get('backend') in ('linux-systemd-cgroup-v2', 'macos-process-group')
+            and receipt.get('quiescent') is True and receipt.get('survivors') == []
+            and receipt.get('cleanup_status') in ('clean', 'term', 'kill')
+            and native_entry.get('phase') == 'result_processing'
+            and context.get('execution_unknown', False) is False
+            and close_disposition.get('removed') is True
+            and close_disposition.get('invocation') == native_entry
+            and release_disposition.get('removed') is True
+            and release_disposition.get('owner_live') is False
+            and release_disposition.get('cleanup_failed') is False
+            and type(release_disposition.get('possible_launch')) is bool
+            and (release_disposition['possible_launch'] is False or release_disposition.get('quiescent') is True)):
+        return False
+    _check(invocation.owner in ('ordinary', 'v2') and invocation.orch is org.orchestrator
+           and invocation.store is org.db._task_pause_store
+           and invocation.admitted is True and invocation.attempt_committed is True
+           and invocation.recovery_deadline is None
+           and (native_entry.get('id'), native_entry.get('org'), native_entry.get('task_id'),
+                native_entry.get('agent'), native_entry.get('session_id'), native_entry.get('owner')) ==
+               (invocation.identity, org.slug, invocation.task.id, invocation.agent, invocation.session_id, invocation.owner)
+           and (request.get('org'), request.get('invocation_kind'), request.get('logical_id'), request.get('agent_id')) ==
+               (org.slug, 'task', invocation.task.id, invocation.agent)
+           and type(terminal.get('attempt')) is int and terminal['attempt'] >= 0
+           and type(request.get('retry_attempt')) is int and request['retry_attempt'] == terminal['attempt']
+           and (release_disposition.get('owner_id'), release_disposition.get('task_id'),
+                release_disposition.get('agent'), release_disposition.get('session_id')) ==
+               (invocation.identity, invocation.task.id, invocation.agent, invocation.session_id))
+    return org.sessions.get_active(invocation.task.id, invocation.agent) is None
+
+
+def _source_outer_selected(conn: sqlite3.Connection, dispatcher: Any, invocation: Any,
+                           run_id: str, budget: _ReadBudget) -> tuple[dict, dict, dict] | None:
+    """PK selection under the evidence writer, including the immutable callback."""
+    from runtime.workflows.sequential_dispatch import _cancelled
+
+    org = dispatcher.org
+    kind, owner, _ = selected_owner(conn, invocation.task.id, org.slug)
+    _check(kind == 'seq_source_waiting' and owner == run_id)
+    runs = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (run_id,))
+    _check(len(runs) == 1)
+    run = runs[0]
+    _check(run['org_slug'] == org.slug
+           and (run['source_task_id'], run['source_principal'], run['source_session_id']) ==
+               (invocation.task.id, invocation.agent, invocation.session_id))
+    if run['state'] == 'cancelled':
+        return None
+    visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?', (run['active_visit_id'],))
+    _check(len(visits) == 1)
+    visit = visits[0]
+    if _cancelled(conn, run, visit):
+        return None
+    _check(run['state'] == 'active' and visit['run_id'] == run_id and visit['selected'] == 1)
+    sources = _engine_rows(conn, 'tasks', budget, 'id=?', (invocation.task.id,))
+    _check(len(sources) == 1)
+    source = sources[0]
+    _check((source['assigned_agent'], source['current_session_id'], source['status'], source['block_kind'], source['note']) ==
+           (invocation.agent, invocation.session_id, 'in_progress', 'delegated', 'sequential-owned:' + run_id))
+    # Ordinary manager callbacks use admission's bounded native reader, not
+    # the narrower sequential-visit carrier metadata limit.
+    _check(type(run['source_result_id']) is int and run['source_result_id'] > 0)
+    results = _engine_rows(conn, 'task_results', budget, 'id=?', (run['source_result_id'],),
+                           omit=('estimated_cost',))
+    _check(len(results) == 1)
+    result = results[0]
+    _check(type(result['output_summary']) is str and type(result['decision_json']) is str
+           and (result['task_id'], result['agent'], result['session_id'], result['status'], result['waiting_on_job_ids']) ==
+           (invocation.task.id, invocation.agent, invocation.session_id, 'completed', None))
+    command = _parse(run['start_bytes'], parse_start, budget)
+    _check(hashlib.sha256(run['start_bytes']).hexdigest() == run['start_digest'])
+    saved = json.loads(result['decision_json'])
+    saved.pop('_manager_self_evaluation', None)
+    _check(SequentialStartDecision.model_validate(saved).workflow == command
+           and command.operation_key == run['start_operation_key']
+           and run_id == _identity('run', org.slug, invocation.agent, command.operation_key))
+    budget.check()
+    return run, visit, result
+
+
+def source_outer_settled(dispatcher: Any, invocation: Any, *, failed: bool, cleanup: Any,
+                         native_entry: dict | None, close_disposition: dict | None,
+                         release_disposition: dict | None) -> None:
+    """Original source settlement COMMIT precedes the first queue publication."""
+    from runtime.workflows.sequential_dispatch import _callback_identity, _evidence, _evidence_id, _native_metadata
+    from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
+
+    org = dispatcher.org
+    _check(dispatcher is org.workflow_sequential_dispatch
+           and getattr(org.orchestrator, '_workflow_sequential_dispatch', None) is dispatcher
+           and invocation.orch is org.orchestrator)
+    with dispatcher._reader() as conn:
+        kind, run_id, _ = selected_owner(conn, invocation.task.id, org.slug)
+        if kind != 'seq_source_waiting':
+            return  # Ordinary non-sequential sources remain excluded.
+    if not _source_outer_positive(dispatcher, invocation, failed=failed, cleanup=cleanup,
+            native_entry=native_entry, close_disposition=close_disposition, release_disposition=release_disposition):
+        return
+    budget = _ReadBudget()
+    with dispatcher._writer() as conn:
+        if not _source_outer_positive(dispatcher, invocation, failed=failed, cleanup=cleanup,
+                native_entry=native_entry, close_disposition=close_disposition, release_disposition=release_disposition):
+            return
+        with _sql_budget(conn, budget):
+            selected = _source_outer_selected(conn, dispatcher, invocation, run_id, budget)
+            if selected is None:
+                return
+            run, visit, result = selected
+            body = dict(format='workflow-sequential-outer@1', invocation_id=invocation.identity,
+                task_id=invocation.task.id, principal=invocation.agent, session_id=invocation.session_id,
+                callback=_callback_identity(result), positive=True, tracker_clear=True,
+                native_phase=native_entry['phase'], close_removed=True, release_removed=True,
+                release_owner=release_disposition['owner_id'], execution_unknown=False)
+            _native_metadata(invocation.task.id, invocation.agent, invocation.session_id, dict(body=body))
+            prior = _evidence(conn, run_id, None, 'outer')
+            if prior is None:
+                _check(visit['ordinal'] == 1 and visit['state'] == 'queued'
+                       and visit['session_id'] is None and visit['result_id'] is None)
+            _evidence(conn, run_id, None, 'outer', body)  # Conflicts raise inside rollback owner.
+            budget.check()
+        validate_selected_run_uncommitted(conn, org_slug=org.slug, run_id=run_id, scope='evidence',
+            evidence_ids=(_evidence_id(run_id, None, 'outer'),))
+    if prior is None:
+        dispatcher.notify_queued(visit['task_id'], org.orchestrator._queue)

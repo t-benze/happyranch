@@ -830,3 +830,10 @@ warm-up plus five samples; relative comparisons apply only to outcome-matched
 pairs, with matched ordinary controls for newly readable sequential subjects.
 Authentic native-v2 spend/claim/ack plus graph rollback and genuine host/outer
 settlement remain UNVERIFIED; labelled fixtures do not close those gaps.
+
+
+## U3e-1b-ii source outer producer (ROOT TASK-14640)
+
+The existing settle_live finally path reaches a new early original-source-only branch in SequentialDispatcher.outer_settled. It reads the same TaskInvocation/native terminal observation and committed close/release dispositions: same org/task/agent/SID/owner, successful supported containment, Boolean True quiescence, no survivors/cleanup error, safe cleanup, result_processing, no execution_unknown, tracker clear, and positive original-owner removal/release with no live/failed cleanup ownership. Ordinary final retry ordinal is retained rather than forced to zero.
+
+Inside the existing writer, cancellation/result/command pins are rechecked and the existing null-visit outer evidence is selected by PK, inserted and validated. The first-visit queue notification occurs after COMMIT only. An exact re-observation is a no-op; divergent evidence refuses and rolls back. Neither ended SID nor process/tracker absence reconstructs proof. Missing evidence after a crash stays a native recovery hold. Returned-only rediscovery, unknown-owner handling and the no-nonterminal-sequential-Pause rollback rule remain unchanged. Real host settlement, launch and restart/races remain UNVERIFIED(V3); U5 remains open.

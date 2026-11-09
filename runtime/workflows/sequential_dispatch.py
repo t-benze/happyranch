@@ -223,12 +223,12 @@ def _callback_identity(result: dict | None) -> dict | None:
                 carrier_digest=hashlib.sha256(result['output_summary'].encode('utf8')).hexdigest())
 
 
-def _evidence_id(run_id: str, visit_id: str, kind: str) -> str:
+def _evidence_id(run_id: str, visit_id: str | None, kind: str) -> str:
     return hashlib.sha256(_bytes(dict(format='workflow-sequential-evidence-id@1',
         run_id=run_id, visit_id=visit_id, kind=kind))).hexdigest()
 
 
-def _evidence(conn: sqlite3.Connection, run_id: str, visit_id: str, kind: str,
+def _evidence(conn: sqlite3.Connection, run_id: str, visit_id: str | None, kind: str,
               body: dict | None = None) -> dict | None:
     key = _evidence_id(run_id, visit_id, kind)
     size = conn.execute('SELECT typeof(evidence_bytes),length(CAST(evidence_bytes AS BLOB)) '
@@ -456,6 +456,11 @@ class SequentialDispatcher:
 
     def outer_settled(self, invocation: Any, *, failed: bool, cleanup: Any, native_entry: dict | None,
                       close_disposition: dict | None, release_disposition: dict | None) -> None:
+        if invocation.owner in ('ordinary', 'v2'):
+            from runtime.workflows.sequential_start import source_outer_settled
+            source_outer_settled(self, invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
+                close_disposition=close_disposition, release_disposition=release_disposition)
+            return
         if invocation.owner != 'sequential' or invocation.workflow_dispatcher is not self:
             return
         # Original close/release arguments belong to TaskInvocation.settle's finally.
