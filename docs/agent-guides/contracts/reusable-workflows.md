@@ -1016,12 +1016,43 @@ R-U3f-SB5-1 retains the required 32-node/16-role/late16 case. Protected `_entry`
 has pre-existing uncharged definition compilation: **F-U3f-ENTRY remains open**
 to charge or bound it on the reader budget. Paired B/candidate observations
 must show identical `_entry` invocations and unchanged evidence/entry counters;
-U3f adds no compile, compiled-tree clone, snapshot copy or uncharged parse.
-That condition permits publication, not a PASS of compile accounting.
+U3f adds no definition compile or compiled-tree clone. New history, evidence,
+output and definition parsing/copies must be charged. That condition permits
+publication, not a PASS of compile accounting.
 Document binding context uses the charged start parser and reuses the resulting
 bindings. Non-document advancement leaves context empty before composition and
 retains B's start parse only for a fresh NextEdge successor after composition.
 The non-document input-rendering parse retains its original pre-selection condition.
+
+R-U3f-SB5-2 requires fresh authority capture before ownership. In
+`node_instruction`, the original reader budget starts before capture and charges
+four snapshot JSON decodes at `48 * snapshot_bytes + 512` each, with token
+traversal steps, plus both profile-mirror walks and digest-map work. The same
+allowance/deadline continues through admission_writer, `_entry` and rendering on
+document and non-document paths; document binding's additional decoder remains
+separately charged. No duplicate canonical/effective-profile discovery is added.
+**F-U3f-AUTH remains open, owner ROOT engineering_manager:** protected authority
+configuration parsing (teams, agent definitions and effective profiles) is not
+charged to any reader budget, a pre-existing class shared by dispatchers. This
+classified follow-up does not block U3f publication and is not charged-accounting
+PASS. F-U3f-ENTRY remains separate.
+
+R-U3f-SB5-3 corrects C1 with document-only digest deferral: `_advance` computes
+terminal/outer digests only inside its positive document classification branch,
+after context validation. Before each serialization it reserves
+`48 * 16384 + 512` bytes and one step on the ORIGINAL prefix budget; 16 KiB
+is the unchanged `_evidence` input preflight. The non-document hold and
+foreign-result refusal perform zero proof serializations, matching B. There is
+no budget reset/refund, new parser or change to protected proof/key/CAS/effect
+fragments. `_compose` keeps its original internal digest interface.
+**F-U3f-MOVE remains open, owner ROOT engineering_manager:** native team-move
+fence parsing (MoveRequest and task closure) is not charged to any reader
+budget, a pre-existing class shared by native writers including sequential_engine.
+Keep the design-mandated node_instruction guard unchanged. This is classified
+follow-up, not a publication blocker or accounting PASS. The three disclosed
+classes are F-U3f-AUTH, F-U3f-ENTRY and F-U3f-MOVE; any other NEW uncharged
+history/evidence/definition/output work requires STOP to ROOT. Source
+measurements do not certify hard RSS or OS timing.
 
 Inline bytes retain the native task-result audience; recipients promise no
 role-private custody. Stronger custody needs a separately approved design.

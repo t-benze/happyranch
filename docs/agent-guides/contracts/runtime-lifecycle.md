@@ -872,5 +872,20 @@ projection sums. The required paired 32-node/16-role/late16 evidence case must
 preserve `_entry` invocations and unchanged evidence/entry counters. Pre-existing
 uncharged `_entry` compilation stays open as F-U3f-ENTRY, not a PASS of compiler
 accounting. No cap, unit, product byte limit or protected radius changes.
+R-U3f-SB5-2 keeps the design-mandated fresh capture. The node_instruction reader
+budget begins before it, charges four snapshot decodes/token walks plus captured
+profile-mirror/digest-map work, and retains that same allowance/deadline through
+admission_writer, `_entry` and document/non-document rendering. Protected capture
+configuration discovery/parsing stays uncharged as **F-U3f-AUTH, OPEN, owner ROOT
+engineering_manager**, the existing shared-dispatcher follow-up. This is separate
+from F-U3f-ENTRY and is not accounting PASS. No duplicate canonical/effective-
+profile acquisition occurs. R-U3f-SB5-3 preserves the mandatory native team-move
+guard unchanged and classifies its uncharged MoveRequest/task-closure parsing as
+F-U3f-MOVE (OPEN, owner ROOT engineering_manager), shared by native writers.
+C1 defers terminal/outer digests to the document branch after context validation,
+prepaying `48 * 16384 + 512` bytes and one step before each serialization on the
+original budget. The repository-success hold and foreign-result refusal have
+zero new proof serializations, matching B. No reset/refund or protected fragment
+change follows; NEW uncharged work beyond F-U3f-AUTH/ENTRY/MOVE requires STOP.
 See [the current contract](reusable-workflows.md#u3f--u5a-document-witnesses-and-addressed-delivery)
 and [U3f source record](../../superpowers/specs/2026-11-09-sequential-document-witness-u3f.md).

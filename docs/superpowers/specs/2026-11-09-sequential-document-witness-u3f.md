@@ -94,7 +94,7 @@ die before transition. Witnesses do not load upstream content. Rendering reuses
 acquired rows and charges decoded/Unicode/final-string copies to its original
 budget. No extra full reader, index, snapshot or reset is introduced.
 
-## SB-5 and open F-U3f-ENTRY
+## SB-5 and open F-U3f-ENTRY / F-U3f-AUTH
 
 R-U3f-SB5-1 judges each scope on its OWN actual charged bytes/rows/steps/time under
 33,554,432 / 4096 / 32768 / 2.5 seconds. No lexical projections or cross-scope sums
@@ -118,8 +118,9 @@ in a separately scoped follow-up. For this fixture its separately disclosed
 projection is 1,583,888 bytes and 7,965 lexical tokens for 32,987 definition bytes:
 **pre-existing uncharged, F-U3f-ENTRY, not a PASS of compile accounting**. It is
 not added to charged steps. Unchanged attribution permits source publication
-under the ROOT ruling; any added uncharged compile/parse or changed unchanged
-scope counters requires STOP to ROOT.
+under R-U3f-SB5-1. R-U3f-SB5-2 separately classifies protected fresh capture
+configuration work as F-U3f-AUTH below; any other added uncharged data work or
+changed unchanged-scope counters requires STOP to ROOT.
 
 Other measured production scopes include the 1 MiB transport (8,390,149-byte
 observed live footprint), 49,152-byte dense review transport (565,010), current
@@ -208,3 +209,132 @@ remains pre-existing uncharged, not a PASS of compile accounting. These
 structural observations do not establish genuine callbacks, live rendering,
 M1/V3 or the full repository negative matrix. Independent full review, same-head
 scoped QA and ROOT guarded merge remain required.
+
+## TASK-14948 preserved partial capture correction under R-U3f-SB5-2
+
+ROOT adopted TASK-14944's preserved partial patch (SHA256
+dfdbc3d78265373de122b7e6df7ac46b3a3dccc7564283dee30e0e02da745deb)
+under R-U3f-SB5-2 (SHA256
+7c6af9db23d7e18208ef57d8f838a49015c6d29f9d3453fefa2f6eeb49009d95).
+The original reader budget starts before the design-mandated fresh capture.
+Four snapshot JSON decodes are charged at `48 * snapshot_bytes + 512` each,
+with one step per lexical token plus reservation steps. Both captured mirror
+walks (including removed rows) and profile digest-map reconstruction are charged.
+The same allowance/deadline reaches admission_writer, `_entry` and rendering,
+including non-document paths. Document binding's own snapshot decode remains
+separately charged. No protected helper, cap, unit or authority semantics changes.
+
+**F-U3f-AUTH — OPEN, owner ROOT engineering_manager:** protected capture config
+readers parse teams.yaml, active/pending agent files and effective executor
+profiles, derive their canonical projections and validate configuration closure
+without reader-budget accounting. This is the existing class shared by merged
+dispatchers, now reached by the required fresh node_instruction capture. Raw
+agent prompt/YAML size is not bounded by the snapshot's fixed-size digests.
+Configured effective-profile discovery is included in this follow-up; the sizing
+fixtures have zero profile names and do not measure that branch. No duplicate
+canonical/effective-profile discovery is introduced. This classified work is not
+a publication blocker or accounting PASS. F-U3f-ENTRY remains separately open.
+
+Fresh paired B/candidate observations use the same physical fixtures and retain
+SQL exactly after each observed operation. All identities/native/proof rows are
+SEEDS. Each row below is its own scope, with no cross-case sum or budget reset.
+
+| Scope | B bytes / rows / steps | Candidate bytes / rows / steps |
+| --- | --- | --- |
+| Evidence-prefix, two dense 16 KiB rows | 15040621 / 1567 / 27972 | 15040621 / 1567 / 27972 |
+| `_entry` alone | 717117 / 99 / 207 | 717117 / 99 / 207 |
+| Late16 original-transition replay | 15884996 / 1670 / 13241 | 15884996 / 1670 / 13241 |
+| Full node_instruction, document | 5103160 / 499 / 1055 | 12073408 / 499 / 20750 |
+| Full node_instruction, non-document | 692884 / 124 / 260 | 1094828 / 124 / 1495 |
+
+Each unchanged scope invokes `_entry` once. Full node_instruction's entry OWN
+delta is unchanged (document 717117 / 99 / 207; non-document 615738 / 99 / 207);
+its cumulative budget already includes capture charges and is never reset.
+Both full-node fixtures have a 2003-byte / 298-token snapshot and no profile
+mirror rows: exactly 386624 bytes / 0 rows / 1196 steps are the new capture
+charge. Remaining B/candidate differences are existing charged U3f context,
+selection and classification work. Document still refuses the selected 1 MiB
+value at the existing 16 KiB RecipientInput bound; non-document still refuses
+sequential_carrier_identity_conflict. These are full production method calls
+using actual invocation/store/context SEEDS and a joined local loop, without
+native launch, callback, daemon, host or V3 execution.
+
+Refreshed v1/v2 second_read, dense49152, max-document, composition/accept/live-
+copy and repository/foreign-result scopes also fit their own half-caps. The
+complete delta inventory, charge attribution, elapsed times, source hashes and
+limitations live in dev_agent/output/TASK-14948. This was partial, unpublished
+work ending in STOP for C1/C2; R-U3f-SB5-3 below supplies the current disposition.
+Protected capture config is F-U3f-AUTH and pre-existing `_entry` compile is
+F-U3f-ENTRY; neither is a PASS of accounting.
+TASK14921/TASK14939 verdicts and TASK14944 STOP remain historical evidence.
+Static checks, source classification and SEEDS do not close M1/native/V3 or
+constitute independent review/QA. Original holds, spent allowances and V3 window
+remain unchanged.
+
+
+## TASK-14955 C1 correction and C2 classification under R-U3f-SB5-3
+
+ROOT ruling SHA256 d19e88c581f22a10563f74d9db91f64ede05ed0973a4086d45adea1c76b7395b
+disposes TASK14948 STOP. TASK14955 adopts the exact preserved partial patch
+SHA256 9d5f5833d9ed657cd7a1699c5eac9e3d892f2ac0af377139c54372d2b5ba6e28
+and adopted dispatcher hash 0a14b30a52d632ffee6c65df2c6bb59777c5405f27c4ba274198d495349a71a3.
+C1 uses the preferred document-only deferral form. `_advance` retains `_compose`'s
+internal digest interface but computes its terminal/outer digest arguments only
+inside the document classification branch after context validation. Each copy
+is prepaid on the ORIGINAL prefix budget at `48 * 16384 + 512` bytes and one
+reservation step, using the unchanged `_evidence` 16 KiB raw preflight. Together
+these add 1,573,888 bytes and two steps only on the reached document branch.
+Non-document hold/foreign-result scopes gain zero proof serializations. No
+reset/refund, new compile, snapshot clone or protected-fragment edit follows.
+
+C2 stays unchanged, as design line125 requires. **F-U3f-MOVE — OPEN, owner ROOT
+engineering_manager:** native team-move fence parsing (MoveRequest plus task
+closure) is uncharged to any reader budget, the pre-existing class shared by
+native writers including sequential_engine. Current source fixtures do not
+exercise an active move; this is classification, never behavioral/accounting
+PASS. F-U3f-AUTH and F-U3f-ENTRY remain separately open. The complete transitive
+inventory classifies other uncharged sites as inherited zero delta; any NEW
+uncharged work beyond these three classes requires STOP to ROOT.
+
+Fresh B/candidate source observations on each SAME physical SEED fixture:
+
+| Scope | B bytes / rows / steps | Candidate bytes / rows / steps |
+| --- | --- | --- |
+| Evidence-prefix, two dense 16 KiB rows | 15040621 / 1567 / 27972 | 15040621 / 1567 / 27972 |
+| `_entry` alone | 717117 / 99 / 207 | 717117 / 99 / 207 |
+| Late16 original-transition replay | 15884996 / 1670 / 13241 | 15884996 / 1670 / 13241 |
+| Prefix composition | 717117 / 99 / 207 (held) | 9136773 / 99 / 9591 |
+| Prefix composition + accept + live copy | unavailable at B | 27605604 / 1669 / 21331 |
+| Actual `_advance` repository-success hold | 850702 / 174 / 346 | 850702 / 174 / 348 |
+| Actual `_advance` foreign-result refusal | 724702 / 134 / 280 | 724702 / 134 / 280 |
+| Full node_instruction, document | 5103160 / 499 / 1055 | 12073408 / 499 / 20750 |
+| Full node_instruction, non-document | 692884 / 124 / 260 | 1094828 / 124 / 1495 |
+
+Each scope fits its own 33554432-byte / 4096-row / 32768-step / 2.5s half-caps;
+no cross-scope sum. Evidence, entry and late16 replay retain identical call
+attribution, with one `_entry` each. Repository hold's two extra steps are the
+existing charged document classifications, with zero new bytes and zero proof
+serializations. Foreign-result refusal remains identical. Full-node entry OWN
+counters remain identical to B, while the same original budget includes the
+386624-byte / 1196-step capture charge (snapshot 2003B / 298 tokens, zero mirror
+rows); configured effective-profile discovery and active moves are not measured.
+Full-node document retains the existing 16 KiB RecipientInput refusal of the
+selected 1 MiB value; non-document retains its identity-conflict refusal.
+
+Composition observations use original illustrative SEED digests and mirror the
+source's two prepayments on the same prefix; they are not actual native/outer
+proof. An initial observer changed those illustrative digest bytes and hit a v1
+historical replay conflict; that failed receipt is retained, fixture SQL stayed
+unchanged, and the corrected observer restores the original placeholder bytes.
+No product fixture/history rewrite or skipped failing repository test occurred.
+The v1/v2 second_read, dense49152, max-document and live-copy scopes are also
+refreshed within their own half-caps. Evidence, full source hashes, counters,
+transitive inventory and failure receipts live in dev_agent/output/TASK-14955.
+
+All prior failures/holds/spent allowances, including PR1252, F-B, TASK14754,
+TASK14869, JOB6184/6186, TASK14835, TASK14807, TASK14921/14939 verdicts and
+TASK14944/14948 STOPs remain historical evidence. V3 window remains
+2026-11-09T08:48:38.832252Z..2026-11-23T08:48:38.832252Z. M1/native/V3 stay
+UNVERIFIED. Python units RETIRED; integration SKIPPED THR243seq42; no Product
+E2E, V3 job, live DB/config/install/migration/deploy/restart. Independent FULL
+review, same-final-head scoped QA and ROOT guarded merge remain required.

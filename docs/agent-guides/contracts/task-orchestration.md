@@ -516,5 +516,21 @@ The bundled skill adds one document paragraph; the carrier stays unchanged.
 
 The [current U3f contract](reusable-workflows.md#u3f--u5a-document-witnesses-and-addressed-delivery)
 and [source record](../../superpowers/specs/2026-11-09-sequential-document-witness-u3f.md)
-cover per-scope SB-5 and open F-U3f-ENTRY. Structural SEEDS are not genuine
+cover per-scope SB-5 and the separate open F-U3f-ENTRY, F-U3f-AUTH and
+F-U3f-MOVE follow-ups.
+Under R-U3f-SB5-2, node_instruction starts its original reader budget before
+fresh capture, charges four snapshot JSON decodes/token walks and captured
+profile-mirror/digest-map work, and carries the same allowance/deadline through
+admission_writer, `_entry` and document/non-document rendering. Protected capture
+configuration parsing remains uncharged (F-U3f-AUTH, owner ROOT
+engineering_manager), an existing shared-dispatcher class rather than accounting
+PASS. R-U3f-SB5-3 keeps the design-mandated native team-move guard unchanged;
+its MoveRequest/task-closure parsing is classified F-U3f-MOVE, OPEN, owner ROOT
+engineering_manager, the existing uncharged class shared by native writers.
+C1 uses document-only digest deferral: terminal/outer serialization occurs only
+in the document branch, each prepaid at `48 * 16384 + 512` bytes and one step
+on the original budget. Non-document hold/foreign-result scopes have zero such
+serializations, matching B. No duplicate configuration acquisition is added;
+any NEW uncharged work outside the three disclosed classes requires STOP to ROOT.
+Structural SEEDS are not genuine
 callbacks or M1/V3 behavior; Coding/U4/U5 remainder/native recovery remain held.

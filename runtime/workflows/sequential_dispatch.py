@@ -597,12 +597,19 @@ class SequentialDispatcher:
                                                and hashlib.sha256(returned['event_bytes']).hexdigest() == returned['event_digest'])
                                 if document_only(compiled, budget):
                                     start, bound = document_binding_context(run, visit, compiled, capture, budget)
+                                    # Original proofs are preflighted at 16 KiB by _evidence.
+                                    # Prepay canonical copies only on the document path;
+                                    # reserve() also charges a step on this same allowance.
+                                    budget.reserve(48 * 16384 + 512)
+                                    terminal_digest = hashlib.sha256(_bytes(terminal)).hexdigest()
+                                    budget.reserve(48 * 16384 + 512)
+                                    outer_digest = hashlib.sha256(_bytes(outer)).hexdigest()
                                 else:
                                     start, bound = None, None
+                                    terminal_digest = outer_digest = None
                                 envelope, content, recipients, checks = self._compose(run, visit, compiled, result,
                                     bound=bound, budget=budget, carrier_digest=identity['carrier_digest'],
-                                    terminal_digest=hashlib.sha256(_bytes(terminal)).hexdigest(),
-                                    outer_digest=hashlib.sha256(_bytes(outer)).hexdigest())
+                                    terminal_digest=terminal_digest, outer_digest=outer_digest)
                                 contract = next(node.output_contract.type for node in compiled.definition.nodes if node.id == visit['node_id'])
                                 # Parser/base64/snapshot temporaries and native summary die before acceptance.
                                 del result, terminal, outer, identity
@@ -825,17 +832,36 @@ class SequentialDispatcher:
         from runtime.workflows.sequential_contracts import Counters, Finding, Limits
         from runtime.workflows.sequential_definition import parse_result
         from runtime.workflows.sequential_engine import _identity
+        from runtime.workflows.sequential_history import _WIRE_TOKENS
         from runtime.workflows.sequential_reducer import ActiveVisit, RunState
         invocation = self._invocation(task_id, sid)
         _check(invocation.agent == agent)
+        budget = _ReadBudget()
         capture = self.org.workflow_authority.capture_admission()
+        # Three capture decodes plus the owned admission validator's decode.
+        # Prepay the latter before entry; retain this original allowance and
+        # deadline through capture, validation, document/non-document rendering.
+        # Token walks charge work without another decode or snapshot/tree copy.
+        for _ in range(4):
+            budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
+            for _ in _WIRE_TOKENS.finditer(capture.ready.snapshot_bytes):
+                budget.step()
+        # Capture and final validation each rebuild/traverse the profile mirror.
+        # Include removed mirror rows, which need not appear in the snapshot,
+        # and the per-profile digest-map reconstructions in both validators.
+        for _ in range(2):
+            for row in capture.profile_mirror:
+                budget.candidate()
+                budget.reserve(512 + 128 * len(row))
+                for value in row:
+                    budget.reserve(4 * len(value) + 512 if type(value) is str else 512)
+        budget.work(2 * len(capture.profile_names) * (len(capture.profile_digests) + 1))
 
         async def render() -> str:
             async with self.org.workflow_authority._async_writer_lock:
                 async with self.org.teams_lock:
                     async with self.org.db_lock:
                         with self.org.workflow_authority.admission_writer(capture) as conn:
-                            budget = _ReadBudget()
                             with _sql_budget(conn, budget):
                                 _check(invocation is invocation.store._live.get(invocation.identity))
                                 run, visit, compiled = self._entry(conn, task_id, budget=budget)
