@@ -1389,12 +1389,15 @@ func RunLifecyclePreflight(ctx context.Context) error {
 		return lifecycleDiagnosticError("G000148", ErrLifecycle)
 	}
 	cmd.Env = append(os.Environ(), "HAPPYRANCH_LIFECYCLE_DEADLINE_NS="+strconv.FormatInt(now+int64(remaining), 10))
-	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	var diagnostic lifecycleEligibilityCapture
+	cmd.Stdout, cmd.Stderr = &diagnostic, io.Discard
 	if ctx.Err() != nil || !time.Now().Before(deadline) {
 		return lifecycleDiagnosticError("G000149", ErrLifecycle)
 	}
 	if cmd.Run() != nil || ctx.Err() != nil || !time.Now().Before(deadline) {
-		return lifecycleDiagnosticError("G000150", ErrLifecycle)
+		failure := lifecycleDiagnosticError("G000150", ErrLifecycle)
+		failure.(*lifecycleDiagnosticFailure).eligibility = diagnostic.origin()
+		return failure
 	}
 	return nil
 }
@@ -2202,13 +2205,26 @@ func lifecycleState(p *LifecyclePair, boot string, now int64) string {
 
 // HandleLifecycleRequest is the fixed installed executable dispatch. Public
 // syntax lives in the existing Python CLI; stdin is closed and bounded here.
-func HandleLifecycleRequest(input io.Reader, output io.Writer) int {
+func HandleLifecycleRequest(input io.Reader, output io.Writer) (result int) {
 	entry := time.Now()
+	branch := "request_open"
+	var origin error
+	var request lifecycleRequest
+	defer func() {
+		if result != 0 && request.Operation == "start" {
+			writeLifecycleStartRefusal(output, branch, origin)
+		}
+	}()
+	observe := func(err error) error {
+		if err != nil {
+			origin = err
+		}
+		return err
+	}
 	raw, err := io.ReadAll(io.LimitReader(input, 4097))
 	if err != nil || len(raw) > 4096 || !utf8.Valid(raw) {
 		return 78
 	}
-	var request lifecycleRequest
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&request) != nil || request.Version != 2 || !lifecycleID(request.OperationID) ||
@@ -2230,6 +2246,7 @@ func HandleLifecycleRequest(input io.Reader, output io.Writer) int {
 	sampled := time.Now()
 	now, err := LifecycleNow()
 	if err != nil || request.DeadlineNS <= now || request.DeadlineNS-now > int64(45*time.Second) {
+		observe(err)
 		return 78
 	}
 	deadline := sampled.Add(time.Duration(request.DeadlineNS - now))
@@ -2246,30 +2263,35 @@ func HandleLifecycleRequest(input io.Reader, output io.Writer) int {
 	}
 	p, err := OpenLifecycle(acquire)
 	if err != nil {
+		observe(err)
 		return 78
 	}
 	boot, err := LifecycleBoot()
 	if err != nil {
+		observe(err)
 		p.Close()
 		return 78
 	}
 	now, err = LifecycleNow()
 	if err != nil {
+		observe(err)
 		p.Close()
 		return 78
 	}
 	selectedPolicy := p.Main.Policy
 	reply := func(expected string) int {
+		branch, origin = "reply", nil
 		// Every positive result, including same-operation observation, needs
 		// fresh installed authority and current ownership under the original
 		// bound. An old operation ID cannot replay a successful stop/start.
 		current, e := OpenLifecycle(ctx)
 		if e != nil {
+			observe(e)
 			return 78
 		}
 		defer current.Close()
 		currentBoot, e := LifecycleBoot()
-		if e != nil || currentBoot != boot || RunLifecyclePreflight(ctx) != nil {
+		if observe(e) != nil || currentBoot != boot || observe(RunLifecyclePreflight(ctx)) != nil {
 			return 78
 		}
 		if current.Main.Policy.InstallationID != selectedPolicy.InstallationID || request.Operation != "status" && (current.Main.Policy != selectedPolicy || current.Main.Policy.OperationID != request.OperationID) {
@@ -2284,6 +2306,7 @@ func HandleLifecycleRequest(input io.Reader, output io.Writer) int {
 		}
 		observed, e := LifecycleNow()
 		if e != nil {
+			observe(e)
 			return 78
 		}
 		state := lifecycleState(current, boot, observed)
@@ -2295,10 +2318,11 @@ func HandleLifecycleRequest(input io.Reader, output io.Writer) int {
 		}
 		if state == "boot_prepared" {
 			if _, e = lifecycleManagerCurrent(ctx, true); e != nil {
+				observe(e)
 				state = "unavailable"
 			}
 		}
-		if state == "stopped" && !lifecycleStoppedCurrent(ctx, current) {
+		if state == "stopped" && observe(lifecycleStoppedCurrentError(ctx, current)) != nil {
 			state = "unavailable"
 		}
 		if expected == "stopped" && state != "stopped" {
@@ -2499,18 +2523,21 @@ func HandleLifecycleRequest(input io.Reader, output io.Writer) int {
 	}
 	// Start/enable may change intent only at a valid stopped boundary. Neither
 	// explicit start nor restart resets the rate ring or a typed failure.
-	if !lifecycleStoppedCurrent(ctx, p) || p.Main.Policy.Desired == "retired" || p.Main.Policy.HardBlock != "none" {
+	branch, origin = "stopped_current", nil
+	if observe(lifecycleStoppedCurrentError(ctx, p)) != nil || p.Main.Policy.Desired == "retired" || p.Main.Policy.HardBlock != "none" {
 		p.Close()
 		return 78
 	}
 	if request.Operation == "enable" {
 		enabled = true
 	}
-	if RunLifecyclePreflight(ctx) != nil {
+	branch, origin = "eligibility_preflight", nil
+	if observe(RunLifecyclePreflight(ctx)) != nil {
 		p.Close()
 		return 78
 	}
-	if p.policyChange("run", enabled, request.OperationID) != nil {
+	branch, origin = "policy_write", nil
+	if observe(p.policyChange("run", enabled, request.OperationID)) != nil {
 		p.Close()
 		return 78
 	}
@@ -2519,15 +2546,19 @@ func HandleLifecycleRequest(input io.Reader, output io.Writer) int {
 	if request.Operation == "enable" && lifecycleManager(ctx, "enable") != nil {
 		return 78
 	}
-	if lifecycleManager(ctx, "start") != nil {
+	branch, origin = "manager_start", nil
+	if observe(lifecycleManager(ctx, "start")) != nil {
 		return 78
 	}
+	branch, origin = "reply", nil
 	p, err = OpenLifecycle(ctx)
 	if err != nil {
+		observe(err)
 		return 78
 	}
 	now, err = LifecycleNow()
 	if err != nil {
+		observe(err)
 		p.Close()
 		return 78
 	}

@@ -23,20 +23,46 @@ with its matching non-None string category. Unknown sites, null categories,
 non-string fields, newline/control characters and private-path-like or other
 malformed identities emit no site line. It emits no loaded values or child
 stderr. An unmarked identity also emits no site line. `P000052` identifies a
-nonzero/late native helper exit at the parent boundary; it does not identify an
-inner admission predicate. The native lifecycle helper and eligibility reader
-still discard their internal stderr.
-Unit status/journal evidence and the site line alone may therefore leave the
-READY root cause unknown. This diagnostic does not change any service check,
-operation deadline, stream bound or startup behavior.
+nonzero/late native helper exit at the parent boundary. For this reaped start
+failure the CLI additionally prints `managed lifecycle helper outcome:` with
+exactly `nonzero`, `deadline_elapsed` or `nonzero_deadline_elapsed`, from that
+same parent observation. An early timeout or transport failure has no such
+reaped-exit observation and keeps its original refusal/site output.
+
+A timely nonzero exit can additionally print `managed lifecycle start branch:`
+with one registered name: `request_open`, `stopped_current`,
+`eligibility_preflight`, `policy_write`, `manager_start` or `reply`.
+`managed lifecycle native origin:` carries a validated registered G code when
+available. Preflight (including preflight during reply) can also carry
+`managed lifecycle eligibility origin:` with the SAME eligibility invocation's
+validated registered P/G code. These are source identities, not property values
+or a second evaluation. The helper uses its existing stdout channel; eligibility
+stdout contains only its closed identity on failure. Both still discard raw
+internal stderr. The optional canonical frame is at most512 bytes within the
+unchanged4096-byte transport cap; no extra channel or deadline is introduced.
+
+Unknown/unregistered branches, null/wrong categories, malformed/duplicate/extra
+output, unsafe canaries and oversized diagnostic frames suppress child detail.
+The CLI validates closed registries again before printing. Deadline expiry
+suppresses ALL child branch/origin detail; the parent's closed outcome remains
+available. Transport overflow retains the original response-invalid refusal,
+and every public failure still exits1. No raw stderr, paths, operands, exception
+strings, credentials, config values, environment or loaded facts enter this
+lane. Missing detail leaves the inner cause unknown. This diagnostic changes
+no service check, evaluation order, operation deadline, cap, reap or startup
+behavior and does not establish READY acceptance.
 
 The focused native regression command is
-`cd app/linux/tsnet-sidecar && go test -run '^TestManagedLifecycleCLIRefusalSite$' -count=1 -v .`.
+`cd app/linux/tsnet-sidecar && go test -run '^Test(ManagedLifecycle(CLIRefusalSite|StartDiagnostic)|ManagedEligibilityRefusalIdentity|LifecycleStartDiagnosticCarrier)$' -count=1 -v .`.
 It exercises the shipping CLI with supplied native-boundary observations,
 including unknown sites paired with null categories, newline/control/private-path/
 long canaries, non-string fields, invalid/unmarked identities, implicit exception
-context, private observation canaries and successful routing. It does not
-execute a service or establish hosted READY acceptance.
+context, private observation canaries and successful routing. The start tests
+also traverse the real Python spawn/drain/reap path using a test subprocess,
+the shipping Go request-admission refusal, and the eligibility exception writer.
+Other start-branch replies are controlled transport inputs, not execution proof
+of stopped/current checks, preflight, policy writes or systemctl start. No host
+service runs; hosted READY acceptance remains unproven.
 
 P000241 retains the fixed unit identity and missing requested property names in
 the existing bounded loaded delta. The M1 plain log projects only these names,

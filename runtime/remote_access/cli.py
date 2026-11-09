@@ -532,6 +532,20 @@ def _main(args: argparse.Namespace, entry_ns: int) -> int:
                         print("managed lifecycle refusal site: " + site, file=sys.stderr)
                     except (OSError, ValueError):
                         pass  # Preserve the original failed start and exit status.
+            from runtime.remote_access.lifecycle_diagnostics import exception_start_observation
+            observation = exception_start_observation(exc)
+            if observation is not None:
+                outcome, detail = observation
+                try:
+                    print("managed lifecycle helper outcome: " + outcome, file=sys.stderr)
+                    if detail is not None:
+                        print("managed lifecycle start branch: " + detail["branch"], file=sys.stderr)
+                        for name in ("origin", "eligibility"):
+                            if name in detail:
+                                label = "native" if name == "origin" else "eligibility"
+                                print("managed lifecycle " + label + " origin: " + detail[name]["site"], file=sys.stderr)
+                except (OSError, ValueError):
+                    pass
         return 1
     return 1
 

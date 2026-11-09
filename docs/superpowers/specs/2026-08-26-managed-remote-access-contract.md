@@ -695,6 +695,23 @@ serialization, compile or lint results; actual teardown remains unproved locally
 
 ## Private refusal identity correction — THR327seq82 / ROOT14190
 
+TASK14942's M1 diagnostic continuation adds only closed same-invocation names
+to a failed managed CLI start. At reaped-helper P000052 the parent distinguishes
+nonzero, elapsed deadline and both. A timely nonzero reply may carry exactly one
+registered start branch (request_open, stopped_current, eligibility_preflight,
+policy_write, manager_start, reply), a validated native G origin, and, for
+preflight or reply, the same eligibility invocation's validated P/G origin.
+The optional canonical frame uses existing stdout, at most512 bytes inside the
+existing4096-byte cap; raw stderr remains discarded. Registry membership,
+exact types and matching non-None categories are required again at the public
+sink. Malformed/duplicate/extra/oversized/unknown identities suppress child
+detail; elapsed deadlines suppress every child branch/origin. The parent's
+closed reaped outcome remains independent. Original refusal text, public exit1,
+evaluation order, checks/expected values, all deadlines/caps and reap remain
+unchanged. No predicate is repeated, no sensitive operands/values are emitted,
+and no behavioral READY fix or security-contract change follows. See the
+[maintained output and focused-test contract](../../operations/managed-remote-access-linux-package.md#current-m1-hosted-workflow--root14460--founder-thr327seq131).
+
 This source correction continues the same delivery goal and preserves every
 historical failure and unknown hosted site. Explicit Python refusals and reached
 operational boundaries carry adjacent fixed category/site literals. Native error

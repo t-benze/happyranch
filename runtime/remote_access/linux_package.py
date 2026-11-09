@@ -873,7 +873,12 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                     diagnostic.update(helper_exit=helper_exit, deadline_elapsed=elapsed,
                                       reaped=True, reap_exit=helper_exit)
                 if helper_exit != 0 or elapsed:
-                    raise diagnostic_error("P000052", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused"))
+                    failure = diagnostic_error("P000052", "managed_lifecycle_refused", PackageError("managed_lifecycle_refused"))
+                    if operation == "managed-lifecycle" and request.get("operation") == "start":
+                        from runtime.remote_access.lifecycle_diagnostics import start_refusal_frame
+                        outcome = "nonzero_deadline_elapsed" if helper_exit != 0 and elapsed else "deadline_elapsed" if elapsed else "nonzero"
+                        failure._managed_lifecycle_observation = (outcome, start_refusal_frame(bytes(result)) if not elapsed else None)
+                    raise failure
                 if diagnostic is not None:
                     diagnostic["outcome"] = "success"
                 return bytes(result)
@@ -4223,7 +4228,9 @@ def managed_private_entry(operation: str) -> int:
             current()
             return 0
         except (OSError, RuntimeError, ValueError, AttributeError,
-                StateStoreError, ConnectorConfigError, PolicyLoadError):
+                StateStoreError, ConnectorConfigError, PolicyLoadError) as exc:
+            from runtime.remote_access.lifecycle_diagnostics import write_eligibility_refusal
+            write_eligibility_refusal(exc)
             return 78
         finally:
             if "token" in locals():
