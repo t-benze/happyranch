@@ -978,6 +978,7 @@ class Controller:
 
     def check_content(self) -> None:
         from checks import validate_e04, validate_e05, validate_e07, validate_groups
+        self.report.record_sampler_timings(list(self.observer), self.durable, self.e07.get("window", {}))
         observations = self.observations()
         observations["cleanup_pins"] = self.cleanup_pins
         row = dict(observations, source_sha=self.revision, python=os.environ.get("E2E_PYTHON"),

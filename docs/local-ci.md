@@ -16,7 +16,16 @@ E02/E03/E06/Pause results remain independent. E04 observer ordering and full
 barrier coverage replace its hard 1s thread-gap cap. E07 uses a 250ms full-frame/
 start-interval cap (formerly 50ms), at least five samples, first at entry and
 last at/after the full 1s window end. Every per-sample product assertion and
-original deadline remains; measured cadence/coverage values accompany failures.
+original deadline remains. Both PASS and FAIL now carry timing JSON in the first
+E04/E07 product testcase's `system-out` in each uploaded `e2e-3.12` / `e2e-3.14`
+`junit.xml`, including after the launcher merges the controller report. E04
+records sample count, min/max/p95 gaps and observer/barrier coverage endpoints;
+E07 records frame count, min/max/p95 start intervals, maximum frame duration
+and first/last offsets against window entry/end. Values use seconds and
+nearest-rank p95 (`ceil(0.95 * n)`); unreached measurements are null and partial
+failed windows retain available timings. Health permits this diagnostic output
+and continues to reject every failure/error/skip. No numeric bound changes;
+future green artifacts supply data for evaluating the existing limits.
 Historical run42501816137 timing attribution is unresolved from its artifacts.
 Failure capture precedes E05 teardown.
 Optional Owned/E07 process diagnostics are removed; real cleanup is mandatory.
