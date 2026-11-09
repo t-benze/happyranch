@@ -253,6 +253,23 @@ class DreamsMixin:
         return [self._dream_candidate_row_to_model(row) for row in rows]
 
     @_synchronized
+    def list_pending_dream_kb_candidates(
+        self, dream_ids: list[str],
+    ) -> list[DreamKbCandidate]:
+        """Read pending candidates for one bounded presentation page in one query."""
+        if not dream_ids:
+            return []
+        if len(dream_ids) > 500:
+            raise ValueError("dream candidate page exceeds 500 dreams")
+        placeholders = ",".join("?" * len(dream_ids))
+        rows = self._conn.execute(
+            f"SELECT * FROM dream_kb_candidates WHERE dream_id IN ({placeholders}) "
+            "AND status = 'pending' ORDER BY created_at DESC",
+            dream_ids,
+        ).fetchall()
+        return [self._dream_candidate_row_to_model(row) for row in rows]
+
+    @_synchronized
     def update_dream_kb_candidate(
         self,
         candidate_id: int,

@@ -2147,15 +2147,26 @@ route/store tests exercise the accepted and rejected operations. Long-lived,
 cross-agent relevance and preferring supersession are editorial guidance in task
 and reflection skills, not a server semantic-admission guarantee.
 
-KB tags are projected as strings: the current writer/API contract emits a list,
-while a legacy scalar frontmatter value is one tag (never an iterable of
-characters). Missing, empty, or unsupported tag shapes project as no tags. The
+KB tags are projected as strings: the CLI add/update loader preserves a scalar
+frontmatter value as one tag and validates string lists before sending the
+writer/API list contract. The reader also treats a legacy scalar frontmatter
+value as one tag (never an iterable of characters). Missing, empty, or
+unsupported stored tag shapes project as no tags. The
 Knowledge index is `/orgs/:slug/kb`; detail selection is only the explicit
 `/orgs/:slug/kb/:entrySlug/...` route segment, so an enclosing router wildcard
 must never open a detail drawer on the index. Detail Retry invalidates the
 active org-and-entry query so the same slug can recover without navigation.
 Escape or outside dismissal clears the selected URL; late responses must not
 reopen the drawer. The shared drawer currently has no close-button control.
+
+The dreams list adds `pending_kb_candidate_count` to each record. Optional
+`include_candidates=pending` also includes `pending_kb_candidates` using the
+candidate mutation representation (including body/timestamps), without reading
+transcripts. One batch query selects pending candidates for the same bounded
+page of at most 500 dreams; existing list fields and the detail response remain
+unchanged. Knowledge uses this list for its count and candidate cards, with no
+per-row detail requests. Accept/Dismiss invalidate the dreams-list query; Dreams
+continues to request detail only for a selected row.
 
 KB search consumes the server's `hits[{slug,title,snippet,score}]` in ranked order.
 The UI joins the existing unfiltered list summaries by slug for type, whole tags,

@@ -36,7 +36,7 @@ import type { kb as kbApi } from '@/lib/api';
 import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
-import type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
+import type { DreamRecord, DreamKbCandidate, DreamListParams, DreamListResponse } from '@/lib/api/dreams';
 import type {
   AssignSkillRequest,
   AssignSkillResponse,
@@ -320,10 +320,7 @@ export interface KbRoutes {
 // ---------------------------------------------------------------------------
 
 export interface DreamsApi {
-  useDreamsList: (params?: {
-    agent?: string;
-    limit?: number;
-  }) => QueryLike<{ dreams: DreamRecord[] }>;
+  useDreamsList: (params?: DreamListParams) => QueryLike<DreamListResponse>;
   useDream: (dreamId: string | undefined) => QueryLike<DreamRecord & {
     transcript?: string;
     kb_candidates?: DreamKbCandidate[];
