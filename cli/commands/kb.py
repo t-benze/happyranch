@@ -28,12 +28,21 @@ def _read_markdown_payload(path: str) -> dict:
     missing = [k for k in required if not fm.get(k)]
     if missing:
         raise ValueError(f"frontmatter missing keys: {missing}")
+    raw_tags = fm.get("tags")
+    if isinstance(raw_tags, str):
+        tags = [raw_tags] if raw_tags else []
+    elif raw_tags is None:
+        tags = []
+    elif isinstance(raw_tags, list) and all(isinstance(tag, str) for tag in raw_tags):
+        tags = raw_tags
+    else:
+        raise ValueError("frontmatter tags must be a string or a list of strings")
     return {
         "slug": fm["slug"],
         "title": fm["title"],
         "type": fm["type"],
         "topic": fm["topic"],
-        "tags": list(fm.get("tags") or []),
+        "tags": tags,
         "source_task": fm.get("source_task"),
         "supersedes": fm.get("supersedes"),
         "body": body.lstrip("\n"),

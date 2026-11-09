@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -101,8 +102,25 @@ def dream_status(slug: str, org: OrgDep, agent: str | None = None) -> dict:
 
 
 @router.get("/dreams")
-def list_dreams(slug: str, org: OrgDep, agent: str | None = None, limit: int = 50) -> dict:
-    return {"dreams": [_dream_to_dict(d) for d in org.db.list_dreams(agent=agent, limit=limit)]}
+def list_dreams(
+    slug: str,
+    org: OrgDep,
+    agent: str | None = None,
+    limit: int = 50,
+    include_candidates: Literal["pending"] | None = None,
+) -> dict:
+    dreams = org.db.list_dreams(agent=agent, limit=limit)
+    pending: dict[str, list[DreamKbCandidate]] = {d.id: [] for d in dreams}
+    for candidate in org.db.list_pending_dream_kb_candidates([d.id for d in dreams]):
+        pending[candidate.dream_id].append(candidate)
+    rows = []
+    for dream in dreams:
+        data = _dream_to_dict(dream)
+        data["pending_kb_candidate_count"] = len(pending[dream.id])
+        if include_candidates == "pending":
+            data["pending_kb_candidates"] = [_candidate_to_dict(c) for c in pending[dream.id]]
+        rows.append(data)
+    return {"dreams": rows}
 
 
 @router.get("/dreams/{dream_id}")

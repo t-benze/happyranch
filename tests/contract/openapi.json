@@ -1583,6 +1583,10 @@
             "header"
           ],
           [
+            "include_candidates",
+            "query"
+          ],
+          [
             "limit",
             "query"
           ],

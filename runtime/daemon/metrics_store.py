@@ -16,6 +16,7 @@ import sqlite3
 import time as _time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import RLock
 from typing import TYPE_CHECKING, Any
 
 from runtime.daemon.host_session_store import compose_host_sessions_block
@@ -67,25 +68,32 @@ class MetricsStore:
 
     def __init__(self, db_path: str | None) -> None:
         self._db_path = db_path
-        self._conn = sqlite3.connect(db_path if db_path is not None else ":memory:")
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._init_schema()
+        # FastAPI sync routes and the sampler share this connection. Reentrant
+        # ownership also covers health/maintenance calling other store methods.
+        self._lock = RLock()
+        with self._lock:
+            self._conn = sqlite3.connect(
+                db_path if db_path is not None else ":memory:", check_same_thread=False,
+            )
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._init_schema()
 
     def _init_schema(self) -> None:
         """Create tables and indexes if they don't exist (idempotent)."""
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS metrics_snapshots (
+        with self._lock:
+            self._conn.execute(
+                """CREATE TABLE IF NOT EXISTS metrics_snapshots (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 captured_at  TEXT NOT NULL,
                 snapshot_json TEXT NOT NULL
             )"""
-        )
-        self._conn.execute(
-            """CREATE INDEX IF NOT EXISTS idx_metrics_snapshots_captured
+            )
+            self._conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_metrics_snapshots_captured
                ON metrics_snapshots(captured_at)"""
-        )
-        self._conn.commit()
+            )
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # Write
@@ -93,11 +101,12 @@ class MetricsStore:
 
     def append_snapshot(self, captured_at_iso: str, snapshot: dict[str, Any]) -> None:
         """Append a single metrics snapshot row."""
-        self._conn.execute(
-            "INSERT INTO metrics_snapshots (captured_at, snapshot_json) VALUES (?, ?)",
-            (captured_at_iso, json.dumps(snapshot)),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO metrics_snapshots (captured_at, snapshot_json) VALUES (?, ?)",
+                (captured_at_iso, json.dumps(snapshot)),
+            )
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # Retention
@@ -108,12 +117,13 @@ class MetricsStore:
 
         Returns the number of rows deleted.
         """
-        cur = self._conn.execute(
-            "DELETE FROM metrics_snapshots WHERE captured_at < ?",
-            (before_iso,),
-        )
-        self._conn.commit()
-        return cur.rowcount
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM metrics_snapshots WHERE captured_at < ?",
+                (before_iso,),
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     # ------------------------------------------------------------------
     # Query
@@ -130,60 +140,67 @@ class MetricsStore:
         ``since`` / ``until`` are ISO-8601 strings filtering on ``captured_at``
         (inclusive bounds).
         """
-        clauses: list[str] = []
-        params: list[str | int] = []
+        with self._lock:
+            clauses: list[str] = []
+            params: list[str | int] = []
 
-        if since is not None:
-            clauses.append("captured_at >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("captured_at <= ?")
-            params.append(until)
+            if since is not None:
+                clauses.append("captured_at >= ?")
+                params.append(since)
+            if until is not None:
+                clauses.append("captured_at <= ?")
+                params.append(until)
 
-        where = ""
-        if clauses:
-            where = " WHERE " + " AND ".join(clauses)
+            where = ""
+            if clauses:
+                where = " WHERE " + " AND ".join(clauses)
 
-        rows = self._conn.execute(
-            f"SELECT * FROM metrics_snapshots{where} ORDER BY captured_at DESC LIMIT ?",
-            (*params, limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
+            rows = self._conn.execute(
+                f"SELECT * FROM metrics_snapshots{where} ORDER BY captured_at DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     # ------------------------------------------------------------------
     # Storage telemetry (read-only, non-sensitive)
     # ------------------------------------------------------------------
 
     def row_count(self) -> int:
-        cur = self._conn.execute("SELECT COUNT(*) FROM metrics_snapshots")
-        return int(cur.fetchone()[0])
+        with self._lock:
+            cur = self._conn.execute("SELECT COUNT(*) FROM metrics_snapshots")
+            return int(cur.fetchone()[0])
 
     def oldest_captured_at(self) -> str | None:
-        cur = self._conn.execute("SELECT MIN(captured_at) FROM metrics_snapshots")
-        return cur.fetchone()[0]
+        with self._lock:
+            cur = self._conn.execute("SELECT MIN(captured_at) FROM metrics_snapshots")
+            return cur.fetchone()[0]
 
     def newest_captured_at(self) -> str | None:
-        cur = self._conn.execute("SELECT MAX(captured_at) FROM metrics_snapshots")
-        return cur.fetchone()[0]
+        with self._lock:
+            cur = self._conn.execute("SELECT MAX(captured_at) FROM metrics_snapshots")
+            return cur.fetchone()[0]
 
     def page_count(self) -> int | None:
-        if self._db_path is None:
-            return None
-        cur = self._conn.execute("PRAGMA page_count")
-        return int(cur.fetchone()[0])
+        with self._lock:
+            if self._db_path is None:
+                return None
+            cur = self._conn.execute("PRAGMA page_count")
+            return int(cur.fetchone()[0])
 
     def freelist_count(self) -> int | None:
-        if self._db_path is None:
-            return None
-        cur = self._conn.execute("PRAGMA freelist_count")
-        return int(cur.fetchone()[0])
+        with self._lock:
+            if self._db_path is None:
+                return None
+            cur = self._conn.execute("PRAGMA freelist_count")
+            return int(cur.fetchone()[0])
 
     def db_bytes(self) -> int | None:
         if self._db_path is None:
@@ -207,71 +224,77 @@ class MetricsStore:
         page/free-list counts, and on-disk DB/WAL byte sizes (the last three
         are ``None`` for an in-memory store).
         """
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n, MIN(captured_at) AS oldest,"
-            " MAX(captured_at) AS newest FROM metrics_snapshots"
-        ).fetchone()
-        result: dict[str, Any] = {
-            "row_count": int(row["n"]),
-            "oldest_captured_at": row["oldest"],
-            "newest_captured_at": row["newest"],
-            "total_snapshot_bytes": self._total_snapshot_bytes(),
-            "route_label_count": self._latest_route_label_count(),
-        }
-        if self._db_path is None:
-            result["page_count"] = None
-            result["freelist_count"] = None
-            result["db_bytes"] = None
-            result["wal_bytes"] = None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n, MIN(captured_at) AS oldest,"
+                " MAX(captured_at) AS newest FROM metrics_snapshots"
+            ).fetchone()
+            result: dict[str, Any] = {
+                "row_count": int(row["n"]),
+                "oldest_captured_at": row["oldest"],
+                "newest_captured_at": row["newest"],
+                "total_snapshot_bytes": self._total_snapshot_bytes(),
+                "route_label_count": self._latest_route_label_count(),
+            }
+            if self._db_path is None:
+                result["page_count"] = None
+                result["freelist_count"] = None
+                result["db_bytes"] = None
+                result["wal_bytes"] = None
+                return result
+            result["page_count"] = int(
+                self._conn.execute("PRAGMA page_count").fetchone()[0]
+            )
+            result["freelist_count"] = int(
+                self._conn.execute("PRAGMA freelist_count").fetchone()[0]
+            )
+            result["db_bytes"] = _file_size(self._db_path)
+            result["wal_bytes"] = _file_size(self._db_path + "-wal")
             return result
-        result["page_count"] = int(
-            self._conn.execute("PRAGMA page_count").fetchone()[0]
-        )
-        result["freelist_count"] = int(
-            self._conn.execute("PRAGMA freelist_count").fetchone()[0]
-        )
-        result["db_bytes"] = _file_size(self._db_path)
-        result["wal_bytes"] = _file_size(self._db_path + "-wal")
-        return result
 
     def _total_snapshot_bytes(self) -> int:
         """Sum of stored ``snapshot_json`` lengths (drives the DB footprint)."""
-        cur = self._conn.execute(
-            "SELECT COALESCE(SUM(LENGTH(snapshot_json)), 0) FROM metrics_snapshots"
-        )
-        return int(cur.fetchone()[0])
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(snapshot_json)), 0) FROM metrics_snapshots"
+            )
+            return int(cur.fetchone()[0])
 
     def _latest_route_label_count(self) -> int:
         """Distinct route-label count of the newest stored snapshot (0 if none)."""
-        row = self._conn.execute(
-            "SELECT snapshot_json FROM metrics_snapshots"
-            " ORDER BY captured_at DESC, id DESC LIMIT 1"
-        ).fetchone()
-        if row is None:
-            return 0
-        try:
-            parsed = json.loads(row["snapshot_json"])
-        except (ValueError, TypeError):
-            return 0
-        return _route_label_count(parsed)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT snapshot_json FROM metrics_snapshots"
+                " ORDER BY captured_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return 0
+            try:
+                parsed = json.loads(row["snapshot_json"])
+            except (ValueError, TypeError):
+                return 0
+            return _route_label_count(parsed)
 
     def _wal_checkpoint(self) -> dict[str, int]:
         """Checkpoint + truncate the WAL; return the raw PRAGMA result row."""
-        row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        return {
-            "busy": int(row[0]),
-            "log_frames": int(row[1]),
-            "checkpointed_frames": int(row[2]),
-        }
+        with self._lock:
+            row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            return {
+                "busy": int(row[0]),
+                "log_frames": int(row[1]),
+                "checkpointed_frames": int(row[2]),
+            }
 
     def _integrity_check(self) -> str:
         """Return the joined ``PRAGMA integrity_check`` result."""
-        rows = self._conn.execute("PRAGMA integrity_check").fetchall()
-        return "\n".join(r[0] for r in rows)
+        with self._lock:
+            rows = self._conn.execute("PRAGMA integrity_check").fetchall()
+            return "\n".join(r[0] for r in rows)
 
     def _vacuum(self) -> None:
         """Run the controlled SQLite compaction (``VACUUM``)."""
-        self._conn.execute("VACUUM")
+        with self._lock:
+            self._conn.execute("VACUUM")
 
     def maintenance(self, cutoff_iso: str) -> dict[str, Any]:
         """Run the offline maintenance sequence through this store connection.
@@ -295,41 +318,42 @@ class MetricsStore:
         through this connection.  Intended for the startup-only maintenance
         one-shot — do not run against a live serving daemon.
         """
-        t0 = _time.monotonic()
-        before = self.health()
-        pruned = self.prune(cutoff_iso)
-        checkpoint = self._wal_checkpoint()
-        if checkpoint["busy"] != 0:
-            raise MetricsMaintenanceError("checkpoint-busy")
-        integrity_before = self._integrity_check()
-        if integrity_before != "ok":
-            raise MetricsMaintenanceError("integrity-before-vacuum")
-        self._vacuum()
-        # Post-VACUUM WAL checkpoint: after controlled compaction, checkpoint
-        # (TRUNCATE) the WAL again so the compaction's journal frames are
-        # checkpointed back into the main file before the final integrity
-        # evidence is recorded.  Fail closed on busy — a success report is
-        # never produced after a failed post-vacuum checkpoint.
-        post_vacuum_checkpoint = self._wal_checkpoint()
-        if post_vacuum_checkpoint["busy"] != 0:
-            raise MetricsMaintenanceError("post-vacuum-checkpoint-busy")
-        integrity_after = self._integrity_check()
-        if integrity_after != "ok":
-            raise MetricsMaintenanceError("integrity-after-vacuum")
-        after = self.health()
-        duration_s = round(_time.monotonic() - t0, 6)
-        return {
-            "before": before,
-            "after": after,
-            "cutoff": cutoff_iso,
-            "pruned_rows": pruned,
-            "checkpoint": checkpoint,
-            "post_vacuum_checkpoint": post_vacuum_checkpoint,
-            "integrity_check_before_vacuum": integrity_before,
-            "integrity_check_after_vacuum": integrity_after,
-            "vacuum": "ok",
-            "duration_seconds": duration_s,
-        }
+        with self._lock:
+            t0 = _time.monotonic()
+            before = self.health()
+            pruned = self.prune(cutoff_iso)
+            checkpoint = self._wal_checkpoint()
+            if checkpoint["busy"] != 0:
+                raise MetricsMaintenanceError("checkpoint-busy")
+            integrity_before = self._integrity_check()
+            if integrity_before != "ok":
+                raise MetricsMaintenanceError("integrity-before-vacuum")
+            self._vacuum()
+            # Post-VACUUM WAL checkpoint: after controlled compaction, checkpoint
+            # (TRUNCATE) the WAL again so the compaction's journal frames are
+            # checkpointed back into the main file before the final integrity
+            # evidence is recorded.  Fail closed on busy — a success report is
+            # never produced after a failed post-vacuum checkpoint.
+            post_vacuum_checkpoint = self._wal_checkpoint()
+            if post_vacuum_checkpoint["busy"] != 0:
+                raise MetricsMaintenanceError("post-vacuum-checkpoint-busy")
+            integrity_after = self._integrity_check()
+            if integrity_after != "ok":
+                raise MetricsMaintenanceError("integrity-after-vacuum")
+            after = self.health()
+            duration_s = round(_time.monotonic() - t0, 6)
+            return {
+                "before": before,
+                "after": after,
+                "cutoff": cutoff_iso,
+                "pruned_rows": pruned,
+                "checkpoint": checkpoint,
+                "post_vacuum_checkpoint": post_vacuum_checkpoint,
+                "integrity_check_before_vacuum": integrity_before,
+                "integrity_check_after_vacuum": integrity_after,
+                "vacuum": "ok",
+                "duration_seconds": duration_s,
+            }
 
 
 # ------------------------------------------------------------------

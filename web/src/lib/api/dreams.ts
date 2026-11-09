@@ -22,8 +22,19 @@ export interface DreamStatusResponse {
   recent: DreamRecord[]
 }
 
+export interface DreamListRecord extends DreamRecord {
+  pending_kb_candidate_count: number
+  pending_kb_candidates?: DreamKbCandidate[]
+}
+
+export interface DreamListParams {
+  agent?: string
+  limit?: number
+  include_candidates?: 'pending'
+}
+
 export interface DreamListResponse {
-  dreams: DreamRecord[]
+  dreams: DreamListRecord[]
 }
 
 export interface DreamDetailResponse extends DreamRecord {
@@ -42,10 +53,10 @@ export async function getDreamStatus(
 
 export async function listDreams(
   org: string,
-  params: { agent?: string; limit?: number } = {},
+  params: DreamListParams = {},
 ): Promise<DreamListResponse> {
   return request<DreamListResponse>(`/orgs/${org}/dreams`, {
-    params: { agent: params.agent, limit: params.limit },
+    params: { agent: params.agent, limit: params.limit, include_candidates: params.include_candidates },
   })
 }
 

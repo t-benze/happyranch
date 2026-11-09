@@ -2,13 +2,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { dreams as dreamsApi } from '@/lib/api';
 import type { DreamsApi } from './DataContext';
+import type { DreamListParams } from '@/lib/api/dreams';
 
 function useRealOrgSlug(): string {
   const { slug } = useParams<{ slug: string }>();
   return slug ?? '';
 }
 
-function useDreamsList(params?: { agent?: string; limit?: number }) {
+function useDreamsList(params?: DreamListParams) {
   const slug = useRealOrgSlug();
   return useQuery({
     queryKey: ['dreams-list', slug, params],

@@ -20,12 +20,12 @@ import { useIdentityPresentation } from '@/hooks/identities';
  *
  * States: Loading skeleton, Empty ("No entries yet"), Error (retry).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useKbRoutes, useKBList, useKBSearch, useKBStats } from '@/hooks/kb';
 import { useDensity } from '@/hooks/density';
-import { useDreamsList, useDream } from '@/hooks/dreams';
+import { useDreamsList } from '@/hooks/dreams';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Input } from '@/design-system/primitives/Input';
@@ -260,47 +260,23 @@ function LoadingSkeleton(): JSX.Element {
 }
 
 /* ------------------------------------------------------------------ */
-/*  DreamCandidateRow — fetches one dream's candidates                */
+/*  DreamCandidateRow — renders list-supplied pending candidates        */
 /* ------------------------------------------------------------------ */
 
 function DreamCandidateRow({
-  dreamId,
+  pending,
   onSelect,
   detailCandidate,
-  onPendingCountChange,
   visible,
 }: {
-  dreamId: string;
+  pending: DreamKbCandidate[];
   onSelect: (c: DreamKbCandidate) => void;
   detailCandidate: DreamKbCandidate | null;
-  onPendingCountChange?: (dreamId: string, count: number) => void;
-  /**
-   * When false the row still fetches and REPORTS its pending count (so the
-   * header pill + rail 'Candidates' row stay live) but renders no cards. The
-   * cards are shown only in the dedicated Candidates view.
-   */
   visible: boolean;
 }): JSX.Element | null {
   const presentation = useIdentityPresentation();
   const { t } = useTranslation();
-  const dreamQ = useDream(dreamId);
-
-  // Derive pending candidates from fetched statuses (not kb_candidate_count total).
-  const pending = useMemo(() => {
-    if (!dreamQ.data?.kb_candidates) return [];
-    return dreamQ.data.kb_candidates.filter((c) => c.status === 'pending');
-  }, [dreamQ.data?.kb_candidates]);
-
-  // Report pending count for this dream back to the parent so the header tag
-  // and the rail 'Candidates (N)' row track live statuses, not the stored
-  // kb_candidate_count total. This runs regardless of `visible`: the row is
-  // kept mounted in every non-search view precisely to keep the count live.
-  useEffect(() => {
-    onPendingCountChange?.(dreamId, pending.length);
-    return () => onPendingCountChange?.(dreamId, 0);
-  }, [dreamId, pending.length, onPendingCountChange]);
-
-  if (!visible || dreamQ.isLoading || pending.length === 0) return null;
+  if (!visible || pending.length === 0) return null;
 
   return (
     <>
@@ -437,29 +413,14 @@ export function KbPage(): JSX.Element {
     return entries;
   }, [rawEntries, folder, isSearching, selectedTag]);
 
-  // Fetch dreams to find those with candidates
-  const dreamsQuery = useDreamsList({ limit: 50 });
-  const dreamsWithCandidates = useMemo(() => {
-    if (!dreamsQuery.data?.dreams) return [];
-    return dreamsQuery.data.dreams.filter((d) => d.kb_candidate_count > 0);
-  }, [dreamsQuery.data?.dreams]);
-
-  // Pending candidate count derived from the SAME per-dream candidate
-  // statuses the feed already fetches (status === 'pending'), NOT from the
-  // stored kb_candidate_count total which never decrements after Accept/Dismiss.
-  const pendingCountsRef = useRef<Map<string, number>>(new Map());
-  const [candidatePendingCount, setCandidatePendingCount] = useState(0);
-
-  const handlePendingCountChange = useCallback(
-    (dreamId: string, count: number) => {
-      pendingCountsRef.current.set(dreamId, count);
-      const total = Array.from(pendingCountsRef.current.values()).reduce(
-        (sum, c) => sum + c,
-        0,
-      );
-      setCandidatePendingCount(total);
-    },
-    [],
+  // Counts and cards share one bounded list response, refreshed after decisions.
+  const dreamsQuery = useDreamsList({ limit: 50, include_candidates: 'pending' });
+  const dreamsWithCandidates = useMemo(
+    () => (dreamsQuery.data?.dreams ?? []).filter((d) => (d.pending_kb_candidates?.length ?? 0) > 0),
+    [dreamsQuery.data?.dreams],
+  );
+  const candidatePendingCount = dreamsWithCandidates.reduce(
+    (sum, dream) => sum + (dream.pending_kb_candidates?.length ?? 0), 0,
   );
 
   // Derive the grouped folder rail (KB-01) from the unfiltered library:
@@ -652,22 +613,17 @@ export function KbPage(): JSX.Element {
           </div>
         ) : (
           <>
-            {/* Candidate cards + live pending-count probes. Mounted whenever
-                not searching so the header pill and the rail 'Candidates (N)'
-                row track live per-dream pending status; the cards themselves
-                render ONLY in the dedicated Candidates view (visible=…). In the
-                default/folder feed the rows return null → the list is empty and
-                collapses (no padding), so candidates never touch the feed. */}
+            {/* Candidates remain separate from the document feed. The shared
+                list supplies both cards and the live pending count. */}
             {!isSearching && dreamsWithCandidates.length > 0 && (
               <ul aria-label={t('kb.candidateEntries')} className="space-y-2">
                 {dreamsWithCandidates.map((d) => (
                   <DreamCandidateRow
                     key={d.dream_id}
-                    dreamId={d.dream_id}
+                    pending={d.pending_kb_candidates ?? []}
                     visible={showCandidatesView}
                     onSelect={handleCandidateSelect}
                     detailCandidate={detailCandidate}
-                    onPendingCountChange={handlePendingCountChange}
                   />
                 ))}
               </ul>

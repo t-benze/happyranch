@@ -165,9 +165,16 @@ function noopMutation<TArg, TResult>(): MutationLike<TArg, TResult> {
 export const mockDreamsApi: DreamsApi = {
   useDreamsList: (params) =>
     ok({
-      dreams: params?.agent
+      dreams: (params?.agent
         ? MOCK_DREAMS.filter((d) => d.agent_name === params.agent)
-        : MOCK_DREAMS,
+        : MOCK_DREAMS).slice(0, params?.limit ?? 50).map((dream) => {
+          const pending = MOCK_CANDIDATES.filter((c) => c.dream_id === dream.dream_id && c.status === 'pending');
+          return {
+            ...dream,
+            pending_kb_candidate_count: pending.length,
+            ...(params?.include_candidates === 'pending' ? { pending_kb_candidates: pending } : {}),
+          };
+        }),
     }),
   useDream: (dreamId) =>
     ok({
