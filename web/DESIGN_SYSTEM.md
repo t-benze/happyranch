@@ -99,20 +99,21 @@ Use controls/autodocs for real public variants. Interaction stories must be safe
 to click/type. Add loading, empty, error, populated, auth, and permission states
 only where the reusable unit owns them. Aggregate stories preserve representative
 states, controls, and interaction examples; their custom renders do not satisfy
-coverage. `storybook-coverage.test.ts` uses Vite's existing module graph to
+coverage. Historically, `storybook-coverage.test.ts` used Vite's module graph to
 import each mapped source and story module and compare runtime object identity.
-It also requires a mapped named default-render story. The same test renders every
-entry in `PASTURE_REFERENCE_REQUIREMENTS` and queries its declared DOM structure
-and semantic attributes. Adversarial fixtures prove that a combined
+It also required a mapped named default-render story. The same test rendered every
+entry in `PASTURE_REFERENCE_REQUIREMENTS` and queried its declared DOM structure
+and semantic attributes. Adversarial fixtures checked that a combined
 "Timeline & tables" heading without a timeline and generic implementation
-guidance without the prototype selector fail. This narrow contract fails
+guidance without the prototype selector failed. This narrow contract failed
 closed for missing modules/exports/meta, wrong or merely same-named bindings,
-metadata-only references, and custom render overrides. It does not claim to
-interpret JavaScript or TypeScript execution, and creates no generated registry
-or runtime catalogue. Reference page states are explicit and fail-closed in the
+metadata-only references, and custom render overrides. It did not claim to
+interpret JavaScript or TypeScript execution, and created no generated registry
+or runtime catalogue. Reference page states were explicit and fail-closed in the
 same test: empty, loading, error/retry, unauthorized, and populated. Navigation
-ordering and the 390px manager/canvas responsive contract are independently
-asserted.
+ordering and the 390px manager/canvas responsive contract were independently
+asserted. That test was retired under THR-343; web behavior belongs to Product E2E.
+Historical assertions do not establish current coverage.
 Unauthorized is a visual/copy proposal only because reusable units do not own
 auth or permission decisions; no gate is simulated. Loading is a local skeleton
 and retry is local state, so Storybook remains daemon-isolated.
