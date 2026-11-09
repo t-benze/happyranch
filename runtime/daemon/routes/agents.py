@@ -3325,13 +3325,6 @@ async def update_learning(
     slug: str, agent_name: str, id: str, body: LearningUpdateBody, org: OrgDep,
 ) -> dict:
     store = _workspace_memory_store(org, agent_name)
-    # THR-091 WS-A: preserve last_verified on normal update (read-modify-write).
-    # The PUT body deliberately does NOT carry last_verified — we carry forward
-    # the existing value so a content update never silently clears verification state.
-    try:
-        prior_last_verified = store.read_entry(id).last_verified
-    except LearningNotFound:
-        prior_last_verified = None
     entry = MemoryItem(
         id=id,
         slug=body.slug,
@@ -3342,7 +3335,6 @@ async def update_learning(
         source_task=body.source_task,
         related_to=list(body.related_to),
         supersedes=body.supersedes,
-        last_verified=prior_last_verified,
     )
     async with org.db_lock:
         try:

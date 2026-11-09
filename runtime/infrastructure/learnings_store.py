@@ -413,6 +413,12 @@ class MemoryStore:
         # pure id-normalization — never a prefix flip.
         entry.id = existing.id
         entry.promoted_to = existing.promoted_to  # always None at this point
+        # Content edits preserve metadata owned by the existing entry.
+        entry.lifecycle = existing.lifecycle
+        entry.salience = existing.salience
+        entry.provenance = existing.provenance
+        entry.scope = existing.scope
+        entry.last_verified = existing.last_verified
         self._validate_entry_structure(entry)
         self._validate_cross_refs(entry)
         # Reject slug collision with a DIFFERENT entry
