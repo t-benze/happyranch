@@ -85,6 +85,15 @@ and waits for known in-flight required Requests to reach native terminals. This
 keeps departure from overtaking the eager body RPCs; the final sweep still
 checks every required Response, including newly discovered automatic refreshes. A missing, failed or
 incomplete browser body fails the case; relay JSON never substitutes for it.
+After the final C view, E05 drains required bodies and navigates the same page
+to the existing same-origin health JSON document. It waits for departing reads
+to close before N/D CLI work, so C's long-lived SSE readers do not outlive their
+original C deadline. The D view still uses the same page/context and all three
+view/content assertions remain. In final4, the final body sweep, context close
+and proxy close precede SQL, witness and metrics snapshots. All final evidence
+must still finish within four seconds; closure still requires no transport
+errors, workers, listener or connections. Every GET owner retains its original
+deadline and strict native abort/acknowledgement checks. No numeric bound changes.
 Body-read failures name the query-free Response path, HTTP status, request
 method and consumption role (selected view or `thread_bodies` sweep), without
 native exception text that could contain credentials. A returned ordinary
@@ -2298,7 +2307,7 @@ assertion sensitivity remains **UNEXECUTED**.
 
 | Existing case or fixture/consumer | Required contract | Credible regression rejected by named source predicates | Nearest coverage / remaining gap | Production-only seam |
 | --- | --- | --- | --- | --- |
-| Compose / `E05.compose-race`; Browser snapshots and `BrowserRelay` | Complete chronological event ledger, exact held/released prefixes and actual proxy release interval; zero premature navigation, one automatic entry, four paired intentional revisits; actual initial GET/messages and rendered opening | A premature event omitted from a case snapshot, duplicate automatic navigation or empty/wrong opening fails `R2` prefix/navigation/projection/bubble checks | Earlier PNG and snapshot membership checks did not validate chronology or rendered semantics; same-tick eligibility is retained, guard sensitivity UNPROVEN | NO |
+| Compose / `E05.compose-race`; Browser snapshots and `BrowserRelay` | Complete chronological event ledger, exact held/released prefixes and actual proxy release interval; zero premature navigation, one automatic entry, five paired intentional revisits: inbox → C detail → C detail → same-origin `/api/v1/health` → D detail; actual initial GET/messages and rendered opening | A premature event omitted from a case snapshot, duplicate automatic navigation or empty/wrong opening fails `R2` prefix/navigation/projection/bubble checks | Earlier PNG and snapshot membership checks did not validate chronology or rendered semantics; same-tick eligibility is retained, guard sensitivity UNPROVEN | NO |
 | Reply / `E05.reply-natural`; provider and aggregate | Every decline/reply equals its canonical receipt and original instruction; exact argv, request, route, status, selected response, exit and shipping stdout; both literal C messages in their own sequence bubbles | Accepted SQL state with exit1/KeyError on decline, wrong endpoint/body, detached receipt or omitted rendered reply fails `R1` outcome and `R2` bubble checks | Earlier identity/source/terminal-row joins did not prove positive CLI delivery or actual rendering | NO |
 | Dispatch / `E05.self-dispatch-followup`; N/D compose, task read and final callback | Full founder compose command/wire joins; exact dispatch and replies; D2 GET returns this completed task/result/summary and prints literal details; callback remains last; full D system payloads and distinct rendered reply/summary | Wrong task/details summary or an absent D reply hidden by the completion system summary fails `R1` task/read and `R2` per-bubble/system checks | Earlier two-substring D check and selected-response presence did not establish all literal content | NO |
 | Denials / `E05.consumed-token`, `E05.nonparticipant-task-send`; Relay E05 request capture | Exact original instruction/real409 or403/request/response/error stdout, same retained file/live owner and coherent unchanged frame | Another endpoint/status/body or detached denial cannot pass by retaining valid durable rows | Existing negative frame checks are retained; dedicated contradictory artifact controls remain unauthored | NO |
@@ -2343,7 +2352,7 @@ never labeled downstream delivery.
 | Between checkpoint before its header/body validation or inside the next read; size/payload/finite checkpoint outside its own read | Refuse at the exact establishing-operation predicate. A between checkpoint at its own validation finish and existing valid framing waits remain admissible | Existing raw reader controls; no obsolete grammar or unrelated early refusal supplies new sensitivity proof. |
 | Native bridge exits before local acknowledgement coroutine cleanup resumes, or an already queued signal runs after exit | Synchronous finally deactivates the shared local latch and detaches only this exact notifier; coroutine finally is idempotent. Inactive notifications schedule nothing and queued signals cannot set the ended owner's event | Source failure-path assessment only. No shared bridge change, cancellation drain, additional wait or renewed deadline. Native cancellation/interleaving proof NOT RUN/PROOF NOT RUN. |
 | Missing/extra/retyped/reordered/stale/detached/forged counters, framing, identities, operations, native events or closure facts with producer success | Independent closed grammar reconstructs counts, finite lengths, chunk transitions, prior results and intent/ack/native/owner joins; historical failed full runs stay refused | Existing exact-source serialized-clause technique over isolated inputs. Scoped acceptance is NEVER whole-reader/native/Product PASS. |
-| Original one held compose POST200/body/hash/independent commit/release/delivery, automatic navigation/four revisits, public/raw-origin/durable C/N/D | All original assertions remain unconditional in all five original variants | Existing compose/content keeper; GET cancellation supplies no substitute. Native NOT RUN/PROOF NOT RUN. |
+| Original one held compose POST200/body/hash/independent commit/release/delivery, automatic navigation/five revisits (inbox → C detail → C detail → same-origin `/api/v1/health` → D detail), public/raw-origin/durable C/N/D | All original assertions remain unconditional in all five original variants | Existing compose/content keeper; GET cancellation supplies no substitute. Native NOT RUN/PROOF NOT RUN. |
 
 Four authoring answers apply to every affected row above: (1) observe actual
 original native Request/terminal, full target, worker I/O/cancel/close and exported
@@ -2426,7 +2435,8 @@ owner dependency, not permission to relax the whole-origin predicate. The page
 source later self-hosts that Baloo 2 face locally; attribution of the earlier
 origin failures to fonts remains UNKNOWN and none is reclassified. New navigation records retain the pinned native new-document Request lineage.
 The reader permits at most one nondeparting same-URL initialization per actual
-document and still requires the exact automatic detail entry/four real revisits;
+document and still requires the exact automatic C detail entry/five real revisits
+(inbox → C detail → C detail → same-origin `/api/v1/health` → D detail);
 extra documents or changed targets refuse. Historical repeated same-URL events
 lack that lineage and receive no inferred browser acceptance.
 

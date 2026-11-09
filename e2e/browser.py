@@ -1818,6 +1818,29 @@ class Browser:
             self.thread_page.wait_for_timeout(min(10, self.controller.remaining() * 1000))
             self.controller.remaining()
 
+    def park_threads(self) -> None:
+        # C's GET owners keep their original C end even after the controller
+        # enters N/D. Depart the measured view now, through a real same-origin
+        # inert document, rather than leave its SSE readers waiting through CLI
+        # work. Required browser bodies drain before this native cancellation.
+        self._thread_before_navigation()
+        departing = {r['request_id'] for r in self.thread_requests.values()}
+        url = self.thread_base + '/api/v1/health'
+        self.thread_events.append(dict(event='deliberate-revisit', url=url, at=time.monotonic()))
+        self.thread_page.goto(url, timeout=self.controller.remaining(10) * 1000)
+        self.controller.remaining()
+        while True:
+            with self.controller.browser_relay.lock:
+                pending = any(r.get('browser_request_id') in departing and 'closed' not in r
+                              for r in self.controller.browser_relay.records)
+            if not self.thread_streams and not pending:
+                return
+            # Pump the native Request terminals while the existing relay owners
+            # acknowledge the abort and close. Final safety still validates each
+            # complete stop/closure proof and rejects every unexpected error.
+            self.thread_page.wait_for_timeout(min(10, self.controller.remaining() * 1000))
+            self.controller.remaining()
+
     def thread_bodies(self) -> None:
         # Native delivery may discover another automatic response while waiting.
         while True:

@@ -55,6 +55,14 @@ remain required by the independent content reader; no browser JSON is substitute
 excluded. Every deliberate thread document navigation first drains required
 Response bodies and known in-flight required Requests within the original end,
 so navigation cannot overtake their body RPCs. The final sweep remains strict.
+E05 drains the final C view and parks the same page on the existing same-origin
+health JSON document, waiting for departing reads to close before N/D CLI work.
+C's SSE owners therefore settle within their original deadline. The same
+page/context returns for the D view; all three content/DOM views remain required.
+The final body sweep and context/proxy closure run before final SQL, witness and
+metrics snapshots, all inside the unchanged final4 allowance. Every transport
+error remains red, with zero live workers/listener/connections required. No
+numeric bound changes or GET-owner deadline extensions are made.
 E07 selects two consecutive complete equal cancellation frames and exact host
 projections before freezing, inside the original phase deadline, retaining all
 candidates and every later immutability check. E05 identity/cardinality errors
