@@ -31,6 +31,7 @@ from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.work_status import derive_work_status
 from runtime.workflows.coding_start_records import start_decision_schema
+from runtime.workflows.sequential_start import sequential_start_decision_schema
 from runtime.infrastructure.db.tasks import InvalidLineage, TaskThreadOriginUnavailable, _RetryEvidenceRefusal
 from runtime.infrastructure.db.task_reconciliation import (
     selected_scope, gated_roots, HistoricalReceiptResponse, PreflightResponse, ReconcileFailedContinuationBody,
@@ -1050,7 +1051,7 @@ class CompletionBody(BaseModel):
     # on the orchestrator side when the parser runs.
     decision: dict | None = Field(default=None, json_schema_extra={
         'if': {'type': 'object', 'properties': {'action': {'const': 'workflow_start'}}, 'required': ['action']},
-        'then': start_decision_schema(),
+        'then': {'anyOf': [start_decision_schema(), sequential_start_decision_schema()]},
     })
     # Manager-only S6a semantic evidence. Kept raw at the HTTP boundary so a
     # malformed attempt can be reduced to a digest-only durable diagnostic;
@@ -1176,10 +1177,10 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
     ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
     workflow_draft = ownership.kind in {"draft", "f5", "coding_attempt", "seq_visit"}
     workflow_owner = (org.workflow_sequential_dispatch if ownership.kind == "seq_visit" else org.workflow_coding_dispatch if ownership.kind == "coding_attempt" else org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
-    if (ownership.kind in SEQUENTIAL_HELD_KINDS - {"seq_visit"}
-            or ownership.kind not in {"legacy", "draft", "f5", "coding_attempt", "coding_source_waiting", "seq_visit"}):
+    if (ownership.kind in SEQUENTIAL_HELD_KINDS - {"seq_visit", "seq_source_waiting"}
+            or ownership.kind not in {"legacy", "draft", "f5", "coding_attempt", "coding_source_waiting", "seq_visit", "seq_source_waiting"}):
         raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
-    draft_prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id) if workflow_draft else None
+    draft_prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id) if workflow_draft or ownership.kind == 'seq_source_waiting' else None
     # Task-active gate runs BEFORE session ownership (see _require_task_active).
     if draft_prior is None:
         _require_task_active(task_id, org.db.get_task(task_id))
@@ -1195,14 +1196,20 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         decision_payload.pop("_authority_v2_admission", None)
     if decision_payload is not None and decision_payload.get('action') == 'workflow_start':
         from runtime.workflows.coding_start_records import CodingStartDecision
+        workflow = decision_payload.get('workflow')
+        sequential_start = isinstance(workflow, dict) and workflow.get('format') == 'workflow-sequential-start@1'
+        if sequential_start:
+            from runtime.workflows.sequential_start import SequentialStartDecision
+        validator = SequentialStartDecision if sequential_start else CodingStartDecision
+        prefix = 'sequential' if sequential_start else 'coding'
         try:
-            CodingStartDecision.model_validate(decision_payload)
+            validator.model_validate(decision_payload)
         except ValueError:
-            raise HTTPException(status_code=422, detail={'code': 'coding_start_invalid_decision'}) from None
+            raise HTTPException(status_code=422, detail={'code': prefix + '_start_invalid_decision'}) from None
         owner = org.db.get_task(task_id)
         if (owner is None or owner.task_type != 'task' or owner.assigned_agent != body.agent
                 or org.teams.executable_manager_for_team(owner.team) != body.agent):
-            raise HTTPException(status_code=409, detail={'code': 'coding_start_manager_result_required'})
+            raise HTTPException(status_code=409, detail={'code': prefix + '_start_manager_result_required'})
     v2_admission: dict | None = None
     mse_present = "manager_self_evaluation" in body.model_fields_set
     _teams = getattr(org, "teams", None)
@@ -1300,6 +1307,20 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                                 waiting_on_job_ids=body.waiting_on_job_ids or None, verdict=body.verdict,
                                 local_ci_json=_json.dumps(body.local_ci) if body.local_ci is not None else None)):
                         raise HTTPException(status_code=409, detail={'code': 'coding_start_operation_conflict'})
+            if ownership.kind == 'seq_source_waiting':
+                from runtime.infrastructure.database import completion_result_payload_matches
+                from runtime.workflows.sequential_start import source_callback_replay
+                try:
+                    valid = source_callback_replay(org, ownership.intent_id, prior)
+                except (ValueError, sqlite3.Error):
+                    valid = False
+                if (not valid or not completion_result_payload_matches(prior,
+                        output_summary=body.output_summary, confidence_score=body.confidence,
+                        status=body.status, risks_flagged=body.risks_flagged, output_dir=body.output_dir,
+                        decision_json=_json.dumps(decision_payload) if decision_payload is not None else None,
+                        waiting_on_job_ids=body.waiting_on_job_ids or None, verdict=body.verdict,
+                        local_ci_json=_json.dumps(body.local_ci) if body.local_ci is not None else None)):
+                    raise HTTPException(status_code=409, detail={'code': 'sequential_start_operation_conflict'})
             if v2_admission is None:
                 return {"ok": True}
             # Narrowed v2 retry seam: an exact transport retry is read-only
@@ -1380,6 +1401,8 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "unknown_session", "task_id": task_id, "agent": body.agent},
         )
+    if ownership.kind == 'seq_source_waiting':
+        raise HTTPException(status_code=409, detail={'code': 'sequential_start_operation_conflict'})
     if expected != body.session_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1505,14 +1528,20 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                     # origin invocation must not overwrite a recovery claim.
                     if (ownership.kind == 'legacy' and decision_payload is not None
                             and decision_payload.get('action') == 'workflow_start'):
-                        from runtime.workflows.coding_start import CodingStartError, require_start_ready
-                        try:
-                            require_start_ready(org.db._conn, org, decision_payload['workflow'])
-                        except CodingStartError as exc:
-                            # Refuse before persisting a fresh unsupported start result,
-                            # including on I; never poison old/native history or spend
-                            # the genuine manager's result-action claim while disabled.
-                            raise HTTPException(status_code=409, detail={'code': exc.code}) from None
+                        workflow = decision_payload['workflow']
+                        if workflow.get('format') == 'workflow-sequential-start@1':
+                            from runtime.workflows.sequential_start import precheck_start
+                            try:
+                                precheck_start(org, workflow, source_task_id=task_id)
+                            except (ValueError, OSError, sqlite3.Error):
+                                raise HTTPException(status_code=409, detail={'code': 'sequential_start_unavailable'}) from None
+                        else:
+                            from runtime.workflows.coding_start import CodingStartError, require_start_ready
+                            try:
+                                require_start_ready(org.db._conn, org, workflow)
+                            except CodingStartError as exc:
+                                # Refuse before persisting a fresh unsupported start result.
+                                raise HTTPException(status_code=409, detail={'code': exc.code}) from None
                     if not org.db.admit_task_completion_callback(
                         task_id=task_id,
                         agent=body.agent,

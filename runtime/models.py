@@ -285,6 +285,10 @@ class NextStep(BaseModel):
     @classmethod
     def _coding_start_is_closed(cls, value: object) -> object:
         if isinstance(value, dict) and value.get("action") == "workflow_start":
+            workflow = value.get("workflow")
+            if isinstance(workflow, dict) and workflow.get("format") == "workflow-sequential-start@1":
+                from runtime.workflows.sequential_start import SequentialStartDecision
+                return SequentialStartDecision.model_validate(value).model_dump(mode="json")
             from runtime.workflows.coding_start_records import CodingStartDecision
             return CodingStartDecision.model_validate(value).model_dump()
         if isinstance(value, dict) and "workflow" in value:
