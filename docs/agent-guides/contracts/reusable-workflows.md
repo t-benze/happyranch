@@ -956,3 +956,10 @@ warm-up plus five samples; relative comparisons apply only to outcome-matched
 pairs, with matched ordinary controls for newly readable sequential subjects.
 Authentic native-v2 spend/claim/ack plus graph rollback and genuine host/outer
 settlement remain UNVERIFIED; labelled fixtures do not close those gaps.
+
+
+## U3e-1b-ii source outer producer (ROOT TASK-14640)
+
+The original ordinary/v2 source TaskInvocation now supplies the null-visit `outer@1` evidence through `sequential_start.source_outer_settled`. The unchanged StartCommand, admission pins and parked source quartet remain authoritative. Only native success with supported containment, Boolean quiescence, no survivors/cleanup error, safe outer cleanup, a clear tracker and positive original-owner close/release can qualify. Missing or uncertain observations never imply removal.
+
+The existing evidence ID/body and PK conflict rules apply: exact re-observation adds nothing; divergent bytes refuse with rollback. The existing selected evidence validator runs in the writer, and the positive evidence commits before notification of the admitted first visit. Queue admission independently checks that row. Cancellation supplies no row or publication; source/carrier receive no synthetic result or session. Genuine host settlement, first launch, restart/races and U5 remain UNVERIFIED(V3).

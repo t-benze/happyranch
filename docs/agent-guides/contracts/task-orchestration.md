@@ -478,3 +478,10 @@ warm-up plus five samples; relative comparisons apply only to outcome-matched
 pairs, with matched ordinary controls for newly readable sequential subjects.
 Authentic native-v2 spend/claim/ack plus graph rollback and genuine host/outer
 settlement remain UNVERIFIED; labelled fixtures do not close those gaps.
+
+
+## U3e-1b-ii source outer producer (ROOT TASK-14640)
+
+A genuine executable team manager may use its own final completion decision `workflow_start` with the unchanged `workflow-sequential-start@1` StartCommand, exact pins, stable key and actual remaining limits. Unavailable venue is a refusal, never setup authority. Thread-originated and nested sources remain refused by the inert adapter; no other callback/route/CLI contract changes.
+
+Admission alone cannot publish the first visit. After the original native invocation settles, the source producer reselects the retained source/run/current first visit and actual completed INTEGER result, authenticates the saved command and checks cancellation inside the existing evidence writer. It uses the existing null-visit outer identity and exact source callback identity. One positive evidence COMMIT precedes the existing notify_queued port; exact replay is a no-op and conflicts roll back. Carrier and source gain no result/SID. Existing visit settlement is unchanged; report-completion remains FINAL.
