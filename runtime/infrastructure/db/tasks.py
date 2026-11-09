@@ -2219,6 +2219,32 @@ class TasksMixin:
         return None
 
     @_synchronized
+    def try_park_on_jobs(
+        self, expected_claim: RetryClaim, *, blocked_on_job_ids: str,
+        note: str | None,
+    ) -> bool:
+        """Park only the same uncancelled decision owner; a lost claim is inert."""
+        with self._task_owner_mutation(expected_claim.task_id):
+            if not self._retry_claim_matches(expected_claim):
+                return False
+            cursor = self._conn.execute(
+                """UPDATE tasks SET status = ?, block_kind = ?,
+                       blocked_on_job_ids = ?, note = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind IS ?
+                       AND cancelled_at IS NULL""",
+                (
+                    TaskStatus.IN_PROGRESS.value, BlockKind.BLOCKED_ON_JOB.value,
+                    blocked_on_job_ids, note, datetime.now(timezone.utc).isoformat(),
+                    expected_claim.task_id, expected_claim.status.value,
+                    expected_claim.block_kind,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            self._conn.commit()
+            return True
+
+    @_synchronized
     def try_retry_feedback(self, expected_claim: RetryClaim, feedback: str) -> PendingRetry | LostClaim:
         """A: commit existing feedback result/audit and PENDING as one owned write."""
         try:

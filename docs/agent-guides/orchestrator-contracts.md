@@ -2503,6 +2503,18 @@ Agents self-report `status="completed"|"blocked"` via `happyranch report-complet
 
 `block_kind` is the waiting-reason discriminant for an `in_progress` task — *what it is internally waiting on*: `delegated` (parked delegation bookkeeping) or `blocked_on_job` (waiting on background jobs). `block_kind IS NULL` has no parked reason; that marker alone does not prove a subprocess is running now. A parent waiting on its children/jobs stays `in_progress` (not `blocked`); the await-founder state is the top-level `escalated`.
 
+Job-wait parking, out-of-scope delegate/fan-out feedback, and missing-reviewer-
+expectation feedback require the original decision claim to remain current and
+uncancelled. The Database lock and writer transaction cover that recheck and
+the parking write. A lost claim leaves the current row untouched, emits no
+parking audit or synthetic feedback result, and performs no enqueue or immediate
+job-resume check. Feedback results and their feedback audit commit with PENDING;
+the earlier audit of the submitted decision remains as history even if parking
+loses. Successful job parking retains its audit and immediate resume check;
+successful feedback retains its generation-aware self enqueue. Cancellation
+after a successful parking commit remains authoritative; queue delivery is not
+a task claim or a crash-atomic extension of that commit.
+
 `superseded` is a terminal state, peer to `completed`/`failed`. An `escalated` / `in_progress(delegated)` task transitions here when a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) names it in lineage: the predecessor is closed (block_kind cleared, audit cites the continuation root task_id) instead of being re-run. The close never re-enqueues the superseded task; it still wakes a delegated parent via the normal parent-wake path, and the delegated close is gated on all children being terminal so no live sibling is abandoned or SIGTERM'd. It joins every terminal predicate (`TERMINAL_STATES`, `_TERMINAL_TASK_STATUSES`, `_TERMINAL_STATUS_TO_EVENT`) and is completion-class for the thread task-followup: a thread-originated task that is superseded emits its `_maybe_post_thread_followup` system message (`task_completed` kind) just like a normal completion. The thread-dispatch supersede is manager-authorized only — a worker self-dispatch naming `resolves` is rejected (`403 thread_supersede_not_authorized`); the predecessor is never auto-closed by an unauthorized dispatch. Query the backlog with `happyranch tasks --status escalated` or `happyranch tasks --status in_progress --block-kind delegated`.
 
 Manager `supersede` decisions are root-only. The completion consumer identifies a

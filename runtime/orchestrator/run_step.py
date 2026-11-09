@@ -3033,13 +3033,13 @@ def _consume_completion_report_body(
                     return
             # Path B: a task waiting on jobs it submitted is in_progress, with
             # the waiting reason kept in block_kind.
-            db.update_task(
-                task_id,
-                status=TaskStatus.IN_PROGRESS,
-                block_kind=BlockKind.BLOCKED_ON_JOB,
+            if not db.try_park_on_jobs(
+                expected_claim,
                 blocked_on_job_ids=_json.dumps(deduped),
                 note=report.output_summary,
-            )
+            ):
+                logger.info("run_step %s: job parking lost decision claim", task_id)
+                return
             orch._audit.log_task_blocked_on_jobs(
                 task_id=task_id, agent=agent,
                 blocking_job_ids=deduped,
@@ -3518,6 +3518,7 @@ def _consume_completion_report_body(
                 _reject_reviewer_omission(
                     orch, task_id, agent, next_count,
                     _reviewer_omitted_expectation_error(child.agent),
+                    expected_claim=expected_claim,
                     action_label="fan-out",
                 )
                 return
@@ -3543,6 +3544,7 @@ def _consume_completion_report_body(
                     _reject_reviewer_omission(
                         orch, task_id, agent, next_count,
                         _reviewer_omitted_expectation_error(leg.agent),
+                        expected_claim=expected_claim,
                         action_label="fan-out",
                     )
                     return
@@ -3580,20 +3582,7 @@ def _consume_completion_report_body(
                     f"Invalid fan-out: {'; '.join(parts)}. You may only "
                     f"fan-out sub-tasks to yourself ({agent!r}), or escalate."
                 )
-            db.insert_task_result(
-                task_id=task_id,
-                agent=agent,
-                session_id="",
-                status="completed",
-                confidence_score=0,
-                output_summary=feedback,
-                risks_flagged=[],
-            )
-            orch._audit.log_orchestration_step(
-                task_id, next_count, {"action": "feedback", "reason": feedback},
-            )
-            db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
-            _enqueue_task_generation_aware(orch, task_id)
+            _feedback_and_reenqueue(orch, expected_claim, feedback)
             return
 
         for i, child in enumerate(decision.children):
@@ -3667,6 +3656,7 @@ def _consume_completion_report_body(
             if _is_reviewer_omission_error(err):
                 _reject_reviewer_omission(
                     orch, task_id, agent, next_count, err,
+                    expected_claim=expected_claim,
                 )
             else:
                 note = f"invalid delegate: {err}"
@@ -3698,20 +3688,7 @@ def _consume_completion_report_body(
                     f"Invalid delegation: {'; '.join(parts)}. You may only "
                     f"delegate sub-tasks to yourself ({agent!r}), or escalate."
                 )
-            db.insert_task_result(
-                task_id=task_id,
-                agent=agent,
-                session_id="",
-                status="completed",
-                confidence_score=0,
-                output_summary=feedback,
-                risks_flagged=[],
-            )
-            orch._audit.log_orchestration_step(
-                task_id, next_count, {"action": "feedback", "reason": feedback},
-            )
-            db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
-            _enqueue_task_generation_aware(orch, task_id)
+            _feedback_and_reenqueue(orch, expected_claim, feedback)
             return
 
         # THR-078 seq15: MANDATORY retry-link.  When this parent has FAILED
@@ -4267,9 +4244,7 @@ def _check_retry_link_required(
 
 def _feedback_and_reenqueue(
     orch: "Orchestrator",
-    task_id: str,
-    agent: str,
-    next_count: int,
+    expected_claim: RetryClaim,
     feedback: str,
 ) -> None:
     """Record a feedback task result + feedback orchestration audit step and
@@ -4282,21 +4257,14 @@ def _feedback_and_reenqueue(
     ``task_results`` row (status=completed, confidence=0), one
     ``orchestration_step`` audit row keyed to the claimed step with
     ``{"action": "feedback", "reason": feedback}``, task back to PENDING
-    with block_kind cleared, and exactly one self re-enqueue."""
+    with block_kind cleared, and exactly one self re-enqueue. A lost original
+    claim writes no feedback, does not park, and does not enqueue."""
     db = orch._db
-    db.insert_task_result(
-        task_id=task_id,
-        agent=agent,
-        session_id="",
-        status="completed",
-        confidence_score=0,
-        output_summary=feedback,
-        risks_flagged=[],
-    )
-    orch._audit.log_orchestration_step(
-        task_id, next_count, {"action": "feedback", "reason": feedback},
-    )
-    db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
+    task_id = expected_claim.task_id
+    pending = db.try_retry_feedback(expected_claim, feedback)
+    if not isinstance(pending, PendingRetry):
+        logger.info("run_step %s: feedback parking lost decision claim", task_id)
+        return
     _enqueue_task_generation_aware(orch, task_id)
 
 
@@ -4316,6 +4284,7 @@ def _reject_reviewer_omission(
     next_count: int,
     err: str,
     *,
+    expected_claim: RetryClaim,
     action_label: str = "delegation",
 ) -> None:
     """HARD REJECT a configured reviewer leg that omits ``expect_verdict`` as a
@@ -4328,7 +4297,7 @@ def _reject_reviewer_omission(
         f"Correct the decision and re-submit with "
         f'expect_verdict: "APPROVE" on the reviewer leg.'
     )
-    _feedback_and_reenqueue(orch, task_id, agent, next_count, feedback)
+    _feedback_and_reenqueue(orch, expected_claim, feedback)
 
 
 def _reject_retry_link_decision(
