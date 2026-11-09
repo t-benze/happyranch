@@ -5,7 +5,7 @@
  *
  * `@happyranch/feature-flags` is resolved by `vite.config.ts` (resolve.alias)
  * to the checked-in production profile for every `vite build`, or to a
- * resolved local/test snapshot for dev, `npm run build:local` and Vitest. The
+ * resolved local/test snapshot for dev and `npm run build:local`. The
  * registry in `web/config/features.registry.json` names each flag with its
  * purpose, owner and removal condition. Values are fixed for one startup or
  * build: restart the dev server or rebuild to change them. This is UI

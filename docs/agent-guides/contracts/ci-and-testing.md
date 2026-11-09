@@ -149,8 +149,9 @@ Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
 
 Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
-under THR-243 seq42, never PASS. Web Vitest, native/platform, integration,
-the named actual CLI callback and their isolation fences retain their sources.
+under THR-243 seq42, never PASS. Native/platform, integration, the named actual
+CLI callback and their isolation fences retain their sources. See the
+[repository verification status](../../../AGENTS.md#verification-status) for retired suites.
 Docs Manual build and the real tenant-isolation harness retain manual-only
 workflows, outside PR/main. Manual/tag macOS packaging is a separate release
 activity and invokes no fresh E2E. Legacy nightly integration remains separate

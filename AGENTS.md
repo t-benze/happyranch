@@ -115,6 +115,8 @@ authorized Mac Linux guest. Run them before changes touching daemon lifespan,
 
 ## Verification status
 
+Web unit tests (Vitest) were retired by founder decision (THR-343); web behavior is covered by Product E2E.
+
 - Merge CI is lint/static only: the required checks at the final PR head and on
   the merged main commit are exactly `Source Boundary Lint` and `Web Lint (Node 24)`.
   Normal hooks stay enabled; never bypass hooks or the guarded worktree.
@@ -196,7 +198,7 @@ and changing a responsibility without unrelated edits.
 Every browser-callable daemon route maps to one TS function in `web/src/lib/api/`.
 
 - Python snapshot maintainer: `scripts/generate_openapi_snapshot.py`; data: `tests/contract/openapi.json`.
-- TS coverage: `web/src/test/openapi-coverage.test.ts`.
+- TS mirrors: `web/src/lib/api/`; route classification: `tests/contract/route-classification.json`.
 
 All new or changed app-owned headings, actions, dialogs, tooltips, accessible
 labels, validation, loading, empty/error states and generated narratives must
@@ -218,7 +220,6 @@ gitignored `features.local.json`. Read them ONLY from `web/src/config/features.t
 - `scripts/build_web.sh` defaults to `npm run build:local`. Like `npm run dev`,
   it uses development defaults, then the local override, then an explicit
   `VITE_ENABLE_KB_COMPOSE`.
-- Vitest uses development defaults.
 - The `VITE_ENABLE_KB_COMPOSE` compatibility input (local/test only) is strict
   literal `true`/`false`.
 - Values are fixed per startup or build.

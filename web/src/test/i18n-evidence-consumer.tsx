@@ -6,7 +6,7 @@
  * `main.tsx -> App -> createBrowserRouter -> AppShell -> I18nProvider`
  * composition by the evidence-only Vite transform in `vite.config.ts`, and only
  * when `I18N_BROWSER_EVIDENCE` is set. Every ordinary `npm run build`,
- * `npm run build-storybook`, Vitest and CI run leaves that variable unset, so
+ * `npm run build-storybook` and CI run leaves that variable unset, so
  * the transform returns `null` and this file is absent from the bundle.
  *
  * It records the consumer text the component is about to commit on its FIRST
