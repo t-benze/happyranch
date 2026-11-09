@@ -260,10 +260,11 @@ full review and scoped QA precede manager guarded merge.
 
 ## U2a storage and standalone reader boundary
 
-TASK-14536 under replacement root TASK-14531 adds the records/standalone-reader
-boundary of U2a. This is SOURCE-INERT: no production caller of the standalone
-history reader, producer, allocator, route or startup SQL is attached. U2b adds
-only the explicit operator script described below. It does not close U2,
+TASK-14536 under replacement root TASK-14531 originally added the records and
+standalone-reader boundary of U2a without a production caller, producer,
+allocator, route or startup SQL. U2b originally added only the explicit operator
+script described below; the bounded startup composition is described below.
+These source units do not close U2,
 M1, AC5, AC8 or AC12. TASK-14576 under root TASK-14563 adds the
 readers-only composition below; TASK-14597 adds U2b installer/check source.
 Real installation and U3 producers remain separate.
@@ -377,8 +378,10 @@ rebuilds this companion while preserving every v1 mark; adoption belongs to U3.
 validates the entire sequential structure and data/ownership closure. It then
 enters a connection-bound read scope for the original complete document/Coding
 validators, whose recursive structure checks compare independently built complete
-combined references. Normal installed callers outside this scope still refuse the
-extension. Genuine native connections and exact retained budgets keep their guards.
+combined references. Shared installed readers outside this scope still refuse
+the extension. The selected startup consumers below explicitly enter this
+complete read; there is no global recognition. Genuine native connections and
+exact retained budgets keep their guards.
 
 The Coding discriminator imports the closed `SEQUENTIAL_TABLES` names from their
 DDL owner. Only within the validated scope, it acquires and compares each enrolled
@@ -435,6 +438,67 @@ backout limits. Execution behavior remains **UNVERIFIED**: disposable structural
 SQLite observations do not establish real install/reopen/backout safety, V3,
 current authority, native settlement or ordinary-use acceptance. U3–U9 remain
 outside this source unit.
+
+
+## Bounded U2/U3 startup composition (F-M1-REOPEN)
+
+ROOT TASK-14640's three F-M1-REOPEN rulings and accepted TASK-15007 design rev3
+select only the org-load schema wrappers, cutover reads, final task-ownership
+installation read, naming installation target admission and builtin registration
+source/changed-target reads. `OrgState.load` retains its original order and
+failure-close owner. `install_or_recover` and shared legacy reader internals
+remain unchanged. Later Coding/document operational consumers gain no recognition.
+
+`workflow_schema_load.read_org_layout` examines every main/TEMP object's name
+and owner, independent of kind, under a bounded selector. A casefolded
+`workflow_seq_` name or owner selects the existing complete sequential reader
+in that SAME snapshot. Partial, wrong-case/kind, TEMP-shadow, foreign and corrupt
+storage refuse; no fallback follows a selected sequential failure. The complete
+reader returns its genuine retained `(document_layout, coding_inventory)` tuple
+additively with all previous `SequentialHistory` fields. Its authenticated-row
+context is confined to one complete read and reset on every exit. Historical
+direct absent-storage callers retain their unavailable early return.
+
+Complete real-installer J with an I-origin active Draft/Review workload and J
+with Coding schema only use this path. Literal I plus the extension without
+Coding refuses with `ValueError('workflow_schema_object_set_mismatch')` through
+the reopened source read, before automatic Coding DDL, conversion or binding
+refresh. The original transaction rolls back and unpublished load closes its DB.
+I is never relabeled J. Operator remediation is to restore the verified
+pre-install backup, boot normally once, stop, then use the reviewed installer
+under its original prerequisites. No new command or live operation is authorized;
+installer-side literal-I refusal remains separate follow-up F-M1-I-INSTALL.
+
+With no reserved sequential object, the selector ends only its own read
+snapshot before invoking the exact original expression with its original
+arguments. Legacy values, bytes, errors, transaction exits and source-reuse
+eligibility remain with that owner; the extra read-only selector SQL is
+observable. Sequential results bypass source reuse. Writer targets always read
+fresh after mutation, on the actual original cumulative retained budget.
+Retained counter deltas are charged once to C, including refusals. Advances
+remain provisional until the complete read and snapshot exit succeed; an outer
+writer still owns publication after its own successful exit.
+
+Selector and A/B/C/L share the original absolute five-second deadline within
+each read; the selector has its own unchanged finite allowance. Narrow retained
+caps, scope separation and source/target budget identity remain unchanged.
+ROOT's observation thresholds are A rows <=4608 with SAME-schema/history
+invariance and no exhaustion; A bytes/steps/SQL/deadline, B/C/L, selector and
+narrow retained dimensions each retain their own 50% half-cap. Historical
+TASK-15007 structural observations include A=4158 on literal I (4034 rows of
+8192 headroom), J=4452/4460/4492/4502 at distinct startup schema stages
+(3740/3732/3700/3690 headroom), and absent-J=3736/3786 (4456/4406 headroom).
+Same-schema active-document history and builtin source/target each observed
+4502 ->4502. Schema growth consumes A. These are attributed design-source
+observations, not candidate-head capacity, behavior or V3 proof.
+
+This source composition performs no startup sequential installation or upgrade,
+live migration, venue/M1 execution, deploy, restart or activation. Empty installed
+storage still requires compatible code; no old-reader downgrade is supported.
+Independent full review and same-head scoped structural QA remain required.
+Only Source Boundary Lint and Web Lint (Node 24) are automated merge checks;
+Python units remain RETIRED, integration SKIPPED THR-243 seq42, and candidate
+behavior, native closure, backup/reopen/backout and V3 acceptance remain unproven.
 
 
 ## U3s venue-only sequential start enablement (SB-1 a)

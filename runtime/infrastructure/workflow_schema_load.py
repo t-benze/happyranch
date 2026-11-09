@@ -1,6 +1,6 @@
 """Explicit source-validation reuse, confined to one unpublished org load.
 
-Writer target checks deliberately continue to call workflow_schema directly.
+Sequential layouts use complete validation; writer targets never reuse sources.
 """
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
+from collections.abc import Callable
 from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,53 @@ def org_load_validation(database: Any, *, org_slug: str) -> Iterator[None]:
                     org_slug, owner.full_runs, owner.hits, owner.full_seconds)
 
 
+def read_org_layout(
+    conn: sqlite3.Connection, *, expected_org_slug: str | None,
+    legacy: Callable[[], Any], budget: Any = None, advances: Any = None,
+) -> Any:
+    """Select a complete sequential read or the caller's unchanged legacy path.
+
+    Selection and sequential validation share one snapshot and absolute deadline.
+    Only this read's authenticated rows/inventory may escape as its result; a
+    writer target always calls anew after mutation. Absence leaves the original
+    reader's transaction ownership, errors and source-reuse contract intact.
+    """
+    from runtime.infrastructure.workflow_schema import _schema_snapshot, _structure_cells
+    from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, read_sequential_history
+
+    owned = not conn.in_transaction
+    selector = _ReadBudget()
+    collected: list[tuple[tuple[int, int], int]] = []
+    with _schema_snapshot(conn):
+        present = False
+        with _sql_budget(conn, selector):
+            for schema in ('main', 'temp'):
+                rows = _structure_cells(conn, f'SELECT rowid,name,tbl_name FROM {schema}.sqlite_schema',
+                                        ('name', 'tbl_name'), ('rowid',), selector)
+                if any(type(value) is str and value.casefold().startswith('workflow_seq_')
+                       for row in rows for value in row):
+                    present = True
+        if present:
+            history = read_sequential_history(conn, expected_org_slug=expected_org_slug,
+                retained_budget=budget, advances=collected, deadline=selector.deadline)
+            validated = history.retained
+            if validated is None or validated[1] is None:
+                # Never reach install_or_recover's automatic Coding DDL branch
+                # for a never-booted literal-I plus sequential layout.
+                raise ValueError('workflow_schema_object_set_mismatch')
+    if not present:
+        # End only our own selection snapshot BEFORE the original expression.
+        return legacy()
+    selector.check()
+    if owned:
+        from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
+        for file_key, last_id in collected:
+            _advance_audit_log_watermark(conn, file_key, last_id)
+    elif advances is not None:
+        advances.extend(collected)
+    return validated
+
+
 def read_workflow_schema_for_org_load(
     conn: sqlite3.Connection, *, expected_org_slug: str | None,
     writer_source: bool = False, budget: Any = None, advances: Any = None,
@@ -151,20 +199,22 @@ def read_workflow_schema_for_org_load(
     """Source-only: writer_source asserts a fresh BEGIN IMMEDIATE, no own writes.
 
     Arbitrary caller-owned read transactions are never eligible. Outside the
-    OrgState.load scope this is the original complete reader.
+    OrgState.load scope legacy layouts use the original complete reader.
     """
     owner = _current.get()
     kwargs = dict(expected_org_slug=expected_org_slug, budget=budget, advances=advances)
-    if owner is None:
-        from runtime.infrastructure.workflow_schema import _read_workflow_schema
-        return _read_workflow_schema(conn, **kwargs)
-    return owner.read(conn, writer_source=writer_source, **kwargs)
+    from runtime.infrastructure.workflow_schema import _read_workflow_schema
+    return read_org_layout(conn, expected_org_slug=expected_org_slug, budget=budget, advances=advances,
+        legacy=lambda: (_read_workflow_schema(conn, **kwargs) if owner is None else
+                        owner.read(conn, writer_source=writer_source, **kwargs)))
 
 
 def read_installed_for_org_load(conn: sqlite3.Connection, *, expected_org_slug: str, budget: Any) -> tuple:
     """Cutover's fresh writer-source read; preserve metadata semantics elsewhere."""
     if _current.get() is None:
         from runtime.infrastructure.workflow_schema import _read_installed
-        return _read_installed(conn, expected_org_slug=expected_org_slug, validate_data=False, budget=budget)
+        return read_org_layout(conn, expected_org_slug=expected_org_slug, budget=budget,
+            legacy=lambda: _read_installed(conn, expected_org_slug=expected_org_slug,
+                                           validate_data=False, budget=budget))
     return read_workflow_schema_for_org_load(conn, expected_org_slug=expected_org_slug,
                                             writer_source=True, budget=budget)

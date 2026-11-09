@@ -121,7 +121,7 @@ def install_task_ownership(db: Any, *, org_slug: str) -> None:
     repaired or backfilled again. Publication follows successful COMMIT only.
     """
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
-    from runtime.infrastructure.workflow_schema_load import read_workflow_schema_for_org_load
+    from runtime.infrastructure.workflow_schema_load import read_org_layout, read_workflow_schema_for_org_load
     with db.workflow_schema_transaction() as conn:
         layout, coding = read_workflow_schema_for_org_load(
             conn, expected_org_slug=org_slug, writer_source=True,
@@ -143,7 +143,8 @@ def install_task_ownership(db: Any, *, org_slug: str) -> None:
                                        (kind, owner, task))
                 if changed.rowcount != 1:
                     raise ValueError('workflow_task_ownership_task_missing:' + task)
-        _read_workflow_schema(conn, expected_org_slug=org_slug)
+        read_org_layout(conn, expected_org_slug=org_slug,
+                        legacy=lambda: _read_workflow_schema(conn, expected_org_slug=org_slug))
     db._task_ownership_org = org_slug
 
 
