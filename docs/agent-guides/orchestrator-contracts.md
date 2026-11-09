@@ -4812,7 +4812,21 @@ and `memory_collection_seal`. Agent-scoped memory read/update/promotion/lifecycl
 rows are outside this task history; collection acceptance/invalidation controls
 are not informational recovery exemptions. The exact native launch/refusal
 observation `task_native_launch_boundary` is also informational; it does not
-select or consume the recovery result. Unknown actions, including a
+select or consume the recovery result. Session starts accept exactly the native
+five required keys, optionally with a nonempty string `reasoning_effort`.
+Job audits are separately authenticated, never informational: `job_submitted`
+accepts the exact legacy shape or journal shape with `submit_session_id` and
+`submission_digest`; `job_auto_started`, `job_run_started`, `job_run_completed`
+and `job_run_failed` accept only their exact native shapes and an existing jobs
+row owned by this task and worker. Any recorded submit session must be the
+original or selected recovery session. Submission metadata must match the job;
+start metadata must match its recorded runner, working directory, timeout and
+interpreter. Submission and automatic-start actors are the worker. Legacy
+internal `job_run_started` uses `founder` as both actor and recorded reviewer;
+terminal actors match the recorded runner (worker or founder). A prelaunch
+`spawn_failed` refusal without a runner is worker-authored. Terminal status,
+exit, duration and failure reason must match the job row. Foreign ownership,
+malformed shapes and extra keys refuse. Unknown actions, including a
 dictionary-payload `memory_unrecognized_transition`, refuse as
 `ambiguous_history` before failure, review, marker, job or parent effects.
 Selected result/session/owner, review ordering and replay fences are unchanged.
