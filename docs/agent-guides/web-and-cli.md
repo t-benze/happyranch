@@ -1840,10 +1840,10 @@ Current contract:
 
 Layer rules, boundary rules, and agent-callback omissions live in `web/ARCHITECTURE.md`. Full design: `docs/superpowers/specs/2026-05-14-web-ui-design.md`.
 
-Every browser-callable daemon route maps to one TypeScript function in `web/src/lib/api/`. The maintained snapshot and coverage consumer are:
+Every browser-callable daemon route maps to one TypeScript function in `web/src/lib/api/`. The maintained contract sources are:
 
 - Snapshot: `tests/contract/openapi.json`; its Python unit test is retired. Regenerate intentional changes with `uv run python scripts/generate_openapi_snapshot.py --write`.
-- TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
+- TypeScript mirrors: `web/src/lib/api/`; browser inclusions and justified exclusions: `tests/contract/route-classification.json`. Review their parity with the snapshot; the retired web coverage test no longer checks it automatically.
 
 ### Tasks list
 
@@ -2211,8 +2211,8 @@ flags only from `web/src/config/features.ts`.
 - `scripts/build_web.sh` defaults to `npm run build:local`. Like `npm run dev`,
   it uses development defaults, then the local file, then an explicit
   `VITE_ENABLE_KB_COMPOSE`.
-- Vitest uses development defaults plus that explicit input, and ignores the
-  local file.
+- The legacy test-profile environment selector uses development defaults plus
+  that explicit input, and ignores the local file.
 - `VITE_ENABLE_KB_COMPOSE` accepts only the literal `true` or `false`; empty
   or unset means no opinion. Any other value now fails startup, where it used
   to mean off silently.

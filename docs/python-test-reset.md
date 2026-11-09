@@ -69,9 +69,10 @@ retired scratch-report test module; retained containment cases import them there
 Remote DIY integration retains its actual policy-envelope helpers. Unit-only
 fixtures, helpers and archived test data are removed.
 
-Web Vitest and native Swift/Go/platform suites and product assets remain.
-`tests/contract/openapi.json` and `route-classification.json` retain their Web and
-Swift consumers; `scripts/generate_openapi_snapshot.py` remains the maintainer.
+Native Swift/Go/platform suites and product assets remain. Web behavior
+verification follows Product E2E; see [repository verification status](../AGENTS.md#verification-status).
+`tests/contract/openapi.json` and `route-classification.json` remain contract data;
+`scripts/generate_openapi_snapshot.py` remains the maintainer.
 The hostile lab retains the four JSON inputs read by its actual `Contract` reader:
 route policy, credential taxonomy, failure categories and threat cases. Its real
 execution remains separate from the deleted Python preflight. The old unused
@@ -131,8 +132,9 @@ Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
 
 Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
-under THR-243 seq42, never PASS. Web Vitest, native/platform, integration,
-the named actual CLI callback and their isolation fences retain their sources.
+under THR-243 seq42, never PASS. Native/platform, integration, the named actual
+CLI callback and their isolation fences retain their sources. See the
+[repository verification status](../AGENTS.md#verification-status) for retired suites.
 Docs Manual build and the real tenant-isolation harness retain manual-only
 workflows, outside PR/main. Manual/tag macOS packaging is a separate release
 activity and invokes no fresh E2E. Legacy nightly integration remains separate

@@ -119,7 +119,6 @@ export default tseslint.config(
       "dist",
       "node_modules",
       "scripts/**",
-      "vitest.setup.ts",
       "vite.config.ts",
       "**/*.config.js",
       "**/*.config.ts",

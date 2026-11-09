@@ -2773,9 +2773,10 @@ existing explicit `VITE_ENABLE_KB_COMPOSE` compatibility input. It writes
 is absent. `scripts/build_web.sh --production`, `npm run build` and Mac
 packaging use only `web/config/features.production.json`, ignoring local/ambient
 feature overrides and hiding unfinished UI such as Work Hours. `npm run dev`
-uses the local profile; Vitest uses development defaults plus the KB input,
-ignoring the local file. The flags change UI visibility only: daemon settings,
-scheduler, API and CLI behavior do not depend on them. See
+uses the local profile. The legacy test-profile environment selector still uses
+development defaults plus the KB input, ignoring the local file. The flags change
+UI visibility only: daemon settings, scheduler, API and CLI behavior do not depend
+on them. See
 `web/ARCHITECTURE.md` § Build-time UI flags.
 
 `scripts/daemon.sh start` removes a stale port file, launches the daemon, and
@@ -2912,8 +2913,9 @@ Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
 
 Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
-under THR-243 seq42, never PASS. Web Vitest, native/platform, integration,
-the named actual CLI callback and their isolation fences retain their sources.
+under THR-243 seq42, never PASS. Native/platform, integration, the named actual
+CLI callback and their isolation fences retain their sources. See the
+[repository verification status](../../AGENTS.md#verification-status) for retired suites.
 Docs Manual build and the real tenant-isolation harness retain manual-only
 workflows, outside PR/main. Manual/tag macOS packaging is a separate release
 activity and invokes no fresh E2E. Legacy nightly integration remains separate
