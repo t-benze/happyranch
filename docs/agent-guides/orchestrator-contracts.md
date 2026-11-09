@@ -4218,6 +4218,17 @@ complete and the dual-text feature remains unaccepted.
 
 A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `tests/test_thr211_completion_status_lag.py` for the session-bound regression cases.
 
+Next-leg admission atomically requires the parent to remain `in_progress`
+with `block_kind=delegated`, no `cancelled_at`, and the exact chain JSON read
+by the worker. Losing that race rolls back without a child, attachment claim,
+audit or enqueue, and does not clear, wake, fail or complete the parent.
+Chain clearing at this boundary uses the same parent-state comparison.
+Attachment validation or child-insertion failure clears the current chain:
+a manager parent wakes normally, while a pipeline carrier becomes `FAILED`
+through its existing failure path and feeds that failure to the fan-out barrier.
+Admission failure never counts as successful carrier completion; actual final-leg
+completion retains the existing success path.
+
 A configured reviewer leg (org setting `reviewer_agents`, default `code_reviewer`) MUST declare `expect_verdict: "APPROVE"`; omission is a HARD REJECT — the whole delegation is denied before any child spawns, the owner receives a feedback task result and feedback orchestration step naming the required `expect_verdict: "APPROVE"`, and the root stays PENDING and is re-enqueued for a corrected decision (never a root failure). Missing agent / missing workspace delegates keep hard terminal failure. Same semantics apply to pipeline-carrier legs in fan-out decisions.
 
 Implementation: `runtime/orchestrator/chain.py` and `runtime/orchestrator/run_step.py`. Spec: `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.

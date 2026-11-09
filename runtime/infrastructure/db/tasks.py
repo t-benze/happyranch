@@ -3085,6 +3085,26 @@ class TasksMixin:
             self._conn.rollback()
             raise
 
+    @_synchronized
+    def try_clear_chain(self, parent_id: str, expected_active_chain_json: str) -> bool:
+        """Clear only the same uncancelled, delegated parent's chain."""
+        with self._task_owner_mutation(parent_id):
+            cursor = self._conn.execute(
+                """UPDATE tasks SET active_chain = NULL, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind = ?
+                   AND cancelled_at IS NULL AND active_chain = ?""",
+                (
+                    datetime.now(timezone.utc).isoformat(), parent_id,
+                    TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value,
+                    expected_active_chain_json,
+                ),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self._conn.commit()
+            return True
+
     @_task_move_admission
     @_synchronized
     def try_advance_chain(
@@ -3093,9 +3113,10 @@ class TasksMixin:
         active_chain_json: str,
         next_child: "TaskRecord",
         *,
+        expected_active_chain_json: str,
         attachments: list[dict] | None = None,
         uploaded_by: str = "orchestrator",
-    ) -> bool:
+    ) -> bool | None:
         """Atomically update parent active_chain + insert next child +
         attachment links/audit in a single explicit transaction.
 
@@ -3104,17 +3125,27 @@ class TasksMixin:
         or child/link/audit write failure rolls back the chain advance.
 
         Returns True on success (parent chain advanced, child exists,
-        attachments linked). Returns False and rolls back on any failure.
+        attachments linked), False on admission/write failure, or None when
+        the parent is no longer uncancelled/in_progress/delegated with the
+        expected prior chain. Both unsuccessful outcomes roll back all writes;
+        a lost race must not trigger parent wake or terminal changes.
         """
-        now_ts = datetime.now(timezone.utc).isoformat()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             self._check_team_move_task_uncommitted(parent_id, declared_chain=active_chain_json)
             self._check_team_move_task_uncommitted(next_child)
-            self._conn.execute(
-                "UPDATE tasks SET active_chain = ? WHERE id = ?",
-                (active_chain_json, parent_id),
+            cursor = self._conn.execute(
+                """UPDATE tasks SET active_chain = ?
+                   WHERE id = ? AND status = ? AND block_kind = ?
+                   AND cancelled_at IS NULL AND active_chain = ?""",
+                (
+                    active_chain_json, parent_id, TaskStatus.IN_PROGRESS.value,
+                    BlockKind.DELEGATED.value, expected_active_chain_json,
+                ),
             )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                return None
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
