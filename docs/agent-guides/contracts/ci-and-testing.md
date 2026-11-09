@@ -11,7 +11,10 @@ are the launcher handoff. Safe denial cases continue after no-effects checks;
 unsafe dependents report prerequisite ERROR, with no reset/retry. The strict
 same-runtime E05→E07 checkpoint/closure/full50s admission and first cause remain;
 E05 failure stays red even if E07 passes. Failure capture precedes E05 teardown.
-Optional Owned/E07 process diagnostics are removed; real cleanup is mandatory.
+Bounded Owned ownership-registration/read-error and E07 closure-sample diagnostics
+are recorded in scrubbed per-case JUnit `system-out`, without environment contents,
+argv or locals. Former optional ownership/export protocols remain removed; real
+cleanup is mandatory.
 Browser/transport original-body archives, framing/segment hashes and publication
 member/byte/fact budgets are removed. Actual Playwright Response JSON supplies
 E05 browser/public/DOM equality. The native HTTP/SSE forwarding and GET-owner

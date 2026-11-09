@@ -229,9 +229,12 @@ not dispatch E2E. Required merge checks remain Source Boundary Lint and Web Lint
 (Node24), with independent review/scoped QA, normal hooks and manager guarded
 merge. Python units remain RETIRED; integration SKIPPED THR-243 seq42.
 Historical failures, protected proof holds, abrupt-restart and jobs-cap/Stop work
-remain unresolved. Slice 2 removes private state/completion publication and optional Owned/E07
-process annotations, keeping real PID-generation, cgroup, reaper, process/port/
-socket/data cleanup and every product predicate. The E07 prefix is frozen in
+remain unresolved. Historically, slice 2 removed private state/completion publication
+and optional Owned/E07 process annotations, keeping real PID-generation, cgroup,
+reaper, process/port/socket/data cleanup and every product predicate. Bounded
+registration/read-error and closure-sample diagnostics now use the scrubbed
+per-case JUnit `system-out` described above; ownership/export protocols remain
+removed and real cleanup is mandatory. The E07 prefix is frozen in
 memory before allocation; its witness and checkpoint/first-cause joins remain.
 Native launch identity comes from the original provider socket acknowledgement,
 not a published launch file. Slice 3 removes the remaining relay-original archive,
