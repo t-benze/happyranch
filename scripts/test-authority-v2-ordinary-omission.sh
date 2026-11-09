@@ -275,6 +275,32 @@ def contradiction_case(db, kind):
         db._conn.execute("DELETE FROM audit_log WHERE action='authority_policy_v2_result_stage'")
         db._conn.commit()
         assert db.get_authority_policy_v2_attempt_for_result(row['id']) is None
+    elif kind in {'audit_conflicting_result', 'audit_conflicting_attempt', 'audit_conflicting_both',
+                  'audit_foreign_session', 'audit_foreign_duplicate_result', 'audit_foreign_attempt',
+                  'audit_conflicting_binding'}:
+        attempt_id = authority_policy_v2_attempt_id(manager_agent='manager', manager_session_id=body.session_id,
+            result_id=row['id'], root_task_id='TASK-1', team='Engineering')
+        evidence = dict(stage='admitted', root_task_id='TASK-1', manager_agent='manager',
+            manager_session_id=body.session_id, result_id=row['id'], attempt_id=attempt_id)
+        if kind in {'audit_conflicting_result', 'audit_conflicting_both', 'audit_foreign_session',
+                    'audit_conflicting_binding', 'audit_foreign_attempt'}:
+            evidence['result_id'] += 999
+        if kind in {'audit_conflicting_attempt', 'audit_conflicting_both', 'audit_foreign_session',
+                    'audit_conflicting_binding'}:
+            evidence['attempt_id'] = 'APV2R-unrelated'
+        if kind == 'audit_conflicting_binding':
+            # Genuine admitted audits carry the binding, not explicit session fields.
+            evidence = dict(stage='admitted', result_id=evidence['result_id'],
+                attempt_id=evidence['attempt_id'], binding_id=admission['binding_id'])
+        elif kind == 'audit_foreign_attempt':
+            evidence = dict(stage='admitted', result_id=evidence['result_id'], attempt_id=attempt_id)
+        db.insert_audit_log(task_id='foreign' if kind.startswith('audit_foreign') else 'TASK-1', agent='manager',
+            action='authority_policy_v2_result_stage', payload=evidence)
+        if kind == 'audit_foreign_duplicate_result':
+            # SQLite json_extract sees999; strict Python decoding must see the duplicate.
+            db._conn.execute("UPDATE audit_log SET payload=? WHERE action='authority_policy_v2_result_stage'",
+                ('{"stage":"admitted","result_id":999,"result_id":' + str(row['id']) + '}',))
+            db._conn.commit()
     elif kind in {'orphan_audit', 'foreign_audit', 'malformed_audit', 'contradictory_audit', 'duplicate_audit'}:
         db.insert_audit_log(task_id='foreign' if kind in {'foreign_audit', 'malformed_audit'} else 'TASK-1', agent='manager',
             action='authority_policy_v2_result_stage', payload={'stage': 'admitted', 'result_id': row['id']})
@@ -291,7 +317,8 @@ def contradiction_case(db, kind):
         if kind == 'malformed_audit':
             db._conn.execute("UPDATE audit_log SET payload='{' WHERE action='authority_policy_v2_result_stage'")
             db._conn.commit()
-    elif kind in {'marker_missing', 'marker_binding', 'marker_digest', 'carrier_tamper'}:
+    elif kind in {'marker_missing', 'marker_binding', 'marker_digest', 'carrier_tamper',
+                  'marker_epoch_boolean', 'marker_epoch_float'} or kind.startswith('marker_type_'):
         decision = json.loads(row['decision_json'])
         if kind == 'marker_missing':
             decision.pop('_authority_v2_admission')
@@ -299,6 +326,12 @@ def contradiction_case(db, kind):
             decision['_authority_v2_admission']['binding_id'] = 'forged'
         elif kind == 'marker_digest':
             decision['_authority_v2_admission']['assessment_digest'] = '0' * 64
+        elif kind in {'marker_epoch_boolean', 'marker_epoch_float'}:
+            assert type(decision['_authority_v2_admission']['activation_epoch']) is int
+            assert decision['_authority_v2_admission']['activation_epoch'] == 1
+            decision['_authority_v2_admission']['activation_epoch'] = True if kind == 'marker_epoch_boolean' else 1.0
+        elif kind.startswith('marker_type_'):
+            decision['_authority_v2_admission'][kind.removeprefix('marker_type_')] = 1
         else:
             decision['_manager_self_evaluation'] = {'_error_code': 'null_assessment'}
         db._conn.execute('UPDATE task_results SET decision_json=? WHERE id=?', (json.dumps(decision), row['id']))
@@ -306,11 +339,27 @@ def contradiction_case(db, kind):
     elif kind == 'read_error':
         db._conn.set_authorizer(lambda action, table, *args:
             sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_READ and table == 'authority_policy_v2_attempts' else sqlite3.SQLITE_OK)
+    stored = row_for(db)
     try:
-        assert refused(db, body) == 'v2_attempt_missing'
-        assert not db.admit_task_completion_callback(**kwargs)
+        route_result = replay(db, body)
+    except HTTPException as error:
+        assert error.status_code == 409, error
+        route_result = error.detail['code']
+    try:
+        accepted = db.admit_task_completion_callback(**kwargs)
+        assert route_result == 'v2_attempt_missing' and not accepted, (kind, route_result, accepted)
     finally:
         db._conn.set_authorizer(None)
+    assert row_for(db) == stored, 'refusal changed immutable result'
+
+
+def admission_type_case(db, value):
+    body, admission, kwargs, row = admit(db, ORDINARY['done'])
+    assert type(admission['activation_epoch']) is int and admission['activation_epoch'] == 1
+    kwargs['v2_admission'] = dict(admission, activation_epoch=value)
+    assert not db.admit_task_completion_callback(**kwargs), 'mistyped admission acknowledged'
+    assert row_for(db) == row
+    assert replay(db, body) == {'ok': True}, 'valid original replay changed'
 
 
 def attribution_case(db, mode):
@@ -414,7 +463,15 @@ with tempfile.TemporaryDirectory(prefix='authority-omission-') as scratch:
         'carrier', 'summary', 'status', 'confidence', 'verdict', 'risks', 'output', 'decision', 'wait_ids', 'local_ci')]
     cases += [('contradiction/' + kind, partial(contradiction_case, kind=kind)) for kind in (
         'orphan_attempt', 'orphan_audit', 'foreign_audit', 'malformed_audit', 'contradictory_audit', 'duplicate_audit', 'marker_missing',
-        'marker_binding', 'marker_digest', 'carrier_tamper', 'read_error')]
+        'marker_binding', 'marker_digest', 'carrier_tamper', 'read_error',
+        'audit_conflicting_result', 'audit_conflicting_attempt', 'audit_conflicting_both', 'audit_foreign_session',
+        'audit_foreign_duplicate_result', 'audit_foreign_attempt', 'audit_conflicting_binding',
+        'marker_epoch_boolean', 'marker_epoch_float')]
+    cases += [('contradiction/marker_type_' + field, partial(contradiction_case, kind='marker_type_' + field))
+        for field in ('omitted', 'assessment_digest', 'binding_id', 'team', 'contract_id', 'contract_version',
+                      'contract_digest', 'release_id', 'activation_id', 'selector_id')]
+    cases += [('admission/epoch-boolean', partial(admission_type_case, value=True)),
+              ('admission/epoch-float', partial(admission_type_case, value=1.0))]
     cases += [('attribution/' + mode, partial(attribution_case, mode=mode)) for mode in ('omitted', 'attempt', 'legacy')]
     cases += [('hook/missing-attempt', hook_case), ('route/fresh-ordinary', route_admission_case)]
     cases += [('exception/' + seam, partial(exception_case, seam=seam)) for seam in ('parser', 'lineage-read')]

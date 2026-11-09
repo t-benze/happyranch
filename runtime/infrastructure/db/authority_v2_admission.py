@@ -23,6 +23,17 @@ def _marker(admission: dict) -> dict:
             **{key: admission[key] for key in _BINDING_KEYS}}
 
 
+def _marker_matches(marker: object, expected: dict) -> bool:
+    """Authenticate every closed marker field without bool/int coercion."""
+    if type(marker) is not dict or marker.keys() != expected.keys():
+        return False
+    for key, value in expected.items():
+        field_type = int if key == "activation_epoch" else str
+        if type(value) is not field_type or type(marker[key]) is not field_type or marker[key] != value:
+            return False
+    return True
+
+
 def ordinary_completion_omission(db: Any, *, task_id: str, row: dict) -> bool:
     """Called only in the ordinary callback writer's owned transaction.
 
@@ -80,7 +91,7 @@ def authenticated_omitted_result(db: Any, *, result_id: int, task_id: str, agent
             carrier = decision["_manager_self_evaluation"]
             digest = hashlib.sha256(authority_policy_v2_canonical_json_bytes(carrier)).hexdigest()
             expected = _marker({**binding.model_dump(), "binding_id": binding.binding_id, "assessment_digest": digest})
-            if marker != expected:
+            if not _marker_matches(marker, expected):
                 return None
             attempt_id = authority_policy_v2_attempt_id(
                 manager_agent=agent, manager_session_id=row["session_id"],
@@ -94,20 +105,24 @@ def authenticated_omitted_result(db: Any, *, result_id: int, task_id: str, agent
                 return None
             # Read the raw audit relation as well: a typed attempt reader also
             # returns None for corrupt attempts or missing/duplicate audits.
-            # Malformed JSON is a read error, never proof of absence. Include
-            # foreign-scoped evidence naming this result, and conservatively
-            # reject malformed stage evidence on its own root.
+            # Select by the indexed action only. SQL JSON extraction can hide
+            # duplicate-key/foreign-scoped evidence before strict decoding.
+            # Malformed evidence is never proof of absence. A shared immutable
+            # binding or explicit original session also contradicts omission,
+            # even when both result and attempt IDs were changed.
             for audit in db._conn.execute(
-                "SELECT task_id,payload FROM audit_log WHERE action='authority_policy_v2_result_stage' "
-                "AND (task_id=? OR CAST(json_extract(payload,'$.result_id') AS TEXT)=? "
-                "OR json_extract(payload,'$.attempt_id')=?)",
-                (task_id, str(result_id), attempt_id),
+                "SELECT task_id,agent,payload FROM audit_log INDEXED BY idx_audit_log_action "
+                "WHERE action='authority_policy_v2_result_stage'",
             ):
                 payload = decode_authority_policy_v2_json(audit["payload"])
                 if (not isinstance(payload, dict)
                         or type(payload.get("result_id")) is not int
-                        or str(payload["result_id"]) == str(result_id)
-                        or payload.get("attempt_id") == attempt_id):
+                        or payload["result_id"] == result_id
+                        or payload.get("attempt_id") == attempt_id
+                        or payload.get("binding_id") == binding.binding_id
+                        or ((audit["task_id"] == task_id or payload.get("root_task_id") == task_id)
+                            and (audit["agent"] == agent or payload.get("manager_agent") == agent)
+                            and payload.get("manager_session_id") == row["session_id"])):
                     return None
             return row
     except Exception:  # noqa: BLE001 - every classification/proof error must deny omission/replay
@@ -128,7 +143,7 @@ def omitted_completion_replay_matches(db: Any, stored_result: dict, *, admission
             ):
                 return False
             marker = json.loads(row["decision_json"])[OMISSION_KEY]
-            if marker != _marker(admission):
+            if not _marker_matches(marker, _marker(admission)):
                 return False
             incoming = json.loads(payload["decision_json"])
             if OMISSION_KEY in incoming:
