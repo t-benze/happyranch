@@ -2092,33 +2092,31 @@ async def resolve_escalation_from_thread(
         thread_id=thread_id,
         resolution_path="thread_manual_supersede",
     )
-    # Resolve first so a rejected resolution leaves the invocation pending.
+    # Resolve first so a rejected resolution does not consume the invocation.
     # Then acknowledge the REPLY's claimed coverage and release its slot in
     # the same transaction that consumes the invocation.
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
-        if org.db.get_pending_invocation(body.invocation_token) is None:
-            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-        if invocation.purpose is ThreadInvocationPurpose.REPLY:
-            settlement, catch_up = org.db.settle_conversational_reply_with_exchange(
-                token=body.invocation_token,
-                outcome="reply",
-            )
-            if settlement is None:
-                # Legacy/stale pending REPLY not owned by delivery state.
-                ok = org.db.consume_invocation(body.invocation_token)
-            else:
-                ok = True
-                if settlement.follow_on_token is not None:
-                    tokens_to_enqueue.append(settlement.follow_on_token)
-                tokens_to_enqueue.extend(
-                    a.invocation_token for a in catch_up
-                    if a.invocation_token is not None
+        # Another terminal path may win while resolution awaits its tail.
+        # Preserve that settlement and the already-applied resolution result.
+        if org.db.get_pending_invocation(body.invocation_token) is not None:
+            if invocation.purpose is ThreadInvocationPurpose.REPLY:
+                settlement, catch_up = org.db.settle_conversational_reply_with_exchange(
+                    token=body.invocation_token,
+                    outcome="reply",
                 )
-        else:
-            ok = org.db.consume_invocation(body.invocation_token)
-        if not ok:
-            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+                if settlement is None:
+                    # Legacy/stale pending REPLY not owned by delivery state.
+                    org.db.consume_invocation(body.invocation_token)
+                else:
+                    if settlement.follow_on_token is not None:
+                        tokens_to_enqueue.append(settlement.follow_on_token)
+                    tokens_to_enqueue.extend(
+                        a.invocation_token for a in catch_up
+                        if a.invocation_token is not None
+                    )
+            else:
+                org.db.consume_invocation(body.invocation_token)
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
     return {"ok": True, "task_id": body.task_id, "new_status": new_status}

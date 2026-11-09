@@ -3288,8 +3288,11 @@ conversational REPLY, it atomically acknowledges the claimed range and clears
 the reply-delivery slot, then enqueues any follow-on and exchange catch-up
 tokens after commit. BOOTSTRAP and legacy REPLY tokens without delivery-state
 ownership retain plain consumption. Resolution still precedes invocation
-settlement; a rejected resolution leaves the invocation pending. This operation
-does not append a reply message or set `reply_message_seq`.
+settlement; a rejected resolution does not consume the invocation. An already
+terminal token is rejected before resolution. If another terminal path wins
+during resolution, the applied success result is returned without settling the
+invocation again. This operation does not append a reply message or set
+`reply_message_seq`.
 
 Both served resolution contracts — `POST /tasks/{task_id}/resolve-escalation`
 and `POST /threads/{thread_id}/resolve-escalation` — return the stable `410`
