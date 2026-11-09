@@ -1,6 +1,7 @@
 """FastAPI app factory."""
 from __future__ import annotations
 
+import logging
 import time as _time
 from contextlib import asynccontextmanager
 
@@ -52,6 +53,8 @@ from runtime.daemon.routes import settings as settings_routes
 from runtime.daemon.metrics import error_label, route_template_label
 from runtime.daemon.state import DaemonState
 from runtime.orchestrator._paths import OrgPaths
+
+logger = logging.getLogger(__name__)
 
 
 def _attach_org_runtime_wiring(state: DaemonState) -> None:

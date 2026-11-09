@@ -1479,7 +1479,11 @@ class Orchestrator:
                 producer_id=session_id,
             )
         except TaskScratchError as exc:
-            self._db.update_task(task_id, note=f"Task scratch containment refused launch: {exc}")
+            from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
+            # Sequential rows belong to their workflow writer; the existing
+            # audit records this refusal without a forbidden generic mutation.
+            if classify_task(self._db, task_id, org_slug=self._slug).kind not in SEQUENTIAL_HELD_KINDS:
+                self._db.update_task(task_id, note=f"Task scratch containment refused launch: {exc}")
             self._db.insert_audit_log(
                 task_id, agent_name, "task_scratch_containment_failed", {"error": str(exc)}
             )
