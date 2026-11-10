@@ -1082,7 +1082,9 @@ and existing envelope receipts/checks, without a new evidence row or signature.
 Current authority is a fresh veto; time/generation never changes receipt content.
 Original-source keys, c/c+1 atomic transition/return and read-only exact callback
 replay remain unchanged. A post-outer refusal rolls back only new sequential
-work; prior native/evidence commits remain. No partial-pair repair is allowed.
+work; prior native/evidence commits remain. U4b1 records its finite expected
+business refusals as the authenticated Held overlay described below; other
+errors propagate. No partial-pair repair is allowed.
 
 SB-5 uses each scope's own charged bytes/rows/steps/time under
 33,554,432 / 4096 / 32768 / 2.5 seconds, without resets or cross-scope sums.
@@ -1167,9 +1169,10 @@ are not a racing-rename fence.
 
 There is no production caller, public transport, evidence DML, persistent run
 subject or lifecycle state change in U4a. A Held receipt does not mean the
-database run has become Held. U4b owns durable immutable subject binding,
-resolve-only release, actual repository/base/head/PR code-change composition,
-downstream revalidation and the post-positive-outer-COMMIT business-Held fix.
+database run has become Held. U4b2/U4b3 still own durable immutable subject
+binding, resolve-only release, actual repository/base/head/PR code-change
+composition and downstream revalidation. U4b1 supplies the post-positive-outer
+business-Held overlay below.
 Another repository/origin/base or expanded scope needs a new authorized run;
 correction heads retain the original subject. Existing preflight/observation
 evidence slots are the planned storage seam; no schema change or live installer
@@ -1180,3 +1183,37 @@ U4a behavior/AC4 two-repository proof is NOT RUN. Python units are RETIRED;
 general integration SKIPPED THR243seq42; required automated checks are lint/static
 only. Full U4 split, caller inventory and pending evidence are in the
 [U4 source specification](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).
+
+
+## U4b1 post-settlement business Held (THR336 / ROOT TASK-15144)
+
+After the original positive outer COMMIT, only the finite typed advance causes
+`sequential_output_access_unavailable` (including repository/mixed outputs),
+`sequential_capability_unavailable`, `sequential_carrier_invalid`,
+`sequential_carrier_limit_exceeded` and `sequential_output_limit_exceeded` become
+business Held. The refused sequential transaction rolls back first. A separate
+short native-owned writer reselects the original run/visit/task/principal/SID/
+INTEGER, successful terminal, positive outer and exact callback, and validates
+unchanged CAS/last-event/selection. This writer records refusal without granting
+access, so it does not require a successful fresh admission capture. Current
+cancellation or an authenticated competing transition wins. All other failures,
+including corruption, ownership, SQLite and hold persistence, remain errors.
+
+One transaction appends a deterministic closed `observation` in the existing
+evidence table and sets visit/run Held with exact row-count/CAS checks. Cause,
+node/role/principal, original source/proof digests, accountable-manager next
+owner and no-automatic-retry/resume-unavailable limitation remain inspectable.
+Accepted result stays NULL; no output, successor, new outbox, caller return or
+retry follows. Event bytes/count/CAS/last-event remain unchanged. Complete and
+selected readers authenticate the overlay against its active selecting prefix
+and original proofs, including a later cancellation; unknown, conflicting or
+mismatched observations refuse. Exact original outer redelivery reuses saved
+IDs/cause without another hold or fresh access. A failed COMMIT claims no Held.
+
+Document composition, 48 KiB JSON/1 MiB document limits and witnesses remain
+identical. Coding tail still precedes sequential tail; native/Pause settlement
+order and error aggregation are unchanged. No callback/agent-facing command or
+instruction changes. Disposable retained-M1 snapshot diagnostics are scratch
+evidence only; genuine native execution, concurrent races and V3 are NOT RUN.
+Python units RETIRED; integration SKIPPED THR243seq42. No schema, admission,
+settings, install, deployment or restart change follows.

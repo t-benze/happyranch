@@ -335,7 +335,8 @@ and at close. Common-directory/gitdir indirection, gitfiles, object alternates,
 grafts, replacement refs and linked/unsupported object topology refuse with
 Held / `repository_unavailable`. Config includes and inherited Git overrides
 are unavailable; shallow history is allowed. No subject is emitted for a
-refused observation, and no callback or durable Held writer is added.
+refused preflight observation; that inert service adds no callback or writer.
+U4b1 separately attaches the post-settlement business-Held writer below.
 
 Only selected seq_visit joins workflow callback admission/replay. The existing
 order remains404, classify, local409, task-active, v2, session, exact idempotency,
@@ -609,3 +610,30 @@ serializations, matching B. No duplicate configuration acquisition is added;
 any NEW uncharged work outside the three disclosed classes requires STOP to ROOT.
 Structural SEEDS are not genuine
 callbacks or M1/V3 behavior; Coding/U4/U5 remainder/native recovery remain held.
+
+
+## U4b1 sequential post-settlement refusal overlay
+
+After genuine callback/native terminal settlement and positive outer evidence
+COMMIT, the sequential owner catches only its finite typed business advance
+refusals after rollback. An independent non-authorizing native DB writer checks
+the original task/principal/SID/INTEGER, successful terminal/positive outer,
+callback identity and unchanged CAS/last-event before atomically appending a
+closed hold observation and marking visit/run Held. Cancellation or a settled
+competing transition wins. Held preserves accepted-result NULL and the entire
+event prefix, with no output, successor, return, retry or additional outbox.
+
+The complete and selected readers authenticate cause, original identities,
+proof digests and selecting event before recognizing this overlay. Exact outer
+redelivery acknowledges saved IDs/cause without fresh access or advancement.
+Unknown/mismatched/conflicting observations and failed persistence still error;
+no false durable Held is returned. The cause records accountable-manager next
+owner and no-automatic-retry/resume-unavailable limitation.
+
+The coding tail observer still precedes the sequential one in unchanged
+`task_pause.settle_live`; `run_step` retains its original finally/real-error
+aggregation. Callback validation, document composition/limits/witnesses and
+agent-facing instructions remain unchanged. See the
+[finite causes and U4 status](reusable-workflows.md#u4b1-post-settlement-business-held-thr336--root-task-15144).
+Scratch retained-snapshot diagnostics are not native/V3 acceptance; genuine
+concurrency and Pause-tail execution remain NOT RUN.

@@ -464,6 +464,13 @@ def _validate_lifecycle(conn: sqlite3.Connection, *, org_slug: str, run_id: str,
             _require(visit['node_id'] in nodes and visit['principal'] == bindings[nodes[visit['node_id']].role],
                      'visit_binding_conflict')
         active = by_id.get(run['active_visit_id'])
+        from runtime.workflows.sequential_business_hold import read_hold_rows, validate_business_holds
+        observations = read_hold_rows(conn, run_id, budget)
+        hold = validate_business_holds(conn, rows=observations, run=run, visits=by_id,
+            events=events, compiled=compiled, budget=budget)
+        if hold is not None and run['state'] == 'held':
+            _require(active is not None and active['id'] == hold['visit_id']
+                     and events[-1]['id'] == hold['last_event_id'], 'business_hold_prefix_conflict')
         if run['state'] in ('active', 'held'):
             _require(active is not None and active['epoch'] == counters.epoch
                      and active['state'] in (('held',) if run['state'] == 'held' else ('queued', 'running', 'waiting')),
@@ -509,7 +516,7 @@ def _validate_lifecycle(conn: sqlite3.Connection, *, org_slug: str, run_id: str,
                 touched.append(target)
                 if event is events[-1]:
                     _require(active is target and source['state'] == 'completed'
-                             and source['selected'] == 0 and run['state'] == 'active',
+                             and source['selected'] == 0 and run['state'] == ('held' if hold is not None else 'active'),
                          'successor_conflict')
             else:
                 expected = ('completed' if isinstance(decision.edge, TerminalEdge) else

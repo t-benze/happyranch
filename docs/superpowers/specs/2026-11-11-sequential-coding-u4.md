@@ -2,8 +2,8 @@
 
 2026-11-11; THR-336 / ROOT TASK-15144, maker TASK-15145. This specifies the
 whole re-scoped U4. U4a supplies inert records/readers and an unmounted preflight;
-U4b must attach subject binding, code-change composition and durable business
-holds. Source delivery and static checks do not establish runtime acceptance.
+U4b1 attaches durable business holds; U4b2/U4b3 still own subject binding and
+code-change composition. Source delivery and static checks do not establish runtime acceptance.
 
 ## Authority and scope
 
@@ -227,6 +227,34 @@ COMMIT the sequential observer returns normally; outer/native success stays true
 and process/history/task views can explain the Held cause and next owner.
 Lifecycle resume/effect recovery is outside this unit.
 
+### U4b1 source implementation (TASK-15150)
+
+`sequential_business_hold.py` defines the finite causes
+`sequential_output_access_unavailable` (including repository/mixed output),
+`sequential_capability_unavailable`, `sequential_carrier_invalid`,
+`sequential_carrier_limit_exceeded` and `sequential_output_limit_exceeded`.
+Only these typed advance refusals are caught, after the admission writer and
+its rollback have exited, before any post-COMMIT publication. Identity,
+corruption, SQLite, ownership and unclassified authority failures propagate.
+
+The independent writer uses native DB ownership without an admission capture.
+It reselects the original task/SID/INTEGER and successful terminal/positive
+outer proofs, authenticates the current selected prefix and compares the
+original CAS/event/visit pins. Current cancellation or an authenticated later
+transition wins. A result-derived deterministic observation and both Held
+updates commit atomically with exact row counts. The observation carries node,
+role, principal, callback/source/proof digests, accountable-manager next owner
+and no-automatic-retry/resume-unavailable limitation. Accepted result stays NULL;
+CAS/event bytes/count/last-event and all prior proofs stay unchanged.
+
+Both complete and selected readers authenticate the closed observation against
+the selecting event and original native/terminal/outer proofs. Only a later
+cancellation may follow it; unknown, mismatched or conflicting observations
+refuse. Exact original outer redelivery acknowledges the saved IDs/cause without
+fresh access or advancement. Failed persistence propagates and rolls back.
+Document composition, size limits, witnesses, callback/agent instructions and
+native/Pause tail ordering are unchanged. No schema change or resume is added.
+
 ## Acceptance obligations and delivery evidence
 
 | Case | Required later observation; current U4a status |
@@ -236,8 +264,8 @@ Lifecycle resume/effect recovery is outside this unit.
 | Subject/replay | Exact receipt replay retains original IDs/bytes; changed target/base/origin or expansion cannot mutate the subject; correction head/epoch retains base/scope. U4b pending; NOT RUN. |
 | Later access loss | Valid preflight then loss of current access blocks the affected downstream disclosure/publication/action with bindings unchanged. No readiness panel/grant shortcut. U4b/U5 pending; NOT RUN. |
 | AC8 | Wrong task/SID/result/subject and duplicate results preserve original evidence/budgets; oversized JSON Held, unsaved, unsuccessful; no second allocation. Existing 49152-byte cap retained. New Coding observations NOT RUN. |
-| F8/AC9 hold tail | Force an expected post-positive-outer business refusal: one durable Held visit/run/cause, original proofs preserved, zero successors/outputs and no Pause-tail ExceptionGroup. Include replay, cancellation/transition race and failing hold persistence without false Held claim. U4b pending; NOT RUN. |
-| Document compatibility | Document composition, limits, recipient witnesses and native order remain identical; no default admission/public-start change. U4a changes no existing producer; behavior NOT RUN. |
+| F8/AC9 hold tail | Force an expected post-positive-outer business refusal: one durable Held visit/run/cause, original proofs preserved, zero successors/outputs and no Pause-tail ExceptionGroup. Include replay, cancellation/transition race and failing hold persistence without false Held claim. U4b1 source attached. Disposable retained-M1 snapshot diagnostic observes durable Held, both readers, exact outer replay without fresh authority, cancellation winning and persistence failure propagation. Full native Pause-tail execution, genuine concurrent races and V3 are NOT RUN. |
+| Document compatibility | Document composition, limits, recipient witnesses and native order remain identical; no default admission/public-start change. U4b1 changes refusal handling/readers only; document execution NOT RUN. |
 
 No tests are added or changed here. Future executable case authoring must pass
 test-authoring-evidence-gate's four answers (observable contract, credible
