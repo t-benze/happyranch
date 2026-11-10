@@ -458,6 +458,13 @@ SID, result, step and revision remain. Carrier/visit have no invented SID/result
 Initial exact admission replay returns original IDs; conflict or later lifecycle
 admission replay holds.
 
+Native task scratch accepts these exact `TASK-SEQ-` identities with 64 lowercase
+hex digits in addition to its existing task-ID grammar. If scratch preparation
+refuses a sequential held task, the native launch seam records the existing
+`task_scratch_containment_failed` audit and returns its failed `ExecutorResult`
+without a generic task-note write. The sequential task row and its mutation
+guard remain unchanged; this reporting supplies no retry or cleanup authority.
+
 This unit publishes no queue item and has no source-outer producer. The admitted
 first visit remains ineligible: `queue_admission_allowed` stays false without the
 positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
