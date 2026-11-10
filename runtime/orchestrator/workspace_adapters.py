@@ -1118,8 +1118,10 @@ def validate_workspace_skills_integrity(
     — `happyranch set-executor <agent> --executor <current-executor>`
     (never repairs bytes); (b) for corrupted canonical bytes —
     `happyranch skills recover <slug> <version> <content_hash>`
-    then restart daemon. Local same-UID sources are not automatically
-    repaired or trusted.
+    then restart daemon. Version is the current numeric B2 ID, system, or
+    current release version; next materialization rebuilds from ArtifactStore
+    (B2) or bundled release source (system/release). Local same-UID sources
+    are not automatically repaired or trusted.
 
     Args:
         workspace: Agent workspace root
@@ -1293,9 +1295,9 @@ def validate_workspace_skills_integrity(
     # - Corrupted canonical bytes (hash mismatch, tampered content) →
     #   set-executor CANNOT recover bytes — it only repairs links.
     #   Recovery is manual, operator-invoked: `happyranch skills
-    #   recover <slug> <version> <content_hash>`. Validates B2 provenance
-    #   provenance and member hashes before deletion; refuses already-
-    #   valid targets. Next materialization rebuilds from ArtifactStore.
+    #   recover <slug> <version> <content_hash>`. Validates current B2 artifact
+    #   or bundled release-source provenance before deletion; refuses already-
+    #   valid targets. Next materialization rebuilds from that verified source.
     #   There is NO automatic same-UID local source repair and
     #   NO automatic recovery from any local same-UID source.
     recovery = (
@@ -1305,6 +1307,9 @@ def validate_workspace_skills_integrity(
         "--executor <current-executor> (non-destructive re-materialize); "
         "for corrupted canonical bytes — happyranch skills recover "
         "<slug> <version> <content_hash> then restart daemon. "
+        "Version: current numeric B2 ID, system, or current release version; "
+        "next materialization rebuilds from ArtifactStore (B2) or bundled "
+        "release source (system/release). "
         "Local same-UID sources are not automatically repaired or trusted."
     )
 
@@ -1534,7 +1539,10 @@ def _skills_directory_readonly_section(skills_dir: str, agent_name: str) -> list
         "recovery/autoheal. Recovery requires FIRST manual authoritative ",
         "external re-sync/redeploy of release/custom ",
         "artifacts; ONLY THEN existing verified link repair / ",
-        "skills recover / restart as applicable. Local same-UID "
+        "happyranch skills recover <slug> <version> <content_hash> / restart as applicable. "
+        "Version: current numeric B2 ID, system, or current release version; "
+        "next materialization rebuilds from ArtifactStore (B2) or bundled "
+        "release source (system/release). Local same-UID "
         "sources are not automatically repaired or trusted. Do not "
         "rely on this as a security control or treat it as "
         "OS-enforced protection.\n",

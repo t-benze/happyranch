@@ -35,9 +35,12 @@ event is emitted and the session is REFUSED before Popen/retry — the
 mismatched package is NEVER automatically rebuilt, repaired, or healed from
 any same-UID local source (including the ArtifactStore, source tree, or any
 local copy). Recovery is manual, operator-invoked only, through
-``happyranch skills recover``, after an authoritative external
-re-sync/redeploy. This is detection for accidental corruption — it is NOT
-an attacker-independent external attestation authority. Policy withdrawal
+``happyranch skills recover <slug> <version> <content_hash>``, after an
+authoritative external re-sync/redeploy. Version is the current numeric B2 ID,
+``system``, or current release version. Next materialization rebuilds from
+ArtifactStore (B2) or bundled release source (system/release). This is detection
+for accidental corruption — it is NOT an attacker-independent external
+attestation authority. Policy withdrawal
 and atomic link repair remain safe.
 
 **Fail-closed:** any isolation violation or integrity mismatch raises

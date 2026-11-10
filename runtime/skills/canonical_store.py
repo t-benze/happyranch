@@ -399,10 +399,11 @@ class CanonicalSkillStore:
                         f"(expected {verify_source_hash[:16]}... "
                         f"got {actual_hash[:16] if actual_hash else '<error>'}). "
                         f"No automatic repair from same-UID local source. "
-                        f"Recovery: use `happyranch skills recover "
+                        f"Recovery: FIRST authoritative external re-sync/redeploy; "
+                        f"ONLY THEN use `happyranch skills recover "
                         f"{slug} {version} {content_hash}` to remove the "
                         f"corrupted package, then next materialization "
-                        f"rebuilds from the ArtifactStore.",
+                        f"rebuilds from ArtifactStore (B2) or bundled release source (system/release).",
                     )
                 else:
                     return pkg_path
@@ -422,10 +423,11 @@ class CanonicalSkillStore:
                 f"but integrity check failed (is_built=False). "
                 f"Package may be incompletely hardened. "
                 f"No automatic repair from same-UID local source. "
-                f"Recovery: use `happyranch skills recover "
+                f"Recovery: FIRST authoritative external re-sync/redeploy; "
+                f"ONLY THEN use `happyranch skills recover "
                 f"{slug} {version} {content_hash}` to remove the "
                 f"corrupted package, then next materialization "
-                f"rebuilds from the ArtifactStore.",
+                f"rebuilds from ArtifactStore (B2) or bundled release source (system/release).",
             )
 
         # Collect files from source
@@ -576,10 +578,11 @@ class CanonicalSkillStore:
                 f"Canonical package {slug}@{version} content mismatch "
                 f"detected — existing corrupted package present. "
                 f"No automatic repair from same-UID local source. "
-                f"Recovery: use `happyranch skills recover "
+                f"Recovery: FIRST authoritative external re-sync/redeploy; "
+                f"ONLY THEN use `happyranch skills recover "
                 f"{slug} {version} {content_hash}` to remove the "
                 f"corrupted package, then next materialization "
-                f"rebuilds from the ArtifactStore.",
+                f"rebuilds from the verified B2 ArtifactStore.",
             )
 
         # ── Detection: existing but invalid canonical package ────────
@@ -595,10 +598,11 @@ class CanonicalSkillStore:
                 f"but integrity check failed (is_built=False). "
                 f"Package may be incompletely hardened. "
                 f"No automatic repair from same-UID local source. "
-                f"Recovery: use `happyranch skills recover "
+                f"Recovery: FIRST authoritative external re-sync/redeploy; "
+                f"ONLY THEN use `happyranch skills recover "
                 f"{slug} {version} {content_hash}` to remove the "
                 f"corrupted package, then next materialization "
-                f"rebuilds from the ArtifactStore.",
+                f"rebuilds from the verified B2 ArtifactStore.",
             )
 
         members = manifest.get("members", [])
