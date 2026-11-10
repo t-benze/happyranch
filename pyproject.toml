@@ -48,6 +48,7 @@ packages = ["runtime", "cli"]
 exclude = ["runtime/skills/bundled/**"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"runtime/remote_access/route_policy.json" = "runtime/remote_access/route_policy.json"
 "runtime/skills/bundled" = "runtime/skills/bundled"
 "runtime/workflows/builtin_templates/coding.v1.json" = "runtime/workflows/builtin_templates/coding.v1.json"
 "runtime/workflows/builtin_templates/coding.v2.json" = "runtime/workflows/builtin_templates/coding.v2.json"

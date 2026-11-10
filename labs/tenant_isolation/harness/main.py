@@ -28,7 +28,6 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-CONTRACT_DIR = REPO_ROOT / "tests" / "contract" / "managed_remote_access"
 MANIFEST_PATH = REPO_ROOT / "labs" / "tenant_isolation" / "manifest.json"
 
 EXIT_OK = 0
@@ -94,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     from .orchestrator import Bounds, Orchestrator, PreflightError
 
     try:
-        contract = Contract(CONTRACT_DIR)
+        contract = Contract(REPO_ROOT)
     except ContractLoadError as exc:
         print(f"preflight declined: {exc}", file=sys.stderr)
         _write_no_run_evidence(args.results_dir, manifest, str(exc), run_id)

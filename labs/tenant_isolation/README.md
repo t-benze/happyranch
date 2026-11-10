@@ -3,7 +3,7 @@
 **Status:** non-production lab/harness — strictly additive. No production code,
 deployment, auth/schema, dependency, permission, or default is touched.
 **Merge unit A (normative contract):** `docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md`
-+ `tests/contract/managed_remote_access/*.json` (read-only inputs).
++ shipped `runtime/remote_access/route_policy.json` and `tests/contract/managed_remote_access/*.json` (read-only inputs).
 **Sibling unit:** `labs/managed-remote-access/capacity/` (merge unit D) is a
 separate, unrelated lab; this harness does not reuse or depend on it.
 
@@ -51,19 +51,21 @@ disabled DERP or control-plane TCP.
 
 ## What the harness proves (semantically consumed from the contract)
 
-The route-policy pin includes the already merged route removals in
-[PR #754](https://github.com/t-benze/happyranch/pull/754)
-(`a8cf692e20010e233ff49163f511a4367de1c04c`, mention-routing) and
-[PR #1017](https://github.com/t-benze/happyranch/pull/1017)
-(`b3179b123fddbb0f0f604ed9e0d148f1b23455f3`, ten Assistant entries).
-Relative to the original `01ebc8b38` / `aa67985ff` fixture, only `allow`
-changed: eleven removals and no additions. The other three fixture pins are
-unchanged. A pin update requires provenance review of the merged fixture
-changes; a drift refusal alone is never authority to repin. Matching digests
-only admit preflight, not prove real isolation or cleanup.
+The manifest pins the shipped `runtime/remote_access/route_policy.json`.
+THR-327 seq187 PR-a moves the sole policy out of the fixture directory and
+removes exactly five R1 v1 routes from `allow` (123 → 118), adding them as
+examples under existing forbidden classes. All 11 class IDs are retained,
+including `coding_release_import_cli_only`; the independent runtime lock and
+required static lint now agree. The other three fixture bytes/pins are unchanged.
+The prior removals from [PR #754](https://github.com/t-benze/happyranch/pull/754)
+and [PR #1017](https://github.com/t-benze/happyranch/pull/1017) remain preserved.
+A pin update requires provenance review of the policy changes; a drift refusal
+alone is never authority to repin. Matching digests only admit preflight,
+not prove real isolation or cleanup.
 
-The harness reads `tests/contract/managed_remote_access/*.json` at runtime
-(read-only; pinned digests in `manifest.json`, drift fails closed):
+The harness reads the shipped policy and the other three normative inputs from
+`tests/contract/managed_remote_access/` at runtime (read-only; pinned digests
+in `manifest.json`, drift fails closed):
 
 - expected deny/audit categories for every threat case come **from the
   fixtures**, never duplicated in harness code;
