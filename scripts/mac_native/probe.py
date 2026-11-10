@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth",)
+SUITES = ("truth", "teardown")
 PROC_PIDTBSDINFO = 3
 
 
@@ -455,6 +455,235 @@ def truth(report: dict[str, Any]) -> None:
     }
 
 
+def teardown_worker(role: str, registry: Path) -> None:
+    """Sleeper chain with independent identities and direct-child reaping."""
+    signal.signal(signal.SIGTERM, interrupt)
+    signal.signal(signal.SIGINT, interrupt)
+    own = identity()
+    (registry / f"{role}.json").write_text(json.dumps(own), encoding="utf-8")
+    child = None
+    try:
+        tree = {role: own}
+        next_role = {"parent": "child", "child": "grandchild"}.get(role)
+        if next_role:
+            child = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()),
+                 "--teardown-worker", next_role, "--registry", str(registry)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True,
+            )
+            tree.update(read_ready(child))
+        print(json.dumps(tree), flush=True)
+        while True:
+            time.sleep(1)
+    except InterruptedError:
+        pass
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if child is not None:
+            child.terminate()
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=3)
+            if child.stdout is not None:
+                child.stdout.close()
+
+
+def forced_libproc_failure() -> dict[str, Any]:
+    """Use a fresh interpreter; the forced failure cannot affect the real tree."""
+    script = r'''
+import ctypes
+import ctypes.util
+import json
+import sys
+sys.path.insert(0, sys.argv[1])
+original = ctypes.CDLL
+attempts = []
+def fail_proc(name, *args, **kwargs):
+    if "proc" in str(name):
+        attempts.append(str(name))
+        raise OSError("probe-forced libproc load failure")
+    return original(name, *args, **kwargs)
+ctypes.CDLL = fail_proc
+from runtime.platform.backend_factory import select_session_backend
+import_attempts = list(attempts)
+backend = select_session_backend()
+print(json.dumps({"import_succeeded": True, "import_load_attempts": import_attempts,
+                  "libproc_load_attempts": attempts, "selected_backend": backend.name}))
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(ROOT)], cwd=ROOT,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    observation: dict[str, Any] = {
+        "exit_code": result.returncode, "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+    if result.returncode == 0:
+        observation.update(json.loads(result.stdout))
+    return observation
+
+
+def teardown(report: dict[str, Any]) -> None:
+    """Exercise shipping selection, launch, sample and finish on an owned tree."""
+    from dataclasses import asdict
+
+    sys.path.insert(0, str(ROOT))
+    from runtime.orchestrator.host_supervisor import AdmissionRequest
+    from runtime.platform.backend_factory import select_session_backend
+    from runtime.platform.macos_process_group import MacOSProcessGroupBackend
+    from runtime.platform.session_backend import LaunchSpec
+
+    checks: list[dict[str, Any]] = []
+    section: dict[str, Any] = {"checks": checks}
+    report["teardown"] = section
+
+    def check(name: str, passed: bool, observed: Any) -> None:
+        checks.append({"name": name, "status": "PASS" if passed else "FAIL",
+                       "observed": observed})
+
+    forced = forced_libproc_failure()
+    section["forced_libproc_failure"] = forced
+    check("P03_import_without_libproc", forced.get("import_succeeded") is True
+          and forced.get("import_load_attempts") == [], forced)
+    check("P03_factory_fallback", forced.get("exit_code") == 0
+          and bool(forced.get("libproc_load_attempts"))
+          and forced.get("selected_backend") == "passthrough", forced)
+    backend = select_session_backend()
+    section["selected_backend"] = backend.name
+    check("product_macos_backend_selected", isinstance(backend, MacOSProcessGroupBackend),
+          backend.name)
+    if not isinstance(backend, MacOSProcessGroupBackend):
+        raise RuntimeError("product selection did not yield the macOS backend")
+
+    # Every role publishes its identity before spawning, even if readiness fails.
+    with tempfile.TemporaryDirectory(prefix="happyranch-mac-teardown-") as folder:
+        registry = Path(folder)
+        running = None
+        pending = None
+        pids: list[int] = []
+        try:
+            request = AdmissionRequest(
+                org="native-probe", invocation_kind="task",
+                logical_id=f"teardown-{os.getpid()}", executor_profile="native-probe",
+            )
+            pending = backend.prepare(request, None)
+            running = backend.launch(pending, LaunchSpec(
+                argv=(sys.executable, str(Path(__file__).resolve()),
+                      "--teardown-worker", "parent", "--registry", folder),
+                cwd=str(ROOT), stdin=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ))
+            if running.process is None:
+                raise RuntimeError("backend did not return its direct process handle")
+            tree = read_ready(running.process)
+            section["tree"] = tree
+            pids = [tree[role]["pid"] for role in ("parent", "child", "grandchild")]
+            group_ok = (
+                pids[0] == running.root_pid and len(set(pids)) == 3
+                and tree["child"]["ppid"] == pids[0]
+                and tree["grandchild"]["ppid"] == pids[1]
+                and all(tree[role]["pgid"] == running.root_pid for role in tree)
+                and all(os.getpgid(pid) == running.root_pid for pid in pids)
+            )
+            check("three_generation_session_group", group_ok, tree)
+            sample = backend.sample(running)
+            section["sample"] = asdict(sample)
+            check("tree_sample", sample.process_count == 3
+                  and sample.memory_peak_bytes is not None and sample.memory_peak_bytes > 0
+                  and sample.cpu_total_seconds is not None and sample.cpu_total_seconds >= 0
+                  and sample.provenance == "sampled", section["sample"])
+            receipt = backend.finish(running, "cancelled", 5.0, samples=(sample,))
+            section["receipt"] = asdict(receipt)
+            section["clean"] = (receipt.quiescent and not receipt.survivors
+                                and receipt.cleanup_status != "incomplete")
+            section["signal_sent"] = {
+                "term": ["SIGTERM"], "kill": ["SIGTERM", "SIGKILL"],
+            }.get(receipt.cleanup_status, [])
+            section["signal_source"] = "receipt.cleanup_status; not independent delivery proof"
+            # Observe BEFORE any probe-owned disposal can conceal a product leak.
+            deadline = time.monotonic() + 3
+            while not all(absent(pid) for pid in pids) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            gone = {str(pid): absent(pid) for pid in pids}
+            section["post_finish_kill_zero_ESRCH"] = gone
+            for pid, is_gone in gone.items():
+                check(f"pid_{pid}_gone_after_product_finish", is_gone, {"ESRCH": is_gone})
+            check("receipt_honesty", receipt.quiescent and section["clean"]
+                  and all(gone.values()) and bool(section["signal_sent"]), section["receipt"])
+        finally:
+            # This disposal is separate from the product result and cannot turn
+            # a failed teardown check into PASS. Registry covers partial readiness.
+            cleanup: dict[str, Any] = {"sigterm_pids": [], "sigkill_pids": []}
+            section["probe_cleanup"] = cleanup
+            if running is not None:
+                if running.root_pid not in pids:
+                    pids.append(running.root_pid)
+                # Also cover a partially published tree. The unreaped direct
+                # child still owns this group; no arbitrary host group is used.
+                if running.process is not None and running.process.poll() is None:
+                    try:
+                        os.killpg(running.root_pid, signal.SIGTERM)
+                        cleanup["sigterm_group"] = running.root_pid
+                    except ProcessLookupError:
+                        pass
+            for role in ("parent", "child", "grandchild"):
+                path = registry / f"{role}.json"
+                if path.exists():
+                    pid = json.loads(path.read_text(encoding="utf-8"))["pid"]
+                    if pid not in pids:
+                        pids.append(pid)
+            # TERM gives each parent a chance to reap before any escalation.
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    cleanup["sigterm_pids"].append(pid)
+                except ProcessLookupError:
+                    pass
+            if running is not None and running.process is not None:
+                try:
+                    running.process.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    pass
+            # Leaf-first KILL + bounded wait lets surviving parents reap children.
+            leaf_first = []
+            for role in ("grandchild", "child", "parent"):
+                path = registry / f"{role}.json"
+                if path.exists():
+                    pid = json.loads(path.read_text(encoding="utf-8"))["pid"]
+                    leaf_first.append(pid)
+                    if pid not in pids:
+                        pids.append(pid)
+            leaf_first.extend(pid for pid in pids if pid not in leaf_first)
+            for pid in leaf_first:
+                if not absent(pid):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        cleanup["sigkill_pids"].append(pid)
+                    except ProcessLookupError:
+                        pass
+                    deadline = time.monotonic() + 3
+                    while not absent(pid) and time.monotonic() < deadline:
+                        if running is not None and running.process is not None:
+                            running.process.poll()
+                        time.sleep(0.05)
+            if running is not None and running.process is not None:
+                running.process.wait(timeout=3)
+                if running.process.stdout is not None:
+                    running.process.stdout.close()
+            elif pending is not None:
+                backend.abandon(pending)
+            cleanup["absent_pids"] = {str(pid): absent(pid) for pid in pids}
+            check("probe_cleanup_no_orphans", all(cleanup["absent_pids"].values()), cleanup)
+            if not all(cleanup["absent_pids"].values()):
+                raise RuntimeError("probe cleanup could not verify every owned PID absent")
+    if any(row["status"] != "PASS" for row in checks):
+        raise RuntimeError("native teardown checks failed")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=SUITES, default="truth")
@@ -462,7 +691,17 @@ def main() -> int:
     parser.add_argument(
         "--tree-worker", choices=("child", "grandchild"), help=argparse.SUPPRESS
     )
+    parser.add_argument(
+        "--teardown-worker", choices=("parent", "child", "grandchild"),
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--registry", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.teardown_worker:
+        if args.registry is None:
+            parser.error("--teardown-worker requires --registry")
+        teardown_worker(args.teardown_worker, args.registry)
+        return 0
     if args.tree_worker:
         tree_worker(args.tree_worker)
         return 0
@@ -475,7 +714,7 @@ def main() -> int:
         signal.signal(signal.SIGTERM, interrupt)
         signal.signal(signal.SIGINT, interrupt)
         try:
-            {"truth": truth}[args.suite](report)
+            {"truth": truth, "teardown": teardown}[args.suite](report)
             report["completed"] = True
         except Exception as exc:  # noqa: BLE001 -- emit partial JSON for any internal probe error
             report.update(

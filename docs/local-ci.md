@@ -1555,8 +1555,9 @@ origin checks must point into that wheel-owned venv; source PYTHONPATH never
 establishes installed/frozen callbacks.
 
 The macOS `proc_bsdinfo` declaration includes the SDK's `pbi_xstatus` field
-before PID/PPID, with unsigned PID fields. The struct's total size alone does
-not establish correct UID, parent or process-group offsets. Hosted native
+before PID/PPID. Initialization requires the 136-byte layout and a real self
+PID/PPID decode; total size alone does not establish correct UID, parent or
+process-group offsets. Hosted native
 receipts must match the actual selected SDK definition. Inaccessible living
 processes still refuse the census; do not omit an opaque same-owner process or
 claim quiescence from an incomplete native table. The only privilege exception

@@ -404,8 +404,11 @@ both backends:
   provenance **only when a sampled value exists**; a wholly or partially
   absent counter with no sample behind it is `unavailable`, never a
   fabricated zero or a labeled-sampled None.
-- macOS peaks are always `sampled` (resident-sum RSS, cumulative per-process
-  CPU, census process count) and never labeled authoritative.
+- Available macOS peaks are `sampled` (resident-sum RSS, cumulative per-process
+  CPU, census process count) and never labeled authoritative. Each RSS/CPU sum
+  is `None` when no member supplies that counter; a genuine observed zero stays
+  zero. When neither counter is available, the sample uses `unavailable`
+  provenance while retaining any observed process count.
 - Survivor/residue checks are zombie-aware and identity-safe: an unreaped
   zombie answers `kill(pid,0)` but is already dead and is never counted as a
   survivor; a PID is only acted upon when its (pid, start identity) still
@@ -636,3 +639,20 @@ DRR/weighted resource classes, new top-level dependencies, schema/migrations
 or overloaded-column semantics, permission/sandbox changes, auth/credentials/
 notification changes, and Windows implementation are explicitly held for
 later founder rulings.
+
+### THR-346 S1 macOS correction (2026-11-10)
+
+The libproc `proc_bsdinfo` layout includes `pbi_xstatus` between status and PID.
+Initialization checks both its 136-byte size and a real self PID/PPID decode;
+an incompatible or unavailable observation refuses backend construction. Merely
+importing the macOS backend does not load libproc. The capability factory catches
+construction/probe failure and selects its existing honest passthrough fallback.
+
+The manual native `teardown` suite exercises product selection, a three-generation
+session tree, one resource sample and normal finish. Independent `kill(pid, 0)` /
+ESRCH checks for all spawned PIDs precede probe-owned fallback cleanup, so cleanup
+cannot hide a falsely quiescent receipt. Separate subprocess fault injection
+checks import and passthrough selection with libproc unavailable. Linux reports
+skipped JSON; static checks establish no native behavior. Native evidence for
+S1 remains pending until the one authorized Jenkins job is observed at its exact
+source SHA. No frozen-app build, deployment or restart follows from this suite.

@@ -335,6 +335,7 @@ class _LibProc:
             _fields_ = [
                 ("pbi_flags", ctypes.c_uint32),
                 ("pbi_status", ctypes.c_uint32),
+                ("pbi_xstatus", ctypes.c_uint32),
                 ("pbi_pid", ctypes.c_int),
                 ("pbi_ppid", ctypes.c_int),
                 ("pbi_uid", ctypes.c_uint32),
@@ -385,6 +386,19 @@ class _LibProc:
         lib.proc_listpids.restype = ctypes.c_int
         lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
         lib.proc_pidinfo.restype = ctypes.c_int
+
+        # Size alone did not catch the missing pbi_xstatus word: padding kept
+        # the old, shifted layout at 136 bytes too. Check a real kernel decode.
+        if ctypes.sizeof(ProcBsdinfo) != 136:
+            raise LibProcUnavailable("unexpected proc_bsdinfo ABI size")
+        own_pid = os.getpid()
+        info = ProcBsdinfo()
+        count = lib.proc_pidinfo(
+            own_pid, self.PROC_PIDTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info)
+        )
+        if (count != ctypes.sizeof(info) or info.pbi_pid != own_pid
+                or info.pbi_ppid != os.getppid()):
+            raise LibProcUnavailable("proc_bsdinfo PID/PPID decode self-check failed")
 
     def list_pids(self) -> list[int]:
         ctypes = self._ctypes
@@ -632,7 +646,7 @@ class DescendantSampler:
 
     Callable with a :class:`RunningHandle`: samples the identity-safe
     descendant tree of the handle's root PID at the supervisor's bounded
-    cadence. Provenance is always ``sampled`` (never authoritative); an
+    cadence. Available counters have ``sampled`` provenance (never authoritative); an
     unreadable root yields an empty tree, a broken reader raises so the
     supervisor records a measurement failure (fail-closed).
     """
@@ -656,12 +670,13 @@ class DescendantSampler:
         members = census.descendants(
             running.root_pid, running.start_identity or None, include_root=True
         )
-        rss = sum(o.rss_bytes for o in members if o.rss_bytes is not None)
-        cpu = sum(o.cpu_seconds for o in members if o.cpu_seconds is not None)
+        rss = [o.rss_bytes for o in members if o.rss_bytes is not None]
+        cpu = [o.cpu_seconds for o in members if o.cpu_seconds is not None]
         return ResourceSample(
             sampled_at=self._monotonic(),
-            memory_peak_bytes=rss if rss or members else None,
-            cpu_total_seconds=cpu if cpu or members else None,
+            memory_peak_bytes=sum(rss) if rss else None,
+            cpu_total_seconds=sum(cpu) if cpu else None,
             process_count=len(members) if members else None,
-            provenance=MeasurementProvenance.SAMPLED,
+            provenance=(MeasurementProvenance.SAMPLED if rss or cpu
+                        else MeasurementProvenance.UNAVAILABLE),
         )

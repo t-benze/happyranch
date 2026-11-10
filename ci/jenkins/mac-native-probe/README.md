@@ -49,7 +49,9 @@ From a checkout, using an existing Python 3.12–3.14 interpreter:
 python3 scripts/mac_native/probe.py --suite truth --output /absolute/probe.json
 ```
 
-Only `truth` ships in S0. JSON goes to stdout and the optional output path;
+Suites: `truth` (S0 observations) and `teardown` (THR-346 S1 product lifecycle).
+The existing job accepts either suite without configuration changes.
+JSON goes to stdout and the optional output path;
 human observations go to stderr. Linux prints `darwin-only`, emits skipped
 JSON and exits 0. Darwin findings, including a broken repo decoder or unavailable
 mount API, are data. Internal exceptions, incomplete process-tree cleanup and
@@ -88,3 +90,27 @@ queue/build; do not use `lastBuild` as identity. Use a durable HappyRanch job fo
 a long wait/collection and report in-flight state rather than holding a session.
 This job is separate from lint/static-only required PR checks and Product E2E;
 no GitHub workflow or CI trigger is added.
+
+## S1 teardown suite
+
+```sh
+python3 scripts/mac_native/probe.py --suite teardown --output /absolute/probe.json
+```
+
+On Darwin this imports the pinned product factory and macOS backend, records the
+selected backend, launches a real parent → child → grandchild session group
+through `prepare`/`launch`, samples RSS/CPU/process count and provenance once,
+and calls normal `finish`. It records the complete receipt, clean/quiescent and
+survivor fields, plus signals derived from the receipt's cleanup status (not
+independent signal-delivery proof). Every spawned PID must independently return
+ESRCH to `os.kill(pid, 0)` after product finish and before probe cleanup. JSON
+checks carry individual PASS/FAIL; failed assertions exit nonzero. A separate
+interpreter forces libproc loading to fail and verifies successful factory import
+and passthrough selection. Probe-owned TERM/KILL disposal and final PID absence
+are recorded separately; a cleanup rescue never changes a product FAIL to PASS.
+Linux emits the same skipped JSON shape as `truth` and exits 0.
+
+Product imports use stdlib only. `truth` observations retain their S0 meaning.
+Native evidence: PENDING (leg 2); Linux skipped output and lint are not native
+proof. No Jenkins creation/reconfiguration, additional trigger, app build,
+deployment or daemon restart is part of this slice.
