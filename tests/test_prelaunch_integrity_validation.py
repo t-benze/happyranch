@@ -85,14 +85,234 @@ class TestReleasePackageRecovery:
         ).fetchall()
 
     def test_system_corrupted_recovery(self, recovery):
+        import json
+        import shutil
+        import sqlite3
+
         self.corrupt(recovery.target)
-        response = self.post(recovery)
+        neighbor = recovery.target.parent / "unrelated-package"
+        neighbor.mkdir()
+        (neighbor / "SKILL.md").write_text("untouched neighbor")
+        remove = shutil.rmtree
+        removed = []
+
+        def remove_after_audit(target):
+            # A second connection proves the intent was committed before any
+            # removal, rather than merely visible inside the writer connection.
+            with sqlite3.connect(recovery.db.db_path) as observer:
+                assert observer.execute(
+                    "SELECT count(*) FROM skill_validation_events WHERE source='operator_recovery' AND ok=1"
+                ).fetchone()[0] == 1
+            assert target == recovery.target
+            removed.append(target)
+            remove(target)
+
+        with patch("shutil.rmtree", side_effect=remove_after_audit):
+            response = self.post(recovery)
         assert response.status_code == 200, response.text
         assert response.json()["ok"] is True
         assert not recovery.target.exists()
+        assert removed == [recovery.target]
+        assert (neighbor / "SKILL.md").read_text() == "untouched neighbor"
         rows = self.audits(recovery)
         assert len(rows) == 1 and rows[0]["ok"]
         assert rows[0]["version"] == "system"
+        assert json.loads(rows[0]["reason_codes"]) == ["operator_recovery"]
+
+    @pytest.mark.parametrize("case,status,reason", (
+        ("valid", 409, "valid_target_refused"),
+        ("hash", 400, "hash_mismatch"),
+        ("unknown-system", 404, "release_provenance_not_found"),
+        ("unknown-version", 404, "release_provenance_not_found"),
+        ("absent", 404, "package_not_found_on_disk"),
+        ("source-unavailable", 400, "release_source_unavailable"),
+    ))
+    def test_system_refusal_is_audited(self, recovery, case, status, reason):
+        import json
+        import shutil
+
+        body = dict(recovery.body)
+        if case == "hash":
+            body["content_hash"] = "0" * 64
+        elif case == "unknown-system":
+            body["slug"] = "not-a-system-contract"
+        elif case == "unknown-version":
+            body["version"] = "unknown-release"
+        elif case == "absent":
+            shutil.rmtree(recovery.target)
+        elif case == "source-unavailable":
+            (recovery.source / "SKILL.md").unlink()
+        response = self.post(recovery, body)
+        assert response.status_code == status, response.text
+        rows = self.audits(recovery)
+        assert len(rows) == 1 and not rows[0]["ok"]
+        assert json.loads(rows[0]["reason_codes"]) == [reason]
+        if case != "absent":
+            assert (recovery.target / "SKILL.md").read_text() == "Authoritative release contract\n"
+
+    @pytest.mark.parametrize("alias", ("target", "dangling-target", "version", "slug", "root", "member", "hardlink"))
+    def test_aliased_target_is_refused_without_external_changes(self, recovery, tmp_path, alias):
+        import json
+        import stat
+
+        self.corrupt(recovery.target)
+        external = tmp_path / "external"
+        external.write_text("external bytes")
+        external.chmod(0o444)
+        if alias in {"member", "hardlink"}:
+            member = recovery.target / "alias"
+            if alias == "member":
+                member.symlink_to(external)
+            else:
+                os.link(external, member)
+        else:
+            target = {
+                "target": recovery.target, "dangling-target": recovery.target,
+                "version": recovery.target.parent, "slug": recovery.target.parent.parent,
+                "root": recovery.store.root,
+            }[alias]
+            moved = tmp_path / "preserved-package"
+            target.rename(moved)
+            target.symlink_to(tmp_path / "missing" if alias == "dangling-target" else moved,
+                              target_is_directory=True)
+        response = self.post(recovery)
+        assert response.status_code == 409, response.text
+        rows = self.audits(recovery)
+        assert len(rows) == 1 and json.loads(rows[0]["reason_codes"]) == ["unsafe_target"]
+        assert external.read_text() == "external bytes"
+        assert stat.S_IMODE(external.stat().st_mode) == 0o444
+        if alias in {"member", "hardlink"}:
+            assert (recovery.target / "SKILL.md").read_text() == "corrupted contract\n"
+        else:
+            assert target.is_symlink() and moved.is_dir()
+
+    @pytest.mark.parametrize("source_kind", ("release", "user_authored", "org-only"))
+    def test_release_catalog_requires_release_provenance(self, recovery, tmp_path, source_kind):
+        import json
+
+        root = recovery.config.project_root / "runtime/skills"
+        if source_kind == "org-only":
+            root = tmp_path / "org/runtime/skills"
+        source = root / "catalog-skill"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("release catalog source\n")
+        (source / "skill.yaml").write_text(
+            "id: hr:catalog-skill\nslug: catalog-skill\nversion: 1.0.0\n"
+            + ("source: user_authored\n" if source_kind == "user_authored" else "")
+        )
+        identity = _compute_dir_hash(source)
+        body = dict(slug="catalog-skill", version="1.0.0", content_hash=identity)
+        target = recovery.store.build_from_source(**body, source_dir=source, verify_source_hash=identity)
+        self.corrupt(target)
+        response = self.post(recovery, body)
+        rows = self.audits(recovery)
+        assert len(rows) == 1
+        if source_kind == "release":
+            assert response.status_code == 200, response.text
+            assert not target.exists() and rows[0]["ok"]
+            assert rows[0]["skill_id"] == "hr:catalog-skill"
+        else:
+            assert response.status_code == 404, response.text
+            assert json.loads(rows[0]["reason_codes"]) == ["release_provenance_not_found"]
+            assert (target / "SKILL.md").read_text() == "corrupted contract\n"
+
+    @pytest.mark.parametrize("failure", ("intent-audit", "refusal-audit", "deletion", "unreadable"))
+    def test_failures_preserve_package_and_honest_audit(self, recovery, failure):
+        import json
+
+        if failure != "refusal-audit":
+            self.corrupt(recovery.target)
+        before = (recovery.target / "SKILL.md").read_bytes()
+        if failure in {"intent-audit", "refusal-audit"}:
+            injected = patch.object(recovery.db, "insert_skill_validation_event", side_effect=OSError("audit unavailable"))
+        elif failure == "deletion":
+            injected = patch("shutil.rmtree", side_effect=OSError("deletion unavailable"))
+        else:
+            injected = patch.object(CanonicalSkillStore, "compute_tree_hash", side_effect=OSError("read unavailable"))
+        with injected:
+            response = self.post(recovery)
+        assert response.status_code == (409 if failure == "unreadable" else 500), response.text
+        assert (recovery.target / "SKILL.md").read_bytes() == before
+        rows = self.audits(recovery)
+        if failure in {"intent-audit", "refusal-audit"}:
+            assert not rows
+            assert "audit persistence failed" in response.json()["detail"]
+        elif failure == "deletion":
+            assert len(rows) == 2 and rows[0]["ok"] and not rows[1]["ok"]
+            assert json.loads(rows[1]["reason_codes"]) == ["deletion_failed"]
+        else:
+            assert len(rows) == 1 and not rows[0]["ok"]
+            assert json.loads(rows[0]["reason_codes"]) == ["target_unreadable"]
+
+    def test_emitted_system_hint_recovers_and_next_materialization_rebuilds(self, recovery):
+        import re
+
+        self.corrupt(recovery.target)
+        with pytest.raises(CanonicalStoreError) as failure:
+            recovery.store.build_from_source(**recovery.body, source_dir=recovery.source,
+                                             verify_source_hash=recovery.body["content_hash"])
+        assert failure.value.code == "content_corruption"
+        command = re.search(r"`happyranch skills recover ([^`]+)`", str(failure.value))
+        assert command is not None
+        slug, version, content_hash = command[1].split()
+        response = self.post(recovery, dict(slug=slug, version=version, content_hash=content_hash))
+        assert response.status_code == 200, response.text
+        assert "bundled release source" in str(failure.value)
+        assert not recovery.target.exists()
+        rebuilt = recovery.store.build_from_source(slug, version, content_hash, recovery.source,
+                                                   verify_source_hash=content_hash)
+        assert rebuilt == recovery.target
+        assert (rebuilt / "SKILL.md").read_text() == "Authoritative release contract\n"
+        assert recovery.store.compute_tree_hash(slug, version, content_hash) == content_hash
+
+    @pytest.mark.parametrize("case", ("corrupted", "valid", "hash", "unknown", "noncanonical"))
+    def test_numeric_b2_recovery_regression(self, recovery, case, tmp_path):
+        import json
+
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.skills.custom_store import create_skill_with_first_version
+
+        artifact = b"B2 authoritative content\n"
+        identity = hashlib.sha256(artifact).hexdigest()
+        artifacts = ArtifactStore(OrgPaths(tmp_path / "org").artifacts_dir)
+        artifacts.put("b2-content.md", artifact)
+        version = create_skill_with_first_version(
+            recovery.db._conn, skill_id="custom:b2-skill", org_slug="test-org", slug="b2-skill",
+            name="B2 skill", origin_kind="human", origin_agent=None, created_by="founder",
+            content_hash=identity, content_artifact_key="b2-content.md", author_kind="human",
+            author_identity="founder", created_at="2026-11-10T00:00:00+00:00",
+        )
+        recovery.db._conn.execute("UPDATE custom_skill_versions SET validation_state='valid' WHERE id=?", (version,))
+        recovery.db._conn.commit()
+        source = tmp_path / "b2-source"
+        source.mkdir()
+        (source / "SKILL.md").write_bytes(artifact)
+        body = dict(slug="b2-skill", version=str(version), content_hash=identity)
+        target = recovery.store.build_from_source(**body, source_dir=source)
+        if case == "corrupted":
+            self.corrupt(target)
+        elif case == "hash":
+            body["content_hash"] = "0" * 64
+        elif case == "unknown":
+            body["version"] = str(version + 1)
+        elif case == "noncanonical":
+            body["version"] = "0" + str(version)
+        response = self.post(recovery, body)
+        rows = self.audits(recovery)
+        expected = {"corrupted": 200, "valid": 409, "hash": 400, "unknown": 404, "noncanonical": 400}
+        assert response.status_code == expected[case], response.text
+        if case == "corrupted":
+            assert response.json()["artifact_key"] == "b2-content.md"
+            assert not target.exists() and len(rows) == 1 and rows[0]["ok"]
+        else:
+            assert (target / "SKILL.md").read_bytes() == artifact
+            if case == "noncanonical":
+                assert not rows and response.json()["detail"] == "version must be the B2 version ID"
+            else:
+                reason = {"valid": "valid_target_refused", "hash": "hash_mismatch", "unknown": "b2_provenance_not_found"}
+                assert len(rows) == 1 and not rows[0]["ok"]
+                assert json.loads(rows[0]["reason_codes"]) == [reason[case]]
 
 
 class TestBytecodePackageIntegrity:

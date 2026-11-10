@@ -1273,7 +1273,7 @@ def _recover_release_package(
     try:
         org.db.insert_skill_validation_event(skill_id=skill_id, slug=body.slug, agent="operator",
             source="operator_recovery", severity="info", ok=True, version=body.version,
-            findings=["Operator recovery removed a corrupted release canonical package."], reason_codes=["operator_recovery"])
+            findings=["Operator recovery authorized removal of a corrupted release canonical package."], reason_codes=["operator_recovery"])
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Recovery audit persistence failed; canonical package was not deleted") from exc
     try:
