@@ -1437,15 +1437,13 @@ mirror because the header is outside their focus trap. Locale changes make no
 API request or mutation; bounded observations distinguish already-due polling.
 Work Hours shows roster loading/error/Retry separately from empty. Engineering's
 current v2 editor retains exact text and target through locale/query changes;
-Stay/Discard and confirmation remain required. Browser geometry, screenshots
-and real after-M acceptance are held independently of mounted Web tests.
+Stay/Discard and confirmation remain required. Browser geometry and screenshots
+require their own evidence; mounted Web tests do not establish them.
 
-The offline roster utility remains operator-only. Its real checked manifest
-binds clean candidate/Python3.14 reader and detached runtime registration;
-apply/recovery requires that exact digest. Compensation retains the original
-successful receipt and records a new coherent original-roster generation in
-`compensation-receipt.json`. No transfer UI/API or startup migration is added.
-See the migration runbook for commands and AUTHORED-versus-executed case maps.
+Moving agents between teams is no longer supported (Founder THR296 seq316).
+The offline maintenance utility and its runbook are removed. Founder-managed
+Default remains supported through fresh org creation and the founder command
+`happyranch teams ensure-default --org ORG`.
 
 GET teams/settings retain string manager names for agent teams; human rows
 carry manager:null, manager_kind:human, human_manager:founder and is_default.
@@ -1453,7 +1451,7 @@ Both TypeScript wire types and existing real/mock providers accept this shape.
 Settings accepts coherent worker additions and preserves pointers/principals.
 Removing a still-active declared worker returns teams_consistency_drift and rolls
 back. A native registry serialization add/remove roundtrip does not prove valid
-HTTP removal; the coordinated offline utility owns the approved team move.
+HTTP removal or authorize moving an agent between teams.
 Existing Agent selectors/detail and Work Hours display localized Founder
 leadership while preserving executable worker selection. Demoted consultants
 are ineligible for manager policy views; no transfer UI is introduced.

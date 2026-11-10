@@ -2042,12 +2042,11 @@ leadership is a localized label, never an executable option or synthetic null
 row. Engineering/Product policy eligibility remains guarded; worker policy GET
 and mutation denial require server evidence, not merely hidden controls.
 
-The bounded roster utility preserves unrelated canonical literal text and
-closed memory/history/thread delivery/breaker/frozen evidence. Completed replay
-requires operation-specific audit/journal/pointer facts, including zero rows and
-already-cleared rows; equality alone supplies no no-helper/no-write proof.
-C6/C8/C9 source assertions and finite crash/localization selections remain
-unexecuted under the existing Python/M holds.
+Moving agents between teams is no longer supported (Founder THR296 seq316).
+The offline maintenance utility, its runbook and utility-only C6/C8/C9 cases
+are removed. Founder-managed Default remains supported through fresh org
+creation and `happyranch teams ensure-default --org ORG`; human-manager and
+existing worker-context coverage remains.
 
 Selected human failed-leaf recovery retains its original exceptional operation
 after native drain exception or cancellation. Same-process same-result reentry

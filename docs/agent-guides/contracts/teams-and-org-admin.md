@@ -484,9 +484,10 @@ partial state; existing supported publication/cold recovery retains ownership.
 teams; refresh its teams read after provision, then select Default without
 creating an agent. Source acceptance, loaded capability and actual live selection
 are separate evidence. No startup seeding, live raw edits, agent move/creation,
-offline migration, deployment/restart or broader administration follows. The
-deferred offline move and its historical proof/correction limits below remain
-unchanged; they do not gate this distinct empty-team operation. No new cases or
+offline migration, deployment/restart or broader administration follows.
+Moving agents between teams is no longer supported (Founder THR296 seq316).
+The offline maintenance utility and its runbook are removed; fresh org creation
+and `teams ensure-default` retain founder-managed Default. No new cases or
 fixtures, retired Python units, integration or ad hoc E2E execution follows.
 
 Historical TASK10394/TASK10553 PR1022 runs used the finite
@@ -495,29 +496,21 @@ independently pinned b317 reader and transient exact browser tooling.
 Merged PR1025/THR291seq69 supersedes that automatic PR entry with lint-only
 checks and daily-only Product E2E; retained case source grants no new execution.
 See `docs/local-ci.md`. Python units remain RETIRED and broad integration SKIPPED.
-M, compatible restore, reboot, live operations and after-M acceptance remain
-held. Source checks are not behavioral proof; preserve exits and missing evidence.
+The removed maintenance cases supplied no executed move/restore/reboot proof.
+Source checks are not behavioral proof; preserve exits and missing evidence.
 
 
 C10 uses the existing built SPA and isolated integration fixture, with en/zh-CN
 at 390×844 and 1440×900. Authored availability/empty-team projections are UI
-boundaries; real after-migration browser acceptance requires the actual C6 M
-check/apply/receipt. Header locale selection transfers focus to its trigger;
-modal external-tab locale updates preserve their focused drafts. Work Hours
+boundaries, not evidence of a team transfer. Header locale selection transfers
+focus to its trigger; modal external-tab locale updates preserve their focused
+drafts. Work Hours
 roster loading/error/Retry is distinct from empty. Emitted completion guidance
 references the canonical start-task skill: worker-owned roots have only
 server-authorized `done`, self-only `delegate` or `escalate` decisions;
 delegated leaves return plain completions. An attempted non-root founder
 escalation fails the child and wakes its parent; manager-only operations stay
 restricted.
-
-The bounded roster maintenance source pins effective registration and the clean
-Python3.14 reader, independently closes org/shared-store restore inventories,
-and performs final pre-reset CAS. Complete/compensate and two same-manifest
-replays retain native reset/publication ownership; compensation preserves the
-original receipt and records its NEW coherent generation separately. C6/C8/C9
-source and 28 publication/3 replay localizations are AUTHORED, not executed.
-M launch/observer/reboot capability remains unproved; see the operator runbook.
 
 Team managers may be existing agent names or closed tagged principals
 `{kind: agent|human, principal: ...}`. The sole human principal is `founder`;
