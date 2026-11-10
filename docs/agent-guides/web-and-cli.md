@@ -2178,8 +2178,7 @@ it is not automatically mounted or sent. Add Agent already renders the returned
 human team with Founder-managed labeling: refresh teams after provisioning and
 select Default without creating an agent. An old running daemon lacks the new
 capability; source acceptance/merge, loaded capability and live dropdown outcome
-are distinct. The deferred offline consultant move is a separate operation;
-no adoption/restart or agent-move authority follows from this command.
+are distinct. No adoption, restart or agent-move authority follows from this command.
 
 **Backend:** The `GET /agents` response now includes `repos`, `system_prompt`, and `model` fields (additive, `allow_rules` remains excluded). The `PUT /agents/{agent}/model` route sets or clears the per-agent model (see below).
 
