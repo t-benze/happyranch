@@ -96,11 +96,12 @@ class TestBytecodePackageIntegrity:
             import json
 
             members = []
-            for path in sorted(source.rglob("*")):
+            for index, path in enumerate(sorted(source.rglob("*"))):
                 if path.is_file():
                     name = str(path.relative_to(source))
-                    artifacts.put(name, path.read_bytes())
-                    members.append(dict(path=name, artifact_key=name,
+                    key = f"member-{index}.blob"
+                    artifacts.put(key, path.read_bytes())
+                    members.append(dict(path=name, artifact_key=key,
                                         hash="sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()))
             manifest = dict(members=members)
             identity = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
@@ -216,6 +217,28 @@ class TestBytecodePackageIntegrity:
         assert store.build_from_source("bytecode-skill", "system", identity, source,
                                        verify_source_hash=clean_hash) == target
         validate_workspace_skills_integrity(workspace, specs)
+
+    def test_declared_bytecode_retains_manifest_provenance(self, package: tuple) -> None:
+        from runtime.skills.canonical_store import _compute_tree_hash_from_manifest_members
+
+        source, store, _, artifacts = package
+        clean_hash = _compute_dir_hash(source)
+        self.add_bytecode(source)
+        target, identity, tree_hash, _, manifest = self.build(package, "manifest")
+        expected = _compute_tree_hash_from_manifest_members(manifest, artifacts, skill_slug="bytecode-skill")
+        assert expected == tree_hash == clean_hash
+        # Declared members are preserved and checked, unlike undeclared extras.
+        declared = target / "loose.pyc"
+        declared.chmod(0o644)
+        declared.write_bytes(b"changed declared member")
+        with pytest.raises(CanonicalStoreError, match="content_corruption"):
+            store.build_from_manifest("bytecode-skill", "system", identity, manifest, artifacts)
+        key = next(member["artifact_key"] for member in manifest["members"] if member["path"] == "loose.pyc")
+        artifacts.put(key, b"changed declared artifact")
+        with pytest.raises(CanonicalStoreError, match="member_hash_mismatch"):
+            _compute_tree_hash_from_manifest_members(manifest, artifacts, skill_slug="bytecode-skill")
+        with pytest.raises(CanonicalStoreError, match="member_hash_mismatch"):
+            store.build_from_manifest("bytecode-skill", "fresh", identity, manifest, artifacts)
 
     @pytest.mark.parametrize("inherited", (None, "", "0"))
     def test_executor_launch_environment_disables_bytecode(
