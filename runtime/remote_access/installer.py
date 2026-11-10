@@ -106,17 +106,16 @@ class ManagedInstaller:
             raise InstallerError("unsafe happyranch account: require non-root dedicated group, /nonexistent home and nologin shell")
         return user.pw_uid, user.pw_gid
 
-    def _layout(self) -> dict[str, tuple[int, tuple[int, int]]]:
-        layout = {path: (0o755, self.root_owner) for path in (
+    def _layout(self) -> dict[str, tuple[int, tuple[int, int] | None]]:
+        layout: dict[str, tuple[int, tuple[int, int] | None]] = {path: (0o755, self.root_owner) for path in (
             "opt/happyranch", "opt/happyranch/bin", "etc/happyranch",
         )}
-        if self._service_owner is not None:
-            for base in ("var/lib", "var/log", "run"):
-                for name in ("happyranch-connector", "happyranch-tsnet-sidecar"):
-                    # Match the renderer's systemd directory modes, including
-                    # its explicit private sidecar StateDirectoryMode.
-                    mode = 0o700 if base == "var/lib" and name == "happyranch-tsnet-sidecar" else 0o755
-                    layout[f"{base}/{name}"] = (mode, self._service_owner)
+        for base in ("var/lib", "var/log", "run"):
+            for name in ("happyranch-connector", "happyranch-tsnet-sidecar"):
+                # Include destinations before account creation, so preflight
+                # cannot overlook existing service-owned paths.
+                mode = 0o700 if base == "var/lib" and name == "happyranch-tsnet-sidecar" else 0o755
+                layout[f"{base}/{name}"] = (mode, self._service_owner)
         return layout
 
     @contextmanager
@@ -139,10 +138,12 @@ class ManagedInstaller:
                 except FileNotFoundError:
                     if not create:
                         raise
+                    mode, owner = expected or (0o755, self.root_owner)
+                    if owner is None:
+                        raise InstallerError("cannot create service directories without a validated happyranch account")
                     os.mkdir(part, mode=0o700, dir_fd=descriptor)
                     child = os.open(part, _DIR_FLAGS, dir_fd=descriptor)
                     try:
-                        mode, owner = expected or (0o755, self.root_owner)
                         os.fchown(child, *owner)
                         os.fchmod(child, mode)
                     except BaseException:
@@ -156,7 +157,7 @@ class ManagedInstaller:
             os.close(descriptor)
 
     def _check_directory(
-        self, descriptor: int, path: str, expected: tuple[int, tuple[int, int]] | None,
+        self, descriptor: int, path: str, expected: tuple[int, tuple[int, int] | None] | None,
     ) -> None:
         info = os.fstat(descriptor)
         owner = expected[1] if expected else self.root_owner
@@ -165,9 +166,11 @@ class ManagedInstaller:
             # Creation follows systemd's mode; the trust-state store tightens
             # this directory to owner-only on save. Preserve either safe mode.
             allowed_modes += (0o700,)
-        if ((info.st_uid, info.st_gid) != owner or info.st_mode & 0o022
+        if ((owner is not None and (info.st_uid, info.st_gid) != owner) or info.st_mode & 0o022
                 or (expected and stat.S_IMODE(info.st_mode) not in allowed_modes)):
             raise InstallerError(f"unsafe directory ownership or mode: {path}")
+        if owner is None:
+            raise InstallerError(f"cannot validate existing service directory ownership without a happyranch account: {path}")
 
     def _read_unit(self, parent: int, name: str) -> bytes:
         named = os.stat(name, dir_fd=parent, follow_symlinks=False)
@@ -189,8 +192,8 @@ class ManagedInstaller:
             os.close(descriptor)
 
     def _preflight(self) -> None:
-        # Check every existing destination before writing any unit. This is not
-        # transactional recovery or a defense against a concurrent root writer.
+        # Check every existing destination before account creation or systemctl.
+        # This is not transactional recovery or a concurrent-root-writer fence.
         for path in (*self._layout(), _UNIT_DIR):
             try:
                 with self._directory(path):
