@@ -298,3 +298,352 @@ def test_sweep_old_session_result_does_not_replay_multi_step_task(tmp_path: Path
     assert "daemon_restart_failure" in actions, (
         f"expected daemon_restart_failure audit; got: {actions}"
     )
+
+
+
+# THR-350: retained integration source; no collection/execution on the live
+# daemon host. Only OS observations are deterministic test-side substitutes.
+@pytest.fixture
+def unknown_session(tmp_path: Path, monkeypatch, request):
+    import os
+    from datetime import datetime, timedelta, timezone
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
+    from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
+    from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+    from runtime.orchestrator.task_pause import fingerprint, restore_pause_preparations
+
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon-home"))
+    db, orch, queue = _real_orch(tmp_path)
+    initialize_complete_org_schema(db, expected_org_slug="acme")
+    install_task_ownership(db, org_slug="acme")
+    install_pause_schema(db, org_slug="acme")
+    store = db._task_pause_store = TaskPauseStore(db, "acme")
+    moment = datetime.now(timezone.utc)
+    db.insert_task(TaskRecord(
+        id="TASK-PARENT", brief="manage", team="engineering", assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-CHILD", brief="work", team="engineering", assigned_agent="dev_agent",
+        parent_task_id="TASK-PARENT", task_type="subtask", status=TaskStatus.IN_PROGRESS,
+        orchestration_step_count=1, current_session_id="sess-crashed",
+    ))
+    db.update_task("TASK-CHILD", executor_pid=2147483000,
+        last_heartbeat=(moment - timedelta(seconds=600)).isoformat())
+    assert db.get_task("TASK-CHILD").executor_pid == 2147483000
+    assert db.get_task("TASK-CHILD").last_heartbeat == moment - timedelta(seconds=600)
+    AuditLogger(db).log_session_start("TASK-CHILD", "dev_agent", str(orch._paths.root),
+        session_id="sess-crashed", invocation_purpose="worker_execution")
+    identity = {}
+    wake = getattr(request, "param", None)
+    if wake is not None:
+        from runtime.models import JobRecord
+        from runtime.orchestrator.run_step import _maybe_resume_blocked_task
+        db.insert_job(JobRecord(id="JOB-1", task_id="TASK-CHILD", agent_name="dev_agent",
+            title="finished", rationale="fixture", script_text="true", interpreter="bash",
+            status="completed", exit_code=0, created_at=moment.isoformat()))
+        db.update_task("TASK-CHILD", block_kind=BlockKind.BLOCKED_ON_JOB, blocked_on_job_ids='["JOB-1"]')
+        assert _maybe_resume_blocked_task(orch, "TASK-CHILD", trigger=wake,
+            triggering_job_id="JOB-1" if wake == "job_terminal" else None)
+        slug, task_id, identity = queue._queue.get_nowait()
+        assert (slug, task_id) == ("acme", "TASK-CHILD")
+        db.update_task("TASK-CHILD", block_kind=None, blocked_on_job_ids=None)
+    with store.writer("TASK-CHILD") as (root, row):
+        row = store.ensure_uncommitted(root["id"])
+        row["journal"]["entries"].append({
+            "id": "crash-owner", "org": "acme", "root_task_id": root["id"],
+            "task_id": "TASK-CHILD", "agent": "dev_agent", "session_id": "sess-crashed",
+            "owner": "ordinary", "owner_identity": identity, "fingerprint": fingerprint(
+                db.get_task("TASK-CHILD").model_copy(update={"orchestration_step_count": 0})),
+            "generation": 0, "phase": "running", "retry": {}, "context": {},
+            "started_at": moment.isoformat(), "captured_generation": None,
+        })
+        store.save_journal_uncommitted(row)
+    restore_pause_preparations(orch)
+    original_kill = os.kill
+    def dead_pid(pid: int, sig: int) -> None:
+        if pid == 2147483000:
+            raise ProcessLookupError(pid)
+        original_kill(pid, sig)
+    monkeypatch.setattr(os, "kill", dead_pid)
+    original_read = Path.read_text
+    def proc_stat(path: Path, *args, **kwargs) -> str:
+        if path == Path("/proc/stat"):
+            assert not db._conn.in_transaction
+            assert not db._lock._is_owned()
+            return "btime 1\n"
+        return original_read(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", proc_stat)
+    wakes = []
+    original_put = queue.put_nowait
+    def observe_put(slug: str, task_id: str, *, metadata=None) -> None:
+        wakes.append(task_id)
+        original_put(slug, task_id, metadata=metadata)
+    monkeypatch.setattr(queue, "put_nowait", observe_put)
+    try:
+        yield db, orch, queue, store, moment, wakes
+    finally:
+        db.close()
+
+
+def _unknown_entry(store):
+    with store.db._lock:
+        return store.row_uncommitted("TASK-PARENT")["journal"]["entries"][0]
+
+
+def _unknown_sweep(case, seam: str, *, seconds: int = 0) -> None:
+    from datetime import timedelta
+    from runtime.daemon.zombie_reaper import _sweep_org_zombies
+    db, orch, queue, _, moment, _ = case
+    if seam == "startup":
+        _sweep_on_startup(db, queue, "acme", orch)
+    else:
+        _sweep_org_zombies(db, orchestrator=orch, queue=queue,
+            now=moment + timedelta(seconds=seconds), uptime=1000, warm_up_seconds=30)
+
+
+@pytest.mark.parametrize("seam", ["startup", "periodic"])
+@pytest.mark.parametrize("child_first", [False, True])
+@pytest.mark.parametrize("unknown_session", [None, "job_terminal", "block_submit"], indirect=True)
+def test_unknown_dead_session_terminal_and_single_parent_wake(unknown_session, monkeypatch, seam, child_first):
+    import sqlite3
+    from runtime.orchestrator.task_pause import pause_deferred_owner
+    db, orch, _, store, _, wakes = unknown_session
+    expected = TaskStatus.FAILED if seam == "startup" else TaskStatus.CANCELLED
+    original_save = store.save_journal_uncommitted
+    def observe_settlement(row):
+        if row["journal"]["entries"][0]["context"].get("producer_settled"):
+            with sqlite3.connect(orch._paths.db_path) as observer:
+                assert observer.execute("SELECT status FROM tasks WHERE id='TASK-CHILD'").fetchone()[0] == expected.value
+        original_save(row)
+    monkeypatch.setattr(store, "save_journal_uncommitted", observe_settlement)
+    original_ids = db.get_nonterminal_task_ids
+    monkeypatch.setattr(db, "get_nonterminal_task_ids", lambda: sorted(
+        original_ids(), key=lambda tid: (tid != "TASK-CHILD") if child_first else (tid == "TASK-CHILD")))
+    assert pause_deferred_owner(db, "TASK-CHILD")
+    _unknown_sweep(unknown_session, seam)
+    if seam == "periodic":
+        assert db.get_task("TASK-CHILD").status == TaskStatus.IN_PROGRESS
+        assert db.get_task("TASK-CHILD").zombie_flagged_at is not None
+        assert wakes == []
+        assert not _unknown_entry(store)["context"].get("producer_settled")
+        _unknown_sweep(unknown_session, seam, seconds=151)
+    action = "daemon_restart_failure" if seam == "startup" else "zombie_cancelled"
+    assert db.get_task("TASK-CHILD").status == expected
+    assert _unknown_entry(store)["phase"] == "unknown"
+    assert _unknown_entry(store)["context"] == {"execution_unknown": True, "producer_settled": True}
+    assert not pause_deferred_owner(db, "TASK-CHILD")
+    for _ in range(2):
+        _unknown_sweep(unknown_session, seam, seconds=500)
+    logs = db.get_audit_logs("TASK-CHILD")
+    assert sum(row["action"] == action for row in logs) == 1
+    terminal_audit = next(row for row in logs if row["action"] == action)
+    assert terminal_audit["task_id"] == "TASK-CHILD"
+    assert terminal_audit["agent"] == "dev_agent"
+    assert terminal_audit["payload"] == {"reason": (
+        "daemon restarted mid-task" if seam == "startup" else "zombie cancelled after TTL expiry")}
+    assert not any(row["action"] == ("zombie_cancelled" if seam == "startup" else "daemon_restart_failure") for row in logs)
+    assert wakes == ["TASK-PARENT"]
+    assert db.get_children("TASK-CHILD") == []
+
+
+@pytest.mark.parametrize("seam", ["startup", "periodic"])
+@pytest.mark.parametrize("probe", ["alive", "indeterminate", "missing"])
+def test_unknown_session_without_death_proof_stays_deferred(unknown_session, monkeypatch, seam, probe):
+    import os
+    from runtime.orchestrator.task_pause import pause_deferred_owner
+    db, _, _, store, _, wakes = unknown_session
+    def probe_pid(pid: int, sig: int) -> None:
+        if probe == "indeterminate":
+            raise PermissionError(pid)
+    monkeypatch.setattr(os, "kill", probe_pid)
+    if probe == "missing":
+        db.update_task("TASK-CHILD", executor_pid=None)
+    before = _unknown_entry(store)
+    _unknown_sweep(unknown_session, seam)
+    _unknown_sweep(unknown_session, seam, seconds=500)
+    assert db.get_task("TASK-CHILD").status == TaskStatus.IN_PROGRESS
+    assert db.get_task("TASK-CHILD").zombie_flagged_at is None
+    assert _unknown_entry(store) == before
+    assert pause_deferred_owner(db, "TASK-CHILD")
+    assert wakes == []
+
+
+@pytest.mark.parametrize("seam,probe", [("startup", "dead"), ("periodic", "dead"),
+    ("startup", "missing"), ("startup", "indeterminate")])
+@pytest.mark.parametrize("result_sid", ["sess-crashed", "sess-prior"])
+def test_unknown_result_is_scoped_and_wins_before_inferred_terminal(unknown_session, monkeypatch, seam, probe, result_sid):
+    import os
+    db, _, _, store, _, wakes = unknown_session
+    if probe == "missing":
+        db.update_task("TASK-CHILD", executor_pid=None)
+    elif probe == "indeterminate":
+        def denied(pid: int, sig: int) -> None:
+            raise PermissionError(pid)
+        monkeypatch.setattr(os, "kill", denied)
+    db.insert_task_result(task_id="TASK-CHILD", agent="dev_agent", session_id=result_sid,
+        status="completed", output_summary="authentic completion", confidence_score=90)
+    _unknown_sweep(unknown_session, seam)
+    _unknown_sweep(unknown_session, seam, seconds=151)
+    _unknown_sweep(unknown_session, seam, seconds=500)
+    expected = TaskStatus.COMPLETED if result_sid == "sess-crashed" else (TaskStatus.IN_PROGRESS
+        if probe != "dead" else TaskStatus.FAILED if seam == "startup" else TaskStatus.CANCELLED)
+    assert db.get_task("TASK-CHILD").status == expected
+    actions = [r["action"] for r in db.get_audit_logs("TASK-CHILD")]
+    if result_sid == "sess-crashed" or probe != "dead":
+        assert "daemon_restart_failure" not in actions and "zombie_cancelled" not in actions
+    if expected == TaskStatus.IN_PROGRESS:
+        assert not _unknown_entry(store)["context"].get("producer_settled")
+        assert wakes == []
+    else:
+        assert _unknown_entry(store)["phase"] == "unknown"
+        assert _unknown_entry(store)["context"] == {"execution_unknown": True, "producer_settled": True}
+        assert wakes == ["TASK-PARENT"]
+
+
+@pytest.mark.parametrize("seam", ["startup", "periodic"])
+@pytest.mark.parametrize("exclusion", ["job", "draft", "coding", "sequential", "recovery", "v2", "authority_identity", "invalid_job_wake", "stale_sid", "stale_count", "stale_agent", "other_deferral", "operator_hold", "recovery_ledger"])
+def test_unknown_nonordinary_and_held_owners_untouched(unknown_session, seam, exclusion):
+    from copy import deepcopy
+    from runtime.daemon.sessions import SessionTracker
+    db, _, _, store, moment, wakes = unknown_session
+    with store.writer("TASK-CHILD") as (_, row):
+        entry = row["journal"]["entries"][0]
+        if exclusion in {"job", "draft", "coding", "sequential", "recovery", "v2"}:
+            # An outstanding competing owner must prevent bypass, even though
+            # job alone never defers. Its journal history must remain unchanged.
+            other = deepcopy(entry)
+            other.update(id="other-owner", owner=exclusion)
+            row["journal"]["entries"].append(other)
+        elif exclusion == "stale_sid":
+            entry["session_id"] = "sess-prior"
+        elif exclusion == "stale_count":
+            entry["fingerprint"]["count"] = 5
+        elif exclusion == "stale_agent":
+            entry["agent"] = "engineering_head"
+        elif exclusion == "other_deferral":
+            entry["phase"] = "retry_deferred"
+        elif exclusion == "authority_identity":
+            entry["owner_identity"] = {"trigger": "job_terminal", "triggering_job_id": "JOB-1",
+                "authority_v2_generation": "generation"}
+        elif exclusion == "invalid_job_wake":
+            entry["owner_identity"] = {"trigger": "job_terminal", "triggering_job_id": None}
+        store.save_journal_uncommitted(row)
+    if exclusion == "operator_hold":
+        store.control("TASK-PARENT", held=True, expected_generation=0, actor="founder", sessions=SessionTracker())
+    elif exclusion == "recovery_ledger":
+        db._conn.execute("INSERT INTO task_completion_recoveries "
+            "(task_id,agent,origin_session_id,recovery_session_id,provider_session_id,claimed_at,expires_at,state) "
+            "VALUES (?,?,?,?,?,?,?,'restart_settled')",
+            ("TASK-CHILD", "dev_agent", "sess-crashed", "sess-recovery", "provider", moment.isoformat(), moment.isoformat()))
+        db._conn.commit()
+    before = db.get_task("TASK-CHILD")
+    _unknown_sweep(unknown_session, seam)
+    _unknown_sweep(unknown_session, seam, seconds=500)
+    assert db.get_task("TASK-CHILD") == before
+    assert not _unknown_entry(store)["context"].get("producer_settled")
+    assert wakes == []
+    if exclusion == "operator_hold":
+        assert store.row_uncommitted("TASK-PARENT")["held"] == 1
+
+
+@pytest.mark.parametrize("seam", ["startup", "periodic"])
+@pytest.mark.parametrize("start", ["before_boot", "equal_boot", "missing", "malformed", "wrong_sid", "duplicate", "non_utc", "missing_boot", "malformed_boot", "duplicate_boot"])
+def test_unknown_reused_pid_needs_exact_persisted_start_before_boot(unknown_session, monkeypatch, seam, start):
+    import os
+    from datetime import datetime, timezone
+    db, _, _, _, _, wakes = unknown_session
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+    original_read = Path.read_text
+    boot_text = {"missing_boot": "cpu 0\n", "malformed_boot": "btime bad\n",
+                 "duplicate_boot": "btime 2000000000\nbtime 2000000000\n"}.get(start, "btime 2000000000\n")
+    def read_boot(path: Path, *args, **kwargs) -> str:
+        if path == Path("/proc/stat"):
+            assert not db._conn.in_transaction
+            assert not db._lock._is_owned()
+            return boot_text
+        return original_read(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", read_boot)
+    if start == "missing":
+        db._conn.execute("DELETE FROM audit_log WHERE task_id='TASK-CHILD' AND action='session_start'")
+    else:
+        stamp = datetime.fromtimestamp(1999999999 if start in {"before_boot", "missing_boot", "malformed_boot", "duplicate_boot"} else 2000000000, timezone.utc).isoformat()
+        if start == "malformed":
+            stamp = "not-a-time"
+        elif start == "non_utc":
+            stamp = "2033-05-18T00:00:00+08:00"
+        db._conn.execute("UPDATE audit_log SET timestamp=? WHERE task_id='TASK-CHILD' AND action='session_start'", (stamp,))
+        if start == "wrong_sid":
+            db._conn.execute("UPDATE audit_log SET payload=json_set(payload,'$.session_id','sess-prior') WHERE action='session_start'")
+        elif start == "duplicate":
+            db._conn.execute("INSERT INTO audit_log(task_id,agent,action,payload,timestamp) "
+                "SELECT task_id,agent,action,payload,timestamp FROM audit_log WHERE action='session_start'")
+    db._conn.commit()
+    _unknown_sweep(unknown_session, seam)
+    _unknown_sweep(unknown_session, seam, seconds=151)
+    expected = (TaskStatus.FAILED if seam == "startup" else TaskStatus.CANCELLED) if start == "before_boot" else TaskStatus.IN_PROGRESS
+    assert db.get_task("TASK-CHILD").status == expected
+    assert wakes == (["TASK-PARENT"] if start == "before_boot" else [])
+
+
+@pytest.mark.parametrize("seam", ["startup", "periodic"])
+@pytest.mark.parametrize("winner", ["operator_hold", "new_session", "result", "session_start"])
+def test_unknown_terminal_writer_rechecks_competing_winner(unknown_session, monkeypatch, seam, winner):
+    import os
+    from contextlib import contextmanager
+    from datetime import datetime, timezone
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.orchestrator.task_pause import OrdinaryUnknownOwner
+    db, _, _, store, _, wakes = unknown_session
+    if winner == "session_start":
+        monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+        original_read = Path.read_text
+        def read_boot(path: Path, *args, **kwargs) -> str:
+            if path == Path("/proc/stat"):
+                assert not db._conn.in_transaction
+                assert not db._lock._is_owned()
+                return "btime 2000000000\n"
+            return original_read(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", read_boot)
+        db._conn.execute("UPDATE audit_log SET timestamp=? WHERE action='session_start'",
+            (datetime.fromtimestamp(1999999999, timezone.utc).isoformat(),))
+        db._conn.commit()
+    if seam == "periodic":
+        _unknown_sweep(unknown_session, seam)
+    original_writer = store.writer
+    injected = False
+    @contextmanager
+    def competing_writer(task_id, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            if winner == "operator_hold":
+                store.control("TASK-PARENT", held=True, expected_generation=0, actor="founder", sessions=SessionTracker())
+            elif winner == "new_session":
+                db.update_task("TASK-CHILD", current_session_id="sess-new")
+            elif winner == "session_start":
+                db._conn.execute("UPDATE audit_log SET timestamp=? WHERE action='session_start'",
+                    (datetime.fromtimestamp(2000000000, timezone.utc).isoformat(),))
+                db._conn.commit()
+            else:
+                db.insert_task_result(task_id="TASK-CHILD", agent="dev_agent", session_id="sess-crashed",
+                    status="completed", output_summary="winner", confidence_score=90)
+        with original_writer(task_id, **kwargs) as observed:
+            yield observed
+    original_guard = OrdinaryUnknownOwner.writer
+    @contextmanager
+    def arm_winner(owner, **kwargs):
+        monkeypatch.setattr(store, "writer", competing_writer)
+        with original_guard(owner, **kwargs) as allowed:
+            yield allowed
+    monkeypatch.setattr(OrdinaryUnknownOwner, "writer", arm_winner)
+    _unknown_sweep(unknown_session, seam, seconds=151)
+    assert injected
+    assert db.get_task("TASK-CHILD").status == TaskStatus.IN_PROGRESS
+    assert not _unknown_entry(store)["context"].get("producer_settled")
+    assert wakes == []
+    if winner == "result":
+        _unknown_sweep(unknown_session, seam, seconds=500)
+        assert db.get_task("TASK-CHILD").status == TaskStatus.COMPLETED
+        assert wakes == ["TASK-PARENT"]

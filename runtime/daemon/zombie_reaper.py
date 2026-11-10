@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import time as _time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -141,8 +142,9 @@ def _sweep_org_zombies(
             if t is None:
                 continue
 
-            from runtime.orchestrator.task_pause import pause_deferred_owner
-            if pause_deferred_owner(db, task_id):
+            from runtime.orchestrator.task_pause import ordinary_unknown_owner, pause_deferred_owner
+            unknown_owner = ordinary_unknown_owner(db, t)
+            if pause_deferred_owner(db, task_id) and unknown_owner is None:
                 continue
             from runtime.workflows.recovery import classify_task
             ownership = classify_task(db, task_id, org_slug=getattr(orchestrator, "_slug", None))
@@ -173,22 +175,28 @@ def _sweep_org_zombies(
             if hb_age < STALE_HEARTBEAT_SECONDS:
                 # Heartbeat is fresh → healthy. If previously flagged, clear.
                 if t.zombie_flagged_at is not None:
-                    db.update_task(task_id, zombie_flagged_at=None)
-                    audit.log_zombie_cleared(
-                        task_id, t.assigned_agent or "unknown",
-                    )
+                    with unknown_owner.writer(allow_result=True, require_dead=False) if unknown_owner is not None else nullcontext(True) as current_owner:
+                        if not current_owner:
+                            continue
+                        db.update_task(task_id, zombie_flagged_at=None)
+                        audit.log_zombie_cleared(
+                            task_id, t.assigned_agent or "unknown",
+                        )
                 continue
 
             # 2. Dead executor pid — must be definitively not alive.
-            if t.executor_pid is None:
+            if t.executor_pid is None and unknown_owner is None:
                 continue  # err toward miss — can't probe
-            if not _pid_is_dead(t.executor_pid):
+            if not (unknown_owner.process_dead() if unknown_owner is not None else _pid_is_dead(t.executor_pid)):
                 # Pid is alive (or indeterminate). If previously flagged, clear.
                 if t.zombie_flagged_at is not None:
-                    db.update_task(task_id, zombie_flagged_at=None)
-                    audit.log_zombie_cleared(
-                        task_id, t.assigned_agent or "unknown",
-                    )
+                    with unknown_owner.writer(allow_result=True, require_dead=False) if unknown_owner is not None else nullcontext(True) as current_owner:
+                        if not current_owner:
+                            continue
+                        db.update_task(task_id, zombie_flagged_at=None)
+                        audit.log_zombie_cleared(
+                            task_id, t.assigned_agent or "unknown",
+                        )
                 continue
 
             # ── PREDICATE MATCHED — task is a zombie candidate ──
@@ -212,8 +220,11 @@ def _sweep_org_zombies(
 
             if t.zombie_flagged_at is None:
                 # ── FIRST DETECTION: FLAG only, do NOT cancel ──
-                db.update_task(task_id, zombie_flagged_at=now.isoformat())
-                audit.log_zombie_flagged(task_id, agent)
+                with unknown_owner.writer(allow_result=True) if unknown_owner is not None else nullcontext(True) as current_owner:
+                    if not current_owner:
+                        continue
+                    db.update_task(task_id, zombie_flagged_at=now.isoformat())
+                    audit.log_zombie_flagged(task_id, agent)
             else:
                 # ── ALREADY FLAGGED ──
                 # If a task_result fingerprint appears on an already-flagged zombie,
@@ -233,6 +244,8 @@ def _sweep_org_zombies(
                             # The exact selected operation owns legacy bookkeeping;
                             # pending/loss must never clear through this fallback.
                             continue
+                        if unknown_owner is not None:
+                            unknown_owner.settle()
                         if policy_family == "v2":
                             # The real common consumer committed first.  The
                             # Database-owned CAS now re-reads the exact immutable
@@ -291,16 +304,21 @@ def _sweep_org_zombies(
                     # cancelled status transition, routed through shared
                     # terminal side-effects so a delegated parent parked on
                     # this child is woken (code_reviewer FIX 2).
-                    with _capture_root_worktree_transition(orchestrator, task_id, '_sweep_org_zombies.legacy', root_transitions):
-                        db.update_task(
-                            task_id,
-                            status=TaskStatus.CANCELLED,
-                            cancelled_at=now.isoformat(),
-                            completed_at=now.isoformat(),
-                            block_kind=None,
-                            note="zombie reaped: session died without completing",
-                        )
-                    audit.log_zombie_cancelled(task_id, agent)
+                    with unknown_owner.writer() if unknown_owner is not None else nullcontext(True) as current_owner:
+                        if not current_owner:
+                            continue
+                        with _capture_root_worktree_transition(orchestrator, task_id, '_sweep_org_zombies.legacy', root_transitions):
+                            db.update_task(
+                                task_id,
+                                status=TaskStatus.CANCELLED,
+                                cancelled_at=now.isoformat(),
+                                completed_at=now.isoformat(),
+                                block_kind=None,
+                                note="zombie reaped: session died without completing",
+                            )
+                        audit.log_zombie_cancelled(task_id, agent)
+                    if unknown_owner is not None:
+                        unknown_owner.settle()
                     if orchestrator is not None:
                         from runtime.orchestrator.run_step import (
                             _enqueue_parent_if_waiting,

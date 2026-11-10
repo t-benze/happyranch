@@ -4384,6 +4384,20 @@ Inline traps:
 
 ## Daemon-Restart Sweep (THR-064)
 
+THR-350 lets only the unheld current ordinary unknown-session class reach
+liveness despite Pause deferral. Missing/indeterminate PID is not death for
+that class; the additional Linux boot proof requires a sole exact-current-SID
+UTC session_start timestamp strictly before btime. Current results win before
+inferred failure even with missing/inconclusive PID. Ordinary job-wake
+provenance remains ordinary. Boot/PID reads precede root/DB writer ownership;
+persisted exact-session start and competing winners are rechecked inside.
+Startup retains FAILED/daemon_restart_failure; periodic
+retains flag, fingerprint consumption or TTL CANCELLED/zombie_cancelled.
+Writer revalidation precedes effects, and only matching entries are marked
+producer_settled after terminal commit, retaining unknown cleanup history.
+Job-owned entries, workflows, v2/recovery episodes, stale/other deferrals and
+genuine Pause holds remain excluded. See [the complete contract](contracts/runtime-lifecycle.md#ordinary-pause-unknown-crash-recovery-thr-350).
+
 On daemon restart, `_sweep_on_startup` recovers tasks that were killed mid-flight.
 Before Branch 1, a claimed but unaccepted THR-247 completion recovery is
 settled fail-closed in its dedicated ledger transaction when its durable
@@ -4432,12 +4446,13 @@ row while preserving the audit payload's existing status-string map.
 
 Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the restart):
 
-1. **Mark failed with restart context.** The killed child's note is enriched to
-   `"daemon_restart -- infra fault, not a code failure; status-assess the
-   branch/PR/CI and adopt already-pushed work before re-dispatching"`. This
-   note surfaces to the parent manager via `_build_prior_steps_from_db`
-   (as `result_summary`), so the manager can ground its next decision on the
-   failure cause rather than treating it as a code bug.
+1. **Mark failed with restart context.** The existing note reports
+   "session died on daemon restart -- executor pid not alive" or, outside
+   the narrow unknown-session exception, "session liveness undeterminable
+   on daemon restart -- executor pid null or probe inconclusive".
+   The daemon_restart_failure audit and existing bounded parent tail expose
+   that infrastructure failure; inspect and adopt already-pushed work before
+   an explicit re-dispatch.
 
 2. **Parked-ancestor recovery.** The sweep marks killed children FAILED. If a
    killed child has a parked non-terminal ancestor

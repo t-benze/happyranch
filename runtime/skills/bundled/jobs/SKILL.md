@@ -492,6 +492,15 @@ Do not automatically retry job submission or flip policy fields. Reconcile the a
 
 ## Root task Pause outcomes
 
+THR-350's ordinary unknown-session crash recovery excludes job-owned journal
+entries. An ordinary session resumed with authenticated job_terminal or
+block_submit provenance remains ordinary. Normal job terminal persistence can
+retain phase unknown because direct exit does not prove descendant cleanup; a successful job exit is no reason to
+clear it. Only the matching ordinary session producer may be marked settled
+after its existing startup failure or periodic terminal path commits, under
+current ownership and an unheld root. Deliberate Pause and all job admission,
+host/tree settlement and retention rules remain unchanged.
+
 Task-root Pause may leave an authorized submitted job Pending. Automatic launch is gated at the actual origin root; rejection/stop remain available. Manual run is retired410 even after Resume. Only an ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by that pause generation has the unreviewed auto-run exception, subject to fresh exact task/agent/SID validation. A submission ID, tracker binding or host lease is not running evidence. Preserve truthful pending/terminal receipts; never describe deferral as a PASS or grant broader authority.
 
 Pause capture reconciles current tracker bindings and durable real-running evidence at the serialized control COMMIT. A pre-request snapshot grants no exception; new bindings are considered, ended/replaced bindings are excluded, and duplicate Pause never renews capture. Every actual job run still revalidates current ordinary purpose, exact task/agent/SID and the held generation; legacy true rows never use this exception.
