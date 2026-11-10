@@ -9,12 +9,13 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import stat
 import subprocess
 import time
 from typing import Any
 
 from runtime.workflows.repository_artifact_objects import (
-    _Budget, _DIR_FLAGS, _config, _directory, _git_environment, _regular, _same,
+    _Budget, _DIR_FLAGS, _absent, _config, _directory, _git_environment, _names, _regular, _same,
 )
 from runtime.workflows.repository_artifacts import WorkflowRepositoryError, _oid
 from runtime.workflows.sequential_definition import parse_start
@@ -31,6 +32,37 @@ class _ObservationHeld(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+def _repository_layout(git: int, budget: _Budget) -> None:
+    """Refuse config/object indirection before Git and at the closing bookend."""
+    for name in ('commondir', 'gitdir'):
+        _absent(git, name, budget)
+    for name, forbidden in (('info', 'grafts'), ('refs', 'replace')):
+        try:
+            with _directory(git, name, budget) as child:
+                _absent(child, forbidden, budget)
+        except FileNotFoundError:
+            continue
+    try:
+        packed_refs = _regular(git, 'packed-refs', budget, 65536)
+    except FileNotFoundError:
+        packed_refs = b''
+    if b' refs/replace/' in packed_refs:
+        raise _ObservationHeld('repository_unavailable')
+    with _directory(git, 'objects', budget) as objects:
+        for name in _names(objects, budget):
+            with _directory(objects, name, budget) as child:
+                if name == 'info':
+                    for forbidden in ('alternates', 'http-alternates'):
+                        _absent(child, forbidden, budget)
+                # Git must not follow a loose-object, pack or metadata symlink.
+                # Inspect names/types only; no source/object content is read.
+                for filename in _names(child, budget):
+                    if not stat.S_ISREG(os.stat(filename, dir_fd=child,
+                                               follow_symlinks=False).st_mode):
+                        raise _ObservationHeld('repository_unavailable')
+    # Shallow history is allowed: it does not redirect config or object storage.
 
 
 def _git(repository: Path, args: tuple[str, ...], deadline: float,
@@ -65,6 +97,7 @@ def _observe(org_root: Path, org_slug: str, principal: str, origin: str | None,
               _directory(repos, request.repo_key, budget) as repo,
               _directory(repo, '.git', budget) as git):
             before_repo, before_git = os.fstat(repo), os.fstat(git)
+            _repository_layout(git, budget)
             raw = _regular(git, 'config', budget, 65536)
             try:
                 observed_origin = _config(raw, 'sha1')
@@ -85,16 +118,20 @@ def _observe(org_root: Path, org_slug: str, principal: str, origin: str | None,
                     base=request.base, scope=request.scope)
             except ValueError:
                 raise _ObservationHeld('unsupported_repository_scope') from None
+            _repository_layout(git, budget)
             if _git(repository, ('rev-parse', '--verify', request.base + '^{commit}'), budget.deadline,
                     'unsupported_repository_scope') != request.base:
                 raise _ObservationHeld('unsupported_repository_scope')
             budget.check()
+            _repository_layout(git, budget)
             if (_regular(git, 'config', budget, 65536) != raw
                     or not _same(before_repo, os.fstat(repo)) or not _same(before_git, os.fstat(git))
                     or not _same(before_repo, repository.stat(follow_symlinks=False))
                     or not _same(before_git, (repository / '.git').stat(follow_symlinks=False))):
                 raise _ObservationHeld('repository_changed')
             return subject
+    except (OSError, WorkflowRepositoryError):
+        raise _ObservationHeld('repository_unavailable') from None
     finally:
         os.close(root)
 

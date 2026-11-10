@@ -42,9 +42,9 @@ Web Lint (Node 24).
 | Owner / symbols | Current callers / reuse and U4 responsibility |
 | --- | --- |
 | `sequential_repository_records.py`: request, subject, cause, receipt, `read_repository_preflight` | New U4a closed immutable models and canonical historical reader. Only new preflight imports them; no existing producer imports either new module. Saved parsing authenticates no issuer or permission. |
-| `sequential_repository_preflight.py`: `SequentialRepositoryPreflight.resolve`, `_selected`, `_observe`, `_git` | New U4a unmounted synchronous worker-thread service. No OrgState registration, route, CLI, native-preparation hook or progression caller. U4b may consume through an explicit selected Coding boundary; U7 owns task-session transport. |
+| `sequential_repository_preflight.py`: `SequentialRepositoryPreflight.resolve`, `_selected`, `_observe`, `_repository_layout`, `_git` | New U4a unmounted synchronous worker-thread service. No OrgState registration, route, CLI, native-preparation hook or progression caller. U4b may consume through an explicit selected Coding boundary; U7 owns task-session transport. |
 | `repository_artifacts.py`: `_oid`, `RepositoryId`, `Component` | Reuse SHA1 OID syntax and existing org/key/origin-derived identity. Its saved presentation family also supports SHA256; that does not enable SHA256 for sequential Coding. `WorkflowRepositoryArtifactService.resolve` remains unavailable. |
-| `repository_artifact_objects.py`: `_Budget`, `_directory`, `_regular`, `_same`, `_config`, `_git_environment` | Reuse bounded no-follow metadata reads, closed clone-config parsing and isolated Git environment. Do not call `_resolve_objects`, `_build_resolution`, `_store` or adopt K1/K2 authority as sequential authority. |
+| `repository_artifact_objects.py`: `_Budget`, `_directory`, `_regular`, `_absent`, `_names`, `_same`, `_config`, `_git_environment` | Reuse bounded no-follow metadata reads, closed clone-config parsing and isolated Git environment. Do not call `_resolve_objects`, `_build_resolution`, `_store` or adopt K1/K2 authority as sequential authority. |
 | `coding_saved_records.py`: `_paths` (uses `_path`) | Reuse the retained 64-path, relative-prefix grammar (`.` supported), not its SHA256-capable grant/setup/source grammars. No old Coding record is rewritten. |
 | `_coding_source_admission.py`: `source_storage` | Inspected, not reused as admission: it joins old mapping/adoption/source-capability provenance and verifies origin/object-format radius. Those producers cannot authorize a new sequential subject. |
 | `SequentialDispatcher._entry`, `_on_loop`; `_native_task`, `_discover_result`, `_cancelled` | U4a reuses selected ownership, native task/SID, no-completion and cancellation checks. `_entry` is an existing compiler seam, not a new full-history scan. |
@@ -85,6 +85,21 @@ yields `repository_unavailable`; observed origin/config/directory movement yield
 `repository_changed`. This subset supports ordinary managed clones with local
 bare origins; linked `.git` files and bare editable targets remain unavailable.
 Filesystem bookends are observations, not a racing-rename or hostile-shell fence.
+
+Before either Git command and again at close, `_repository_layout` refuses
+`commondir`, `gitdir`, object-store `info/alternates` and `http-alternates`,
+`info/grafts`, loose `refs/replace` and packed replacement refs. The literal
+`.git` must be a no-follow directory, so gitfiles and linked worktrees refuse.
+The bounded ordinary two-level object-directory metadata inspection rejects
+symlinked directories/files and nested or special entries; no object contents
+are read. Unsupported topology returns existing `repository_unavailable`, never
+a resolved subject. Closed `_config` rejects include/includeIf and helper
+configuration; `_git_environment` replaces inheritance with fixed isolation
+values, never caller Git directory/common-directory/object/alternate/config
+overrides. `--no-replace-objects` remains defense in depth, not permission to
+accept replacement refs. Assumption: shallow clones are allowed, since shallow
+history does not redirect repository identity or storage. Closing checks repeat
+all these absences/topology checks as well as the config/directory bookends.
 
 After probing, a second fresh authority/task/session selection must match the
 original context and configured origin before any private metadata is returned.

@@ -1155,6 +1155,16 @@ bytes. Raw origins, local paths and Git diagnostics stay private. Scope is the
 actual task's declaration, not a permission grant; receipts are observations,
 not effective-access or containment proof.
 
+The observer refuses Git common-directory/gitdir indirection, gitfiles,
+object alternates/http-alternates, grafts and loose/packed replacement refs
+before Git and again at close. It reuses bounded no-follow metadata helpers
+to reject linked or unsupported object topology. Closed config parsing refuses
+include/includeIf; Git receives a fixed environment without inherited Git
+overrides and retains `--no-replace-objects`. Unsupported topology produces
+Held / `repository_unavailable`, with no subject. Shallow history is allowed
+because it does not redirect identity/storage. These repeated observations
+are not a racing-rename fence.
+
 There is no production caller, public transport, evidence DML, persistent run
 subject or lifecycle state change in U4a. A Held receipt does not mean the
 database run has become Held. U4b owns durable immutable subject binding,

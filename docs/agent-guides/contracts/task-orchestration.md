@@ -330,6 +330,13 @@ the run nor change its lifecycle. There is no four-role duty-access checkpoint
 or readiness label. Later disclosures/publication/actions still require current
 authority/access. See the [U4 split and native ordering contract](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).
 
+The inert observer checks literal no-follow clone/object metadata before Git
+and at close. Common-directory/gitdir indirection, gitfiles, object alternates,
+grafts, replacement refs and linked/unsupported object topology refuse with
+Held / `repository_unavailable`. Config includes and inherited Git overrides
+are unavailable; shallow history is allowed. No subject is emitted for a
+refused observation, and no callback or durable Held writer is added.
+
 Only selected seq_visit joins workflow callback admission/replay. The existing
 order remains404, classify, local409, task-active, v2, session, exact idempotency,
 callback_admission, locked owner/task/session recheck, native writer. Source/carrier
