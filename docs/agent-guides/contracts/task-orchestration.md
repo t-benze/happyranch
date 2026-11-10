@@ -134,6 +134,13 @@ their history.
 
 ## Root task Pause and Resume (THR-292)
 
+THR-350's narrow ordinary unknown-session exception permits existing startup
+failure or periodic flag/TTL recovery only with positive death proof and no
+operator hold. Its post-terminal writer records producer_settled while retaining
+unknown history; it never certifies cleanup or releases Pause. Jobs, workflows,
+authority/recovery episodes and other deferrals keep their own owners. See
+[the exact lifecycle contract](runtime-lifecycle.md#ordinary-pause-unknown-crash-recovery-thr-350).
+
 TASK-11437's bounded correction adds only coherent serializer child_wait
 observations (256/query257 per parent,1000 inspected children/250ms per response,
 no refill), exact current completed-report recognition and neutral unavailable

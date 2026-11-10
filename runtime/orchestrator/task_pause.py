@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sys
 import uuid
 from copy import deepcopy
@@ -15,7 +16,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any, Callable, Iterator
 
 from runtime.infrastructure.task_pause_controls import PauseControlError, TaskPauseStore, now
 from runtime.models import BlockKind, TaskRecord, TaskStatus
@@ -966,6 +968,132 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
                         raise
                     active_error.add_note(f"Sequential tail observation failed for {invocation.identity}: {exc!r}")
                     logging.getLogger(__name__).exception("sequential tail observation failed; original error preserved")
+
+
+def _ordinary_unknown_entries(store: TaskPauseStore, task: TaskRecord, row: dict | None) -> list[dict]:
+    """Select only the actual ordinary session; uncertainty is never cleanup."""
+    if row is None or row["held"] or not task.assigned_agent or not task.current_session_id:
+        return []
+    entries = [e for e in row["journal"]["entries"]
+               if e["task_id"] == task.id and not e["context"].get("producer_settled")]
+    if not entries or any(e["owner"] != "ordinary" or e["phase"] != "unknown"
+            or e["agent"] != task.assigned_agent or e["session_id"] != task.current_session_id
+            or e["fingerprint"]["count"] + 1 != task.orchestration_step_count
+            or e["fingerprint"]["parent"] != task.parent_task_id
+            or e["fingerprint"]["brief_digest"] != hashlib.sha256(task.brief.encode()).hexdigest()
+            or e["owner_identity"] or e["retry"] or e["id"] in store._live
+            for e in entries):
+        return []
+    db = store.db
+    from runtime.workflows.recovery import classify_task
+    from runtime.orchestrator.active_authority_policy import (
+        ActiveAuthorityPolicyError, load_session_policy_binding, load_session_policy_snapshot,
+    )
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from runtime.infrastructure.task_pause_controls import normal_session_entry
+    if classify_task(db, task.id, org_slug=store.org_slug).kind != "legacy":
+        return []
+    if db._conn.execute("SELECT 1 FROM task_completion_recoveries WHERE task_id=? "
+            "AND (origin_session_id=? OR recovery_session_id=?) LIMIT 1",
+            (task.id, task.current_session_id, task.current_session_id)).fetchone() is not None:
+        return []
+    try:
+        binding = load_session_policy_binding(db=db, task_id=task.id,
+            session_id=task.current_session_id, agent_name=task.assigned_agent)
+        if binding is not None and binding.get("mode") == "v2":
+            return []
+        if binding is not None:
+            load_session_policy_snapshot(db=db, store=AuthorityPolicyStore(db), task_id=task.id,
+                session_id=task.current_session_id, agent_name=task.assigned_agent)
+    except (ActiveAuthorityPolicyError, ValueError, TypeError):
+        return []  # Mixed/malformed authority never becomes ordinary permission.
+    if not all(normal_session_entry(db._conn, e) for e in entries):
+        return []
+    return entries
+
+
+@dataclass
+class OrdinaryUnknownOwner:
+    """Narrow sweep observation, revalidated before existing lifecycle writes."""
+    store: TaskPauseStore
+    task: TaskRecord
+    entries: list[dict]
+
+    def process_dead(self) -> bool:
+        # A boot second must be strictly later than the exact current session's
+        # persisted server start. Creation/heartbeat/journal times are not starts.
+        try:
+            starts = []
+            with self.store.db._lock:
+                rows = self.store.db._conn.execute(
+                    "SELECT agent,payload,timestamp FROM audit_log WHERE task_id=? AND action='session_start'",
+                    (self.task.id,)).fetchall()
+            for row in rows:
+                payload = json.loads(row["payload"])
+                if payload.get("session_id") == self.task.current_session_id:
+                    if row["agent"] != self.task.assigned_agent:
+                        raise ValueError("session start agent mismatch")
+                    starts.append(datetime.fromisoformat(row["timestamp"]))
+            boot = [line.split() for line in Path("/proc/stat").read_text().splitlines()
+                    if line.startswith("btime ")]
+            if (len(starts) == len(boot) == 1 and len(boot[0]) == 2
+                    and starts[0].utcoffset() == timedelta(0)
+                    and boot[0][1].isascii() and boot[0][1].isdigit()
+                    and 0 < starts[0].timestamp() < int(boot[0][1])):
+                return True
+        except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+            pass  # Missing/malformed/non-UTC/equal-second evidence proves no reboot.
+        if self.task.executor_pid is None:
+            return False
+        try:
+            os.kill(self.task.executor_pid, 0)
+        except ProcessLookupError:
+            return True
+        except Exception:
+            pass
+        return False
+
+    @contextmanager
+    def writer(self, *, allow_result: bool = False, require_dead: bool = True) -> Iterator[bool]:
+        """Arbitrate result/hold/session winners before flag or terminal commit.
+
+        Existing task/audit writers retain their commits; no opaque tail runs
+        here. Journal settlement is a separate post-terminal writer below.
+        """
+        db = self.store.db
+        with self.store.writer(self.task.id) as (_, row):
+            current = db.get_task(self.task.id)
+            yield (current == self.task
+                and _ordinary_unknown_entries(self.store, current, row) == self.entries
+                and (allow_result or db.get_latest_task_result(current.id, current.assigned_agent, current.current_session_id) is None)
+                and (not require_dead or self.process_dead()))
+
+    def settle(self) -> None:
+        """Record ended producer only AFTER terminal commit; retain unknown bytes."""
+        with self.store.writer(self.task.id) as (_, row):
+            current = self.store.db.get_task(self.task.id)
+            if (current is None or current.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+                    or current.assigned_agent != self.task.assigned_agent
+                    or current.current_session_id != self.task.current_session_id
+                    or _ordinary_unknown_entries(self.store, current, row) != self.entries):
+                return
+            for entry in row["journal"]["entries"]:
+                if entry in self.entries:
+                    entry["context"]["execution_unknown"] = True
+                    entry["context"]["producer_settled"] = True
+            self.store.save_journal_uncommitted(row)
+
+
+def ordinary_unknown_owner(db: Any, task: TaskRecord) -> OrdinaryUnknownOwner | None:
+    """Only unheld current ordinary unknown owners may reach sweep liveness."""
+    store = getattr(db, "_task_pause_store", None)
+    if (store is None or task.status != TaskStatus.IN_PROGRESS or task.block_kind is not None
+            or task.cancelled_at is not None):
+        return None
+    with db._lock:
+        root = store.root_uncommitted(task.id)
+        entries = _ordinary_unknown_entries(store, task, store.row_uncommitted(root["id"]))
+        return OrdinaryUnknownOwner(store, task, deepcopy(entries)) if entries else None
 
 
 def pause_deferred_owner(db: Any, task_id: str) -> bool:

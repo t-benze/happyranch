@@ -5,6 +5,42 @@
 > extends an earlier one, the later section controls; sections marked
 > "Historical" are retained evidence, not current instructions.
 
+### Ordinary Pause-unknown crash recovery (THR-350)
+
+Only a current, uncancelled ordinary in_progress session with no block_kind,
+an unheld root, and exclusively matching ordinary unknown journal owners may
+pass the sweeps' Pause-deferral skip. Actual task/agent/SID and server-admitted
+ordinary purpose must agree. Jobs, workflow owners, v2/authority bindings,
+current-session recovery-ledger episodes, stale owners and other deferral
+classes retain their existing paths. The general pause_deferred_owner contract
+is unchanged.
+
+Death requires ProcessLookupError for the persisted PID, or Linux /proc/stat
+btime strictly later than the sole exact-current-SID UTC session_start audit
+timestamp. Creation, heartbeat and reset journal started_at are not substitutes.
+Missing, malformed, conflicting, non-UTC or equal-second boot evidence proves
+nothing; absent/indeterminate PID alone leaves this class deferred. PID reuse
+without positive boot proof remains conservative. No schema or new clock is added.
+
+Startup consumes a current-session result before inferring failure; otherwise
+it uses the existing FAILED, daemon_restart_failure and bounded parent tail.
+Periodic recovery retains stale-heartbeat/warm-up, first flag, fingerprint
+consumption and TTL CANCELLED/zombie_cancelled behavior, including unchanged
+v2 handling outside this ordinary exception. Before flag/clear/terminal writes,
+the existing root/DB writer rechecks the exact task, entries, hold and ownership;
+failure/cancellation also rechecks death and absence of a current result.
+The existing terminal and audit commits precede a separate Pause writer marking
+only the selected session entries execution_unknown/producer_settled. Unknown
+history remains; producer settlement is not host/tree/preparation cleanup proof
+or fresh-launch permission. Opaque parent/worktree tails remain outside the writer.
+Existing queue pending-item arbitration prevents Branch 1/2 duplicate parent
+wakes across iteration orders and repeat sweeps; no new successor is created.
+
+Genuine operator holds remain held, even with a dead process. No historical
+unknown-row cleanup, live DB repair, deployment or restart follows. Retained
+integration regression source is NOT RUN / PROOF NOT RUN under THR-243 seq42;
+lint/static analysis cannot establish behavioral acceptance.
+
 ### Bounded ordinary native launch refusals (THR-315)
 
 Actual non-hold refusals before durable preparation allow at most THREE consecutive

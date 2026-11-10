@@ -24,7 +24,7 @@ import signal
 import socket
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from types import FrameType
@@ -182,7 +182,10 @@ def _sweep_on_startup(
         No auto-revisit is spawned — the founder receives a
         ``daemon_restart_failure`` audit row and decides whether to
         re-dispatch. NOTE: a recycled pid could read as falsely-alive;
-        the probe is the ratified THR-079 approach.
+        the probe is the ratified THR-079 approach. THR-350's narrow unheld
+        ordinary unknown-session class additionally accepts exact persisted
+        current-session-start/host-boot proof; absent/indeterminate PID alone
+        leaves that class deferred. Other Pause deferrals remain excluded.
       - Branch 2 — in_progress + block_kind=DELEGATED with all children terminal
         → re-enqueue parent (orphaned wake-up: the daemon died after a child
         terminated but before the parent saw the signal). Else leave (children
@@ -273,8 +276,9 @@ def _sweep_on_startup(
             t = db.get_task(task_id)
             if t is None:
                 continue
-            from runtime.orchestrator.task_pause import pause_deferred_owner
-            if pause_deferred_owner(db, task_id):
+            from runtime.orchestrator.task_pause import ordinary_unknown_owner, pause_deferred_owner
+            unknown_owner = ordinary_unknown_owner(db, t)
+            if pause_deferred_owner(db, task_id) and unknown_owner is None:
                 continue
             from runtime.workflows.recovery import recover_owned_task
             if recover_owned_task(db, queue, slug, task_id, orchestrator=orchestrator):
@@ -396,7 +400,12 @@ def _sweep_on_startup(
                 # relative to the risk of duplicate runs from false-negative.
                 pid = t.executor_pid
                 alive = False
-                if pid is not None:
+                if unknown_owner is not None:
+                    # THR-350: unknown is not immunity from dead-session
+                    # recovery, but missing/indeterminate PID is not death.
+                    if not unknown_owner.process_dead():
+                        continue
+                elif pid is not None:
                     try:
                         os.kill(pid, 0)  # signal 0 = existence check, no signal sent
                     except ProcessLookupError:
@@ -445,6 +454,8 @@ def _sweep_on_startup(
                         result_row_id=orphaned_result_row.get("id"),
                         reclaim_terminal_worktree=False,
                     )
+                    if unknown_owner is not None:
+                        unknown_owner.settle()
                     continue
 
                 # Dead or undeterminable (no orphaned result to consume):
@@ -461,9 +472,14 @@ def _sweep_on_startup(
                     reason = (
                         "session died on daemon restart -- executor pid not alive"
                     )
-                with _capture_root_worktree_transition(orchestrator, task_id, '_sweep_on_startup.failure', root_transitions):
-                    db.update_task(task_id, status=TaskStatus.FAILED, note=reason)
-                audit.log_daemon_restart_failure(task_id, t.assigned_agent or "daemon")
+                with unknown_owner.writer() if unknown_owner is not None else nullcontext(True) as current_owner:
+                    if not current_owner:
+                        continue
+                    with _capture_root_worktree_transition(orchestrator, task_id, '_sweep_on_startup.failure', root_transitions):
+                        db.update_task(task_id, status=TaskStatus.FAILED, note=reason)
+                    audit.log_daemon_restart_failure(task_id, t.assigned_agent or "daemon")
+                if unknown_owner is not None:
+                    unknown_owner.settle()
                 if orchestrator is not None:
                     _enqueue_parent_if_waiting(
                         orchestrator, task_id,

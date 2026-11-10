@@ -1,5 +1,14 @@
 # Runtime And Configuration
 
+Ordinary Pause-unknown crash recovery (THR-350) is automatic only through the
+existing startup sweep or periodic reaper: positive dead-PID or exact
+current-session-start/host-boot proof, current ordinary ownership and an unheld
+root are required. Startup retains FAILED; periodic retains flag/TTL CANCELLED;
+current results take their existing consumption path. The post-terminal journal
+writer records ended producers without clearing unknown cleanup history.
+See [the lifecycle contract](contracts/runtime-lifecycle.md#ordinary-pause-unknown-crash-recovery-thr-350).
+This source change grants no restart, deploy or historical-row repair.
+
 ## Authority terminal recovery and connection custody (THR-328)
 
 Startup's existing refusal owner may classify a fully consumed authenticated

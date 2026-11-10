@@ -882,6 +882,15 @@ publication/merge does not establish that the running daemon contains the correc
 
 ## Root task Pause outcomes
 
+An unheld ordinary session with matching unknown journal evidence can undergo
+existing startup FAILED or periodic flag/TTL CANCELLED recovery only after
+positive dead-process or exact current-session-start/host-boot proof. Current
+results retain their consumption path. The post-terminal writer marks only
+that producer settled and preserves unknown cleanup history. Missing PID alone
+proves nothing; deliberate Pause holds, workflow/v2/recovery owners and other
+deferrals retain their own rules. This grants no agent journal cleanup,
+historical repair, daemon restart or deployment authority.
+
 A root Pause holds future task execution, not your already running callback. Complete truthful progress/completion for your original task/session and preserve real job evidence. A held-root deferred invocation is not an execution failure, and Resume grants no new session, step, budget or permission. Only the server-captured ordinary-purpose actual running session (including a normal v2-admitted manager session) may auto-run its already-authorized unreviewed jobs while held; recovery sessions retain their existing purpose restrictions.
 
 A bound `workflow-coding-development@1` supplement selects only the actual
