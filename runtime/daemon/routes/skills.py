@@ -10,14 +10,14 @@ Per the THR-092 v3 endpoint spec (engineering_manager-2026-07-13-skills-web-v1-e
 """
 from __future__ import annotations
 
-from runtime.orchestrator.producer_move import native_writer
+from runtime.orchestrator.producer_move import NativeWriterDisposition, native_writer
 
 import hashlib
 import errno
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
 import yaml
 from fastapi import APIRouter, Body as RequestBody, HTTPException, Query, Request, status
@@ -1174,7 +1174,7 @@ def skill_status(
 
 
 class SkillRecoverRequest(BaseModel):
-    """Operator request to remove one corrupted B2 canonical package."""
+    """Operator request to remove one corrupted B2 or current release package."""
 
     slug: str
     version: str
@@ -1199,9 +1199,99 @@ class SkillRecoverRequest(BaseModel):
         return value
 
 
+def _recover_release_package(
+    body: SkillRecoverRequest, org: OrgState, writer: NativeWriterDisposition,
+) -> dict:
+    """Use only the shipped release registry/contracts, never org-local sources.
+
+    Mirrors B2's ordering: validate provenance and corruption, persist the
+    mandatory intent audit, then remove only the selected canonical package.
+    Rebuilding remains a separate, later materialization operation.
+    """
+    import shutil
+    import stat
+
+    from runtime.platform.isolation import detect_platform_isolation
+    from runtime.skills.canonical_store import CanonicalSkillStore, CanonicalStoreError, _make_writable_for_removal
+    from runtime.skills.package_content import compute_skill_tree_hash
+
+    skill_id = f"hr:{body.slug}"
+
+    def refuse(status_code: int, detail: str, reason: str) -> NoReturn:
+        _recover_audit_event_mandatory(org.db, skill_id=skill_id, slug=body.slug,
+            detail=detail, reason_codes=[reason])
+        with writer.validation():
+            raise HTTPException(status_code=status_code, detail=detail)
+
+    source_dir: Path | None = None
+    if body.version == "system":
+        if any(contract.id == body.slug for contract in SYSTEM_CONTRACTS):
+            source_dir = settings.get_bundled_skills_dir() / body.slug
+    else:
+        release_root = settings.project_root / "runtime" / "skills"
+        for entry in SkillRegistry(skills_root=release_root).list_all():
+            if (entry.slug == body.slug and (entry.version or "0") == body.version
+                    and entry.source != "user_authored"):
+                source_dir = release_root / entry.slug
+                skill_id = entry.id
+                break
+    if source_dir is None:
+        refuse(404, "Current release-owned skill/version not found", "release_provenance_not_found")
+    if not (source_dir / "SKILL.md").is_file():
+        refuse(400, "Bundled release source unavailable; restore the authoritative release first", "release_source_unavailable")
+    try:
+        expected_hash = compute_skill_tree_hash(source_dir)
+    except OSError:
+        refuse(400, "Bundled release source unreadable; restore the authoritative release first", "release_source_unavailable")
+    if expected_hash != body.content_hash:
+        refuse(400, "content_hash does not match the current bundled release source", "hash_mismatch")
+
+    store = CanonicalSkillStore(settings=settings, isolation=detect_platform_isolation())
+    package_path = store.canonical_path(body.slug, body.version, body.content_hash)
+    try:
+        if any(path.is_symlink() for path in (package_path, *package_path.parents)):
+            refuse(409, "Canonical package path is aliased; refusing recovery", "unsafe_target")
+        if not package_path.exists():
+            refuse(404, "Canonical package is absent; nothing to recover", "package_not_found_on_disk")
+        if not package_path.is_dir():
+            refuse(409, "Canonical package is not a directory; refusing recovery", "unsafe_target")
+        # The removal helper chmods members. Never follow an alias outside
+        # this package or touch hardlinked/special members through that helper.
+        for member in package_path.rglob("*"):
+            info = member.lstat()
+            if not (stat.S_ISDIR(info.st_mode) or
+                    (stat.S_ISREG(info.st_mode) and info.st_nlink == 1)):
+                refuse(409, "Canonical package contains an aliased or special member", "unsafe_target")
+    except OSError:
+        refuse(409, "Canonical package cannot be inspected; refusing recovery", "target_unreadable")
+    try:
+        target_valid = store.compute_tree_hash(body.slug, body.version, body.content_hash) == expected_hash
+    except (CanonicalStoreError, OSError):
+        refuse(409, "Canonical package integrity cannot be verified; refusing recovery", "target_unreadable")
+    if target_valid:
+        refuse(409, "Canonical package is valid; refusing to delete it", "valid_target_refused")
+    try:
+        org.db.insert_skill_validation_event(skill_id=skill_id, slug=body.slug, agent="operator",
+            source="operator_recovery", severity="info", ok=True, version=body.version,
+            findings=["Operator recovery removed a corrupted release canonical package."], reason_codes=["operator_recovery"])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Recovery audit persistence failed; canonical package was not deleted") from exc
+    try:
+        _make_writable_for_removal(package_path)
+        shutil.rmtree(package_path)
+    except Exception as exc:
+        _recover_audit_event_mandatory(org.db, skill_id=skill_id, slug=body.slug,
+            detail=f"Failed to delete corrupted release canonical package: {exc}", reason_codes=["deletion_failed"])
+        raise HTTPException(status_code=500, detail="Failed to delete corrupted canonical package") from exc
+    return {"ok": True, "action": "recovered", "slug": body.slug, "version": body.version,
+            "content_hash": body.content_hash, "canonical_path": str(package_path), "skill_id": skill_id,
+            "artifact_key": None,
+            "message": "Corrupted release canonical package deleted; next materialization rebuilds from the bundled release source."}
+
+
 @router.post("/skills/recover", status_code=200)
 def skill_recover(body: SkillRecoverRequest, org: OrgDep) -> dict:
-    """Fail-closed operator recovery for a B2 custom-skill package."""
+    """Fail-closed recovery for a current B2, system, or release-skill package."""
     with native_writer(org.db, publisher='skill_recovery') as writer:
         import shutil
 
@@ -1210,7 +1300,10 @@ def skill_recover(body: SkillRecoverRequest, org: OrgDep) -> dict:
         from runtime.platform.isolation import detect_platform_isolation
         from runtime.skills.canonical_store import CanonicalSkillStore, CanonicalStoreError, _make_writable_for_removal
 
-        if not body.version.isdecimal() or str(int(body.version)) != body.version:
+        # Numeric versions retain the existing B2 provenance/eligibility path.
+        if not body.version.isdecimal():
+            return _recover_release_package(body, org, writer)
+        if str(int(body.version)) != body.version:
             with writer.validation():
                 raise HTTPException(status_code=400, detail="version must be the B2 version ID")
         conn = getattr(org.db, "_conn", org.db)

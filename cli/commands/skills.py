@@ -780,7 +780,7 @@ def cmd_skills_create(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_skills_recover(args: argparse.Namespace) -> None:
-    """Request explicit B2-provenance recovery after operator confirmation."""
+    """Request explicit B2 or release-source recovery after operator confirmation."""
     import httpx
     import re
 
@@ -938,11 +938,11 @@ def register(sub) -> None:
 
     p_recover = skills_sub.add_parser(
         "recover",
-        help="Operator recovery for a corrupted B2 canonical package",
+        help="Operator recovery for a corrupted B2, system, or release canonical package",
     )
-    p_recover.add_argument("slug", help="B2 custom-skill slug")
-    p_recover.add_argument("version", help="B2 custom-skill version ID")
-    p_recover.add_argument("content_hash", help="B2 version SHA-256 hash")
+    p_recover.add_argument("slug", help="B2 custom-skill or release-owned skill slug")
+    p_recover.add_argument("version", help="B2 numeric version ID, system, or current release version")
+    p_recover.add_argument("content_hash", help="B2 version SHA-256 hash or bundled source tree hash")
     p_recover.add_argument("--org", help="Org slug (default: auto-detect)")
     p_recover.set_defaults(func=cmd_skills_recover)
 

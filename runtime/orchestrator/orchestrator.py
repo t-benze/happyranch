@@ -1035,7 +1035,8 @@ class Orchestrator:
                         "canonical bytes — happyranch skills recover "
                         "<slug> <version> <content_hash> (then restart "
                         "daemon; next materialization rebuilds from "
-                        "ArtifactStore). Local same-UID sources are not "
+                        "ArtifactStore for B2, bundled release source for "
+                        "system/release). Local same-UID sources are not "
                         "automatically repaired or trusted."
                     ),
                     status=TaskStatus.FAILED,

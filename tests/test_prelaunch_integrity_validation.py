@@ -31,6 +31,70 @@ from runtime.skills.canonical_store import CanonicalSkillStore, CanonicalStoreEr
 from runtime.skills.symlink_materializer import SymlinkMaterializer
 
 
+class TestReleasePackageRecovery:
+    """Operator recovery crosses the real HTTP boundary, store and audit DB."""
+
+    @pytest.fixture
+    def recovery(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from runtime.config import Settings
+        from runtime.daemon import paths
+        from runtime.daemon.routes import skills
+        from runtime.daemon.routes._org_dep import resolve_org
+
+        release = tmp_path / "release"
+        source = release / "runtime/skills/bundled/start-task"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("Authoritative release contract\n")
+        monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(tmp_path / "canonical"))
+        config = Settings(project_root=release)
+        monkeypatch.setattr(skills, "settings", config)
+        monkeypatch.setattr(paths, "read_token", lambda: "synthetic-token")
+        db = Database(tmp_path / "audit.db")
+        org = SimpleNamespace(slug="test-org", root=tmp_path / "org", db=db)
+        app = FastAPI()
+        app.include_router(skills.router, prefix="/api/v1/orgs/{slug}")
+        app.dependency_overrides[resolve_org] = lambda: org
+        store = CanonicalSkillStore(settings=config)
+        identity = _compute_dir_hash(source)
+        body = dict(slug="start-task", version="system", content_hash=identity)
+        target = store.build_from_source(**body, source_dir=source, verify_source_hash=identity)
+        with TestClient(app, headers={"Authorization": "Bearer synthetic-token"}) as client:
+            yield SimpleNamespace(client=client, db=db, source=source, store=store,
+                                  body=body, target=target, config=config)
+        db.close()
+
+    @staticmethod
+    def corrupt(target):
+        member = target / "SKILL.md"
+        member.chmod(0o644)
+        member.write_text("corrupted contract\n")
+
+    @staticmethod
+    def post(recovery, body=None):
+        return recovery.client.post("/api/v1/orgs/test-org/skills/recover",
+                                    json=recovery.body if body is None else body)
+
+    @staticmethod
+    def audits(recovery):
+        return recovery.db._conn.execute(
+            "SELECT * FROM skill_validation_events WHERE source='operator_recovery' ORDER BY id"
+        ).fetchall()
+
+    def test_system_corrupted_recovery(self, recovery):
+        self.corrupt(recovery.target)
+        response = self.post(recovery)
+        assert response.status_code == 200, response.text
+        assert response.json()["ok"] is True
+        assert not recovery.target.exists()
+        rows = self.audits(recovery)
+        assert len(rows) == 1 and rows[0]["ok"]
+        assert rows[0]["version"] == "system"
+
+
 class TestBytecodePackageIntegrity:
     """Bytecode is incidental; ordinary package bytes remain fail-closed."""
 
