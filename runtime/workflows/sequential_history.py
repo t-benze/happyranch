@@ -521,7 +521,12 @@ def _wire_record(raw: bytes, parser: Callable[[bytes], _WireRecord],
 
 def _run_history(conn: sqlite3.Connection, run: dict, compiled: CompiledDefinition,
                  settings: dict, snapshot: StorageSettings, visits: list[dict],
-                 events: list[dict], outputs: dict[str, list[dict]], budget: _ReadBudget) -> None:
+                 events: list[dict], outputs: dict[str, list[dict]], budget: _ReadBudget,
+                 observations: list[dict]) -> None:
+    from runtime.workflows.sequential_business_hold import validate_business_holds
+    budget.reserve(512 + 128 * len(visits))
+    hold = validate_business_holds(conn, rows=observations, run=run,
+        visits={visit['id']: visit for visit in visits}, events=events, compiled=compiled, budget=budget)
     start = _wire_record(_hashed(run['start_bytes'], run['start_digest']),
                          parse_start, StartCommand, DEFINITION_LIMIT, budget)
     original = Limits.model_validate(_decode(run['original_limits_bytes'], budget))
@@ -642,6 +647,10 @@ def _run_history(conn: sqlite3.Connection, run: dict, compiled: CompiledDefiniti
                 _require(event['kind'] == 'returned' and state == 'completed'
                          and event is events[-1], 'return_conflict')
         prior = event['event_digest']
+        if hold is not None and event['id'] == hold['last_event_id']:
+            _require(state == 'active' and active is not None and active['id'] == hold['visit_id']
+                     and active['result_id'] is None, 'business_hold_prefix_conflict')
+            state = 'held'
     _require(allocated == by_id.keys() and run['state'] == state and run['cas'] == len(events) - 1
              and run['event_count'] == len(events) and run['last_event_id'] == events[-1]['id']
              and (run['epoch'], run['content_returns'], run['visit_count']) ==
@@ -791,6 +800,12 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
             _require(not runs or layout.ownership == 2, 'companion_ownership_required')
             by_run_visits: dict[str, list[dict]] = {}
             by_run_events: dict[str, list[dict]] = {}
+            observations: dict[str, list[dict]] = {}
+            for row in data['workflow_seq_evidence']:
+                budget.step()
+                if row['kind'] == 'observation':
+                    _require(row['run_id'] in runs, 'evidence_owner_conflict')
+                    observations.setdefault(row['run_id'], []).append(row)
             for rows, grouped in ((visits.values(), by_run_visits), (events.values(), by_run_events)):
                 for row in rows:
                     budget.step()
@@ -810,7 +825,8 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                     budget.work(len(rows) * max(1, len(rows).bit_length()))
                 _run_history(conn, run, definitions[run['definition_id']], setting, snapshots[setting['id']],
                     sorted(run_visits, key=lambda row: row['ordinal']),
-                    sorted(run_events, key=lambda row: row['sequence']), outputs, budget)
+                    sorted(run_events, key=lambda row: row['sequence']), outputs, budget,
+                    observations.get(run['id'], []))
             _auxiliary(conn, data, runs, visits, events, budget)
             if layout.ownership:
                 validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget, runs=runs, visits=visits)

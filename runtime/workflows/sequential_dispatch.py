@@ -34,6 +34,7 @@ from runtime.workflows.sequential_document_access import (
 )
 from runtime.workflows.sequential_history import _ReadBudget, _bytes, _selection, _sql_budget
 from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
+from runtime.workflows.sequential_business_hold import BusinessHoldCause, hold_body, hold_id
 
 CARRIER_LIMIT = 1414488
 CARRIER_METADATA_LIMIT = 16384
@@ -505,9 +506,72 @@ class SequentialDispatcher:
                 evidence_ids=(_evidence_id(run['id'], visit['id'], 'outer'),))
             if terminal['classification'] == 'success' and terminal['callback'] is not None:
                 result_id = terminal['callback']['result_id']
+                if run['state'] == visit['state'] == 'held' and visit['result_id'] is None:
+                    # The selected reader authenticated the exact original hold
+                    # and proofs. Redelivery needs neither fresh access nor retry.
+                    row = conn.execute('SELECT id FROM workflow_seq_evidence WHERE id=?',
+                        (hold_id(run['id'], visit['id'], result_id),)).fetchone()
+                    _check(row is not None)
+                    return
         # The positive outer COMMIT is complete BEFORE capturing fresh authority.
         if result_id is not None:
-            self._advance(run['id'], visit_id=visit['id'], result_id=result_id)
+            self._advance(run['id'], visit_id=visit['id'], result_id=result_id,
+                          expected_run=run, expected_visit=visit)
+
+    def _record_business_hold(self, expected_run: dict, expected_visit: dict, result_id: int,
+                              cause: BusinessHoldCause) -> dict | None:
+        """One independent non-authorizing transaction after advance rollback."""
+        with self._writer() as conn:
+            budget = _ReadBudget()
+            run, visit, compiled = self._entry(conn, expected_visit['task_id'], budget=budget)
+            validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence')
+            with _sql_budget(conn, budget):
+                _check((run['id'], visit['id']) == (expected_run['id'], expected_visit['id']))
+                if _cancelled(conn, run, visit):
+                    return None
+                # Validate before deciding that a competing committed transition
+                # won; a changed/corrupt CAS is not a successful race disposition.
+                anchor = ('cas', 'event_count', 'last_event_id', 'active_visit_id', 'epoch',
+                          'content_returns', 'visit_count', 'definition_id', 'settings_id', 'start_digest')
+                if any(run[key] != expected_run[key] for key in anchor):
+                    _check(run['cas'] > expected_run['cas'] and run['last_event_id'] != expected_run['last_event_id'])
+                    return None
+                _check(all(visit[key] == expected_visit[key] for key in
+                    ('id', 'run_id', 'node_id', 'epoch', 'task_id', 'principal', 'session_id', 'input_selection_digest')))
+                result = _discover_result(conn, visit)
+                _check(result is not None and result['id'] == result_id)
+                key = hold_id(run['id'], visit['id'], result_id)
+                if run['state'] == visit['state'] == 'held' and visit['result_id'] is None:
+                    row = conn.execute('SELECT evidence_bytes FROM workflow_seq_evidence WHERE id=?', (key,)).fetchone()
+                    _check(row is not None)
+                    value = _json(row[0], 16384)
+                    _check(value['cause'] == cause.value)
+                    return value
+                _check(run['state'] == 'active' and run['active_visit_id'] == visit['id']
+                       and visit['state'] == 'running' and visit['selected'] == 1 and visit['result_id'] is None
+                       and _native_task(conn, visit['task_id'])['status'] == 'completed')
+                events = _engine_rows(conn, 'workflow_seq_events', budget, 'id=?', (run['last_event_id'],))
+                _check(len(events) == 1)
+                body = hold_body(conn, run=run, visit=visit, compiled=compiled, result_id=result_id,
+                    cause=cause, event=events[0], budget=budget)
+                raw = _bytes(body)
+                check_evidence_size(raw)
+                inserted = conn.execute('INSERT INTO workflow_seq_evidence '
+                    '(id,run_id,visit_id,kind,task_id,principal,session_id,result_id,evidence_bytes,evidence_digest) '
+                    'VALUES(?,?,?,?,?,?,?,?,?,?)', (key, run['id'], visit['id'], 'observation', visit['task_id'],
+                    visit['principal'], visit['session_id'], result_id, raw, hashlib.sha256(raw).hexdigest()))
+                _check(inserted.rowcount == 1)
+                changed_visit = conn.execute("UPDATE workflow_seq_visits SET state='held' WHERE id=? AND run_id=? "
+                    "AND task_id=? AND principal=? AND session_id=? AND state='running' AND selected=1 "
+                    'AND result_id IS NULL AND input_selection_digest=?', (visit['id'], run['id'], visit['task_id'],
+                    visit['principal'], visit['session_id'], visit['input_selection_digest']))
+                changed_run = conn.execute("UPDATE workflow_seq_runs SET state='held' WHERE id=? AND state='active' "
+                    'AND active_visit_id=? AND cas=? AND event_count=? AND last_event_id=?',
+                    (run['id'], visit['id'], run['cas'], run['event_count'], run['last_event_id']))
+                _check(changed_visit.rowcount == changed_run.rowcount == 1)
+            validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence',
+                evidence_ids=(key,))
+        return body  # No durable Held claim before successful COMMIT.
 
     def _compose(self, run: dict, visit: dict, compiled: CompiledDefinition,
                  result: dict, *, bound: dict[str, dict], budget: _ReadBudget,
@@ -542,112 +606,121 @@ class SequentialDispatcher:
         budget.check()
         return envelope, content, recipients, checks
 
-    def _advance(self, run_id: str, *, visit_id: str, result_id: int) -> Any:
+    def _advance(self, run_id: str, *, visit_id: str, result_id: int,
+                 expected_run: dict, expected_visit: dict) -> Any:
         async def advance() -> Any:
             capture = self.org.workflow_authority.capture_admission()
             async with self.org.workflow_authority._async_writer_lock:
                 async with self.org.teams_lock:
                     async with self.org.db_lock:
-                        with self.org.workflow_authority.admission_writer(capture) as conn:
-                            budget = _ReadBudget()
-                            visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?', (visit_id,))
-                            _check(len(visits) == 1 and visits[0]['run_id'] == run_id)
-                            run, visit, compiled = self._entry(conn, visits[0]['task_id'], budget=budget)
-                            with _sql_budget(conn, budget):
-                                _check((run['id'], visit['id']) == (run_id, visit_id))
-                                task = _native_task(conn, visit['task_id'])
-                                if _cancelled(conn, run, visit):
-                                    return None
-                                terminal = _evidence(conn, run_id, visit_id, 'terminal')
-                                outer = _evidence(conn, run_id, visit_id, 'outer')
-                                _check(terminal is not None and outer is not None and outer['positive'] is True
-                                       and terminal['classification'] == 'success'
-                                       and terminal['invocation_id'] == outer['invocation_id'])
-                                result = _native_result(conn, result_id)
-                                identity = _callback_identity(result)
-                                _check(terminal['callback'] == outer['callback'] == identity
-                                       and result['status'] == 'completed'
-                                       and (result['task_id'], result['agent'], result['session_id']) ==
-                                           (visit['task_id'], visit['principal'], visit['session_id']))
-                                source = hashlib.sha256(_bytes(dict(format='workflow-sequential-advance-id@1',
-                                    run_id=run_id, visit_id=visit_id, result_id=result_id))).hexdigest()
-                                transition_key, return_key = 'seq-advance-transition-' + source, 'seq-advance-return-' + source
-                                events = [_engine_rows(conn, 'workflow_seq_events', budget, 'run_id=? AND operation_key=?',
-                                    (run_id, key)) for key in (transition_key, return_key)]
-                                transition, returned = (rows[0] if rows else None for rows in events)
-                                c = run['cas']
-                                terminal_edge = False
+                        try:
+                            with self.org.workflow_authority.admission_writer(capture) as conn:
+                                budget = _ReadBudget()
+                                visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=?', (visit_id,))
+                                _check(len(visits) == 1 and visits[0]['run_id'] == run_id)
+                                run, visit, compiled = self._entry(conn, visits[0]['task_id'], budget=budget)
+                                with _sql_budget(conn, budget):
+                                    _check((run['id'], visit['id']) == (run_id, visit_id))
+                                    task = _native_task(conn, visit['task_id'])
+                                    if _cancelled(conn, run, visit):
+                                        return None
+                                    terminal = _evidence(conn, run_id, visit_id, 'terminal')
+                                    outer = _evidence(conn, run_id, visit_id, 'outer')
+                                    _check(terminal is not None and outer is not None and outer['positive'] is True
+                                           and terminal['classification'] == 'success'
+                                           and terminal['invocation_id'] == outer['invocation_id'])
+                                    result = _native_result(conn, result_id)
+                                    identity = _callback_identity(result)
+                                    _check(terminal['callback'] == outer['callback'] == identity
+                                           and result['status'] == 'completed'
+                                           and (result['task_id'], result['agent'], result['session_id']) ==
+                                               (visit['task_id'], visit['principal'], visit['session_id']))
+                                    source = hashlib.sha256(_bytes(dict(format='workflow-sequential-advance-id@1',
+                                        run_id=run_id, visit_id=visit_id, result_id=result_id))).hexdigest()
+                                    transition_key, return_key = 'seq-advance-transition-' + source, 'seq-advance-return-' + source
+                                    events = [_engine_rows(conn, 'workflow_seq_events', budget, 'run_id=? AND operation_key=?',
+                                        (run_id, key)) for key in (transition_key, return_key)]
+                                    transition, returned = (rows[0] if rows else None for rows in events)
+                                    c = run['cas']
+                                    terminal_edge = False
+                                    if transition is None:
+                                        _check(returned is None and run['state'] == 'active'
+                                               and run['active_visit_id'] == visit_id and visit['state'] == 'running')
+                                    else:
+                                        _check(transition['kind'] == 'transition'
+                                               and hashlib.sha256(transition['event_bytes']).hexdigest() == transition['event_digest'])
+                                        record = parse_transition(transition['event_bytes'])
+                                        _check((record.source_visit, record.source_result) == (visit_id, result_id))
+                                        c = record.prior_cas
+                                        terminal_edge = isinstance(record.edge, TerminalEdge)
+                                        _check((returned is not None) == terminal_edge)
+                                        if returned is not None:
+                                            expected = dict(format='workflow-sequential-storage-event@1', kind='returned',
+                                                run_id=run_id, sequence=c + 3, operation_key=return_key,
+                                                prior_digest=transition['event_digest'])
+                                            _check(returned['kind'] == 'returned' and returned['sequence'] == (c + 1) + 2
+                                                   and returned['event_bytes'] == _bytes(expected)
+                                                   and hashlib.sha256(returned['event_bytes']).hexdigest() == returned['event_digest'])
+                                    if document_only(compiled, budget):
+                                        start, bound = document_binding_context(run, visit, compiled, capture, budget)
+                                        # Original proofs are preflighted at 16 KiB by _evidence.
+                                        # Prepay canonical copies only on the document path;
+                                        # reserve() also charges a step on this same allowance.
+                                        budget.reserve(48 * 16384 + 512)
+                                        terminal_digest = hashlib.sha256(_bytes(terminal)).hexdigest()
+                                        budget.reserve(48 * 16384 + 512)
+                                        outer_digest = hashlib.sha256(_bytes(outer)).hexdigest()
+                                    else:
+                                        start, bound = None, None
+                                        terminal_digest = outer_digest = None
+                                    envelope, content, recipients, checks = self._compose(run, visit, compiled, result,
+                                        bound=bound, budget=budget, carrier_digest=identity['carrier_digest'],
+                                        terminal_digest=terminal_digest, outer_digest=outer_digest)
+                                    contract = next(node.output_contract.type for node in compiled.definition.nodes if node.id == visit['node_id'])
+                                    # Parser/base64/snapshot temporaries and native summary die before acceptance.
+                                    del result, terminal, outer, identity
+                                    budget.check()
+                                common = dict(org_slug=self.org.slug, run_id=run_id, compiled=compiled,
+                                              authority=self.org.workflow_authority, capture=capture)
+                                successor = None
                                 if transition is None:
-                                    _check(returned is None and run['state'] == 'active'
-                                           and run['active_visit_id'] == visit_id and visit['state'] == 'running')
-                                else:
-                                    _check(transition['kind'] == 'transition'
-                                           and hashlib.sha256(transition['event_bytes']).hexdigest() == transition['event_digest'])
-                                    record = parse_transition(transition['event_bytes'])
-                                    _check((record.source_visit, record.source_result) == (visit_id, result_id))
-                                    c = record.prior_cas
-                                    terminal_edge = isinstance(record.edge, TerminalEdge)
-                                    _check((returned is not None) == terminal_edge)
-                                    if returned is not None:
-                                        expected = dict(format='workflow-sequential-storage-event@1', kind='returned',
-                                            run_id=run_id, sequence=c + 3, operation_key=return_key,
-                                            prior_digest=transition['event_digest'])
-                                        _check(returned['kind'] == 'returned' and returned['sequence'] == (c + 1) + 2
-                                               and returned['event_bytes'] == _bytes(expected)
-                                               and hashlib.sha256(returned['event_bytes']).hexdigest() == returned['event_digest'])
-                                if document_only(compiled, budget):
-                                    start, bound = document_binding_context(run, visit, compiled, capture, budget)
-                                    # Original proofs are preflighted at 16 KiB by _evidence.
-                                    # Prepay canonical copies only on the document path;
-                                    # reserve() also charges a step on this same allowance.
-                                    budget.reserve(48 * 16384 + 512)
-                                    terminal_digest = hashlib.sha256(_bytes(terminal)).hexdigest()
-                                    budget.reserve(48 * 16384 + 512)
-                                    outer_digest = hashlib.sha256(_bytes(outer)).hexdigest()
-                                else:
-                                    start, bound = None, None
-                                    terminal_digest = outer_digest = None
-                                envelope, content, recipients, checks = self._compose(run, visit, compiled, result,
-                                    bound=bound, budget=budget, carrier_digest=identity['carrier_digest'],
-                                    terminal_digest=terminal_digest, outer_digest=outer_digest)
-                                contract = next(node.output_contract.type for node in compiled.definition.nodes if node.id == visit['node_id'])
-                                # Parser/base64/snapshot temporaries and native summary die before acceptance.
-                                del result, terminal, outer, identity
-                                budget.check()
-                            common = dict(org_slug=self.org.slug, run_id=run_id, compiled=compiled,
-                                          authority=self.org.workflow_authority, capture=capture)
-                            successor = None
-                            if transition is None:
-                                node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
-                                edge = dict(node.outcomes).get(parse_result(envelope).outcome)
-                                if isinstance(edge, NextEdge):
-                                    target = next(node for node in compiled.definition.nodes if node.id == edge.node)
-                                    bound = (bound if bound is not None else _bound_agents(compiled, parse_start(run['start_bytes']), capture))[target.role]
-                                    successor = TaskRecord(id='TASK-SEQ-' + source, parent_task_id=run['carrier_task_id'],
-                                        assigned_agent=bound['name'], team=bound['team'], task_type='subtask',
-                                        brief='Sequential node ' + target.id + '; follow only the bound node brief and domain supplement.')
-                            accept_result_uncommitted(conn, self.org.db, **common, visit_id=visit_id,
-                                task_id=visit['task_id'], principal=visit['principal'], session_id=visit['session_id'],
-                                result_id=result_id, envelope_bytes=envelope, verified_checks=checks,
-                                content=content, contract=contract, recipients=recipients)
-                            del content, envelope
-                            moved = transition_uncommitted(conn, self.org.db, **common, visit_id=visit_id,
-                                result_id=result_id, operation_key=transition_key, expected_cas=c, successor_task=successor)
-                            if transition is None:
-                                row = conn.execute('SELECT event_bytes FROM workflow_seq_events WHERE id=?', (moved.event_id,)).fetchone()
-                                terminal_edge = isinstance(parse_transition(row[0]).edge, TerminalEdge)
-                            if terminal_edge:
-                                return_uncommitted(conn, self.org.db, **common, operation_key=return_key,
-                                    expected_cas=c + 1, completed_at=task['completed_at'])
-                                if returned is None:
-                                    # U3c owns lifecycle closure. Project only the final
-                                    # native task's retained caller fields in this writer.
-                                    conn.execute('UPDATE tasks SET block_kind=NULL,note=?,'
-                                        'final_output_summary=(SELECT final_output_summary FROM tasks WHERE id=?),'
-                                        'final_output_dir=(SELECT final_output_dir FROM tasks WHERE id=?) '
-                                        'WHERE id IN (?,?)',
-                                        ('Sequential run ' + run_id + ' returned.', visit['task_id'], visit['task_id'],
-                                         run['source_task_id'], run['carrier_task_id']))
+                                    node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+                                    edge = dict(node.outcomes).get(parse_result(envelope).outcome)
+                                    if isinstance(edge, NextEdge):
+                                        target = next(node for node in compiled.definition.nodes if node.id == edge.node)
+                                        bound = (bound if bound is not None else _bound_agents(compiled, parse_start(run['start_bytes']), capture))[target.role]
+                                        successor = TaskRecord(id='TASK-SEQ-' + source, parent_task_id=run['carrier_task_id'],
+                                            assigned_agent=bound['name'], team=bound['team'], task_type='subtask',
+                                            brief='Sequential node ' + target.id + '; follow only the bound node brief and domain supplement.')
+                                accept_result_uncommitted(conn, self.org.db, **common, visit_id=visit_id,
+                                    task_id=visit['task_id'], principal=visit['principal'], session_id=visit['session_id'],
+                                    result_id=result_id, envelope_bytes=envelope, verified_checks=checks,
+                                    content=content, contract=contract, recipients=recipients)
+                                del content, envelope
+                                moved = transition_uncommitted(conn, self.org.db, **common, visit_id=visit_id,
+                                    result_id=result_id, operation_key=transition_key, expected_cas=c, successor_task=successor)
+                                if transition is None:
+                                    row = conn.execute('SELECT event_bytes FROM workflow_seq_events WHERE id=?', (moved.event_id,)).fetchone()
+                                    terminal_edge = isinstance(parse_transition(row[0]).edge, TerminalEdge)
+                                if terminal_edge:
+                                    return_uncommitted(conn, self.org.db, **common, operation_key=return_key,
+                                        expected_cas=c + 1, completed_at=task['completed_at'])
+                                    if returned is None:
+                                        # U3c owns lifecycle closure. Project only the final
+                                        # native task's retained caller fields in this writer.
+                                        conn.execute('UPDATE tasks SET block_kind=NULL,note=?,'
+                                            'final_output_summary=(SELECT final_output_summary FROM tasks WHERE id=?),'
+                                            'final_output_dir=(SELECT final_output_dir FROM tasks WHERE id=?) '
+                                            'WHERE id IN (?,?)',
+                                            ('Sequential run ' + run_id + ' returned.', visit['task_id'], visit['task_id'],
+                                             run['source_task_id'], run['carrier_task_id']))
+                        except SequentialRefusal as refusal:
+                            if refusal.code not in BusinessHoldCause:
+                                raise
+                            # Admission ownership has exited and its refused
+                            # transaction rolled back. This writer grants no access.
+                            return self._record_business_hold(expected_run, expected_visit, result_id,
+                                                              BusinessHoldCause(refusal.code))
                         # Sole sequential COMMIT precedes all queue/caller effects.
                         if terminal_edge:
                             from runtime.workflows.sequential_return import notify_returned
