@@ -1212,7 +1212,10 @@ def _recover_release_package(
     import stat
 
     from runtime.platform.isolation import detect_platform_isolation
-    from runtime.skills.canonical_store import CanonicalSkillStore, CanonicalStoreError, _make_writable_for_removal
+    from runtime.skills.canonical_store import (
+        CanonicalSkillStore, CanonicalStoreError, _get_canonical_store_root,
+        _make_writable_for_removal,
+    )
     from runtime.skills.package_content import compute_skill_tree_hash
 
     skill_id = f"hr:{body.slug}"
@@ -1246,9 +1249,14 @@ def _recover_release_package(
     if expected_hash != body.content_hash:
         refuse(400, "content_hash does not match the current bundled release source", "hash_mismatch")
 
-    store = CanonicalSkillStore(settings=settings, isolation=detect_platform_isolation())
-    package_path = store.canonical_path(body.slug, body.version, body.content_hash)
     try:
+        # Store construction creates its root. Refuse even dangling root
+        # aliases before that mkdir, and audit construction/read failures.
+        root = _get_canonical_store_root(settings)
+        if any(path.is_symlink() for path in (root, *root.parents)):
+            refuse(409, "Canonical store path is aliased; refusing recovery", "unsafe_target")
+        store = CanonicalSkillStore(settings=settings, isolation=detect_platform_isolation())
+        package_path = store.canonical_path(body.slug, body.version, body.content_hash)
         if any(path.is_symlink() for path in (package_path, *package_path.parents)):
             refuse(409, "Canonical package path is aliased; refusing recovery", "unsafe_target")
         if not package_path.exists():

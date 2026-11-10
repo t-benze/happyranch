@@ -62,7 +62,8 @@ class TestReleasePackageRecovery:
         identity = _compute_dir_hash(source)
         body = dict(slug="start-task", version="system", content_hash=identity)
         target = store.build_from_source(**body, source_dir=source, verify_source_hash=identity)
-        with TestClient(app, headers={"Authorization": "Bearer synthetic-token"}) as client:
+        with TestClient(app, headers={"Authorization": "Bearer synthetic-token"},
+                        raise_server_exceptions=False) as client:
             yield SimpleNamespace(client=client, db=db, source=source, store=store,
                                   body=body, target=target, config=config)
         db.close()
@@ -150,7 +151,7 @@ class TestReleasePackageRecovery:
         if case != "absent":
             assert (recovery.target / "SKILL.md").read_text() == "Authoritative release contract\n"
 
-    @pytest.mark.parametrize("alias", ("target", "dangling-target", "version", "slug", "root", "member", "hardlink"))
+    @pytest.mark.parametrize("alias", ("target", "dangling-target", "version", "slug", "root", "dangling-root", "member", "hardlink"))
     def test_aliased_target_is_refused_without_external_changes(self, recovery, tmp_path, alias):
         import json
         import stat
@@ -169,11 +170,11 @@ class TestReleasePackageRecovery:
             target = {
                 "target": recovery.target, "dangling-target": recovery.target,
                 "version": recovery.target.parent, "slug": recovery.target.parent.parent,
-                "root": recovery.store.root,
+                "root": recovery.store.root, "dangling-root": recovery.store.root,
             }[alias]
             moved = tmp_path / "preserved-package"
             target.rename(moved)
-            target.symlink_to(tmp_path / "missing" if alias == "dangling-target" else moved,
+            target.symlink_to(tmp_path / "missing" if alias.startswith("dangling-") else moved,
                               target_is_directory=True)
         response = self.post(recovery)
         assert response.status_code == 409, response.text
