@@ -321,6 +321,22 @@ Disposable observations are not V3 behavioral acceptance or live enablement.
 
 ## Sequential visit callback consumer (U3d-1)
 
+U4a adds unmounted task-session repository preflight records/service only; it
+does not change this callback or settlement path. The Developer's eventual U4b
+path starts resolve-only inside its existing node task, binds repository/origin,
+base/scope and verified SHA1 before editing, and records business refusals as
+durable Held after positive outer COMMIT. U4a receipt bytes alone neither bind
+the run nor change its lifecycle. There is no four-role duty-access checkpoint
+or readiness label. Later disclosures/publication/actions still require current
+authority/access. See the [U4 split and native ordering contract](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).
+
+The inert observer checks literal no-follow clone/object metadata before Git
+and at close. Common-directory/gitdir indirection, gitfiles, object alternates,
+grafts, replacement refs and linked/unsupported object topology refuse with
+Held / `repository_unavailable`. Config includes and inherited Git overrides
+are unavailable; shallow history is allowed. No subject is emitted for a
+refused observation, and no callback or durable Held writer is added.
+
 Only selected seq_visit joins workflow callback admission/replay. The existing
 order remains404, classify, local409, task-active, v2, session, exact idempotency,
 callback_admission, locked owner/task/session recheck, native writer. Source/carrier
