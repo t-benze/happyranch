@@ -1134,3 +1134,39 @@ Source/SEED observations do not close M1 or prove native callbacks, settlement,
 return/races or V3. Coding/U4/U5 remainder/native recovery remain held.
 No live installation, settings, roles, admission, deploy or restart follows.
 See the [U3f source record](../../superpowers/specs/2026-11-09-sequential-document-witness-u3f.md).
+
+## U4a inert repository preflight (THR336 msg85/102/113)
+
+R-M2-1 / ROOT TASK-15144 applies PRD v1.0.3 to U4. The Developer starts
+resolve-only in its existing task, resolves actual repository/origin, base and
+authorized scope, and verifies SHA1 before editing. The removed four-role
+effective-duty-access checkpoint and readiness labels are not implemented.
+Ordinary eligibility remains; configuration is not access proof. A prior check
+is never a lasting disclosure/publication/action grant.
+
+`sequential_repository_records.py` supplies closed immutable request/subject/
+Held-cause/receipt records and a bounded canonical saved reader.
+`SequentialRepositoryPreflight.resolve` is an **unmounted internal service**:
+it checks the actual selected live code-change task/principal/SID and fresh
+authority before observing that principal's configured clone, then rechecks
+before returning metadata. It observes exact origin, SHA1 and full base commit,
+validates supported relative scope syntax, and returns resolved/Held receipt
+bytes. Raw origins, local paths and Git diagnostics stay private. Scope is the
+actual task's declaration, not a permission grant; receipts are observations,
+not effective-access or containment proof.
+
+There is no production caller, public transport, evidence DML, persistent run
+subject or lifecycle state change in U4a. A Held receipt does not mean the
+database run has become Held. U4b owns durable immutable subject binding,
+resolve-only release, actual repository/base/head/PR code-change composition,
+downstream revalidation and the post-positive-outer-COMMIT business-Held fix.
+Another repository/origin/base or expanded scope needs a new authorized run;
+correction heads retain the original subject. Existing preflight/observation
+evidence slots are the planned storage seam; no schema change or live installer
+is part of U4a. Coding successful-output holds, document behavior, Disabled
+admission and existing start/settlement order remain unchanged.
+
+U4a behavior/AC4 two-repository proof is NOT RUN. Python units are RETIRED;
+general integration SKIPPED THR243seq42; required automated checks are lint/static
+only. Full U4 split, caller inventory and pending evidence are in the
+[U4 source specification](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).
