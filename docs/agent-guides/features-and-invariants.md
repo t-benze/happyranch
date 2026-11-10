@@ -2066,9 +2066,8 @@ checks refuse before new graph writes. Schema1 historical admission contexts,
 IDs and digests remain unchanged through schema2 publication and cold replay;
 template-definition schema1 and its @1 pins remain separate from authority JSON.
 Portability remains preflight/reconcile plus explicitly authorized
-closed-copy/restore/reopen; no archive/export/import service is added. The
-bounded utility requires stopped service, persistent external restart inhibition,
-closed verified backups and exact current-file CAS. No live migration is authorized.
+closed-copy/restore/reopen; no archive/export/import service is added.
+No live migration is authorized.
 
 ## Feature Modules Overview
 

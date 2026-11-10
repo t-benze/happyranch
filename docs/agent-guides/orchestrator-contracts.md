@@ -1893,12 +1893,7 @@ Manager-only operations retain their restrictions; the canonical start-task skil
 payload guidance. Delegated leaves still omit decisions and callback identity
 and final-action ordering remain unchanged.
 
-Offline roster recovery uses the retained native operation/journal/request
-identity. Replay performs no reset/materializer/publication when actual durable
-completion is already established. Explicit compensation publishes a new
-coherent original-roster generation, retaining cleared resumes and audits; the
-original successful receipt is preserved. C6/C8/C9 observers/localizations are
-authored source, with M/guest-reboot behavior unexecuted.
+The offline roster utility was retired; moving agents between teams is no longer supported.
 
 Attachment and executable authority are distinct. An exactly registered pending
 bootstrap manager can attach without a current manager grant; owner admission and
