@@ -2,8 +2,8 @@
 
 2026-11-11; THR-336 / ROOT TASK-15144, maker TASK-15145. This specifies the
 whole re-scoped U4. U4a supplies inert records/readers and an unmounted preflight;
-U4b1 attaches durable business holds; U4b2/U4b3 still own subject binding and
-code-change composition. Source delivery and static checks do not establish runtime acceptance.
+U4b1 attaches durable business holds; U4b2 attaches immutable subject binding
+and the resolve-only/editing boundary. U4b3 still owns code-change composition. Source delivery and static checks do not establish runtime acceptance.
 
 ## Authority and scope
 
@@ -41,17 +41,17 @@ Web Lint (Node 24).
 
 | Owner / symbols | Current callers / reuse and U4 responsibility |
 | --- | --- |
-| `sequential_repository_records.py`: request, subject, cause, receipt, `read_repository_preflight` | New U4a closed immutable models and canonical historical reader. Only new preflight imports them; no existing producer imports either new module. Saved parsing authenticates no issuer or permission. |
-| `sequential_repository_preflight.py`: `SequentialRepositoryPreflight.resolve`, `_selected`, `_observe`, `_repository_layout`, `_git` | New U4a unmounted synchronous worker-thread service. No OrgState registration, route, CLI, native-preparation hook or progression caller. U4b may consume through an explicit selected Coding boundary; U7 owns task-session transport. |
+| `sequential_repository_records.py`: request, subject, cause, receipt, `read_repository_preflight` | U4a closed immutable models and canonical syntax reader. U4b2 preflight binding and subject owner consume these records; no public adapter. Saved parsing authenticates no issuer or permission. |
+| `sequential_repository_preflight.py`: `SequentialRepositoryPreflight.resolve`, `_selected`, `_observe`, `_repository_layout`, `_git` | U4a synchronous worker-thread observation; U4b2 internal bind reuses selected ownership, reobserves outside transaction, then commits immutable evidence/Held. No OrgState registration, route, CLI, native-preparation or progression caller. U7 owns transport. |
 | `repository_artifacts.py`: `_oid`, `RepositoryId`, `Component` | Reuse SHA1 OID syntax and existing org/key/origin-derived identity. Its saved presentation family also supports SHA256; that does not enable SHA256 for sequential Coding. `WorkflowRepositoryArtifactService.resolve` remains unavailable. |
 | `repository_artifact_objects.py`: `_Budget`, `_directory`, `_regular`, `_absent`, `_names`, `_same`, `_config`, `_git_environment` | Reuse bounded no-follow metadata reads, closed clone-config parsing and isolated Git environment. Do not call `_resolve_objects`, `_build_resolution`, `_store` or adopt K1/K2 authority as sequential authority. |
 | `coding_saved_records.py`: `_paths` (uses `_path`) | Reuse the retained 64-path, relative-prefix grammar (`.` supported), not its SHA256-capable grant/setup/source grammars. No old Coding record is rewritten. |
 | `_coding_source_admission.py`: `source_storage` | Inspected, not reused as admission: it joins old mapping/adoption/source-capability provenance and verifies origin/object-format radius. Those producers cannot authorize a new sequential subject. |
 | `SequentialDispatcher._entry`, `_on_loop`; `_native_task`, `_discover_result`, `_cancelled` | U4a reuses selected ownership, native task/SID, no-completion and cancellation checks. `_entry` is an existing compiler seam, not a new full-history scan. |
 | `WorkflowAuthorityCoordinator.capture_admission`, `admission_writer`; `_bound_agents`, `parse_start` | Fresh capture precedes coroutine locks; short owned scopes validate actual fixed role bindings and current eligibility, never effective duty access. Revalidate again after observation. No Git/filesystem/network work inside writer ownership. |
-| `SequentialDispatcher.node_instruction`, `_compose`, `_advance` | Existing node instruction caller is orchestrator execution; `_advance` is called only from positive `outer_settled`. U4b adds contract-based Coding supplement, selected-input authorization and code-change composition. Preserve the document-only branch and existing document witness policy. Avoid a module-time import cycle: U4a imports dispatcher helpers; future dispatcher composition must use a callable-local service import or factor the existing owner seam. |
+| `SequentialDispatcher.node_instruction`, `_compose`, `_advance` | Existing node instruction caller is orchestrator execution; `_advance` is called only from positive `outer_settled`. U4b2 adds the code-change resolve-only/committed-subject supplement. U4b3 retains selected-input authorization and code-change composition. Preserve the document-only branch and existing document witness policy. Avoid a module-time import cycle: U4a imports dispatcher helpers; future dispatcher composition must use a callable-local service import or factor the existing owner seam. |
 | `sequential_engine.accept_result_uncommitted`, `transition_uncommitted`, `sequential_return` | Existing dispatcher lifecycle callers; U4b retains genuine native quartet, result/output limits, CAS/replay and post-COMMIT publication. No old Coding progression call. |
-| `sequential_history._auxiliary` / event replay; `sequential_run_validation._validate_lifecycle` | Existing complete and selected reader owners. U4b must recognize/validate subject and hold evidence before attaching writers; no weakened whole-layout comparison or frozen history rewrite. |
+| `sequential_history._auxiliary` / event replay; `sequential_run_validation._validate_lifecycle` | Existing complete and selected reader owners. U4b1/U4b2 recognize/validate hold and subject evidence before producer attachment; no weakened whole-layout comparison or frozen history rewrite. |
 | `task_pause.settle_live`, `run_step._run_step_owned` tail | Existing native settlement callers. U4b does not change their ordering or bytes to handle business refusal. |
 
 ## U4a receipt and observation boundary (this PR)
@@ -122,7 +122,7 @@ No existing Coding producer consumes it; document workflows, Disabled admission,
 public start, native launch and settlement behavior remain unchanged. This is
 the deliberate records/reader/preflight split, not whole-U4 acceptance.
 
-## U4b immutable subject and code-change composition (next PR)
+## U4b immutable subject and code-change composition
 
 Attach only after reader-first independent review. The first selected Developer
 remains resolve-only until its genuine task-session receipt is durably bound.
@@ -168,6 +168,57 @@ Any subsequently approved schema delta must follow
 `workflow_sequential_schema.py` / `install_workflow_sequential_schema.py` patterns;
 never put an index on a new column into the fresh startup executescript. Install/
 migration stays founder-reserved, source only; no live operation follows.
+
+### U4b2 source implementation (TASK-15159)
+
+`SequentialRepositoryPreflight.bind` is the explicit internal worker-thread
+writer. It resolves a fresh receipt, repeats the exact clone observation outside
+writer ownership, then reselects the current live task/SID, authority/configuration
+and run pins in the short admission transaction. There is no Git/filesystem work
+or await inside that transaction. Observation bookends remain cooperative, not a
+racing-rename fence. A changed selection/authority/observation refuses without a
+subject write. No public task-session command or OrgState service mount is added;
+U7 owns transport. U4b3's successful code-change output still remains unavailable.
+
+`sequential_repository_subject.py` owns bounded canonical subject validation.
+Both complete `_auxiliary` and selected `_validate_lifecycle` recognize the
+run-level `preflight` slot before producer attachment. Exactly one deterministic
+run ID stores the successful U4a receipt, including its original issuer/authority
+pins. The table's existing all-or-none native-provenance CHECK is retained:
+visit_id and task/principal/SID/result columns stay NULL in this run-level row;
+original visit/task/principal/SID are authenticated from receipt bytes, the pinned
+run/definition and native parent/assigned-agent/session relations. The original
+issuer must be the first code-change visit. No schema or historical bytes change.
+
+Exact replay returns the original canonical bytes/ID, even under newer current
+authority or a correction visit. A narrowed requested scope reuses the original
+prefixes without rewriting them; it grants no broader scope. A different
+repository/origin/base or expanded scope commits a finite non-authorizing Held
+observation with the accountable manager and new-authorized-run action. Failed
+format/scope/metadata preflight can likewise hold before any subject exists.
+This distinct `workflow-sequential-repository-hold@1` family reuses U4b1's
+observation/Held reader seam, without inventing successful terminal proof or an
+INTEGER result. All native provenance columns stay NULL. Event count/CAS/last
+event remain unchanged, no output/successor is admitted, and only later
+cancellation is supported. Exact same-session Held redelivery acknowledges the
+original observation without a new probe, permission or retry.
+
+`node_instruction` supplies a code-change domain supplement: resolve-only with
+no committed subject, editing only under the original committed subject. Binding
+returns only after positive COMMIT; insert/update/COMMIT failure rolls back and
+releases no editing phase. This is the subject boundary, not a four-role access
+checkpoint or permission-enforcement change. Scope remains the selected
+Developer's declaration under its authorized brief, not machine proof of a grant.
+Downstream access/output/merge remains U4b3/U5; correction visits cannot adopt a
+latest repository or raise original run limits.
+
+Disposable scratch diagnostics observe local SHA1 clone binding, complete and
+selected readers, original-byte replay, narrowing, target/base/scope expansion
+Held, pre/post-COMMIT phase, stale selection/authority refusal and failed-COMMIT
+rollback. They use synthetic pre-result native/live/authority scaffolding derived
+from a retained M1 DB copy; they are not genuine native admission/callback/host
+or V3 acceptance. Full correction progression and racing filesystem changes remain
+NOT RUN. No repository tests are added or changed.
 
 ## U4b F-M1-CODING-HOLD-TAIL: durable post-settlement Held
 
@@ -257,12 +308,12 @@ native/Pause tail ordering are unchanged. No schema change or resume is added.
 
 ## Acceptance obligations and delivery evidence
 
-| Case | Required later observation; current U4a status |
+| Case | Required observation and current source/evidence status |
 | --- | --- |
 | AC4 two targets | Two separately authorized requests resolve two different local SHA1 repositories/bare origins under identical definition/settings/bindings. Distinct immutable subjects, no discovery node or config edit. NOT RUN. |
-| F4 SHA1/scope | SHA1 verified before any first edit; SHA256, invalid scope/base, origin drift, unknown repo and unavailable metadata produce Held with cause and no edit. U4a source only; native first-edit ordering NOT RUN. |
-| Subject/replay | Exact receipt replay retains original IDs/bytes; changed target/base/origin or expansion cannot mutate the subject; correction head/epoch retains base/scope. U4b pending; NOT RUN. |
-| Later access loss | Valid preflight then loss of current access blocks the affected downstream disclosure/publication/action with bindings unchanged. No readiness panel/grant shortcut. U4b/U5 pending; NOT RUN. |
+| F4 SHA1/scope | SHA1 verified before any first edit; SHA256, invalid scope/base, origin drift, unknown repo and unavailable metadata produce Held with cause and no edit. U4b2 subject boundary attached; disposable scope/COMMIT phase diagnostics observed. Native first-edit ordering NOT RUN. |
+| Subject/replay | Exact receipt replay retains original IDs/bytes; changed target/base/origin or expansion cannot mutate the subject; correction head/epoch retains base/scope. U4b2 attached; disposable bind/readers/replay/target/base/expansion-Held observed. Genuine correction progression NOT RUN. |
+| Later access loss | Valid preflight then loss of current access blocks the affected downstream disclosure/publication/action with bindings unchanged. No readiness panel/grant shortcut. U4b3/U5 pending; NOT RUN. |
 | AC8 | Wrong task/SID/result/subject and duplicate results preserve original evidence/budgets; oversized JSON Held, unsaved, unsuccessful; no second allocation. Existing 49152-byte cap retained. New Coding observations NOT RUN. |
 | F8/AC9 hold tail | Force an expected post-positive-outer business refusal: one durable Held visit/run/cause, original proofs preserved, zero successors/outputs and no Pause-tail ExceptionGroup. Include replay, cancellation/transition race and failing hold persistence without false Held claim. U4b1 source attached. Disposable retained-M1 snapshot diagnostic observes durable Held, both readers, exact outer replay without fresh authority, cancellation winning and persistence failure propagation. Full native Pause-tail execution, genuine concurrent races and V3 are NOT RUN. |
 | Document compatibility | Document composition, limits, recipient witnesses and native order remain identical; no default admission/public-start change. U4b1 changes refusal handling/readers only; document execution NOT RUN. |
@@ -275,8 +326,8 @@ integration is SKIPPED under THR-243 seq42. No ad hoc Product E2E or V3 executio
 is authorized by this source leg. Independent full code review, honest scoped QA,
 normal hooks/nonforce push and ROOT guarded merge remain required at final head.
 
-Doc parity in U4a: this spec, reusable-workflows contract, task-orchestration
-contract and bundled start-task skill describe the inert boundary. No public
+Doc parity through U4b2: this spec, reusable-workflows contract, task-orchestration
+contract and bundled start-task skill describe the internal binding and phase boundary. No public
 route/schema/CLI/TS/native change, permission/allow-rule/credential/grant change,
 role assignment, admission/settings/live migration, deployment or restart. U4b
 must renew parity for each attached behavior and leave reserved operations held.

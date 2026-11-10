@@ -1,13 +1,15 @@
-"""Unmounted task-session-only repository preflight. No writes or progression.
+"""Task-session-only repository observation and explicit immutable subject binding.
 
 Only the selected live code-change invocation may observe its own configured
-clone. The receipt is an observation, never edit/publication permission. U4b
-must bind it durably before any producer consumes it; U7 owns public transport.
+clone. The resolve receipt alone grants no editing. bind returns only after positive
+subject/hold COMMIT; U7 still owns public task-session transport.
 """
 from __future__ import annotations
 
 import hashlib
 import os
+import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 import stat
 import subprocess
@@ -18,9 +20,9 @@ from runtime.workflows.repository_artifact_objects import (
     _Budget, _DIR_FLAGS, _absent, _config, _directory, _git_environment, _names, _regular, _same,
 )
 from runtime.workflows.repository_artifacts import WorkflowRepositoryError, _oid
-from runtime.workflows.sequential_definition import parse_start
+from runtime.workflows.sequential_definition import CompiledDefinition, parse_start
 from runtime.workflows.sequential_dispatch import _cancelled, _discover_result, _native_task
-from runtime.workflows.sequential_engine import SequentialRefusal, _bound_agents
+from runtime.workflows.sequential_engine import SequentialRefusal, _bound_agents, check_evidence_size
 from runtime.workflows.sequential_history import _ReadBudget, _WIRE_TOKENS, _bytes, _parse, _sql_budget
 from runtime.workflows.sequential_repository_records import (
     RepositoryChangeSubject, RepositoryPreflightCause, RepositoryPreflightReceipt,
@@ -137,13 +139,17 @@ def _observe(org_root: Path, org_slug: str, principal: str, origin: str | None,
 
 
 class SequentialRepositoryPreflight:
-    """Internal worker-thread service; intentionally no OrgState mount/caller."""
+    """Internal worker-thread binding service; public adapter remains unmounted."""
 
     def __init__(self, org: Any) -> None:
         self.org = org
 
     def _selected(self, task_id: str, principal: str, session_id: str,
-                  request: RepositoryPreflightRequest) -> tuple[dict, str | None]:
+                  request: RepositoryPreflightRequest, *,
+                  allow_held: bool = False,
+                  consume: Callable[[sqlite3.Connection, dict, dict, CompiledDefinition,
+                                     _ReadBudget, dict, str | None], None] | None = None
+                  ) -> tuple[dict, str | None]:
         dispatcher = self.org.workflow_sequential_dispatch
         capture = self.org.workflow_authority.capture_admission()
         budget = _ReadBudget()
@@ -167,8 +173,10 @@ class SequentialRepositoryPreflight:
                                     and (inv.task.id, inv.agent, inv.session_id) == (task_id, principal, session_id)]
                                 if (len(live) != 1 or live[0].orch is not self.org.orchestrator
                                         or live[0].orch._paths.root != self.org.root
-                                        or run['state'] != 'active' or run['active_visit_id'] != visit['id']
-                                        or visit['selected'] != 1 or visit['state'] != 'running'
+                                        or run['state'] not in (('active', 'held') if allow_held else ('active',))
+                                        or run['active_visit_id'] != visit['id']
+                                        or visit['selected'] != 1
+                                        or visit['state'] != ('held' if run['state'] == 'held' else 'running')
                                         or (visit['principal'], visit['session_id']) != (principal, session_id)
                                         or task['status'] != 'in_progress' or visit['result_id'] is not None
                                         or _discover_result(conn, visit) is not None
@@ -188,6 +196,8 @@ class SequentialRepositoryPreflight:
                                     definition_digest=compiled.pin.definition_digest, start_digest=run['start_digest'],
                                     authority_generation=capture.ready.generation,
                                     authority_digest=capture.ready.snapshot_digest)
+                                if consume is not None:
+                                    consume(conn, run, visit, compiled, budget, context, origin)
                                 budget.check()
                                 return context, origin
         return dispatcher._on_loop(select())
@@ -219,3 +229,95 @@ class SequentialRepositoryPreflight:
         raw = _bytes(receipt.model_dump())
         read_repository_preflight(raw)
         return raw
+
+    def bind(self, *, task_id: str, principal: str, session_id: str,
+             request: RepositoryPreflightRequest) -> bytes:
+        """Observe off-loop, then bind/replay/hold in a fresh short selected writer.
+
+        resolve's closing no-follow observation precedes fresh admission capture;
+        no filesystem work or await occurs in the evidence transaction. These
+        are cooperative bookends, never a racing-rename fence. Return only after
+        the admission context has positively committed, including on replay.
+        """
+        from runtime.workflows.sequential_definition import _json
+        from runtime.workflows.sequential_repository_subject import (
+            read_repository_subject, repository_hold_body, repository_hold_id, same_subject, subject_id,
+        )
+        from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
+        saved_hold: list[bytes] = []
+
+        def replay_hold(conn: sqlite3.Connection, run: dict, visit: dict, compiled: CompiledDefinition,
+                        budget: _ReadBudget, context: dict, origin: str | None) -> None:
+            if run['state'] != 'held':
+                return
+            from runtime.workflows.sequential_business_hold import read_hold_rows
+            validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence')
+            rows = read_hold_rows(conn, run['id'], budget)
+            if len(rows) != 1:
+                raise SequentialRefusal('sequential_repository_hold_unavailable')
+            value = read_repository_preflight(_bytes(_json(rows[0]['evidence_bytes'], 16384)['observation']))
+            if value.request_digest != hashlib.sha256(_bytes(request.model_dump())).hexdigest():
+                raise SequentialRefusal('sequential_repository_hold_conflict')
+            saved_hold.append(rows[0]['evidence_bytes'])
+
+        self._selected(task_id, principal, session_id, request, allow_held=True, consume=replay_hold)
+        if saved_hold:
+            return saved_hold[0]  # Historical acknowledgement; never releases editing.
+        raw = self.resolve(task_id=task_id, principal=principal, session_id=session_id, request=request)
+        receipt = read_repository_preflight(raw)
+        # Repeat the exact current observation immediately before fresh admission.
+        # Both Git commands and their filesystem bookends stay outside ownership.
+        context, origin = self._selected(task_id, principal, session_id, request)
+        observed = None
+        try:
+            observed = _observe(self.org.root, self.org.slug, principal, origin, request)
+        except _ObservationHeld as exc:
+            if receipt.disposition != 'Held' or receipt.cause.code != exc.code:
+                raise SequentialRefusal('sequential_repository_observation_changed') from None
+        except (OSError, UnicodeError, subprocess.SubprocessError, WorkflowRepositoryError):
+            if receipt.disposition != 'Held' or receipt.cause.code != 'repository_unavailable':
+                raise SequentialRefusal('sequential_repository_observation_changed') from None
+        if observed != receipt.subject:
+            raise SequentialRefusal('sequential_repository_observation_changed')
+        result: list[bytes] = []
+
+        def consume(conn: sqlite3.Connection, run: dict, visit: dict, compiled: CompiledDefinition,
+                    budget: _ReadBudget, current: dict, current_origin: str | None) -> None:
+            original_context = {key: getattr(receipt, key) for key in context}
+            if (current != context or current != original_context or current_origin != origin):
+                raise SequentialRefusal('sequential_repository_authority_changed')
+            validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='session')
+            bound = read_repository_subject(conn, run, compiled, budget)
+            if receipt.disposition == 'Held' or bound is not None and not same_subject(bound.subject, receipt.subject):
+                cause = receipt.cause.code if receipt.cause is not None else 'sequential_repository_subject_changed'
+                key = repository_hold_id(run['id'], visit['id'])
+                body = repository_hold_body(run=run, visit=visit, compiled=compiled, receipt=receipt,
+                    bound_digest=None if bound is None else hashlib.sha256(_bytes(bound.model_dump())).hexdigest(), cause=cause)
+                value = _bytes(body)
+                check_evidence_size(value)
+                changed_visit = conn.execute("UPDATE workflow_seq_visits SET state='held' WHERE id=? AND run_id=? "
+                    "AND state='running' AND selected=1 AND session_id=? AND result_id IS NULL",
+                    (visit['id'], run['id'], session_id))
+                changed_run = conn.execute("UPDATE workflow_seq_runs SET state='held' WHERE id=? AND state='active' "
+                    'AND active_visit_id=? AND cas=? AND event_count=? AND last_event_id=?',
+                    (run['id'], visit['id'], run['cas'], run['event_count'], run['last_event_id']))
+                if changed_visit.rowcount != 1 or changed_run.rowcount != 1:
+                    raise SequentialRefusal('sequential_repository_selection_changed')
+                visit_id, kind = visit['id'], 'observation'
+            elif bound is not None:
+                # Preserve original issuer/authority bytes even on a correction visit.
+                result.append(_bytes(bound.model_dump()))
+                return
+            else:
+                key, visit_id, kind, value = subject_id(run['id']), None, 'preflight', raw
+            inserted = conn.execute('INSERT INTO workflow_seq_evidence '
+                '(id,run_id,visit_id,kind,evidence_bytes,evidence_digest) VALUES(?,?,?,?,?,?)',
+                (key, run['id'], visit_id, kind, value, hashlib.sha256(value).hexdigest()))
+            if inserted.rowcount != 1:
+                raise SequentialRefusal('sequential_repository_selection_changed')
+            validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence',
+                                              evidence_ids=(key,))
+            result.append(value)
+
+        self._selected(task_id, principal, session_id, request, consume=consume)
+        return result[0]  # No editing release or durable-Held claim before COMMIT.

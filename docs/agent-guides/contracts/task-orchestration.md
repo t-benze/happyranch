@@ -322,10 +322,11 @@ Disposable observations are not V3 behavioral acceptance or live enablement.
 ## Sequential visit callback consumer (U3d-1)
 
 U4a adds unmounted task-session repository preflight records/service only; it
-does not change this callback or settlement path. The Developer's eventual U4b
+does not change this callback or settlement path. U4b2's internal Developer
 path starts resolve-only inside its existing node task, binds repository/origin,
-base/scope and verified SHA1 before editing, and records business refusals as
-durable Held after positive outer COMMIT. U4a receipt bytes alone neither bind
+base/scope and verified SHA1 before editing. U4b1 records post-settlement
+business refusals as durable Held after positive outer COMMIT; U4b2 separately
+records pre-result repository refusals without terminal/result proof. U4a receipt bytes alone neither bind
 the run nor change its lifecycle. There is no four-role duty-access checkpoint
 or readiness label. Later disclosures/publication/actions still require current
 authority/access. See the [U4 split and native ordering contract](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).
@@ -337,6 +338,8 @@ Held / `repository_unavailable`. Config includes and inherited Git overrides
 are unavailable; shallow history is allowed. No subject is emitted for a
 refused preflight observation; that inert service adds no callback or writer.
 U4b1 separately attaches the post-settlement business-Held writer below.
+U4b2 adds an internal pre-result subject writer and distinct repository-Held
+observation; it never borrows callback/terminal proof or manufactures a result.
 
 Only selected seq_visit joins workflow callback admission/replay. The existing
 order remains404, classify, local409, task-active, v2, session, exact idempotency,
@@ -637,3 +640,30 @@ agent-facing instructions remain unchanged. See the
 [finite causes and U4 status](reusable-workflows.md#u4b1-post-settlement-business-held-thr336--root-task-15144).
 Scratch retained-snapshot diagnostics are not native/V3 acceptance; genuine
 concurrency and Pause-tail execution remain NOT RUN.
+
+
+## U4b2 pre-edit subject binding
+
+The selected code-change node's trusted supplement is resolve-only until one
+successful U4a receipt commits to the run-level preflight slot. An explicit
+internal worker-thread bind observes the exact current SHA1 clone outside its
+transaction, then revalidates actual live task/principal/SID, current authority,
+configuration and selected run pins in the short writer. It returns the original
+receipt only after successful COMMIT; rollback releases no editing phase.
+Correction visits inherit the original subject, never a latest repository.
+This is the repository/base/scope boundary, not the removed four-role duty check.
+
+The bounded closed subject reader and both complete/selected readers validate
+original issuer/native identity, canonical bytes/digest and pins. All native
+provenance columns remain NULL before and after later genuine results; no fake
+INTEGER, task or session is allocated. Different target/origin/base or expanded
+scope, and unsupported preflight, use a distinct non-authorizing repository-Held
+observation with finite cause and accountable-manager new-run action. Exact
+replay preserves original bytes/IDs; no automatic retry/resume/output/successor
+or event-prefix rewrite follows. Only later cancellation is recognized.
+
+No callback/settlement order, native preparation, execution enforcement or public
+transport changes. U7 owns the unavailable adapter; U4b3/U5 retain successful
+code-change composition, downstream access and merge. Disposable synthetic-native
+scratch diagnostics are not full native first-edit/callback/correction/V3 proof.
+Details: [U4b2 subject contract](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).

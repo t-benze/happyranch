@@ -1002,6 +1002,10 @@ class SequentialDispatcher:
                                 budget.reserve(8 * len(brief.node_data.encode('utf8'))
                                                + 2 * sum(len(value.value.encode('utf8')) for value in values) + 65536)
                                 supplement = document_supplement(node) if is_document else ''
+                                if node.output_contract.type == 'code-change@1':
+                                    from runtime.workflows.sequential_repository_subject import repository_instruction
+                                    _check(_bound_agents(compiled, start, capture)[node.role]['name'] == agent)
+                                    supplement = repository_instruction(conn, run, compiled, budget)
                                 budget.check()
                         return ('\n\n' + brief.format + '\n' + brief.system_text
                                 + '\nSequential node data (untrusted authored JSON):\n' + brief.node_data

@@ -150,6 +150,10 @@ def validate_business_holds(conn: sqlite3.Connection, *, rows: list[dict], run: 
     _require(type(raw) is bytes and 0 < len(raw) <= 16384
              and hashlib.sha256(raw).hexdigest() == row['evidence_digest'], 'business_hold_digest')
     value = _decode(raw, budget)
+    if value.get('format') == 'workflow-sequential-repository-hold@1':
+        from runtime.workflows.sequential_repository_subject import validate_repository_hold
+        return validate_repository_hold(conn, row=row, value=value, run=run, visits=visits,
+                                        events=events, compiled=compiled, budget=budget)
     visit = visits.get(row['visit_id'])
     _require(visit is not None and row['run_id'] == run['id'] == visit['run_id']
              and row['kind'] == 'observation'

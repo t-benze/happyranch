@@ -1,7 +1,7 @@
 """Inert U4 repository observations; saved syntax never establishes access.
 
-U4b owns durable run binding and consumption. No reader probes Git, authenticates
-an issuer, grants editing or changes sequential state.
+U4b2 binds these bytes through sequential_repository_subject. This syntax reader
+never probes Git, authenticates an issuer, grants editing or changes state.
 """
 from __future__ import annotations
 
