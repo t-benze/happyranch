@@ -52,6 +52,7 @@ Web Lint (Node 24).
 | `SequentialDispatcher.node_instruction`, `_compose`, `_advance` | Existing node instruction caller is orchestrator execution; `_advance` is called only from positive `outer_settled`. U4b2 adds the code-change resolve-only/committed-subject supplement. U4b3 retains selected-input authorization and code-change composition. Preserve the document-only branch and existing document witness policy. Avoid a module-time import cycle: U4a imports dispatcher helpers; future dispatcher composition must use a callable-local service import or factor the existing owner seam. |
 | `sequential_engine.accept_result_uncommitted`, `transition_uncommitted`, `sequential_return` | Existing dispatcher lifecycle callers; U4b retains genuine native quartet, result/output limits, CAS/replay and post-COMMIT publication. No old Coding progression call. |
 | `sequential_history._auxiliary` / event replay; `sequential_run_validation._validate_lifecycle` | Existing complete and selected reader owners. U4b1/U4b2 recognize/validate hold and subject evidence before producer attachment; no weakened whole-layout comparison or frozen history rewrite. |
+| `SequentialDispatcher._repository_held`, `callback_uncommitted`, `terminal`, `outer_settled` | U4b2 repair authenticates only the repository-Held family for an original negative BLOCK callback. Existing completion writer, native terminal and TaskInvocation outer callers retain ordering, authority, replay and cancellation fences; no sequential acceptance or advance. |
 | `task_pause.settle_live`, `run_step._run_step_owned` tail | Existing native settlement callers. U4b does not change their ordering or bytes to handle business refusal. |
 
 ## U4a receipt and observation boundary (this PR)
@@ -199,9 +200,21 @@ format/scope/metadata preflight can likewise hold before any subject exists.
 This distinct `workflow-sequential-repository-hold@1` family reuses U4b1's
 observation/Held reader seam, without inventing successful terminal proof or an
 INTEGER result. All native provenance columns stay NULL. Event count/CAS/last
-event remain unchanged, no output/successor is admitted, and only later
-cancellation is supported. Exact same-session Held redelivery acknowledges the
+event remain unchanged, no output/successor is admitted, and cancellation
+is the only later lifecycle event. Exact same-session Held redelivery acknowledges the
 original observation without a new probe, permission or retry.
+
+The authenticated original live task/principal/SID may still commit its canonical
+negative `BLOCK` callback under current authority, with empty content/claims and causal
+findings. Success-shaped callbacks and foreign sessions refuse; exact full-payload
+replay retains the one original INTEGER result. Original safe terminal/positive outer
+settlement drains without sequential acceptance: run/visit stay Held, accepted result
+stays NULL, and no output, successor, editing release, resume or retry follows. Native
+completed/failed status is retained; a blocked callback keeps its blocked
+result/classification and closes the native task as failed after safe terminal proof.
+Cancellation wins over fresh callbacks/settlement; an already committed callback may
+only replay unchanged. The immutable subject, hold bytes/cause and event prefix are
+preserved.
 
 `node_instruction` supplies a code-change domain supplement: resolve-only with
 no committed subject, editing only under the original committed subject. Binding

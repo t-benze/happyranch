@@ -1243,8 +1243,20 @@ cause, accountable manager and new-authorized-run/no-automatic-retry action.
 Unsupported preflight can hold before a subject exists. Its distinct closed
 repository-hold observation shares the existing Held reader seam, with NULL
 native provenance, unchanged event/CAS prefix and no output/successor. Both
-readers authenticate it; only later cancellation is supported. Same-session
+readers authenticate it; cancellation is the only later lifecycle event. Same-session
 exact Held replay acknowledges original bytes without probing or releasing edits.
+
+The authenticated original live task/principal/SID may still commit its canonical
+negative `BLOCK` callback under current authority, with empty content/claims and causal
+findings. Success-shaped callbacks and foreign sessions refuse; exact full-payload
+replay retains the one original INTEGER result. Original safe terminal/positive outer
+settlement drains without sequential acceptance: run/visit stay Held, accepted result
+stays NULL, and no output, successor, editing release, resume or retry follows. Native
+completed/failed status is retained; a blocked callback keeps its blocked
+result/classification and closes the native task as failed after safe terminal proof.
+Cancellation wins over fresh callbacks/settlement; an already committed callback may
+only replay unchanged. The immutable subject, hold bytes/cause and event prefix are
+preserved.
 
 This is an internal source attachment, without a public route/CLI/TS adapter or
 new admission/settings/permission/credential/grant. U7 owns transport; report an

@@ -660,10 +660,23 @@ INTEGER, task or session is allocated. Different target/origin/base or expanded
 scope, and unsupported preflight, use a distinct non-authorizing repository-Held
 observation with finite cause and accountable-manager new-run action. Exact
 replay preserves original bytes/IDs; no automatic retry/resume/output/successor
-or event-prefix rewrite follows. Only later cancellation is recognized.
+or event-prefix rewrite follows. Cancellation is the only later lifecycle event.
 
-No callback/settlement order, native preparation, execution enforcement or public
-transport changes. U7 owns the unavailable adapter; U4b3/U5 retain successful
+The authenticated original live task/principal/SID may still commit its canonical
+negative `BLOCK` callback under current authority, with empty content/claims and causal
+findings. Success-shaped callbacks and foreign sessions refuse; exact full-payload
+replay retains the one original INTEGER result. Original safe terminal/positive outer
+settlement drains without sequential acceptance: run/visit stay Held, accepted result
+stays NULL, and no output, successor, editing release, resume or retry follows. Native
+completed/failed status is retained; a blocked callback keeps its blocked
+result/classification and closes the native task as failed after safe terminal proof.
+Cancellation wins over fresh callbacks/settlement; an already committed callback may
+only replay unchanged. The immutable subject, hold bytes/cause and event prefix are
+preserved.
+
+The repository-Held callback drain preserves callback/terminal/outer ordering.
+No native preparation, execution enforcement or public transport changes. U7 owns
+the unavailable adapter; U4b3/U5 retain successful
 code-change composition, downstream access and merge. Disposable synthetic-native
 scratch diagnostics are not full native first-edit/callback/correction/V3 proof.
 Details: [U4b2 subject contract](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).

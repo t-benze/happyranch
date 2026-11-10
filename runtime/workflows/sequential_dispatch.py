@@ -359,6 +359,19 @@ class SequentialDispatcher:
         except (SequentialRefusal, ValueError, TypeError, sqlite3.DatabaseError):
             return False
 
+    def _repository_held(self, conn: sqlite3.Connection, run: dict, visit: dict) -> bool:
+        """Authenticate only the pre-result repository hold, without releasing it."""
+        from runtime.workflows.sequential_repository_subject import repository_hold_id
+        if (run['state'] != 'held' or run['active_visit_id'] != visit['id']
+                or visit['state'] != 'held' or visit['selected'] != 1 or visit['result_id'] is not None):
+            return False
+        row = conn.execute('SELECT id FROM workflow_seq_evidence WHERE id=? AND run_id=? AND visit_id=? '
+            "AND kind='observation'", (repository_hold_id(run['id'], visit['id']), run['id'], visit['id'])).fetchone()
+        if row is None:
+            return False
+        validate_selected_run_uncommitted(conn, org_slug=self.org.slug, run_id=run['id'], scope='evidence')
+        return True
+
     def callback_uncommitted(self, *, task_id: str, agent: str, session_id: str,
                              payload: dict, capture: Any = None, budget: Any = None) -> bool:
         conn = self.org.db._conn
@@ -369,8 +382,8 @@ class SequentialDispatcher:
             return ((prior['task_id'], prior['agent'], prior['session_id']) == (task_id, agent, session_id)
                     and completion_result_payload_matches(prior, **payload))
         task = _native_task(conn, task_id)
-        if (run['state'] != 'active' or run['active_visit_id'] != visit['id']
-                or visit['state'] != 'running' or visit['selected'] != 1
+        if ((run['state'], visit['state']) not in (('active', 'running'), ('held', 'held'))
+                or run['active_visit_id'] != visit['id'] or visit['selected'] != 1
                 or (visit['principal'], visit['session_id']) != (agent, session_id)
                 or _cancelled(conn, run, visit) or task['status'] != 'in_progress'
                 or (task['assigned_agent'], task['current_session_id']) != (agent, session_id)
@@ -388,6 +401,8 @@ class SequentialDispatcher:
         metadata = _native_metadata(task_id, agent, session_id, payload)
         value, content = _carrier(payload['output_summary'], contract=node.output_contract.type,
             checks=node.completion_checks, status=payload['status'], verdict=payload['verdict'])
+        if run['state'] == 'held' and (value['outcome'] != 'BLOCK' or not self._repository_held(conn, run, visit)):
+            return False
         del value, content
         needed = len(payload['output_summary'].encode('utf8')) + metadata + 4096
         _check(needed <= conn.getlimit(sqlite3.SQLITE_LIMIT_LENGTH), 'sequential_carrier_storage_unavailable')
@@ -450,7 +465,10 @@ class SequentialDispatcher:
             if existing is not None:
                 _check(existing == body)
                 return
-            if classification in ('success', 'failed'):
+            repository_blocked = classification == 'blocked' and self._repository_held(conn, run, visit)
+            if classification in ('success', 'failed') or repository_blocked:
+                # Native tasks have no terminal blocked status. Retain the actual
+                # blocked callback/classification while closing this held task as failed.
                 now = datetime.now(timezone.utc).isoformat()
                 conn.execute('UPDATE tasks SET status=?,completed_at=?,updated_at=?,block_kind=NULL,final_output_summary=?,final_output_dir=? WHERE id=?',
                     ('completed' if classification == 'success' else 'failed', now, now,
@@ -507,6 +525,8 @@ class SequentialDispatcher:
             if terminal['classification'] == 'success' and terminal['callback'] is not None:
                 result_id = terminal['callback']['result_id']
                 if run['state'] == visit['state'] == 'held' and visit['result_id'] is None:
+                    if self._repository_held(conn, run, visit):
+                        return  # Original negative callback drains; no sequential acceptance.
                     # The selected reader authenticated the exact original hold
                     # and proofs. Redelivery needs neither fresh access nor retry.
                     row = conn.execute('SELECT id FROM workflow_seq_evidence WHERE id=?',
