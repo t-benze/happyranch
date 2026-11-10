@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Upload verbatim as the ONE THR-346 msg6 authorized job; no substitutions. -->
+<project>
+  <actions/>
+  <description>HappyRanch manual Mac native probe. THR-346 S0 and later separately authorized suites. Explicit immutable SOURCE_SHA only; no deployment or daemon restart.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>30</daysToKeep><numToKeep>20</numToKeep>
+        <artifactDaysToKeep>30</artifactDaysToKeep><artifactNumToKeep>20</artifactNumToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>SOURCE_SHA</name><description>Required: exactly 40 hexadecimal commit characters.</description>
+          <defaultValue/><trim>false</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>SUITE</name><description>Validated by the pinned dispatcher allowlist. S0 supports truth only.</description>
+          <defaultValue>truth</defaultValue><trim>false</trim>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <scm class="hudson.scm.NullSCM"/>
+  <assignedNode>mac-mini</assignedNode>
+  <canRoam>false</canRoam><disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers/><concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command><![CDATA[#!/bin/bash -p
+set +x
+set -euo pipefail
+unset BASH_ENV ENV CDPATH GIT_DIR GIT_WORK_TREE GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export LC_ALL=C GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+umask 077
+: "${WORKSPACE:?Jenkins workspace required}"
+cd "$WORKSPACE"
+mkdir -p evidence
+# Only these job-owned outputs are replaced; the checkout is always freshly created.
+rm -f evidence/probe.json evidence/probe.log evidence/identity.txt evidence/build.log
+scratch=''
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  if [ -n "$scratch" ]; then
+    if rm -rf -- "$scratch"; then
+      printf 'scratch_removed=true\n' >> "$WORKSPACE/evidence/identity.txt"
+    else
+      printf 'scratch_removed=false\n' >> "$WORKSPACE/evidence/identity.txt"
+      rc=1
+    fi
+  fi
+  cat "$WORKSPACE/evidence/build.log"
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+run_probe() {
+  [[ "${SOURCE_SHA:-}" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'SOURCE_SHA must be 40 hex characters'; return 2; }
+  [[ "${SUITE:-}" =~ ^[a-z][a-z0-9-]{0,47}$ ]] || { echo 'Invalid SUITE syntax'; return 2; }
+  test "$(uname -s)" = Darwin
+  scratch=$(mktemp -d "$WORKSPACE/native-probe.XXXXXX")
+  mkdir "$scratch/source"
+  cd "$scratch/source"
+  git init --quiet
+  git remote add origin https://github.com/t-benze/happyranch.git
+  # Do not use a full refspec or SCM plugin: fetch only the requested commit.
+  git -c credential.helper= fetch --no-tags --depth 1 origin "$SOURCE_SHA"
+  git checkout --quiet --detach FETCH_HEAD
+  actual=$(git rev-parse HEAD)
+  expected=$(printf '%s' "$SOURCE_SHA" | tr 'A-F' 'a-f')
+  test "$actual" = "$expected"
+  {
+    printf 'source_sha=%s\nsuite=%s\nnode=%s\n' "$actual" "$SUITE" "${NODE_NAME:-}"
+    printf 'job=%s\nbuild_number=%s\nbuild_url=%s\n' "${JOB_NAME:-}" "${BUILD_NUMBER:-}" "${BUILD_URL:-}"
+    command -v python3
+    python3 --version
+  } > "$WORKSPACE/evidence/identity.txt"
+  python3 scripts/mac_native/probe.py --suite "$SUITE" --output "$WORKSPACE/evidence/probe.json" > "$WORKSPACE/evidence/probe.log" 2>&1
+  cat "$WORKSPACE/evidence/probe.log"
+}
+# Preserve the actual failing command status (do not call this function in an if).
+run_probe > "$WORKSPACE/evidence/build.log" 2>&1
+]]></command>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers>
+    <hudson.tasks.ArtifactArchiver>
+      <artifacts>evidence/*.json,evidence/*.log,evidence/identity.txt</artifacts>
+      <allowEmptyArchive>false</allowEmptyArchive><onlyIfSuccessful>false</onlyIfSuccessful>
+      <fingerprint>false</fingerprint><defaultExcludes>true</defaultExcludes>
+      <caseSensitive>true</caseSensitive><followSymlinks>false</followSymlinks>
+    </hudson.tasks.ArtifactArchiver>
+  </publishers>
+  <buildWrappers>
+    <hudson.plugins.build__timeout.BuildTimeoutWrapper>
+      <strategy class="hudson.plugins.build_timeout.impl.AbsoluteTimeOutStrategy"><timeoutMinutes>30</timeoutMinutes></strategy>
+      <operationList><hudson.plugins.build__timeout.operations.AbortOperation/></operationList>
+    </hudson.plugins.build__timeout.BuildTimeoutWrapper>
+  </buildWrappers>
+</project>
