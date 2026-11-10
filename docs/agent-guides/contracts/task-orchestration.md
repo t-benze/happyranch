@@ -137,7 +137,8 @@ their history.
 THR-350's narrow ordinary unknown-session exception permits existing startup
 failure or periodic flag/TTL recovery only with positive death proof and no
 operator hold. Its post-terminal writer records producer_settled while retaining
-unknown history; it never certifies cleanup or releases Pause. Jobs, workflows,
+unknown history; it never certifies cleanup or releases Pause. Ordinary
+job-wake provenance stays ordinary, while job-owned entries, workflows,
 authority/recovery episodes and other deferrals keep their own owners. See
 [the exact lifecycle contract](runtime-lifecycle.md#ordinary-pause-unknown-crash-recovery-thr-350).
 

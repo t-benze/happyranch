@@ -402,10 +402,10 @@ def _sweep_on_startup(
                 alive = False
                 if unknown_owner is not None:
                     # THR-350: unknown is not immunity from dead-session
-                    # recovery, but missing/indeterminate PID is not death.
-                    if not unknown_owner.process_dead():
-                        continue
-                elif pid is not None:
+                    # recovery. Preserve result consumption even when the
+                    # missing/indeterminate PID cannot establish death.
+                    unknown_dead = unknown_owner.process_dead()
+                if pid is not None and (unknown_owner is None or not unknown_dead):
                     try:
                         os.kill(pid, 0)  # signal 0 = existence check, no signal sent
                     except ProcessLookupError:
@@ -457,6 +457,9 @@ def _sweep_on_startup(
                     if unknown_owner is not None:
                         unknown_owner.settle()
                     continue
+
+                if unknown_owner is not None and not unknown_dead:
+                    continue  # No result and no positive death proof: defer.
 
                 # Dead or undeterminable (no orphaned result to consume):
                 # fail-closed. No auto-revisit spawn — the THR-079 ruling

@@ -4388,12 +4388,15 @@ THR-350 lets only the unheld current ordinary unknown-session class reach
 liveness despite Pause deferral. Missing/indeterminate PID is not death for
 that class; the additional Linux boot proof requires a sole exact-current-SID
 UTC session_start timestamp strictly before btime. Current results win before
-inferred failure. Startup retains FAILED/daemon_restart_failure; periodic
+inferred failure even with missing/inconclusive PID. Ordinary job-wake
+provenance remains ordinary. Boot/PID reads precede root/DB writer ownership;
+persisted exact-session start and competing winners are rechecked inside.
+Startup retains FAILED/daemon_restart_failure; periodic
 retains flag, fingerprint consumption or TTL CANCELLED/zombie_cancelled.
 Writer revalidation precedes effects, and only matching entries are marked
 producer_settled after terminal commit, retaining unknown cleanup history.
-Jobs, workflows, v2/recovery episodes, stale/other deferrals and genuine Pause
-holds remain excluded. See [the complete contract](contracts/runtime-lifecycle.md#ordinary-pause-unknown-crash-recovery-thr-350).
+Job-owned entries, workflows, v2/recovery episodes, stale/other deferrals and
+genuine Pause holds remain excluded. See [the complete contract](contracts/runtime-lifecycle.md#ordinary-pause-unknown-crash-recovery-thr-350).
 
 On daemon restart, `_sweep_on_startup` recovers tasks that were killed mid-flight.
 Before Branch 1, a claimed but unaccepted THR-247 completion recovery is

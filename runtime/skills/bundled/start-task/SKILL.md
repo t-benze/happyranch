@@ -885,7 +885,9 @@ publication/merge does not establish that the running daemon contains the correc
 An unheld ordinary session with matching unknown journal evidence can undergo
 existing startup FAILED or periodic flag/TTL CANCELLED recovery only after
 positive dead-process or exact current-session-start/host-boot proof. Current
-results retain their consumption path. The post-terminal writer marks only
+results retain their startup consumption path even with missing/inconclusive
+PID; ordinary job-wake provenance remains ordinary. Boot/PID observations are
+read outside the root/DB writer. The post-terminal writer marks only
 that producer settled and preserves unknown cleanup history. Missing PID alone
 proves nothing; deliberate Pause holds, workflow/v2/recovery owners and other
 deferrals retain their own rules. This grants no agent journal cleanup,

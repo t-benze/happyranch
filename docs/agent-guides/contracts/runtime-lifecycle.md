@@ -10,7 +10,10 @@
 Only a current, uncancelled ordinary in_progress session with no block_kind,
 an unheld root, and exclusively matching ordinary unknown journal owners may
 pass the sweeps' Pause-deferral skip. Actual task/agent/SID and server-admitted
-ordinary purpose must agree. Jobs, workflow owners, v2/authority bindings,
+ordinary purpose must agree. The closed ordinary job-wake provenance from
+_maybe_resume_blocked_task (job_terminal with a job ID, or block_submit with
+a null triggering_job_id) remains ordinary; it is not a job-owned entry.
+Job-owned entries, workflow owners, v2/authority bindings,
 current-session recovery-ledger episodes, stale owners and other deferral
 classes retain their existing paths. The general pause_deferred_owner contract
 is unchanged.
@@ -19,16 +22,21 @@ Death requires ProcessLookupError for the persisted PID, or Linux /proc/stat
 btime strictly later than the sole exact-current-SID UTC session_start audit
 timestamp. Creation, heartbeat and reset journal started_at are not substitutes.
 Missing, malformed, conflicting, non-UTC or equal-second boot evidence proves
-nothing; absent/indeterminate PID alone leaves this class deferred. PID reuse
-without positive boot proof remains conservative. No schema or new clock is added.
+nothing; without a consumable current result, absent/indeterminate PID alone
+leaves this class deferred. PID reuse without positive boot proof remains
+conservative. No schema or new clock is added.
 
-Startup consumes a current-session result before inferring failure; otherwise
+Startup preserves current-session result consumption with a missing or
+inconclusive PID, before requiring positive death proof for failure; otherwise
 it uses the existing FAILED, daemon_restart_failure and bounded parent tail.
 Periodic recovery retains stale-heartbeat/warm-up, first flag, fingerprint
 consumption and TTL CANCELLED/zombie_cancelled behavior, including unchanged
 v2 handling outside this ordinary exception. Before flag/clear/terminal writes,
 the existing root/DB writer rechecks the exact task, entries, hold and ownership;
 failure/cancellation also rechecks death and absence of a current result.
+Host boot/PID observations are read before entering that writer. Under writer
+ownership, only persisted exact-session start and task/hold/result winners are
+validated against that observation; no /proc/stat I/O holds root/DB ownership.
 The existing terminal and audit commits precede a separate Pause writer marking
 only the selected session entries execution_unknown/producer_settled. Unknown
 history remains; producer settlement is not host/tree/preparation cleanup proof

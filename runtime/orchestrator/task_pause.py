@@ -976,12 +976,19 @@ def _ordinary_unknown_entries(store: TaskPauseStore, task: TaskRecord, row: dict
         return []
     entries = [e for e in row["journal"]["entries"]
                if e["task_id"] == task.id and not e["context"].get("producer_settled")]
+    def ordinary_identity(identity: dict) -> bool:
+        # TaskInvocation.prepare preserves these two ordinary job-wake
+        # provenance fields; they do not make the invocation job-owned.
+        return not identity or (set(identity) == {"trigger", "triggering_job_id"} and (
+            (identity["trigger"] == "block_submit" and identity["triggering_job_id"] is None)
+            or (identity["trigger"] == "job_terminal" and isinstance(identity["triggering_job_id"], str)
+                and bool(identity["triggering_job_id"]))))
     if not entries or any(e["owner"] != "ordinary" or e["phase"] != "unknown"
             or e["agent"] != task.assigned_agent or e["session_id"] != task.current_session_id
             or e["fingerprint"]["count"] + 1 != task.orchestration_step_count
             or e["fingerprint"]["parent"] != task.parent_task_id
             or e["fingerprint"]["brief_digest"] != hashlib.sha256(task.brief.encode()).hexdigest()
-            or e["owner_identity"] or e["retry"] or e["id"] in store._live
+            or not ordinary_identity(e["owner_identity"]) or e["retry"] or e["id"] in store._live
             for e in entries):
         return []
     db = store.db
@@ -1019,9 +1026,33 @@ class OrdinaryUnknownOwner:
     task: TaskRecord
     entries: list[dict]
 
-    def process_dead(self) -> bool:
+    def _death_observation(self) -> tuple[int | None, bool]:
+        """Read host evidence before taking root/DB writer ownership."""
+        boot_time = None
+        try:
+            boot = [line.split() for line in Path("/proc/stat").read_text().splitlines()
+                    if line.startswith("btime ")]
+            if (len(boot) == 1 and len(boot[0]) == 2
+                    and boot[0][1].isascii() and boot[0][1].isdigit()):
+                boot_time = int(boot[0][1])
+        except (OSError, ValueError):
+            pass
+        if self.task.executor_pid is not None:
+            try:
+                os.kill(self.task.executor_pid, 0)
+            except ProcessLookupError:
+                return boot_time, True
+            except Exception:
+                pass
+        return boot_time, False
+
+    def _death_proven(self, boot_time: int | None, pid_dead: bool) -> bool:
         # A boot second must be strictly later than the exact current session's
         # persisted server start. Creation/heartbeat/journal times are not starts.
+        if pid_dead:
+            return True
+        if boot_time is None:
+            return False
         try:
             starts = []
             with self.store.db._lock:
@@ -1034,24 +1065,16 @@ class OrdinaryUnknownOwner:
                     if row["agent"] != self.task.assigned_agent:
                         raise ValueError("session start agent mismatch")
                     starts.append(datetime.fromisoformat(row["timestamp"]))
-            boot = [line.split() for line in Path("/proc/stat").read_text().splitlines()
-                    if line.startswith("btime ")]
-            if (len(starts) == len(boot) == 1 and len(boot[0]) == 2
+            if (len(starts) == 1
                     and starts[0].utcoffset() == timedelta(0)
-                    and boot[0][1].isascii() and boot[0][1].isdigit()
-                    and 0 < starts[0].timestamp() < int(boot[0][1])):
+                    and 0 < starts[0].timestamp() < boot_time):
                 return True
         except (OSError, ValueError, TypeError, AttributeError, OverflowError):
             pass  # Missing/malformed/non-UTC/equal-second evidence proves no reboot.
-        if self.task.executor_pid is None:
-            return False
-        try:
-            os.kill(self.task.executor_pid, 0)
-        except ProcessLookupError:
-            return True
-        except Exception:
-            pass
         return False
+
+    def process_dead(self) -> bool:
+        return self._death_proven(*self._death_observation())
 
     @contextmanager
     def writer(self, *, allow_result: bool = False, require_dead: bool = True) -> Iterator[bool]:
@@ -1061,12 +1084,13 @@ class OrdinaryUnknownOwner:
         here. Journal settlement is a separate post-terminal writer below.
         """
         db = self.store.db
+        observation = self._death_observation() if require_dead else (None, False)
         with self.store.writer(self.task.id) as (_, row):
             current = db.get_task(self.task.id)
             yield (current == self.task
                 and _ordinary_unknown_entries(self.store, current, row) == self.entries
                 and (allow_result or db.get_latest_task_result(current.id, current.assigned_agent, current.current_session_id) is None)
-                and (not require_dead or self.process_dead()))
+                and (not require_dead or self._death_proven(*observation)))
 
     def settle(self) -> None:
         """Record ended producer only AFTER terminal commit; retain unknown bytes."""

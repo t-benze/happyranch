@@ -493,8 +493,9 @@ Do not automatically retry job submission or flip policy fields. Reconcile the a
 ## Root task Pause outcomes
 
 THR-350's ordinary unknown-session crash recovery excludes job-owned journal
-entries. Normal job terminal persistence can retain phase unknown because direct
-exit does not prove descendant cleanup; a successful job exit is no reason to
+entries. An ordinary session resumed with authenticated job_terminal or
+block_submit provenance remains ordinary. Normal job terminal persistence can
+retain phase unknown because direct exit does not prove descendant cleanup; a successful job exit is no reason to
 clear it. Only the matching ordinary session producer may be marked settled
 after its existing startup failure or periodic terminal path commits, under
 current ownership and an unheld root. Deliberate Pause and all job admission,
