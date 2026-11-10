@@ -14,8 +14,11 @@ Freestyle job with NullSCM: neither controller Git nor the Git SCM plugin is
 used. The existing `mac-mini` label and build-timeout plugin must be available;
 do not install or reconfigure them on this authorization.
 
-The controller browser URL is `http://192.168.18.174:8081`. Use only the existing
-authorized credential environment/reference for its ordinary API; never embed
+The authorized controller API origin is `http://127.0.0.1:8081`; use
+`curl --netrc-file /home/benze/.config/jenkins/netrc` with the bounded curl
+wrapper in KB `jenkins-job-setup-and-durable-observation`. The browser-only
+address is `http://192.168.18.174:8081`. Use only this credential-file reference;
+never read, print, copy or embed its contents or other
 credentials in the template, source checkout, parameters or archived evidence.
 Missing credentials block creation/submission. No controller executors, sudo,
 credential configuration, daemon deployment or restart is needed.
