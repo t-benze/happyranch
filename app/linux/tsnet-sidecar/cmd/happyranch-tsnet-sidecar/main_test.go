@@ -286,6 +286,7 @@ func TestMainSIGTERMDuringStartup(t *testing.T) {
 		main()
 		return
 	}
+	t.Setenv("TS_NO_LOGS_NO_SUPPORT", "true")
 	conn := notificationSocket(t)
 	t.Setenv("WATCHDOG_USEC", "")
 	cfg := configForCommand(t)
@@ -347,7 +348,9 @@ func TestMainSIGTERMDuringStartup(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SIGTERM exit: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	// tsnet.Close allows up to five seconds for its own best-effort flush.
+	// Leave margin for cleanup while staying below the unit's 35s stop limit.
+	case <-time.After(10 * time.Second):
 		cmd.Process.Kill()
 		<-finished
 		t.Fatal("SIGTERM did not stop the foreground process")

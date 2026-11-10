@@ -10,6 +10,7 @@ import (
 )
 
 func TestTSNetStartWaitsForUpUntilContextDeadline(t *testing.T) {
+	t.Setenv("TS_NO_LOGS_NO_SUPPORT", "true")
 	// A local, deliberately unavailable control server leaves the real engine
 	// joining. Start must wait for Up, rather than reject its transient state.
 	control := httptest.NewTLSServer(http.NotFoundHandler())
