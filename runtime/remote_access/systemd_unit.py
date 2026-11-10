@@ -1,6 +1,6 @@
 """Least-privilege systemd unit rendering (THR-097 phase unit 3).
 
-Renders the connector service unit file with a canonical hardening posture:
+Renders connector/sidecar units and their target. systemd owns recovery:
 
 - a dedicated unprivileged service user (system mode) or the calling user
   (user mode — no ``User=``/``Group=`` allowed in user units);
@@ -27,7 +27,6 @@ from dataclasses import dataclass, field
 _SYSTEM_HARDENING: tuple[str, ...] = (
     "Type=notify",
     "Restart=on-failure",
-    "RestartSec=1",
     "NoNewPrivileges=yes",
     "PrivateTmp=yes",
     "ProtectSystem=strict",
@@ -38,7 +37,6 @@ _SYSTEM_HARDENING: tuple[str, ...] = (
     "RestrictRealtime=yes",
     "LockPersonality=yes",
     "MemoryDenyWriteExecute=yes",
-    "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
     "SystemCallArchitectures=native",
     "UMask=0077",
 )
@@ -60,6 +58,18 @@ _SYSTEM_ONLY_HARDENING: tuple[str, ...] = (
 
 _DEFAULT_WATCHDOG_SEC = 30
 _DEFAULT_RESTART_SEC = 1
+_MANAGED_TARGET = "happyranch-managed.target"
+_START_LIMIT = ("StartLimitIntervalSec=300", "StartLimitBurst=5")
+
+
+def _hardening(*, system: bool, sidecar: bool = False) -> list[str]:
+    # tsnet's Linux netmon subscribes to NETLINK_ROUTE for interface changes.
+    families = "AF_INET AF_INET6 AF_UNIX" + (" AF_NETLINK" if sidecar else "")
+    return [
+        *_SYSTEM_HARDENING,
+        f"RestrictAddressFamilies={families}",
+        *(_SYSTEM_ONLY_HARDENING if system else ()),
+    ]
 
 
 @dataclass(frozen=True)
@@ -103,6 +113,8 @@ def render_connector_unit(spec: ConnectorUnitSpec) -> str:
     lines.append("Description=HappyRanch remote-access connector (supervised Linux home connector)")
     lines.append("After=network-online.target")
     lines.append("Wants=network-online.target")
+    lines.extend(_START_LIMIT)
+    lines.append(f"PartOf={_MANAGED_TARGET}")
     lines.append("")
     lines.append("[Service]")
     exec_line = " ".join(_quote_systemd_arg(arg) for arg in spec.exec_start)
@@ -115,9 +127,9 @@ def render_connector_unit(spec: ConnectorUnitSpec) -> str:
     lines.append(f"RestartSec={spec.restart_sec}")
     lines.append(f"WatchdogSec={spec.watchdog_sec}")
     lines.append("TimeoutStopSec=10")
-    lines.extend(_SYSTEM_HARDENING)
-    if spec.system:
-        lines.extend(_SYSTEM_ONLY_HARDENING)
+    lines.append("TimeoutStartSec=120")
+    lines.append("NotifyAccess=main")
+    lines.extend(_hardening(system=spec.system))
     lines.append(f"StateDirectory={spec.state_dir}")
     lines.append(f"RuntimeDirectory={spec.run_dir}")
     lines.append(f"LogsDirectory={spec.logs_dir}")
@@ -131,3 +143,56 @@ def render_connector_unit(spec: ConnectorUnitSpec) -> str:
     lines.append("[Install]")
     lines.append("WantedBy=multi-user.target" if spec.system else "WantedBy=default.target")
     return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
+class SidecarUnitSpec:
+    """Fixed managed Linux sidecar service; no installation or enrollment."""
+
+    restart_sec: int = _DEFAULT_RESTART_SEC
+    watchdog_sec: int = _DEFAULT_WATCHDOG_SEC
+
+
+def render_sidecar_unit(spec: SidecarUnitSpec) -> str:
+    """Render a systemd-owned sidecar ordered after its loopback connector."""
+    return "\n".join([
+        "[Unit]",
+        "Description=HappyRanch embedded tsnet sidecar",
+        "After=network-online.target happyranch-connector.service",
+        "Wants=network-online.target",
+        *_START_LIMIT,
+        "BindsTo=happyranch-connector.service",
+        f"PartOf={_MANAGED_TARGET}",
+        "",
+        "[Service]",
+        "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json",
+        "User=happyranch",
+        "Group=happyranch",
+        "NotifyAccess=main",
+        f"RestartSec={spec.restart_sec}",
+        f"WatchdogSec={spec.watchdog_sec}",
+        "TimeoutStartSec=120",
+        "TimeoutStopSec=35",
+        *_hardening(system=True, sidecar=True),
+        "StateDirectory=happyranch-tsnet-sidecar",
+        "StateDirectoryMode=0700",
+        "RuntimeDirectory=happyranch-tsnet-sidecar",
+        "LogsDirectory=happyranch-tsnet-sidecar",
+        "",
+        "[Install]",
+        f"WantedBy={_MANAGED_TARGET}",
+        "",
+    ])
+
+
+def render_managed_target() -> str:
+    """Group both independently supervised services; does not install them."""
+    return "\n".join([
+        "[Unit]",
+        "Description=HappyRanch managed remote access",
+        "Wants=happyranch-connector.service happyranch-tsnet-sidecar.service",
+        "",
+        "[Install]",
+        "WantedBy=multi-user.target",
+        "",
+    ])

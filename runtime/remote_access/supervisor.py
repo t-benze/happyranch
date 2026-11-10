@@ -6,7 +6,8 @@ Linux connector lifecycle:
 
 - ``run`` — the systemd ``Type=notify`` foreground loop: readiness gates
   before ANY listener; on readiness loss the listener is stopped
-  immediately (fail closed); READY/WATCHDOG via sd_notify. A runnable
+  immediately and the process exits nonzero for systemd recovery; READY is
+  emitted once and WATCHDOG only after healthy passes. A runnable
   configuration REQUIRES a concrete lab provider/listener — provider-less
   run configurations are rejected at startup and NEVER emit READY=1.
 - ``install``/``uninstall``/``start``/``stop``/``restart``/``enable``/
@@ -894,19 +895,11 @@ class ConnectorSupervisor:
         poll_seconds: float | None = None,
         wait_fn: Callable[[float], None] = time.sleep,
     ) -> int:
-        """Readiness-gated foreground loop.
+        """Wait for first readiness under systemd's bounded TimeoutStartSec.
 
-        - a provider-less run configuration (no lab config, no injected
-          provider) is REJECTED at startup — fail closed, never READY=1;
-        - readiness passes: start the provider (if configured); READY=1 is
-          emitted ONLY when the listener actually started (``_start_provider``
-          returns proven success) — never on a bind/start failure; subsequent
-          passes ping WATCHDOG.
-        - readiness fails while the provider is up: stop the listener
-          IMMEDIATELY (fail closed) and notify STOPPING.
-        - the loop runs until ``max_iterations`` (tests) or a signal-driven
-          stop (the CLI installs SIGTERM/SIGINT handlers that call
-          ``shutdown()``).
+        After READY, readiness/listener loss closes admission and exits nonzero.
+        systemd owns restart; revocation may still rotate its one-shot registry
+        within a healthy pass. No STOPPING-then-READY re-arm is allowed.
         """
         poll_seconds = poll_seconds if poll_seconds is not None else self.config.poll_seconds
         # A RUNNABLE configuration REQUIRES a concrete listener provider (a lab
@@ -925,6 +918,7 @@ class ConnectorSupervisor:
                 "has no listener to bring up, so READY would be false"
             )
         iterations = 0
+        notified_ready = False
         while True:
             iterations += 1
             if max_iterations is not None and iterations > max_iterations:
@@ -933,22 +927,38 @@ class ConnectorSupervisor:
                 if self._shutdown:
                     break
                 report = self.readiness_report()
-                if report.ready:
-                    if not self._provider_running:
-                        if self._start_provider():
-                            self._notify_fn("READY=1\n")
-                        # else: no listener — STATUS already emitted; never READY
+                if notified_ready and (not report.ready or not self._listener_running()):
+                    self._notify_fn("STATUS=readiness or listener lost; exiting for systemd recovery\n")
+                    self.shutdown()
+                    return 1
+                if report.ready and not notified_ready and not self._provider_running:
+                    self._start_provider()
+                if not report.ready:
+                    self._notify_fn("STATUS=waiting for readiness\n")
+                self._reconcile_revocation()
+                if self._shutdown:
+                    break
+                if notified_ready and not self._listener_running():
+                    self._notify_fn("STATUS=listener lost during revocation reconciliation\n")
+                    self.shutdown()
+                    return 1
+                if report.ready and self._listener_running():
+                    if not notified_ready:
+                        self._notify_fn("READY=1\n")
+                        notified_ready = True
                     else:
                         self._notify_fn("WATCHDOG=1\n")
-                else:
-                    if self._provider_running:
-                        self._stop_provider()
-                        self._notify_fn("STOPPING=1\n")
-                    else:
-                        self._notify_fn("STATUS=waiting for readiness\n")
-            self._reconcile_revocation()
             wait_fn(poll_seconds)
         return 0
+
+    def _listener_running(self) -> bool:
+        provider = self._provider
+        if not self._provider_running or provider is None or not provider.listening:
+            return False
+        # Shipping adapters expose listening, but that flag alone survives an
+        # unexpectedly exited serve_forever thread. Check that owner as well.
+        thread = getattr(provider, "_thread", None)
+        return thread is None or thread.is_alive()
 
     def _reconcile_revocation(self) -> None:
         """Cross-process revocation closure at the REAL shipping seam
@@ -1023,7 +1033,7 @@ class ConnectorSupervisor:
         the cached one-shot registry and pairing manager, rebuild the
         provider adapter and every captured ctx-factory reference against a
         FRESH registry, and restart the listener only when readiness still
-        passes (else the run loop brings it up when ready). The old registry
+        passes (otherwise the post-READY loop exits for systemd recovery). The old registry
         is sealed (denies) and the listener is down (refuses) until the new
         runtime is live — nothing is admitted against a half-rotated state."""
         was_running = self._provider_running if restart_provider is None else restart_provider
@@ -1036,7 +1046,7 @@ class ConnectorSupervisor:
         if was_running and self.readiness_report().ready:
             # Rebuild the provider (fresh registry + pairing manager + ctx
             # factory) and reopen the listener. On any failure the loop
-            # re-evaluates readiness and retries — fail closed, no READY.
+            # exits after READY for systemd recovery, without a second READY.
             self._start_provider()
 
     def shutdown(self) -> None:

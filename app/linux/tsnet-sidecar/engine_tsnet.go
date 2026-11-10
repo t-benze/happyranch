@@ -4,13 +4,13 @@ import (
 	"context"
 	"net"
 	"strings"
+	"time"
 
 	"tailscale.com/tsnet"
 )
 
-// TSNetEngine is the production embedded userspace-tailnet adapter. Successful
-// Server.Start is the upstream redemption boundary; tsnet persists the node
-// identity in the owner-only Dir before returning.
+// TSNetEngine is the production embedded userspace-tailnet adapter. Server.Start
+// launches the backend; readiness requires the bounded Server.Up wait as well.
 type TSNetEngine struct{ server *tsnet.Server }
 
 func NewTSNetEngine() *TSNetEngine { return &TSNetEngine{} }
@@ -20,12 +20,12 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 		return RedemptionReceipt{}, ErrEngine
 	}
 	e.server.AuthKey = ""
-	lc, err := e.server.LocalClient()
+	// Start only launches the backend. Joining can legitimately pass through
+	// NeedsLogin/NeedsMachineAuth before Running; Up waits for that transition.
+	upCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	status, err := e.server.Up(upCtx)
 	if err != nil {
-		return RedemptionReceipt{}, ErrEngine
-	}
-	status, err := lc.Status(ctx)
-	if err != nil || status.BackendState != "Running" {
 		return RedemptionReceipt{}, ErrEngine
 	}
 	visible := false
