@@ -327,10 +327,12 @@ def unknown_session(tmp_path: Path, monkeypatch, request):
     db.insert_task(TaskRecord(
         id="TASK-CHILD", brief="work", team="engineering", assigned_agent="dev_agent",
         parent_task_id="TASK-PARENT", task_type="subtask", status=TaskStatus.IN_PROGRESS,
-        orchestration_step_count=1,
-        executor_pid=2147483000, current_session_id="sess-crashed",
-        last_heartbeat=moment - timedelta(seconds=600),
+        orchestration_step_count=1, current_session_id="sess-crashed",
     ))
+    db.update_task("TASK-CHILD", executor_pid=2147483000,
+        last_heartbeat=(moment - timedelta(seconds=600)).isoformat())
+    assert db.get_task("TASK-CHILD").executor_pid == 2147483000
+    assert db.get_task("TASK-CHILD").last_heartbeat == moment - timedelta(seconds=600)
     AuditLogger(db).log_session_start("TASK-CHILD", "dev_agent", str(orch._paths.root),
         session_id="sess-crashed", invocation_purpose="worker_execution")
     identity = {}
