@@ -160,8 +160,13 @@ class ManagedInstaller:
     ) -> None:
         info = os.fstat(descriptor)
         owner = expected[1] if expected else self.root_owner
+        allowed_modes = (expected[0],) if expected else ()
+        if expected and path == _STATE_DIRS[0]:
+            # Creation follows systemd's mode; the trust-state store tightens
+            # this directory to owner-only on save. Preserve either safe mode.
+            allowed_modes += (0o700,)
         if ((info.st_uid, info.st_gid) != owner or info.st_mode & 0o022
-                or (expected and stat.S_IMODE(info.st_mode) != expected[0])):
+                or (expected and stat.S_IMODE(info.st_mode) not in allowed_modes)):
             raise InstallerError(f"unsafe directory ownership or mode: {path}")
 
     def _read_unit(self, parent: int, name: str) -> bytes:
