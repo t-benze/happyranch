@@ -1169,9 +1169,9 @@ are not a racing-rename fence.
 
 There is no production caller, public transport, evidence DML, persistent run
 subject or lifecycle state change in U4a. A Held receipt does not mean the
-database run has become Held. U4b2/U4b3 still own durable immutable subject
-binding, resolve-only release, actual repository/base/head/PR code-change
-composition and downstream revalidation. U4b1 supplies the post-positive-outer
+database run has become Held. U4b2 now attaches the internal immutable subject
+binding and resolve-only release described below. U4b3 still owns actual
+repository/base/head/PR code-change composition and downstream revalidation. U4b1 supplies the post-positive-outer
 business-Held overlay below.
 Another repository/origin/base or expanded scope needs a new authorized run;
 correction heads retain the original subject. Existing preflight/observation
@@ -1217,3 +1217,53 @@ instruction changes. Disposable retained-M1 snapshot diagnostics are scratch
 evidence only; genuine native execution, concurrent races and V3 are NOT RUN.
 Python units RETIRED; integration SKIPPED THR243seq42. No schema, admission,
 settings, install, deployment or restart change follows.
+
+
+## U4b2 immutable Coding subject (THR336 / ROOT TASK-15144)
+
+The internal `SequentialRepositoryPreflight.bind` writer binds one successful
+U4a receipt in the existing append-only run-level preflight slot. The original
+issuer and authority/definition/start/request pins stay in canonical receipt
+bytes. Both complete and selected readers authenticate digest, original first
+code-change visit, native parent/agent/SID and run pins. All four native
+provenance columns and the run-level visit_id stay NULL; no result is fabricated
+or later backfilled. Schema and historical evidence remain unchanged.
+
+The selected Developer receives resolve-only instructions until positive subject
+COMMIT. Only a successfully returned bind releases editing under that original
+subject. The writer repeats exact current SHA1 repository observation outside
+transaction ownership and revalidates fresh authority/session/configuration and
+pins before committing. No Git/filesystem/await occurs inside its transaction.
+These metadata bookends supply no racing-rename fence or permission grant.
+
+Exact replay preserves original bytes/IDs; narrower requested prefixes only reuse
+the original scope. Corrections inherit the same repository/origin/base/scope.
+Another target/origin/base or scope expansion commits durable Held with a finite
+cause, accountable manager and new-authorized-run/no-automatic-retry action.
+Unsupported preflight can hold before a subject exists. Its distinct closed
+repository-hold observation shares the existing Held reader seam, with NULL
+native provenance, unchanged event/CAS prefix and no output/successor. Both
+readers authenticate it; cancellation is the only later lifecycle event. Same-session
+exact Held replay acknowledges original bytes without probing or releasing edits.
+
+The authenticated original live task/principal/SID may still commit its canonical
+negative `BLOCK` callback under current authority, with empty content/claims and causal
+findings. Success-shaped callbacks and foreign sessions refuse; exact full-payload
+replay retains the one original INTEGER result. Original safe terminal/positive outer
+settlement drains without sequential acceptance: run/visit stay Held, accepted result
+stays NULL, and no output, successor, editing release, resume or retry follows. Native
+completed/failed status is retained; a blocked callback keeps its blocked
+result/classification and closes the native task as failed after safe terminal proof.
+Cancellation wins over fresh callbacks/settlement; an already committed callback may
+only replay unchanged. The immutable subject, hold bytes/cause and event prefix are
+preserved.
+
+This is an internal source attachment, without a public route/CLI/TS adapter or
+new admission/settings/permission/credential/grant. U7 owns transport; report an
+unavailable adapter. No four-role effective-duty checkpoint is restored. U4b3
+still owns code-change output and downstream current-access revalidation; U5
+owns review/QA/merge. Disposable scratch observations use explicit synthetic
+pre-result native/authority/live scaffolding, not genuine native/V3 acceptance.
+Full correction progression, racing filesystem changes and native first-edit
+ordering are NOT RUN. Units RETIRED; general integration SKIPPED24342; all CI is
+lint/static only. See the current [U4 spec](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).

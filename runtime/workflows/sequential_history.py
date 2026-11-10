@@ -667,7 +667,10 @@ def _run_history(conn: sqlite3.Connection, run: dict, compiled: CompiledDefiniti
 
 
 def _auxiliary(conn: sqlite3.Connection, data: dict[str, list[dict]], runs: dict[str, dict], visits: dict[str, dict],
-               events: dict[str, dict], budget: _ReadBudget) -> None:
+               events: dict[str, dict], budget: _ReadBudget,
+               definitions: dict[str, CompiledDefinition]) -> None:
+    from runtime.workflows.sequential_repository_subject import validate_subject
+    subjects: dict[str, list[dict]] = {}
     for row in data['workflow_seq_evidence']:
         budget.step()
         _require(row['kind'] in ('preflight', 'review', 'qa', 'intent', 'action', 'observation', 'terminal', 'outer'),
@@ -675,6 +678,10 @@ def _auxiliary(conn: sqlite3.Connection, data: dict[str, list[dict]], runs: dict
         _require(row['run_id'] in runs and (row['visit_id'] is None or
                  (row['visit_id'] in visits and visits[row['visit_id']]['run_id'] == row['run_id'])),
                  'evidence_owner_conflict')
+        if row['kind'] == 'preflight':
+            _require(type(row['evidence_bytes']) is bytes and 0 < len(row['evidence_bytes']) <= 16384,
+                     'subject_bytes_invalid')
+            subjects.setdefault(row['run_id'], []).append(row)
         _decode(_hashed(row['evidence_bytes'], row['evidence_digest']), budget)
         if row['result_id'] is not None:
             _result(conn, row['result_id'], row['task_id'], row['principal'], row['session_id'], budget)
@@ -682,6 +689,12 @@ def _auxiliary(conn: sqlite3.Connection, data: dict[str, list[dict]], runs: dict
             visit = visits.get(row['visit_id'])
             _require((visit is not None and row['task_id'] == visit['task_id']) or
                      (row['visit_id'] is None and row['task_id'] == run['source_task_id']), 'evidence_task_conflict')
+    for run_id, rows in subjects.items():
+        run = runs[run_id]
+        budget.work(len(visits))
+        validate_subject(conn, rows=rows, run=run,
+            visits={key: value for key, value in visits.items() if value['run_id'] == run_id},
+            compiled=definitions[run['definition_id']], budget=budget)
     notifications: dict[str, dict] = {}
     for row in data['workflow_seq_outbox']:
         budget.step()
@@ -827,7 +840,7 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                     sorted(run_visits, key=lambda row: row['ordinal']),
                     sorted(run_events, key=lambda row: row['sequence']), outputs, budget,
                     observations.get(run['id'], []))
-            _auxiliary(conn, data, runs, visits, events, budget)
+            _auxiliary(conn, data, runs, visits, events, budget, definitions)
             if layout.ownership:
                 validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget, runs=runs, visits=visits)
         # Enroll only fully authenticated new rows; recursive old readers still

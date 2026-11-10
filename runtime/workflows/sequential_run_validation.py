@@ -292,7 +292,7 @@ def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str
                  and run['visit_count'] <= limits.max_visits and run['event_count'] <= limits.max_events
                  and run['epoch'] <= limits.max_content_epochs and run['content_returns'] <= limits.content_returns,
                  'run_history_conflict')
-        _auxiliary(conn, data, {run_id: run}, {visit['id']: visit}, {event['id']: event}, budget)
+        _auxiliary(conn, data, {run_id: run}, {visit['id']: visit}, {event['id']: event}, budget, {run['definition_id']: compiled})
         _ownership(conn, metadata, org_slug=org_slug, run=run, visit=visit, budget=budget)
         budget.check()
     return budget
@@ -463,6 +463,9 @@ def _validate_lifecycle(conn: sqlite3.Connection, *, org_slug: str, run_id: str,
         for visit in visits:
             _require(visit['node_id'] in nodes and visit['principal'] == bindings[nodes[visit['node_id']].role],
                      'visit_binding_conflict')
+        from runtime.workflows.sequential_repository_subject import read_subject_rows, validate_subject
+        validate_subject(conn, rows=read_subject_rows(conn, run_id, budget), run=run, visits=by_id,
+                         compiled=compiled, budget=budget)
         active = by_id.get(run['active_visit_id'])
         from runtime.workflows.sequential_business_hold import read_hold_rows, validate_business_holds
         observations = read_hold_rows(conn, run_id, budget)
@@ -552,7 +555,7 @@ def _validate_lifecycle(conn: sqlite3.Connection, *, org_slug: str, run_id: str,
             'id IN (' + ','.join('?' for _ in evidence_ids) + ')', evidence_ids) if evidence_ids else [])
         _require({row['id'] for row in evidence} == set(evidence_ids), 'evidence_missing')
         _auxiliary(conn, {'workflow_seq_evidence': evidence, 'workflow_seq_outbox': outbox},
-                   {run_id: run}, by_id, {row['id']: row for row in events}, budget)
+                   {run_id: run}, by_id, {row['id']: row for row in events}, budget, {run['definition_id']: compiled})
         # Lifecycle ownership checks are independent of admission's pristine rule.
         for task, kind, owner, state in (
             (run['source_task_id'], 'seq_source_waiting', run_id, run['state']),
