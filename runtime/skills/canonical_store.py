@@ -23,6 +23,8 @@ import stat
 from pathlib import Path
 from typing import Optional
 
+from runtime.skills.package_content import compute_skill_tree_hash, is_bytecode_artifact
+
 from runtime.platform.isolation import (
     PlatformIsolation,
     detect_platform_isolation,
@@ -262,6 +264,11 @@ def _compute_tree_hash_from_manifest_members(
                 f"artifact store has {actual_hex[:16]}...",
             )
 
+        # Declared bytes are still verified above; generated artifacts do not
+        # contribute to the canonical tree hash, just as on-disk verification.
+        if is_bytecode_artifact(member_path):
+            continue
+
         h.update(member_path.encode())
         h.update(b"\x00")
         h.update(member_bytes)
@@ -347,7 +354,7 @@ class CanonicalSkillStore:
     ) -> Path:
         """Build a canonical package from a source directory.
 
-        Copies all files from *source_dir* into a temp directory, validates
+        Copies non-bytecode files from *source_dir* into a temp directory, validates
         safe paths (no traversal), then atomically replaces into the canonical
         path. Sets all files read-only after build.
 
@@ -427,6 +434,8 @@ class CanonicalSkillStore:
             if not fpath.is_file():
                 continue
             rel = str(fpath.relative_to(source_dir))
+            if is_bytecode_artifact(rel):
+                continue
             # Validate no path traversal in relative name
             if ".." in rel.split(os.sep):
                 raise CanonicalStoreError(
@@ -707,7 +716,7 @@ class CanonicalSkillStore:
     def compute_tree_hash(self, slug: str, version: str, content_hash: str) -> str:
         """Compute SHA-256 of the canonical tree content (for verification).
 
-        Returns hex digest of all file contents sorted by relative path.
+        Returns hex digest of non-bytecode file contents sorted by relative path.
         """
         pkg_path = self.canonical_path(slug, version, content_hash)
         if not pkg_path.is_dir():
@@ -715,15 +724,7 @@ class CanonicalSkillStore:
                 "package_missing",
                 f"Canonical package not found: {slug}@{version}",
             )
-        h = hashlib.sha256()
-        for fpath in sorted(pkg_path.rglob("*")):
-            if fpath.is_file():
-                rel = str(fpath.relative_to(pkg_path))
-                h.update(rel.encode())
-                h.update(b"\x00")
-                h.update(fpath.read_bytes())
-                h.update(b"\x00")
-        return h.hexdigest()
+        return compute_skill_tree_hash(pkg_path)
 
     @staticmethod
     def _manifest_content_matches(pkg_path: Path, manifest: dict) -> bool:
@@ -731,7 +732,8 @@ class CanonicalSkillStore:
 
         Compares each member file in *pkg_path* against the expected hash
         declared in *manifest*. Returns True if ALL members match;
-        False if any member is missing, extra, or has wrong hash.
+        False if any member is missing, has wrong hash, or a non-bytecode extra
+        exists. Explicitly declared members are always verified, even bytecode.
 
         This is best-effort corruption detection for same-owner deployments —
         NOT an attacker-independent security guarantee.
@@ -744,7 +746,9 @@ class CanonicalSkillStore:
         actual_files: set[str] = set()
         for fpath in sorted(pkg_path.rglob("*")):
             if fpath.is_file():
-                actual_files.add(str(fpath.relative_to(pkg_path)))
+                rel = str(fpath.relative_to(pkg_path))
+                if not is_bytecode_artifact(rel):
+                    actual_files.add(rel)
 
         for member in members:
             member_path = member.get("path", "")

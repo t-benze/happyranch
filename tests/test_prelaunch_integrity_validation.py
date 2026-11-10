@@ -16,6 +16,7 @@ Proves:
 
 import hashlib
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,8 +27,233 @@ from runtime.orchestrator.workspace_adapters import (
     validate_workspace_skills_integrity,
     WorkspaceIntegrityError,
 )
-from runtime.skills.canonical_store import CanonicalSkillStore
+from runtime.skills.canonical_store import CanonicalSkillStore, CanonicalStoreError
 from runtime.skills.symlink_materializer import SymlinkMaterializer
+
+
+class TestBytecodePackageIntegrity:
+    """Bytecode is incidental; ordinary package bytes remain fail-closed."""
+
+    BYTECODE = (
+        "loose.pyc", "loose.pyo", ".pyc",
+        "scripts/__pycache__/x.cpython-312.pyc", "__pycache__/metadata",
+    )
+    CONTENT = (
+        "SKILL.md", "scripts/run.py", "references/guide.md",
+        "foo.pyc.txt", "pycache/data", "__pycache__.txt", "upper.PYC",
+    )
+
+    @pytest.fixture
+    def package(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
+        from runtime.infrastructure.artifact_store import ArtifactStore
+
+        source = tmp_path / "source"
+        for name in self.CONTENT:
+            path = source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"original {name}\n")
+        store = CanonicalSkillStore(root=tmp_path / "canonical")
+        monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(store.root))
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        return source, store, workspace, ArtifactStore(tmp_path / "artifacts")
+
+    @staticmethod
+    def previous_hash(source: Path) -> str:
+        # Frozen pre-fix algorithm: independent compatibility oracle only.
+        digest = hashlib.sha256()
+        for path in sorted(source.rglob("*")):
+            if path.is_file():
+                digest.update(str(path.relative_to(source)).encode())
+                digest.update(b"\x00")
+                digest.update(path.read_bytes())
+                digest.update(b"\x00")
+        return digest.hexdigest()
+
+    @staticmethod
+    def add_bytecode(root: Path) -> None:
+        for name in TestBytecodePackageIntegrity.BYTECODE:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                path.chmod(0o644)
+            path.write_bytes(b"generated Python cache")
+
+    @staticmethod
+    def materialize(store: CanonicalSkillStore, workspace: Path, identity: str, tree_hash: str) -> list[dict]:
+        spec = dict(slug="bytecode-skill", version="system", content_hash=identity,
+                    tree_hash=tree_hash)
+        for subdir in (".claude/skills", ".agents/skills"):
+            SymlinkMaterializer(store).materialize_skills_batch([spec], workspace, subdir)
+        return [spec]
+
+    def build(self, package: tuple, kind: str) -> tuple:
+        source, store, workspace, artifacts = package
+        tree_hash = _compute_dir_hash(source)
+        manifest = None
+        identity = tree_hash
+        if kind == "manifest":
+            import json
+
+            members = []
+            for index, path in enumerate(sorted(source.rglob("*"))):
+                if path.is_file():
+                    name = str(path.relative_to(source))
+                    key = f"member-{index}.blob"
+                    artifacts.put(key, path.read_bytes())
+                    members.append(dict(path=name, artifact_key=key,
+                                        hash="sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()))
+            manifest = dict(members=members)
+            identity = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+            target = store.build_from_manifest("bytecode-skill", "system", identity, manifest, artifacts)
+        else:
+            target = store.build_from_source("bytecode-skill", "system", identity, source,
+                                             verify_source_hash=tree_hash)
+        specs = self.materialize(store, workspace, identity, tree_hash)
+        validate_workspace_skills_integrity(workspace, specs)
+        return target, identity, tree_hash, specs, manifest
+
+    def test_clean_tree_keeps_previous_identity(self, package: tuple) -> None:
+        source, store, workspace, _ = package
+        old_hash = self.previous_hash(source)
+        assert _compute_dir_hash(source) == old_hash
+        target, identity, _, specs, _ = self.build(package, "source")
+        before = target.stat().st_ino
+        assert identity == old_hash
+        assert store.compute_tree_hash("bytecode-skill", "system", identity) == old_hash
+        assert store.build_from_source("bytecode-skill", "system", identity, source,
+                                       verify_source_hash=old_hash) == target
+        assert target.stat().st_ino == before
+        validate_workspace_skills_integrity(workspace, specs)
+
+    @pytest.mark.parametrize("name", BYTECODE)
+    def test_source_bytecode_keeps_identity(self, package: tuple, name: str) -> None:
+        source, _, _, _ = package
+        clean_hash = _compute_dir_hash(source)
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"generated Python cache")
+        assert _compute_dir_hash(source) == clean_hash
+
+    def test_source_bytecode_is_not_copied(self, package: tuple) -> None:
+        source, _, _, _ = package
+        self.add_bytecode(source)
+        target, _, _, _, _ = self.build(package, "source")
+        assert {str(p.relative_to(target)) for p in target.rglob("*") if p.is_file()} == set(self.CONTENT)
+        assert not (target / "__pycache__").exists()
+        assert not (target / "scripts/__pycache__").exists()
+
+    @pytest.mark.parametrize("kind", ("source", "manifest"))
+    def test_leaked_bytecode_passes_reuse_and_prelaunch(self, package: tuple, kind: str) -> None:
+        source, store, workspace, artifacts = package
+        target, identity, tree_hash, specs, manifest = self.build(package, kind)
+        before = target.stat().st_ino
+        self.add_bytecode(target)
+        assert store.compute_tree_hash("bytecode-skill", "system", identity) == tree_hash
+        if kind == "manifest":
+            assert store.build_from_manifest("bytecode-skill", "system", identity, manifest, artifacts) == target
+        else:
+            assert store.build_from_source("bytecode-skill", "system", identity, source,
+                                           verify_source_hash=tree_hash) == target
+        assert target.stat().st_ino == before
+        self.materialize(store, workspace, identity, tree_hash)
+        validate_workspace_skills_integrity(workspace, specs)
+
+    @pytest.mark.parametrize("kind", ("source", "manifest"))
+    @pytest.mark.parametrize("name", CONTENT)
+    def test_nonbytecode_tampering_refuses_reuse_and_prelaunch(self, package: tuple, kind: str, name: str) -> None:
+        source, store, workspace, artifacts = package
+        target, identity, tree_hash, specs, manifest = self.build(package, kind)
+        path = target / name
+        path.chmod(0o644)
+        path.write_bytes(b"tampered content")
+        path.chmod(0o444)
+        with pytest.raises(CanonicalStoreError) as error:
+            if kind == "manifest":
+                store.build_from_manifest("bytecode-skill", "system", identity, manifest, artifacts)
+            else:
+                store.build_from_source("bytecode-skill", "system", identity, source,
+                                        verify_source_hash=tree_hash)
+        assert error.value.code == "content_corruption"
+        with pytest.raises(WorkspaceIntegrityError) as error:
+            validate_workspace_skills_integrity(workspace, specs)
+        assert error.value.code == "integrity_mismatch"
+        assert any("tree hash mismatch" in finding for finding in error.value.findings)
+        assert path.read_bytes() == b"tampered content"  # Never healed.
+
+    @pytest.mark.parametrize("name", ("extra.pyc.txt", "pycache/new.py"))
+    def test_manifest_nonbytecode_extras_are_corruption(self, package: tuple, name: str) -> None:
+        _, store, workspace, artifacts = package
+        target, identity, _, specs, manifest = self.build(package, "manifest")
+        path = target / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            path.chmod(0o644)
+        path.write_bytes(b"unexpected content")
+        with pytest.raises(CanonicalStoreError, match="content_corruption"):
+            store.build_from_manifest("bytecode-skill", "system", identity, manifest, artifacts)
+        with pytest.raises(WorkspaceIntegrityError, match="integrity_mismatch"):
+            validate_workspace_skills_integrity(workspace, specs)
+
+    def test_bytecode_in_old_source_moves_identity_once(self, package: tuple) -> None:
+        source, store, workspace, _ = package
+        clean_hash = _compute_dir_hash(source)
+        self.add_bytecode(source)
+        old_hash = self.previous_hash(source)
+        assert old_hash != clean_hash
+        # Reproduce the old on-disk package, including its leaked cache bytes.
+        old_target = store.build_from_source("bytecode-skill", "system", old_hash, source)
+        self.add_bytecode(old_target)
+        before = {str(p.relative_to(old_target)): p.read_bytes()
+                  for p in old_target.rglob("*") if p.is_file()}
+        self.materialize(store, workspace, old_hash, old_hash)
+        target, identity, _, specs, _ = self.build(package, "source")
+        assert identity == clean_hash
+        assert target != old_target
+        assert {str(p.relative_to(old_target)): p.read_bytes()
+                for p in old_target.rglob("*") if p.is_file()} == before
+        for subdir in (".claude/skills", ".agents/skills"):
+            assert (workspace / subdir / "bytecode-skill").resolve() == target
+        assert store.build_from_source("bytecode-skill", "system", identity, source,
+                                       verify_source_hash=clean_hash) == target
+        validate_workspace_skills_integrity(workspace, specs)
+
+    def test_declared_bytecode_retains_manifest_provenance(self, package: tuple) -> None:
+        from runtime.skills.canonical_store import _compute_tree_hash_from_manifest_members
+
+        source, store, _, artifacts = package
+        clean_hash = _compute_dir_hash(source)
+        self.add_bytecode(source)
+        target, identity, tree_hash, _, manifest = self.build(package, "manifest")
+        expected = _compute_tree_hash_from_manifest_members(manifest, artifacts, skill_slug="bytecode-skill")
+        assert expected == tree_hash == clean_hash
+        # Declared members are preserved and checked, unlike undeclared extras.
+        declared = target / "loose.pyc"
+        declared.chmod(0o644)
+        declared.write_bytes(b"changed declared member")
+        with pytest.raises(CanonicalStoreError, match="content_corruption"):
+            store.build_from_manifest("bytecode-skill", "system", identity, manifest, artifacts)
+        key = next(member["artifact_key"] for member in manifest["members"] if member["path"] == "loose.pyc")
+        artifacts.put(key, b"changed declared artifact")
+        with pytest.raises(CanonicalStoreError, match="member_hash_mismatch"):
+            _compute_tree_hash_from_manifest_members(manifest, artifacts, skill_slug="bytecode-skill")
+        with pytest.raises(CanonicalStoreError, match="member_hash_mismatch"):
+            store.build_from_manifest("bytecode-skill", "fresh", identity, manifest, artifacts)
+
+    @pytest.mark.parametrize("inherited", (None, "", "0"))
+    def test_executor_launch_environment_disables_bytecode(
+        self, package: tuple, monkeypatch: pytest.MonkeyPatch, inherited: str | None,
+    ) -> None:
+        from runtime.orchestrator.executors import build_command_launch_spec
+
+        _, _, workspace, _ = package
+        if inherited is None:
+            monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+        else:
+            monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", inherited)
+        spec = build_command_launch_spec(cmd=("python", "script.py"), workspace=workspace,
+                                         input_text=None, org_slug="test", session_id="test-session")
+        assert spec.env["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
 class TestPreLaunchIntegrityValidation:

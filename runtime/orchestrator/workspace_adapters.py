@@ -1031,17 +1031,10 @@ def _build_custom_skill_canonical_specs(
 
 
 def _compute_dir_hash(src_dir: Path) -> str:
-    """Compute a deterministic SHA-256 for a source tree."""
-    import hashlib
+    """Compute the canonical, bytecode-free source tree identity."""
+    from runtime.skills.package_content import compute_skill_tree_hash
 
-    digest = hashlib.sha256()
-    for path in sorted(src_dir.rglob("*")):
-        if path.is_file():
-            digest.update(str(path.relative_to(src_dir)).encode())
-            digest.update(b"\x00")
-            digest.update(path.read_bytes())
-            digest.update(b"\x00")
-    return digest.hexdigest()
+    return compute_skill_tree_hash(src_dir)
 
 
 # ── Pre-launch integrity validation ────────────────────────────────
