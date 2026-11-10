@@ -61,6 +61,19 @@ retries. It then obtains the explicit platform adapter and launches. Task,
 subtask, thread, wake, dream, schedule, bootstrap, and executor-switch paths
 continue to converge on the existing materialization and verification seams.
 
+Source hashes, source package copies and on-disk tree hashes exclude only
+relative paths with an exact `__pycache__` component or a `.pyc`/`.pyo` filename
+suffix, using one shared predicate. B2 manifest reuse ignores undeclared
+bytecode extras while retaining declared member-hash checks. Manifest-derived
+tree hashes validate declared artifacts before excluding bytecode. The shared
+executor environment sets `PYTHONDONTWRITEBYTECODE=1` for all providers.
+Bytecode-free trees retain the previous identity exactly. Previously
+bytecode-inclusive source identities move once to a clean hash path during
+ordinary materialization/link reconciliation; old package paths are retained.
+Existing packages with incidental bytecode pass tree verification. Other
+content changes still refuse reuse and launch. Cosmetic modes remain `0444`
+for files and `0755` for directories; no chmod security boundary is claimed.
+
 ## Failure Modes
 
 - Unsupported platform: named `unsupported_platform`, no materialization or

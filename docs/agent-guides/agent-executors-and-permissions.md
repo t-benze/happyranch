@@ -598,6 +598,26 @@ withdrawable. A tombstone committed during selection excludes the skill at the
 publication barrier; it does not recall already-running work. Canonical-store,
 production-boundary, and materialization tests own these guarantees.
 
+Package identity, source copying and tree verification share one bytecode
+exclusion: any relative path component exactly `__pycache__`, or a filename
+ending in `.pyc` or `.pyo`. Other names, including `foo.pyc.txt` and `pycache/`,
+remain content. Manifest verification ignores undeclared bytecode extras;
+explicitly declared B2 members still require their declared SHA-256 bytes.
+The manifest-derived tree hash excludes bytecode after verifying those bytes.
+Every executor launch environment sets `PYTHONDONTWRITEBYTECODE=1`, including
+when the daemon inherited a different value. Files retain cosmetic `0444`
+hardening and directories retain `0755`; neither is a same-UID security boundary.
+
+Bytecode-free trees keep the previous sorted relative-name/NUL/bytes/NUL SHA-256
+identity exactly. Bytecode added to an existing package is ignored by tree
+verification and does not cause content corruption. If source bytecode was
+previously included in the identity, the next materialization selects a new
+bytecode-free hash path and reconciles both workspace links. The old path is
+left untouched and becomes unused once no links or active sessions refer to it;
+there is no upgrade-time deletion or mass corruption scan. In-flight callers
+holding an old bytecode-inclusive expected hash must rematerialize with current
+source selection; that obsolete expected hash is not accepted as a clean hash.
+
 Custom-skill selection captures all selected rows and eligibility rules in one
 Database-owned coherent read view, releasing it before artifact reads, hashing
 and package construction. The builder refuses a pre-existing caller transaction
