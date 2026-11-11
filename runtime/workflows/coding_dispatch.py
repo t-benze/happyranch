@@ -101,7 +101,7 @@ class CodingDispatcher:
                 from runtime.workflows.sequential_legacy_cancel import legacy_cancellation_scope
                 scope = (nullcontext(False) if cancellation_task_id is None else
                          legacy_cancellation_scope(conn, org_slug=self.org.slug,
-                             task_id=cancellation_task_id, retained_budget=budget))
+                             task_id=cancellation_task_id))
                 with scope:
                     yield conn, budget
                     from runtime.infrastructure.workflow_schema import _read_workflow_schema

@@ -37,6 +37,8 @@ class AuditMixin:
         agent: str,
         action: str,
         payload: dict | None = None,
+        *,
+        canonical_payload: bool = False,
     ) -> int:
         """Insert an audit row WITHOUT committing the transaction.
 
@@ -51,13 +53,20 @@ class AuditMixin:
         clean rollback path.  The standard ``insert_audit_log`` (which
         commits inline) is retained for all existing callers.
         """
+        # New mixed cancellation must satisfy its retained canonical reader.
+        # Existing native callers keep their original JSON bytes by default.
+        if payload and canonical_payload:
+            encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'),
+                                 ensure_ascii=False, allow_nan=False)
+        else:
+            encoded = json.dumps(payload) if payload else None
         cur = self._conn.execute(
             "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) VALUES (?, ?, ?, ?, ?)",
             (
                 task_id,
                 agent,
                 action,
-                json.dumps(payload) if payload else None,
+                encoded,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )

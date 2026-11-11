@@ -122,7 +122,7 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
 
 def write_uncommitted(org: Any, task_id: str, *, cascade: bool, rationale: str, actor: str,
                       transitions: Any, captures: ExitStack, saved: Any, selected: dict,
-                      instances: set, budget: _Budget) -> tuple[str, dict]:
+                      instances: set, budget: _Budget, canonical_audits: bool = False) -> tuple[str, dict]:
     """Original Coding command/events and sole native overlay in caller's writer.
 
     The complete reader and mutation selection belong to the enclosing owner.
@@ -187,7 +187,7 @@ def write_uncommitted(org: Any, task_id: str, *, cascade: bool, rationale: str, 
         conn.execute("UPDATE tasks SET status='cancelled',block_kind=NULL,note=?,cancelled_at=?,completed_at=?,updated_at=? WHERE id=?",
             (note, now, now, now, key))
         audit_id = db.insert_audit_log_uncommitted(key, actor, 'task_cancelled',
-            dict(rationale=rationale, cascade=cascade))
+            dict(rationale=rationale, cascade=cascade), **({'canonical_payload': True} if canonical_audits else {}))
         audit = list(rows(conn, 'audit_log', budget, where='id=?', args=(audit_id,), maximum=1))
         _check(len(audit) == 1)
         audits.append(dict(table='audit_log', id=audit_id, record=encode_row(audit[0])))

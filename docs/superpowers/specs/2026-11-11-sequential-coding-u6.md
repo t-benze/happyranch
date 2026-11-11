@@ -149,10 +149,14 @@ the complete post-write oracle reject drift. Post-write native task comparison
 permits only the derived cancellation fields on the exact live write set;
 original result identities, owners, parents and all other native fields match.
 
-Each complete read keeps D2 A/B/C/L limits; both reads share the original
-operation deadline and retained-family cumulative allowance. Extra discovery,
-copying, native comparison and control collection use one additional finite
-operation budget/deadline, with no reset on refusal. Existing run event/visit/
+Under EM ruling R-M3-2 (ROOT TASK-15165, 2026-11-11), pre-write authentication
+and post-write WHOLE retained-target replay each have their OWN unchanged D2
+A/B/C/L allowance, including the retained 16384 traversal limit. Both share the
+ONE original operation deadline. PRD v1.0.4 specifies no reader traversal
+allowance; this replaces U6's engineering-only shared-read allowance rule.
+Extra discovery, copying, native comparison, control collection and writer work
+use one additional finite operation budget on that deadline, with no reset,
+retry or fork on refusal. Existing run event/visit/
 epoch/return limits and native attempt budgets stay with their original owners.
 The coroutine performs no native control or external effect. It returns controls
 only for newly cancelled live rows, with original root transition captures kept
@@ -308,19 +312,33 @@ this prevents a late native drain from invalidating Coding's original overlay.
 ## Authenticated legacy cancellation scope (TASK-15380)
 
 The mounted document intent lookup runs inside
-`sequential_legacy_cancel.legacy_cancellation_scope`, after a complete mixed read on the
-SAME connection and transaction. Original document terminal and Coding terminal/outer
-writers, plus Coding aggregate observation, enter that composition only for a stamped
+`sequential_legacy_cancel._mixed_lookup_scope`, pinning the initial complete mixed
+read on the SAME connection and existing BEGIN IMMEDIATE transaction. Read-only
+planning uses query_only, a savepoint, monotonic total_changes and schema cookies
+plus exact sequential-row comparison; the scope closes before the first DML.
+This removes redundant scope entry/exit complete reads without trusting changed
+data. Original document terminal and Coding terminal/outer
+writers, plus Coding aggregate observation, enter `legacy_cancellation_scope` only for a stamped
 cancelled native task. Standalone `_intent`, `_entry`, schema validation and their
 default writers retain their original refusal of sequential storage.
 
 The scope enrolls bounded sequential rows only after complete authentication, checks
 that legacy consumers leave those rows unchanged, resets the scope on success or
-failure, and validates the complete changed target before COMMIT. Both complete reads
-share the original deadline and retained allowance; copied rows use finite SQL/copy
-budgets. Mounted selection restores its operation SQL hook before original-owner capture
+failure, and validates the complete changed target before COMMIT. R-M3-2 gives
+the mounted writer's two mandatory complete reads their OWN unchanged D2 allowances
+and ONE original operation deadline; planning, copies and writes share the existing
+single additional finite operation budget. There is no incremental target oracle
+or allowance reset/retry on refusal. Original terminal/outer consumers retain
+`legacy_cancellation_scope` and its standalone validation, with a separate unchanged
+D2 allowance per complete read on their original deadline; native consumer work
+keeps its original enclosing allowance. Mounted selection
+restores its operation SQL hook before original-owner capture
 and native comparison. Original event builders, semantic/settlement rules, Pause
 generation and U6b2a remain unchanged.
+
+New mixed Coding cancellation audits opt in to canonical JSON at INSERT, as
+required by the unchanged complete retained reader. Standalone audit and Coding
+writer defaults preserve their original bytes; no historical audit is updated.
 
 Synthetic real-file production document activation plus sequential admission now reaches
 mounted cancellation and original running-document terminal drain. It preserves the
@@ -330,3 +348,9 @@ This does not establish a populated old-Coding positive or genuine native accept
 Captured ordinary/document invocations remain UNSETTLED under Option B; a literal
 all-family-positive captured-owner outcome is therefore unavailable under that contract.
 No guard is bypassed to manufacture that result.
+
+TASK-15410's R-M3-2 repair qualifies the production-written old-Coding + running
+document + ordinary/sequential fixture through mounted COMMIT, one fence/CAS per
+fresh graph, unchanged exact callback drain and original document terminal drain.
+These are synthetic storage/route observations only; native/V3 acceptance and
+Option B's ordinary/document UNSETTLED limitation remain unchanged.

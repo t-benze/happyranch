@@ -116,7 +116,9 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
 
     _check(type(cascade) is bool and type(actor) is str and bool(actor)
            and type(rationale) is str)
-    budget, retained = _ReadBudget(), _Budget()
+    # R-M3-2: two complete reads, each with its unchanged D2 allowance.
+    # Planning/writes share one additional budget and the original deadline.
+    budget, before_budget, after_budget = _ReadBudget(), _Budget(), _Budget()
     budget.reserve(24 * (len(actor.encode('utf8')) + len(rationale.encode('utf8'))) + 512)
     authority = org.workflow_authority
     _check(authority is not None)
@@ -125,9 +127,10 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
         async with org.teams_lock:
             async with org.db_lock:
                 with ExitStack() as captures:
-                    with authority.admission_writer(capture) as conn:
-                        before = read_sequential_history(conn, expected_org_slug=org.slug,
-                            retained_budget=retained, deadline=budget.deadline, task_id=task_id)
+                    with authority.admission_writer(capture) as conn, ExitStack() as lookup:
+                        from runtime.workflows.sequential_legacy_cancel import _mixed_lookup_scope
+                        before = lookup.enter_context(_mixed_lookup_scope(conn, org_slug=org.slug,
+                            task_id=task_id, retained_budget=before_budget, budget=budget))
                         _check(isinstance(before, MixedSequentialHistory) and before.task_history is not None)
                         history = before.task_history
                         with _sql_budget(conn, budget):
@@ -182,25 +185,23 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
                             coding_selection, instances = {}, set()
                             if saved is not None:
                                 from runtime.workflows.coding_cancellation import affected
-                                coding_selection, instances = affected(conn, task_id, cascade, saved, retained)
+                                coding_selection, instances = affected(conn, task_id, cascade, saved, budget)
                                 if instances:
                                     _check(coding_selection.keys() <= selected.keys())
-                            from runtime.workflows.sequential_legacy_cancel import legacy_cancellation_scope
                             documents = []
-                            with legacy_cancellation_scope(conn, org_slug=org.slug, task_id=task_id,
-                                    cancelled=False, retained_budget=retained, deadline=budget.deadline):
-                                for key, kind, _, _ in history.owners:
-                                    if key in live and kind in ('draft', 'f5'):
-                                        dispatcher = org.workflow_drafts if kind == 'draft' else org.workflow_reviews
-                                        _check(dispatcher is not None and dispatcher.org is org and dispatcher.db is org.db)
-                                        # Resolve original controls/intent before any DML.
-                                        intent = dispatcher._intent(conn, key)
-                                        documents.append((key, dispatcher, intent))
+                            for key, kind, _, _ in history.owners:
+                                if key in live and kind in ('draft', 'f5'):
+                                    dispatcher = org.workflow_drafts if kind == 'draft' else org.workflow_reviews
+                                    _check(dispatcher is not None and dispatcher.org is org and dispatcher.db is org.db)
+                                    # The first complete read stays pinned through lookup.
+                                    intent = dispatcher._intent(conn, key)
+                                    documents.append((key, dispatcher, intent))
                             with _sql_budget(conn, budget):
                                 from runtime.workflows.sequential_cancel_owners import CancelOwners
                                 owners = CancelOwners.capture(org, conn, selected, history, budget, saved=saved,
                                     retained_cancelled=retained_cancelled)
                                 _unchanged(conn, history, budget)
+                        lookup.close()  # Reset read-only composition before any mutation.
                         for run, compiled, key in fresh:
                             cancel_fence_uncommitted(conn, org.db, org_slug=org.slug, run_id=run['id'],
                                 operation_key=key, expected_cas=run['cas'], compiled=compiled,
@@ -214,7 +215,7 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
                             from runtime.workflows.coding_cancellation import write_uncommitted
                             now, _ = write_uncommitted(org, task_id, cascade=cascade, rationale=rationale,
                                 actor=actor, transitions=transitions, captures=captures, saved=saved,
-                                selected=coding_selection, instances=instances, budget=retained)
+                                selected=coding_selection, instances=instances, budget=budget, canonical_audits=True)
                         else:
                             now = datetime.now(timezone.utc).isoformat()
                         for key in sorted(live.keys() - (coding_selection.keys() if instances else set())):
@@ -225,7 +226,7 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
                             org.db.insert_audit_log_uncommitted(key, actor, 'task_cancelled',
                                                               dict(rationale=rationale, cascade=cascade))
                         after = read_sequential_history(conn, expected_org_slug=org.slug,
-                            retained_budget=retained, deadline=budget.deadline, task_id=task_id)
+                            retained_budget=after_budget, deadline=budget.deadline, task_id=task_id)
                         _check(isinstance(after, MixedSequentialHistory) and after.task_history is not None)
                         target = after.task_history
                         with _sql_budget(conn, budget):

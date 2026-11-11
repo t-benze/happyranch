@@ -2454,6 +2454,18 @@ Coding subset. Other families' detached rows have one separate native overlay;
 no row or graph is fenced twice. Literal historical commands/events/readers and
 returned/cancelled graphs remain unchanged. The full target oracle must succeed.
 
+EM ruling R-M3-2 (ROOT TASK-15165, 2026-11-11) gives the mounted mixed writer's
+pre-write authentication and post-write WHOLE retained-target read their OWN
+unchanged D2 A/B/C/L allowance, including 16384 retained traversals, on ONE
+original operation deadline. PRD v1.0.4 sets no reader traversal allowance.
+Discovery, copying, native comparison, controls and writer work share the existing
+single additional finite operation budget. No constant increase, allowance reset,
+retry/fork on refusal or incremental target validation follows. Read-only document
+intent planning pins the first complete read under BEGIN IMMEDIATE and closes its
+guarded scope before DML, avoiding redundant complete authentication. New mixed
+Coding audits opt in to canonical payload serialization at INSERT to satisfy the
+unchanged retained reader; standalone defaults and historical audit bytes remain.
+
 Old Coding original `outer_settled` and complete native reconstruction alone
 qualify its captured originals; U6b2a stays sequential-only and unchanged. Missing
 or unavailable family proof remains UNSETTLED. Aggregate all-owner qualification
@@ -2469,3 +2481,5 @@ scope for the stamped cancelled task. Original queued/native readers and settlem
 predicates run unchanged, and complete target validation follows scope reset before
 writer COMMIT. Standalone Coding validation retains its original refusal of sequential
 storage. This supplies no new positive owner proof, retry, recovery or Final permission.
+R-M3-2 also keeps these two scope reads on separate unchanged D2 allowances and
+one original deadline, leaving native consumer work on its own enclosing allowance.
