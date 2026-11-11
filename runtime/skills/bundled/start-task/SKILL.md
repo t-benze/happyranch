@@ -1340,7 +1340,9 @@ browser projection boundary. The existing content_utf8 contains the closed
 workflow-sequential-coding-final-summary@1 machine summary (outcome merged),
 while content_digest still names the original stored observation. No native
 pin, local path, SID/handle, intent/command/remote or proof record is copied to
-that summary. Stored observation/carrier bytes, complete replay, witness and
+that summary. Successful Final visit findings project as an empty array because
+arbitrary finding text can carry native material; the outcome conveys success.
+Stored observation/carrier bytes, complete replay, witness and
 all validators stay unchanged, as do every other output contract and the
 browser response shape. This grants no action/access/reissue authority. Keep
 causal BLOCK, original Pause, command=None receipt uncertainty/no reissue,

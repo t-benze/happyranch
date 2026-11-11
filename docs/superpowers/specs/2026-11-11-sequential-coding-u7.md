@@ -430,8 +430,10 @@ R-M3-6 / TASK-15570 authorizes the single additional protected-owner exception
 `sequential_views.py` for browser-only Final redaction. After unchanged complete
 replay, an accepted `guarded-repository-merge@1` output's existing `content_utf8`
 contains only canonical `{"format":"workflow-sequential-coding-final-summary@1","outcome":"merged"}`.
-No observation field, diagnostic, native pin/path/SID/handle, intent, command,
-remote record or other native proof is copied. `content_digest` still identifies
+Successful Final visits also project `findings` as an empty array: arbitrary
+finding text can carry native material, and the existing outcome conveys success.
+No observation or finding text, diagnostic, native pin/path/SID/handle, intent,
+command, remote record or other native proof is copied. `content_digest` still identifies
 the ORIGINAL stored output, not this browser summary. OutputView/RunDetail and
 all route/OpenAPI/classification/TS shapes stay unchanged; every other output
 contract retains its original verbatim content. Stored observation/carrier bytes,
@@ -439,4 +441,7 @@ complete/selected history, witness preimage and all readers/validators keep thei
 original behavior. This is solely a browser disclosure boundary, with no new
 agent capability, access grant or LOCAL action. Synthetic B/H projection parity
 and prior-H RED / exact-head GREEN evidence are in
-`dev_agent/output/TASK-15570/handoff.md`; no native/V3/real-merge claim follows.
+`dev_agent/output/TASK-15570/handoff.md`. TASK-15571 found a sibling findings leak;
+TASK-15572 extends the existing keeper with nonempty native-bearing findings and
+records its correction in `dev_agent/output/TASK-15572/handoff.md`. Prior failure
+history remains; no native/V3/real-merge claim follows.
