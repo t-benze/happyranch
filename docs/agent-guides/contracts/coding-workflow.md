@@ -2365,8 +2365,13 @@ current-evidence reader and pure trusted policy: settled exact-subject
 independent APPROVE plus QA PASS stay mandatory even if graph data omits or
 reroutes review/QA. Retained contributors cannot approve/check/finalize their
 own change. Refusal produces zero executable selection/intent/action; an
-admissibility projection grants none either. U5b still owes assessment/Final
-producers, genuine live Final ownership, exact-head two-lint observation and
+admissibility projection grants none either. U5b1 now attaches exact-subject
+review APPROVE/QA PASS composition and addressed disclosure under current authority
+and original native callback/host/outer provenance. Negative matching verdicts
+retain their no-output path; own live exact-head fetch is required. Subject drift
+or denied/unverified publication uses the existing rollback-then-Held owner.
+Decoded traversal/native reads share the original finite budget. U5b2 still owes
+Final producers, genuine live Final ownership, exact-head two-lint observation and
 one expected-head non-admin LOCAL guarded merge/remote MERGED/full commit/aware
 time receipt. Daemon records/validates/advances only, with no PR/network effects.
 ACCESS-1 msg131 / PRD v1.0.4 requires current authority revalidation and the

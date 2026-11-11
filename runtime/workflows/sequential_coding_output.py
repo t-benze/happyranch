@@ -2,7 +2,7 @@
 
 No Git/provider I/O: the selected downstream agent proves effective access by
 its own exact-head operation. These witnesses establish bounded provenance,
-never PR existence, diff scope, remote head, review/QA or merge permission.
+never PR existence, diff scope, remote head, semantic truth or merge permission.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import hashlib
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
@@ -18,10 +18,14 @@ from runtime.workflows.authority import AuthorityAdmissionCapture
 from runtime.workflows.sequential_contracts import Closed, Epoch, Node, OutputRef, Positive, SETTLEMENT_CHECK, StartCommand
 from runtime.workflows.sequential_definition import CompiledDefinition, _json
 from runtime.workflows.sequential_document_access import document_binding_context, document_recipients
-from runtime.workflows.sequential_engine import SequentialRefusal, check_evidence_size
-from runtime.workflows.sequential_history import _ReadBudget, _bytes, _decoded
+from runtime.workflows.sequential_engine import SequentialRefusal, _engine_rows, _identity, check_evidence_size
+from runtime.workflows.sequential_history import _ReadBudget, _bytes, _decoded, _selection
 from runtime.workflows.sequential_repository_records import RepositoryChangeSubject
 from runtime.workflows.sequential_repository_subject import read_repository_subject
+
+
+if TYPE_CHECKING:
+    from runtime.workflows.sequential_coding_policy import SettledCodingResult
 
 
 class PullRequestDeclaration(Closed):
@@ -61,6 +65,20 @@ def coding_graph(compiled: CompiledDefinition) -> bool:
     return any(node.output_contract.type == 'code-change@1' for node in compiled.definition.nodes)
 
 
+def coding_assessment_supplement(node: Node) -> str:
+    outcomes = ('APPROVE, REQUEST_CHANGES or BLOCK' if node.output_contract.type == 'independent-code-review@1'
+                else 'PASS, REVISE or BLOCK')
+    return ('Sequential Coding assessment supplement (trusted): independently assess only the addressed exact '
+            'repository/origin/base/scope/head/PR/epoch. Prove effective access with your own exact-head fetch '
+            'in this live session; metadata or another agent assessment is not access proof. '
+            'Use ' + outcomes + ' with matching verdict. APPROVE/PASS uses completed status and canonical JSON '
+            'content with exactly format=workflow-sequential-code-assessment@1 and change (the entire unchanged '
+            'selected workflow-sequential-code-change@1 declaration). Negative outcomes have empty content and '
+            'own causal findings. capability_claims must be empty. An unavailable required operation uses BLOCK '
+            'and distinguishes denied from unverified. Preserve native failure causes and your genuine FINAL '
+            'callback. No new credential, permission, daemon fetch or Final merge capability follows.')
+
+
 def coding_supplement() -> str:
     return ('Sequential Coding declaration supplement (trusted): capability_claims must be empty. '
             'For produced/completed/null verdict, content is canonical JSON with exactly format='
@@ -73,7 +91,7 @@ def coding_supplement() -> str:
             'Agents share one OS user and one gh credential; the runtime cannot independently observe '
             'per-agent effective access. Downstream agents must prove access through their own exact-head '
             'operation; unavailable/denied operations require BLOCK with that distinction. '
-            'Review/QA capabilities and final-manager guarded merge remain U5.')
+            'Review/QA use the addressed assessment supplement; final-manager guarded merge remains unavailable.')
 
 
 def coding_binding_context(run: dict, visit: dict, compiled: CompiledDefinition,
@@ -114,20 +132,109 @@ def _declaration(conn: sqlite3.Connection, *, run: dict, compiled: CompiledDefin
     return declaration, hashlib.sha256(_bytes(receipt.model_dump())).hexdigest()
 
 
+def _assessment_declaration(conn: sqlite3.Connection, *, run: dict, compiled: CompiledDefinition,
+                            content: bytes, epoch: int, budget: _ReadBudget) -> tuple[CodeChangeDeclaration, str]:
+    # Local import preserves the policy -> declaration dependency; use U5a's
+    # closed syntax, with all parsing/copies/traversal on the ORIGINAL budget.
+    from runtime.workflows.sequential_coding_policy import read_code_assessment
+    budget.reserve(96 * len(content) + 4096)
+    try:
+        assessment = read_code_assessment(content)
+    except (ValueError, TypeError, UnicodeError):
+        raise SequentialRefusal('sequential_code_change_invalid') from None
+    _decoded(assessment.model_dump(mode='json'), budget)
+    return _declaration(conn, run=run, compiled=compiled, content=_bytes(assessment.change.model_dump()),
+                        epoch=epoch, budget=budget)
+
+
+def _settled_input(conn: sqlite3.Connection, *, run: dict, compiled: CompiledDefinition,
+                   ref: OutputRef, budget: _ReadBudget) -> SettledCodingResult:
+    from runtime.workflows.sequential_coding_evidence import _settled
+    from runtime.workflows.sequential_coding_policy import CodingEvidenceRefusal
+    visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=? AND run_id=?', (ref.producer_visit, run['id']))
+    outputs = _engine_rows(conn, 'workflow_seq_outputs', budget, 'id=? AND run_id=?',
+                           (_identity('output', ref.producer_visit, ref.slot), run['id']))
+    _require(len(visits) == len(outputs) == 1, 'sequential_repository_subject_unverified')
+    visit, output = visits[0], outputs[0]
+    _require((visit['task_id'], visit['session_id'], visit['result_id'], visit['epoch']) ==
+             (ref.task_id, ref.session_id, ref.result_id, ref.epoch),
+             'sequential_repository_subject_unverified')
+    _require((output['visit_id'], output['slot'], output['contract'], output['epoch'], output['task_id'],
+              output['session_id'], output['result_id'], output['content_digest']) ==
+             (ref.producer_visit, ref.slot, ref.contract, ref.epoch, ref.task_id, ref.session_id, ref.result_id, ref.digest)
+             and hashlib.sha256(output['content_bytes']).hexdigest() == ref.digest,
+             'sequential_repository_subject_unverified')
+    node = next(item for item in compiled.definition.nodes if item.id == visit['node_id'])
+    _require(node.output_contract.type == ref.contract and node.output_contract.slot == ref.slot,
+             'sequential_repository_subject_unverified')
+    events = _engine_rows(conn, 'workflow_seq_events', budget, 'run_id=? AND sequence=?' if visit['ordinal'] == 1
+        else 'run_id=? AND id=?', (run['id'], 1 if visit['ordinal'] == 1 else visit['predecessor_event_id']))
+    _require(len(events) == 1, 'sequential_repository_subject_unverified')
+    try:
+        settled = _settled(conn, run=run, visit=visit, output=output, compiled=compiled, events=events, budget=budget)
+    except CodingEvidenceRefusal:
+        raise SequentialRefusal('sequential_repository_subject_unverified') from None
+    except ValueError as exc:
+        # Reader exhaustion is never malformed agent content or a fresh budget.
+        if str(exc).startswith('workflow_seq_read_'):
+            raise
+        raise SequentialRefusal('sequential_repository_subject_unverified') from None
+    _require(settled.ref == ref and settled.outcome == {'code-change@1': 'produced',
+        'independent-code-review@1': 'APPROVE', 'code-qa@1': 'PASS'}.get(ref.contract)
+        and settled.verdict == (None if ref.contract == 'code-change@1' else settled.outcome),
+        'sequential_repository_subject_unverified')
+    return settled
+
+
+def _assessment_inputs(conn: sqlite3.Connection, *, run: dict, visit: dict, node: Node,
+                       compiled: CompiledDefinition, bound: dict[str, dict],
+                       declaration: CodeChangeDeclaration, budget: _ReadBudget) -> None:
+    refs = _selection(visit, budget)
+    subjects = [ref for ref in refs if ref.contract == 'code-change@1']
+    _require(len(subjects) == 1, 'sequential_repository_subject_unverified')
+    producers = {item.output_contract.slot: item for item in compiled.definition.nodes}
+    budget.work(len(producers) + len(node.inputs) + len(refs))
+    for ref in refs:
+        _require(any(item.source == 'current.' + ref.slot for item in node.inputs),
+                 'sequential_repository_subject_unverified')
+        if ref.contract not in ('code-change@1', 'independent-code-review@1', 'code-qa@1'):
+            continue
+        settled = _settled_input(conn, run=run, compiled=compiled, ref=ref, budget=budget)
+        _require(settled.change == declaration and ref.epoch == visit['epoch'],
+                 'sequential_repository_subject_changed')
+        producer = producers[ref.slot]
+        _require(bound[producer.role]['name'] == settled.principal
+                 and bound[producer.role]['role'] == 'worker', 'sequential_authority_denied')
+        _require(settled.principal != visit['principal'], 'sequential_capability_unavailable')
+    # Retain every native code-change contributor, including invalidated epochs.
+    visits = _engine_rows(conn, 'workflow_seq_visits', budget, 'run_id=?', (run['id'],))
+    nodes = {item.id: item for item in compiled.definition.nodes}
+    budget.work(len(visits) + len(nodes))
+    _require(bound[node.role]['role'] == 'worker' and all(item['principal'] != visit['principal']
+        for item in visits if nodes[item['node_id']].output_contract.type == 'code-change@1'),
+        'sequential_capability_unavailable')
+
+
 def build_coding_witness(conn: sqlite3.Connection, *, org_slug: str, run: dict, visit: dict,
                          node: Node, compiled: CompiledDefinition, bound: dict[str, dict],
                          result: dict, outcome: str, content: bytes, content_digest: str,
                          carrier_digest: str, terminal_digest: str, outer_digest: str,
                          budget: _ReadBudget) -> CodingWitness:
-    _require(node.output_contract.type == 'code-change@1' and outcome == 'produced'
-             and result['status'] == 'completed' and result['verdict'] is None,
+    expected = {'code-change@1': 'produced', 'independent-code-review@1': 'APPROVE', 'code-qa@1': 'PASS'}
+    _require(outcome == expected.get(node.output_contract.type)
+             and result['status'] == 'completed'
+             and result['verdict'] == (None if outcome == 'produced' else outcome),
              'sequential_code_change_invalid')
     _require(type(result['id']) is int and result['id'] > 0
              and (result['task_id'], result['agent'], result['session_id']) ==
                  (visit['task_id'], bound[node.role]['name'], visit['session_id']),
              'sequential_carrier_identity_conflict')
-    declaration, subject_digest = _declaration(conn, run=run, compiled=compiled,
+    reader = _declaration if node.output_contract.type == 'code-change@1' else _assessment_declaration
+    declaration, subject_digest = reader(conn, run=run, compiled=compiled,
         content=content, epoch=visit['epoch'], budget=budget)
+    if node.output_contract.type != 'code-change@1':
+        _assessment_inputs(conn, run=run, visit=visit, node=node, compiled=compiled, bound=bound,
+                           declaration=declaration, budget=budget)
     recipients = document_recipients(compiled, node.output_contract.slot, budget)
     _require(bool(recipients) and all(role in bound for role in recipients), 'sequential_authority_denied')
     preimage = dict(format='workflow-sequential-coding-witness@1', org_slug=org_slug,
@@ -167,6 +274,18 @@ def authorize_coding_input(conn: sqlite3.Connection, *, run: dict, visit: dict, 
     if ref.contract == 'code-change@1':
         _declaration(conn, run=run, compiled=compiled, content=output['content_bytes'],
                      epoch=ref.epoch, budget=budget)
+    elif ref.contract in ('independent-code-review@1', 'code-qa@1'):
+        declaration, _ = _assessment_declaration(conn, run=run, compiled=compiled, content=output['content_bytes'],
+                                                 epoch=visit['epoch'], budget=budget)
+        settled = _settled_input(conn, run=run, compiled=compiled, ref=ref, budget=budget)
+        _require(ref.epoch == visit['epoch'] and settled.change == declaration,
+                 'sequential_repository_subject_changed')
+        _require(settled.principal == bound[producer.role]['name'], 'sequential_authority_denied')
+        for selected in _selection(visit, budget):
+            if selected.contract == 'code-change@1':
+                current = _settled_input(conn, run=run, compiled=compiled, ref=selected, budget=budget)
+                _require(current.change == declaration and selected.epoch == visit['epoch'],
+                         'sequential_repository_subject_changed')
     else:
-        # Other Coding producers remain U5; no arbitrary saved output is disclosed.
+        # Final remains unavailable: assessment provenance grants no merge capability.
         raise SequentialRefusal('sequential_output_access_unavailable')

@@ -24,7 +24,7 @@ from runtime.workflows.sequential_contracts import Limits, OutputRef
 from runtime.workflows.sequential_definition import CompiledDefinition, _json, parse_result
 from runtime.workflows.sequential_engine import SequentialRefusal, check_output_size
 from runtime.workflows.sequential_history import (
-    _ReadBudget, _WIRE_TOKENS, _decode, _definitions, _native_rows, _outputs, _parse, _run_history, _sql_budget,
+    _ReadBudget, _WIRE_TOKENS, _decode, _decoded, _definitions, _native_rows, _outputs, _parse, _run_history, _sql_budget,
 )
 from runtime.workflows.sequential_repository_subject import read_repository_subject
 from runtime.workflows.sequential_run_validation import _prior_state, _read_selected, _selected_layout, _selected_settings, _types
@@ -106,6 +106,7 @@ def _settled(conn: sqlite3.Connection, *, run: dict, visit: dict, output: dict,
     else:
         budget.reserve(96 * len(content) + 4096)
         change = read_code_assessment(content).change
+    _decoded(change.model_dump(mode='json'), budget)
     return SettledCodingResult(run['id'], envelope.outputs[0], visit['principal'], change,
         envelope.outcome, verdict, proof['callback']['carrier_digest'],
         proof['terminal_digest'], proof['outer_digest'])
