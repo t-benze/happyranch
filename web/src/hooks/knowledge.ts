@@ -13,11 +13,12 @@
  * cannot be read or the key cannot be durably written, nothing is sent; while
  * any recorded attempt is unknown or unconfirmed, no new key is minted.
  */
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import * as api from '@/lib/api/knowledge';
+import { getMemory } from '@/lib/api/agents';
 
 export type {
   SourceCoverage,
@@ -29,7 +30,11 @@ export type {
   CuratedKnowledgeItem,
   KnowledgeArchive,
   KnowledgeArchiveSelection,
+  ImportOperation,
+  ImportItemResult,
+  ImportEligibility,
 } from '@/lib/api/knowledge';
+export type { MemoryEntry } from '@/lib/api/types';
 
 function useSlug(): string {
   const { slug: routeSlug } = useParams<{ slug: string }>();
@@ -133,11 +138,21 @@ export interface LedgerSnapshot { ok: boolean; attempts: DistillAttempt[] }
 const UNREADABLE = Symbol('unreadable');
 const snapshots = new Map<string, { raw: string | null | typeof UNREADABLE; value: LedgerSnapshot }>();
 
-function readLedger(key: string): LedgerSnapshot {
+function isDistillAttempt(entry: unknown): entry is DistillAttempt {
+  const value = entry as DistillAttempt | null;
+  return !!value && typeof value.submission_id === 'string'
+    && (value.operation_id === null || typeof value.operation_id === 'string')
+    && typeof value.submitted_at === 'string';
+}
+
+/** `valid` is the per-ledger entry predicate (Distill attempts by default). */
+function readLedger<T extends DistillAttempt = DistillAttempt>(
+  key: string, valid: (entry: unknown) => boolean = isDistillAttempt,
+): { ok: boolean; attempts: T[] } {
   let raw: string | null | typeof UNREADABLE;
   try { raw = window.localStorage.getItem(key); } catch { raw = UNREADABLE; }
   const cached = snapshots.get(key);
-  if (cached && cached.raw === raw) return cached.value;
+  if (cached && cached.raw === raw) return cached.value as { ok: boolean; attempts: T[] };
   let value: LedgerSnapshot = { ok: false, attempts: [] };
   if (raw !== UNREADABLE) {
     try {
@@ -145,17 +160,14 @@ function readLedger(key: string): LedgerSnapshot {
       // (including '') must parse and validate, else it is unreadable.
       const parsed: unknown = raw === null ? [] : JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        const attempts = parsed.filter((entry): entry is DistillAttempt =>
-          !!entry && typeof entry.submission_id === 'string'
-          && (entry.operation_id === null || typeof entry.operation_id === 'string')
-          && typeof entry.submitted_at === 'string');
+        const attempts = parsed.filter((entry): entry is DistillAttempt => valid(entry));
         // A dropped entry could be an unresolved submission: treat as unreadable.
         value = { ok: attempts.length === parsed.length, attempts };
       }
     } catch { /* malformed: unreadable */ }
   }
   snapshots.set(key, { raw, value });
-  return value;
+  return value as { ok: boolean; attempts: T[] };
 }
 
 /**
@@ -163,7 +175,7 @@ function readLedger(key: string): LedgerSnapshot {
  * when storage refuses or does not hold the write (quota, disabled storage).
  * Trimming never drops an unresolved submission (operation_id null).
  */
-function writeLedger(key: string, next: DistillAttempt[]): boolean {
+function writeLedger<T extends DistillAttempt>(key: string, next: T[]): boolean {
   let kept = next;
   if (kept.length > LEDGER_LIMIT) {
     const excess = kept.length - LEDGER_LIMIT;
@@ -302,4 +314,238 @@ export function useStartDistill(sourceId: string) {
       void queryClient.invalidateQueries({ queryKey: ['knowledge', slug, 'archives'] });
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Instill into an ACTIVE recipient (THR-296 S5). Thin forwarders over the S3b
+// mirrors; the server owns eligibility, admission, item identity and receipts.
+
+const IMPORT_IN_FLIGHT = new Set<api.ImportOperation['state']>(['Queued', 'Processing']);
+
+/** Recipient import history (learned sources and receipt links). */
+export function useKnowledgeImports(recipientId: string | null) {
+  const slug = useSlug();
+  return useQuery({
+    queryKey: ['knowledge', slug, 'imports', recipientId],
+    queryFn: () => api.listKnowledgeImports(slug, recipientId!),
+    enabled: !!slug && !!recipientId,
+    retry: false,
+    refetchInterval: (query: { state: { data?: { operations: api.ImportOperation[] } } }) =>
+      query.state.data?.operations.some((op) => IMPORT_IN_FLIGHT.has(op.state)) ? 4000 : false,
+  });
+}
+
+export function useKnowledgeImport(operationId: string | null) {
+  const slug = useSlug();
+  return useQuery({
+    queryKey: ['knowledge', slug, 'import', operationId],
+    queryFn: () => api.getKnowledgeImport(slug, operationId!),
+    enabled: !!slug && !!operationId,
+    retry: false,
+    refetchInterval: (query: { state: { data?: api.ImportOperation } }) =>
+      query.state.data && IMPORT_IN_FLIGHT.has(query.state.data.state) ? 4000 : false,
+  });
+}
+
+/** Advisory S3b projection: no reservation; confirm/retry revalidate on the server. */
+export function useImportEligibility(recipientId: string | null, archiveId: string | null) {
+  const slug = useSlug();
+  return useQuery({
+    queryKey: ['knowledge', slug, 'eligibility', recipientId, archiveId],
+    queryFn: () => api.getKnowledgeImportEligibility(slug, recipientId!, archiveId!),
+    enabled: !!slug && !!recipientId && !!archiveId,
+    retry: false,
+  });
+}
+
+/** One recipient memory note (existing memory read; returns inherited provenance). */
+export function useAgentMemoryEntry(agentName: string | null, memoryId: string | null) {
+  const slug = useSlug();
+  return useQuery({
+    queryKey: ['knowledge', slug, 'memory', agentName, memoryId],
+    queryFn: () => getMemory(slug, agentName!, memoryId!),
+    enabled: !!slug && !!agentName && !!memoryId,
+    retry: false,
+  });
+}
+
+function useImportSettled(slug: string, recipientId: string) {
+  const queryClient = useQueryClient();
+  return useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['knowledge', slug, 'imports', recipientId] });
+    void queryClient.invalidateQueries({ queryKey: ['knowledge', slug, 'eligibility', recipientId] });
+    void queryClient.invalidateQueries({ queryKey: ['agent-learnings', slug, recipientId] });
+  }, [queryClient, slug, recipientId]);
+}
+
+/**
+ * Same-operation retry. The server rewrites only items it proves missing or
+ * unwritten; held and successful items are never rewritten. Any failure
+ * re-reads the operation so the next retry waits for authoritative state.
+ */
+export function useRetryImport(recipientId: string) {
+  const slug = useSlug();
+  const queryClient = useQueryClient();
+  const settled = useImportSettled(slug, recipientId);
+  return useMutation({
+    mutationFn: (operationId: string) => api.retryKnowledgeImport(slug, operationId),
+    onSuccess: (operation) => {
+      queryClient.setQueryData(['knowledge', slug, 'import', operation.operation_id], operation);
+    },
+    onError: (_error, operationId) => {
+      void queryClient.invalidateQueries({ queryKey: ['knowledge', slug, 'import', operationId] });
+    },
+    onSettled: settled,
+  });
+}
+
+/**
+ * Unknown-outcome confirmations for one recipient. Each entry carries the exact
+ * confirmation so a lost response is re-sent byte-for-byte with its ORIGINAL
+ * submission ID (the server returns the original operation and never imports
+ * twice). An entry is removed only when an operation for that submission ID is
+ * returned (POST response or the recipient's import history). Same storage
+ * rules as Distill: only an absent value is empty; malformed, '' or unwritable
+ * storage refuses with zero requests.
+ */
+export interface InstillAttempt extends DistillAttempt {
+  recipient_id: string;
+  archive_id: string;
+  archive_version: number;
+  item_ids: string[];
+}
+
+const instillKey = (slug: string, recipientId: string) => `happyranch.knowledge.instill.${slug}.${recipientId}`;
+
+function isInstillAttempt(entry: unknown): boolean {
+  const value = entry as InstillAttempt | null;
+  return isDistillAttempt(entry) && value!.operation_id === null && typeof value!.recipient_id === 'string'
+    && typeof value!.archive_id === 'string' && Number.isInteger(value!.archive_version)
+    && Array.isArray(value!.item_ids) && value!.item_ids.length > 0
+    && value!.item_ids.every((id) => typeof id === 'string');
+}
+
+const EMPTY_INSTILL: { ok: boolean; attempts: InstillAttempt[] } = { ok: true, attempts: [] };
+
+export function useInstillAttempts(recipientId: string | null) {
+  const slug = useSlug();
+  const key = recipientId && slug ? instillKey(slug, recipientId) : null;
+  const snapshot = useSyncExternalStore(subscribe, () => (key ? readLedger<InstillAttempt>(key, isInstillAttempt) : EMPTY_INSTILL));
+  const history = useKnowledgeImports(recipientId);
+  // Settle from authoritative history only: a returned operation carrying the
+  // recorded submission ID. A read never settles anything by absence.
+  const operations = history.data?.operations;
+  useEffect(() => {
+    if (!key || !operations || !snapshot.ok || snapshot.attempts.length === 0) return;
+    const found = new Set(operations.map((op) => op.submission_id));
+    if (snapshot.attempts.some((entry) => found.has(entry.submission_id))) {
+      writeLedger(key, snapshot.attempts.filter((entry) => !found.has(entry.submission_id)));
+    }
+  }, [key, operations, snapshot]);
+  return { attempts: snapshot.attempts, ledgerReadable: snapshot.ok };
+}
+
+/**
+ * Local refusals around the Instill POST. `ledger_unavailable`,
+ * `ledger_write_failed` and `unresolved_attempt` refuse BEFORE any request.
+ * `recovery_refused` means the daemon refused a same-key re-send: that proves
+ * nothing about the ORIGINAL confirmation, so its key stays recorded and new
+ * confirmations stay blocked. `refusal`/`blockers` carry the daemon's own code.
+ */
+export type InstillLedgerCode = 'ledger_unavailable' | 'ledger_write_failed' | 'unresolved_attempt' | 'recovery_refused';
+export class InstillLedgerError extends Error {
+  constructor(
+    readonly code: InstillLedgerCode,
+    readonly refusal: string | null = null,
+    readonly blockers: { kind: string; id: string }[] = [],
+  ) {
+    super(code);
+    this.name = 'InstillLedgerError';
+  }
+}
+
+export interface InstillSelection { archive_id: string; archive_version: number; item_ids: string[] }
+
+/**
+ * Confirmed Instill. With `submissionId` this re-sends that recorded unknown
+ * confirmation with its original key and exact body. Without it, a new key is
+ * minted only when no unknown confirmation is recorded, and only after the key
+ * and body are durably recorded; otherwise nothing is sent.
+ */
+export function useStartInstill(recipientId: string) {
+  const slug = useSlug();
+  const queryClient = useQueryClient();
+  const settled = useImportSettled(slug, recipientId);
+  // The submission ID of the latest send, so an unknown outcome can be matched
+  // against the recipient's authoritative history (a read, never a re-send).
+  const lastSubmissionId = useRef<string | null>(null);
+  const mutation = useMutation({
+    mutationFn: async ({ selection, submissionId }: { selection?: InstillSelection; submissionId?: string }) => {
+      const key = instillKey(slug, recipientId);
+      const ledger = readLedger<InstillAttempt>(key, isInstillAttempt);
+      if (!ledger.ok) throw new InstillLedgerError('ledger_unavailable');
+      let entry: InstillAttempt | undefined;
+      if (submissionId) {
+        // Recovery re-sends only a key (and body) this browser recorded.
+        entry = ledger.attempts.find((attempt) => attempt.submission_id === submissionId);
+        if (!entry) throw new InstillLedgerError('ledger_unavailable');
+      } else {
+        if (!selection || selection.item_ids.length === 0) throw new InstillLedgerError('ledger_unavailable');
+        if (ledger.attempts.length > 0) throw new InstillLedgerError('unresolved_attempt');
+        entry = {
+          submission_id: newSubmissionId(), operation_id: null, submitted_at: new Date().toISOString(),
+          recipient_id: recipientId, archive_id: selection.archive_id, archive_version: selection.archive_version,
+          item_ids: [...selection.item_ids],
+        };
+        const recorded = writeLedger(key, [entry]);
+        const reread = readLedger<InstillAttempt>(key, isInstillAttempt);
+        if (!recorded || !reread.ok || !reread.attempts.some((attempt) => attempt.submission_id === entry!.submission_id)) {
+          throw new InstillLedgerError('ledger_write_failed');
+        }
+      }
+      const confirmation: api.InstillConfirmation = {
+        submission_id: entry.submission_id, archive_id: entry.archive_id, archive_version: entry.archive_version,
+        item_ids: entry.item_ids, confirmed: true,
+      };
+      lastSubmissionId.current = entry.submission_id;
+      let operation: api.ImportOperation;
+      try {
+        operation = await api.instillKnowledge(slug, recipientId, confirmation);
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        if (submissionId) {
+          // Only a returned operation settles an unknown confirmation; a refusal
+          // of THIS re-send keeps the original key recorded.
+          if (typeof status === 'number' && status >= 400 && status < 500) {
+            const code = (error as { code?: string | null }).code;
+            throw new InstillLedgerError('recovery_refused', code ?? `http_${status}`, blockersOf(error));
+          }
+          throw error;
+        }
+        // First send of a fresh key: S3b refuses these statuses before creating
+        // any operation (bearer, validation, identity, admission/Busy, in-flight).
+        // Anything else (5xx, transport loss) keeps the key for a same-key check.
+        if (typeof status === 'number' && NO_OPERATION_STATUSES.has(status)) {
+          writeLedger(key, readLedger<InstillAttempt>(key, isInstillAttempt).attempts
+            .filter((attempt) => attempt.submission_id !== entry!.submission_id));
+        }
+        throw error;
+      }
+      queryClient.setQueryData(['knowledge', slug, 'import', operation.operation_id], operation);
+      const current = readLedger<InstillAttempt>(key, isInstillAttempt);
+      // A failed removal leaves the entry; history settles it on the next read.
+      if (current.ok) writeLedger(key, current.attempts.filter((attempt) => attempt.submission_id !== operation.submission_id));
+      return operation;
+    },
+    onSettled: settled,
+  });
+  return { mutation, lastSubmissionId };
+}
+
+/** Busy blockers from a daemon refusal (`ApiError.detail.blockers`), else []. */
+export function blockersOf(error: unknown): { kind: string; id: string }[] {
+  const detail = (error as { detail?: unknown } | null)?.detail as { blockers?: unknown } | null | undefined;
+  const list: unknown[] = detail && typeof detail === 'object' && Array.isArray(detail.blockers) ? detail.blockers : [];
+  return list.filter((b): b is { kind: string; id: string } => !!b && typeof (b as { kind?: unknown }).kind === 'string'
+    && typeof (b as { id?: unknown }).id === 'string');
 }
