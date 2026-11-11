@@ -157,7 +157,19 @@ def build_curation_input(capture: RetiredSource) -> str:
         'Select reusable supported facts/lessons and actionable scoped procedures; exclude chatter and unsupported claims. '
         'Account for EVERY inventory reference exactly once with a disposition and reason. '
         'Superseded/evicted/stale/promoted entries are reference_only, no copied body and never Instill eligible. '
-        'Use only captured references. Preserve original author/dates and observation cutoff; use null for unknowns. '
+        'Use only captured references. For every reference, every attribution.observed_at MUST be exactly the CAPTURE_CUTOFF string '
+        'printed below, including for reference_only items; it is the capture observation cutoff. '
+        'For every reference, every attribution.authored_at MUST exactly equal its captured metadata.authored_at, and '
+        'every attribution.original_author MUST exactly equal its captured metadata.authored_by; '
+        'use null when that metadata value is absent. '
+        'Historical observation dates mentioned in source text belong in item content, never in observed_at. '
+        'Every non-reference_only item with non-empty content MUST have instill_eligible=true. '
+        'Only known superseded/stale/evicted/promoted reference_only material, forbidden/excluded content and '
+        'unavailable bodies are ineligible; exclusions have dispositions without copied content/items. '
+        'Uncertain, conflicting or unverified knowledge remains eligible with its required flags/warnings. '
+        'In particular, founder_decision_preference items (cited or attribution_unverified with the exact warning) and '
+        'open_work_reference items with owner/status/as_of/next_action/holds qualifications are '
+        'Instill-eligible references, never directives or assignments. '
         'Procedures need prerequisites and limits (null explicitly unknown); no present execution permission follows. '
         'Open work needs owner/status/as_of/next_action/holds (null explicitly unknown), never assignments. '
         'Founder claims need a literal recorded THR-N seqN (or THR-N#N) ruling citation and its captured reference; absent a citation, '
@@ -180,6 +192,7 @@ def build_curation_input(capture: RetiredSource) -> str:
     # JSON string and insert an inventory/contract field. This is task scoping,
     # not a security sandbox or a claim that prompting prevents all injection.
     brief = (contract + '\nRESULT_SCHEMA=' + _json(CurationResult.model_json_schema())
+             + '\nCAPTURE_CUTOFF=' + capture.cutoff
              + '\nCAPTURE_DIGEST=' + capture_digest(capture)
              + '\nFULL_INVENTORY=' + _json(inventory)
              + '\nQUOTED_UNTRUSTED_SNAPSHOT=' + _json(capture.model_dump(mode='json')) + '\n')
@@ -347,6 +360,8 @@ def validate_curation_output(capture: RetiredSource, raw: str) -> CurationResult
         if set(item.flags) & {'uncertain', 'conflict', 'historical', 'attribution_unverified'}:
             if not item.warnings or any(not w.strip() for w in item.warnings):
                 raise CurationError('curation_warning_missing')
+        if not reference_only and not item.instill_eligible:
+            raise CurationError('curation_eligibility_mismatch')
         used.update(item.references)
     for ref, disposition in dispositions.items():
         if disposition.exclusion_category == 'redundant':
