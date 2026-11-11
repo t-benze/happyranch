@@ -1203,3 +1203,34 @@ aggregation/history and Founder/native-tail attachment remain implementation.
 U6b1 stays unmounted; existing Founder cancellation, original budgets, Pause,
 Final receipt uncertainty and genuine FINAL callback contract are unchanged.
 See docs/superpowers/specs/2026-11-11-sequential-coding-u6.md.
+
+
+## Sequential U6b2b mounted business-stop boundary
+
+This supersedes the earlier U6a/U6b1/U6b2a unmounted/remainder statuses above.
+The existing Founder cancel/cascade composes mixed ordinary/document/old-Coding/
+sequential ownership in one transaction using original family inner writers,
+one native overlay per live task and unchanged readers/events. Full validation
+and audit/CAS precede Stop outside locks. Hidden live and family-dependent
+ordinary point stops still refuse; terminal returned/cancelled histories remain
+immutable. Ordinary-only/document-only paths keep their original behavior.
+
+Manager Option B composes qualification owners: U6b2a remains exactly the
+sequential-source/visit-only reader. Other captured originals use their existing
+family proof owner. Old Coding retains its original outer/native proof; captured
+ordinary/document invocations have no existing positive cancellation-outer
+qualifier and stay UNSETTLED under the explicit fallback. Journal-only originals
+without an actual original TaskInvocation, prepared/unknown/missing-control and
+unsettled outer ownership keep the root tail incomplete. Never reconstruct an
+invocation or clear tracker/journal/reservation ownership to force settlement.
+Only every captured owner positive permits the existing safe root-tail
+disposition, still subject to native protections; one positive of many does not.
+The handoff is ephemeral, one-shot, and grants no cleanup retry/recovery authority.
+
+Cancellation fences fresh visits, advancing results, publication and Final.
+Only a previously committed original callback may drain/replay unchanged.
+Preserve Pause generation, native/effect uncertainty, Final intent/action/receipt,
+original budgets and failures. Launcher TERM/INT, ended SID, missing PID or a
+successful Stop request never supplies product cancellation/settlement proof.
+U5b2b2/U7–U9 and native/V3 acceptance remain separate; this source grants no new
+agent control, endpoint, job, effect, credential, admission or live operation.

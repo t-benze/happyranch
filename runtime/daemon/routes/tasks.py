@@ -2490,6 +2490,7 @@ async def cancel_task(
     """
     root_transitions = _RootWorktreeTransitions()
     root_tail_failed = False
+    mixed_owners = None
     try:
         from runtime.infrastructure.audit_logger import AuditLogger
         from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
@@ -2535,7 +2536,28 @@ async def cancel_task(
         controls_to_invoke: list[tuple[str, str, Callable[[], None]]] = []
         pids_without_control: list[tuple[str, str, int]] = []
         audit = AuditLogger(org.db)
-        if sequential:
+        mixed = sequential and root.status != TaskStatus.CANCELLED
+        if not sequential:
+            async with org.db_lock:
+                from runtime.workflows.sequential_mixed_cancel import has_sequential_descendant
+                try:
+                    mixed = has_sequential_descendant(org, task_id)
+                except (ValueError, TypeError, KeyError, sqlite3.Error):
+                    raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
+        if mixed:
+            from runtime.workflows.authority import WorkflowAuthorityError
+            from runtime.workflows.sequential_mixed_cancel import cancel_mixed
+            try:
+                cancellation = await cancel_mixed(org, task_id, cascade=body.cascade,
+                    rationale=rationale, actor=actor, transitions=root_transitions)
+            except (ValueError, TypeError, KeyError, sqlite3.Error, WorkflowAuthorityError):
+                raise HTTPException(status_code=409, detail={'code': 'sequential_cancellation_reconciliation_required'}) from None
+            to_cancel = cancellation['tasks']
+            prior_statuses = cancellation['prior']
+            prior_block_kinds = cancellation['block_kinds']
+            controls_to_invoke = cancellation['controls']
+            mixed_owners = cancellation['owners']
+        elif sequential:
             from runtime.workflows.authority import WorkflowAuthorityError
             from runtime.workflows.sequential_cancel import cancel_selected
             try:
@@ -2708,7 +2730,7 @@ async def cancel_task(
             )
             for tid in to_cancel:
                 task = org.db.get_task(tid)
-                if not root_transitions and task is not None and task.parent_task_id is not None:
+                if mixed_owners is None and not root_transitions and task is not None and task.parent_task_id is not None:
                     await _await_terminal_task_worktree(org.orchestrator, tid)
 
         return {
@@ -2721,7 +2743,9 @@ async def cancel_task(
         root_tail_failed = True
         raise
     finally:
-        if root_transitions:
+        if mixed_owners is not None:
+            await _await_worktree_cleanup(mixed_owners.seal, failed=root_tail_failed)
+        elif root_transitions:
             await _await_root_worktree_batch(org.orchestrator, root_transitions, teardown_incomplete=root_tail_failed)
 
 

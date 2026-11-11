@@ -655,3 +655,26 @@ connection/budget guards remain. Normal installed schema readers outside that
 scope still refuse the extension. No installation is authorized by source delivery.
 See [the reusable storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary)
 and [UNVERIFIED operator draft](../../runbooks/sequential-workflow-storage.md).
+
+
+## Sequential U6b2b document cancellation composition (TASK-15349)
+
+Direct document-only cancellation keeps its original route and writer behavior.
+The existing draft/review cancellation body is extracted as
+`_cancel_uncommitted`. Mixed Founder cancellation reuses the already-selected
+original intent and original document events in one outer transaction. Its native
+overlay is supplied once by the Coding or mixed writer; standalone defaults
+retain their original native write, event bytes/order and refusals. Full existing
+document/history validation still precedes COMMIT. Terminal document histories
+remain unchanged; live historical document roots without an original dispatch
+cancellation owner refuse. No new document lifecycle/event/schema is defined.
+Captured document invocations cannot gain positive aggregate settlement because
+there is no existing positive family cancellation-outer qualifier; manager
+Option B explicitly keeps them UNSETTLED. See the
+[U6 composition contract](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
+
+The original document terminal writer (also inherited by review) preserves a
+native row already stamped cancelled by the mixed stop. It emits its unchanged
+original terminal event without replacing the frozen cancellation timestamps.
+Standalone document cancellation/terminal bytes and ordering remain unchanged;
+this prevents a late native drain from invalidating Coding's original overlay.

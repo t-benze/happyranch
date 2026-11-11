@@ -2441,3 +2441,23 @@ Historical Coding cancellation/return readers and document paths remain exact.
 U6b2b still owes live retained-family writers, cross-family ordinary overlays,
 original-owner aggregation/history and Founder/native-tail attachment; U5b2b2/U7
 and Final success Held remain. See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## Sequential U6b2b retained-family composition (TASK-15349)
+
+This supersedes the earlier U6 unmounted/remainder statuses. Coding cancellation's
+existing command/event and native-overlay body is extracted as
+`write_uncommitted`; its standalone wrapper retains the original transaction,
+complete discovery, document exclusions, validation/order/refusals and bytes.
+The mixed Founder owner supplies one outer writer and the original authenticated
+Coding subset. Other families' detached rows have one separate native overlay;
+no row or graph is fenced twice. Literal historical commands/events/readers and
+returned/cancelled graphs remain unchanged. The full target oracle must succeed.
+
+Old Coding original `outer_settled` and complete native reconstruction alone
+qualify its captured originals; U6b2a stays sequential-only and unchanged. Missing
+or unavailable family proof remains UNSETTLED. Aggregate all-owner qualification
+is necessary before the original safe root-tail disposition; no ownership is
+cleared to force it. Source/static and synthetic writer comparisons are separate
+from a full populated mixed-old-history or native/V3 acceptance claim. See the
+[current U6 owner table](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).

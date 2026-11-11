@@ -1,8 +1,8 @@
 # Sequential Coding U6: cancellation and mixed-history closure
 
-> Status: current design; U6a/U6b1 and U6b2a inert interfaces implemented
+> Status: current design; U6b2b mounted business stop and original-owner composition
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
-> Notes: U6b2b cross-family writers, owner aggregation and attachment remain required.
+> Notes: TASK-15349 below supersedes earlier split/unmounted statuses; native/V3 acceptance is separate.
 
 THR-336 / ROOT TASK-15165; maker TASK-15287. Fetched base B is
 `dc35c34ca907d6094cc79654f6f7b5be7476fe82`. Plan rev3 TASK-14461 §U6
@@ -236,3 +236,70 @@ No repository tests. U5b2b2 callback validation/mount, U7 transport, U8/U9 and
 Final success Held remain unchanged; V3/native/mixed writer acceptance, V5/M4,
 real access/merge/effect recovery and all reserved live operations remain NOT RUN.
 All earlier preserved failures, allowances, V3 end and ACCESS-1 limits above apply.
+
+
+## U6b2b mounted composition (TASK-15349)
+
+Fixed own-fetched B=`7c8788b9f59b0013e9fe92bc484532c71b0ec036`.
+The manager's Option B resolution replaces the earlier literal “every owner
+through U6b2a”: **compose; do not extend U6b2a**. This section supersedes the
+unmounted/remainder statements above at their historical heads. No further
+source-interface split is introduced. The existing Founder task-cancel route
+now selects the mixed producer for fresh sequential stops and ordinary/Coding
+ancestry containing sequential work. Exact already-cancelled selected replay
+keeps its original owner. Ordinary-only and direct document-only stops retain
+their original paths.
+
+One outer admission writer owns the mixed operation. The complete mixed oracle
+precedes selection. Whole retained families expand in their original namespaces;
+terminal dependency paths grant no hidden live mutation. Coding's independently
+reconstructed original `affected` subset uses extracted `write_uncommitted` for
+its existing commands/events and native overlays. Detached foreign members use
+the mixed native overlay owner. Each live row gets one overlay and one original
+`task_cancelled` audit. Document draft/review dispatch members use their original
+`_cancel_uncommitted` events and previously selected intent, suppressing only the
+native overlay already owned by the mixed writer. Standalone defaults preserve
+the original transaction/order/refusals and event bytes. Plain live historical
+document roots without an existing dispatch cancellation owner still refuse;
+terminal historical documents remain immutable. No new history family/column
+or interpretation is added. The full post-oracle and exact derived native-row
+comparison must succeed before COMMIT; any unsupported closure/drift rolls back.
+Opaque Stop follows COMMIT outside all locks. Point stops of family-dependent
+ordinary ancestors and hidden fresh work under terminal dependencies refuse.
+
+| Owner / current caller | Composition / preservation boundary |
+| --- | --- |
+| `tasks.cancel_task` → `has_sequential_descendant` / `cancel_mixed` | Existing Founder route/cascade only; no U7 transport or new endpoint. |
+| `coding_cancellation.cancel_locked` / `write_uncommitted` | Standalone retains its original outer transaction; mixed reuses the inner command/events and exact original native subset without another BEGIN/COMMIT. Existing readers and literal @1/@2 families are unchanged. |
+| Draft/review `cancel` / `_cancel_uncommitted` | Existing standalone owner unchanged in behavior; mixed supplies its already-selected intent and sole native overlay. Existing document events/readers remain owners. |
+| `CancelOwners.capture` / `attach` / `seal` | Bounded ephemeral handoff of actual original objects/journals and original transition captures; rolled-back attachment is removed. No invocation reconstruction, journal/tracker/reservation clearance or durable receipt. |
+| `task_pause.settle_live` → `observe_cancel_owners` | After original close/release AND existing family outer callbacks. Original exceptions remain primary. Every captured original sequential source/visit uses U6b2a, even after another owner has made the batch incomplete. |
+| U6b2a `cancelled_owner_disposition_uncommitted` | **Byte-identical selector and predicate**, sequential source/visit only. Missing original TaskInvocation (journal-only included) is UNSETTLED. |
+| Old Coding `outer_settled` → original complete native reconstruction | Positive qualification comes only from that original invocation's committed family settlement. Missing original/native/family proof is UNSETTLED; no reimplementation of its predicate. |
+| Ordinary/document captured invocations | No existing family callback exposes a positive cancellation-outer qualification. Option B's explicit fallback therefore keeps these **UNSETTLED**, even when a control returns. This limitation is retained rather than inventing a new proof owner. |
+| Existing `_root_worktree_batch` | Original captures wait for every possible original response. All owners positive is necessary for safe disposition; one positive of many is incomplete. Any impossible/negative owner delivers one incomplete batch. Original one-shot/attempted and native protection semantics remain; no retry or restarted cleanup. |
+
+A route error/control failure latches incomplete. Prepared/unknown/journal-only,
+missing control/host/original, unresolved source/stage/outer and sticky uncertainty
+cannot gain clearance. An already committed original positive outer remains
+with its original family reader; absence of a journal alone is insufficient.
+Lost in-memory handoffs supply no recovery authority. Original native callbacks
+may close their own ownership under their unchanged rules; the aggregate never
+clears it to obtain a positive result. Resource/attempt budgets, Pause generation
+TASK-15250 and Final receipt uncertainty TASK-15275 remain unchanged.
+
+Evidence is out-of-repo **SYNTHETIC**, not V3/native acceptance. B/H fixed-clock
+standalone writer comparison includes original task/audit/event bytes and
+transaction/refusal/rollback order. Mounted sequential/ordinary/deep retained
+document probes, original native owner aggregation and root-tail reducer run
+real source. A populated full old-Coding/document mixed-oracle positive has not
+been established by a qualified storage fixture; writer scaffolding is explicitly
+separate and cannot claim that acceptance. Full native/effect races, V3/V5/M4 and
+U5b2b2/U7/U8/U9 remain NOT RUN/separate as applicable. Existing preserved failures,
+allowances, PRD v1.0.4/msg131 ACCESS-1 and Founder-reserved boundaries above remain.
+
+The original document terminal writer (also inherited by review) preserves a
+native row already stamped cancelled by the mixed stop. It emits its unchanged
+original terminal event without replacing the frozen cancellation timestamps.
+Standalone document cancellation/terminal bytes and ordering remain unchanged;
+this prevents a late native drain from invalidating Coding's original overlay.

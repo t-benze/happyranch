@@ -65,8 +65,6 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
     discovery, original audit, all graphs and fresh independent target validation.
     No current start authority/readiness is required to stop retained ownership.
     """
-    from runtime.workflows.coding_dispatch import stamp
-    from runtime.orchestrator.run_step import _capture_root_worktree_transition
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
     db = org.db
     with db._lock:
@@ -110,107 +108,126 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                     _check(conn.execute(f'SELECT 1 FROM {table} WHERE task_id=? LIMIT 1', (key,)).fetchone() is None)
                 if key not in saved.owners:
                     _check(conn.execute('SELECT 1 FROM workflow_instances WHERE root_task_id=? LIMIT 1', (key,)).fetchone() is None)
-            live = {k: v for k, v in selected.items() if v['status'] not in TERMINAL}
-            _check(live)
-            returned = {i for i in instances if saved.runs[i]['run']['state'] == 'complete'}
-            fresh = {i for i in instances if saved.runs[i]['run']['state'] not in ('cancelled', 'complete')}
-            # Retained graphs still belong to the complete closure, but never
-            # receive another cancellation event, task write or control.
-            for instance in instances - fresh:
-                _check(all(t['status'] in TERMINAL for t in saved.runs[instance]['tasks'].values()))
-            for instance in fresh:
-                entry = saved.runs[instance]
-                _check(entry['run']['state'] != 'complete'
-                       and entry['run']['cas_version'] < min(4096, entry['source']['budgets']['coding_event_limit']))
-            from runtime.infrastructure.task_pause_controls import decode_journal
-            native_owners = []
-            if conn.execute("SELECT 1 FROM sqlite_schema WHERE name='task_pause_controls' AND type='table'").fetchone() is not None:
-                for pause in rows(conn, 'task_pause_controls', budget):
-                    for native in decode_journal(pause['admission_journal_json'])['entries']:
-                        budget.step()
-                        if native['task_id'] in selected:
-                            owner = saved.owners.get(native['task_id'])
-                            _check(owner is None or owner[1] not in returned)
-                            native_owners.append(native)
-            _check(len(native_owners) <= 512 and len({n['id'] for n in native_owners}) == len(native_owners))
-            native_owners.sort(key=lambda n: n['id'])
-            # Native preparation has effects before a control/PID is published.
-            # Neither its absence nor a later successful control settles it.
-            teardown_incomplete = bool(native_owners)
-            for instance in instances:
-                native = saved.runs[instance]['native']
-                teardown_incomplete |= not native['source_settled'] or native.get('ownership_unknown', False)
-                for state in native['stages'].values():
-                    budget.step()
-                    owned = state['claim'] is not None or state.get('queue_owner') is not None or state['host'] is not None
-                    teardown_incomplete |= owned and not (state['cleanup_recorded'] and state['cleanup'])
-            now = stamp()
-            version = '2' if returned else '1'
-            command = dict(format='workflow-coding-cancellation-command@' + version, target_task_id=task_id,
-                cascade=cascade, actor=actor, rationale=rationale, cancelled_at=now, native_owners=native_owners,
-                tasks=[dict(id=k, record=encode_row(v)) for k, v in sorted(selected.items())],
-                owners=[dict(task_id=k, kind=owner[0], instance_id=owner[1])
-                    for k, owner in sorted(saved.owners.items()) if owner[1] in instances])
-            _copy_allowance(command, budget)
-            note = f'cancelled by {actor}: {rationale}' if rationale else f'cancelled by {actor}'
-            audits = []
-            # Keep capture contexts alive THROUGH COMMIT. A failed validator
-            # rolls back before capture exits, so no terminal tail is published.
             with ExitStack() as captures:
-                for key in sorted(live):
-                    captures.enter_context(_capture_root_worktree_transition(org.orchestrator, key,
-                        'coding_cancellation', transitions))
-                captures.callback(lambda: conn.rollback() if conn.in_transaction else None)
-                for key in sorted(live):
-                    conn.execute("UPDATE tasks SET status='cancelled',block_kind=NULL,note=?,cancelled_at=?,completed_at=?,updated_at=? WHERE id=?",
-                        (note, now, now, now, key))
-                    audit_id = db.insert_audit_log_uncommitted(key, actor, 'task_cancelled',
-                        dict(rationale=rationale, cascade=cascade))
-                    audit = list(rows(conn, 'audit_log', budget, where='id=?', args=(audit_id,), maximum=1))
-                    _check(len(audit) == 1)
-                    audits.append(dict(table='audit_log', id=audit_id, record=encode_row(audit[0])))
-                for instance in sorted(fresh):
-                    entry = saved.runs[instance]
-                    previous = entry['native']['history'][-1]
-                    principal = 'service:coding-cancellation:' + org.slug
-                    digest = _hash(_canonical(command))
-                    key = 'coding-cancel:' + digest
-                    event_id = identity('event', org.slug, instance, principal, key)
-                    # The additive family stores the original complete task
-                    # closure once. Replay derives every target row, rather than
-                    # persisting duplicate full after-images as supposed proof.
-                    for a in entry['attempts'].values():
-                        if a['task_id'] in live:
-                            conn.execute("UPDATE workflow_coding_attempts SET state='cancelled' WHERE id=?", (a['id'],))
-                    payload = dict(format='workflow-coding-cancellation-event@' + version, id=event_id, instance_id=instance,
-                        event_seq=previous['event_seq'] + 1, event_kind='cancelled', attempt_id=entry['attempt']['id'],
-                        operation=dict(org_slug=org.slug, principal=principal, key=key, request_digest=digest),
-                        previous_digest=previous['event_digest'],
-                        before=dict(cas_version=entry['run']['cas_version'], last_event_id=previous['id']),
-                        after=dict(state='cancelled'),
-                        evidence=dict(command=command, audits=audits,
-                            native_task_observations=entry['native']['pending_observations']), created_at=now)
-                    _copy_allowance(payload, budget)
-                    raw = _canonical(payload)
-                    _check(len(raw) <= 16777216)
-                    conn.execute('INSERT INTO workflow_coding_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                        (event_id, instance, payload['event_seq'], entry['attempt']['id'], org.slug, principal, key,
-                         digest, 'cancelled', previous['event_digest'], raw, _hash(raw), now))
-                    conn.execute("UPDATE workflow_coding_runs SET state='cancelled',cas_version=?,last_event_id=? WHERE instance_id=?",
-                        (payload['event_seq'], event_id, instance))
-                if not fresh:
-                    # No coding graph may be fenced twice just to carry an
-                    # ordinary ancestor stop. Its own closed task-scoped audit
-                    # anchors the earlier genuine fences without modifying them.
-                    from runtime.workflows._coding_cancellation_history import ordinary_overlay
-                    overlay = ordinary_overlay(org.slug, command, audits, saved, instances, budget)
-                    _copy_allowance(overlay, budget)
-                    _check(len(_canonical(overlay)) <= 1048576)
-                    db.insert_audit_log_uncommitted(task_id, actor, 'coding_ordinary_cancellation', overlay)
+                _, delivery = write_uncommitted(org, task_id, cascade=cascade, rationale=rationale,
+                    actor=actor, transitions=transitions, captures=captures, saved=saved,
+                    selected=selected, instances=instances, budget=budget)
                 _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
                 conn.commit()
-            return dict(teardown_incomplete=teardown_incomplete, tasks=sorted(live), coding_tasks=sorted(set(live) & saved.owners.keys()), prior={k: TaskStatus(v['status']) for k, v in live.items()},
-                        block_kinds={k: None if v['block_kind'] is None else BlockKind(v['block_kind']) for k, v in live.items()})
+            return delivery
         except BaseException:
             conn.rollback()
             raise
+
+
+def write_uncommitted(org: Any, task_id: str, *, cascade: bool, rationale: str, actor: str,
+                      transitions: Any, captures: ExitStack, saved: Any, selected: dict,
+                      instances: set, budget: _Budget) -> tuple[str, dict]:
+    """Original Coding command/events and sole native overlay in caller's writer.
+
+    The complete reader and mutation selection belong to the enclosing owner.
+    Caller keeps capture contexts through its validation and COMMIT/rollback.
+    """
+    from runtime.workflows.coding_dispatch import stamp
+    from runtime.orchestrator.run_step import _capture_root_worktree_transition
+
+    db, conn = org.db, org.db._conn
+    _check(conn.in_transaction and db._lock._is_owned())
+    live = {k: v for k, v in selected.items() if v['status'] not in TERMINAL}
+    _check(live)
+    returned = {i for i in instances if saved.runs[i]['run']['state'] == 'complete'}
+    fresh = {i for i in instances if saved.runs[i]['run']['state'] not in ('cancelled', 'complete')}
+    # Retained graphs still belong to the complete closure, but never
+    # receive another cancellation event, task write or control.
+    for instance in instances - fresh:
+        _check(all(t['status'] in TERMINAL for t in saved.runs[instance]['tasks'].values()))
+    for instance in fresh:
+        entry = saved.runs[instance]
+        _check(entry['run']['state'] != 'complete'
+               and entry['run']['cas_version'] < min(4096, entry['source']['budgets']['coding_event_limit']))
+    from runtime.infrastructure.task_pause_controls import decode_journal
+    native_owners = []
+    if conn.execute("SELECT 1 FROM sqlite_schema WHERE name='task_pause_controls' AND type='table'").fetchone() is not None:
+        for pause in rows(conn, 'task_pause_controls', budget):
+            for native in decode_journal(pause['admission_journal_json'])['entries']:
+                budget.step()
+                if native['task_id'] in selected:
+                    owner = saved.owners.get(native['task_id'])
+                    _check(owner is None or owner[1] not in returned)
+                    native_owners.append(native)
+    _check(len(native_owners) <= 512 and len({n['id'] for n in native_owners}) == len(native_owners))
+    native_owners.sort(key=lambda n: n['id'])
+    # Native preparation has effects before a control/PID is published.
+    # Neither its absence nor a later successful control settles it.
+    teardown_incomplete = bool(native_owners)
+    for instance in instances:
+        native = saved.runs[instance]['native']
+        teardown_incomplete |= not native['source_settled'] or native.get('ownership_unknown', False)
+        for state in native['stages'].values():
+            budget.step()
+            owned = state['claim'] is not None or state.get('queue_owner') is not None or state['host'] is not None
+            teardown_incomplete |= owned and not (state['cleanup_recorded'] and state['cleanup'])
+    now = stamp()
+    version = '2' if returned else '1'
+    command = dict(format='workflow-coding-cancellation-command@' + version, target_task_id=task_id,
+        cascade=cascade, actor=actor, rationale=rationale, cancelled_at=now, native_owners=native_owners,
+        tasks=[dict(id=k, record=encode_row(v)) for k, v in sorted(selected.items())],
+        owners=[dict(task_id=k, kind=owner[0], instance_id=owner[1])
+            for k, owner in sorted(saved.owners.items()) if owner[1] in instances])
+    _copy_allowance(command, budget)
+    note = f'cancelled by {actor}: {rationale}' if rationale else f'cancelled by {actor}'
+    audits = []
+    # Keep capture contexts alive THROUGH COMMIT. A failed validator
+    # rolls back before capture exits, so no terminal tail is published.
+    for key in sorted(live):
+        captures.enter_context(_capture_root_worktree_transition(org.orchestrator, key,
+            'coding_cancellation', transitions))
+    captures.callback(lambda: conn.rollback() if conn.in_transaction else None)
+    for key in sorted(live):
+        conn.execute("UPDATE tasks SET status='cancelled',block_kind=NULL,note=?,cancelled_at=?,completed_at=?,updated_at=? WHERE id=?",
+            (note, now, now, now, key))
+        audit_id = db.insert_audit_log_uncommitted(key, actor, 'task_cancelled',
+            dict(rationale=rationale, cascade=cascade))
+        audit = list(rows(conn, 'audit_log', budget, where='id=?', args=(audit_id,), maximum=1))
+        _check(len(audit) == 1)
+        audits.append(dict(table='audit_log', id=audit_id, record=encode_row(audit[0])))
+    for instance in sorted(fresh):
+        entry = saved.runs[instance]
+        previous = entry['native']['history'][-1]
+        principal = 'service:coding-cancellation:' + org.slug
+        digest = _hash(_canonical(command))
+        key = 'coding-cancel:' + digest
+        event_id = identity('event', org.slug, instance, principal, key)
+        # The additive family stores the original complete task
+        # closure once. Replay derives every target row, rather than
+        # persisting duplicate full after-images as supposed proof.
+        for a in entry['attempts'].values():
+            if a['task_id'] in live:
+                conn.execute("UPDATE workflow_coding_attempts SET state='cancelled' WHERE id=?", (a['id'],))
+        payload = dict(format='workflow-coding-cancellation-event@' + version, id=event_id, instance_id=instance,
+            event_seq=previous['event_seq'] + 1, event_kind='cancelled', attempt_id=entry['attempt']['id'],
+            operation=dict(org_slug=org.slug, principal=principal, key=key, request_digest=digest),
+            previous_digest=previous['event_digest'],
+            before=dict(cas_version=entry['run']['cas_version'], last_event_id=previous['id']),
+            after=dict(state='cancelled'),
+            evidence=dict(command=command, audits=audits,
+                native_task_observations=entry['native']['pending_observations']), created_at=now)
+        _copy_allowance(payload, budget)
+        raw = _canonical(payload)
+        _check(len(raw) <= 16777216)
+        conn.execute('INSERT INTO workflow_coding_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (event_id, instance, payload['event_seq'], entry['attempt']['id'], org.slug, principal, key,
+             digest, 'cancelled', previous['event_digest'], raw, _hash(raw), now))
+        conn.execute("UPDATE workflow_coding_runs SET state='cancelled',cas_version=?,last_event_id=? WHERE instance_id=?",
+            (payload['event_seq'], event_id, instance))
+    if not fresh:
+        # No coding graph may be fenced twice just to carry an
+        # ordinary ancestor stop. Its own closed task-scoped audit
+        # anchors the earlier genuine fences without modifying them.
+        from runtime.workflows._coding_cancellation_history import ordinary_overlay
+        overlay = ordinary_overlay(org.slug, command, audits, saved, instances, budget)
+        _copy_allowance(overlay, budget)
+        _check(len(_canonical(overlay)) <= 1048576)
+        db.insert_audit_log_uncommitted(task_id, actor, 'coding_ordinary_cancellation', overlay)
+    return now, dict(teardown_incomplete=teardown_incomplete, tasks=sorted(live), coding_tasks=sorted(set(live) & saved.owners.keys()), prior={k: TaskStatus(v['status']) for k, v in live.items()},
+                block_kinds={k: None if v['block_kind'] is None else BlockKind(v['block_kind']) for k, v in live.items()})

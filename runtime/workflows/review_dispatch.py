@@ -542,6 +542,23 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
         if completed:
             self._on_loop(self.org.workflow_review_receipts.admit_completed(task_id))
 
+    def _cancel_uncommitted(self, conn: sqlite3.Connection, task_id: str, *, native_overlay: bool = True,
+                            intent: dict | None = None) -> dict | None:
+        """Reuse original events; mixed callers retain the original selected intent."""
+        if intent is None:
+            intent = self._intent(conn, task_id)
+        if intent['state'] in ('cancelled', 'completed'):
+            return self.projection(intent)
+        if not intent['cancellation_requested']:
+            self._event(conn, intent, 'cancel_requested', changes={'cancellation_requested': 1})
+            intent = self._intent(conn, task_id)
+        if not intent['host_launch_started']:
+            if native_overlay:
+                now = datetime.now(timezone.utc).isoformat()
+                conn.execute("UPDATE tasks SET status='cancelled',cancelled_at=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?",
+                             (now, now, now, task_id))
+            self._event(conn, intent, 'cancelled', changes={'state': 'cancelled'})
+
     def cancel(self, task_id: str) -> dict:
         from runtime.orchestrator.run_step import _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch
         root_transitions = _RootWorktreeTransitions()
@@ -550,17 +567,9 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
         try:
             with self._writer() as conn:
                 with _capture_root_worktree_transition(self.org.orchestrator, task_id, 'review_dispatch.cancel', staged_transitions):
-                    intent = self._intent(conn, task_id)
-                    if intent['state'] in ('cancelled', 'completed'):
-                        return self.projection(intent)
-                    if not intent['cancellation_requested']:
-                        self._event(conn, intent, 'cancel_requested', changes={'cancellation_requested': 1})
-                        intent = self._intent(conn, task_id)
-                    if not intent['host_launch_started']:
-                        now = datetime.now(timezone.utc).isoformat()
-                        conn.execute("UPDATE tasks SET status='cancelled',cancelled_at=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?",
-                                     (now, now, now, task_id))
-                        self._event(conn, intent, 'cancelled', changes={'state': 'cancelled'})
+                    terminal = self._cancel_uncommitted(conn, task_id)
+                    if terminal is not None:
+                        return terminal
             # Publish only the original successfully committed transition.
             root_transitions.extend(staged_transitions)
             for _agent, control in self.org.sessions.iter_task_cancel_controls(task_id):
