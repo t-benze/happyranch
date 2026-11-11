@@ -1,5 +1,14 @@
 # Project Layout
 
+`runtime/platform/process_census.py` remains the census API. Its S1 `_LibProc`,
+exceptions and checked thread-local state are re-exported from the single
+stdlib-only `runtime/skills/bundled/workspace-cleanup/scripts/darwin_process.py`
+leaf. That data source also owns strict Darwin cleanup observations and travels
+with installed skill siblings; they never depend on an importable runtime package.
+The exact package evidence list includes the leaf; wheel/frozen bundled-tree
+inventories already include it. Runtime and installed scripts share one module
+identity per interpreter through fixed sibling loading.
+
 ## Naming v1 core, API, routing, CLI/prompt and UI source
 
 `runtime/identities/schema.py` owns the org-only naming v1 layout and closed

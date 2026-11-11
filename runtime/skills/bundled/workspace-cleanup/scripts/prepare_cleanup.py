@@ -259,7 +259,7 @@ def prepare(inventory_path: Path, history_path: Path, output_dir: Path,
 EVIDENCE_CAP = 16 * 1024 * 1024
 PACKAGE_NAMES = ('../SKILL.md', 'prepare_cleanup.py', 'run_cleanup_candidate.sh',
                  'run_cleanup_batch.py', 'observe_cleanup_batch.py',
-                 'check_path_use.py', 'worktree_safety.py')
+                 'check_path_use.py', 'worktree_safety.py', 'darwin_process.py')
 
 
 def package_identity() -> dict[str, str]:

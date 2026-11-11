@@ -155,6 +155,20 @@ def _mount_table(text: str) -> list[dict[str, Any]]:
 
 
 def capture_context() -> dict[str, Any]:
+    if sys.platform == 'darwin':
+        from darwin_process import boot_uuid, parse_mount_table
+        command = capture_command(['/sbin/mount'], Path.cwd(), timeout=5)
+        errors, mounts, boot = [], [], None
+        try:
+            if not successful_receipts([command]):
+                raise ValueError('bsd_mount_command_failed')
+            mounts = parse_mount_table(command['stdout'])
+            boot = boot_uuid()
+        except (OSError, ValueError, RuntimeError) as exc:
+            errors.append(str(exc))
+        return {'platform': 'darwin', 'uid': os.getuid(), 'gid': os.getgid(),
+                'pid': os.getpid(), 'boot_uuid': boot, 'mount_command': command,
+                'mounts': mounts, 'errors': errors, 'complete': not errors}
     pid = os.getpid()
     self_root = Path('/proc') / str(pid)
     reads = {'mountinfo': _read(self_root / 'mountinfo'), 'pid1_comm': _read(Path('/proc/1/comm'), 64),
@@ -263,24 +277,36 @@ def capture_protected(bound: dict[str, str], rows: list[dict[str, Any]], history
     for row in rows:
         if row.get('kind') == 'cache':
             paths.update({Path(row['containing']), Path(row['containing']) / '.git'})
-    receipts = [capture_command(['findmnt', '--json', '--list', '--output', 'TARGET,SOURCE,FSTYPE,OPTIONS'], workspace),
-                capture_command(['git', '-C', str(primary), 'rev-parse', '--git-common-dir'], workspace)]
-    errors = []
-    table = None
-    try:
-        if not successful_receipts(receipts):
-            raise ValueError('required_command_failed')
-        table = json.loads(receipts[0]['stdout'])
-        if (not isinstance(table, dict) or not isinstance(table.get('filesystems'), list)
-                or not table['filesystems'] or any(not isinstance(item, dict)
-                or not isinstance(item.get('target'), str) or not item['target'].startswith('/')
-                or not all(isinstance(item.get(key), str) for key in ('source', 'fstype', 'options'))
-                for item in table['filesystems'])):
-            raise ValueError('findmnt_malformed')
-        git_root = Path(receipts[1]['stdout'].strip())
-        paths.add(git_root if git_root.is_absolute() else primary / git_root)
-    except (ValueError, TypeError) as exc:
-        errors.append(str(exc))
+    if sys.platform == 'darwin':
+        receipts = [capture_command(['git', '-C', str(primary), 'rev-parse', '--git-common-dir'], workspace)]
+        errors, table = [], None
+        try:
+            if (context.get('platform') != 'darwin' or context.get('complete') is not True
+                    or not context.get('mounts') or not successful_receipts(receipts)):
+                raise ValueError('darwin_host_mount_or_git_unavailable')
+            git_root = Path(receipts[0]['stdout'].strip())
+            paths.add(git_root if git_root.is_absolute() else primary / git_root)
+        except (ValueError, TypeError) as exc:
+            errors.append(str(exc))
+    else:
+        receipts = [capture_command(['findmnt', '--json', '--list', '--output', 'TARGET,SOURCE,FSTYPE,OPTIONS'], workspace),
+                    capture_command(['git', '-C', str(primary), 'rev-parse', '--git-common-dir'], workspace)]
+        errors = []
+        table = None
+        try:
+            if not successful_receipts(receipts):
+                raise ValueError('required_command_failed')
+            table = json.loads(receipts[0]['stdout'])
+            if (not isinstance(table, dict) or not isinstance(table.get('filesystems'), list)
+                    or not table['filesystems'] or any(not isinstance(item, dict)
+                    or not isinstance(item.get('target'), str) or not item['target'].startswith('/')
+                    or not all(isinstance(item.get(key), str) for key in ('source', 'fstype', 'options'))
+                    for item in table['filesystems'])):
+                raise ValueError('findmnt_malformed')
+            git_root = Path(receipts[1]['stdout'].strip())
+            paths.add(git_root if git_root.is_absolute() else primary / git_root)
+        except (ValueError, TypeError) as exc:
+            errors.append(str(exc))
     metadata = [_metadata(path, context['mounts']) for path in sorted(paths)]
     errors.extend(item['path'] + ':' + item['error'] for item in metadata if item['state'] == 'error')
     history = None
@@ -323,9 +349,14 @@ def capture_protected(bound: dict[str, str], rows: list[dict[str, Any]], history
         filesystem = {'available_bytes': fs.f_bavail * fs.f_frsize, 'free_inodes': fs.f_favail}
     except (OSError, ValueError, KeyError, TypeError) as exc:
         errors.append(str(exc))
-    return {'metadata': metadata, 'commands': receipts, 'findmnt': table, 'history': history, 'package_sha256': packages,
-            'cache_source': caches, 'concurrent_metadata': concurrent, 'statvfs': filesystem,
-            'errors': errors, 'complete': not errors}
+    result = {'metadata': metadata, 'commands': receipts, 'history': history, 'package_sha256': packages,
+              'cache_source': caches, 'concurrent_metadata': concurrent, 'statvfs': filesystem,
+              'errors': errors, 'complete': not errors}
+    if sys.platform == 'darwin':
+        result.update(platform='darwin', mount_evidence=context['mounts'])
+    else:
+        result['findmnt'] = table
+    return result
 
 
 def _observe(manifest: Path, history: Path, phase: str) -> dict[str, Any]:
@@ -360,10 +391,15 @@ def compare_observations(before: dict[str, Any], after: dict[str, Any]) -> dict[
         for key in ('uid', 'gid', 'pid', 'mounts'):
             if before['context'][key] != after['context'][key]:
                 errors.append('context_changed:' + key)
-        for key in ('self_pid_ns', 'self_mnt_ns'):
+        darwin = before['context'].get('platform') == 'darwin'
+        if darwin:
+            if (after['context'].get('platform') != 'darwin'
+                    or before['context']['boot_uuid'] != after['context']['boot_uuid']):
+                errors.append('darwin_platform_or_boot_changed')
+        for key in (() if darwin else ('self_pid_ns', 'self_mnt_ns')):
             if before['context']['reads'][key] != after['context']['reads'][key]:
                 errors.append('namespace_changed:' + key)
-        for key in ('metadata', 'findmnt', 'history', 'package_sha256'):
+        for key in ('metadata', 'mount_evidence' if darwin else 'findmnt', 'history', 'package_sha256'):
             if before['protected'][key] != after['protected'][key]:
                 errors.append('protected_changed:' + key)
         # Native command timestamps change on purpose; compare only source/status.

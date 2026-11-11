@@ -5,7 +5,14 @@
 # Markdown to run cleanup commands.
 
 _WC_RUNNER_SKILL_DIR="$(
-  realpath "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null
+  python3 - "${BASH_SOURCE[0]}" 2>/dev/null <<'PY_LOCATION'
+from pathlib import Path
+import sys
+script = Path(sys.argv[1]).resolve(strict=True)
+if not script.is_file():
+    raise SystemExit(1)
+print(script.parent.parent.resolve(strict=True))
+PY_LOCATION
 )" || _WC_RUNNER_SKILL_DIR=""
 [ -d "$_WC_RUNNER_SKILL_DIR" ] || _WC_RUNNER_SKILL_DIR=""
 _WC_SCAN_HELPER="${_WC_RUNNER_SKILL_DIR:+$_WC_RUNNER_SKILL_DIR/scripts/check_path_use.py}"
@@ -113,10 +120,12 @@ def mountpoints():
         if proc.returncode:
             raise RuntimeError("mount_table_unavailable")
         for line in proc.stdout.splitlines():
-            match = re.search(r" on (.+?) \\(", line)
-            if not match:
+            match = re.fullmatch(r".+ on (/.*?) \([^()\r\n]+\)", line)
+            if not match or os.path.normpath(match.group(1)) != match.group(1):
                 raise RuntimeError("malformed_mount_table")
             result.add(os.path.abspath(match.group(1)))
+        if not result or "/" not in result:
+            raise RuntimeError("empty_or_incomplete_mount_table")
         return result
 
 def identity(path):
@@ -313,10 +322,12 @@ def mountpoints():
         if process.returncode:
             raise RuntimeError("mount_table_unavailable")
         for line in process.stdout.splitlines():
-            match = re.search(r" on (.+?) \\(", line)
-            if not match:
+            match = re.fullmatch(r".+ on (/.*?) \([^()\r\n]+\)", line)
+            if not match or os.path.normpath(match.group(1)) != match.group(1):
                 raise RuntimeError("malformed_mount_table")
             result.add(os.path.abspath(match.group(1)))
+        if not result or "/" not in result:
+            raise RuntimeError("empty_or_incomplete_mount_table")
         return result
 
 def identity(value):
@@ -621,7 +632,7 @@ d=json.load(open(sys.argv[1])); raise SystemExit(0 if d=={"status":"completed","
     --org "$ORG" --json --task-id "$ACTING_TASK" --session-id "$SESSION_ID" \
     > "$output_json" 2>/dev/null || return 1
   export job_id started_epoch
-  if ! cmp -s "$show_json" "$output_json" || ! python3 - "$show_json" <<'PY'
+  if ! cmp -s "$show_json" "$output_json" || ! python3 - "$show_json" "$_WC_RUNNER_SKILL_DIR/scripts/darwin_process.py" <<'PY'
 import datetime, json, os, re, sys, time
 
 receipt = json.load(open(sys.argv[1]))
@@ -680,6 +691,15 @@ if output["truncated_stdout"] is not False or output["truncated_stderr"] is not 
 if output["total_stdout_bytes"] != len(output["stdout"].encode()) or output["total_stderr_bytes"] != 0:
     raise SystemExit(1)
 scan = json.loads(output["stdout"])
+if sys.platform == "darwin":
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("darwin_process", sys.argv[2])
+    native = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = native
+    from pathlib import Path
+    exec(compile(Path(sys.argv[2]).read_bytes(), sys.argv[2], "exec"), native.__dict__)
+    native.validate_clear_scan(scan, os.environ["CANDIDATE"], os.environ["CONTAINING"])
+    raise SystemExit(0)
 if not isinstance(scan, dict) or set(scan) != {"state", "target", "hits", "reasons", "coverage", "exempt", "cycles"}:
     raise SystemExit(1)
 if scan["state"] != "clear_observation" or scan["target"] != os.path.realpath(os.environ["CANDIDATE"]):

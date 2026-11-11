@@ -303,7 +303,7 @@ tied-deepest, unregistered, or changed registration is `unknown`, never a
 It returns exactly one of `clear_observation`, `blocked`, or `unknown`
 (never `safe`), and exit `0` only for `clear_observation`.
 
-- **Complete same-user population.** Every process running as your user must be
+- **Complete same-user population (Linux).** Every process running as your user must be
   read, except confirmed-exited processes and the fixed login/session daemons
   matched by an **exact readable process name AND its exact bounded cgroup
   role**:
@@ -361,6 +361,34 @@ counters are different units and must not be summed as population proof.
 Historical receipts retain their original source-bound event meanings and
 bytes. This correction grants no cleanup, package refresh, deployment or
 live-process unreadability waiver.
+
+On Darwin, the same shipping scanner selects the stdlib-only shared
+`darwin_process.py` leaf. It observes native cwd/root, vnode fds, executable
+path, thread-local cwd and public region paths, with kernel boot UUID and
+PID/start-time/complete real-effective-saved UID/GID bookends. Stable known
+root/other-user UID tuples are outside the worktree scope; unreadable identities,
+mixed credentials, EPERM, short reads, caps, churn and reuse retain UNKNOWN.
+Darwin has no name/launchd/session exemptions. Known in-scope use is BLOCKED,
+including inode matches through hardlinks or renamed paths, even with gaps.
+
+Public region-path evidence does not establish complete negative mapping
+coverage: a null vnode cannot distinguish anonymous memory from lost backing
+path acquisition. This implementation therefore returns UNKNOWN for negative
+Darwin scans, with `public_region_negative_coverage_unestablished`; it never
+manufactures idle clearance. Its JSON has `coverage.platform=darwin`, native
+boot/ABI/population and explicit lane evidence. The authenticated shell consumer
+validates a separate closed Darwin schema; Linux receipt bytes/contracts remain.
+The observation retains the caller's existing deadline and finite aggregate caps.
+S4 PR1 does not route task-scratch collectors: their all-PID scope and EPERM
+retention stay unchanged, and nightly disk sweeping keeps its separate policy.
+
+The existing read-only scanner, observer `observe --phase before`, and safety
+`preserved`/`snapshot` commands can preview their individual gates. They do not
+prove idle `eligible` at the candidate-runner boundary. Never run the candidate
+runner or observer `run` as a dry-run. Frozen-app acceptance is separate and
+NOT RUN by the source-native suite. Installed skill Bash scripts retain their
+existing external PATH `python3` prerequisite even alongside the frozen app;
+this change supplies neither a bundled interpreter nor host installation.
 
 This is a **snapshot** with a disclosed later-opener/write-interruption and
 data-loss residual risk. It is not a claim of OS-wide absence or future
@@ -524,10 +552,16 @@ change cwd, retry, submit an alternative or refill. The renderer never submits.
 The outer job runs `observe_cleanup_batch.py run` with the frozen manifest and
 history. It writes before.json, then admits only the default packaged batch
 and candidate runner, then attempts after.json even after a batch failure.
-Readable self UID/GID/PID/namespaces/mountinfo, host-init and one unstacked proc
-mount are mandatory. Root PID1 namespace read errors are diagnostic, without
-an added equality veto. This observation does not replace the unchanged nested
-host scanner. Required findmnt/Git commands preserve raw stdout/stderr/exits.
+On Linux, readable self UID/GID/PID/namespaces/mountinfo, host-init and one
+unstacked proc mount are mandatory; root PID1 namespace read errors remain
+diagnostic. On Darwin, real UID/GID/PID, kernel boot UUID and a nonempty strictly
+parseable BSD `/sbin/mount` table replace those Linux-specific fields. Mount/Git
+commands preserve raw stdout/stderr/exits; Darwin neither requires GNU findmnt
+nor emits fabricated procfs/findmnt evidence. Empty, malformed, ambiguous or
+unavailable mount tables retain. Both embedded runner mount parsers and recursive
+snapshots reject incomplete BSD tables; Linux mountinfo behavior is unchanged.
+Runner sibling resolution uses strict stdlib resolution of BASH_SOURCE without
+external realpath. These observations do not replace the nested host scanner.
 Protected metadata includes workspace .codex/.aws, home .codex/.aws, primary
 Git metadata, outputs/memory/artifacts/logs/configuration and skill roots,
 symlink/resolved-target identity and longest covering mount. Credential contents
@@ -832,7 +866,8 @@ Source helper argv stays Python `-m`/script-based. The sweep revision hashes
 loader code (`code-sha256:`), with no loose-source requirement or fabricated
 fallback; unavailable code prevents worker launch. This grants agents no new
 cleanup authority. The root owner still retains unavailable scanner evidence;
-Darwin process-use parity and manual mount-parser fixes remain S4.
+Darwin process-use observations and strict BSD mount parsing are described above;
+S4 scratch routing and frozen-app acceptance remain separate.
 
 ## Separate future root-terminal owner
 
