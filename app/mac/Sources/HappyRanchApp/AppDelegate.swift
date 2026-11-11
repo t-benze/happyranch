@@ -92,6 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// after the follow-on start is issued.
     private var pendingRestart = false
 
+    /// Quit may observe exit before the queued launch callback can settle it.
+    /// Both paths consume the current launch's exit at most once.
+    private var managedExitSettled = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Foreground the app as a regular Dock-present application so a bare
         // `swift run` executable gets a visible window without requiring a .app bundle.
@@ -138,9 +142,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Retry bounded teardown for any live owned child, including .stopping
         // after an incomplete Stop or refused role switch. Keep the actual outcome.
         // External daemons are NEVER terminated on quit.
-        if supervisor.isManagedBySelf, currentHandle?.isRunning == true {
+        guard supervisor.isManagedBySelf, let handle = currentHandle else { return }
+        if handle.isRunning {
             terminateManagedProcess()
         }
+        // Termination is synchronous: a nested run loop need not run a queued
+        // MainActor Task before this method returns and the app exits.
+        guard currentHandle === handle, !handle.isRunning else { return }
+        let status = handle.terminationStatus
+        settleManagedProcessExit(
+            exitCode: status,
+            signal: handle.terminationReason == .uncaughtSignal ? status : nil)
     }
 
     // MARK: - Daemon home
@@ -404,6 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: - Process management
 
     private func launchDaemonProcess() {
+        managedExitSettled = false
         let pc = processController
         let mode = Self.packagingMode()
 
@@ -468,13 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         if let stdout = stdout {
                             self.diagnostics.recordDaemonStdout(stdout)
                         }
-                        self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
-                        self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
-                        self.refreshDerivedState()
-                        if self.pendingRestart {
-                            self.pendingRestart = false
-                            self.startDaemon()
-                        }
+                        self.settleManagedProcessExit(exitCode: exitCode, signal: signal)
                     }
                 }
             )
@@ -533,17 +540,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         if let stdout = stdout {
                             self.diagnostics.recordDaemonStdout(stdout)
                         }
-                        self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
-                        self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
-                        self.refreshDerivedState()
-
-                        // Restart continuation: if a restart was requested,
-                        // the termination-completion path performs the
-                        // follow-on start now that the supervisor has settled.
-                        if self.pendingRestart {
-                            self.pendingRestart = false
-                            self.startDaemon()
-                        }
+                        self.settleManagedProcessExit(exitCode: exitCode, signal: signal)
                     }
                 }
             )
@@ -562,6 +559,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             stateText = "Launch failed: \(error.localizedDescription)"
             supervisor.onProcessExited(exitCode: -1, signal: nil)
             refreshDerivedState()
+        }
+    }
+
+    /// Called only after the current child's exit has actually been observed.
+    private func settleManagedProcessExit(exitCode: Int32, signal: Int32?) {
+        guard !managedExitSettled else { return }
+        managedExitSettled = true
+        supervisor.onProcessExited(exitCode: exitCode, signal: signal)
+        diagnostics.recordExit(exitCode: exitCode, signal: signal)
+        refreshDerivedState()
+        if pendingRestart {
+            pendingRestart = false
+            startDaemon()
         }
     }
 

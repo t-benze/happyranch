@@ -40,6 +40,11 @@ Quit cancels any pending Restart before exit callbacks can run during teardown,
 so an exiting child cannot launch a replacement. It attempts the same bounded
 TERM/KILL teardown for any live child the app owns, including one still stopping
 after an earlier incomplete Stop or a refused HOME to CLIENT switch. If the
+same owned handle has exited, Quit synchronously settles the supervisor and
+records its actual exit code and signal before returning; it does not depend
+on a queued MainActor callback running before app termination. Exit settlement
+is consumed once per launch, so a later callback cannot settle it again or
+restart it. The callback can still record captured output. If the
 child survives again, the outcome remains
 Stop incomplete and ownership is retained; Quit never fabricates an exit.
 External daemons remain untouched.
