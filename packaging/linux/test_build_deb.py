@@ -130,6 +130,23 @@ class DebPackageTests(unittest.TestCase):
                 self.assertEqual(subprocess.check_output(['dpkg-deb', '-f', deb, 'Version'], text=True).strip(),
                                  debversion)
 
+    def test_debian_revision(self) -> None:
+        archive = self.payload()
+        for revision in ('1', '2'):
+            result = subprocess.run(['bash', BUILDER, archive, '--dist-dir', self.work / 'dist',
+                                     '--debian-revision', revision], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            deb = self.work / f'dist/happyranch_0.1.0-{revision}_amd64.deb'
+            self.assertEqual(subprocess.check_output(['dpkg-deb', '-f', deb, 'Version'], text=True).strip(),
+                             '0.1.0-' + revision)
+        subprocess.run(['dpkg', '--compare-versions', '0.1.0-2', 'gt', '0.1.0-1'], check=True)
+        for invalid in ('0', '-1', '01', '2/../3', '2\nVersion: 9', '2.1'):
+            with self.subTest(invalid=invalid):
+                result = subprocess.run(['bash', BUILDER, archive, '--debian-revision=' + invalid],
+                                        text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('must be a positive integer', result.stderr)
+
     def test_unsafe_archive_is_refused_before_output(self) -> None:
         for index, kind in enumerate(('traversal', 'escaping-link', 'link-parent')):
             with self.subTest(kind=kind):
