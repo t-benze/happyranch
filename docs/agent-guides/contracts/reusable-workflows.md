@@ -1605,7 +1605,8 @@ unbound subject refuses and does not bind/release editing. Both derive native
 task/principal/current SID from the original binding, reject browser/bearer,
 foreign/recovery/ended sessions, and bookend current ACCESS-1 authority, full
 mixed history, native owner and cancellation under a SELECT-only snapshot.
-No TS/browser mirror, native audience/connector allowlist or auth grant changes.
+Native SurfaceAllowList excludes the two new GETs. Existing audience rules,
+managed allowlist and auth grants are unchanged; no TS/browser mirror.
 
 `workflows sequential finalize` mounts U5b2b1 locally through fresh HTTP
 selections, without a second CLI OrgState or daemon effect/network I/O. Original

@@ -210,7 +210,9 @@ binding; supplied SID only looks up that binding. Task/principal/current SID and
 native invocation/workspace are server-derived. Bearer, browser Origin, foreign,
 recovery, ended/replaced and nonselected sessions refuse. Native absent404
 precedes ownership409. Native agent-only and managed-connector audiences are
-excluded, with no TS/browser mirror or allowlist/permission/credential change.
+excluded: native SurfaceAllowList explicitly denies these two new GETs; the
+managed allowlist is unchanged/default-denied. No TS/browser mirror or
+agent-permission/credential change.
 No-store, strict empty body/query, current ACCESS-1 authority and original native
 owner/cancellation bookends precede disclosure. The profile/publisher/DB/binding
 read fences own BEGIN/rollback with no durable admission lease or DML. Full mixed

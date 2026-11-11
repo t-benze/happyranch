@@ -111,6 +111,9 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/workflows/coding/role-selections"),
             ("GET", "/workflows/coding/runs/*"),
             ("GET", "/workflows/coding/runs/*/final-manager"),
+            // Sequential selections belong only to their own live task-session CLI.
+            ("GET", "/workflows/sequential/repository-preflight"),
+            ("GET", "/workflows/sequential/final-manager"),
             // Original-current author staging is a native-sensitive mutation.
             ("POST", "/workflows/submissions/handoffs"),
             // Current agent reviewer staging is not a remote human surface.
