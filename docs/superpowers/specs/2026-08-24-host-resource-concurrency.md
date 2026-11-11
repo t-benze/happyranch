@@ -404,8 +404,11 @@ both backends:
   provenance **only when a sampled value exists**; a wholly or partially
   absent counter with no sample behind it is `unavailable`, never a
   fabricated zero or a labeled-sampled None.
-- macOS peaks are always `sampled` (resident-sum RSS, cumulative per-process
-  CPU, census process count) and never labeled authoritative.
+- Available macOS peaks are `sampled` (resident-sum RSS, cumulative per-process
+  CPU, census process count) and never labeled authoritative. Each RSS/CPU sum
+  is `None` when no member supplies that counter; a genuine observed zero stays
+  zero. When neither counter is available, the sample uses `unavailable`
+  provenance while retaining any observed process count.
 - Survivor/residue checks are zombie-aware and identity-safe: an unreaped
   zombie answers `kill(pid,0)` but is already dead and is never counted as a
   survivor; a PID is only acted upon when its (pid, start identity) still
@@ -636,3 +639,91 @@ DRR/weighted resource classes, new top-level dependencies, schema/migrations
 or overloaded-column semantics, permission/sandbox changes, auth/credentials/
 notification changes, and Windows implementation are explicitly held for
 later founder rulings.
+
+### THR-346 S1 macOS correction (2026-11-10)
+
+The libproc `proc_bsdinfo` layout includes `pbi_xstatus` between status and PID.
+Initialization checks both its 136-byte size and a real self PID/PPID decode;
+an incompatible or unavailable observation refuses backend construction. Merely
+importing the macOS backend does not load libproc. The capability factory catches
+construction/probe failure and selects its existing honest passthrough fallback.
+
+The manual native `teardown` suite exercises product selection, a three-generation
+session tree, one resource sample and normal finish. Independent `kill(pid, 0)` /
+ESRCH checks for all spawned PIDs precede probe-owned fallback cleanup, so cleanup
+cannot hide a falsely quiescent receipt. Separate subprocess fault injection
+checks import and passthrough selection with libproc unavailable. Linux reports
+skipped JSON; static checks establish no native behavior. Native evidence for
+S1 remains pending until the one authorized Jenkins job is observed at its exact
+source SHA. No frozen-app build, deployment or restart follows from this suite.
+
+### THR-346 S1 checked-read diagnosis (2026-11-11)
+
+`sample` reaches `_snapshot_members` → `read_all_checked` → `MacProcReader.read_all`
+→ `_LibProc.bsd_info` for every enumerated PID. Launch already uses this checked
+snapshot and retains any failure as sticky uncertainty. The S1 layout/self-check
+correction did not introduce these calls. The permissive selection probe can
+succeed before a later checked scan refuses a native read.
+
+Checked identity exceptions now retain PID, returned/expected bytes and errno/name.
+No unreadable row is excluded: a foreign UID alone cannot disprove lineage or
+escaped group membership. In particular EPERM, unknown short reads and opaque
+same-owner processes remain fail-closed; later readability cannot erase prior
+uncertainty or fabricate a clean/quiescent receipt. Native errno evidence is
+required to establish the earlier build's cause; this is not a claim of a
+permission/race repair.
+
+The existing teardown suite records at most eight failed reads and later numeric
+OS PID/PPID/PGID/UID/RUID context for at most four distinct PIDs, explicitly
+separating known probe workers from unknown descendant status. It compares the
+full product BSD decode for self and all workers to independent OS identities,
+and exercises missing/zero task counters on real census rows through both
+samplers with a probe-only wrapper that is restored afterward. Sample failure
+still attempts product finish and records refusal/no receipt distinctly from
+probe rescue. Rescue precedes optional bounded `ps` enrichment. Worker launch
+records retain native PID/start-time identities; each TERM/KILL requires a fresh
+matching identity, or retained unreaped direct-child ownership for a partially
+ready root. ESRCH/reaping permanently retires the worker. Unreadable or mismatched
+identity permanently forbids signals and remains unknown residue, never clean;
+a recycled PID cannot reactivate a retired worker. Rescue signals individual
+identities, with no saved-group broadcast or atomic identity-and-signal claim.
+Native and frozen-app acceptance remain separate outstanding
+evidence; no new job, trigger, deploy or restart is introduced. `truth` is unchanged.
+
+### THR-346 S1 EPERM identity fallback (2026-11-11)
+
+This correction supersedes the unresolved-EPERM diagnosis above.
+
+Build #3 at `4fa5e4b78f79b723893e3d82ea442fd57088309b` established EPERM on
+one host PID during the all-PID checked scan. Other foreign-UID processes were
+readable; UID/PPID never authorizes row exclusion. EPERM alone now triggers a
+read-only `CTL_KERN/KERN_PROC/KERN_PROC_PID` sysctl identity fallback.
+Apple XNU `xnu-11417.101.15` public `proc.h`, `sysctl.h`, `vm.h` and type
+headers pin the arm64/x86_64 LP64 layout: `kinfo_proc`648 bytes, `extern_proc`296,
+PID40, state36, PPID560, PGID564, effective UID420. Product checks these sizes/
+offsets, exact returned size, requested PID, state and start-time ranges, and
+cross-checks its own identity with libproc/OS before admitting this ABI.
+ESRCH or successful zero-length sysctl means gone. Other errors/malformed data
+remain unknown; unresolved checked rows still poison observation permanently.
+Fallback identities participate in the same lineage and group decisions as
+libproc identities. They carry no task counters/nfiles; RSS/CPU is unavailable.
+A missing member counter makes that whole counter aggregate unavailable in both
+samplers; a completely observed zero still has sampled provenance.
+
+The teardown probe compares sysctl and independent libproc PID/PPID/PGID/start
+time for self/parent/child/grandchild and records bounded numeric distinct PID,
+read and triggering-errno counts for successful fallback use. Existing truth
+helpers and rescue authentication/bounds are unchanged. Native execution at the
+repaired head and frozen-app acceptance remain NOT RUN here.
+
+**Open manager question; finish behavior unchanged.** The current macOS section
+requires unknown observation to raise cleanup/measurement failure. Consequently
+finish still refuses before TERM/KILL on unresolved census uncertainty and its
+direct-child wait may time out (as build #3 demonstrated). This conflicts with
+the broad terminal-teardown and INCOMPLETE wording above. Returning only an
+INCOMPLETE/non-quiescent receipt in the backend would weaken the existing
+supervisor gate for finish-only macOS uncertainty: its best-effort receipt path
+does not itself mark measurement failure without an earlier sampler error.
+Reconcile the exception/receipt and authenticated termination contracts, plus
+any supervisor scope, before a separate lifecycle repair. This annotation
+records the conflict rather than changing that policy or claiming termination.

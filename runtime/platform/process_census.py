@@ -12,7 +12,8 @@ Design rules that are load-bearing:
 
 1. **OS-shipped APIs only.** The Linux reader walks ``/proc`` (``stat`` /
    ``statm``); the macOS reader uses libproc through the standard library's
-   ``ctypes`` (``proc_listpids`` / ``proc_pidinfo``). No third-party
+   ``ctypes`` (``proc_listpids`` / ``proc_pidinfo`` and identity-only sysctl
+   fallback on EPERM). No third-party
    dependency (e.g. ``psutil``) is added — that requires separate founder
    approval.
 2. **Never fabricated zeros.** A sample whose enumeration failed reports
@@ -303,9 +304,10 @@ class LinuxProcReader(_CheckedReader):
 class _LibProc:
     """Bounded ``ctypes`` binding to macOS libproc (no third-party dep).
 
-    Uses only ``proc_listpids`` / ``proc_pidinfo`` with the
+    Uses ``proc_listpids`` / ``proc_pidinfo`` with the
     ``PROC_PIDTBSDINFO`` (parent/start identity) and ``PROC_PIDTASKINFO``
-    (RSS/CPU) structs. Loaded lazily and only on macOS; raises
+    (RSS/CPU) structs, plus read-only sysctl identity fallback on EPERM.
+    Loaded lazily and only on macOS; raises
     :class:`LibProcUnavailable` when the host cannot provide it.
     """
 
@@ -327,6 +329,7 @@ class _LibProc:
         except (OSError, ImportError) as exc:
             raise LibProcUnavailable(f"cannot load libproc: {exc}") from exc
         self._setup_proc_pidinfo()
+        self._kinfo_lock = threading.RLock()
 
     def _setup_proc_pidinfo(self) -> None:
         ctypes = self._ctypes
@@ -335,6 +338,7 @@ class _LibProc:
             _fields_ = [
                 ("pbi_flags", ctypes.c_uint32),
                 ("pbi_status", ctypes.c_uint32),
+                ("pbi_xstatus", ctypes.c_uint32),
                 ("pbi_pid", ctypes.c_int),
                 ("pbi_ppid", ctypes.c_int),
                 ("pbi_uid", ctypes.c_uint32),
@@ -386,6 +390,19 @@ class _LibProc:
         lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
         lib.proc_pidinfo.restype = ctypes.c_int
 
+        # Size alone did not catch the missing pbi_xstatus word: padding kept
+        # the old, shifted layout at 136 bytes too. Check a real kernel decode.
+        if ctypes.sizeof(ProcBsdinfo) != 136:
+            raise LibProcUnavailable("unexpected proc_bsdinfo ABI size")
+        own_pid = os.getpid()
+        info = ProcBsdinfo()
+        count = lib.proc_pidinfo(
+            own_pid, self.PROC_PIDTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info)
+        )
+        if (count != ctypes.sizeof(info) or info.pbi_pid != own_pid
+                or info.pbi_ppid != os.getppid()):
+            raise LibProcUnavailable("proc_bsdinfo PID/PPID decode self-check failed")
+
     def list_pids(self) -> list[int]:
         ctypes = self._ctypes
         size = self.PROC_PIDLISTFD_SIZE
@@ -404,27 +421,183 @@ class _LibProc:
         return [int(buf[i]) for i in range(count) if buf[i] > 0]
 
     def bsd_info(self, pid: int) -> dict | None:
+        import errno
+
         ctypes = self._ctypes
         info = self._ProcBsdinfo()
-        if getattr(_checked_read, "deadline", None) is not None:
-            ctypes.set_errno(0)
+        ctypes.set_errno(0)
         n = self._lib.proc_pidinfo(
             pid, self.PROC_PIDTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info)
         )
-        if getattr(_checked_read, "deadline", None) is not None and n != ctypes.sizeof(info):
-            import errno
-
-            if n <= 0 and ctypes.get_errno() == errno.ESRCH:
+        native_errno = ctypes.get_errno()
+        if n <= 0 and native_errno == errno.EPERM:
+            # A permission refusal cannot establish non-membership. sysctl
+            # supplies the SAME lineage identity, never invented task counters.
+            try:
+                fallback = self.kinfo_identity(pid)
+                if fallback is not None:
+                    fallback["fallback_errno"] = native_errno
+                return fallback
+            except ProcessObservationUnavailable as exc:
+                if getattr(_checked_read, "deadline", None) is not None:
+                    raise ProcessObservationUnavailable(
+                        f"libproc identity observation unavailable: pid={pid} returned={n} "
+                        f"expected={ctypes.sizeof(info)} errno={native_errno}; {exc}"
+                    ) from exc
                 return None
-            raise ProcessObservationUnavailable("libproc identity observation unavailable")
+        if getattr(_checked_read, "deadline", None) is not None and n != ctypes.sizeof(info):
+            if n <= 0 and native_errno == errno.ESRCH:
+                return None
+            # Numeric native evidence only; an opaque row is still unknown,
+            # including EPERM. UID alone cannot exclude a descendant.
+            raise ProcessObservationUnavailable(
+                f"libproc identity observation unavailable: pid={pid} returned={n} "
+                f"expected={ctypes.sizeof(info)} errno={native_errno} "
+                f"errno_name={errno.errorcode.get(native_errno, 'UNKNOWN')}"
+            )
         if n <= 0:
             return None
         return {
+            "pid": int(info.pbi_pid),
             "ppid": info.pbi_ppid,
             "pgid": info.pbi_pgid,
             "start_identity": f"{info.pbi_start_tvsec}.{info.pbi_start_tvusec}",
             "comm": info.pbi_comm.decode("utf-8", "replace"),
             "state": int(info.pbi_status),
+        }
+
+    def _setup_kinfo_proc(self) -> None:
+        """Darwin LP64 public ABI, pinned to Apple XNU xnu-11417.101.15.
+
+        bsd/sys/{proc.h,sysctl.h,vm.h,_types.h}, arm/_types.h and
+        sys/_types/_timeval.h define these widths/alignment on arm64/x86_64.
+        Pointer fields are opaque: never dereferenced or exposed. No compiler
+        or SDK is required in the frozen app. Unexpected ABIs refuse fallback.
+        """
+        import platform
+
+        c = self._ctypes
+        if (platform.machine() not in ("arm64", "x86_64")
+                or c.sizeof(c.c_void_p) != 8 or c.sizeof(c.c_long) != 8):
+            raise ProcessObservationUnavailable("unsupported kinfo_proc ABI")
+
+        class Timeval(c.Structure):
+            _fields_ = [("sec", c.c_long), ("usec", c.c_int32)]
+
+        class ExternProc(c.Structure):
+            _fields_ = [
+                ("start", Timeval), ("vmspace", c.c_void_p), ("sigacts", c.c_void_p),
+                ("flag", c.c_int32), ("state", c.c_int8), ("pid", c.c_int32),
+                ("oppid", c.c_int32), ("dupfd", c.c_int32),
+                ("user_stack", c.c_void_p), ("exit_thread", c.c_void_p),
+                ("debugger", c.c_int32), ("sigwait", c.c_int32),
+                ("estcpu", c.c_uint32), ("cpticks", c.c_int32), ("pctcpu", c.c_uint32),
+                ("wchan", c.c_void_p), ("wmesg", c.c_void_p),
+                ("swtime", c.c_uint32), ("slptime", c.c_uint32),
+                ("realtimer", Timeval * 2), ("rtime", Timeval),
+                ("uticks", c.c_uint64), ("sticks", c.c_uint64), ("iticks", c.c_uint64),
+                ("traceflag", c.c_int32), ("tracep", c.c_void_p),
+                ("siglist", c.c_int32), ("textvp", c.c_void_p), ("holdcnt", c.c_int32),
+                ("sigmask", c.c_uint32), ("sigignore", c.c_uint32), ("sigcatch", c.c_uint32),
+                ("priority", c.c_uint8), ("usrpri", c.c_uint8), ("nice", c.c_int8),
+                ("comm", c.c_char * 17), ("pgrp", c.c_void_p), ("addr", c.c_void_p),
+                ("xstat", c.c_uint16), ("acflag", c.c_uint16), ("ru", c.c_void_p),
+            ]
+
+        class Pcred(c.Structure):
+            _fields_ = [
+                ("lock", c.c_char * 72), ("ucred", c.c_void_p),
+                ("ruid", c.c_uint32), ("svuid", c.c_uint32),
+                ("rgid", c.c_uint32), ("svgid", c.c_uint32), ("refcnt", c.c_int32),
+            ]
+
+        class Ucred(c.Structure):
+            _fields_ = [("ref", c.c_int32), ("uid", c.c_uint32),
+                        ("ngroups", c.c_int16), ("groups", c.c_uint32 * 16)]
+
+        class Vmspace(c.Structure):
+            _fields_ = [("dummy", c.c_int32), ("dummy2", c.c_void_p),
+                        ("dummy3", c.c_int32 * 5), ("dummy4", c.c_void_p * 3)]
+
+        class Eproc(c.Structure):
+            _fields_ = [
+                ("paddr", c.c_void_p), ("sess", c.c_void_p),
+                ("pcred", Pcred), ("ucred", Ucred), ("vm", Vmspace),
+                ("ppid", c.c_int32), ("pgid", c.c_int32), ("jobc", c.c_int16),
+                ("tdev", c.c_int32), ("tpgid", c.c_int32), ("tsess", c.c_void_p),
+                ("wmesg", c.c_char * 8), ("xsize", c.c_int32),
+                ("xrssize", c.c_int16), ("xccount", c.c_int16), ("xswrss", c.c_int16),
+                ("flag", c.c_int32), ("login", c.c_char * 12), ("spare", c.c_int32 * 4),
+            ]
+
+        class KinfoProc(c.Structure):
+            _fields_ = [("proc", ExternProc), ("eproc", Eproc)]
+
+        if (c.sizeof(KinfoProc) != 648 or c.sizeof(ExternProc) != 296
+                or ExternProc.pid.offset != 40 or ExternProc.state.offset != 36
+                or KinfoProc.eproc.offset + Eproc.ppid.offset != 560
+                or KinfoProc.eproc.offset + Eproc.pgid.offset != 564
+                or KinfoProc.eproc.offset + Eproc.ucred.offset + Ucred.uid.offset != 420):
+            raise ProcessObservationUnavailable("unexpected kinfo_proc layout")
+        libc = c.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        libc.sysctl.argtypes = [c.POINTER(c.c_int), c.c_uint, c.c_void_p,
+                               c.POINTER(c.c_size_t), c.c_void_p, c.c_size_t]
+        libc.sysctl.restype = c.c_int
+        self._KinfoProc = KinfoProc
+        self._sysctl = libc.sysctl
+        try:
+            own_pid = os.getpid()
+            own = self.kinfo_identity(own_pid)
+            bsd = self._ProcBsdinfo()
+            n = self._lib.proc_pidinfo(own_pid, self.PROC_PIDTBSDINFO, 0,
+                                       c.byref(bsd), c.sizeof(bsd))
+            if (own is None or n != c.sizeof(bsd) or own["pid"] != own_pid
+                    or own["ppid"] != os.getppid() or own["pgid"] != os.getpgid(own_pid)
+                    or own["start_identity"] != f"{bsd.pbi_start_tvsec}.{bsd.pbi_start_tvusec}"):
+                raise ProcessObservationUnavailable("kinfo_proc identity self-check failed")
+        except Exception:
+            # A failed self-check must never leave a reusable unvalidated ABI.
+            del self._KinfoProc
+            del self._sysctl
+            raise
+
+    def kinfo_identity(self, pid: int) -> dict | None:
+        """One bounded CTL_KERN/KERN_PROC/KERN_PROC_PID identity read.
+
+        ESRCH or successful zero bytes means gone. All other failures and
+        malformed responses remain unknown, even outside checked scans.
+        """
+        import errno
+
+        c = self._ctypes
+        with self._kinfo_lock:
+            if not hasattr(self, "_KinfoProc"):
+                try:
+                    self._setup_kinfo_proc()
+                except (OSError, AttributeError) as exc:
+                    raise ProcessObservationUnavailable("kinfo_proc binding unavailable") from exc
+        info = self._KinfoProc()
+        size = c.c_size_t(c.sizeof(info))
+        mib = (c.c_int * 4)(1, 14, 1, pid)
+        c.set_errno(0)
+        returned = self._sysctl(mib, 4, c.byref(info), c.byref(size), None, 0)
+        native_errno = c.get_errno()
+        _check_observation_budget()
+        if (returned != 0 and native_errno == errno.ESRCH) or (returned == 0 and size.value == 0):
+            return None
+        if (returned != 0 or size.value != c.sizeof(info) or info.proc.pid != pid
+                or info.proc.start.sec <= 0 or not 0 <= info.proc.start.usec < 1_000_000
+                or info.eproc.ppid < 0 or info.eproc.pgid < 0 or not 1 <= info.proc.state <= 5):
+            raise ProcessObservationUnavailable(
+                f"sysctl identity unavailable: pid={pid} returned={returned} "
+                f"size={size.value} expected={c.sizeof(info)} errno={native_errno}"
+            )
+        return {
+            "pid": int(info.proc.pid), "ppid": int(info.eproc.ppid),
+            "pgid": int(info.eproc.pgid),
+            "start_identity": f"{info.proc.start.sec}.{info.proc.start.usec}",
+            "state": int(info.proc.state), "uid": int(info.eproc.ucred.uid),
+            "ruid": int(info.eproc.pcred.ruid), "identity_source": "sysctl",
         }
 
     def task_info(self, pid: int) -> dict | None:
@@ -433,7 +606,7 @@ class _LibProc:
         n = self._lib.proc_pidinfo(
             pid, self.PROC_PIDTASKINFO, 0, ctypes.byref(info), ctypes.sizeof(info)
         )
-        if n <= 0:
+        if n != ctypes.sizeof(info):
             return None
         return {
             "rss_bytes": int(info.pti_resident_size),
@@ -464,7 +637,8 @@ class MacProcReader(_CheckedReader):
             bsd = self._libproc.bsd_info(pid)
             if bsd is None:
                 continue  # exited during the pass
-            task = self._libproc.task_info(pid) or {}
+            task = ({} if bsd.get("identity_source") == "sysctl"
+                    else self._libproc.task_info(pid) or {})
             obs.append(
                 ProcessObservation(
                     pid=pid,
@@ -488,7 +662,8 @@ class MacProcReader(_CheckedReader):
         bsd = self._libproc.bsd_info(pid)
         if bsd is None:
             return None
-        task = self._libproc.task_info(pid) or {}
+        task = ({} if bsd.get("identity_source") == "sysctl"
+                else self._libproc.task_info(pid) or {})
         return ProcessObservation(
             pid=pid,
             ppid=bsd["ppid"],
@@ -632,7 +807,7 @@ class DescendantSampler:
 
     Callable with a :class:`RunningHandle`: samples the identity-safe
     descendant tree of the handle's root PID at the supervisor's bounded
-    cadence. Provenance is always ``sampled`` (never authoritative); an
+    cadence. Available counters have ``sampled`` provenance (never authoritative); an
     unreadable root yields an empty tree, a broken reader raises so the
     supervisor records a measurement failure (fail-closed).
     """
@@ -656,12 +831,17 @@ class DescendantSampler:
         members = census.descendants(
             running.root_pid, running.start_identity or None, include_root=True
         )
-        rss = sum(o.rss_bytes for o in members if o.rss_bytes is not None)
-        cpu = sum(o.cpu_seconds for o in members if o.cpu_seconds is not None)
+        rss = [o.rss_bytes for o in members if o.rss_bytes is not None]
+        cpu = [o.cpu_seconds for o in members if o.cpu_seconds is not None]
+        if len(rss) != len(members):
+            rss = []
+        if len(cpu) != len(members):
+            cpu = []
         return ResourceSample(
             sampled_at=self._monotonic(),
-            memory_peak_bytes=rss if rss or members else None,
-            cpu_total_seconds=cpu if cpu or members else None,
+            memory_peak_bytes=sum(rss) if rss else None,
+            cpu_total_seconds=sum(cpu) if cpu else None,
             process_count=len(members) if members else None,
-            provenance=MeasurementProvenance.SAMPLED,
+            provenance=(MeasurementProvenance.SAMPLED if rss or cpu
+                        else MeasurementProvenance.UNAVAILABLE),
         )

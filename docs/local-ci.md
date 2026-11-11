@@ -1560,11 +1560,44 @@ origin checks must point into that wheel-owned venv; source PYTHONPATH never
 establishes installed/frozen callbacks.
 
 The macOS `proc_bsdinfo` declaration includes the SDK's `pbi_xstatus` field
-before PID/PPID, with unsigned PID fields. The struct's total size alone does
-not establish correct UID, parent or process-group offsets. Hosted native
+before PID/PPID. Initialization requires the 136-byte layout and a real self
+PID/PPID decode; total size alone does not establish correct UID, parent or
+process-group offsets. Hosted native
 receipts must match the actual selected SDK definition. Inaccessible living
 processes still refuse the census; do not omit an opaque same-owner process or
-claim quiescence from an incomplete native table. The only privilege exception
+claim quiescence from an incomplete native table. Checked libproc identity
+failures include bounded PID, returned/expected byte counts and errno/name;
+EPERM is not proof that a row is outside a session. The existing Jenkins
+`teardown` suite records up to eight such failures, later numeric OS ownership
+context for at most four PIDs, full self/worker PID/PPID/PGID decode, P07
+missing-versus-zero counter cases, and product finish even after sample failure.
+Probe rescue runs before optional bounded diagnostic enrichment. Each signal
+requires a fresh match to the worker's recorded native start identity, or an
+unreaped direct-child handle for a partially ready root. ESRCH/reaping permanently
+retires workers; unreadable/mismatched identities are never signalled and remain
+unknown residue. Cleanup reports original-worker disappearance separately from
+product receipt checks; no atomic identity-and-signal guarantee is claimed.
+These diagnostics neither bypass checked reads nor prove frozen-app behavior.
+`truth` retains its original observations; no extra job or CI trigger is added.
+
+THR-346 EPERM repair uses identity-only `CTL_KERN/KERN_PROC/KERN_PROC_PID`
+sysctl after libproc EPERM only. Apple XNU xnu-11417.101.15 public LP64 headers
+pin `kinfo_proc`648 bytes (PID40, PPID560, PGID564); product checks layout,
+returned size, requested PID, valid start time and its own identity against
+libproc/OS before using fallback. ESRCH or successful zero bytes means gone.
+Malformed or doubly unreadable rows remain unknown, with existing sticky
+fail-closed behavior. No UID/parent heuristic excludes a row. Fallback member
+RSS/CPU is unavailable, and either sampler reports a missing aggregate as None,
+not a partial sum or zero. Fully observed zeros remain sampled zero. The native
+teardown suite cross-checks sysctl/libproc identities for all four readable probe
+PIDs and records bounded numeric fallback PID/read/errno counts. Native proof at
+the repaired head remains NOT RUN until separately authorized observation.
+Finish behavior is unchanged: uncertainty can prevent TERM/KILL and time out the
+direct-child wait. The spec explicitly requires a raised macOS cleanup failure,
+while also requiring terminal teardown/INCOMPLETE evidence. A platform-only
+receipt return could bypass the supervisor gate on finish-only uncertainty;
+termination plus a non-quiescent receipt is an open manager contract question.
+The only privilege exception
 is the explicitly admitted TASK-10245/THR-294 ephemeral read-only native observer
 on disposable GitHub-hosted Ubuntu and native macOS15 runners. Their existing
 [passwordless sudo](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)

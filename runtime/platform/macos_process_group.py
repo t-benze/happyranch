@@ -59,7 +59,6 @@ from runtime.platform.session_backend import (
     RecoveryResult,
     ResourceSample,
     RunningHandle,
-    SessionBackend,
     SurvivorRecord,
 )
 
@@ -268,8 +267,8 @@ class MacOSProcessGroupBackend:
         """A sampler callable for the supervisor's sampler seam.
 
         Refreshes the backend's per-session member snapshot (identity-safe)
-        and returns a ``sampled``-provenance :class:`ResourceSample` — the
-        honest portable measurement for a backend with no kernel counters.
+        and returns a :class:`ResourceSample` with ``sampled`` provenance
+        for available counters, or ``unavailable`` when neither exists.
         """
 
         def _sample(running: RunningHandle) -> ResourceSample:
@@ -294,14 +293,19 @@ class MacOSProcessGroupBackend:
                     raise
                 if session.observation_error is not None:
                     raise ProcessObservationUnavailable(session.observation_error)
-            rss = sum(o.rss_bytes for o in members.values() if o.rss_bytes is not None)
-            cpu = sum(o.cpu_seconds for o in members.values() if o.cpu_seconds is not None)
+            rss = [o.rss_bytes for o in members.values() if o.rss_bytes is not None]
+            cpu = [o.cpu_seconds for o in members.values() if o.cpu_seconds is not None]
+            if len(rss) != len(members):
+                rss = []
+            if len(cpu) != len(members):
+                cpu = []
             return ResourceSample(
                 sampled_at=self._monotonic(),
-                memory_peak_bytes=rss if rss or members else None,
-                cpu_total_seconds=cpu if cpu or members else None,
+                memory_peak_bytes=sum(rss) if rss else None,
+                cpu_total_seconds=sum(cpu) if cpu else None,
                 process_count=len(members) if members else None,
-                provenance=MeasurementProvenance.SAMPLED,
+                provenance=(MeasurementProvenance.SAMPLED if rss or cpu
+                            else MeasurementProvenance.UNAVAILABLE),
             )
 
         return _sample
@@ -574,11 +578,3 @@ class MacOSProcessGroupBackend:
                 discovered_at=now, last_seen_at=now,
             ))
         return tuple(survivors)
-
-
-# Keep the Protocol check honest at import time.
-def _protocol_check() -> None:
-    assert isinstance(MacOSProcessGroupBackend(), SessionBackend)
-
-
-_protocol_check()
