@@ -269,6 +269,10 @@ The mounted catch walks cause/context links across D/P/A/B/C/L/R; it never infer
 exhaustion from counter signs or traceback frames. Standalone calls without an
 enclosing deadline and genuine malformed history retain their classifications
 and persisted bytes. No cap, original deadline, allowance or retry is renewed.
+Sequential-start recognition retains genuine exhaustion as the cause of the
+caller's already handled first error before returning its original Boolean
+fallback. Both queued and central-metadata rethrows therefore preserve it;
+ordinary unmatched recognition still returns False with its original error.
 
 **Final success remains Held; U7c2 is implementation remainder.** Transport and
 validated observation do not implement a Final capability witness, recipients,

@@ -9,12 +9,14 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
 from runtime.workflows._read_exhaustion import check as _budget_check
+from runtime.workflows._read_exhaustion import exhausted
 
 from runtime.workflows.sequential_contracts import StartCommand
 from runtime.workflows.coding_authority_history import _TRAVERSAL_LIMIT
@@ -235,6 +237,7 @@ def recognized_start(raw: object, *, location: str, result_id: int | None,
     if (location != 'task_results.decision_json' or not sequential or budget is None
             or type(result_id) is not int or result_id <= 0):
         return False
+    original_error = sys.exception()
     try:
         value = _json(raw, budget)
         _require(set(value) in ({'action', 'workflow'}, {'action', 'workflow', '_manager_self_evaluation'})
@@ -278,6 +281,10 @@ def recognized_start(raw: object, *, location: str, result_id: int | None,
                          and _original(command, row['start_bytes'], len(raw), budget))
         _require(len(referenced) <= 1)
         clean = _residual(value, budget, reserved)
-    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError) as exc:
+        # Both callers rethrow their retained first error after False. Keep the
+        # actual failed reservation reachable through that original exception.
+        if original_error is not None and exhausted(exc):
+            original_error.__cause__ = exc
         return False
     return clean
