@@ -181,12 +181,17 @@ def _normalize_path() -> None:
     the Swift-side ``PACKAGING_MODE=bundled`` env var is stripped by
     EnvironmentSanitizer before the daemon child launches.
 
+    Source-mode bundles can instead set ``HAPPYRANCH_BUNDLED_BIN`` to their
+    launcher directory. It has the same first-entry/deduplication behavior;
+    frozen bundles retain their executable-derived directory. Without either
+    signal, only the standard tool directory behavior applies.
+
     Idempotent: dirs already present are not duplicated.
     """
     current = os.environ.get("PATH", "")
     entries = current.split(":") if current else []
 
-    # Build prepends in priority order: bundled CLI dir first (frozen only),
+    # Build prepends in priority order: bundled CLI dir first (when signalled),
     # then standard tool dirs, then the original PATH entries.
     prepends: list[str] = []
 
@@ -204,6 +209,9 @@ def _normalize_path() -> None:
             # always resolves to the bundled binary.
             entries = [e for e in entries if e != bundled_cli_dir]
             prepends.append(bundled_cli_dir)
+    elif bundled_cli_dir := os.environ.get("HAPPYRANCH_BUNDLED_BIN"):
+        entries = [e for e in entries if e != bundled_cli_dir]
+        prepends.append(bundled_cli_dir)
 
     # Standard tool dirs: prepend only those not already present.
     for d in _STANDARD_TOOL_DIRS:
