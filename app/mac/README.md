@@ -36,6 +36,12 @@ reports Stop incomplete (including a native KILL error when present), retains
 the handle and keeps Start disabled. A pending Restart waits for the real exit
 callback. External daemons are not signaled through this managed-child path.
 
+Quit attempts the same bounded TERM/KILL teardown for any live child the app
+owns, including one still stopping after an earlier incomplete Stop or a
+refused HOME to CLIENT switch. If the child survives again, the outcome remains
+Stop incomplete and ownership is retained; Quit never fabricates an exit.
+External daemons remain untouched.
+
 Switching from HOME to CLIENT stops the managed child before changing the role.
 If it survives, the switch is refused: the effective and saved role stay HOME,
 the live handle stays owned, the state stays stopping, Start stays disabled,

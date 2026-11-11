@@ -133,10 +133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Terminate the managed daemon if it's still alive.
+        // Retry bounded teardown for any live owned child, including .stopping
+        // after an incomplete Stop or refused role switch. Keep the actual outcome.
         // External daemons are NEVER terminated on quit.
-        if supervisor.isManagedBySelf,
-           supervisor.state == .running || supervisor.state == .starting || supervisor.state == .unhealthy {
+        if supervisor.isManagedBySelf, currentHandle?.isRunning == true {
             terminateManagedProcess()
         }
     }

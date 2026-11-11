@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 import Testing
@@ -88,7 +89,7 @@ struct AppDelegateStopHonestyTests {
         #expect(factory.launchCallCount == 0)
     }
 
-    @Test("HOME to CLIENT refuses a surviving managed child", arguments: [false, true])
+    @Test("HOME to CLIENT refuses a surviving managed child, and Quit retries Stop", arguments: [false, true])
     func roleSwitchKeepsHomeWhileChildSurvives(stoppedEarlier: Bool) throws {
         let savedPreference = UserDefaults.standard.object(forKey: "connectionRolePreference")
         defer {
@@ -136,6 +137,46 @@ struct AppDelegateStopHonestyTests {
         if let earlierDiagnostic {
             #expect(delegate.stateText == earlierDiagnostic)
         }
+
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+
+        #expect(handle.terms == 2)
+        #expect(handle.kills == 2)
+        #expect(handle.isRunning)
+        #expect(delegate.currentHandle === handle)
+        #expect(delegate.supervisor.isManagedBySelf)
+        #expect(delegate.supervisor.state == .stopping)
+        #expect(!delegate.canStart)
+        #expect(delegate.supervisor.lastExitCode == nil)
+        #expect(delegate.supervisor.lastExitSignal == nil)
+        #expect(delegate.stateText == "Stop incomplete: daemon still running; SIGKILL errno: \(EPERM)")
+        #expect(delegate.diagnostics.collect()["launcher_log"] as? String
+                == "Managed Stop: still running, SIGKILL errno=\(EPERM)")
+    }
+
+    @Test("Quit leaves a live external handle untouched", arguments: [false, true])
+    func quitLeavesLiveExternalHandleUntouched(stopping: Bool) {
+        let delegate = AppDelegate()
+        let factory = FakeProcessController()
+        delegate.processController = factory
+        delegate.supervisor.configure(homeDir: "/unused")
+        let handle = StopObservation()
+        delegate.currentHandle = handle
+        delegate.supervisor.onExternalDaemonDetected(pid: handle.processIdentifier, port: 9876)
+        if stopping { delegate.supervisor.forceState(.stopping) }
+        delegate.refreshDerivedState()
+
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+
+        #expect(handle.terms == 0)
+        #expect(handle.kills == 0)
+        #expect(handle.isRunning)
+        #expect(delegate.currentHandle === handle)
+        #expect(!delegate.supervisor.isManagedBySelf)
+        #expect(delegate.supervisor.state == (stopping ? .stopping : .externalRunning))
+        #expect(delegate.supervisor.lastExitCode == nil)
+        #expect(delegate.supervisor.lastExitSignal == nil)
+        #expect(factory.launchCallCount == 0)
     }
 
     @Test("scripted Stop escalates a disposable TERM-ignoring child")
