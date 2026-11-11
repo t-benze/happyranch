@@ -17,6 +17,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/managed-m1-logs"
           echo "M1_BUILD=$RUNNER_TEMP/managed-m1-build" >> "$GITHUB_ENV"
           echo "M1_LOGS=$RUNNER_TEMP/managed-m1-logs" >> "$GITHUB_ENV"
+          echo "MANAGED_DOWNLOADS=$RUNNER_TEMP/managed-downloads" >> "$GITHUB_ENV"
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Install uv
@@ -26,6 +27,16 @@ jobs:
         with:
           go-version-file: app/linux/tsnet-sidecar/go.mod
           cache-dependency-path: app/linux/tsnet-sidecar/go.sum
+      - name: Cache pinned Headscale binary
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.MANAGED_DOWNLOADS }}/headscale
+          key: managed-linux-amd64-headscale-0.25.1-d2cda0a5d748587f77c920a76cd1bf1ab429e5299ba5bc6b3dda90712721b45b
+      - name: Cache pinned Tailscale archive
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.MANAGED_DOWNLOADS }}/tailscale.tgz
+          key: managed-linux-amd64-tailscale-1.102.3-36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5
       - name: Install system Python venv support
         run: sudo apt-get update && sudo apt-get install -y python3-venv
       - name: Install, observe READY, request, uninstall and check residue
