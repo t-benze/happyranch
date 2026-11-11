@@ -610,3 +610,16 @@ Readiness remains unconditionally disabled; this grants no live allocation.
 Deferred native recovery/reassignment remain unavailable separately. Genuine
 current task/SID report-completion remains the final action; never fabricate
 an earlier result or another task's callback to work around a refusal.
+
+
+Sequential Coding U5a's unmounted evidence reader/policy grants no job or Final
+execution entitlement. Mandatory settled independent exact-subject APPROVE/PASS
+and required selected-head Source Boundary Lint + Web Lint (Node 24) cannot be
+waived by graph data. U5b still owns LOCAL genuine live Final wiring and one
+owned expected-head non-admin action/remote observation; neither selection,
+intent, action nor receipt production moves to a job/daemon/recovery runner.
+ACCESS-1 msg131 / PRD v1.0.4 preserves current-authority rechecks and agent-owned
+access failures (denied versus unverified BLOCK -> Held), with zero daemon PR/
+network I/O or new access observer/credential. U5a supplies no executable
+selection on success or refusal; existing assessment/Final success paths stay
+held. See docs/superpowers/specs/2026-11-11-sequential-coding-u5.md.

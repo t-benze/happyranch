@@ -1,0 +1,219 @@
+# Sequential Coding U5: current evidence and local Final capability
+
+2026-11-11; THR-336 / ROOT TASK-15165; U5a maker TASK-15200. Source base
+`c9732f07f79cd74e04a41777a6f1ebae57079704` includes U4b3 PR1373.
+This is the full U5 design and its first reader/policy merge unit. It supplies
+no live admission, installation, migration, deployment or runtime acceptance.
+
+## Authority and preserved decisions
+
+Plan rev3 `engineering_manager/output/TASK-14461/implementation-plan.md` §U5
+(SHA256 `adb23e805373d0694c4ad79f1847c50d5f7fabcb20fb193cb110f6dd6cee06e7`),
+R-M2-1 `output/TASK-15144/r-m2-1-u4-u9-rescope.md` (SHA256
+`49d6cb83a575ae5e15b9b5cb6415371052cc66d54331cb15e3f238ddc01c153d`, “U5
+unchanged”), and canonical Shared Artifact
+`product_lead-2026-11-11-workflow-mechanism-prd-v1.0.4.md` (SHA256
+`96925395de4e44cc5c1570deb512ec843fcfd72c0b3eaeff0423c00b58a07bb5`)
+control this unit. PRD F3/F4/F5/F6/F8 and AC5/AC6/AC8/AC9 apply.
+Founder THR-336 msg131, “ok access 1”, selects ACCESS-1 from msg130.
+
+ACCESS-1 means the daemon rechecks **only current authority** before each later
+disclosure/publication/action: role eligibility, fixed binding, active principal
+and unchanged repository/origin/base/scope. Effective repository access is the
+selected agent's own operation in its live session: reviewer/QA exact-head fetch,
+Final manager expected-head non-admin guarded merge. Its failure is BLOCK ->
+Held, distinguishing denied from unverified. There is no four-role checkpoint,
+new credential, access observer, daemon GitHub/network I/O or OS containment
+claim. Preserve U4a/U4b2 clone-metadata/SHA1/origin/base preflight unchanged.
+See the [U4 owner/spec](2026-11-11-sequential-coding-u4.md).
+
+Preserve F-1=(i), Decision1=B (49152-byte JSON; document 1 MiB), Decision2=1,
+SB-1=(a), all earlier failed/cancelled tasks and consumed allowances, V3 window
+ending `2026-11-23T08:48:38Z`, and held PR1252. U5 supplies no replenishment,
+thread notifications, live config/admission/roles, install/migration,
+deploy/restart, genuine Coding scratch (V5/M4) or effect recovery. Merged is
+separate from deployed. A newly required product/schema/auth/permission or
+Founder-reserved change stops for the manager; none is introduced here.
+
+## Split and caller inventory
+
+**U5a implemented here:** closed assessment syntax, an unmounted SELECT-only
+current-evidence reader and pure capability derivation/refusal classification.
+It returns transient evidence admissibility, never an executable Final selection,
+intent/action or durable capability. A refusal returns no admissibility value.
+No runtime consumer is attached; review/QA/Final outputs keep their existing
+unavailable hold. No existing U4 runtime owner is edited.
+
+**U5b pending:** attach review/QA assessment composition and addressed disclosure,
+then the Final live-owner selection and common local CLI finalization core;
+adapt historical `cli/commands/workflow_coding_finalize.py` without changing its
+admitted families; use `runtime/daemon/pr_ci_merge.guarded_merge` only as the
+existing locally called guard requires; add selected-head lint observation and
+owned intent/action/remote-observation validation. If this exceeds a merge unit,
+split these producers serially. No producer may precede its compatible reader,
+current-authority checks and cancellation boundary.
+
+This clarifies the default split at its producer interface: current
+`SequentialDispatcher._compose` explicitly refuses every repository success
+contract except `code-change@1`. There are no genuine sequential review/QA/Final
+producers to attach merely by adding a reader. Attaching assessment producers
+together with Final wiring belongs to the next producer unit, avoiding a
+partially authorized successful-output path in U5a. The diagnostic below may
+seed synthetic accepted rows, but cannot turn these missing producers into
+native proof. This assumption was stated before editing and in the handoff.
+
+| Owner / symbols | Callers, consumers and responsibility |
+| --- | --- |
+| New `sequential_coding_policy.py`: `CodeAssessmentDeclaration`, `read_code_assessment`, `SettledCodingResult`, `CurrentCodingEvidence`, `CodingAdmissibility`, `mandatory_coding_assessments`, `derive_coding_admissibility`, refusal enum/exception | No production caller. New SQL reader consumes it. U5b will consume the reader and syntax. All data classes are in-process projections, with no authenticated Boolean or executable capability. |
+| New `sequential_coding_evidence.py`: `read_current_coding_evidence_uncommitted`, `_pinned`, `_read`, `_settled` | No production caller, route, CLI, settings consumer or registration. Future U5b selected Final adapter calls under original authority ownership. SQL SELECTs and pure validation only. |
+| `sequential_history`: `_run_history`, `_outputs`, `_native_rows`, `_ReadBudget`; `sequential_run_validation`: `_selected_layout`, `_read_selected`, `_selected_settings`, `_prior_state` | Existing complete/selected readers and engine keep ownership. U5a replays the whole selected run, not incremental trust in old result/envelope writes. Original admitted pins are read without selecting today's settings. |
+| `sequential_business_hold.hold_body`, `_proof` | Existing hold writer/readers remain owners. U5a reuses their SELECT-only native INTEGER callback + successful terminal + positive original outer authenticator, discarding the reconstructed hold body. It writes no hold. |
+| `sequential_coding_output`: declaration, `coding_binding_context`; `sequential_repository_subject.read_repository_subject` | Existing dispatcher/subject/preflight owners remain unchanged. Reuse exact declared change syntax, fixed bindings/current eligibility and original committed subject. Do not adopt historical Coding repository capability or reobserve Git. |
+| `WorkflowAuthorityCoordinator._validate_admission_uncommitted` | Existing sole captured-authority validator. Caller captures outside locks, owns the original authority transaction/locks; U5a validates before and after derivation without file/network reads. Missing/stale authority is unverified; proved inactive/ineligible binding is denied. |
+| `SequentialDispatcher._compose`, `_advance`, `node_instruction`, `outer_settled` | Existing U4 composition and rollback-then-Held owner remain unchanged. U5b will attach assessment witnesses and finite U5 refusal handling, retaining native/outer COMMIT ordering. U5a does not add a callback/hold writer. |
+| `cli/commands/workflow_coding_finalize.py` (`_selected`, `_execute`, `_checks`, `_local_subject`) | Historical local Final adapter, no sequential consumer today. U5b extracts/reuses a common local core while keeping immutable historical command/selection/output interpretation. |
+| `pr_ci_waiter.wait_for_ci`, `pr_ci_merge.guarded_merge`, `_gh_perform_merge`, remote confirmation | Called only by the selected Final manager's local CLI in U5b. Their module location grants no daemon effect authority. No new job/recovery executor. |
+| Engine/reducer/cancellation/native Pause and ownership | Preserve allocation/CAS, invalidation, output caps, cancellation, native tail/outer proof and independent merge-observation versus execution-settlement owners. U6 still owns mixed-history closure; U7 public transport; U9 fresh-start cutover. |
+
+## U5a current-evidence reader and policy
+
+`read_current_coding_evidence_uncommitted` accepts original org/run/Final
+task/principal/SID, canonical declared change bytes and original authority
+coordinator/capture. Its caller owns coherent raw SQLite values, admission
+transaction and locks throughout; no await or capture I/O occurs inside it.
+This internal reader does not establish actual host liveness. U5b must prove
+the original selected live invocation before exposing any executable selection.
+
+The reader compares the complete selected schema, reads immutable definition/
+settings/start pins, all visits/events/outputs for that run, and replays the full
+prefix with the common reducer. This checks native result attribution, envelopes,
+selection inputs, edges, returns, invalidations, counters, event digest chain and
+CAS. Current evidence comes from replayed selections, **not Final's declared
+review/QA inputs**, node IDs, presumed stage order or newest verdict lookup.
+Final's declared change must match the original subject and current epoch.
+
+The selected Final must be the active run's sole running selected
+`guarded-repository-merge@1` visit, with matching task/principal/SID, no result,
+native in-progress identity, no cancellation/zombie/chain/fanout/job wait,
+authentic sequential ownership, and a current registered executable manager
+binding. Review/QA/development selected principals retain their fixed active
+worker bindings. A stale capture or unavailable profile/authority owner refuses
+as unverified; positively ineligible/inactive/missing principal refuses as denied.
+This is current authority, never effective repository permission observation.
+
+Assessment output syntax is canonical UTF8 JSON, at most 49152 bytes:
+`{"format":"workflow-sequential-code-assessment@1","change":<entire original
+workflow-sequential-code-change@1 declaration>}`. This is a subject assertion
+only. Approval/PASS comes exclusively from the original native INTEGER callback
+and its closed canonical carrier, not an outcome field in this content or an
+agent-supplied check. U5b's producer must use this same syntax/reader.
+
+For every selected development/review/QA result, re-read the original native
+callback bytes, require completed status and its exact task/principal/SID,
+successful host receipt (supported backend, Boolean quiescence, no survivors),
+positive original outer closure with matching invocation/callback/carrier digest,
+and completed uncancelled native task. The original carrier's output bytes must
+equal the saved output, outcome equal the accepted envelope, and claims be empty.
+No unsigned PASS string, saved digest, check list, stale native result, local
+process success or remote PR state substitutes for these joins.
+
+Trusted policy unconditionally selects `independent-code-review@1` APPROVE and
+`code-qa@1` PASS for every Final capability. A valid develop -> Final definition
+omitting them reaches this policy and refuses missing review; review satisfied
+without QA refuses missing QA. Rerouted graph/input data cannot waive either.
+Require exactly one current development, review and QA result, all same run,
+epoch and full declaration: repository ID/key/raw-origin digest, SHA1 format,
+base, immutable scope, full head and exact PR repository/number/URL. Stale head,
+PR, base or epoch refuses. Ambiguous evidence refuses rather than choosing one.
+
+Retain contributor principals from **all** run visits producing the code-change
+contract, including earlier content epochs and invalidated outputs. This is
+native run contributor attribution, not a claim to enumerate Git commit authors.
+Reviewer, QA and Final are mutually distinct and absent from that entire set;
+current developer is in the contributor set. Definition independence omissions
+cannot allow self-approval. Current access/authority checks never erase retained
+contributor history. Existing intent/action evidence refuses as effect-uncertain;
+there is no clearance, replay or second effect after missing/failed recording.
+
+Successful derivation contains exact development/review/QA references, original
+carrier/terminal/outer digests, original run/Final identity, definition/start/CAS/
+event/input pins and mandatory lint names. It proves neither successful lints nor
+merge permission. Parsing/reconstructing/saving its classes confers no authority.
+U5b must re-read at later boundaries; no cached derivation is a lasting grant.
+
+Closed refusal causes distinguish missing review, missing QA, stale evidence,
+non-independent contributor, authority denied, authority unverified, malformed/
+unverified evidence, unavailable Final and prior/uncertain effect. Refusal raises
+without returning any admissibility/executable selection or writing any row,
+intent or action. U5b must translate these finite causes through the existing
+rollback-then-business-Held owner, preserving actual causal evidence; persistence
+failure cannot be reported as durable Held. U5a itself does not persist Held.
+
+One original `_ReadBudget` covers selected schema, full replay, native proofs,
+copies, parser/policy work and closing validation: cooperative five seconds,
+64 MiB charged bytes, 65536 traversal steps and SQL progress ceiling. Existing
+row/value bounds remain; exhaustion refuses without partial evidence, renewal or
+hard memory/time guarantees. SQL is SELECT-only; no transaction control.
+
+## U5b local Final execution and observation design (pending)
+
+1. Prove the actual selected original live Final task/principal/SID and native
+   invocation, unchanged subject and current authority. Derive U5a evidence at
+   that same boundary before exposing an executable Final selection. A valid
+   omitted/rerouted graph must reach policy; an earlier validator denial is not
+   the mandatory-review/QA negative. Bind original workspace/repository metadata
+   and exact selection pins. No daemon GitHub/PR/network I/O.
+2. The local Final-manager CLI core consumes only that exact selection. Reuse
+   historical adapter safeguards and revalidate authority/selection before each
+   later disclosure/publication/action. Effective access is established by its
+   own real operation, never a daemon access observer or synthetic probe. Actual
+   denied versus unverified repository failure returns BLOCK -> Held.
+3. Locally observe exactly **Source Boundary Lint** and **Web Lint (Node 24)**
+   successful at selected H. Preserve actual remote check identities/head/status;
+   missing, pending, stale, ambiguous, skipped or neutral is Held. Do not accept
+   arbitrary status labels, caller Boolean ci_pass or old-head checks. This
+   source task does not execute or claim those future workflow observations.
+4. Reserve one original Final-task-owned attempt/intent independent of operation
+   key/cwd/path variants, with unchanged original native workspace and subject.
+   Persist the exact selected pins, check observations and intent before action;
+   preserve partial/failed recording uncertainty. Before the one action, re-read
+   current authority, exact selection and immutable local subject. A refusal
+   before capability admission creates zero executable selection/intent/action;
+   later failed lint/operation preserves its actual local evidence and hold.
+5. Invoke existing ordinary guarded merge with full expected head and without
+   `--admin`; retain independent review APPROVE, QA PASS, open/non-draft exact PR,
+   head and clean mergeability gates. Final manager owns the command, original
+   exit/diagnostic and local receipt in its genuine live session, never a job,
+   daemon service, old source SID or recovery runner.
+6. Independently observe exact repository/PR/URL, pinned H, remote MERGED, full
+   actual merge-commit SHA1 and timezone-aware merge time. Never synthesize a
+   commit or timestamp. Command failure/loss stays failed/uncertain even if a
+   later read sees MERGED; that read is a separate observation. No reissued
+   merge, new operation key, admin fallback or automatic recovery.
+7. The daemon only validates/records the genuine original callback and remote
+   observation. Business merge observation and native execution settlement stay
+   separate: only successful original host termination AND positive outer
+   settlement permit normal reducer advance/caller return. A remote merge cannot
+   clear native uncertainty or fabricate a result. Cancellation fences new work
+   and retains already-owned effect facts under the existing owners.
+
+## Evidence and remaining gates
+
+No repository tests are added/changed. Python units are RETIRED; general
+integration is SKIPPED (THR-243 seq42); no ad hoc Product E2E. Required delivery
+checks are exact-H `scripts/local_ci.sh all` as an authenticated job, normal
+hooked nonforce push, full B..H/AST/radius review, and hosted Source Boundary Lint
+plus Web Lint (Node 24) snapshot at H. Independent review APPROVE, scoped QA PASS
+and manager guarded merge remain required; the maker never approves/QA/merges.
+
+The disposable out-of-repo diagnostic drives the actual U5a reader/policy using
+synthetic authority, callback/host/outer/accepted-row scaffolding. Required cases:
+missing review; review satisfied/missing QA; stale head/PR/base/epoch; self-approval
+and retained-contributor independence; lost authority denied vs unverified;
+omitted/rerouted nodes still mandatory; admissible full evidence at the same
+boundary; zero SQL changes/executable selection/intent/action on refusal.
+Scaffolding is not native, V3, real agent fetch, successful lint-at-selected-head,
+live Final selection/command/merge, genuine Coding scratch, cancellation/restart,
+effect recovery, installed compatibility or deployment acceptance. These remain
+NOT RUN; preserve historical failures. Handoff records actual diagnostic results,
+commands/exits, exact B/H, full changed-file/AST inventory and remaining gates.
