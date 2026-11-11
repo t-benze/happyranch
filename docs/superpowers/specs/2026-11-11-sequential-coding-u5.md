@@ -2,7 +2,9 @@
 
 2026-11-11; THR-336 / ROOT TASK-15165; U5a maker TASK-15200. Source base
 `c9732f07f79cd74e04a41777a6f1ebae57079704` includes U4b3 PR1373.
-This is the full U5 design and its first reader/policy merge unit. It supplies
+U5b1 maker TASK-15222 uses base `4d662ef96d933bb0cdd86e4d2761e116c3d70c24`
+(U5a PR1380). This is the full U5 design and its reader/policy plus assessment
+producer merge units. It supplies
 no live admission, installation, migration, deployment or runtime acceptance.
 
 ## Authority and preserved decisions
@@ -41,38 +43,36 @@ Founder-reserved change stops for the manager; none is introduced here.
 current-evidence reader and pure capability derivation/refusal classification.
 It returns transient evidence admissibility, never an executable Final selection,
 intent/action or durable capability. A refusal returns no admissibility value.
-No runtime consumer is attached; review/QA/Final outputs keep their existing
-unavailable hold. No existing U4 runtime owner is edited.
+The current-evidence Final reader remains unmounted; its settled-result helper
+is now reused by U5b1. Final outputs keep their unavailable hold.
 
-**U5b pending:** attach review/QA assessment composition and addressed disclosure,
-then the Final live-owner selection and common local CLI finalization core;
-adapt historical `cli/commands/workflow_coding_finalize.py` without changing its
-admitted families; use `runtime/daemon/pr_ci_merge.guarded_merge` only as the
-existing locally called guard requires; add selected-head lint observation and
-owned intent/action/remote-observation validation. If this exceeds a merge unit,
-split these producers serially. No producer may precede its compatible reader,
-current-authority checks and cancellation boundary.
+**U5b1 implemented (TASK-15222):** attach `independent-code-review@1` APPROVE
+and `code-qa@1` PASS composition and addressed assessment disclosure through
+`SequentialDispatcher`. The producer consumes U5a's closed syntax and settled
+native authenticator under the original current-authority ownership. Negative
+REQUEST_CHANGES/REVISE/BLOCK callbacks retain their ordinary no-output path.
 
-This clarifies the default split at its producer interface: current
-`SequentialDispatcher._compose` explicitly refuses every repository success
-contract except `code-change@1`. There are no genuine sequential review/QA/Final
-producers to attach merely by adding a reader. Attaching assessment producers
-together with Final wiring belongs to the next producer unit, avoiding a
-partially authorized successful-output path in U5a. The diagnostic below may
-seed synthetic accepted rows, but cannot turn these missing producers into
-native proof. This assumption was stated before editing and in the handoff.
+**U5b2 pending:** Final live-owner selection and common local CLI finalization
+core; adapt historical `cli/commands/workflow_coding_finalize.py` without changing
+its admitted families; use `runtime/daemon/pr_ci_merge.guarded_merge` only as the
+existing locally called guard requires; selected-head lint observation and owned
+intent/action/remote-observation validation. `guarded-repository-merge@1` success
+continues to refuse with the existing unavailable-output durable hold. Assessment
+witnesses grant no partial Final selection, intent, action or merge permission.
+No producer may precede its compatible reader, current-authority checks and
+cancellation boundary.
 
 | Owner / symbols | Callers, consumers and responsibility |
 | --- | --- |
-| New `sequential_coding_policy.py`: `CodeAssessmentDeclaration`, `read_code_assessment`, `SettledCodingResult`, `CurrentCodingEvidence`, `CodingAdmissibility`, `mandatory_coding_assessments`, `derive_coding_admissibility`, refusal enum/exception | No production caller. New SQL reader consumes it. U5b will consume the reader and syntax. All data classes are in-process projections, with no authenticated Boolean or executable capability. |
-| New `sequential_coding_evidence.py`: `read_current_coding_evidence_uncommitted`, `_pinned`, `_read`, `_settled` | No production caller, route, CLI, settings consumer or registration. Future U5b selected Final adapter calls under original authority ownership. SQL SELECTs and pure validation only. |
+| New `sequential_coding_policy.py`: `CodeAssessmentDeclaration`, `read_code_assessment`, `SettledCodingResult`, `CurrentCodingEvidence`, `CodingAdmissibility`, `mandatory_coding_assessments`, `derive_coding_admissibility`, refusal enum/exception | U5b1 output producer consumes the assessment syntax; the Final SQL reader consumes policy. No executable Final consumer. All data classes are in-process projections, with no authenticated Boolean or executable capability. |
+| New `sequential_coding_evidence.py`: `read_current_coding_evidence_uncommitted`, `_pinned`, `_read`, `_settled` | U5b1 `_settled_input` calls `_settled` for original upstream callback/host/outer joins. The full Final reader has no production caller, route, CLI, settings consumer or registration; U5b2 remains pending. SQL SELECTs and pure validation only. |
 | `sequential_history`: `_run_history`, `_outputs`, `_native_rows`, `_ReadBudget`; `sequential_run_validation`: `_selected_layout`, `_read_selected`, `_selected_settings`, `_prior_state` | Existing complete/selected readers and engine keep ownership. U5a replays the whole selected run, not incremental trust in old result/envelope writes. Original admitted pins are read without selecting today's settings. |
 | `sequential_business_hold.hold_body`, `_proof` | Existing hold writer/readers remain owners. U5a reuses their SELECT-only native INTEGER callback + successful terminal + positive original outer authenticator, discarding the reconstructed hold body. It writes no hold. |
-| `sequential_coding_output`: declaration, `coding_binding_context`; `sequential_repository_subject.read_repository_subject` | Existing dispatcher/subject/preflight owners remain unchanged. Reuse exact declared change syntax, fixed bindings/current eligibility and original committed subject. Do not adopt historical Coding repository capability or reobserve Git. |
+| `sequential_coding_output`: declaration, `coding_binding_context`, `_assessment_declaration`, `_settled_input`, `_assessment_inputs`, `build_coding_witness`, `authorize_coding_input`, `coding_assessment_supplement`; `sequential_repository_subject.read_repository_subject` | U5b1 extends the existing output/disclosure owner. Reuse exact declared change syntax, fixed bindings/current eligibility, original committed subject and U5a settled proofs. Do not adopt historical Coding repository capability or reobserve Git. |
 | `WorkflowAuthorityCoordinator._validate_admission_uncommitted` | Existing sole captured-authority validator. Caller captures outside locks, owns the original authority transaction/locks; U5a validates before and after derivation without file/network reads. Missing/stale authority is unverified; proved inactive/ineligible binding is denied. |
-| `SequentialDispatcher._compose`, `_advance`, `node_instruction`, `outer_settled` | Existing U4 composition and rollback-then-Held owner remain unchanged. U5b will attach assessment witnesses and finite U5 refusal handling, retaining native/outer COMMIT ordering. U5a does not add a callback/hold writer. |
-| `cli/commands/workflow_coding_finalize.py` (`_selected`, `_execute`, `_checks`, `_local_subject`) | Historical local Final adapter, no sequential consumer today. U5b extracts/reuses a common local core while keeping immutable historical command/selection/output interpretation. |
-| `pr_ci_waiter.wait_for_ci`, `pr_ci_merge.guarded_merge`, `_gh_perform_merge`, remote confirmation | Called only by the selected Final manager's local CLI in U5b. Their module location grants no daemon effect authority. No new job/recovery executor. |
+| `SequentialDispatcher._compose`, `_advance`, `node_instruction`, `outer_settled` | U5b1 extends supported output types, context/proof preparation, verdict matching and trusted assessment supplements. Existing rollback-then-Held owner and native/outer COMMIT order remain unchanged; no callback/hold writer is added. |
+| `cli/commands/workflow_coding_finalize.py` (`_selected`, `_execute`, `_checks`, `_local_subject`) | Historical local Final adapter, no sequential consumer today. U5b2 extracts/reuses a common local core while keeping immutable historical command/selection/output interpretation. |
+| `pr_ci_waiter.wait_for_ci`, `pr_ci_merge.guarded_merge`, `_gh_perform_merge`, remote confirmation | Called only by the selected Final manager's local CLI in U5b2. Their module location grants no daemon effect authority. No new job/recovery executor. |
 | Engine/reducer/cancellation/native Pause and ownership | Preserve allocation/CAS, invalidation, output caps, cancellation, native tail/outer proof and independent merge-observation versus execution-settlement owners. U6 still owns mixed-history closure; U7 public transport; U9 fresh-start cutover. |
 
 ## U5a current-evidence reader and policy
@@ -106,7 +106,7 @@ Assessment output syntax is canonical UTF8 JSON, at most 49152 bytes:
 workflow-sequential-code-change@1 declaration>}`. This is a subject assertion
 only. Approval/PASS comes exclusively from the original native INTEGER callback
 and its closed canonical carrier, not an outcome field in this content or an
-agent-supplied check. U5b's producer must use this same syntax/reader.
+agent-supplied check. U5b1's producer uses this same syntax/reader.
 
 For every selected development/review/QA result, re-read the original native
 callback bytes, require completed status and its exact task/principal/SID,
@@ -155,7 +155,59 @@ copies, parser/policy work and closing validation: cooperative five seconds,
 row/value bounds remain; exhaustion refuses without partial evidence, renewal or
 hard memory/time guarantees. SQL is SELECT-only; no transaction control.
 
-## U5b local Final execution and observation design (pending)
+## U5b1 assessment composition and addressed disclosure (implemented)
+
+An APPROVE/PASS producer requires its own completed original INTEGER callback
+and matching verdict, successful native host receipt and positive outer proof,
+then current fixed active/eligible bindings and the unchanged committed subject.
+The entire assessment declaration must equal the one selected `code-change@1`
+input, including repository/key/origin/base/scope, full head, exact PR and current
+epoch. Missing/ambiguous change input refuses as subject-unverified. Every selected
+Coding upstream result is re-read with U5a's `_settled` authenticator: original
+callback content/verdict, host/outer digests, native completed uncancelled task,
+full output reference and selected content must agree. Selected upstream workers
+retain their original binding; reviewer/QA cannot be a selected upstream principal
+or any code-change contributor in the run, including invalidated earlier epochs.
+
+Witnesses reuse U4b3's original provenance/content/subject/recipient preimage and
+existing check names. REQUEST_CHANGES, REVISE and BLOCK have empty content/claims,
+own findings, matching verdict and no domain witness/output; existing reducer
+return/hold and consumed-counter semantics apply. Assessment syntax/provenance
+never proves semantic truth or the agent's effective access. The trusted supplement
+requires the selected reviewer/QA's own exact-head fetch in its live session.
+
+Addressed input rendering rechecks authority through the existing owned writer
+before returning any bytes. It validates original recipients, selected reference,
+content hash, committed subject/current epoch and original settled assessment,
+including equality with any selected code-change input.
+Denied and unverified authority stay distinct. Refused publication rolls back and
+uses U4b1's sole independent finite business-Held writer with zero accepted output,
+verified checks or successor for that visit. Disclosure refusal returns no bytes
+and preserves selections/bindings; it does not invent a pre-callback result or hold.
+An agent's required-operation failure is its own causal BLOCK callback. Failed
+hold COMMIT cannot claim durable Held. No new hold cause, schema, authentication,
+permission, remote observer, credential or daemon network operation is introduced.
+
+One original dispatcher `_ReadBudget` covers parser/model copies, decoded
+traversal, selected upstream native proof reads, contributor enumeration and
+witness/disclosure work. Both the new declaration walk and reused `_settled`
+walk charge that original allowance; exhaustion is a reader refusal, outside
+malformed-output conversion. No allowance renewal follows a refusal. Native
+callback, host, positive outer and sequential COMMIT/queue order are unchanged.
+
+Native Impact: three Python files change. `sequential_coding_output` owns the
+new producer/disclosure helpers, `sequential_coding_evidence._settled` charges its
+decoded declaration traversal, and `sequential_dispatch._compose`, `_advance` and
+`node_instruction` select the added types/supplement. The dispatcher remains
+mounted by `OrgState`; task callback, outer/native settlement, engine/reducer,
+current-authority coordinator, immutable definition/settings, U4 clone preflight,
+Final CLI/guard, admission/configuration and cancellation owners are unmodified.
+Risk is assessment subject/provenance attribution and refusal classification;
+there is no schema/contract-family or historical adapter change. Targeted caller
+search, full B..H/AST inventory and synthetic diagnostic evidence are recorded
+in `dev_agent/output/TASK-15222/handoff.md`.
+
+## U5b local Final execution and observation design (U5b2 pending)
 
 1. Prove the actual selected original live Final task/principal/SID and native
    invocation, unchanged subject and current authority. Derive U5a evidence at
@@ -199,7 +251,7 @@ hard memory/time guarantees. SQL is SELECT-only; no transaction control.
 
 ## Evidence and remaining gates
 
-No repository tests are added/changed. Python units are RETIRED; general
+No repository tests are added/changed in either unit. Python units are RETIRED; general
 integration is SKIPPED (THR-243 seq42); no ad hoc Product E2E. Required delivery
 checks are exact-H `scripts/local_ci.sh all` as an authenticated job, normal
 hooked nonforce push, full B..H/AST/radius review, and hosted Source Boundary Lint
@@ -217,3 +269,12 @@ live Final selection/command/merge, genuine Coding scratch, cancellation/restart
 effect recovery, installed compatibility or deployment acceptance. These remain
 NOT RUN; preserve historical failures. Handoff records actual diagnostic results,
 commands/exits, exact B/H, full changed-file/AST inventory and remaining gates.
+
+
+U5b1's disposable out-of-repo diagnostic drives actual dispatcher composition,
+acceptance/transition, addressed rendering and complete/selected readers with
+explicitly synthetic authority, TaskInvocation, INTEGER callbacks and host/outer
+scaffolding. Cases cover review APPROVE/REQUEST_CHANGES/BLOCK, QA PASS/REVISE/BLOCK,
+stale full subjects/head/PR/base/epoch, denied/unverified current authority, shared
+budget exhaustion and continued Final refusal. It supplies no real live fetch,
+native workflow, selected-head lint, Final execution, deployment or runtime PASS.

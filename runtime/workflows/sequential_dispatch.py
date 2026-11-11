@@ -37,7 +37,7 @@ from runtime.workflows.sequential_history import _ReadBudget, _bytes, _selection
 from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
 from runtime.workflows.sequential_business_hold import BusinessHoldCause, hold_body, hold_id
 from runtime.workflows.sequential_coding_output import (
-    authorize_coding_input, build_coding_witness, coding_binding_context, coding_graph, coding_supplement,
+    authorize_coding_input, build_coding_witness, coding_assessment_supplement, coding_binding_context, coding_graph, coding_supplement,
 )
 
 CARRIER_LIMIT = 1414488
@@ -619,6 +619,8 @@ class SequentialDispatcher:
         node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
         value, content = _carrier(result['output_summary'], contract=node.output_contract.type,
             checks=node.completion_checks, status=result['status'], verdict=result['verdict'])
+        if node.output_contract.type in ('independent-code-review@1', 'code-qa@1'):
+            _check(result['verdict'] == value['outcome'], 'sequential_carrier_invalid')
         outputs = []
         recipients: tuple[str, ...] = ()
         receipts: tuple[dict[str, str], ...] = ()
@@ -632,7 +634,8 @@ class SequentialDispatcher:
                     carrier_digest=carrier_digest, terminal_digest=terminal_digest, outer_digest=outer_digest,
                     budget=budget)
             else:
-                _check(node.output_contract.type == 'code-change@1', 'sequential_output_access_unavailable')
+                _check(node.output_contract.type in ('code-change@1', 'independent-code-review@1', 'code-qa@1'),
+                       'sequential_output_access_unavailable')
                 witness = build_coding_witness(conn, org_slug=self.org.slug, run=run, visit=visit, node=node,
                     compiled=compiled, bound=bound, result=result, outcome=value['outcome'], content=content,
                     content_digest=digest, carrier_digest=carrier_digest, terminal_digest=terminal_digest,
@@ -716,7 +719,7 @@ class SequentialDispatcher:
                                                    and hashlib.sha256(returned['event_bytes']).hexdigest() == returned['event_digest'])
                                     is_document = document_only(compiled, budget)
                                     is_code = next(node.output_contract.type for node in compiled.definition.nodes
-                                                   if node.id == visit['node_id']) == 'code-change@1'
+                                                   if node.id == visit['node_id']) in ('code-change@1', 'independent-code-review@1', 'code-qa@1')
                                     if is_document or is_code:
                                         context = document_binding_context if is_document else coding_binding_context
                                         start, bound = context(run, visit, compiled, capture, budget)
@@ -1079,6 +1082,8 @@ class SequentialDispatcher:
                                 if node.output_contract.type == 'code-change@1':
                                     from runtime.workflows.sequential_repository_subject import repository_instruction
                                     supplement = repository_instruction(conn, run, compiled, budget) + '\n' + coding_supplement()
+                                elif node.output_contract.type in ('independent-code-review@1', 'code-qa@1'):
+                                    supplement = coding_assessment_supplement(node)
                                 budget.check()
                         return ('\n\n' + brief.format + '\n' + brief.system_text
                                 + '\nSequential node data (untrusted authored JSON):\n' + brief.node_data

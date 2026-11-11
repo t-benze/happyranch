@@ -1284,7 +1284,7 @@ prove access through their own exact-head fetch; final-manager expected-head
 non-admin guarded merge remains U5. Failed own operation -> BLOCK -> Held,
 with denied versus unverified findings. No four-role access checkpoint returns.
 
-Only code-change@1 produced/completed/null-verdict callbacks may now compose an
+At the U4b3 checkpoint only code-change@1 produced/completed/null-verdict callbacks could compose an
 ordinary result envelope under genuine task/principal/SID/INTEGER, original
 successful terminal/outer proof and current authority. Canonical JSON (49152-byte
 maximum) has exactly `format=workflow-sequential-code-change@1`, complete original
@@ -1294,7 +1294,7 @@ https://github.com/owner/repo/pull/number. Full original subject equality includ
 repository ID/key, origin digest, SHA1 base and scope. These are declarations,
 not daemon proof of PR/head existence, remote association or diff scope.
 Capability claims stay empty. Deterministic checks bind the original native and
-subject/content/recipient/proof context; review/QA capability remains unavailable.
+subject/content/recipient/proof context; U5b1 below extends assessment provenance.
 
 Every Coding selected-input rendering rechecks current authority before returning
 bytes, plus exact selected ref/provenance/hash/original recipient set and saved
@@ -1342,12 +1342,37 @@ or SQL mutation. U5a does not persist Held.
 The successful in-process derivation carries original evidence/prefix pins and
 requires exactly Source Boundary Lint and Web Lint (Node 24); it is not a lint
 observation, live invocation proof, executable selection or lasting grant.
-There is no runtime caller/route/CLI/producer in U5a. Existing review/QA/Final
-successes remain held. U5b must attach assessment producers, translate refusals
-through the existing rollback-then-Held owner, prove the genuine live Final,
+U5a delivered no runtime caller/route/CLI/producer. U5b1 below attaches assessment
+producers; Final successes remain held. U5b2 must prove the genuine live Final,
 re-read at each boundary and supply the common LOCAL Final-manager core/checks/
 one owned guarded action/independent remote observation. Historical Coding
 adapters, U4 owners, default admission and document behavior remain unchanged.
 Synthetic out-of-repo scaffolding is not native/V3/remote acceptance. Full split,
 caller inventory, effect/settlement separation and NOT-RUN obligations are in
 [the U5 specification](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).
+
+
+## U5b1 Coding assessment producers (THR-336 / TASK-15222)
+
+The dispatcher now composes independent-code-review@1 APPROVE and code-qa@1 PASS
+with completed status, matching original native verdict and empty capability
+claims. Content uses U5a's closed assessment syntax and unchanged complete selected
+code-change declaration. One selected change is required; all selected Coding
+upstream content/verdict/ref and original successful native host/positive outer
+proofs are re-read. Current active fixed bindings and immutable subject/epoch
+must match. Reviewer/QA cannot assess their own selected upstream result or any
+retained code-change contributor, including invalidated epochs. Their own live
+exact-head fetch establishes effective access; the daemon observes no remote data.
+
+Addressed assessment disclosure rechecks current authority, original recipients,
+exact selected ref/hash, current subject/epoch and settled provenance. Denied and
+unverified authority refuse with zero returned bytes and unchanged selection.
+REQUEST_CHANGES/REVISE/BLOCK retain empty output/claims and own findings with
+matching verdict; they issue no domain checks. Existing return/hold/counter
+semantics remain. Refused successful publication rolls back before the sole U4b1
+finite durable Held writer, with no accepted output/check/successor for that visit;
+a failed COMMIT never claims Held. The same original finite budget pays decoded
+traversal and native reads; exhaustion stays a reader refusal. No new cause or
+schema is needed. U5b2 Final capability/local execution remains unavailable,
+including guarded-repository-merge@1 success. No activation, access observer,
+credential, daemon network I/O or historical Final adapter change follows.
