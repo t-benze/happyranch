@@ -67,6 +67,7 @@ def _require(condition: bool, cause: FinalObservationCause) -> None:
 
 def _unheld(conn: sqlite3.Connection, mixed: MixedTaskHistory, keys: tuple[str, ...],
             authority: WorkflowAuthorityCoordinator, budget: _ReadBudget) -> str:
+    budget.reserve((512 + 128 * len(mixed.task_columns)) * len(mixed.tasks))
     tasks = {row[0]: dict(zip(mixed.task_columns, row, strict=True)) for row in mixed.tasks}
     budget.work(len(tasks))
     roots = {}
@@ -128,6 +129,8 @@ def _read(conn: sqlite3.Connection, *, org_slug: str, run_id: str, visit_id: str
              and (visit['state'], visit['selected']) == ('running', 1), FinalObservationCause.STALE)
     node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
     _require(node.output_contract.type == 'guarded-repository-merge@1', FinalObservationCause.FOREIGN)
+    budget.reserve(512 + 128 * len(mixed.results))
+    budget.work(2 * len(mixed.results))
     _require(mixed.result(result_id, task_id=task_id, principal=principal, session_id=session_id)[4] == 'completed',
              FinalObservationCause.UNVERIFIED)
     _require([row[0] for row in mixed.results if row[1] == task_id] == [result_id], FinalObservationCause.REPLAYED)
