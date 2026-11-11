@@ -2145,6 +2145,33 @@ the add/remove procedure are in `web/ARCHITECTURE.md` § Build-time UI flags.
 
 The SPA fetches the daemon bearer token once via `GET /api/v1/auth/bootstrap`, which is localhost-gated, then caches it in `sessionStorage` and attaches it to HTTP and SSE calls. CLI bearer-token behavior is unchanged.
 
+## Retired knowledge read API (S1)
+
+The bearer-authenticated same-org routes are
+`GET /api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}` and
+`GET /api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}/sources/{reference_id}`.
+Use existing terminated enrollments for navigation. Detail reports retained
+source identity, team/provider, unknown retirement date, coverage, capture
+availability/consistency and validated records. Unknown IDs return 404; active,
+pending and invalid retained identities refuse with 409. References are opaque,
+content-bound IDs returned by detail, never paths. Malformed reference IDs refuse
+with 422; missing/changed references return `available:false` and coverage.
+
+`happyranch knowledge retired show SOURCE --org ORG` and
+`happyranch knowledge retired source SOURCE REFERENCE --org ORG` print JSON,
+including explicit unknown counts/dates and capture failures. The CLI is a thin
+HTTP client and performs no local source reads or repair. A successful HTTP read
+can report `capture_available:false`; it does not assert Distill success.
+`web/src/lib/api/knowledge.ts` mirrors both routes with typed coverage, detail
+and reference responses. No new page is installed in S1.
+
+The existing route-classification owner lists both browser-callable reads and
+the OpenAPI snapshot pins them. Authentication and native/remote policies remain
+with their existing owners: classification/registration does not grant new
+permissions or remote reachability. No retired Web coverage test/file is added.
+Source availability and consistency rules live in
+[retired knowledge sources](features-and-invariants.md#retired-knowledge-sources-s1-thr-296).
+
 ## CLI
 
 `happyranch cancel <task_id>` prints the daemon's cancelled-task summary, then

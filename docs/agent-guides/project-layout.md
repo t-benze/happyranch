@@ -341,3 +341,11 @@ HTTP routes are per org under `/api/v1/orgs/<slug>/...`; container routes are un
 ## Root task Pause and Resume (THR-292)
 
 runtime/infrastructure/task_pause_controls.py owns the literal org-only table, closed journal, generation control and read projection. runtime/orchestrator/task_pause.py owns private producer arbitration and durable deferred discovery. Integration stays in existing admission, workflow dispatch, jobs, origin actions and startup/reaper owners. CLI controls live in cli/commands/tasks.py; TS transport in web/src/lib/api/{types,tasks}.ts; schema/route snapshots in tests/contract. The current design is docs/superpowers/specs/2026-10-10-root-task-pause-resume.md. No generic Database initializer or platform/auth/permission backend is introduced.
+
+## Retired knowledge source owner (S1)
+
+`runtime/knowledge/sources.py` owns non-migrating read-only retained-source
+validation, capture and coverage. `runtime/daemon/routes/knowledge.py` is the
+HTTP adapter; `cli/commands/knowledge.py` and `web/src/lib/api/knowledge.ts`
+mirror it. This owner installs no storage or background operation. See
+[the source contract](features-and-invariants.md#retired-knowledge-sources-s1-thr-296).

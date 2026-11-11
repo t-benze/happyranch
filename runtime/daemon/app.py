@@ -27,6 +27,7 @@ from runtime.daemon.routes import (
     identities,
     jobs,
     kb,
+    knowledge,
     metrics,
     orgs,
     portability,
@@ -526,6 +527,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(workflow_revisions.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-revisions"])
     app.include_router(workflow_reviews.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-reviews"])
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
+    app.include_router(knowledge.router, prefix="/api/v1/orgs/{slug}", tags=["knowledge"])
     app.include_router(skills.router, prefix="/api/v1/orgs/{slug}", tags=["skills"])
     app.include_router(skills.agent_skills_router, prefix="/api/v1/orgs/{slug}", tags=["skills"])
     app.include_router(custom_skills.router, prefix="/api/v1/orgs/{slug}", tags=["custom-skills"])

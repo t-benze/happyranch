@@ -30,6 +30,7 @@ from cli.commands import (
     executors,
     jobs,
     kb,
+    knowledge,
     learning,
     runtime,
     schedules,
@@ -165,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     jobs.register(sub)
     learning.register(sub)
     kb.register(sub)
+    knowledge.register(sub)
     artifacts.register(sub)
     doctor.register(sub)
     dreams.register(sub)
