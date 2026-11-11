@@ -415,12 +415,16 @@ class ManagedInstaller:
         return digests
 
     def uninstall(self, *, purge: bool = False) -> None:
-        """Stop/disable/remove units. Only explicit purge removes service state."""
+        """Wait for services before unit removal. Only purge removes service state."""
         try:
             self._service_owner = self._account(create=False)
             self._preflight()
             self._remove_enrollment()
             self.manager.stop(UNITS[2], timeout=50.0)
+            # PartOf propagates stop, but the target's job finishes first.
+            # Keep RuntimeDirectory loaded until each service has shut down.
+            for name in reversed(UNITS[:2]):
+                self.manager.stop(name, timeout=50.0)
             self.manager.disable(UNITS[2])
             try:
                 with self._directory(_UNIT_DIR) as parent:
