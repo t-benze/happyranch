@@ -253,6 +253,136 @@ def partial_retry() -> None:
         require(all(snapshot(f)[name] == body for name, body in retained.items() if name != '_index.md'), 'retry rewrote success')
 
 
+def unwritten_overlap(selected: list[str]) -> None:
+    with fixture() as f:
+        validate = MemoryStore._validate_entry_structure
+
+        def validation(memory: MemoryStore, entry: MemoryItem) -> None:
+            if entry.inherited_from and entry.inherited_from['archive_item_id'] == 'item-1':
+                raise InvalidLearningEntry('synthetic_prewrite_failure', 'synthetic')
+            validate(memory, entry)
+
+        with patch.object(MemoryStore, '_validate_entry_structure', validation):
+            original = submit(f)
+        check_operation(original, imported=1, failed=1)
+        reserved = f.owner.store.item(f.owner.store.get(original.operation_id), 'item-1')
+        require(reserved['state'] == 'unwritten' and f.memory._find_by_id(reserved['memory_id']) is None,
+                'overlap fixture did not prove an unwritten reserved item')
+        before = snapshot(f)
+        audit = f.owner.audit.log_knowledge_import
+
+        def lost_response(operation: ImportOperation) -> None:
+            audit(operation)
+            raise RuntimeError('synthetic lost operation response')
+
+        with patch.object(f.owner.audit, 'log_knowledge_import', lost_response):
+            try:
+                submit(f, 'overlap-unwritten', selected)
+            except RuntimeError as error:
+                require(str(error) == 'synthetic lost operation response', 'wrong response-loss boundary')
+            else:
+                raise AssertionError('lost response not injected after durable audit')
+        overlap = submit(f, 'overlap-unwritten', selected)
+        require(snapshot(f) == before, 'fresh overlap wrote another operation unwritten item')
+        check_operation(overlap, skipped=len(selected) - 1, failed=1)
+        rejected = overlap.results[-1]
+        require(rejected.outcome == 'Failed' and rejected.memory_id == reserved['memory_id']
+                and rejected.reason == 'knowledge_import_incomplete_intent_retry_original_operation'
+                and not rejected.retryable and not rejected.held, 'overlap lacks closed original-operation refusal')
+        require(f.owner.store.item(f.owner.store.get(original.operation_id), 'item-1') == reserved,
+                'overlap modified the original intent')
+        require(submit(f) == original, 'original replay changed its failed/unwritten projection')
+        f.db.close()
+        f.org.db = Database(f.org.root / 'happyranch.db')
+        f.db = f.org.db
+        f.owner = InstillLifecycle(f.org)
+        require(submit(f, 'overlap-unwritten', selected) == overlap, 'reopen flipped overlap outcomes')
+        audit_count = len(f.db.get_audit_logs('AGENT-recipient'))
+        require(submit(f) == original and submit(f, 'overlap-unwritten', selected) == overlap,
+                'lost-response replay changed either operation')
+        require(len(f.db.get_audit_logs('AGENT-recipient')) == audit_count and snapshot(f) == before,
+                'replay repeated writes/audits')
+        recovered = asyncio.run(f.owner.retry(original.operation_id))
+        check_operation(recovered, imported=2)
+        require(recovered.results[-1].memory_id == reserved['memory_id'] and len(f.memory.list_entries()) == 2,
+                'original retry duplicated or abandoned reserved identity')
+        after = snapshot(f)
+        require(all(after[name] == body for name, body in before.items() if name != '_index.md'),
+                'original retry rewrote completed note')
+        require(submit(f) == recovered and submit(f, 'overlap-unwritten', selected) == overlap,
+                'post-recovery replay flipped outcomes')
+        closed = asyncio.run(f.owner.retry(overlap.operation_id))
+        check_operation(closed, skipped=len(selected) - 1, failed=1)
+        require(closed.results == overlap.results and snapshot(f) == after,
+                'nonretryable overlap changed results or files')
+        history = {operation.operation_id: operation for operation in asyncio.run(f.owner.list('recipient'))}
+        require(history == {recovered.operation_id: recovered, closed.operation_id: closed}, 'history counts differ')
+        audits = f.db.get_audit_logs('AGENT-recipient')
+        for operation in (original, overlap, recovered, closed):
+            expected = {key: getattr(operation, key) for key in (
+                'operation_id', 'state', 'selected', 'imported', 'skipped', 'failed', 'pending')}
+            require(any(row['action'] == 'knowledge_import' and
+                        all(row['payload'].get(key) == value for key, value in expected.items()) and
+                        row['payload']['items'] == [result.model_dump() for result in operation.results]
+                        for row in audits), 'feature audit disagrees with persisted item/count outcomes')
+        require(len([row for row in audits if row['action'] == 'memory_added']) == 2,
+                'overlap/replay duplicated memory additions')
+        require(not any('CURATED_SENTINEL' in json.dumps(row) for row in audits), 'audit copied inherited body')
+        print('unwritten_overlap ' + repr(selected) + ': PASS', flush=True)
+
+
+def unwritten_overlap_single() -> None:
+    unwritten_overlap(['item-1'])
+
+
+def unwritten_overlap_mixed() -> None:
+    unwritten_overlap(['item-0', 'item-1'])
+
+
+def completed_receipt_recovery() -> None:
+    with fixture() as f:
+        save = f.owner.store.save_results
+
+        class Interrupted(BaseException):
+            pass
+
+        def interrupt(operation_id: str, results: list, *, terminal: bool) -> None:
+            if results[0].outcome == 'Imported':
+                raise Interrupted()
+            save(operation_id, results, terminal=terminal)
+
+        with patch.object(f.owner.store, 'save_results', interrupt):
+            try:
+                submit(f)
+            except Interrupted:
+                pass
+            else:
+                raise AssertionError('receipt/accounting interruption not reached')
+        operation = f.owner.store.find('recipient', 'one')
+        row = f.owner.store.item(operation, 'item-0')
+        require(row['state'] == 'completed' and f.memory.read_entry(row['memory_id']) is not None,
+                'interruption preceded real completed receipt')
+        pending = asyncio.run(f.owner.show(operation['operation_id']))
+        require(pending.imported == 1 and pending.pending == 1 and pending.results[0].outcome == 'Imported',
+                'completed receipt lost durable Imported outcome before result save')
+        before = snapshot(f)
+        recovered = asyncio.run(f.owner.retry(operation['operation_id']))
+        check_operation(recovered, imported=2)
+        require(all(snapshot(f)[name] == body for name, body in before.items() if name != '_index.md'),
+                'receipt recovery rewrote committed note')
+        after = snapshot(f)
+        require(submit(f) == recovered and asyncio.run(f.owner.retry(operation['operation_id'])) == recovered,
+                'completed operation replay/retry changed Imported outcomes')
+        repeat = submit(f, 'after-recovery')
+        check_operation(repeat, skipped=2)
+        require(snapshot(f) == after and len(f.memory.list_entries()) == 2, 'completed mapping replay wrote duplicates')
+        # Even the reserving operation sees Skipped on an already-completed
+        # mapping; recovery retains Imported from the atomic durable result.
+        existing = f.owner._one(f.owner.store.get(operation['operation_id']),
+                               f.owner._selection('recipient', confirmation(f))['item-0'], f.memory)
+        require(existing.outcome == 'Skipped', 'completed-mapping label depends on reservation owner')
+
+
 def held_reconciliation() -> None:
     for mode in ('match', 'contradictory', 'missing', 'unreadable'):
         with fixture() as f:
@@ -575,7 +705,8 @@ def concurrent_admission() -> None:
 
 
 CASES = {f.__name__: f for f in (
-    legacy, happy_repeat_overlap, partial_retry, held_reconciliation, preservation_provenance,
+    legacy, happy_repeat_overlap, partial_retry, unwritten_overlap_single, unwritten_overlap_mixed, completed_receipt_recovery,
+    held_reconciliation, preservation_provenance,
     busy_all_six, history_caps, incomplete_census, confirmation_refusals, lost_eligibility, concurrent_admission)}
 
 

@@ -176,8 +176,20 @@ class KnowledgeImportStore:
     def transition_item(self, operation: dict, item_id: str, state: str, reason: str | None = None) -> None:
         with self.transaction():
             row = self.item(operation, item_id)
-            if row is None or row['state'] == 'completed':
+            if row is None or row['state'] == 'completed' or row['operation_id'] != operation['operation_id']:
                 raise ImportError('knowledge_import_illegal_item_transition')
+            if state == 'completed':
+                # Receipt and the writing operation's outcome are one COMMIT.
+                # Recovery never infers Imported from the reservation owner.
+                current = self.get(operation['operation_id'])
+                results = [ImportItemResult.model_validate(r) for r in json.loads(current['results_json'])]
+                result = next(r for r in results if r.item_id == item_id)
+                result.outcome, result.memory_id, result.reason = 'Imported', row['memory_id'], reason
+                result.held, result.retryable = False, False
+                self.conn.execute(
+                    'UPDATE knowledge_import_operations SET results_json=? WHERE org_slug=? AND operation_id=?',
+                    (_json([r.model_dump() for r in results]), self.org_slug, operation['operation_id']),
+                )
             self.conn.execute(
                 'UPDATE knowledge_import_items SET state=?,reason=?,updated_at=?,completed_at=? '
                 'WHERE org_slug=? AND archive_id=? AND archive_version=? AND item_id=? AND recipient_id=?',
@@ -213,7 +225,10 @@ class KnowledgeImportStore:
             row = self.item(operation, result.item_id)
             if row is not None and row['state'] in {'held', 'writing'}:
                 result.outcome, result.held, result.retryable = 'Failed', True, False
-                result.reason, result.memory_id = 'uncertainty_hold_reconcile_reserved_id', row['memory_id']
+                result.reason = ('uncertainty_hold_reconcile_reserved_id'
+                                 if row['operation_id'] == operation_id else
+                                 'knowledge_import_incomplete_intent_retry_original_operation')
+                result.memory_id = row['memory_id']
         counts = {name: sum(r.outcome == label for r in results) for name, label in (
             ('imported', 'Imported'), ('skipped', 'Skipped'), ('failed', 'Failed'), ('pending', 'Pending'))}
         state = operation['state']

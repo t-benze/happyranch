@@ -178,8 +178,12 @@ class InstillLifecycle:
             entry = self._entry(operation, item, identifier)
             row = self.store.reserve(operation, item.item_id, identifier, memory._serialize(entry))
         if row['state'] == 'completed':
-            return ImportItemResult(item_id=item.item_id, outcome='Imported' if row['operation_id'] == operation['operation_id'] else 'Skipped',
+            return ImportItemResult(item_id=item.item_id, outcome='Skipped',
                                     memory_id=row['memory_id'], reason='durable_existing_mapping')
+        if row['operation_id'] != operation['operation_id']:
+            return ImportItemResult(item_id=item.item_id, outcome='Failed', memory_id=row['memory_id'],
+                                    reason='knowledge_import_incomplete_intent_retry_original_operation',
+                                    held=row['state'] in {'held', 'writing'})
         entry = memory._parse(row['expected_content'])
         if row['state'] in {'held', 'writing'}:
             if not self._matches(memory, row):
@@ -199,11 +203,11 @@ class InstillLifecycle:
             if not self._matches(memory, row):
                 raise ImportError('knowledge_import_readback_mismatch')
         memory.regenerate_index()
-        self.store.transition_item(operation, item.item_id, 'completed')
+        reason = 'reconciled_mapping' if row['state'] in {'held', 'writing'} else None
+        self.store.transition_item(operation, item.item_id, 'completed', reason)
         self.audit.log_memory_added(agent=operation['recipient_id'], id=entry.id, slug=entry.slug,
                                     topic=entry.topic, tags=entry.tags, source_task=None)
-        return ImportItemResult(item_id=item.item_id, outcome='Imported' if row['operation_id'] == operation['operation_id'] else 'Skipped',
-                                memory_id=row['memory_id'], reason='reconciled_mapping' if row['state'] in {'held', 'writing'} else None)
+        return ImportItemResult(item_id=item.item_id, outcome='Imported', memory_id=row['memory_id'], reason=reason)
 
     def _run(self, operation: dict) -> ImportOperation:
         confirmation = InstillConfirmation.model_validate_json(operation['confirmation_json'])
@@ -212,8 +216,9 @@ class InstillLifecycle:
         self.store.save_results(operation['operation_id'], results, terminal=False)
         stopped: str | None = None
         for index, item_id in enumerate(confirmation.item_ids):
-            # Already accounted successes survive lost eligibility/retries.
-            if results[index].outcome in {'Imported', 'Skipped'}:
+            # Successes and closed overlap refusals survive replay/retries.
+            if (results[index].outcome in {'Imported', 'Skipped'} or
+                    results[index].reason == 'knowledge_import_incomplete_intent_retry_original_operation'):
                 continue
             if stopped is None:
                 try:

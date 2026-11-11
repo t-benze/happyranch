@@ -183,6 +183,19 @@ absence checked may write. Successful receipts remain immutable and retries
 never remove successful notes. Counts derive from fixed per-selection outcomes;
 held items count failed, with `retryable:false`.
 
+**Overlapping incomplete intents (design B):** a fresh confirmation encountering
+another operation's incomplete intent records Failed with
+`knowledge_import_incomplete_intent_retry_original_operation`, the reserved MEM
+ID and `retryable:false`. It leaves that intent and recipient files untouched;
+possibly-written evidence remains held. Recovery belongs to the original
+operation's same-operation retry. The refusal remains fixed on replay/retry of
+the new operation, even after the original completes. A completed mapping is
+always Skipped when encountered. The writing operation's Imported item result
+and completed receipt commit in the same SQL transaction, so interruption before
+later accounting cannot change its label. History and body-free feature audits
+derive from these same per-operation outcomes. The completed-mapping label never
+depends on reservation ownership.
+
 `MemoryStore.write_inherited_entry` is an exclusive additive write path that
 never invokes ordinary `write_entry`, supersession or compaction. It retains the
 configured ordinary compaction policy; ordinary future writes can still compact.
@@ -233,8 +246,8 @@ Extend provenance additively with `inherited`, preserving the meanings of experi
 Identity is `(org, archive ID, archive version, item ID, recipient permanent ID)`, never body similarity, title, filename or source MEM ID alone. Every successful item has a retrievable target MEM ID. Shared receipt uniqueness covers repeats and different confirmed selections; later archive versions do not silently update prior imports.
 
 1. Persist the fixed operation and an item intent, including reserved target MEM ID and exact expected inherited content, before touching recipient files.
-2. Revalidate admission and inspect existing receipts/intents. A completed mapping is skipped with its existing MEM ID; it is not written again.
-3. Write the new note through the additive no-compaction path, read it back and confirm its identity/content/provenance, then durably commit the exact receipt/mapping. File and SQLite effects are not one atomic transaction: the intermediate intent is necessary.
+2. Revalidate admission and inspect existing receipts/intents. A completed mapping is skipped with its existing MEM ID; it is not written again. A different operation's incomplete intent is refused with the closed original-operation-retry reason above, without changing that intent or writing its file.
+3. Write the new note through the additive no-compaction path, read it back and confirm its identity/content/provenance, then durably commit the exact receipt/mapping together with that operation's Imported result. File and SQLite effects are not one atomic transaction: the intermediate intent is necessary.
 4. If the response/receipt fails after a possible write, mark the item held for reconciliation. Inspect the original reserved MEM ID and exact attribution/content. A proven matching write can finalize its receipt; proven unwritten intent may resume. Missing, contradictory or unreadable evidence stays uncertain, with no fresh ID or blind second write.
 5. A partial retry retains the original fixed selection and operation. Keep successes, return mappings for skips and write only confirmed missing/failed-unwritten items. A changed selection needs new confirmation and still respects global item identity. Never roll back by deleting successful notes.
 
