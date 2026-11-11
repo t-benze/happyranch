@@ -2058,8 +2058,7 @@ join the original owner; a distinct result identity uses its own operation.
 Human team leadership never adds an AgentDef or launch identity. Native
 thread-session invalidation atomically commits each consultant's resume reset
 and its audit, without changing delivery/breaker state, messages, memory or
-history. Compensation retains safely cleared resumes and publishes a new
-coherent authority generation; it never restores an old ready pointer.
+history.
 Workflow profile closure and version-aware authority readers must agree before
 readiness. Supported-version, malformed-principal/team/routing and current-capture
 checks refuse before new graph writes. Schema1 historical admission contexts,
