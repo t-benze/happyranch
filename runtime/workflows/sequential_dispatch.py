@@ -747,8 +747,9 @@ class SequentialDispatcher:
                                             checks=(), status=result['status'], verdict=result['verdict'])
                                         if value['outcome'] == 'merged':
                                             from runtime.workflows.sequential_coding_final_callback import (
-                                                FinalObservationRefusal, read_final_callback_uncommitted,
+                                                FinalObservationCause, FinalObservationRefusal, read_final_callback_uncommitted,
                                             )
+                                            budget.check()
                                             try:
                                                 read_final_callback_uncommitted(conn, org_slug=self.org.slug,
                                                     run_id=run_id, visit_id=visit_id, task_id=visit['task_id'],
@@ -756,6 +757,9 @@ class SequentialDispatcher:
                                                     result_id=result_id, authority=self.org.workflow_authority,
                                                     capture=capture, deadline=budget.deadline)
                                             except FinalObservationRefusal as exc:
+                                                budget.check()
+                                                if exc.cause is FinalObservationCause.LIMIT:
+                                                    raise
                                                 cause = (exc.code if exc.code in (BusinessHoldCause.AUTHORITY_DENIED.value,
                                                     BusinessHoldCause.AUTHORITY_UNVERIFIED.value) else BusinessHoldCause.CAPABILITY.value)
                                                 raise SequentialRefusal(cause) from None

@@ -251,6 +251,11 @@ encoding just to size the reservation. Exhaustion propagates as the original
 reader refusal with no committed effects, never malformed-output business-Held.
 The compatible callback reader retains its original R-M3-2 limits on the shared
 deadline; no cap, allowance, retry or historical decoder is changed.
+The dispatcher checks that SAME original deadline at the callback-reader handoff
+and before classifying its refusal. Original deadline exhaustion propagates as
+`workflow_seq_read_deadline_exhausted`; the callback reader's own read-exhausted
+refusal also propagates unchanged. Neither path records a business-Held overlay
+or commits DML. Validated selected success still rolls back to business-Held.
 
 **Final success remains Held; U7c2 is implementation remainder.** Transport and
 validated observation do not implement a Final capability witness, recipients,
