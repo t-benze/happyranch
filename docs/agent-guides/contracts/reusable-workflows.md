@@ -1487,3 +1487,42 @@ root protection remains controlling. No caller is mounted. U6b2b still owns live
 retained-family/cross-family overlay composition, owner aggregation/history and
 Founder/native-tail attachment. U6b1, old Coding/document and U4/U5/Pause/Final
 owners stay unchanged. See the [current U6 remainder](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## U6b2b mounted mixed cancellation (TASK-15349)
+
+This supersedes the earlier U6a/U6b1/U6b2a unmounted/remainder statuses. The
+existing Founder cancel/cascade selects one mixed admission transaction for
+fresh sequential stops and sequential-dependent ancestry. It reuses Coding's
+original inner command/event/native-overlay writer and document draft/review
+inner cancellation events. Detached native rows use the mixed overlay owner;
+each live task has one overlay/audit. Original complete readers, immutable
+returned/cancelled graphs, terminal dependency traversal, point/hidden-live
+refusals, post-oracle rollback and COMMIT-before-Stop remain controlling.
+Standalone ordinary/document-only paths keep their behavior. Historical live
+document roots without an existing dispatch owner still refuse.
+
+Manager Option B composes proof owners. U6b2a remains byte-identical and selects
+only original sequential source/visit invocations. Other captured owners use
+only their existing original family qualification. Old Coding reads its own
+committed outer/native settlement; ordinary/document invocations have no
+existing positive cancellation-outer qualification, so the specified fallback
+keeps them UNSETTLED. Journal-only originals, prepared/unknown/missing controls,
+unsettled outers and lost originals remain incomplete. No invocation is
+fabricated and no native ownership is cleared to force settlement.
+
+The ephemeral `CancelOwners` handoff retains the original root captures through
+COMMIT and original native close/release/family callbacks. One positive of many
+cannot deliver safe disposition. Only all captured owners positive permits the
+existing safe root-tail consumer, still subject to native protections. Negative
+or impossible qualification delivers one incomplete batch; no cleanup retry or
+durable receipt is introduced. U5b2b2/U7–U9 and native/V3 acceptance remain
+separate. See the [current U6 owner table](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
+
+
+The U6 mixed stop authenticates combined history before composing legacy document lookup
+and the original cancelled document/Coding terminal/outer consumers on that same
+connection. Legacy consumers preserve sequential rows; the complete changed target is
+authenticated after scope reset. Default standalone validation remains unchanged. This
+composition repairs mounted cancellation without changing captured ordinary/document
+UNSETTLED qualification or granting native/V3 acceptance.

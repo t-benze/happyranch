@@ -503,7 +503,11 @@ against unchanged original admission bytes. Retained task originals compare at
 an independently reconstructed later capture boundary; authenticated event and
 heartbeat order must agree with its capture interval. Full native suffix replay
 and exact current SQL equality still include every field, including executor_pid,
-on the original shared copy/traversal allowance; no history rewrite or settlement
+on the original finite allowances. R-M3-2 (ROOT TASK-15165) gives the mounted
+mixed writer's pre-write authentication and post-write WHOLE target reads their
+OWN unchanged D2 A/B/C/L allowance on ONE original operation deadline; discovery,
+copying, comparison and writer work share the existing single additional finite
+operation budget, without reset/retry/fork on refusal. No history rewrite or settlement
 inference follows. A point stop of a coding-dependent
 ordinary ancestor refuses before writes, independently of mutation cascade;
 ordinary-only point stops remain supported. Prepared/unknown ownership,

@@ -751,3 +751,19 @@ U6b2b must compose live retained-family writers/cross-family overlays, aggregate
 all original owners and attach the complete route/native tail. Hidden live work
 and coding-dependent ordinary point stops still refuse. See the
 [U6 remainder](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## U6b2b existing Founder-route composition (TASK-15349)
+
+Superseding the earlier unmounted U6 statuses, `cancel_task` routes fresh
+sequential stops and ordinary/Coding ancestors with sequential descendants to
+`cancel_mixed`. Exact cancelled selected replay and ordinary-only/document-only
+paths retain their original owners. One outer writer reuses native family
+commands/events and sole live task overlays, validates complete target history,
+then returns opaque Stop controls for delivery outside locks after COMMIT.
+Hidden live work and family-dependent ordinary point stops still refuse.
+Original committed callbacks only drain unchanged. There is no new endpoint or
+Retry/Resume/Reassign/cleanup transport. The original root captures go through
+all-original-owner qualification, never one-owner clearance; ordinary/document
+positive-proof unavailability stays UNSETTLED as specified by manager Option B.
+See the [current U6 contract](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).

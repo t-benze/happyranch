@@ -975,3 +975,40 @@ whole root; no aggregate teardown-incomplete flag may be cleared from it.
 Native consumers and Founder cancellation stay unchanged until U6b2b composes
 every captured owner, live retained-family overlays and the complete attachment.
 See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## U6b2b original-owner aggregate (TASK-15349)
+
+This supersedes the earlier unmounted U6 lifecycle statuses. The mounted mixed
+stop retains actual TaskInvocation objects and journal-only uncertainty, plus
+original root transition captures. Native Stop runs after COMMIT/outside locks.
+`settle_live` supplies only its actual original close/release and existing family
+outer observations. Sequential source/visit owners use unchanged U6b2a; old
+Coding uses its original committed native reader. Captured ordinary/document
+invocations have no existing positive family cancellation-outer qualification
+and therefore remain UNSETTLED under the manager's explicit fallback. No new
+family proof is invented and no journal/tracker/reservation is cleared.
+
+A bounded ephemeral aggregate retains the original delivery until every possible
+original responds; one positive of many remains incomplete. All-positive permits
+only the existing root-tail disposition and native protections. Missing original
+TaskInvocation (journal-only included), prepared/unknown/missing-control/host,
+unsettled outer, failed control or route failure supplies one incomplete batch.
+No attempted transition is reset/retried. Lost memory grants no recovery action.
+This does not alter Pause admission generation or Final action/receipt uncertainty,
+or treat launcher TERM/INT, ended SID or missing PID as product cancellation.
+See the [U6 composition table](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
+
+The original document terminal writer (also inherited by review) preserves a
+native row already stamped cancelled by the mixed stop. It emits its unchanged
+original terminal event without replacing the frozen cancellation timestamps.
+Standalone document cancellation/terminal bytes and ordering remain unchanged;
+this prevents a late native drain from invalidating Coding's original overlay.
+
+
+Mixed cancellation keeps legacy document intent and original document/Coding
+terminal/outer consumers inside an authenticated same-transaction composition. The
+original schema/semantic readers remain intact; complete target validation occurs after
+the temporary composition ends and before COMMIT. Sequential rows cannot change within
+that legacy scope. A read or terminal/control return supplies no additional settlement
+proof; Option B ordinary/document owners remain UNSETTLED.

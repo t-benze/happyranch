@@ -1,9 +1,4 @@
-"""Unmounted U6b1 mixed stop producer; retained-family writers mount in U6b2.
-
-The history inventory is wider than the live mutation walk. No controls, native
-settlement, caller return or cleanup are performed here. Existing Founder paths
-remain the only mounted cancellation entry points.
-"""
+"""Mixed business stop in one writer; native settlement keeps original owners."""
 from __future__ import annotations
 
 import hashlib
@@ -15,11 +10,21 @@ from typing import Any
 from runtime.models import BlockKind, TaskStatus
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.coding_source_history import _TASK_TYPES
-from runtime.workflows.sequential_cancel import _check, _controls, _KINDS, _TERMINAL
+from runtime.workflows.sequential_cancel import _check, _closure, _controls, _KINDS, _TERMINAL
 from runtime.workflows.sequential_definition import compile_definition
 from runtime.workflows.sequential_engine import _engine_rows, cancel_fence_uncommitted
 from runtime.workflows.sequential_history import _ReadBudget, _bytes, _sql_budget, read_sequential_history
 from runtime.workflows.sequential_mixed_history import MixedSequentialHistory, MixedTaskHistory, _rows
+
+
+def has_sequential_descendant(org: Any, task_id: str) -> bool:
+    """Select the existing mixed owner before any ordinary-family mutation."""
+    from runtime.infrastructure.workflow_task_ownership import selected_owner
+
+    budget = _ReadBudget()
+    with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
+        return any(selected_owner(conn, key, org.slug)[0] in _KINDS
+                   for key in _closure(conn, task_id, budget))
 
 
 def _tasks(history: MixedTaskHistory, budget: _ReadBudget) -> dict[str, dict]:
@@ -31,27 +36,26 @@ def _affected(history: MixedTaskHistory, task_id: str, cascade: bool,
               budget: _ReadBudget) -> tuple[dict[str, dict], set[str]]:
     """Ordinary live walk plus whole sequential families; terminal paths retained.
 
-    An ordinary point stop cannot sever a sequential dependency, even through
-    terminal intermediates. A live retained document/Coding member refuses:
-    only its original writer may produce that family's cancellation history.
+    A point stop cannot sever a family dependency, even through terminal rows.
+    Live dispatch members retain their existing inner cancellation writers.
     """
     tasks = _tasks(history, budget)
     owners = {key: (kind, owner, instance) for key, kind, owner, instance in history.owners}
     children: dict[str | None, list[str]] = {}
-    families: dict[str, set[str]] = {}
+    families: dict[tuple[bool, str], set[str]] = {}
     dependencies: set[str] = set()
     for key, task in tasks.items():
         budget.step()
         children.setdefault(task['parent_task_id'], []).append(key)
-        if owners[key][0] in _KINDS:
-            families.setdefault(owners[key][2], set()).add(key)
+        if owners[key][2] is not None:
+            families.setdefault((owners[key][0] in _KINDS, owners[key][2]), set()).add(key)
             parent = task['parent_task_id']
             while parent is not None and parent not in dependencies:
                 budget.step()
                 dependencies.add(parent)
                 parent = tasks[parent]['parent_task_id']
     _check(cascade or owners[task_id][0] in _KINDS or task_id not in dependencies)
-    pending, selected, runs, retaining = [task_id], {}, set(), set()
+    pending, selected, runs, retaining, expanded = [task_id], {}, set(), set(), set()
     while pending:
         budget.step()
         key = pending.pop()
@@ -61,12 +65,17 @@ def _affected(history: MixedTaskHistory, task_id: str, cascade: bool,
         _check(key not in retaining or task['status'] in _TERMINAL)
         selected[key] = task
         kind, _, instance = owners[key]
-        if kind in _KINDS and instance not in runs:
-            _check(key not in retaining or all(tasks[member]['status'] in _TERMINAL
-                                              for member in families[instance]))
-            runs.add(instance)
-            pending.extend(families[instance])
-        _check(task['status'] in _TERMINAL or kind == 'legacy' or kind in _KINDS)
+        if instance is not None:
+            family = (kind in _KINDS, instance)
+            if family not in expanded:
+                _check(key not in retaining or all(tasks[member]['status'] in _TERMINAL
+                                                  for member in families[family]))
+                expanded.add(family)
+                pending.extend(families[family])
+            if kind in _KINDS:
+                runs.add(instance)
+        _check(task['status'] in _TERMINAL or kind in ('legacy', 'draft', 'f5')
+               or kind.startswith('coding_') or kind in _KINDS)
         if cascade:
             if task['status'] not in _TERMINAL:
                 pending.extend(children.get(key, ()))
@@ -75,10 +84,20 @@ def _affected(history: MixedTaskHistory, task_id: str, cascade: bool,
                 # ordinary row. Never expand its unrelated ordinary subtrees.
                 for child in children.get(key, ()):
                     budget.step()
-                    if child in dependencies or owners[child][0] in _KINDS:
+                    if child in dependencies or owners[child][2] is not None:
                         _check(tasks[child]['status'] in _TERMINAL)
                         retaining.add(child)
                         pending.append(child)
+    if not cascade:
+        for key, task in tasks.items():
+            budget.step()
+            if key in selected or task['status'] in _TERMINAL:
+                continue
+            parent = task['parent_task_id']
+            while parent is not None and parent not in selected:
+                budget.step()
+                parent = tasks[parent]['parent_task_id']
+            _check(parent is None)  # No live foreign child left behind by a point stop.
     return selected, runs
 
 
@@ -92,17 +111,14 @@ def _unchanged(conn: sqlite3.Connection, history: MixedTaskHistory, budget: _Rea
 
 async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
                        rationale: str, transitions: Any) -> dict:
-    """Produce a whole ordinary/new-sequential stop, without mounting or effects.
-
-    Caller retains the returned opaque controls and original root transitions.
-    They may be consumed only after this coroutine returns (COMMIT/locks ended).
-    Retained live-family composition and the Founder route mount remain U6b2.
-    """
+    """Fence a mixed closure; return controls only after COMMIT/outside locks."""
     from runtime.orchestrator.run_step import _capture_root_worktree_transition
 
     _check(type(cascade) is bool and type(actor) is str and bool(actor)
            and type(rationale) is str)
-    budget, retained = _ReadBudget(), _Budget()
+    # R-M3-2: two complete reads, each with its unchanged D2 allowance.
+    # Planning/writes share one additional budget and the original deadline.
+    budget, before_budget, after_budget = _ReadBudget(), _Budget(), _Budget()
     budget.reserve(24 * (len(actor.encode('utf8')) + len(rationale.encode('utf8'))) + 512)
     authority = org.workflow_authority
     _check(authority is not None)
@@ -111,9 +127,10 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
         async with org.teams_lock:
             async with org.db_lock:
                 with ExitStack() as captures:
-                    with authority.admission_writer(capture) as conn:
-                        before = read_sequential_history(conn, expected_org_slug=org.slug,
-                            retained_budget=retained, deadline=budget.deadline, task_id=task_id)
+                    with authority.admission_writer(capture) as conn, ExitStack() as lookup:
+                        from runtime.workflows.sequential_legacy_cancel import _mixed_lookup_scope
+                        before = lookup.enter_context(_mixed_lookup_scope(conn, org_slug=org.slug,
+                            task_id=task_id, retained_budget=before_budget, budget=budget))
                         _check(isinstance(before, MixedSequentialHistory) and before.task_history is not None)
                         history = before.task_history
                         with _sql_budget(conn, budget):
@@ -126,6 +143,9 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
                                    or task_id not in saved.cancellation_dependencies)
                             live = {key: row for key, row in selected.items() if row['status'] not in _TERMINAL}
                             _check(task_id in live)
+                            selected_kind = next(kind for key, kind, _, _ in history.owners if key == task_id)
+                            _check(cascade or selected_kind not in ('seq_source_waiting', 'seq_carrier')
+                                   or set(live) == {task_id})
                             fresh, retained_cancelled = [], False
                             for run_id in sorted(runs):
                                 found = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (run_id,))
@@ -147,7 +167,7 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
                                 key = 'seq-cancel-' + hashlib.sha256(_bytes(
                                     [run_id, task_id, cascade, actor, rationale])).hexdigest()
                                 fresh.append((run, compiled, key))
-                            controls, incomplete = [], retained_cancelled
+                            controls = []
                             all_tasks = _tasks(history, budget)
                             by_root: dict[str, dict[str, dict]] = {}
                             for key, task in selected.items():
@@ -159,15 +179,46 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
                             for root, native_tasks in by_root.items():
                                 native, uncertain = _controls(org, conn, root, native_tasks, budget)
                                 controls.extend(item for item in native if item[0] in live)
-                                incomplete |= uncertain
-                            _unchanged(conn, history, budget)
+                            # Original Coding closure is independently reconstructed.
+                            # It owns its exact original native subset; detached
+                            # foreign members retain the mixed overlay owner.
+                            coding_selection, instances = {}, set()
+                            if saved is not None:
+                                from runtime.workflows.coding_cancellation import affected
+                                coding_selection, instances = affected(conn, task_id, cascade, saved, budget)
+                                if instances:
+                                    _check(coding_selection.keys() <= selected.keys())
+                            documents = []
+                            for key, kind, _, _ in history.owners:
+                                if key in live and kind in ('draft', 'f5'):
+                                    dispatcher = org.workflow_drafts if kind == 'draft' else org.workflow_reviews
+                                    _check(dispatcher is not None and dispatcher.org is org and dispatcher.db is org.db)
+                                    # The first complete read stays pinned through lookup.
+                                    intent = dispatcher._intent(conn, key)
+                                    documents.append((key, dispatcher, intent))
+                            with _sql_budget(conn, budget):
+                                from runtime.workflows.sequential_cancel_owners import CancelOwners
+                                owners = CancelOwners.capture(org, conn, selected, history, budget, saved=saved,
+                                    retained_cancelled=retained_cancelled)
+                                _unchanged(conn, history, budget)
+                        lookup.close()  # Reset read-only composition before any mutation.
                         for run, compiled, key in fresh:
                             cancel_fence_uncommitted(conn, org.db, org_slug=org.slug, run_id=run['id'],
                                 operation_key=key, expected_cas=run['cas'], compiled=compiled,
                                 authority=authority, capture=capture)
-                        now = datetime.now(timezone.utc).isoformat()
+                        # Every family uses its original event/command bytes. Old
+                        # Coding, when present, owns the sole native overlays too.
+                        for key, dispatcher, intent in documents:
+                            dispatcher._cancel_uncommitted(conn, key, native_overlay=False, intent=intent)
                         note = f'cancelled by {actor}: {rationale}' if rationale else f'cancelled by {actor}'
-                        for key in sorted(live):
+                        if instances:
+                            from runtime.workflows.coding_cancellation import write_uncommitted
+                            now, _ = write_uncommitted(org, task_id, cascade=cascade, rationale=rationale,
+                                actor=actor, transitions=transitions, captures=captures, saved=saved,
+                                selected=coding_selection, instances=instances, budget=budget, canonical_audits=True)
+                        else:
+                            now = datetime.now(timezone.utc).isoformat()
+                        for key in sorted(live.keys() - (coding_selection.keys() if instances else set())):
                             captures.enter_context(_capture_root_worktree_transition(
                                 org.orchestrator, key, 'cancel_task', transitions))
                             conn.execute("UPDATE tasks SET status='cancelled',block_kind=NULL,note=?,"
@@ -175,7 +226,7 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
                             org.db.insert_audit_log_uncommitted(key, actor, 'task_cancelled',
                                                               dict(rationale=rationale, cascade=cascade))
                         after = read_sequential_history(conn, expected_org_slug=org.slug,
-                            retained_budget=retained, deadline=budget.deadline, task_id=task_id)
+                            retained_budget=after_budget, deadline=budget.deadline, task_id=task_id)
                         _check(isinstance(after, MixedSequentialHistory) and after.task_history is not None)
                         target = after.task_history
                         with _sql_budget(conn, budget):
@@ -186,7 +237,9 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
                             _check(target.tasks == tuple(tuple(expected[key][column] for column in history.task_columns)
                                 for key in sorted(expected)) and target.owners == history.owners
                                 and target.results == history.results and target.root_task_ids == history.root_task_ids)
+                            owners.attach(transitions, captures)
+                    owners.committed = True
                 return dict(tasks=sorted(live), prior={key: TaskStatus(row['status']) for key, row in live.items()},
                     block_kinds={key: BlockKind(row['block_kind']) if row['block_kind'] else None
-                                 for key, row in live.items()}, controls=controls, teardown_incomplete=incomplete,
+                                 for key, row in live.items()}, controls=controls, teardown_incomplete=owners.incomplete, owners=owners,
                     sequential_tasks=sorted(key for key, kind, _, _ in history.owners if key in live and kind in _KINDS))
