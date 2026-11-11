@@ -5,11 +5,12 @@ THR-346 msg6 (root TASK-15047, S0 TASK-15050). It observes Darwin prerequisites
 for the frozen Mac app. S0 does not build the app, run a daemon, fix runtime
 code, install tools, or change the host. Connector/launchd work is excluded.
 
-Upload `config.xml.in` verbatim with Jenkins's ordinary `createItem` API after
-checking that this exact item does not already exist. S0 permits pre-merge
-creation from the PR head. If the item already exists, reconcile its owner and
-configuration; do not create another item or overwrite it blindly. Record the
-source commit and configuration SHA256 with the creation receipt. This is a
+The job already exists. Founder THR-346 msg20 authorizes updating that **same**
+job only from a reviewed and merged `config.xml.in`. The engineering manager or
+founder applies the merged file through the existing job's configuration API;
+this PR does not update the live job. Never create or copy another job, and do
+not trigger a build under this repair's authority. Record the merged source SHA
+and configuration SHA256 with the update receipt. This is a
 Freestyle job with NullSCM: neither controller Git nor the Git SCM plugin is
 used. The existing `mac-mini` label and build-timeout plugin must be available;
 do not install or reconfigure them on this authorization.
@@ -20,8 +21,8 @@ wrapper in KB `jenkins-job-setup-and-durable-observation`. The browser-only
 address is `http://192.168.18.174:8081`. Use only this credential-file reference;
 never read, print, copy or embed its contents or other
 credentials in the template, source checkout, parameters or archived evidence.
-Missing credentials block creation/submission. No controller executors, sudo,
-credential configuration, daemon deployment or restart is needed.
+Missing credentials block configuration updates/submission. No controller
+executors, sudo, credential configuration, daemon deployment or restart is needed.
 
 Submit manually with:
 
@@ -40,6 +41,27 @@ is 30 minutes. The EXIT trap removes only the build's fresh checkout scratch;
 `evidence/` stays for archival. Catchable cancellation runs cleanup; SIGKILL,
 agent loss or machine failure may leave scratch and must be reported honestly.
 The next run does not sweep previous scratch. Jenkins retains 20 builds/30 days.
+
+## Output bounds and failure handling
+
+`build.log` and `probe.log` each retain at most 4 MiB (4,194,304 bytes). A pipe
+reader writes only that many bytes and checks one extra byte: exceeding the
+cap fails the build nonzero and closes the pipe. This also bounds checkout
+command output without imposing a file-size limit on Git's fetched packfiles.
+The Python probe additionally inherits `ulimit -f 4096`, limiting each regular
+file it writes, including `probe.json`, to at most 4 MiB (2 MiB on shells using
+512-byte blocks; 4 MiB with 1024-byte blocks). A file-size-limit signal or write
+error fails the build nonzero; the probe cannot expand a log past the pipe cap.
+
+The parent shell owns scratch and runs cleanup after the capture pipeline ends.
+It saves the original stdout/stderr before capture and copies only the first
+1 MiB (1,048,576 bytes) of `build.log` to the saved console descriptor, followed
+by a truncation marker when needed. Cleanup never writes the log back into
+itself. Ordinary probe failures retain their actual exit status; log overflow
+fails nonzero. Cleanup records `scratch_removed=true` or `false`, including for
+an early platform/parameter failure, and a removal/copy failure turns an
+otherwise successful run into a failure without replacing an existing failure.
+Catchable interruption retains the existing INT=130 and TERM/HUP=143 statuses.
 
 ## Probe contract
 
