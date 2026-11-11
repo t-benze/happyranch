@@ -2,7 +2,18 @@
 
 **Phase-2 Part A** — deploy artifact runbook (THR-097)
 **Author:** dev_agent (config + docs only — founder executes)
-**Status:** Ready for founder provisioning
+**Status:** Historical Phase-2 provisioning artifact (THR-097 / PR #425).
+
+The steps below preserve that earlier self-hosted control-plane/Mac environment
+setup, including its reusable-key example. Current THR-327 seq187/227 managed
+Linux installation, single-use credential-file handoff and lifecycle are maintained
+in [the remote-access guide](../../docs/agent-guides/contracts/remote-access-and-remote-jobs.md)
+and [the normative contract](../../docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md#managed-linux-m1-acceptance-thr-327-seq187).
+Bounded M1 **PASSED** on main `455c9c5b689fa25f625e2df8cae1b551c2a1de86`
+([run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282)).
+M2 tailnet transport, full-daemon acceptance, restart/reboot recovery and deployment
+remain **UNEXECUTED** and outside M1. This historical runbook is not evidence of
+those outcomes or authorization to provision/deploy.
 
 ---
 
