@@ -140,20 +140,16 @@ ten-read timing is not a serving-daemon restart or production-size estimate.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
-Focused audit-prefilter observation (THR308seq353/354): run
-`bash scripts/test-coding-audit-prefilter.sh` locally with frozen Python3.14.
-It compares the real complete coding scan with its ordinary SQL projection
-disabled, on synthetic earlier-layout and complete-coding SQLite history.
-The corpus covers every typed discriminator, incomplete/duplicate/escaped
-members, UTF8/16/32 envelopes, invalid UTF8 TEXT, BLOB/NULL/numeric storage,
-size/depth/integer-digit bounds and benign near-misses. It also compares
-accepted built-in history, shared budgets and committed/joined/refused watermark
-publication. Read-only refused scans retain their tracebacks across connection close
-and then collect garbage, asserting zero unraisable cleanup exceptions in both
-standalone and complete-coding candidate paths. Local before/after timings cover
-both sparse and wider flat rows;
-they do not predict a serving-daemon restart saving. No daemon/worker starts,
-retired unit selection, general integration, E2E or CI trigger is added.
+Focused audit-removal observation (THR-308 seq403): run
+`bash scripts/test-coding-audit-removal.sh` locally with frozen Python3.14.
+Disposable SQLite drives production `validate_coding_data`: deep ordinary and
+unrecognised coding audit payloads are accepted, while unknown tasks/task_results
+coding rows still refuse. Retained checks cover accepted built-in history, shared
+budget exhaustion and bounded non-audit refusal cleanup. This replaces the former
+prefilter/watermark corpus because that behavior was deliberately removed, not
+because its baseline spy-signature failure was repaired or ignored. No daemon,
+retired Python unit suite, general integration, E2E or CI trigger is added.
+Restart timing remains a separately authorized Founder observation.
 
 Focused ordinary-authority omission observation (THR308seq384 T-0): run
 `bash scripts/test-authority-v2-ordinary-omission.sh` locally with frozen

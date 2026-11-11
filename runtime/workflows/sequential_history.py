@@ -725,7 +725,6 @@ def _auxiliary(conn: sqlite3.Connection, data: dict[str, list[dict]], runs: dict
 def _legacy_history(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget,
                     sequential_rows: dict[str, list[dict]] | None = None, *,
                     retained_budget: _Budget | None = None,
-                    advances: list[tuple[tuple[int, int], int]] | None = None,
                     ) -> tuple[str, _CodingInventory | None]:
     # Exact retained budget/native connection and original per-call caps. The
     # new reader's schema/copy work has wider limits, so it cannot be seeded
@@ -735,17 +734,15 @@ def _legacy_history(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget
     opening = legacy_budget.consumed, legacy_budget.accepted_rows, legacy_budget.traversed
     try:
         if sequential_rows is None:
-            retained = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=legacy_budget,
-                                             advances=advances)
+            retained = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=legacy_budget)
         else:
             # Same one-read context as workflow_schema:863-878, with the actual
-            # caller budget and provisional advances output preserved.
+            # caller budget preserved.
             if not conn.in_transaction or _sequential_legacy_read.get() is not None:
                 raise ValueError('workflow_seq_legacy_reader_requires_snapshot')
             token = _sequential_legacy_read.set((conn, sequential_rows))
             try:
-                retained = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=legacy_budget,
-                                                 advances=advances)
+                retained = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=legacy_budget)
             finally:
                 _sequential_legacy_read.reset(token)
     finally:
@@ -761,7 +758,6 @@ def _legacy_history(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget
 
 def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                             retained_budget: _Budget | None = None,
-                            advances: list[tuple[tuple[int, int], int]] | None = None,
                             deadline: float | None = None) -> SequentialHistory:
     """Validate all sequential rows and complete combined schema in one snapshot.
 
@@ -776,7 +772,6 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     reference = _ReadBudget(deadline=observed.deadline)
     budget = _ReadBudget(deadline=observed.deadline)
     legacy = _ReadBudget(deadline=observed.deadline, sql_limit=32000000)
-    collected: list[tuple[tuple[int, int], int]] = []
     with _schema_snapshot(conn):
         layout, metadata = _read_layout(conn, observed, reference, budget)
         if not layout.sequential:
@@ -849,14 +844,10 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
             if layout.ownership:
                 validate_sequential_ownership_guards(conn, budget=budget)
             retained = _legacy_history(conn, expected_org_slug, budget, data,
-                                       retained_budget=retained_budget, advances=collected)
+                                       retained_budget=retained_budget)
         budget.check()
         ready = bool(definitions and settings and layout.ownership == 2)
         result = SequentialHistory(layout, 'storage readable' if ready else 'new-engine unavailable',
                                    tuple(sorted(definitions)), tuple(sorted(runs)), retained)
-    # No incomplete validation, interruption or failed snapshot exit publishes.
-    # Historical absent callers above keep their original early-return behavior.
     budget.check()
-    if advances is not None:
-        advances.extend(collected)
     return result

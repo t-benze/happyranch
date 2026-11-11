@@ -6,7 +6,7 @@ Current combined naming contract: [`2026-10-09-identity-names-core.md`](2026-10-
 
 This directory is append-only design history. Specs capture intent, alternatives, and decisions at the time they were written; they are not automatically updated when the implementation evolves.
 
-Startup audit-scan supplement: [`2026-11-08-coding-audit-prefilter.md`](2026-11-08-coding-audit-prefilter.md)
+Historical startup audit-scan supplement (superseded by THR-308 seq403 removal): [`2026-11-08-coding-audit-prefilter.md`](2026-11-08-coding-audit-prefilter.md)
 (THR308seq353/354); current behavior is in the coding workflow contract.
 
 - **current**: [Human-managed Default roster](2026-10-09-human-default-team-roster.md) — THR296 accepted contract; execution/readiness gates remain.
@@ -62,6 +62,7 @@ New specs should include a short status block near the top:
 
 | Spec | Status | Current source / notes |
 | --- | --- | --- |
+| [2026-11-11-knowledge-distill-instill-v1.md](2026-11-11-knowledge-distill-instill-v1.md) | current design; implementation pending | THR-296 Option A / TASK-15170: pre-Ready curation with an existing task identity, retired-source capture, immutable archives and additive idle-only Instill; acceptance NOT RUN. |
 | [2026-10-11-agent-reasoning-effort.md](2026-10-11-agent-reasoning-effort.md) | current | THR298 optional static selection, adapter input-v2 opt-in/legacy wire, invocation plumbing and conditional authority projection |
 | [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md) | current | Separate org root control, final commitment, truthful drain, API/CLI/overview and compatible rollback |
 | `2026-10-01-escalation-reason-display.md` | implemented | THR-279 read-side current-episode reason projection; current contract in `docs/agent-guides/web-and-cli.md`. |
@@ -131,3 +132,4 @@ New specs should include a short status block near the top:
 | `2026-08-26-managed-remote-access-contract.md` | current | Normative managed remote-access contract (THR-097 merge unit A, TASK-5771): one Headscale cell per customer, ciphertext-only DERP, supervised portable Python connector, loopback daemon + final-hop bearer injection, explicit allow-list, credential/failure taxonomy, hostile threat fixtures. Shipped policy: `runtime/remote_access/route_policy.json` (118 allow entries; THR-327 R1 v1 exclusions; required static consistency lint); hostile fixtures: `tests/contract/managed_remote_access/`; connector core (unit C) + Linux supervised packaging (unit 3) implemented; control-plane units B–D outside this PR. |
 | [`2026-11-08-reusable-workflows-u1a.md`](2026-11-08-reusable-workflows-u1a.md) | U1a source; execution pending | THR-336 message 85 / TASK-14461 revision 3: closed sequential records and pure bounded definition validator. Current ABI/source boundary: `docs/agent-guides/contracts/reusable-workflows.md`; U1b reducer/briefs and M1/V3 acceptance remain open. |
 | [`2026-11-08-reusable-workflows-u1b.md`](2026-11-08-reusable-workflows-u1b.md) | U1b pure source; service acceptance pending | THR-336 message 85 / TASK-14461 revision 3: common deterministic reducer, returns/counters/invalidation and recipient-filtered data briefs. Current ABI: `docs/agent-guides/contracts/reusable-workflows.md`; actual U2/U3/M1/V3 remain open. |
+| [`2026-11-11-sequential-coding-u5.md`](2026-11-11-sequential-coding-u5.md) | current U5 design; U5a reader/policy source only | ACCESS-1 msg131 / PRD v1.0.4: authenticated current-evidence derivation, mandatory independent review/QA and U5a/U5b split. Assessment/Final producers and local merge remain pending. |

@@ -20,6 +20,11 @@ class BusinessHoldCause(StrEnum):
     MALFORMED_OUTPUT = 'sequential_carrier_invalid'
     CARRIER_LIMIT = 'sequential_carrier_limit_exceeded'
     OUTPUT_LIMIT = 'sequential_output_limit_exceeded'
+    CODE_CHANGE = 'sequential_code_change_invalid'
+    SUBJECT_CHANGED = 'sequential_repository_subject_changed'
+    SUBJECT_UNVERIFIED = 'sequential_repository_subject_unverified'
+    AUTHORITY_DENIED = 'sequential_authority_denied'
+    AUTHORITY_UNVERIFIED = 'sequential_authority_unverified'
 
 
 def hold_id(run_id: str, visit_id: str, result_id: int) -> str:

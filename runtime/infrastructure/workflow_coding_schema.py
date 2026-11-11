@@ -8,12 +8,7 @@ whole-org SQL equality. This module grants no repository or current authority.
 from __future__ import annotations
 
 import json
-import logging
-import os
 import sqlite3
-import sys
-import threading
-import time
 from collections.abc import Iterator
 from contextlib import ExitStack, closing
 from dataclasses import dataclass
@@ -123,8 +118,6 @@ CODING_VALUES = {
     'namespace': ('release/happyranch',),
 }
 CODING_NAMESPACE_COLUMNS = ('namespace', 'authority_namespace', 'org_namespace')
-
-_logger = logging.getLogger(__name__)
 
 
 def has_coding_schema_objects(conn: sqlite3.Connection) -> bool:
@@ -392,8 +385,7 @@ def validate_coding_data(conn: sqlite3.Connection, *, layout: str,
 
 def _read_coding_data(conn: sqlite3.Connection, *, layout: str,
                       expected_org_slug: str | None,
-                      budget: _Budget | None = None,
-                      advances: list[tuple[tuple[int, int], int]] | None = None) -> _CodingInventory | None:
+                      budget: _Budget | None = None) -> _CodingInventory | None:
     # Own a coherent snapshot only when the caller has none. Central callers
     # have already recognized the complete schema; no recursive schema read.
     if budget is not None:
@@ -401,20 +393,14 @@ def _read_coding_data(conn: sqlite3.Connection, *, layout: str,
         if type(budget) is not _Budget:
             raise ValueError('workflow_coding_data_invalid_budget')
     owned = not conn.in_transaction
-    # A snapshot we open ourselves holds no uncommitted rows of ours, so the
-    # audit rows it verified are committed; advance only after it ends.
-    collected = [] if owned else advances
     if owned:
         conn.execute('BEGIN')
     try:
         inventory = _validate_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
-                                          advances=collected, budget=budget)
+                                          budget=budget)
     finally:
         if owned:
             conn.rollback()
-    if owned:
-        for file_key, last_id in collected or ():
-            _advance_audit_log_watermark(conn, file_key, last_id)
     return inventory
 
 
@@ -429,77 +415,26 @@ def _coding_metadata_candidate(raw: object, *, location: str) -> bool:
     return False
 
 
-def _coding_scan_projection(table: str, columns: list[str]) -> str:
-    """Mark only provably ordinary audit payloads for skipping JSON decoding.
-
-    Keep every rowid and the original scalar action. This is NOT a JSON reader:
-    uncertain storage/encoding, keys, escapes, size or nesting always retain the
-    original payload for the unchanged discriminator. Expected coding rows are
-    acquired independently in full, with their original cumulative allowance.
-    Raw TEXT is ALWAYS fetched/decoded normally, before acting on this marker:
-    invalid UTF8 must retain the original sqlite3 decoding error, not disappear.
-    """
-    quoted = ['"' + name.replace('"', '""') + '"' for name in columns]
-    if table != 'audit_log' or columns != ['action', 'payload']:
-        return ','.join(quoted)
-    # json.loads can refuse a long integer even in otherwise ordinary JSON.
-    # Bound the WHOLE text by the active digit limit (zero means disabled).
-    limit = min(65536, sys.get_int_max_str_digits() or 65536)
-    ordinary = []
-    for name in quoted:
-        ordinary.extend((
-            f"typeof({name})='text'",
-            f'length(CAST({name} AS BLOB))<={limit}',
-            # Conservatively retain non-ASCII/NUL text. Invalid UTF8 may still
-            # satisfy this SQL check, so _coding_scan_rows ALWAYS fetches raw
-            # TEXT through sqlite3's original UTF8 decoder before any skip.
-            f'length(CAST({name} AS BLOB))=length({name})',
-        ))
-    ordinary.extend((
-        "lower(\"action\") NOT GLOB 'coding_*' AND \"action\"!='workflow_start'",
-        "substr(ltrim(\"payload\", ' \t\r\n'),1,1) IN ('{','[')",
-        r"""instr("payload", '\u')=0""",
-        # Count even openers in quoted prose: false positives only. At most
-        # one container rules out BOTH decoder and recursive-visitor overflow.
-        "length(\"payload\")-length(replace(replace(\"payload\",'{',''),'[',''))<=1",
-        'json_valid("payload")',
-    ))
-    # json_each is evaluated ONLY for valid shallow JSON, and visits duplicate
-    # keys too. Every recognized key retains the original Python scan regardless
-    # of value. Invalid/incomplete envelopes never enter this branch.
-    keys = sorted(CODING_PREFIXES.keys() | CODING_VALUES.keys() | set(CODING_NAMESPACE_COLUMNS))
-    key_sql = ','.join("'" + key.replace("'", "''") + "'" for key in keys)
-    return ('"action","payload",CASE WHEN ' + ' AND '.join(ordinary)
-            + ' THEN NOT EXISTS (SELECT 1 FROM json_each("payload") WHERE key IN ('
-            + key_sql + ')) ELSE 0 END AS _coding_ordinary')
-
-
 def _coding_scan_rows(conn: sqlite3.Connection, table: str, columns: list[str], *,
                       where: str, args: tuple, ordered: bool) -> Iterator[tuple | sqlite3.Row]:
-    """Retain original fetch/type/UTF8 failures, then omit ordinary JSON work."""
+    """Scan non-audit metadata with original fetch/type/UTF8 failures."""
     quoted = '"' + table.replace('"', '""') + '"'
-    projection = _coding_scan_projection(table, columns)
+    projection = ','.join('"' + name.replace('"', '""') + '"' for name in columns)
     query = ('SELECT rowid' + (',' + projection if projection else '')
              + ' FROM ' + quoted + where + (' ORDER BY rowid' if ordered else ''))
     cursor = conn.execute(query, args)
     try:
-        for row in cursor:
-            if len(row) == len(columns) + 2:
-                # This marker exists only for the ordinary action/payload
-                # projection. The complete raw row has already decoded above.
-                yield (row[0], row[1], None if row[-1] == 1 else row[2])
-            else:
-                yield row
+        yield from cursor
     finally:
         cursor.close()
 
 
 def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
-                           structured, keys, known, watermark):
+                           structured, keys, known):
     """Locate independently expected rows and reserved metadata, never admit by ID.
 
     Ordinary shared history keeps its preceding unbounded discriminator. Known
-    coding rows bypass ONLY that ordinary scan/watermark; all coding candidates
+    coding rows bypass ONLY that ordinary scan; all coding candidates
     are freshly acquired with the original bounded cell gates and shared budget.
     """
     from runtime.workflows.coding_authority_history import _bounded_rows
@@ -521,9 +456,6 @@ def _coding_candidate_rows(conn, table, columns, allowed, budget, *, scalar,
                           + ' OR ' + key_sql + ' NOT IN ('
                           + ','.join(placeholders for _ in known) + '))')
         args += tuple(value for identity in known for _, value in identity)
-    if watermark is not None:
-        predicates.append('rowid>?')
-        args += (watermark,)
     where = ' WHERE ' + ' AND '.join(predicates) if predicates else ''
     with closing(_coding_scan_rows(conn, table, metadata, where=where, args=args, ordered=True)) as scan:
         for rowid, *values in scan:
@@ -557,10 +489,6 @@ def _coding_column_masks(table: str, selected_columns: tuple[str, ...]) -> tuple
             'id': ('text',), 'namespace': ('text',), 'generation': ('integer',),
             'request_digest': ('text',), 'admitted_by': ('text',),
         },
-        'audit_log': {
-            'id': ('integer',), 'task_id': ('text',), 'agent': ('text',),
-            'action': ('text',), 'payload': ('null', 'text'), 'timestamp': ('text',),
-        },
     }
     if table not in contracts:
         return (('text', 'blob', 'integer', 'real', 'null'),) * len(selected_columns)
@@ -572,13 +500,12 @@ def _coding_column_masks(table: str, selected_columns: tuple[str, ...]) -> tuple
 
 def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                           expected_org_slug: str | None,
-                          advances: list[tuple[tuple[int, int], int]] | None = None,
                           budget: _Budget | None = None) -> _CodingInventory | None:
     """Positive setup/import/mapping/queued closure; refuse unsupported coding families.
 
     No ID skip-list or trusted flag: each supported native row is compared in
     full, with native storage types, against the complete independently parsed
-    history/admission/journal/pointer closure. All other cells retain the shared
+    history/admission/journal/pointer closure. Other non-audit cells retain the shared
     unknown/malformed/duplicate/incomplete discriminator. Recovery must match
     the full schema first, before either legacy return. No task/schema effects.
     """
@@ -670,7 +597,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         if conn.execute(f'SELECT 1 FROM {table} LIMIT 1').fetchone() is not None:
             raise ValueError(f'workflow_coding_data_unsupported: {table}; complete family reader required')
     for table in sorted(tables):
-        if not (table.startswith('workflow_') or table in ('tasks', 'task_results', 'audit_log')):
+        if not (table.startswith('workflow_') or table in ('tasks', 'task_results')):
             continue
         quoted = str(table).replace('"', '""')
         columns = [row[1] for row in conn.execute(f'PRAGMA table_xinfo("{quoted}")')]
@@ -685,7 +612,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             'workflow_template_versions', 'workflow_template_identity_versions',
             'workflow_template_publish_operations', 'workflow_admission_records')
         native_mapping = mappings is not None and table in (
-            'workflow_coding_mappings', 'workflow_admission_records', 'audit_log', 'workflow_authorization_revisions')
+            'workflow_coding_mappings', 'workflow_admission_records', 'workflow_authorization_revisions')
         native_queued = queued is not None and table in (
             *queued.admitted.keys(), *CODING_TABLES)
         native_sequential = table in SEQUENTIAL_TABLES and table in sequential
@@ -706,11 +633,6 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             selected_columns = columns
         if not selected_columns:
             continue
-        file_key = _audit_log_file_key(conn) if table == 'audit_log' else None
-        watermark = _audit_log_watermark(conn, file_key)
-        last_id = watermark
-        scan_start = time.perf_counter() if table == 'audit_log' else None
-        observed_rows = 0
         # Refusal tracebacks may outlive the connection; close every owned
         # scan (including nested candidate acquisition) before leaving this read.
         with ExitStack() as scans:
@@ -756,16 +678,12 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                             expected = _decoded(json.loads(raw), budget)
                             known.add(locator(expected))
                     rows = scans.enter_context(closing(_coding_candidate_rows(conn, table, selected_columns, allowed, budget,
-                        scalar=scalar, structured=structured, keys=keys, known=known,
-                        watermark=watermark if file_key else None)))
+                        scalar=scalar, structured=structured, keys=keys, known=known)))
             else:
                 scan = scans.enter_context(closing(_coding_scan_rows(
-                    conn, table, selected_columns, where=' WHERE rowid > ?' if file_key else '',
-                    args=(watermark,) if file_key else (), ordered=bool(file_key))))
+                    conn, table, selected_columns, where='', args=(), ordered=False)))
                 rows = ((row[0], False, *row[1:]) for row in scan)
             for rowid, expected_candidate, *row in rows:
-                observed_rows += 1
-                last_id = max(last_id, rowid)
                 if table_bounded and row == [None]:
                     continue  # Already discriminated ordinary metadata, no coding spend.
                 data = dict(zip(selected_columns, row, strict=True))
@@ -843,74 +761,6 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                             recognition_budget=enclosing_budget if native_decision else None,
                             sequential=sequential if native_decision else None,
                             result_id=rowid if native_decision else None)
-        if file_key is not None:
-            if advances is not None:
-                advances.append((file_key, last_id))  # applied after the owned snapshot ends
-            else:
-                _advance_audit_log_watermark(conn, file_key, last_id)
-        if scan_start is not None:
-            _logger.info('workflow_coding_audit_scan elapsed_seconds=%.6f observed_rows=%d watermark=%d',
-                         time.perf_counter() - scan_start, observed_rows, watermark)
     if queued is not None:
         return _CodingInventory(budget, release, imported, mappings, queued)
     return None
-
-
-# audit_log is insert-only at runtime (AUTOINCREMENT id; only the one-time
-# pre-serving legacy script->job schema migration rewrites rows). Rescanning
-# every historical payload on each classify_task held Database._lock for
-# seconds per task step, so rows already verified clean in this process are
-# skipped. Keyed by the database file identity (never id(conn), which can be
-# reused); in-memory/unidentifiable databases always rescan fully. A refusal
-# never advances the watermark. Direct same-UID rewrites of already-verified
-# rows remain outside this cooperative guarantee, as elsewhere.
-_AUDIT_LOG_WATERMARKS: dict[tuple[int, int], int] = {}
-_AUDIT_LOG_WATERMARK_LOCK = threading.Lock()
-
-
-def _audit_log_file_key(conn: sqlite3.Connection) -> tuple[int, int] | None:
-    try:
-        path = next((row[2] for row in conn.execute('PRAGMA database_list') if row[1] == 'main'), '')
-        if not path:
-            return None
-        stat = os.stat(path)
-    except (sqlite3.DatabaseError, OSError):
-        return None
-    return (stat.st_dev, stat.st_ino)
-
-
-def _audit_log_watermark(conn: sqlite3.Connection, file_key: tuple[int, int] | None) -> int:
-    if file_key is None:
-        return 0
-    with _AUDIT_LOG_WATERMARK_LOCK:
-        watermark = _AUDIT_LOG_WATERMARKS.get(file_key, 0)
-    current_max = conn.execute('SELECT COALESCE(MAX(rowid), 0) FROM audit_log').fetchone()[0]
-    if type(current_max) is int and current_max >= watermark:
-        return watermark
-    # Rows vanished or ids regressed: the cached proof no longer applies, and
-    # a stale higher mark must not later skip reused ids.
-    with _AUDIT_LOG_WATERMARK_LOCK:
-        _AUDIT_LOG_WATERMARKS.pop(file_key, None)
-    return 0
-
-
-def _advance_audit_log_watermark(conn: sqlite3.Connection, file_key: tuple[int, int], last_id: int) -> None:
-    # Inside an open transaction our own uncommitted rows are visible; a
-    # rollback would reuse their AUTOINCREMENT ids, so never cache past them.
-    if conn.in_transaction:
-        return
-    if _audit_log_file_key(conn) != file_key:
-        with _AUDIT_LOG_WATERMARK_LOCK:
-            _AUDIT_LOG_WATERMARKS.pop(file_key, None)
-        return
-    current_max = conn.execute('SELECT COALESCE(MAX(rowid), 0) FROM audit_log').fetchone()[0]
-    if type(current_max) is not int or current_max < last_id:
-        with _AUDIT_LOG_WATERMARK_LOCK:
-            _AUDIT_LOG_WATERMARKS.pop(file_key, None)
-        return
-    with _AUDIT_LOG_WATERMARK_LOCK:
-        if current_max < _AUDIT_LOG_WATERMARKS.get(file_key, 0):
-            _AUDIT_LOG_WATERMARKS.pop(file_key, None)
-            return
-        if last_id > _AUDIT_LOG_WATERMARKS.get(file_key, 0):
-            _AUDIT_LOG_WATERMARKS[file_key] = last_id

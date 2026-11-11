@@ -3,7 +3,8 @@
 2026-11-11; THR-336 / ROOT TASK-15144, maker TASK-15145. This specifies the
 whole re-scoped U4. U4a supplies inert records/readers and an unmounted preflight;
 U4b1 attaches durable business holds; U4b2 attaches immutable subject binding
-and the resolve-only/editing boundary. U4b3 still owns code-change composition. Source delivery and static checks do not establish runtime acceptance.
+and the resolve-only/editing boundary. TASK-15167 / ROOT TASK-15165 attaches U4b3
+code-change declaration composition and downstream current-authority disclosure checks. Source delivery and static checks do not establish runtime acceptance.
 
 ## Authority and scope
 
@@ -30,8 +31,9 @@ run. Corrections change head/content epoch, never the original change subject.
 The runtime four-role effective-duty-access checkpoint, observation adapters,
 edit-readiness hook and readiness labels are removed. Ordinary role eligibility
 remains. Eligibility/configuration/receipts establish no effective-access grant,
-credential, OS containment or lasting permission. Revalidate current authority
-and access before each later disclosure, publication and action. U5 still requires
+credential, OS containment or lasting permission. ACCESS-1 below separates
+daemon current-authority rechecks from agents’ own effective-access operations
+before later disclosure, publication and action. U5 still requires
 independent exact-subject APPROVE and QA PASS even when graph data omits/reroutes
 those nodes, plus selected live Final-manager-only local merge. Daemon performs
 zero merges. Required selected-head checks remain Source Boundary Lint and
@@ -143,24 +145,9 @@ cause and requires a new authorized run. A narrowed actual diff may fit the
 original authorized prefixes without rewriting them. Correction visits inherit
 the same subject and lower original limits; no latest-repository adoption.
 
-Code-change outputs use actual repository/base/**head/PR** evidence and current
-content epoch, bound to the saved subject. Treat callback JSON and capability
-claims as untrusted declarations. The service validates genuine task/principal/
-SID/INTEGER, full SHA1 OIDs, selected repository/origin/base, diff scope and PR
-identity/current head through supported current-access seams before composing
-the ordinary result envelope. Unsupported observation holds rather than issuing
-`code-change@1`/`repository-pre-edit@1` checks. Never translate old Coding grants
-or configuration strings into new authority. Authenticated historical receipt
-replay is not new publication permission.
-
-Every downstream selected-input disclosure rechecks current authority and access
-for the addressed principal. Later publication/action rechecks at its own actual
-boundary. A valid earlier preflight cannot bypass permission loss. Preserve
-document witness behavior, original recipient selection, 48 KiB JSON and 1 MiB
-document limits, wrong-identity refusals and genuine settlement. U5 separately
-owns independent exact-subject review/QA capability and selected-manager merge;
-U4 supplies no merge or effect grant. Unsupported external/access seams must
-remain held and return to ROOT under the Confusion Protocol.
+Code-change composition and downstream disclosure now follow ACCESS-1 below.
+U5 retains independent exact-subject review/QA capability and selected-manager
+merge; U7 retains public task-session transport. There is no new access observer.
 
 No new table/column/index is required by the proposed subject/hold evidence
 encoding. If implementation reveals that existing closed readers cannot preserve
@@ -179,7 +166,8 @@ and run pins in the short admission transaction. There is no Git/filesystem work
 or await inside that transaction. Observation bookends remain cooperative, not a
 racing-rename fence. A changed selection/authority/observation refuses without a
 subject write. No public task-session command or OrgState service mount is added;
-U7 owns transport. U4b3's successful code-change output still remains unavailable.
+U7 owns transport. At U4b2 delivery successful code-change output remained
+unavailable; U4b3 below attaches declaration composition.
 
 `sequential_repository_subject.py` owns bounded canonical subject validation.
 Both complete `_auxiliary` and selected `_validate_lifecycle` recognize the
@@ -222,7 +210,8 @@ returns only after positive COMMIT; insert/update/COMMIT failure rolls back and
 releases no editing phase. This is the subject boundary, not a four-role access
 checkpoint or permission-enforcement change. Scope remains the selected
 Developer's declaration under its authorized brief, not machine proof of a grant.
-Downstream access/output/merge remains U4b3/U5; correction visits cannot adopt a
+Downstream declaration composition/disclosure is attached by U4b3 below;
+review/QA capability and merge remain U5; correction visits cannot adopt a
 latest repository or raise original run limits.
 
 Disposable scratch diagnostics observe local SHA1 clone binding, complete and
@@ -232,6 +221,81 @@ rollback. They use synthetic pre-result native/live/authority scaffolding derive
 from a retained M1 DB copy; they are not genuine native admission/callback/host
 or V3 acceptance. Full correction progression and racing filesystem changes remain
 NOT RUN. No repository tests are added or changed.
+
+## ACCESS-1 / U4b3 attached source (TASK-15167, ROOT TASK-15165)
+
+Founder THR-336 msg131 (2026-11-11T01:36Z), applying msg129's principle that
+runtime orchestrates repository work, is controlling over PRD v1.0.3 lines
+94/96/150/209, AC4/AC6/AC7 and earlier U4 access-observer wording. Product lead's
+PRD v1.0.4 update is tracked in THR-351; this source cites msg131 directly and
+does not claim that publication has landed.
+
+Before each later disclosure, publication or action, the daemon rechecks only
+current role eligibility, original fixed role binding, active executable
+principal and unchanged committed repository/origin/base/scope. It performs no
+GitHub/network I/O, fetch, new credential operation, permission change or
+per-principal access observation. The U4a/U4b2 local SHA1/origin/base metadata
+preflight is unchanged. Agents share one OS user and one gh credential, so
+per-agent effective repository access is not independently observable by the
+runtime. Selected reviewers and QA prove access by their own exact-head fetch;
+the final manager proves its action access by the expected-head non-admin
+guarded merge (U5). A failed required operation means BLOCK then Held, retaining
+the distinction between denied and unverified. Earlier preflight is no grant.
+
+`SequentialDispatcher._advance` still starts only after genuine callback/native
+terminal/positive outer settlement COMMIT. For a code-change node it authenticates
+the original native task/principal/SID/INTEGER and current binding context, then
+`_compose` accepts a closed canonical declaration of at most 49152 bytes:
+
+```json
+{"epoch":1,"format":"workflow-sequential-code-change@1","head":"<full lowercase 40-hex SHA1>","pr":{"number":1,"repository":"owner/repo","url":"https://github.com/owner/repo/pull/1"},"subject":{"base":"<full lowercase 40-hex SHA1>","object_format":"sha1","origin_digest":"<original SHA256>","repo_key":"<original key>","repository_id":"<original repository ID>","scope":["<original prefix>"]}}
+```
+
+The placeholders above describe the shape, not executable evidence. Subject
+must equal the complete original subject, including unchanged scope prefixes;
+epoch must equal the current visit epoch. PR repository/positive INTEGER/URL
+must be well formed and internally consistent. These are untrusted declarations:
+the daemon does not verify remote repository/PR association, head existence,
+PR current head or diff scope. Those obligations belong to the downstream
+agents' own exact-head operations, not the syntactic checks. Nonempty capability
+claims always refuse; they cannot issue a capability.
+
+`sequential_coding_output` owns declaration validation and deterministic witness
+preimages binding original run/definition/start/subject, epoch, native quartet,
+carrier/input-selection/content digests, PR/head declarations, original sorted
+producer/current-consumer recipients and terminal/outer digests. Ordinary result
+envelopes retain their schema. The `repository-pre-edit@1` check refers to the
+authenticated saved metadata preflight; `code-change@1` establishes declaration
+provenance, not semantic correctness, effective access or U5 review/QA/merge.
+No new evidence table, column or index is needed.
+
+Malformed declaration/PR/OID, changed subject/epoch, absent subject, claims,
+oversized JSON or current-authority failure causes zero accepted outputs/checks.
+After rollback, U4b1 records durable Held with finite causes, adding
+`sequential_code_change_invalid`, `sequential_repository_subject_changed`,
+`sequential_repository_subject_unverified`, `sequential_authority_denied` and
+`sequential_authority_unverified`. Missing/inactive/ineligible fixed principals
+are denied; unavailable/stale authority is unverified. Invalid native identities,
+corrupt history, budgets and persistence errors retain their existing refusals;
+a failed COMMIT cannot report Held or publish a successor. Original settlement
+owners/bytes and Pause-tail ordering are unchanged.
+
+At **every** Coding `node_instruction`, fresh authority is validated in the owned
+admission scope before any selected input bytes return. The addressed principal,
+exact selected ref/native provenance/digest and original recipient set must
+match; selected code-change declarations must still match the committed subject.
+A denied/unverified authority check returns a typed block, with no disclosure,
+recipient/binding/selection update or retry. U5 outputs remain unavailable and
+are not disclosed by this slice. Document composition/witness policy is unchanged.
+Historical subject/hold reads grant no new publication permission.
+
+Disposable diagnostics use derivative retained-M1 SQLite fixtures and synthetic
+authority/live-session/native-proof scaffolding. They observe ordinary Coding
+composition/transition, finite Held cases, downstream blocks, document B/H bytes
+and failed-COMMIT rollback. They are not genuine callback/native/host/provider,
+review/QA, full correction progression or V3 acceptance. Repository tests are
+unchanged; Python units are RETIRED, general integration SKIPPED24342, automated
+merge checks lint/static only. See TASK-15167's diagnostic receipt for actual cases.
 
 ## U4b F-M1-CODING-HOLD-TAIL: durable post-settlement Held
 
@@ -326,10 +390,10 @@ native/Pause tail ordering are unchanged. No schema change or resume is added.
 | AC4 two targets | Two separately authorized requests resolve two different local SHA1 repositories/bare origins under identical definition/settings/bindings. Distinct immutable subjects, no discovery node or config edit. NOT RUN. |
 | F4 SHA1/scope | SHA1 verified before any first edit; SHA256, invalid scope/base, origin drift, unknown repo and unavailable metadata produce Held with cause and no edit. U4b2 subject boundary attached; disposable scope/COMMIT phase diagnostics observed. Native first-edit ordering NOT RUN. |
 | Subject/replay | Exact receipt replay retains original IDs/bytes; changed target/base/origin or expansion cannot mutate the subject; correction head/epoch retains base/scope. U4b2 attached; disposable bind/readers/replay/target/base/expansion-Held observed. Genuine correction progression NOT RUN. |
-| Later access loss | Valid preflight then loss of current access blocks the affected downstream disclosure/publication/action with bindings unchanged. No readiness panel/grant shortcut. U4b3/U5 pending; NOT RUN. |
-| AC8 | Wrong task/SID/result/subject and duplicate results preserve original evidence/budgets; oversized JSON Held, unsaved, unsuccessful; no second allocation. Existing 49152-byte cap retained. New Coding observations NOT RUN. |
+| Later access loss | ACCESS-1 msg131: daemon disclosure rechecks current authority and unchanged subject; denied/unverified blocks leave bindings/selection/recipients unchanged (U4b3 attached; synthetic diagnostics only). Effective access is proven by selected agents’ own exact-head operations and manager guarded merge (U5); those real operations and later-action proof remain NOT RUN. |
+| AC8 | Wrong task/SID/result/subject and duplicate results preserve original evidence/budgets; oversized JSON Held, unsaved, unsuccessful; no second allocation. Existing 49152-byte cap retained. U4b3 synthetic wrong-subject/OID/PR/claims/oversize/identity diagnostics observed; genuine native/remote proof NOT RUN. |
 | F8/AC9 hold tail | Force an expected post-positive-outer business refusal: one durable Held visit/run/cause, original proofs preserved, zero successors/outputs and no Pause-tail ExceptionGroup. Include replay, cancellation/transition race and failing hold persistence without false Held claim. U4b1 source attached. Disposable retained-M1 snapshot diagnostic observes durable Held, both readers, exact outer replay without fresh authority, cancellation winning and persistence failure propagation. Full native Pause-tail execution, genuine concurrent races and V3 are NOT RUN. |
-| Document compatibility | Document composition, limits, recipient witnesses and native order remain identical; no default admission/public-start change. U4b1 changes refusal handling/readers only; document execution NOT RUN. |
+| Document compatibility | Document composition, limits, recipient witnesses and native order remain identical; no default admission/public-start change. U4b3 compares document content/envelope/witness bytes at B/H in disposable diagnostics; genuine document execution/native order NOT RUN. |
 
 No tests are added or changed here. Future executable case authoring must pass
 test-authoring-evidence-gate's four answers (observable contract, credible

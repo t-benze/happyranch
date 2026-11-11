@@ -1050,8 +1050,9 @@ U3f supplies source support for document-only recipient and capability witnesses
 before M1. This supersedes earlier blanket U5 witness-dependency statements for
 this subset only. Every node in the immutable definition must select
 `immutable-document@1` or `document-review@1` with its registered completion check.
-Repository contracts, mixed graphs and every nonempty `capability_claims` stay
-held; JSON, references and URLs confer no repository capability or effect.
+At U3f delivery repository contracts and mixed graphs stayed held; U4b3 below
+attaches only Coding declaration composition/disclosure. Every nonempty
+`capability_claims` still stays held; JSON, references and URLs confer no repository capability or effect.
 
 Recipients are the sorted, distinct producer role plus declared current-consumer
 roles, derived from immutable definition data. Original admitted fixed bindings
@@ -1096,9 +1097,9 @@ U3f adds no definition compile or compiled-tree clone. New history, evidence,
 output and definition parsing/copies must be charged. That condition permits
 publication, not a PASS of compile accounting.
 Document binding context uses the charged start parser and reuses the resulting
-bindings. Non-document advancement leaves context empty before composition and
-retains B's start parse only for a fresh NextEdge successor after composition.
-The non-document input-rendering parse retains its original pre-selection condition.
+bindings. U4b3 extends this charged context to code-change composition and
+Coding input rendering. Other unsupported contracts retain empty advancement
+context and B's lazy successor start parse.
 
 R-U3f-SB5-2 requires fresh authority capture before ownership. In
 `node_instruction`, the original reader budget starts before capture and charges
@@ -1113,12 +1114,12 @@ charged to any reader budget, a pre-existing class shared by dispatchers. This
 classified follow-up does not block U3f publication and is not charged-accounting
 PASS. F-U3f-ENTRY remains separate.
 
-R-U3f-SB5-3 corrects C1 with document-only digest deferral: `_advance` computes
-terminal/outer digests only inside its positive document classification branch,
-after context validation. Before each serialization it reserves
+R-U3f-SB5-3 corrected C1 with document-only digest deferral; U4b3 extends
+that charged branch only to code-change composition after binding validation. Before each serialization it reserves
 `48 * 16384 + 512` bytes and one step on the ORIGINAL prefix budget; 16 KiB
-is the unchanged `_evidence` input preflight. The non-document hold and
-foreign-result refusal perform zero proof serializations, matching B. There is
+is the unchanged `_evidence` input preflight. Unsupported non-code holds and
+foreign-result refusals retain zero proof serializations; supported code-change
+scopes now prepay the same proof copies. There is
 no budget reset/refund, new parser or change to protected proof/key/CAS/effect
 fragments. `_compose` keeps its original internal digest interface.
 **F-U3f-MOVE remains open, owner ROOT engineering_manager:** native team-move
@@ -1170,14 +1171,15 @@ are not a racing-rename fence.
 There is no production caller, public transport, evidence DML, persistent run
 subject or lifecycle state change in U4a. A Held receipt does not mean the
 database run has become Held. U4b2 now attaches the internal immutable subject
-binding and resolve-only release described below. U4b3 still owns actual
-repository/base/head/PR code-change composition and downstream revalidation. U4b1 supplies the post-positive-outer
+binding and resolve-only release described below. U4b3 now attaches repository/base/head/PR declaration composition and
+downstream current-authority revalidation, as described below. U4b1 supplies the post-positive-outer
 business-Held overlay below.
 Another repository/origin/base or expanded scope needs a new authorized run;
 correction heads retain the original subject. Existing preflight/observation
 evidence slots are the planned storage seam; no schema change or live installer
-is part of U4a. Coding successful-output holds, document behavior, Disabled
-admission and existing start/settlement order remain unchanged.
+is part of U4a. At U4a delivery Coding successful outputs stayed held. U4b3 below attaches
+declaration composition; document behavior, Disabled admission and existing
+start/settlement order remain unchanged.
 
 U4a behavior/AC4 two-repository proof is NOT RUN. Python units are RETIRED;
 general integration SKIPPED THR243seq42; required automated checks are lint/static
@@ -1261,9 +1263,91 @@ preserved.
 This is an internal source attachment, without a public route/CLI/TS adapter or
 new admission/settings/permission/credential/grant. U7 owns transport; report an
 unavailable adapter. No four-role effective-duty checkpoint is restored. U4b3
-still owns code-change output and downstream current-access revalidation; U5
-owns review/QA/merge. Disposable scratch observations use explicit synthetic
+now attaches code-change declaration output and downstream current-authority
+revalidation below; U5 owns review/QA/merge. Disposable scratch observations use explicit synthetic
 pre-result native/authority/live scaffolding, not genuine native/V3 acceptance.
 Full correction progression, racing filesystem changes and native first-edit
 ordering are NOT RUN. Units RETIRED; general integration SKIPPED24342; all CI is
 lint/static only. See the current [U4 spec](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).
+
+
+## U4b3 Coding composition and ACCESS-1 (THR-336 msg131)
+
+TASK-15167 / ROOT TASK-15165 implements R-M3-1. Founder ACCESS-1 msg131 is
+controlling over the earlier PRD v1.0.3/U4 access-observer language; PRD v1.0.4
+publication is tracked in THR-351. Agents share one OS user and one gh credential,
+so the runtime cannot independently observe per-agent effective repository access.
+The daemon rechecks current eligible/active fixed principals and unchanged saved
+subject at publication/disclosure; it performs no GitHub/network I/O or fetch.
+The merged local clone metadata preflight is unchanged. Downstream reviewers/QA
+prove access through their own exact-head fetch; final-manager expected-head
+non-admin guarded merge remains U5. Failed own operation -> BLOCK -> Held,
+with denied versus unverified findings. No four-role access checkpoint returns.
+
+Only code-change@1 produced/completed/null-verdict callbacks may now compose an
+ordinary result envelope under genuine task/principal/SID/INTEGER, original
+successful terminal/outer proof and current authority. Canonical JSON (49152-byte
+maximum) has exactly `format=workflow-sequential-code-change@1`, complete original
+`subject`, current visit `epoch`, full lowercase 40-hex SHA1 `head`, and
+`pr={repository,number,url}` with owner/repo, positive INTEGER and matching
+https://github.com/owner/repo/pull/number. Full original subject equality includes
+repository ID/key, origin digest, SHA1 base and scope. These are declarations,
+not daemon proof of PR/head existence, remote association or diff scope.
+Capability claims stay empty. Deterministic checks bind the original native and
+subject/content/recipient/proof context; review/QA capability remains unavailable.
+
+Every Coding selected-input rendering rechecks current authority before returning
+bytes, plus exact selected ref/provenance/hash/original recipient set and saved
+subject for code-change inputs. Authority positively lost is
+`sequential_authority_denied`; unavailable/stale authority is
+`sequential_authority_unverified`. Disclosure blocks preserve bindings, recipient
+set and selection with zero returned bytes. Successful composition failures use
+U4b1's independent rollback-then-Held writer, adding finite code-change-invalid,
+subject-changed/unverified and authority-denied/unverified causes. Failed COMMIT
+never claims durable Held or publishes output/successor. Native settlement and
+document witness behavior remain unchanged. No DDL, transport or new grant.
+
+Source-only delivery includes disposable synthetic diagnostics, not real native/
+provider/full correction/V3 acceptance. U5 and U7 remain separate. See the
+[current U4 specification](../../superpowers/specs/2026-11-11-sequential-coding-u4.md#access-1--u4b3-attached-source-task-15167-root-task-15165)
+for the declaration, cause and evidence boundaries.
+
+
+## U5a Coding evidence reader and policy (THR-336 / TASK-15200)
+
+PRD v1.0.4 SHA256 `96925395de4e44cc5c1570deb512ec843fcfd72c0b3eaeff0423c00b58a07bb5`
+and Founder msg131 ACCESS-1 control current-authority versus agent-owned access.
+The new unmounted `sequential_coding_evidence.read_current_coding_evidence_uncommitted`
+performs SELECT-only full selected-run reducer replay, immutable admitted pins,
+original INTEGER callback/carrier, successful host and positive original outer
+proof joins under the caller's owned current-authority transaction. Original
+subject and current repository/base/head/PR/epoch must agree. Current active
+fixed worker/registered-manager bindings are rechecked before and after deriving
+policy; unavailable authority is unverified, proven lost eligibility is denied.
+No Git/network/access observation occurs.
+
+`sequential_coding_policy` unconditionally requires independent-code-review@1
+APPROVE and code-qa@1 PASS, regardless of Final inputs or omitted/rerouted graph
+nodes. Assessment content is exactly canonical
+`{format:workflow-sequential-code-assessment@1,change:<whole code-change declaration>}`
+with the existing 49152-byte JSON cap. That subject assertion is not approval;
+only the original settled native verdict/carrier can qualify. All retained
+code-change visit principals remain contributors across invalidated epochs;
+reviewer/QA/Final are distinct and absent from that complete set. Existing
+intent/action evidence refuses without another effect. Missing review/QA,
+staleness, non-independence, denied/unverified authority and uncertainty raise
+finite causes with no returned admissibility/executable selection/intent/action
+or SQL mutation. U5a does not persist Held.
+
+The successful in-process derivation carries original evidence/prefix pins and
+requires exactly Source Boundary Lint and Web Lint (Node 24); it is not a lint
+observation, live invocation proof, executable selection or lasting grant.
+There is no runtime caller/route/CLI/producer in U5a. Existing review/QA/Final
+successes remain held. U5b must attach assessment producers, translate refusals
+through the existing rollback-then-Held owner, prove the genuine live Final,
+re-read at each boundary and supply the common LOCAL Final-manager core/checks/
+one owned guarded action/independent remote observation. Historical Coding
+adapters, U4 owners, default admission and document behavior remain unchanged.
+Synthetic out-of-repo scaffolding is not native/V3/remote acceptance. Full split,
+caller inventory, effect/settlement separation and NOT-RUN obligations are in
+[the U5 specification](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).

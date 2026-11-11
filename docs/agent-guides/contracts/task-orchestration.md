@@ -580,11 +580,12 @@ Only settled original produced documents (null verdict) and APPROVE document
 reviews (matching verdict, canonical JSON object and selected document subject)
 receive their registered typed checks. Reviewers differ from every selected
 DOCUMENT producer; a prior contextual review may share the reviewer principal.
-Nonempty capability_claims and repository/mixed graphs remain held. Current
+Nonempty capability_claims remain held. Repository/mixed graphs stayed held
+at U3f delivery; the U4b3 exception below attaches Coding declaration output. Current
 authority vetoes without changing deterministic original witness bytes.
-Document start context is charged. Non-document advancement preserves the original
-lazy start parse at fresh NextEdge successor selection, after composition; held
-output, terminal and replay paths gain no eager start parse.
+Document start context is charged. U4b3 adds the same charged binding context
+for code-change composition; other unsupported contracts retain the original
+lazy start parse at fresh NextEdge successor selection.
 
 Original callback replay remains read-only. Original c/c+1 transition/return,
 purpose-separated keys, prior-CAS replay, no incomplete-pair repair and
@@ -606,10 +607,11 @@ engineering_manager), an existing shared-dispatcher class rather than accounting
 PASS. R-U3f-SB5-3 keeps the design-mandated native team-move guard unchanged;
 its MoveRequest/task-closure parsing is classified F-U3f-MOVE, OPEN, owner ROOT
 engineering_manager, the existing uncharged class shared by native writers.
-C1 uses document-only digest deferral: terminal/outer serialization occurs only
-in the document branch, each prepaid at `48 * 16384 + 512` bytes and one step
-on the original budget. Non-document hold/foreign-result scopes have zero such
-serializations, matching B. No duplicate configuration acquisition is added;
+U3f C1 used document-only digest deferral; U4b3 extends it only to
+code-change composition: terminal/outer serialization occurs only
+in the document or supported code-change branch, each prepaid at `48 * 16384 + 512` bytes and one step
+on the original budget. Unsupported non-code hold/foreign-result scopes retain zero such
+serializations; supported code-change scopes prepay the same proof copies. No duplicate configuration acquisition is added;
 any NEW uncharged work outside the three disclosed classes requires STOP to ROOT.
 Structural SEEDS are not genuine
 callbacks or M1/V3 behavior; Coding/U4/U5 remainder/native recovery remain held.
@@ -676,7 +678,36 @@ preserved.
 
 The repository-Held callback drain preserves callback/terminal/outer ordering.
 No native preparation, execution enforcement or public transport changes. U7 owns
-the unavailable adapter; U4b3/U5 retain successful
-code-change composition, downstream access and merge. Disposable synthetic-native
+the unavailable adapter; U4b3 below attaches successful code-change
+declarations/current-authority disclosure. U5 retains review/QA capability and merge. Disposable synthetic-native
 scratch diagnostics are not full native first-edit/callback/correction/V3 proof.
 Details: [U4b2 subject contract](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).
+
+
+## U4b3 current-authority publication and addressed disclosure
+
+Founder THR-336 msg131 ACCESS-1 (PRD v1.0.4 update tracked in THR-351) controls
+prior access-observer wording. Agents share one OS user and one gh credential;
+per-agent effective repository access is not independently observable by the
+runtime. Daemon checks current eligible/active fixed principals and unchanged
+U4b2 subject only, without GitHub/network I/O/fetch, credentials or permission
+changes. Original local clone metadata preflight and native settlement stay
+unchanged. Selected reviewers/QA prove access through their own exact-head fetch;
+manager expected-head non-admin guarded merge remains U5. Failed operation ->
+BLOCK -> Held, distinguishing denied from unverified.
+
+Post-outer code-change composition now validates the closed bounded declaration
+and current epoch against the original subject, genuine native result and
+terminal/outer proofs. Claims never authorize checks. Malformed declaration,
+subject/epoch mismatch or authority loss rolls back and uses the U4b1 finite
+Held writer with zero output/check/successor publication; failed COMMIT grants
+nothing. At every downstream Coding node_instruction, fresh owned authority and
+original addressed selected refs/recipients are checked before returning bytes.
+Positively unavailable/ineligible binding is denied; inability to establish
+current authority is unverified. Both block disclosure without editing bindings,
+recipient set or selection. This slice does not produce/disclose U5 outputs.
+Document behavior and 1 MiB document / 49152-byte JSON limits are preserved.
+
+See the [U4b3 declaration and evidence contract](reusable-workflows.md#u4b3-coding-composition-and-access-1-thr-336-msg131).
+Disposable synthetic diagnostics are not genuine native/provider/V3 acceptance.
+No public start, U7 transport, live install/configuration or action is enabled.

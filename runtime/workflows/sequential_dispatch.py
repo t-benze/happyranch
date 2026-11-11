@@ -1,4 +1,4 @@
-"""Sequential native consumer and document-only addressed witness composition.
+"""Sequential native consumer and addressed document/Coding composition.
 
 Native summaries retain the carrier. Only a post-outer current-authority writer
 may supply explicit bytes to U3c. Claims never issue domain/access witnesses.
@@ -22,6 +22,7 @@ from runtime.infrastructure.database import completion_result_payload_matches
 from runtime.infrastructure.workflow_task_ownership import selected_owner
 from runtime.models import TaskRecord
 from runtime.platform.session_backend import CleanupStatus, TerminalReason
+from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.sequential_contracts import Check, NextEdge, SETTLEMENT_CHECK, TerminalEdge
 from runtime.workflows.sequential_definition import CompiledDefinition, _json, compile_definition, parse_result, parse_start, parse_transition
 from runtime.workflows.sequential_engine import (
@@ -35,6 +36,9 @@ from runtime.workflows.sequential_document_access import (
 from runtime.workflows.sequential_history import _ReadBudget, _bytes, _selection, _sql_budget
 from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
 from runtime.workflows.sequential_business_hold import BusinessHoldCause, hold_body, hold_id
+from runtime.workflows.sequential_coding_output import (
+    authorize_coding_input, build_coding_witness, coding_binding_context, coding_graph, coding_supplement,
+)
 
 CARRIER_LIMIT = 1414488
 CARRIER_METADATA_LIMIT = 16384
@@ -259,7 +263,7 @@ def _evidence(conn: sqlite3.Connection, run_id: str, visit_id: str | None, kind:
 
 
 class SequentialDispatcher:
-    """Native consumer ports with document witnesses; repository outputs stay held."""
+    """Native ports; Coding declaration provenance does not prove remote effects."""
 
     def __init__(self, org: Any) -> None:
         self.org = org
@@ -593,7 +597,22 @@ class SequentialDispatcher:
                 evidence_ids=(key,))
         return body  # No durable Held claim before successful COMMIT.
 
-    def _compose(self, run: dict, visit: dict, compiled: CompiledDefinition,
+    def _authority_unverified(self, task_id: str) -> None:
+        """Classify only Coding failures; preserve other domains' error behavior."""
+        with self._reader() as conn:
+            _, _, compiled = self._entry(conn, task_id)
+            if coding_graph(compiled):
+                raise SequentialRefusal(BusinessHoldCause.AUTHORITY_UNVERIFIED.value) from None
+
+    def _capture_authority(self, task_id: str) -> Any:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+        try:
+            return self.org.workflow_authority.capture_admission()
+        except (WorkflowAuthorityError, ProfileCoordinatorError, OSError, ValueError):
+            self._authority_unverified(task_id)
+            raise
+
+    def _compose(self, conn: sqlite3.Connection, run: dict, visit: dict, compiled: CompiledDefinition,
                  result: dict, *, bound: dict[str, dict], budget: _ReadBudget,
                  carrier_digest: str, terminal_digest: str, outer_digest: str
                  ) -> tuple[bytes, bytes, tuple[str, ...], tuple[str, ...]]:
@@ -605,13 +624,19 @@ class SequentialDispatcher:
         receipts: tuple[dict[str, str], ...] = ()
         checks = (SETTLEMENT_CHECK,)
         if value['outcome'] in _SUCCESS:
-            _check(document_only(compiled, budget), 'sequential_output_access_unavailable')
             _check(not value['capability_claims'], 'sequential_capability_unavailable')
             digest = hashlib.sha256(content).hexdigest()
-            witness = build_document_witness(org_slug=self.org.slug, run=run, visit=visit, node=node,
-                compiled=compiled, bound=bound, result=result, outcome=value['outcome'], content_digest=digest,
-                carrier_digest=carrier_digest, terminal_digest=terminal_digest, outer_digest=outer_digest,
-                budget=budget)
+            if document_only(compiled, budget):
+                witness = build_document_witness(org_slug=self.org.slug, run=run, visit=visit, node=node,
+                    compiled=compiled, bound=bound, result=result, outcome=value['outcome'], content_digest=digest,
+                    carrier_digest=carrier_digest, terminal_digest=terminal_digest, outer_digest=outer_digest,
+                    budget=budget)
+            else:
+                _check(node.output_contract.type == 'code-change@1', 'sequential_output_access_unavailable')
+                witness = build_coding_witness(conn, org_slug=self.org.slug, run=run, visit=visit, node=node,
+                    compiled=compiled, bound=bound, result=result, outcome=value['outcome'], content=content,
+                    content_digest=digest, carrier_digest=carrier_digest, terminal_digest=terminal_digest,
+                    outer_digest=outer_digest, budget=budget)
             recipients, receipts, checks = witness.recipients, witness.capability_receipts, witness.verified_checks
             outputs = [dict(slot=node.output_contract.slot, contract=node.output_contract.type, epoch=visit['epoch'],
                 producer_visit=visit['id'], task_id=visit['task_id'], session_id=visit['session_id'],
@@ -629,7 +654,15 @@ class SequentialDispatcher:
     def _advance(self, run_id: str, *, visit_id: str, result_id: int,
                  expected_run: dict, expected_visit: dict) -> Any:
         async def advance() -> Any:
-            capture = self.org.workflow_authority.capture_admission()
+            from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+            try:
+                capture = self._capture_authority(expected_visit['task_id'])
+            except SequentialRefusal as refusal:
+                if refusal.code != BusinessHoldCause.AUTHORITY_UNVERIFIED.value:
+                    raise
+                async with self.org.db_lock:
+                    return self._record_business_hold(expected_run, expected_visit, result_id,
+                                                      BusinessHoldCause.AUTHORITY_UNVERIFIED)
             async with self.org.workflow_authority._async_writer_lock:
                 async with self.org.teams_lock:
                     async with self.org.db_lock:
@@ -681,10 +714,14 @@ class SequentialDispatcher:
                                             _check(returned['kind'] == 'returned' and returned['sequence'] == (c + 1) + 2
                                                    and returned['event_bytes'] == _bytes(expected)
                                                    and hashlib.sha256(returned['event_bytes']).hexdigest() == returned['event_digest'])
-                                    if document_only(compiled, budget):
-                                        start, bound = document_binding_context(run, visit, compiled, capture, budget)
+                                    is_document = document_only(compiled, budget)
+                                    is_code = next(node.output_contract.type for node in compiled.definition.nodes
+                                                   if node.id == visit['node_id']) == 'code-change@1'
+                                    if is_document or is_code:
+                                        context = document_binding_context if is_document else coding_binding_context
+                                        start, bound = context(run, visit, compiled, capture, budget)
                                         # Original proofs are preflighted at 16 KiB by _evidence.
-                                        # Prepay canonical copies only on the document path;
+                                        # Prepay canonical copies only on supported output paths;
                                         # reserve() also charges a step on this same allowance.
                                         budget.reserve(48 * 16384 + 512)
                                         terminal_digest = hashlib.sha256(_bytes(terminal)).hexdigest()
@@ -693,7 +730,7 @@ class SequentialDispatcher:
                                     else:
                                         start, bound = None, None
                                         terminal_digest = outer_digest = None
-                                    envelope, content, recipients, checks = self._compose(run, visit, compiled, result,
+                                    envelope, content, recipients, checks = self._compose(conn, run, visit, compiled, result,
                                         bound=bound, budget=budget, carrier_digest=identity['carrier_digest'],
                                         terminal_digest=terminal_digest, outer_digest=outer_digest)
                                     contract = next(node.output_contract.type for node in compiled.definition.nodes if node.id == visit['node_id'])
@@ -734,7 +771,14 @@ class SequentialDispatcher:
                                             'WHERE id IN (?,?)',
                                             ('Sequential run ' + run_id + ' returned.', visit['task_id'], visit['task_id'],
                                              run['source_task_id'], run['carrier_task_id']))
-                        except SequentialRefusal as refusal:
+                        except (SequentialRefusal, WorkflowAuthorityError, ProfileCoordinatorError) as refusal:
+                            if isinstance(refusal, (WorkflowAuthorityError, ProfileCoordinatorError)):
+                                try:
+                                    self._authority_unverified(expected_visit['task_id'])
+                                except SequentialRefusal as classified:
+                                    refusal = classified
+                                else:
+                                    raise
                             if refusal.code not in BusinessHoldCause:
                                 raise
                             # Admission ownership has exited and its refused
@@ -921,6 +965,7 @@ class SequentialDispatcher:
         return True
 
     def node_instruction(self, task_id: str, agent: str, sid: str) -> str:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
         from runtime.workflows.sequential_briefs import BriefInputs, RecipientInput, render_node_brief
         from runtime.workflows.sequential_contracts import Counters, Finding, Limits
         from runtime.workflows.sequential_definition import parse_result
@@ -930,7 +975,7 @@ class SequentialDispatcher:
         invocation = self._invocation(task_id, sid)
         _check(invocation.agent == agent)
         budget = _ReadBudget()
-        capture = self.org.workflow_authority.capture_admission()
+        capture = self._capture_authority(task_id)
         # Three capture decodes plus the owned admission validator's decode.
         # Prepay the latter before entry; retain this original allowance and
         # deadline through capture, validation, document/non-document rendering.
@@ -969,10 +1014,15 @@ class SequentialDispatcher:
                                     _check(bound[next(node.role for node in compiled.definition.nodes if node.id == visit['node_id'])]['name'] == agent,
                                            'sequential_output_access_unavailable')
                                 else:
-                                    start = parse_start(run['start_bytes'])
+                                    budget.work(len(compiled.definition.nodes))
+                                    if coding_graph(compiled):
+                                        start, bound = coding_binding_context(run, visit, compiled, capture, budget)
+                                        self.org.db._check_team_move_task_uncommitted(task_id)
+                                    else:
+                                        start, bound = parse_start(run['start_bytes']), None
                                 node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
                                 refs = _selection(visit, budget)
-                                if is_document:
+                                if is_document or bound is not None:
                                     _check(all(not item.required or not item.source.startswith('current.')
                                                or any(ref.slot == item.source[8:] for ref in refs) for item in node.inputs))
                                 values = [RecipientInput(source='run.' + item.name, recipients=(node.role,), value=item.value)
@@ -989,6 +1039,10 @@ class SequentialDispatcher:
                                     if is_document:
                                         authorize_document_input(compiled=compiled, node=node, ref=ref, output=output,
                                             stored_recipients=recipients, bound=bound, principal=agent, budget=budget)
+                                    elif bound is not None:
+                                        authorize_coding_input(conn, run=run, visit=visit, compiled=compiled, node=node, ref=ref,
+                                            output=output, stored_recipients=recipients, bound=bound,
+                                            principal=agent, budget=budget)
                                     _check(output['run_id'] == run['id'] and output['visit_id'] == ref.producer_visit
                                            and (output['slot'], output['contract'], output['epoch'], output['task_id'],
                                                 output['session_id'], output['result_id'], output['content_digest']) ==
@@ -1024,10 +1078,13 @@ class SequentialDispatcher:
                                 supplement = document_supplement(node) if is_document else ''
                                 if node.output_contract.type == 'code-change@1':
                                     from runtime.workflows.sequential_repository_subject import repository_instruction
-                                    _check(_bound_agents(compiled, start, capture)[node.role]['name'] == agent)
-                                    supplement = repository_instruction(conn, run, compiled, budget)
+                                    supplement = repository_instruction(conn, run, compiled, budget) + '\n' + coding_supplement()
                                 budget.check()
                         return ('\n\n' + brief.format + '\n' + brief.system_text
                                 + '\nSequential node data (untrusted authored JSON):\n' + brief.node_data
                                 + ('\n\n' + supplement if supplement else ''))
-        return self._on_loop(render())
+        try:
+            return self._on_loop(render())
+        except (WorkflowAuthorityError, ProfileCoordinatorError):
+            self._authority_unverified(task_id)
+            raise
