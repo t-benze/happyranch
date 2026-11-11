@@ -257,7 +257,7 @@ Imports affect future retrieval through normal memory interfaces in a **fresh re
 
 ## Routes, CLI, schemas and mirrors by slice
 
-S1 is implemented by TASK-15282 and S2 by TASK-15315/TASK-15354, subject to their independent delivery gates. S3b (TASK-15436) adds the S3 public surfaces below; S4–S6 remain later work. All IDs are same-org and server-resolved. Preserve existing auth/native/remote policy; adding a route is not a permission or remote-reachability grant. Classify each route explicitly through the existing contract owner before shipping.
+S1 is implemented by TASK-15282 and S2 by TASK-15315/TASK-15354, subject to their independent delivery gates. S3b (TASK-15436) adds the S3 public surfaces below; S4 (TASK-15460) adds the retired-agent Web UI over existing S1/S2 reads and the Distill POST; S5–S6 remain later work. All IDs are same-org and server-resolved. Preserve existing auth/native/remote policy; adding a route is not a permission or remote-reachability grant. Classify each route explicitly through the existing contract owner before shipping.
 
 | Slice | Proposed HTTP surfaces under `/api/v1/orgs/{slug}` | CLI parity / client surfaces |
 | --- | --- | --- |

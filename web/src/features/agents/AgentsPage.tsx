@@ -1,4 +1,3 @@
-import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
 import { useIdentityPresentation } from '@/hooks/identities';
 import { IdentityName } from '@/shared/identities/IdentityName';
 /**
@@ -35,6 +34,8 @@ import { AgentDetailPane } from './AgentDetailPane';
 import type { AgentSummary } from '@/lib/api/types';
 import { AddAgentDialog } from './AddAgentDialog';
 import { AgentAvatar } from './AgentAvatar';
+import { RetiredAgentDetail } from './retired/RetiredAgentDetail';
+import { RetiredRoster } from './retired/RetiredRoster';
 import { useTranslation } from '@/hooks/i18n';
 
 /**
@@ -86,6 +87,9 @@ export function AgentsPage(): JSX.Element {
     [agentsQuery.data?.agents],
   );
   const selectedAgent = typeof openAgentName === 'string' ? openAgentName : null;
+  // THR-296 S4: a terminated row selects a retained retired source by its
+  // permanent ID; the detail reads the S1 retired-source GET, not the roster.
+  const selectedSource = tab === 'terminated' ? searchParams.get('source') : null;
 
   // AGENTS-01: on first settle of the active roster surface, auto-select the
   // first agent so its detail pane renders by default (matching the
@@ -255,8 +259,8 @@ export function AgentsPage(): JSX.Element {
                 </ul>
               )}
             </TabsContent>
-            <TabsContent value="terminated" className="mt-0 p-3">
-              {identityPresentation.query.isLoading ? <p>{t('identity.loading')}</p> : identityPresentation.query.isError ? <p role="alert">{t('identity.loadError')}</p> : identityPresentation.query.data?.identities.filter((i) => i.kind === 'agent' && i.lifecycle === 'terminated').length ? <ul className="space-y-3">{identityPresentation.query.data.identities.filter((i) => i.kind === 'agent' && i.lifecycle === 'terminated').map((i) => <li key={i.canonical_id}><AddressableNameEditor canonicalId={i.canonical_id} /></li>)}</ul> : <p>{t('identity.terminatedEmpty')}</p>}
+            <TabsContent value="terminated" className="mt-0">
+              <RetiredRoster selected={selectedSource} onSelect={(id) => navigate(`${routes.inbox()}?view=terminated&source=${encodeURIComponent(id)}`)} />
             </TabsContent>
             <TabsContent value="pending" className="mt-0 p-3">
               <PendingEnrollmentsTab />
@@ -266,7 +270,13 @@ export function AgentsPage(): JSX.Element {
 
         {/* RIGHT: Detail/Edit pane */}
         <main className="bg-surface-canvas max-md:min-h-0 flex-1 overflow-hidden">
-          {selectedAgent ? (
+          {tab === 'terminated' && selectedSource ? (
+            <RetiredAgentDetail key={selectedSource} sourceId={selectedSource} />
+          ) : tab === 'terminated' ? (
+            <div className="text-text-muted flex h-full items-center justify-center p-4">
+              <p className="text-text-muted max-w-sm text-center text-sm">{t('knowledge.roster.select')}</p>
+            </div>
+          ) : selectedAgent ? (
             <AgentDetailPane
               agentName={selectedAgent}
               onClose={() => navigate(routes.inbox())}
