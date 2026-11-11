@@ -2099,7 +2099,7 @@ limits. Other authoring, revise, slice and total-step rules stay unchanged.
 
 - **Agent executors & permissions.** Pluggable executors (Claude, Codex, opencode, Pi) with per-executor sandbox/allow-rule generation and workspace bootstrap. Spec `docs/superpowers/specs/2026-04-20-multi-executor-design.md`; contract `docs/agent-guides/agent-executors-and-permissions.md`; guide `docs/agent-guides/agent-executors-and-permissions.md`; impl `runtime/orchestrator/executors.py`.
 - **Manage-agent (enrollment).** Enroll, update, or terminate an agent; enrollment is founder-gated. Spec `docs/superpowers/specs/2026-04-17-manage-agent-design.md`; skill `runtime/skills/bundled/manage-agent/SKILL.md`; route `runtime/daemon/routes/agents.py`.
-- **Manage-repo.** Add, remove, or update a repository in an agent's `org/agents/<name>.md` frontmatter. Spec `docs/superpowers/specs/2026-04-17-manage-repo-design.md`; CLI `happyranch manage-repo`.
+- **Manage-repo.** Add, remove, or update a repository in an agent's `org/agents/<name>.md` frontmatter. Repository keys must fully match `[a-z0-9-]{1,32}`. Invalid keys return HTTP 422 before workspace lookup, canonical writes or clone/pull; `ContextBuilder.clone_repo` and frontmatter parsing use the same validator. Spec `docs/superpowers/specs/2026-04-17-manage-repo-design.md`; CLI `happyranch manage-repo`.
 - **Founder-facing executor-switch.** `happyranch set-executor` switches an existing agent's executor end-to-end in the org `.md` frontmatter and executor bootstrap (THR-095: agent.yaml is no longer synced). A real executor change clears the old executor-specific `model`; an idempotent request preserves it. The shared canonical instruction pair (`AGENTS.md` + `CLAUDE.md -> AGENTS.md`) and `.claude/skills` are preserved across a switch; only the executor-only `.claude/settings.json` is stale and WARNs by default; cleanup requires an explicit `--clean` flag. CLI-only — no web surface. Commit cf4c9e0; impl `cli/commands/agents.py`, `runtime/daemon/routes/agents.py`.
 - **Per-agent memory.** Each agent keeps durable `MEM-NNN` learnings plus task recall. Specs `docs/superpowers/specs/2026-04-18-agent-memory-design.md` (superseded), `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`; impl `runtime/infrastructure/learnings_store.py`. See [Per-Agent Learnings](#per-agent-learnings) below for traps.
 - **Retired System Assistant.** Feature routes/CLI/settings/dock are removed. Legacy files, links and historical records remain inert.
@@ -2606,6 +2606,17 @@ and operational H-v1 duties remain separately gated.
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
 Content updates, including slug changes, preserve the edited entry's lifecycle,
 salience, provenance, scope and `last_verified` from storage under the write lock.
+The S3a Instill owner also preserves `inherited_from` and the separate
+`imported_at` through MemoryStore reads, search/list/index and supported updates.
+`inherited` records source knowledge, never recipient experience or current
+Founder authority. Its source block binds archive/version/item, source permanent
+ID and per-reference source dates (null explicitly unknown); readable content
+retains original attribution and warnings. The dedicated inherited writer adds
+new local MEM IDs without supersession, replacement or import-triggered compaction,
+including retries at/above the configured threshold. Ordinary compaction remains
+unchanged. Instill public HTTP/CLI projections are S3b work. Once inherited notes
+exist, use compatible daemon/CLI/UI readers and writers; preserve notes/receipts
+on rollback and stop incompatible writers rather than stripping provenance.
 Editing an evicted or superseded entry keeps that state; restoration uses the
 explicit lifecycle route. Promoted entries remain locked against content edits
 (HTTP 409). A supplied `supersedes` still marks its target through the existing
@@ -2638,7 +2649,7 @@ Per-org artifacts live at `<runtime>/orgs/<slug>/artifacts/`. They are opaque fi
 
 Implementation: `runtime/infrastructure/artifact_store.py` and `runtime/daemon/routes/artifacts.py`. CLI: `happyranch artifacts {put,list,get}`.
 
-Route surface: `POST /artifacts` (upload), `GET /artifacts` (list), `GET /artifacts/{name}` (download), `DELETE /artifacts/{name}` (delete). There is no update route — `POST` is an idempotent create-or-overwrite. Delete is exposed in the founder web artifacts UI only; there is **no** `happyranch artifacts delete` CLI verb.
+Route surface: `POST /artifacts` (upload), `GET /artifacts` (list), `GET /artifacts/{name}` (download), `DELETE /artifacts/{name}` (delete). There is no update route — `POST` creates or overwrites the exact stored spelling. On a case-insensitive filesystem, a different-case name that aliases an existing file or folder component is refused before replacement (`400 invalid_artifact_name`, message starts `case_collision:`); existing bytes and spelling survive. Case-sensitive filesystems can still store distinct `Report.txt` and `report.txt` keys. The store checks before directory/temp creation and again before replacement; it does not lock the namespace against concurrent external changes. Custom-skill artifact writes project the same validation error without compensating by deleting the pre-existing alias. Delete is exposed in the founder web artifacts UI only; there is **no** `happyranch artifacts delete` CLI verb.
 
 Web UI (design-overhaul): **Flat 3-column card grid** (`web/src/features/artifacts/ArtifactsPage.tsx`). Each card shows only stored fields (`name`, `size_bytes` as a formatted size, `modified_at` as a formatted timestamp) plus Download and Delete actions. The artifact record carries **no** agent, task_id, thread, kind/type, dream_id, or PR/CI fields — so the surface renders **no** provenance badges, kind pills, status tags, PR/CI panels, or dream markers. Upload is available via a collapsible form in the page header. States: loading skeleton, calm empty ("No artifacts yet"), error with retry (`invalidateQueries` on `['artifacts', slug]`).
 

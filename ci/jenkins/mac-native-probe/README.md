@@ -353,6 +353,41 @@ Run that command under an external <=60-second timeout and output/file caps;
 record it as Linux source/simulated-frozen logic only. Do not use Linux results
 as native or frozen proof. Python units remain retired; integration stays skipped.
 
+
+## S7 case-safety suite
+
+```sh
+python3 -B scripts/mac_native/probe.py --suite case-safety --output /owned/evidence/probe.json
+```
+
+The existing string `SUITE=case-safety` selects the new module through the pinned
+dispatcher. No job configuration, dependency, tool or cap change is needed.
+Manager-owned native execution is a later leg; this PR consumes no native build.
+Linux emits the standard `darwin-only` skip and exit0.
+
+On Darwin, `case_insensitive_apfs_fixture` uses the existing statfs layout and a
+real alias lookup to require APFS with case-insensitive behavior in the build's
+checkout scratch. Wrong filesystem/case mode fails rather than claiming proof.
+Named expected/actual rows cover `artifact_leaf_alias`, `artifact_folder_alias`,
+`artifact_nested_leaf_alias`, `artifact_exact_overwrite`, `artifact_route_400`
+(including no audit on refusal), `custom_skill_refusal_preserves_alias`,
+`artifact_alias_before_replace`, `artifact_no_temporary_residue`,
+`manage_repo_early_validation` (HTTP422, unchanged canonical bytes, no writer, git
+or bootstrap), `context_builder_early_validation`, `context_builder_lowercase_pull`,
+and nine `repo_parser_*` grammar rows. `private_scratch_removed` records removal.
+
+The real store, frontmatter parser and route handlers run in-process with private
+files. Only git/network, workspace bootstrap, post-success audit and native-writer
+bookkeeping are isolated; this is not live route/auth or frozen-app acceptance.
+The suite uses only stdlib plus imports from the existing 18-package set.
+Fixtures are fixed-count and each payload is below 4096 bytes; no database is
+created. Its complete report is checked below 60000 bytes before stdout/output.
+There are no external commands or waits in the suite. All fixture writes are
+inside one temporary directory under the checked-out source in build scratch,
+removed before success. Existing 30-minute, 32 MiB file, 4 MiB log and 64 KiB identity/
+probe limits remain. Namespace checks do not claim to serialize racing external
+renames or simultaneous differently-spelled writers.
+
 ## S9 inode telemetry probe
 
 `python3 -B scripts/mac_native/probe.py --suite inode-telemetry --output /owned/probe.json`

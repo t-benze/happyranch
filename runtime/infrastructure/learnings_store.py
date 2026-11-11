@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -62,7 +63,7 @@ def _id_variants(id: str) -> list[str]:
     return [id, f"{other}-{num}"]
 
 # THR-032 Phase 1 (harness-agnostic memory layer): additive frontmatter enums.
-PROVENANCE_VALUES = {"experiential", "reflective", "directive"}
+PROVENANCE_VALUES = {"experiential", "reflective", "directive", "inherited"}
 SCOPE_VALUES = {"agent", "team", "org"}
 LIFECYCLE_VALUES = {"valid", "superseded", "evicted"}
 
@@ -117,6 +118,8 @@ class LearningSummary:
     lifecycle: str
     provenance: str
     salience: int
+    inherited_from: dict | None = None
+    imported_at: str | None = None
 
 
 @dataclass
@@ -132,6 +135,8 @@ class LearningSearchHit:
     provenance: str = "experiential"
     salience: int = 50
     updated_at: str | None = None
+    inherited_from: dict | None = None
+    imported_at: str | None = None
 
 
 @dataclass
@@ -183,6 +188,8 @@ class MemoryItem:
     salience: int = 50
     # THR-091: optional last-verified timestamp (ISO-8601). None = never verified.
     last_verified: str | None = None
+    inherited_from: dict | None = None
+    imported_at: str | None = None
 
     def age_summary(self, now: datetime | None = None) -> dict:
         """Compute entry age + optional last_verified age for display.
@@ -298,6 +305,55 @@ class MemoryStore:
                 "invalid_lifecycle", f"lifecycle {entry.lifecycle!r} not allowed"
             )
         entry.salience = _clamp_salience(entry.salience)
+        if entry.provenance == "inherited":
+            block = entry.inherited_from
+            if (not isinstance(block, dict) or set(block) != {
+                "archive_id", "archive_version", "archive_item_id", "source_id", "source_dates",
+            } or any(not isinstance(block.get(k), str) or not block[k].strip()
+                     for k in ("archive_id", "archive_item_id", "source_id"))
+                    or type(block.get("archive_version")) is not int or block["archive_version"] < 1
+                    or not isinstance(block.get("source_dates"), list) or not block["source_dates"]
+                    or not isinstance(entry.imported_at, str) or not entry.imported_at):
+                raise InvalidLearningEntry("invalid_inherited_from", "inherited attribution required")
+            for dates in block["source_dates"]:
+                if (not isinstance(dates, dict) or set(dates) != {"reference_id", "authored_at", "observed_at"}
+                        or not isinstance(dates["reference_id"], str) or not dates["reference_id"]
+                        or any(dates[k] is not None and not isinstance(dates[k], str)
+                               for k in ("authored_at", "observed_at"))):
+                    raise InvalidLearningEntry("invalid_inherited_from", "source dates required; null means unknown")
+        elif entry.inherited_from is not None or entry.imported_at is not None:
+            raise InvalidLearningEntry("invalid_inherited_from", "inherited provenance required")
+
+    def write_inherited_entry(self, entry: MemoryItem, expected_content: str) -> MemoryItem:
+        """Write a durably reserved Instill intent, exclusively, without compaction.
+
+        The knowledge owner supplies fixed import timestamps and holds admission
+        and allocation locks. No ordinary write/supersede/compaction path runs.
+        A failed write may have created bytes: the owner must retain uncertainty.
+        """
+        self.validate_id(entry.id)
+        self._validate_entry_structure(entry)
+        if (entry.provenance != "inherited" or entry.supersedes is not None
+                or entry.related_to or entry.promoted_to is not None or entry.lifecycle != "valid"
+                or not entry.authored_by or not entry.authored_at
+                or self._serialize(entry) != expected_content):
+            raise InvalidLearningEntry("invalid_inherited_intent", "exact additive intent required")
+        if self._find_by_id(entry.id) is not None:
+            raise LearningIdExists(entry.id)
+        if self._find_by_slug(entry.slug) is not None:
+            raise LearningSlugExists(entry.slug)
+        target = self.path_for(entry.id, entry.slug)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(expected_content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        directory_fd = os.open(self._root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        return entry
 
     def next_id(self) -> str:
         # Continue the single per-agent number line across BOTH prefixes so the
@@ -419,6 +475,8 @@ class MemoryStore:
         entry.provenance = existing.provenance
         entry.scope = existing.scope
         entry.last_verified = existing.last_verified
+        entry.inherited_from = deepcopy(existing.inherited_from)
+        entry.imported_at = existing.imported_at
         self._validate_entry_structure(entry)
         self._validate_cross_refs(entry)
         # Reject slug collision with a DIFFERENT entry
@@ -483,6 +541,9 @@ class MemoryStore:
         # THR-091: omit last_verified when None (byte-identical round-trip)
         if entry.last_verified is not None:
             fm["last_verified"] = entry.last_verified
+        if entry.inherited_from is not None:
+            fm["inherited_from"] = entry.inherited_from
+            fm["imported_at"] = entry.imported_at
         fm_text = yaml.safe_dump(fm, sort_keys=False).strip()
         body = entry.body if entry.body.endswith("\n") else entry.body + "\n"
         return f"---\n{fm_text}\n---\n\n{body}"
@@ -515,6 +576,8 @@ class MemoryStore:
             updated_by=fm.get("updated_by"),
             updated_at=fm.get("updated_at"),
             provenance=fm.get("provenance", "experiential"),
+            inherited_from=fm.get("inherited_from"),
+            imported_at=fm.get("imported_at"),
             scope=fm.get("scope", "agent"),
             lifecycle=fm.get("lifecycle", "valid"),
             salience=_clamp_salience(fm.get("salience", 50)),
@@ -553,6 +616,8 @@ class MemoryStore:
                 lifecycle=entry.lifecycle,
                 provenance=entry.provenance,
                 salience=entry.salience,
+                inherited_from=entry.inherited_from,
+                imported_at=entry.imported_at,
             ))
         return out
 
@@ -651,6 +716,10 @@ class MemoryStore:
                     f"- `{s.id}` — {s.title}{tags_part}{promo_part}"
                     f"  ({s.provenance}, salience {s.salience})"
                 )
+                if s.inherited_from is not None:
+                    origin = s.inherited_from
+                    lines.append(f"  Inherited from `{origin['source_id']}`; archive `{origin['archive_id']}` "
+                                 f"v{origin['archive_version']} item `{origin['archive_item_id']}`; imported {s.imported_at}.")
             lines.append("")
         index_path = self._root / "_index.md"
         self._atomic_write(index_path, "\n".join(lines).rstrip() + "\n")
@@ -1399,6 +1468,8 @@ class MemoryStore:
                 provenance=entry.provenance,
                 salience=entry.salience,
                 updated_at=entry.updated_at,
+                inherited_from=entry.inherited_from,
+                imported_at=entry.imported_at,
             )))
 
         # Deterministic sort: score desc, salience desc, updated_at desc,

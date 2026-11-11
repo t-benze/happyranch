@@ -16,9 +16,11 @@ jobs:
       - name: Set temporary paths
         run: |
           mkdir -p "$RUNNER_TEMP/managed-m2-logs"
-          echo "M2_BUILD=$RUNNER_TEMP/managed-m2-build" >> "$GITHUB_ENV"
-          echo "M2_LOGS=$RUNNER_TEMP/managed-m2-logs" >> "$GITHUB_ENV"
-          echo "MANAGED_DOWNLOADS=$RUNNER_TEMP/managed-downloads" >> "$GITHUB_ENV"
+          {
+            echo "M2_BUILD=$RUNNER_TEMP/managed-m2-build"
+            echo "M2_LOGS=$RUNNER_TEMP/managed-m2-logs"
+            echo "MANAGED_DOWNLOADS=$RUNNER_TEMP/managed-downloads"
+          } >> "$GITHUB_ENV"
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Install uv

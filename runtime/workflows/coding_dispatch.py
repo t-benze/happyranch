@@ -90,16 +90,22 @@ class CodingDispatcher:
         return {**entry, '_budget': budget}
 
     @contextmanager
-    def _writer(self) -> Iterator[tuple[Any, _Budget]]:
+    def _writer(self, *, cancellation_task_id: str | None = None) -> Iterator[tuple[Any, _Budget]]:
         with self.db._lock:
             conn = self.db._conn
             _check(not conn.in_transaction)
             conn.execute('BEGIN IMMEDIATE')
             budget = _Budget()
             try:
-                yield conn, budget
-                from runtime.infrastructure.workflow_schema import _read_workflow_schema
-                _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
+                from contextlib import nullcontext
+                from runtime.workflows.sequential_legacy_cancel import legacy_cancellation_scope
+                scope = (nullcontext(False) if cancellation_task_id is None else
+                         legacy_cancellation_scope(conn, org_slug=self.org.slug,
+                             task_id=cancellation_task_id))
+                with scope:
+                    yield conn, budget
+                    from runtime.infrastructure.workflow_schema import _read_workflow_schema
+                    _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
                 conn.commit()
             except BaseException:
                 conn.rollback()
@@ -709,7 +715,7 @@ class CodingDispatcher:
         transitions = _RootWorktreeTransitions()
         failed = True
         try:
-            with self._writer() as (conn, budget), _capture_root_worktree_transition(
+            with self._writer(cancellation_task_id=task_id) as (conn, budget), _capture_root_worktree_transition(
                     self.org.orchestrator, task_id, 'coding_dispatch.terminal', transitions):
                 entry = self._entry(conn, task_id, budget=budget)
                 host = entry['native']['host']
@@ -756,7 +762,7 @@ class CodingDispatcher:
                 return
         from runtime.orchestrator.run_step import _RootWorktreeTransitions, _capture_root_worktree_transition, _root_worktree_batch
         transitions = _RootWorktreeTransitions()
-        with self._writer() as (conn, budget):
+        with self._writer(cancellation_task_id=invocation.task.id) as (conn, budget):
             saved = queued_storage(conn, self.org.slug, budget=budget)
             ownership = saved.owners.get(invocation.task.id)
             if ownership is None:

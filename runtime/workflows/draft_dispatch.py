@@ -87,13 +87,18 @@ class WorkflowDraftDispatcher:
         self._live: dict[str, tuple[str, str, object | None]] = {}
 
     @contextmanager
-    def _writer(self) -> Iterator[sqlite3.Connection]:
+    def _writer(self, *, cancellation_task_id: str | None = None) -> Iterator[sqlite3.Connection]:
         with self.db._lock:
             conn = self.db._conn
             conn.execute("BEGIN IMMEDIATE")
             try:
-                yield conn
-                validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                from contextlib import nullcontext
+                from runtime.workflows.sequential_legacy_cancel import legacy_cancellation_scope
+                scope = (nullcontext(False) if cancellation_task_id is None else
+                         legacy_cancellation_scope(conn, org_slug=self.org.slug, task_id=cancellation_task_id))
+                with scope:
+                    yield conn
+                    validate_workflow_schema(conn, expected_org_slug=self.org.slug)
                 conn.commit()
             except BaseException:
                 conn.rollback()
@@ -507,7 +512,7 @@ class WorkflowDraftDispatcher:
         try:
             with self._live_lock:
                 live = self._live.get(task_id)
-                with self._writer() as conn:
+                with self._writer(cancellation_task_id=task_id) as conn:
                     with _capture_root_worktree_transition(self.org.orchestrator, task_id, 'draft_dispatch.terminal', staged_transitions):
                         intent = self._intent(conn, task_id)
                         if (live is None or live[:2] != (intent["claim_token"], session_id)
@@ -538,7 +543,12 @@ class WorkflowDraftDispatcher:
                                 self._event(conn, intent, "uncertain", changes={"state": state, "last_error": "workflow_callback_incomplete"})
                             return
                         now = datetime.now(timezone.utc).isoformat()
-                        conn.execute("UPDATE tasks SET status=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?", (state, now, now, task_id))
+                        # A mixed business stop already owns this exact native
+                        # overlay. Drain the original document event without
+                        # replacing its frozen cancellation timestamps.
+                        conn.execute("UPDATE tasks SET status=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=? "
+                                     "AND NOT (status='cancelled' AND cancelled_at IS NOT NULL)",
+                                     (state, now, now, task_id))
                         self._event(conn, intent, state, changes={"state": state},
                                     terminal_evidence={"host_quiescent": True} if quiescent else None,
                                     result=result if state == "completed" else None)
@@ -551,6 +561,25 @@ class WorkflowDraftDispatcher:
             if root_transitions:
                 _root_worktree_batch(self.org.orchestrator, root_transitions, teardown_incomplete=root_tail_failed)
 
+    def _cancel_uncommitted(self, conn: sqlite3.Connection, task_id: str, *, native_overlay: bool = True,
+                            intent: dict | None = None) -> dict | None:
+        """Reuse original events; mixed callers retain the original selected intent."""
+        if intent is None:
+            intent = self._intent(conn, task_id)
+        if intent["state"] in {"cancelled", "failed", "completed"}:
+            return self.projection(intent)
+        if not intent["cancellation_requested"]:
+            self._event(conn, intent, "cancel_requested", changes={"cancellation_requested": 1})
+            intent = dict(conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?", (intent["id"],)).fetchone())
+        # A committed prelaunch state0, not PID absence, proves this
+        # intent cannot have crossed the reserved launch boundary.
+        if not intent["host_launch_started"]:
+            if native_overlay:
+                now = datetime.now(timezone.utc).isoformat()
+                conn.execute("UPDATE tasks SET status='cancelled',cancelled_at=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?",
+                             (now, now, now, task_id))
+            self._event(conn, intent, "cancelled", changes={"state": "cancelled"})
+
     def cancel(self, task_id: str) -> dict:
         # Durable cancellation wins before any opaque containment operation.
         from runtime.orchestrator.run_step import _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch
@@ -560,19 +589,9 @@ class WorkflowDraftDispatcher:
         try:
             with self._writer() as conn:
                 with _capture_root_worktree_transition(self.org.orchestrator, task_id, 'draft_dispatch.cancel', staged_transitions):
-                    intent = self._intent(conn, task_id)
-                    if intent["state"] in {"cancelled", "failed", "completed"}:
-                        return self.projection(intent)
-                    if not intent["cancellation_requested"]:
-                        self._event(conn, intent, "cancel_requested", changes={"cancellation_requested": 1})
-                        intent = dict(conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?", (intent["id"],)).fetchone())
-                    # A committed prelaunch state0, not PID absence, proves this
-                    # intent cannot have crossed the reserved launch boundary.
-                    if not intent["host_launch_started"]:
-                        now = datetime.now(timezone.utc).isoformat()
-                        conn.execute("UPDATE tasks SET status='cancelled',cancelled_at=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?",
-                                     (now, now, now, task_id))
-                        self._event(conn, intent, "cancelled", changes={"state": "cancelled"})
+                    terminal = self._cancel_uncommitted(conn, task_id)
+                    if terminal is not None:
+                        return terminal
             # Publish only the original successfully committed transition.
             root_transitions.extend(staged_transitions)
             for _agent, control in self.org.sessions.iter_task_cancel_controls(task_id):

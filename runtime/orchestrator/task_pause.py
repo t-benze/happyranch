@@ -947,26 +947,41 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
             logging.getLogger(__name__).exception("move tail release failed; original error preserved")
         finally:
             active_error = sys.exception() or tail_error
-            coding = getattr(invocation.orch, "_workflow_coding_dispatch", None)
-            if coding is not None:
-                try:
-                    coding.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
-                        close_disposition=close_disposition, release_disposition=release_disposition)
-                except BaseException as exc:
-                    if active_error is None:
-                        raise
-                    active_error.add_note(f"Coding tail observation failed for {invocation.identity}: {exc!r}")
-                    logging.getLogger(__name__).exception("coding tail observation failed; original error preserved")
-            sequential = getattr(invocation.orch, "_workflow_sequential_dispatch", None)
-            if sequential is not None:
-                try:
-                    sequential.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
-                        close_disposition=close_disposition, release_disposition=release_disposition)
-                except BaseException as exc:
-                    if active_error is None:
-                        raise
-                    active_error.add_note(f"Sequential tail observation failed for {invocation.identity}: {exc!r}")
-                    logging.getLogger(__name__).exception("sequential tail observation failed; original error preserved")
+            try:
+                coding = getattr(invocation.orch, "_workflow_coding_dispatch", None)
+                if coding is not None:
+                    try:
+                        coding.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
+                            close_disposition=close_disposition, release_disposition=release_disposition)
+                    except BaseException as exc:
+                        if active_error is None:
+                            raise
+                        active_error.add_note(f"Coding tail observation failed for {invocation.identity}: {exc!r}")
+                        logging.getLogger(__name__).exception("coding tail observation failed; original error preserved")
+                sequential = getattr(invocation.orch, "_workflow_sequential_dispatch", None)
+                if sequential is not None:
+                    try:
+                        sequential.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
+                            close_disposition=close_disposition, release_disposition=release_disposition)
+                    except BaseException as exc:
+                        if active_error is None:
+                            raise
+                        active_error.add_note(f"Sequential tail observation failed for {invocation.identity}: {exc!r}")
+                        logging.getLogger(__name__).exception("sequential tail observation failed; original error preserved")
+
+            finally:
+                if getattr(invocation, '_sequential_cancel_owners', ()):
+                    from runtime.workflows.sequential_cancel_owners import observe_cancel_owners
+                    observer_error = sys.exception()
+                    try:
+                        observe_cancel_owners(invocation, failed=failed or observer_error is not None,
+                            cleanup=cleanup, native_entry=native_entry, close_disposition=close_disposition,
+                            release_disposition=release_disposition)
+                    except BaseException as exc:
+                        if observer_error is None:
+                            raise
+                        observer_error.add_note(f"Mixed cancellation tail observation failed for {invocation.identity}: {exc!r}")
+                        logging.getLogger(__name__).exception("mixed cancellation tail observation failed; original error preserved")
 
 
 def _ordinary_unknown_entries(store: TaskPauseStore, task: TaskRecord, row: dict | None) -> list[dict]:

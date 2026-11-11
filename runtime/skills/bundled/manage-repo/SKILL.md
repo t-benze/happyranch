@@ -20,6 +20,8 @@ The manage-repo callback agent remains the permanent ID, and repository keys/URL
 
 Manage the repositories cloned into your `repos/` directory. You can **add** a new repo, **remove** an existing one, or **update** the URL of an existing repo (which deletes the old clone and re-clones from the new URL).
 
+Repository keys must fully match `[a-z0-9-]{1,32}` (ASCII lowercase letters, digits and hyphens). Invalid keys, including `Foo`, return HTTP 422 before any workspace lookup, configuration write, clone or pull. Use the stored lowercase key; names are never silently normalized.
+
 ## Usage
 
 1. **Write a JSON file** to `/tmp/manage-repo-<unique>.json` using the Write tool:

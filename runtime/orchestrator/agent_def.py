@@ -18,6 +18,12 @@ class AgentParseError(ValueError):
     """Raised when an agent file cannot be parsed or fails validation."""
 
 
+def validate_repo_key(key: str) -> None:
+    """Validate the canonical lowercase repository key before any repo I/O."""
+    if not isinstance(key, str) or not _REPO_KEY_RE.fullmatch(key):
+        raise AgentParseError(f"invalid repo key: {key!r}; expected [a-z0-9-]{{1,32}}")
+
+
 Role = Literal["worker", "manager"]
 # Executor is a plain string (THR-052: capability-registered, not name-listed).
 # NOT validated against the registry at parse time — an org must be able to
@@ -126,8 +132,7 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
         raise AgentParseError("repos must be a mapping")
     repos: dict[str, str] = {}
     for k, v in raw_repos.items():
-        if not isinstance(k, str) or not _REPO_KEY_RE.match(k):
-            raise AgentParseError(f"invalid repo key: {k!r}")
+        validate_repo_key(k)
         if not isinstance(v, str) or not v:
             raise AgentParseError(f"repo {k!r} url must be a non-empty string")
         repos[k] = v
