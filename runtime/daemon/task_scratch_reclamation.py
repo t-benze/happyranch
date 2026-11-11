@@ -1,4 +1,4 @@
-"""Dormant, production-unreferenced task-scratch reclamation primitives."""
+"""Task-scratch primitives for the conditional, default-disabled pre-agent hook."""
 from __future__ import annotations
 
 import hashlib
@@ -158,11 +158,13 @@ def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, 
                                                 monotonic_now: float | None = None,
                                                 daemon_started_monotonic: float | None = None,
                                                 now_ns: int | None = None) -> ReclamationResult | None:
-    """Dormant synchronous test-only consumer; no production caller imports it.
+    """Synchronous consumer called by run_step's default-disabled pre-agent hook.
 
     Each refusal returns ``None`` before sealing/execution.  This is a bounded
     observer, not an atomic snapshot or writer fence.
     """
+    if sys.platform not in {"linux", "darwin"}:
+        return None
     kwargs = {"db": db, "sessions": sessions, "task_id": task_id,
               "root": workspace / ".happyranch" / "task-tmp" / task_id,
               "proc_root": proc_root, "monotonic_now": monotonic_now,

@@ -2,7 +2,7 @@
 
 > Status: current
 > Current source: bundled workspace-cleanup skill and jobs-and-cleanup guide
-> Scope: S4 PR1 (S4a + S4b0 + S4b); S4c follows separately
+> Scope: S4 PR1 (S4a + S4b0 + S4b) and PR2 (S4c)
 
 The target is the Mac app's daemon, with Linux parity. Source-native evidence is
 an observation venue; frozen-app acceptance is outside S4 and remains NOT RUN.
@@ -93,12 +93,66 @@ Suite time is240s with10s reserved for owned-child release/TERM/KILL/reap/absenc
 and fixture disposal,64KiB command stream and32KiB report limits. Missing tools,
 imports, native observations or cleanup remain visible. Exactly18 locked wheels
 in an isolated --without-pip venv are a pre-submit closure gate; no new dependency,
-job or bootstrap change follows. No native build is submitted by the maker; PR1
-uses execution1, PR2 execution2, execution3 stays reserved, budget0/3 until actual
-manager submission. Review, scoped QA, exact-head lint and guarded merge remain.
+job or bootstrap change follows. PR1 used1/3 (build14); PR2 is execution2 and
+execution3 remains held for a diagnosed failure. This source change submits no
+build. Review, scoped QA, exact-head lint and guarded merge remain.
 Python units are retired; general integration is SKIPPED THR-243 seq42. No ad hoc
 Product E2E. Static/source/simulated evidence never becomes native/frozen proof.
 
-S4c will extend this same suite with scratch evidence/coverage/report and existing
-root consumer routing, preserving all-PID scope and existing budgets. Neither
-cleanup_diagnostics nor nightly disk-sweeper process policy changes here.
+The build15 evidence-loss fix keeps all named rows and independent facts. Only
+this source suite's dispatcher output uses compact JSON, with the same keys and
+values; suite registration and job/bootstrap caps are unchanged. Size includes
+final completion/error fields and newline. Worktree hit diagnostics omit repeated
+paths, keep at most four PID/kind/device-inode hits, two reasons and128 stderr
+characters. Scratch/real-errno reasons keep at most four distinct192-character
+entries, with explicit middle elision retaining PID/errno ends. Above28KiB the
+suite first removes optional worktree hits/stderr/additional reasons and protected
+errors and records them in `optional_detail_omitted`; worktree state, exit, lanes
+and the first reason remain. It retains every row's name/status/expected/
+actual/provenance, source SHA/hashes, owned PID/start/cwd/device-inode ground truth,
+boot UUID, ABI, scratch decision/count/coverage/boot facts and child/fixture cleanup.
+`row_status` is validated even after native/cleanup failure; failure text includes
+observed/failed counts. If mandatory evidence alone still exceeds32KiB, the suite
+fails with `report_capped=true`/`evidence=INCOMPLETE` and retains the oversized
+evidence instead of silently discarding rows. This negative is not within-cap
+acceptance. Build15 remains a failed native run with all92 rows UNOBSERVED.
+Four new portable `report_*` rows cover96-row realistic worst-case encoding
+(256-character paths, 64-bit identities, full diagnostic list bounds), optional
+overflow, irreducible mandatory overflow and early failure. The realistic case
+must fit below28KiB with all rows/facts intact. These fixtures do not replace
+native review/QA or spend the manager's reserved execution3 (2of3 already used).
+
+## S4c scratch and existing consumers
+
+The same suite now includes scratch evidence, coverage and report observations.
+The shared leaf's explicit `all_pids=True` mode is used only by scratch; its
+same-user worktree default and receipt shape remain unchanged. Every PID's
+strict native identity/reference reads use the caller's remaining five-second
+budget, with 10,000 PID/fd limits and no nested deadline refill. Kernel
+`kern.bootsessionuuid` brackets collection; final PID/start comparisons use the
+same shared reader. EPERM/EACCES and incomplete lanes produce null counts and
+retain. Public negative region coverage remains unestablished, so even a readable
+idle host cannot currently establish global scratch clearance. Known cwd/fd use
+is retained in reasons despite incomplete measurement. No UID filter, exemption,
+privilege or new loader is introduced.
+
+Coverage supports Darwin boot identity and the existing workspace partition,
+keeping every no-follow/device/manifest/read/byte/entry/deadline/coherence gate.
+Default `/proc` arguments select the native host route on Darwin; explicit
+nondefault procfs fixtures retain Linux behavior and API/output shapes. The
+coordinator therefore needs no new platform route or report schema. Daemon
+compatibility aliases retain module/type identity. Unsupported platforms refuse
+the reclamation consumer before collectors. Its former dormant/test-only prose
+is corrected: run_step's pre-agent caller is real, conditional and disabled by
+default; ordinal/owner/claim and stack-local ledger binding are unchanged.
+
+Native `scratch_cwd_retain`, `scratch_fd_retain`, `scratch_idle_or_denied` and
+`native_root_unknown_retains` extend all PR1 rows. Synthetic all-PID/different-UID,
+EPERM, boot-mismatch, coverage-change, final identity/deadline and Linux fixture
+rows run through the real collectors/report/audit APIs on disposable state.
+The root row supplies actual shared scanner UNKNOWN to the real root consumer,
+isolating prior owner/Git facts at a recorded command boundary with a removal
+sentinel. It never runs a candidate runner or enables reclamation. Real kernel
+EPERM evidence is separate from simulated errno and may be NOT OBSERVED.
+Frozen-app acceptance remains NOT RUN. Neither cleanup_diagnostics nor nightly
+disk-sweeper process policy changes here.

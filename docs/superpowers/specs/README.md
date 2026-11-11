@@ -1,6 +1,6 @@
 # Superpowers Specs Index
 
-- **current**: [Darwin cleanup process-use observations](2026-11-11-darwin-cleanup-process-use.md) — THR-346 S4 PR1; conservative negative coverage and separate native/frozen evidence.
+- **current**: [Darwin cleanup process-use observations](2026-11-11-darwin-cleanup-process-use.md) — THR-346 S4 PR1/PR2; all-PID scratch routing, conservative negative coverage and separate native/frozen evidence.
 
 Current THR307 contract: [`2026-10-15-nightly-disk-sweeper.md`](2026-10-15-nightly-disk-sweeper.md).
 

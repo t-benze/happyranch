@@ -450,8 +450,9 @@ and Product E2E require their separately owned evidence.
 ## S4 cleanup-process-use suite
 
 `scripts/mac_native/suite_cleanup_process_use.py` owns the one extensible S4
-suite, registered as `cleanup-process-use`. PR2 adds scratch routing to this same
-module. It needs only stdlib in addition to the unchanged locked 18-wheel job
+suite, registered as `cleanup-process-use`. PR2 extends this same module with
+scratch/report and existing root consumers. It needs only stdlib in addition to
+the unchanged locked 18-wheel job
 bootstrap; no job parameters, dependencies, host tools or timeout change.
 
 | Rows | Boundary and required outcome |
@@ -463,14 +464,20 @@ bootstrap; no job parameters, dependencies, host tools or timeout change.
 | Simulated EPERM / short / cap / churn / reuse / renamed inode (including unavailable path) / deadline | Test-side libproc/sysctl buffer/errno fixtures exercise shipping reader/scanner decisions. Known dev/inode inventory hits must still BLOCK when vn_getpath supplies an empty path; unresolved negatives retain UNKNOWN. These are not native permission proof. |
 | Real EPERM | Actual kernel errno/PID evidence if observed; otherwise explicitly NOT OBSERVED. No host exemption or elevation. |
 | Darwin receipt schema | Complete schema accepts, wrong platform/missing or incomplete lane/Boolean counters refuse; schema fixtures are not authenticated-job proof. |
+| Scratch cwd/fd and idle | Shipping producer/database APIs seed disposable manifested scratch. Owned native children hold cwd/fd; reports must retain known references with zero actual reclamation. Idle requires complete global evidence for measured zero; denied/incomplete lanes retain with null counts. |
+| Scratch simulated all-PID / boot / coverage / aliases / deadline / Linux fixtures | Different-UID syscall buffers prove scratch never adopts the worktree UID filter. Denial yields null counts and no consumer execution; mismatched boot and changing coverage refuse. Explicit procfs fixtures retain Linux results on Darwin; aliases preserve module/type identity. Simulated rows are not native evidence. |
+| Root UNKNOWN | Actual shared scanner output reaches the real root consumer through recorded commands with a removal sentinel; prior owner/Git gates are isolated. UNKNOWN must reach the process gate and issue no remove command. |
 | Observer / protected mounts / snapshot / preserved | Shipping read-only commands and metadata API, no findmnt/procfs fabrication. Offline preservation refuses at its remote-history gate. The observer with stripped binding fields must refuse with exactly `scope_or_marker_unset` after host collection, without a binding or owner receipt; this is missing-binding coverage, not owner-check acceptance. Snapshot/protected host evidence is checked separately. |
+| Report size / optional overflow / irreducible overflow / early failure | Four portable `report_*` rows build all 60 existing portable plus 32 synthetic native and four regression rows, with 256-character paths, 64-bit identities and full diagnostic list bounds. The realistic worst case must fit below 28KiB with all rows and independent facts intact. Optional overflow retains them; deliberately oversized mandatory row data fails visibly with rows intact. Early failure still validates row status and retains cleanup facts. Synthetic encoding evidence is not native execution. |
 
 The approved preview proves individual observation gates only. Idle `eligible`
 at the candidate-runner boundary is **not proven**. Never invoke candidate
 cleanup or `observe ... run` as a dry-run. Source-native acceptance and real
 EPERM observation are separate from simulated evidence. Frozen-app acceptance
 is **NOT RUN/out of S4**; external PATH python3 remains the installed skill's
-existing prerequisite. Scratch all-PID collectors are PR2, with EPERM retaining.
+existing prerequisite. Scratch remains all-PID, with EPERM and incomplete public
+region evidence retaining. The source suite does not enable reclamation or
+create tasks/jobs in a live org.
 
 From an existing checkout/interpreter, portable fixtures (including synthetic
 native syscall buffers) can run in under one minute without pytest:
@@ -484,8 +491,27 @@ The dispatcher cleanly skips on Linux (`platform=linux, skipped=true`). Native
 Darwin requires the existing job-owned TMPDIR, records exact SHA/source hashes
 and per-row expected/actual/provenance. A single 240s suite allowance includes a
 reserved 10s owned-child cleanup window; command streams retain at most64KiB,
-report at most32KiB. Children are released, TERM/KILL if needed, reaped and group
+report at most32KiB. Only this suite uses compact JSON in the dispatcher (same
+keys and values, no indentation); registration is unchanged. All 96 named rows
+retain `name`, `status`, `expected`, `actual` and `provenance`. The suite measures
+the exact final encoding, including completion/error fields and trailing newline.
+Scanner-hit detail omits repeated paths already present in owned ground truth;
+at most four PID/kind/device-inode hits, two reasons and 128 stderr characters
+remain per worktree observation. Scratch and real-errno diagnostic lists retain
+at most four distinct reasons, each at most192 characters (middle elision retains
+the PID prefix and errno suffix). Scratch decisions, counts, coverage and boot
+identity remain. Above28KiB, optional worktree hits/stderr/additional reasons and
+protected-error diagnostics are explicitly listed in `optional_detail_omitted`
+and removed first; worktree state, exit, lanes and the first reason remain.
+Checks, source identities/hashes, child PID/start/cwd/device-inode ground truth,
+ABI, boot UUID, scratch facts and cleanup facts are never removed by the cap.
+`row_status` records observed/failed counts on success and every caught failure;
+failure text includes those counts. An irreducible mandatory-evidence overflow
+exits nonzero with `report_capped=true` and `evidence=INCOMPLETE`, preserving the
+oversized rows instead of replacing them with a stub; it is never a passing
+within-cap report. Build15's discarded-row failure remains historical evidence.
+Children are released, TERM/KILL if needed, reaped and group
 absence verified before fixture disposal; cleanup uncertainty exits nonzero.
 Admitted kernel I/O is not hard-preemptible. Native execution is a separate
-manager-owned leg: S4 budget starts 0/3, PR1 execution1, PR2 execution2, one
-reserved correction; source changes never replenish or submit that budget.
+manager-owned leg: PR1 used1/3 (build14), PR2 receives execution2, one
+held diagnosed correction; source changes never replenish or submit that budget.

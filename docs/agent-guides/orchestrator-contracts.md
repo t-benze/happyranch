@@ -1873,6 +1873,14 @@ in-memory `TeamsRegistry` agent and reconciles to the invocation's initial
 successful `0 -> 1` claim (the first two runs stay report-only); disabling the
 key affects later admissions only and cannot revoke an already admitted call.
 
+Scratch evidence and coverage use Linux procfs or the shared Darwin native leaf
+and kernel boot-session UUID. The scratch population remains all PIDs, unlike
+the same-user worktree scanner. Denied or incomplete evidence retains with null
+counts; public negative region coverage remains unestablished. Coverage keeps
+its no-follow/device/manifest and two-pass coherence gates. Teardown and daily
+scratch reports remain report-only. This routing does not enable the pre-agent
+hook or change its ordinal, claim, owner, ledger or deadline checks.
+
 Routine scheduled and exact-marker manual cleanup reports remain durable on the
 existing agent page via ordinary completion/results (THR-259 seq418). The scheduler
 admits a clean-root task without report-thread configuration, lookup, ID allocation

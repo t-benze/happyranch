@@ -182,6 +182,16 @@ def _walk(path: Path, root_dev: int, budget: _Budget, items: list[_Item], worksp
 def _boot(proc_root: Path, budget: _Budget) -> str | None:
     if not budget.admit(read=True):
         return None
+    if sys.platform == "darwin" and proc_root == Path("/proc"):
+        try:
+            from runtime.orchestrator.task_scratch_evidence import _native
+            def admit() -> None:
+                if not budget.admit(read=True):
+                    raise RuntimeError("observation_timeout")
+            return _native().boot_uuid(admit)
+        except Exception:
+            budget.reasons.add("boot_id_unavailable")
+            return None
     try:
         fd = os.open(proc_root / "sys/kernel/random/boot_id", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         if not budget.admit(read=True):
@@ -320,7 +330,7 @@ def _snapshot(workspace: Path, proc_root: Path, budget: _Budget) -> _Snapshot:
     boot = _boot(proc_root, budget)
     work_info = _stat(workspace, budget)
     workspace_id = None if work_info is None else (work_info.st_dev, work_info.st_ino)
-    if sys.platform != "linux" or workspace_id is None:
+    if sys.platform not in {"linux", "darwin"} or workspace_id is None:
         budget.reasons.add("unsupported_or_unavailable_workspace")
         return _Snapshot(boot, workspace_id, (), (), (), ())
     root_dev = workspace_id[0]

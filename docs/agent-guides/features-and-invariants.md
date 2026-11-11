@@ -2018,6 +2018,14 @@ same coordinator through `trigger_cleanup`, off the event loop and before the
 unchanged atomic cleanup-task allocation block. No new scheduler, threshold,
 cooldown, counter, history reset, receipt, API or UI is introduced.
 
+Linux uses the existing procfs collector. Default Darwin observations use the
+shared native leaf with all PIDs and kernel boot UUID; explicit procfs fixture
+roots keep Linux behavior. EPERM/EACCES and incomplete negative thread/region
+evidence retain with unavailable counts. The public region lane currently
+prevents globally clear Darwin scratch evidence. Coverage retains its existing
+no-follow/device/manifest/budget and two-pass coherence gates on both platforms.
+The conditional pre-agent reclamation hook remains default-disabled.
+
 The coordinator appends `task_scratch_report` to the existing audit log with the
 actual candidate task ID. Read these rows through the existing audit reader or
 `happyranch audit --org <slug> <task-id> --json`. Each append has a unique
