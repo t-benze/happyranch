@@ -1287,3 +1287,28 @@ U7c selected preflight/Final transport and U7d completion consumption remain. Fi
 public fresh start remains OFF until U9's atomic old-start fence. No browser
 start, daemon repository I/O or Final job/recovery executor follows. See the
 current docs/superpowers/specs/2026-11-11-sequential-coding-u7.md.
+
+
+Sequential U7c1 supplies OWN-current-ordinary-session CLI reads through
+`happyranch workflows sequential repository-preflight --org ORG --session-id SID --json`:
+only the original committed repository/base/scope/SHA1 subject, no duty fields.
+An unbound subject refuses; this read cannot bind or release editing. U4's
+original resolve-only/positive-COMMIT rule remains. No browser/bearer, foreign,
+ended or recovery-session fallback exists.
+Only a genuine selected live Final manager may call LOCAL
+`happyranch workflows sequential finalize --org ORG --session-id SID --from-file ABS --json`.
+Supply the closed canonical <=49152-byte workflow-sequential-finalize-command@1:
+exactly format, operation_key, repository_path and change (whole selected change).
+No task/principal/native fields; the daemon derives current ownership. Preserve
+original body/key after loss; never reissue an effect. The original local fence,
+current-authority/native/cancellation reselects, two raw selected-head lints,
+expected-head non-admin guard and independent remote observation remain mandatory.
+The command saves callback.json and prints the unchanged canonical callback STRING;
+use it only in your OWN genuine FINAL report-completion summary. Failed/uncertain
+recording uses causal BLOCK, empty content/claims; no later MERGED read clears it.
+Transport exit0/merged is an observation, never engine admission/settlement.
+U5b2b2 validates the genuine callback after original positive outer settlement;
+Final success STILL rolls back then business-Held. U7c2 owes compatible Final
+witness/output acceptance; U7d and atomic U9 fresh-start cutover remain. No job,
+recovery runner, daemon PR executor, second CLI OrgState, new permission/credential,
+access observer or live activation follows. ACCESS-1/shared-user/gh limits remain.

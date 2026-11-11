@@ -253,6 +253,8 @@
     "POST /api/v1/orgs/{slug}/workflows/coding/role-selections": "current agent-manager CLI-only role defaults/selection; no browser, repository access or coding allocation grant",
     "GET /api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}": "current source-manager CLI-only queued run metadata; no browser, remote connector or execution grant",
     "GET /api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}/final-manager": "own current original final-manager CLI-only selected read; no browser, remote connector or execution grant",
-    "POST /api/v1/orgs/{slug}/threads/{thread_id}/abort-predecessors/{invocation_id}/attest": "founder CLI-only abort-predecessor attestation (threads attest-abort-predecessor); not in SPA, never remote"
+    "POST /api/v1/orgs/{slug}/threads/{thread_id}/abort-predecessors/{invocation_id}/attest": "founder CLI-only abort-predecessor attestation (threads attest-abort-predecessor); not in SPA, never remote",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/repository-preflight": "own current selected task-session CLI-only read; no bearer/browser, recovery, managed connector or native agent-only audience; no daemon effect",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/final-manager": "own current selected task-session CLI-only read; no bearer/browser, recovery, managed connector or native agent-only audience; no daemon effect"
   }
 }

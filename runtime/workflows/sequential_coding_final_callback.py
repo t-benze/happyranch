@@ -1,4 +1,4 @@
-"""Unmounted, SELECT-only Final callback observation validation (R-M3-3).
+"""SELECT-only Final callback validation (R-M3-3), consumed by U7c1.
 
 Caller owns the original authority/teams/DB locks, capture and read transaction.
 No action, acceptance, Held writer, transport or executable selection is returned.
@@ -216,15 +216,16 @@ def _read(conn: sqlite3.Connection, *, org_slug: str, run_id: str, visit_id: str
 
 def read_final_callback_uncommitted(conn: sqlite3.Connection, *, org_slug: str, run_id: str, visit_id: str,
         task_id: str, principal: str, session_id: str, result_id: int,
-        authority: WorkflowAuthorityCoordinator, capture: AuthorityAdmissionCapture) -> ValidatedFinalObservation:
+        authority: WorkflowAuthorityCoordinator, capture: AuthorityAdmissionCapture,
+        deadline: float | None = None) -> ValidatedFinalObservation:
     """Complete mixed oracle then selected proof read, with zero writes.
 
     R-M3-2: the mandatory complete read owns unchanged D2 A/B/C/L allowances;
     selected projection/validation owns one finite budget on the SAME original
     deadline. No retries, resetting, cached evidence or caller-supplied callback.
-    U7 alone may later wire this reader into acceptance and mount local action.
+    U7c1 validates before retaining business-Held; U7c2 still owns admission.
     """
-    budget = _ReadBudget()
+    budget = _ReadBudget() if deadline is None else _ReadBudget(deadline=deadline)
     try:
         _require(type(conn) is sqlite3.Connection and conn.in_transaction
                  and authority._db._conn is conn and authority._org_slug == org_slug and capture is not None,

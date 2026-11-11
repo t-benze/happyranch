@@ -1,21 +1,21 @@
-"""Unmounted U5b2b1 LOCAL Final adapter, not a command or callback producer.
+"""U5b2b1 LOCAL Final adapter; U7c supplies the selected-manager CLI transport.
 
-Only a future genuine selected-manager transport may call this in its live
-session. Saved records never authorize invocation/replay. U5b2b2 owns callback
-validation/mount; U6/U7 remain required. No daemon PR I/O or merge executor.
+Only the genuine selected-manager transport may call this in its live session.
+Saved records never authorize invocation/replay. U5b2b2 owns callback validation;
+U7c2 success admission remains Held. No daemon PR I/O or merge executor.
 """
 from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from cli.commands import workflow_final_local as local
 from cli.commands.workflow_sequential_final_journal import _current, _sync_directory, reserve_attempt
 from runtime.daemon import pr_ci_merge, pr_ci_waiter
 from runtime.workflows.coding_saved_records import _check, _hash
 from runtime.workflows.coding_start_records import github_origin
-from runtime.workflows.sequential_coding_final import SequentialCodingFinalSelection
 from runtime.workflows.sequential_coding_final_records import (
     CodingFinalCommandResult, CodingFinalIntent, CodingFinalRemoteObservation, CodingFinalSelection,
     FinalLintObservation, final_disposition, read_final_command, read_final_intent,
@@ -33,6 +33,10 @@ class LocalFinalObservation:
     intent: CodingFinalIntent | None = None
     command: CodingFinalCommandResult | None = None
     remote: CodingFinalRemoteObservation | None = None
+
+
+class FinalSelectionReader(Protocol):
+    def select(self, *, task_id: str, principal: str, session_id: str, change: bytes) -> CodingFinalSelection: ...
 
 
 def _local_subject(selected: CodingFinalSelection, repository_path: Path) -> tuple[str, int, str]:
@@ -86,7 +90,7 @@ def observe_lints(selected: CodingFinalSelection, directory: Path) -> tuple[Fina
     return result
 
 
-def execute_selected_final(*, selection: SequentialCodingFinalSelection, task_id: str, principal: str,
+def execute_selected_final(*, selection: FinalSelectionReader, task_id: str, principal: str,
                            session_id: str, change: bytes, operation_key: str,
                            repository_path: Path) -> LocalFinalObservation:
     """Unregistered local seam; caller must be the original live Final manager.
