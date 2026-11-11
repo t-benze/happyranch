@@ -1,0 +1,49 @@
+name: Managed M1 install READY uninstall
+
+# THR-327 seq187: separate manual acceptance run; required CI stays lint/static.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  managed-m1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Set temporary paths
+        run: |
+          mkdir -p "$RUNNER_TEMP/managed-m1-logs"
+          echo "M1_BUILD=$RUNNER_TEMP/managed-m1-build" >> "$GITHUB_ENV"
+          echo "M1_LOGS=$RUNNER_TEMP/managed-m1-logs" >> "$GITHUB_ENV"
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/linux/tsnet-sidecar/go.mod
+          cache-dependency-path: app/linux/tsnet-sidecar/go.sum
+      - name: Install system Python venv support
+        run: sudo apt-get update && sudo apt-get install -y python3-venv
+      - name: Install, observe READY, request, uninstall and check residue
+        run: |
+          set -euo pipefail
+          mkdir -p "$M1_LOGS"
+          bash scripts/ci/m1_install_ready_uninstall.sh run 2>&1 | tee "$M1_LOGS/run.log"
+      - name: Dump plain diagnostics before teardown
+        if: always()
+        run: bash scripts/ci/m1_install_ready_uninstall.sh logs
+      - name: Stop disposable fixtures and discard input keys
+        if: always()
+        run: bash scripts/ci/m1_install_ready_uninstall.sh teardown 2>&1 | tee "$M1_LOGS/teardown.log"
+      - name: Upload plain logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: managed-m1-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.M1_LOGS }}
+          if-no-files-found: error
+          retention-days: 14
