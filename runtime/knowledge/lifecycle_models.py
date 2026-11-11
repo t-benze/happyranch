@@ -164,3 +164,49 @@ class ImportOperation(BaseModel):
     failed: int
     pending: int
     results: list[ImportItemResult]
+
+
+class ImportHistory(BaseModel):
+    operations: list[ImportOperation]
+
+
+class ImportMapping(BaseModel):
+    operation_id: str
+    memory_id: str
+    state: Literal['intent', 'writing', 'unwritten', 'held', 'completed']
+    reason: str | None
+    completed_at: str | None
+
+
+class ImportEligibilityItem(BaseModel):
+    item_id: str
+    eligible: bool
+    reason: str | None
+    default_selected: bool
+    mapping: ImportMapping | None
+
+
+class ImportBlocker(BaseModel):
+    kind: str
+    id: str
+
+
+class ImportEligibility(BaseModel):
+    recipient_id: str
+    archive_id: str
+    archive_version: int
+    source_id: str
+    recipient_eligible: bool
+    reason: str | None
+    blockers: list[ImportBlocker]
+    items: list[ImportEligibilityItem]
+
+
+class ImportRefusalDetail(BaseModel):
+    code: str
+    blockers: list[ImportBlocker] = Field(default_factory=list)
+    message: str | None = None
+
+
+class ImportRefusal(BaseModel):
+    detail: ImportRefusalDetail

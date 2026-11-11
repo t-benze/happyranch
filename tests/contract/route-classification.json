@@ -176,7 +176,12 @@
     "GET /api/v1/orgs/{slug}/knowledge/distill/{operation_id}",
     "GET /api/v1/orgs/{slug}/knowledge/archives",
     "GET /api/v1/orgs/{slug}/knowledge/archives/{archive_id}",
-    "GET /api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}/sources/{reference_id}"
+    "GET /api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}/sources/{reference_id}",
+    "POST /api/v1/orgs/{slug}/agents/{recipient_id}/knowledge/imports",
+    "GET /api/v1/orgs/{slug}/agents/{recipient_id}/knowledge/imports",
+    "GET /api/v1/orgs/{slug}/agents/{recipient_id}/knowledge/imports/eligibility/{archive_id}",
+    "GET /api/v1/orgs/{slug}/knowledge/imports/{operation_id}",
+    "POST /api/v1/orgs/{slug}/knowledge/imports/{operation_id}/retry"
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",

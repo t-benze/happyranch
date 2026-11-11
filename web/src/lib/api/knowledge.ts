@@ -195,3 +195,94 @@ export const listKnowledgeArchives = (slug: string): Promise<{ archives: Knowled
 
 export const getKnowledgeArchive = (slug: string, archiveId: string): Promise<KnowledgeArchive> =>
   request(`/orgs/${encodeURIComponent(slug)}/knowledge/archives/${encodeURIComponent(archiveId)}`);
+
+
+export interface InstillConfirmation {
+  submission_id: string;
+  archive_id: string;
+  archive_version: number;
+  item_ids: string[];
+  confirmed: true;
+}
+
+export interface ImportItemResult {
+  item_id: string;
+  outcome: 'Pending' | 'Imported' | 'Skipped' | 'Failed';
+  memory_id: string | null;
+  reason: string | null;
+  held: boolean;
+  retryable: boolean;
+}
+
+export interface ImportOperation {
+  operation_id: string;
+  submission_id: string;
+  archive_id: string;
+  archive_version: number;
+  source_id: string;
+  recipient_id: string;
+  item_ids: string[];
+  state: 'Queued' | 'Processing' | 'Succeeded' | 'Partially failed' | 'Failed';
+  phase: string;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  selected: number;
+  imported: number;
+  skipped: number;
+  failed: number;
+  pending: number;
+  results: ImportItemResult[];
+}
+
+export interface ImportEligibility {
+  recipient_id: string;
+  archive_id: string;
+  archive_version: number;
+  source_id: string;
+  /** Advisory only: confirm/retry revalidate current eligibility and idle state. */
+  recipient_eligible: boolean;
+  reason: string | null;
+  blockers: { kind: string; id: string }[];
+  items: {
+    item_id: string;
+    eligible: boolean;
+    reason: string | null;
+    default_selected: boolean;
+    mapping: {
+      operation_id: string;
+      memory_id: string;
+      state: 'intent' | 'writing' | 'unwritten' | 'held' | 'completed';
+      reason: string | null;
+      completed_at: string | null;
+    } | null;
+  }[];
+}
+
+export const instillKnowledge = (
+  slug: string, recipientId: string, confirmation: InstillConfirmation,
+): Promise<ImportOperation> =>
+  request(`/orgs/${encodeURIComponent(slug)}/agents/${encodeURIComponent(recipientId)}/knowledge/imports`,
+    { method: 'POST', body: confirmation });
+
+export const listKnowledgeImports = (
+  slug: string, recipientId: string,
+): Promise<{ operations: ImportOperation[] }> =>
+  request(`/orgs/${encodeURIComponent(slug)}/agents/${encodeURIComponent(recipientId)}/knowledge/imports`);
+
+export const getKnowledgeImport = (slug: string, operationId: string): Promise<ImportOperation> =>
+  request(`/orgs/${encodeURIComponent(slug)}/knowledge/imports/${encodeURIComponent(operationId)}`);
+
+export const retryKnowledgeImport = (slug: string, operationId: string): Promise<ImportOperation> =>
+  request(`/orgs/${encodeURIComponent(slug)}/knowledge/imports/${encodeURIComponent(operationId)}/retry`, { method: 'POST' });
+
+export const getKnowledgeImportEligibility = (
+  slug: string, recipientId: string, archiveId: string,
+): Promise<ImportEligibility> =>
+  request(`/orgs/${encodeURIComponent(slug)}/agents/${encodeURIComponent(recipientId)}/knowledge/imports/eligibility/${encodeURIComponent(archiveId)}`);
+
+
+export interface ImportRefusal {
+  detail: { code: string; blockers?: { kind: string; id: string }[]; message?: string | null };
+}
