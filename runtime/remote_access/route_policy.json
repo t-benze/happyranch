@@ -2,7 +2,7 @@
   "version": "1",
   "name": "managed-remote-access-route-policy",
   "status": "normative-contract",
-  "description": "Explicit allow-by-method+normalized-template remote-surface policy for the supervised home connector. Merge unit A (TASK-5771) contract only: no runtime behavior. The allow list is the browser-consumed daemon surface (route-classification.json 'included') expressed as explicit method+template entries, MINUS routes the contract forbids remotely even though the local SPA consumes them (auth bootstrap/registration). Every other daemon route is denied by default. This is the structural correction to the legacy Swift deny-list SurfaceAllowList, which canonized 'deny known-bad, allow the rest'.",
+  "description": "Explicit allow-by-method+normalized-template remote-surface policy for the supervised home connector. The allow list is the browser-consumed daemon surface (route-classification.json 'included') expressed as explicit method+template entries, MINUS routes the contract forbids remotely even though the local SPA consumes them (auth bootstrap/registration and THR-327 R1 v1 remote exclusions). Every other daemon route is denied by default. This is the structural correction to the legacy Swift deny-list SurfaceAllowList, which canonized 'deny known-bad, allow the rest'.",
   "decision_order": [
     "authenticate",
     "bind",
@@ -86,10 +86,12 @@
     },
     {
       "id": "management",
-      "description": "Operator/agent management routes not consumed by the SPA: executor switching, agent repo management, agent enrollment administration. The founder SPA settings surface is separately and explicitly allowed; these specific management verbs are never remote.",
+      "description": "Operator/agent management routes excluded from remote access: executor switching, agent repo management, agent enrollment administration. Only explicitly listed founder SPA settings routes are remotely allowed; these specific management verbs are never remote.",
       "examples": [
         "PUT /api/v1/orgs/{slug}/agents/{agent_name}/executor",
-        "POST /api/v1/orgs/{slug}/agents/{agent_name}/repos"
+        "POST /api/v1/orgs/{slug}/agents/{agent_name}/repos",
+        "POST /api/v1/runtime/use",
+        "DELETE /api/v1/orgs/{slug}"
       ]
     },
     {
@@ -135,7 +137,9 @@
         "POST /api/v1/runtime/adapters/{adapter_id}/approve",
         "POST /api/v1/runtime/adapters/{adapter_id}/reject",
         "POST /api/v1/runtime/adapters/{adapter_id}/bind-profile",
-        "POST /api/v1/runtime/custom-cli/connect"
+        "POST /api/v1/runtime/custom-cli/connect",
+        "POST /api/v1/runtime/custom-cli/{operation_id}/commit",
+        "DELETE /api/v1/runtime/adapters/{adapter_id}"
       ]
     },
     {
@@ -146,7 +150,8 @@
         "POST /api/v1/orgs/{slug}/executors/register",
         "POST /api/v1/executors/runtime/conformance-checkin",
         "POST /api/v1/executors/runtime/register",
-        "POST /api/v1/executors/runtime/register-binary"
+        "POST /api/v1/executors/runtime/register-binary",
+        "POST /api/v1/executor-binaries/register"
       ]
     },
     {
@@ -185,19 +190,11 @@
     },
     {
       "method": "DELETE",
-      "path_template": "/api/v1/orgs/{slug}"
-    },
-    {
-      "method": "DELETE",
       "path_template": "/api/v1/orgs/{slug}/artifacts/{name}"
     },
     {
       "method": "DELETE",
       "path_template": "/api/v1/orgs/{slug}/kb/{entry_slug}"
-    },
-    {
-      "method": "DELETE",
-      "path_template": "/api/v1/runtime/adapters/{adapter_id}"
     },
     {
       "method": "GET",
@@ -461,10 +458,6 @@
     },
     {
       "method": "POST",
-      "path_template": "/api/v1/executor-binaries/register"
-    },
-    {
-      "method": "POST",
       "path_template": "/api/v1/executor-binaries/validate"
     },
     {
@@ -637,19 +630,11 @@
     },
     {
       "method": "POST",
-      "path_template": "/api/v1/runtime/custom-cli/{operation_id}/commit"
-    },
-    {
-      "method": "POST",
       "path_template": "/api/v1/runtime/custom-cli/{operation_id}/forget"
     },
     {
       "method": "POST",
       "path_template": "/api/v1/runtime/custom-cli/{operation_id}/retry"
-    },
-    {
-      "method": "POST",
-      "path_template": "/api/v1/runtime/use"
     },
     {
       "method": "PUT",

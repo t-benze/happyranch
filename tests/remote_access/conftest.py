@@ -8,11 +8,13 @@ from pathlib import Path
 from runtime.remote_access.policy import PolicyEnvelope
 
 _CONTRACT_DIR = Path(__file__).resolve().parents[1] / "contract" / "managed_remote_access"
+_ROUTE_POLICY = Path(__file__).resolve().parents[2] / "runtime" / "remote_access" / "route_policy.json"
 
 
 def load_fixture(name: str) -> dict:
     """Load one Unit-A normative fixture (read-only)."""
-    with (_CONTRACT_DIR / f"{name}.json").open("r", encoding="utf-8") as fh:
+    path = _ROUTE_POLICY if name == "route-policy" else _CONTRACT_DIR / f"{name}.json"
+    with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)
 
 

@@ -16,7 +16,7 @@
 #   web          cd web; npm ci; design-system colour gate; npm run lint;
 #                npm run typecheck (static only)
 #   integration  uv sync --frozen; isolated parent -> pytest tests/ -v -m integration
-#   boundary-lint Source-only boundary lint + bounded synthetic CLI validation
+#   boundary-lint Source boundary/policy lint + bounded synthetic CLI validation
 #   all          Boundary lint + Web static checks (default; THR-291 seq69)
 #   help         Show this help
 #
@@ -334,6 +334,7 @@ run_python() {
 run_boundary_lint() {
   echo "=== Source boundary lint ==="
   python scripts/check_source_boundaries.py "$@"
+  python scripts/check_remote_access_policy.py
   python scripts/validate_source_boundaries.py
 }
 

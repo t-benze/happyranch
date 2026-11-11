@@ -653,17 +653,26 @@ real reconciliation/replay and both original retry reads before naming use.
 ```bash
 python scripts/check_source_boundaries.py
 python scripts/check_source_boundaries.py --source-root <isolated-root>
+python scripts/check_remote_access_policy.py
 python scripts/validate_source_boundaries.py
 scripts/local_ci.sh boundary-lint [--source-root <isolated-root>]
 ```
 
-The local target runs the actual baseline CLI followed by bounded standalone
-synthetic validation; `all` runs the same lane before Web and propagates its
-nonzero exit. Local lint requires Python 3.12+ on PATH and only stdlib; it needs
+The local target runs the actual baseline CLI, shipped remote-access policy
+consistency check, and bounded standalone synthetic validation; `all` runs the
+same lane before Web and propagates its nonzero exit. Local lint requires Python
+3.12+ on PATH and only stdlib; it needs
 no dependency installation. The unconditional `Source Boundary Lint` hosted job
-in `ci.yml` runs both scripts via `uv run --no-project --python 3.14 python ...`
+in `ci.yml` runs all three scripts via `uv run --no-project --python 3.14 python ...`
 on every PR and push to main, without project dependency sync. `Web Lint (Node 24)` is the other unconditional required check. Retained
 canonical/callback sources are not automated merge requirements.
+
+The policy check reads `runtime/remote_access/route_policy.json` without product
+imports. It checks forbidden-class IDs against the runtime's independent lock,
+the five THR-327 R1 exclusions across HTTP/SSE/WebSocket, the single tracked
+policy location, and the tenant-isolation manifest digest. It is static lint,
+not connector behavior verification. `--source-root` applies only to the source
+boundary scan; the policy check still reads this checkout's shipped policy.
 
 Only recursive `*.py` in `runtime/infrastructure` and `runtime/orchestrator`
 are parsed. Explicit daemon import/from forms are forbidden at module execution

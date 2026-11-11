@@ -8,7 +8,7 @@ Merge unit B (THR-097, TASK-5792). The harness consumes the normative contract
 - the full hostile/positive threat matrix (``threat-cases.json``);
 - the seven credential classes (``credential-taxonomy.json``);
 - the route-policy decision order and allow-list semantics
-  (``route-policy.json``).
+  (``runtime/remote_access/route_policy.json``, shipped product policy).
 
 Expected deny/audit categories are never hard-coded here: they come from the
 fixtures. The harness maps each threat case to an executable probe recipe
@@ -22,8 +22,9 @@ import hashlib
 import json
 from pathlib import Path
 
+ROUTE_POLICY = "runtime/remote_access/route_policy.json"
 CONTRACT_FILES = (
-    "route-policy.json",
+    ROUTE_POLICY,
     "credential-taxonomy.json",
     "failure-categories.json",
     "threat-cases.json",
@@ -37,11 +38,15 @@ class ContractLoadError(RuntimeError):
 class Contract:
     """Read-only, semantic view over the normative managed-remote-access contract."""
 
-    def __init__(self, contract_dir: Path) -> None:
-        self.contract_dir = Path(contract_dir)
+    def __init__(self, repo_root: Path) -> None:
+        contract_dir = Path(repo_root) / "tests" / "contract" / "managed_remote_access"
+        self._paths = {
+            name: Path(repo_root) / name if name == ROUTE_POLICY else contract_dir / name
+            for name in CONTRACT_FILES
+        }
         self._docs: dict[str, dict] = {}
         for name in CONTRACT_FILES:
-            path = self.contract_dir / name
+            path = self._paths[name]
             if not path.is_file():
                 raise ContractLoadError(f"missing normative fixture: {name}")
             try:
@@ -56,7 +61,7 @@ class Contract:
         """sha256 digests of the four normative fixtures (mutation detection)."""
         out: dict[str, str] = {}
         for name in CONTRACT_FILES:
-            raw = (self.contract_dir / name).read_bytes()
+            raw = self._paths[name].read_bytes()
             out[name] = "sha256:" + hashlib.sha256(raw).hexdigest()
         return out
 
@@ -115,7 +120,7 @@ class Contract:
 
     @property
     def decision_order(self) -> list[str]:
-        return list(self._docs["route-policy.json"]["decision_order"])
+        return list(self._docs[ROUTE_POLICY]["decision_order"])
 
     # -- validation ---------------------------------------------------------
 

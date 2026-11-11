@@ -16,7 +16,7 @@
 
 This is the normative contract for the HappyRanch-managed remote-access lane: the supervised portable home connector, the one-Headscale-cell-per-customer tenant boundary, the shared ciphertext-only DERP fleet, the loopback-only daemon boundary, the credential taxonomy, and the hostile threat matrix that later implementation merge units must satisfy. It corrects known weaknesses in the legacy Swift `HomeConnector`/`SurfaceAllowList` implementation rather than canonizing them (see §11).
 
-The four retained fixtures under `tests/contract/managed_remote_access/` encode the decision order, allow-list, forbidden classes, credential classes, failure/audit categories and threat cases consumed by the hostile lab. The former unit-validator coverage is absent; deletion does not validate completeness or product compatibility.
+The shipped product policy at `runtime/remote_access/route_policy.json` and three retained fixtures under `tests/contract/managed_remote_access/` encode the decision order, allow-list, forbidden classes, credential classes, failure/audit categories and threat cases consumed by the hostile lab. The former unit-validator coverage is absent; deletion does not validate completeness or product compatibility.
 
 ## 2. Fixed invariants (load-bearing — do not bend)
 
@@ -95,7 +95,7 @@ The connector is a companion process supervised by the platform service manager 
 
 ### 6.1 Locked request decision order
 
-Every new request/stream runs these steps **in this exact order** (encoded as `decision_order` in `route-policy.json`; the validator rejects any reordering, and the connector-core consumer rejects reversed/missing/duplicated order, altered defaults, and every security-relevant nested value that deviates from the canonical Unit-A semantics — including contradictory non-empty prose and altered allowed-template lists — fail closed at load):
+Every new request/stream runs these steps **in this exact order** (encoded as `decision_order` in `runtime/remote_access/route_policy.json`; the validator rejects any reordering, and the connector-core consumer rejects reversed/missing/duplicated order, altered defaults, and every security-relevant nested value that deviates from the canonical Unit-A semantics — including contradictory non-empty prose and altered allowed-template lists — fail closed at load):
 
 1. `authenticate` — establish authenticated connector/device context (device proof valid, connector identity established).
 2. `bind` — verify tenant/home/device/cell binding and current pairing.
@@ -125,28 +125,31 @@ Every new request/stream runs these steps **in this exact order** (encoded as `d
 
 ### 6.4 Allow-list semantics
 
-- Remote policy is **explicit allow-by-method+normalized-template** and deny-unclassified. The allow-list is the browser-consumed daemon surface expressed as explicit `{method, path_template}` entries, **minus** routes this contract forbids remotely even though the local SPA consumes them (auth bootstrap/registration).
+- Remote policy is **explicit allow-by-method+normalized-template** and deny-unclassified. The allow-list is the browser-consumed daemon surface expressed as explicit `{method, path_template}` entries, **minus** routes this contract forbids remotely even though the local SPA consumes them (auth bootstrap/registration and the five THR-327 R1 v1 exclusions below).
 - `route-classification.json` `included` (web coverage) is **not** equivalent to remotely allowed; it is an input from which the explicit allow-list is derived and audited. The Swift deny-list approach is evidence of a weakness, not authority (§11).
-- Forbidden classes (each with example templates in `route-policy.json`, validated to never overlap the allow-list):
+- Forbidden classes (each with example templates in `runtime/remote_access/route_policy.json`, validated to never overlap the allow-list):
 
   | Class | Meaning |
   |---|---|
   | `auth_bootstrap_registration` | auth bootstrap + registration-token minting — local-only |
   | `agent_callbacks` | completion/progress, jobs submit, thread reply/decline/dispatch/escalation/compose/post-as-agent, dreams complete, work-hours/schedules spawn, agents manage |
-  | `management` | set-executor, agent repos, enrollment administration (SPA settings surface is separately explicitly allowed) |
+  | `management` | set-executor, agent repos, enrollment administration, runtime switching, org deletion (only explicitly listed SPA settings routes are allowed) |
   | `founder_as_founder` | founder-only + `/as-founder` surfaces, portability reconciliation |
   | `memory_learning_writes` | memory/learning POST/PUT/PATCH/compact/promote/reindex/lifecycle |
   | `artifact_upload_agent_only` | agent-facing artifact upload/list/download, thread attachments |
-  | `adapter_administration` | adapter register/submit/approve/reject/bind-profile, custom-cli connect |
+  | `adapter_administration` | adapter register/submit/approve/reject/bind-profile/delete, custom-cli connect/commit |
   | `executor_registration` | executor/conformance/binary registration |
   | `portability_reconciliation` | org-portability preflight + reconcile |
+  | `coding_release_import_cli_only` | fixed coding release import and saved receipt — Founder CLI-only |
   | `unclassified_default_deny` | any route not in `allow`, including all future routes — deny by default |
+
+- THR-327 seq187 R1 v1 remote exclusions: `POST /api/v1/executor-binaries/register`, `POST /api/v1/runtime/custom-cli/{operation_id}/commit`, `POST /api/v1/runtime/use`, `DELETE /api/v1/runtime/adapters/{adapter_id}`, and `DELETE /api/v1/orgs/{slug}` are absent from `allow` (118 entries) and all allowed upgrade templates. Forbidden examples label denials only after an allow miss; they do not override an allow entry. Local access is unchanged.
 
 - Method-awareness: an allowed template permits only its listed method(s); unsupported methods on an allowed path are denied (`method_denied`).
 
 ### 6.5 Upgrade semantics (HTTP + SSE/WebSocket)
 
-- HTTP is the baseline surface. SSE and WebSocket are allowed only via explicitly listed GET templates (`upgrade_semantics.sse.allowed_templates` / `.websocket.allowed_templates` in `route-policy.json`); every upgrade template must also be on the allow-list (validator-enforced).
+- HTTP is the baseline surface. SSE and WebSocket are allowed only via explicitly listed GET templates (`upgrade_semantics.sse.allowed_templates` / `.websocket.allowed_templates` in `runtime/remote_access/route_policy.json`); every upgrade template must also be on the allow-list (validator-enforced).
 - Unsupported upgrades, unsupported bodies on upgrade surfaces, and non-GET upgrade methods are denied.
 - WebSocket: currently **no** daemon WebSocket surface is remotely allowed (`websocket.allowed_templates: []`); any future WS surface must be deliberately added and reviewed.
 - Revocation cancels open HTTP/SSE/WebSocket streams immediately (§10).
@@ -247,12 +250,14 @@ No production provisioning, deployment, dependency, schema, auth, or permission 
 
 | Fixture | Contents |
 |---|---|
-| `tests/contract/managed_remote_access/route-policy.json` | locked decision order; normalization/header/upgrade semantics; forbidden classes with examples; explicit allow-list (134 method+template entries derived from the browser-consumed daemon surface minus remote-forbidden auth bootstrap) |
+| `runtime/remote_access/route_policy.json` | locked decision order; normalization/header/upgrade semantics; forbidden classes with examples; explicit allow-list (118 method+template entries (123 before the five R1 removals) derived from the browser-consumed daemon surface minus remote-forbidden auth bootstrap and the five THR-327 R1 v1 routes) |
 | `tests/contract/managed_remote_access/credential-taxonomy.json` | the seven credential classes with issuer/subject/storage/lifetime/single-use/replay/rotation/revocation/forbidden-exposure fields and `PLACEHOLDER_*` examples |
 | `tests/contract/managed_remote_access/failure-categories.json` | deny + audit category taxonomies and the existence-guard rule |
 | `tests/contract/managed_remote_access/threat-cases.json` | 61 cases: 3 positive controls + 58 hostile negatives covering every mandated scenario class, with existence-guard pairs (including the absent-vs-consumed credential pair `CRED-003`/`CRED-003b`) and the lifecycle ownership boundary races (`REV-004` admission-vs-seal; `REV-005` single-close-vs-seal, close first; `REV-006` single-close-vs-seal, seal first; `REV-007` same-thread re-entrant `close_all` from an unfinished transport cleanup callback fails closed with non-success, never success; `REV-008` a callback failure that becomes terminal after the re-entrant rejection is persisted and re-surfaced, never erased) |
 | `tests/contract/managed_remote_access/lifecycle-matrix.json` | the exhaustive lifecycle ownership matrix: every discovered public membership mutation (`open` admission; post-seal admission rejection; duplicate-id replacement; explicit `close(stream_id)`; retained-wrapper public close; missing/idempotent close; bulk `close_all`; transport-driven self-close/EOF/error; re-entrant callback close/open/close_all; concurrent `close_all` waiters; `RevocationCoordinator.revoke`) crossed with revocation in both deterministic orderings (mutation linearizes first vs revocation seal linearizes first) and transport-close success/failure, stating the exact linearization point, the atomic seal+membership transition, callback scope (outside locks, inside the revocation acknowledgement barrier), and the permitted/denied outcome for every cell — including the THR-097 seq140 founder ruling that same-thread re-entrant `close_all` from an unfinished transport cleanup callback MUST return fail-closed non-success (never success, never an incomplete failed-id publish) with the callback failure that becomes terminal after the rejection persisted and re-surfaced |
 | `tests/contract/test_managed_remote_access_contract.py` | semantic validator (stdlib + pytest): schema exactness, decision-order lock, allow-list well-formedness/uniqueness/daemon-snapshot consistency/forbidden-overlap rejection, credential-class completeness, placeholder hygiene, encrypted-transport-to-audience transport rules, category-taxonomy membership, hostile⇒denied + positive-control⇒allowed enforcement with a checked-in hostile→allowed mutation proof, threat-matrix coverage completeness, redaction checks, sentinel-credential scan (fixtures + validator error messages), existence-pair identity including identical visible failure detail |
+
+`scripts/check_remote_access_policy.py` is a stdlib-only static check in the required **Source Boundary Lint** job. It parses the independent locked forbidden-class set in `policy.py` with `ast` (without importing runtime), checks equality with the shipped policy, rejects the five R1 pairs in HTTP/SSE/WebSocket allow lists, rejects a second tracked policy copy, and checks the labs manifest SHA-256 pin. The runtime lock still rejects altered forbidden-class sets at load. The former Python validator listed above is retired.
 
 Validators are semantic, not tautological snapshots: the normative invariants are hard-coded in the test module and the fixtures must encode them. They reject missing/unknown required fields, duplicate/ambiguous cases, malformed methods/paths/ordering, secret-bearing examples, and incomplete hostile matrices.
 

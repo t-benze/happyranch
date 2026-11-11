@@ -1,6 +1,6 @@
 """Versioned route-policy artifact consumer (contract §6.1 step 4, §14).
 
-The policy artifact is the Unit-A route-policy fixture wrapped in an envelope
+The policy artifact is the shipped route_policy.json wrapped in an envelope
 carrying schema version, issued-at time, freshness window, and a monotonic
 revision. Structural drift (schema/version/unknown or missing keys, pinned
 digest mismatch) fails closed at load; operational drift (empty/malformed/
@@ -118,6 +118,8 @@ LOCKED_SSE_ALLOWED_TEMPLATES: tuple[str, ...] = (
     "GET /api/v1/orgs/{slug}/jobs/{job_id}/tail",
 )
 LOCKED_WEBSOCKET_ALLOWED_TEMPLATES: tuple[str, ...] = ()
+# Independent load-time lock; scripts/check_remote_access_policy.py checks the
+# shipped JSON against this set without executing runtime code.
 LOCKED_FORBIDDEN_CLASS_IDS = frozenset(
     {
         "auth_bootstrap_registration",
@@ -130,6 +132,7 @@ LOCKED_FORBIDDEN_CLASS_IDS = frozenset(
         "executor_registration",
         "portability_reconciliation",
         "unclassified_default_deny",
+        "coding_release_import_cli_only",
     }
 )
 KNOWN_POLICY_STATES = frozenset(
