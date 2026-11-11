@@ -1,1 +1,1 @@
-"""Retained knowledge capture, curation and immutable archives; no imports."""
+"""Retained knowledge capture, curation, immutable archives and additive Instill."""

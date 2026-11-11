@@ -149,6 +149,60 @@ Use the existing audit envelope `(task_id, agent, action, payload)` and real tas
 
 ## S3 — Additive, idle-only Instill
 
+**S3a owner (TASK-15403):** `runtime/knowledge/instill.py` implements fixed confirmed
+selection, replay/reopen, same-operation retry and recipient operation history;
+`imports.py` owns the additive operations/items installer and durable reserved-ID
+intents/receipts. `admission.py` uses exactly the six exhaustive readers below,
+point-reading every returned ID (including thread invocation tokens) and refusing
+unknown attribution or inconsistent reads. No HTTP/CLI/TS/snapshot surface is
+mounted by S3a; S3b retains ownership of authenticated Founder confirmation,
+public memory projections, imports routes and mirrors. These owner capabilities
+do not establish deployed support or the S6 fresh-session journey.
+
+The owner acquires `teams_lock`, then `org.db_lock`, then the SAME database
+RLock. There is no await after acquiring that RLock until the entire confirmed
+batch has been accounted for. Each item rechecks current native executable
+owner/team/role admission, initialized writable memory and all six categories.
+Ordinary task submission/memory routes share `org.db_lock`; dream admission and
+roster retirement share `teams_lock`; synchronous event-loop producers cannot
+interleave the no-await segment, and DB worker-thread starts block on the RLock.
+This is the existing single-daemon coordination boundary, not a fence against
+external same-UID/multiprocess filesystem writers. Eligibility/completeness loss
+stops the remaining selected items with explicit non-success causes.
+
+An original `submission_id` reopens its unchanged confirmation; a changed
+selection requires a new key. Per-item identity is shared across confirmations.
+Each intent fixes the exact serialized inherited note and reserved MEM ID before
+file creation. A durable `writing` marker precedes the exclusive file create;
+read-back and index generation precede receipt COMMIT. `writing` after interruption
+projects as held even if operation accounting was interrupted. Retry inspects
+that SAME ID: exact bytes and round-tripped identity/provenance can finalize,
+but contradictory, absent or unreadable possibly-written evidence stays held,
+without a new ID or second write. Only an intent/proven-unwritten failure with
+absence checked may write. Successful receipts remain immutable and retries
+never remove successful notes. Counts derive from fixed per-selection outcomes;
+held items count failed, with `retryable:false`.
+
+`MemoryStore.write_inherited_entry` is an exclusive additive write path that
+never invokes ordinary `write_entry`, supersession or compaction. It retains the
+configured ordinary compaction policy; ordinary future writes can still compact.
+`inherited_from` contains archive ID/version/item, source permanent ID and
+per-reference authored/observed dates (null explicitly unknown); `imported_at`
+is separate. Readable content retains original attribution, warnings and current
+authority qualifications. Store reads/search/list/index and later supported
+updates preserve source metadata; HTTP/CLI presentation parity remains S3b.
+
+**Compatible-release prerequisite:** before S3b enables confirmation, daemon,
+CLI and UI writers/readers must all support inherited provenance and its metadata
+round-trip. The inspected old reader can display an unknown provenance string;
+it does not universally refuse, and older writes/updates may reject or strip
+metadata. A rollback must keep notes and operation/item receipts intact and stop
+imports/older writers until a compatible release is restored. Do not convert
+inherited to experiential/directive or strip `inherited_from` to enable downgrade.
+This owner slice adds no destructive conversion or automatic compatibility gate
+to an older binary. Deployment/activation and that supported-combination check
+remain outside S3a.
+
 The Founder independently opens an active approved recipient’s page and selects any same-org Ready archive, across source teams/providers. Reject pending/retired/uninitialized/unwritable recipients, foreign/non-Ready archives and identical source/recipient permanent IDs. Show existing mappings and prior versions. Default-select all eligible not-yet-imported items; allow deselection. Stale/superseded/evicted, forbidden or unavailable items are visibly ineligible. Eligible uncertainty/conflicts require warnings. Zero selection writes nothing. Preview/navigation cannot import; confirmation fixes recipient, archive/version and exact item IDs. A different selection requires a new confirmation.
 
 At write admission, reuse the existing quiescence concept and blocker kinds from `_collect_quiescence_conflicts` (`agents.py:388`), **not its capped reads as proof of idle**. S3 must completely enumerate every category below using DB-side status filters, or refuse the import whenever completeness of any category cannot be established. A matching recipient row is Busy with actual kind/ID references and “finish/wait, then retry.” This includes a curation task if that processor is now the recipient. No cancellation, global shutdown or team-move machinery is added.
