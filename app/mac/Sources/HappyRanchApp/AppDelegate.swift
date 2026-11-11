@@ -133,6 +133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Quit cancels Restart before teardown pumps the exit callbacks.
+        pendingRestart = false
         // Retry bounded teardown for any live owned child, including .stopping
         // after an incomplete Stop or refused role switch. Keep the actual outcome.
         // External daemons are NEVER terminated on quit.

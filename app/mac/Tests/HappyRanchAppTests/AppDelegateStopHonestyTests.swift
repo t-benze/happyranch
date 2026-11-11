@@ -31,6 +31,48 @@ private final class StopObservation: ProcessHandle, @unchecked Sendable {
     }
 }
 
+/// Retains the factory's real launch callback while the first Stop cannot exit.
+private final class QuitRetryController: ProcessControlling, @unchecked Sendable {
+    let factory = FakeProcessController()
+
+    func launch(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL?,
+        environment: [String: String]?,
+        terminationHandler: (@Sendable (any ProcessHandle) -> Void)?
+    ) throws -> any ProcessHandle {
+        let child = try factory.launch(
+            executableURL: executableURL, arguments: arguments,
+            currentDirectoryURL: currentDirectoryURL, environment: environment,
+            terminationHandler: terminationHandler)
+        return QuitRetryHandle(child: child)
+    }
+}
+
+private final class QuitRetryHandle: ProcessHandle, @unchecked Sendable {
+    let child: any ProcessHandle
+    var terms = 0
+    var kills = 0
+    var onRetryTerm: (@Sendable () -> Void)?
+    var isRunning: Bool { child.isRunning }
+    var processIdentifier: Int32 { child.processIdentifier }
+    var terminationStatus: Int32 { child.terminationStatus }
+    var terminationReason: Process.TerminationReason { child.terminationReason }
+    var capturedStandardError: String? { child.capturedStandardError }
+    var capturedStandardOutput: String? { child.capturedStandardOutput }
+
+    init(child: any ProcessHandle) { self.child = child }
+    func terminate() {
+        terms += 1
+        if terms > 1 { onRetryTerm?() }
+    }
+    func forceKill() -> Int32? {
+        kills += 1
+        return EPERM
+    }
+}
+
 @Suite("AppDelegate Stop honesty", .serialized)
 @MainActor
 struct AppDelegateStopHonestyTests {
@@ -87,6 +129,64 @@ struct AppDelegateStopHonestyTests {
         #expect(delegate.stateText.contains("Stop incomplete"))
         delegate.startDaemon()
         #expect(factory.launchCallCount == 0)
+    }
+
+    @Test("Quit cancels an incomplete Restart before either launch callback", arguments: ["dev", "bundled"])
+    func quitCancelsIncompleteRestart(mode: String) throws {
+        AppDelegate._testPackagingMode = mode
+        AppDelegate._testSkipBundledDaemonPreflight = true
+        defer {
+            AppDelegate._testPackagingMode = nil
+            AppDelegate._testSkipBundledDaemonPreflight = false
+        }
+        let delegate = AppDelegate()
+        let controller = QuitRetryController()
+        delegate.processController = controller
+        delegate.supervisor.configure(homeDir: "/unused")
+        delegate.startDaemon()
+        let handle = try #require(delegate.currentHandle as? QuitRetryHandle)
+        let child = try #require(controller.factory.activeHandle)
+        try #require(controller.factory.launchCallCount == 1)
+        delegate.supervisor.onHealthCheckPassed(pid: handle.processIdentifier, port: 9876)
+        delegate.refreshDerivedState()
+        try #require(delegate.canRestart)
+
+        delegate.restartDaemon()
+
+        try #require(handle.terms == 1 && handle.kills == 1)
+        try #require(handle.isRunning)
+        try #require(delegate.currentHandle === handle)
+        try #require(delegate.supervisor.state == .stopping)
+        try #require(delegate.stateText.contains("Stop incomplete"))
+        try #require(controller.factory.launchCallCount == 1)
+
+        handle.onRetryTerm = {
+            // Deliver the registered launch callback from Quit's pumped wait,
+            // then let its real MainActor continuation settle before returning.
+            RunLoop.main.perform {
+                child.terminate()
+                MainActor.assumeIsolated {
+                    let end = ProcessInfo.processInfo.systemUptime + 1
+                    while delegate.supervisor.state == .stopping
+                            && ProcessInfo.processInfo.systemUptime < end {
+                        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+                    }
+                }
+            }
+        }
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+
+        #expect(handle.terms == 2)
+        #expect(handle.kills == 1)
+        #expect(controller.factory.terminateCallCount == 1)
+        #expect(controller.factory.launchCallCount == 1)
+        #expect(controller.factory.handles.count == 1)
+        #expect(controller.factory.handles.allSatisfy { !$0.isRunning })
+        #expect(!handle.isRunning)
+        #expect(delegate.currentHandle === handle)
+        #expect(delegate.currentHandle?.isRunning == false)
+        #expect(delegate.supervisor.state == .stopped)
+        #expect(delegate.supervisor.lastExitCode == 0)
     }
 
     @Test("HOME to CLIENT refuses a surviving managed child, and Quit retries Stop", arguments: [false, true])

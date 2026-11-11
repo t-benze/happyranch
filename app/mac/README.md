@@ -36,9 +36,11 @@ reports Stop incomplete (including a native KILL error when present), retains
 the handle and keeps Start disabled. A pending Restart waits for the real exit
 callback. External daemons are not signaled through this managed-child path.
 
-Quit attempts the same bounded TERM/KILL teardown for any live child the app
-owns, including one still stopping after an earlier incomplete Stop or a
-refused HOME to CLIENT switch. If the child survives again, the outcome remains
+Quit cancels any pending Restart before exit callbacks can run during teardown,
+so an exiting child cannot launch a replacement. It attempts the same bounded
+TERM/KILL teardown for any live child the app owns, including one still stopping
+after an earlier incomplete Stop or a refused HOME to CLIENT switch. If the
+child survives again, the outcome remains
 Stop incomplete and ownership is retained; Quit never fabricates an exit.
 External daemons remain untouched.
 
