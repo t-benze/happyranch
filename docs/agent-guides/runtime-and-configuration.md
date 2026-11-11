@@ -2723,10 +2723,8 @@ CLI callback and their isolation fences retain their sources. See the
 [repository verification status](../../AGENTS.md#verification-status) for retired suites.
 Docs Manual build and the real tenant-isolation harness retain manual-only
 workflows, outside PR/main. Manual/tag macOS packaging is a separate release
-activity and invokes no fresh E2E. Legacy nightly integration remains separate
-at 07:00 UTC, with its historical failures and fixtures unchanged; its manual
-`all_only` input runs the same lint/static all selection. No legacy repair or
-run is authorized by this cadence change.
+activity and invokes no fresh E2E.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
 See [the reset coverage gap record](../python-test-reset.md) and
 [Local CI](../local-ci.md) for retained selectors and evidence limits.

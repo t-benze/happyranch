@@ -3101,22 +3101,9 @@ The Web inbox reads one active Open, Archived or All stream in 50-row pages. Hea
 
 Refresh restarts at a null cursor, privately stages a prefix to prior depth and commits it together. Org/bucket/generation ownership and abort signals reject late results. Inbox reconnect/events, focus and local thread mutations reconcile rows and totals. Pin freezes paging, snapshots actual legacy/infinite/detail caches, reorders loaded Open rows only, conditionally rolls back owned writes and restarts authoritatively. Scoped scroll offset/anchor/depth survives detail/back; restoration waits for enough content or termination and retains its target through errors. User movement cancels pending restoration. Command palette reads only committed active-org caches without fetching. CLI calls retain the existing omitted-pagination contract.
 
-### Manual local-CI receipt contract
+### Retired manual local-CI receipt lane
 
-The nightly workflow's default manual lane takes `all_only` (boolean, default
-false); there is no `run_integration` toggle. Explicit `naming_only=true` with
-`all_only=false`, exact published `naming_source_sha` and immutable amd64
-`naming_image` suppresses the broad manual lane and selects only finite naming.
-The default lane invokes the extracted receipt-producing
-`uv run python scripts/nightly_local_ci_all.py` runner from the checkout root,
-which records actual checkout/source/tool provenance and the
-`scripts/local_ci.sh all` command exit. The manual cap is the approved 150
-minutes; general integration retains its 30-minute cap and exact schedule-only
-predicate, so all three manual input cases skip it. THR-291 seq40 retired
-Python unit source, G named-case controls/repetitions and the PR1011 unit entry.
-The wrapper verifies source boundary and Web static checks only under seq69,
-with units RETIRED and first daily E2E PENDING. General integration remains SKIPPED under THR243 seq42, never PASS.
-See `docs/local-ci.md` for current checks and selectors.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
 ## Functional naming UI and API contract
 
@@ -3312,11 +3299,9 @@ record actual daemon/browser outcomes separately from MSW/component evidence. Th
 current case record, mutations and unselected historical branches are in
 `docs/superpowers/specs/2026-10-09-identity-names-core.md` under Current finite
 naming verification source. Standalone OpenAPI --check and a genuine served
-schema comparison are both retained in the hosted receipts. Clean hooked
-publication precedes each authorized disposable GitHub naming operation. The
-naming-only workflow and `scripts/identity_names_hosted.sh` are published on the
-open naming PR; each corrected source requires its own attributed verification.
-Its ordinary selection is exactly 20 function selectors / 23 parameterized cases
+schema comparison are both retained in the historical hosted receipts.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
+The retained naming script selects exactly 20 function selectors / 23 parameterized cases
 for the same twelve scenarios, including C1/four C2/F1. Named daemon receipts,
 complete full-definition/CLI/readback evidence and every selected JUnit outcome
 are required. The exact offline workload container contains nested CLI sessions;
