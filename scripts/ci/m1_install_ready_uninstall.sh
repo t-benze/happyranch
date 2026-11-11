@@ -130,7 +130,7 @@ log:
   level: info
 EOF
   sudo systemd-run --unit="${fixtures[0]}" "$M1_WORK/headscale" serve --config "$M1_WORK/config.yaml"
-  wait_for curl --silent --fail --output /dev/null https://127.0.0.1:18080/health
+  wait_for curl --silent --fail --connect-timeout 2 --max-time 3 --output /dev/null https://127.0.0.1:18080/health
   sudo "$M1_WORK/headscale" --config "$M1_WORK/config.yaml" users create ci
   for name in peer enrollment; do
     # The generated key goes straight into a root-owned 0600 file, never argv/logs.
@@ -142,7 +142,7 @@ EOF
     --auth-key="file:$M1_WORK/peer.key" --hostname=synthetic-peer-ci --accept-dns=false --timeout=60s
   sudo rm "$M1_WORK/peer.key"
   sudo systemd-run --unit="${fixtures[2]}" /usr/bin/python3 "$M1_WORK/fixture_http.py"
-  wait_for curl --silent --output /dev/null http://127.0.0.1:18765/api/v1/health
+  wait_for curl --silent --connect-timeout 2 --max-time 3 --output /dev/null http://127.0.0.1:18765/api/v1/health
 }
 installer() {
   local rc=0
