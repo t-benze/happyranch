@@ -136,7 +136,8 @@ class AptRepoTests(unittest.TestCase):
     def test_finalize_fails_closed(self) -> None:
         deb = self.deb()
         for case in ('missing-inline', 'missing-detached', 'bad-inline', 'bad-detached',
-                     'changed-release', 'changed-inline-release', 'changed-index', 'changed-pool', 'wrong-key'):
+                     'changed-release', 'changed-inline-release', 'changed-index', 'changed-pool', 'wrong-key',
+                     'binary-signed-inline', 'armored-signed-inline'):
             with self.subTest(case=case):
                 self.prepare(deb)
                 self.sign()
@@ -149,6 +150,11 @@ class AptRepoTests(unittest.TestCase):
                     self.inrelease.write_bytes(b'not a signature')
                 elif case == 'bad-detached':
                     self.detached.write_bytes(b'not a signature')
+                elif case in ('binary-signed-inline', 'armored-signed-inline'):
+                    options = ['--sign'] if case == 'binary-signed-inline' else ['--armor', '--sign']
+                    subprocess.run(['gpg', '--batch', '--yes', '--output', self.inrelease,
+                                    *options, self.repo / 'dists/stable/Release'],
+                                   env=self.env, check=True, capture_output=True)
                 elif case in ('changed-release', 'changed-inline-release'):
                     release = self.repo / 'dists/stable/Release'
                     release.write_bytes(release.read_bytes().replace(b'Label: HappyRanch', b'Label: Altered'))
@@ -175,6 +181,8 @@ class AptRepoTests(unittest.TestCase):
                     result = self.finalize()
                     self.assertNotEqual(result.returncode, 0, result.stdout)
                     self.assertIn('apt archive refused', result.stderr)
+                    if case in ('binary-signed-inline', 'armored-signed-inline'):
+                        self.assertIn('gpg --clearsign', result.stderr)
                     self.assertFalse((self.repo / 'dists/stable/InRelease').exists())
                     self.assertFalse((self.repo / 'dists/stable/Release.gpg').exists())
                 finally:

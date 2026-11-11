@@ -217,6 +217,14 @@ def finalize(repo: Path, inrelease: Path, detached: Path, key: Path) -> None:
     unsigned = (suite / 'Release').read_bytes()
     # Snapshot external inputs; gpgv never opens the caller's keyring/home.
     signatures = [inrelease.read_bytes(), detached.read_bytes()]
+    # gpgv also extracts binary/armored signed messages, which apt cannot split.
+    if re.fullmatch(
+            rb'-----BEGIN PGP SIGNED MESSAGE-----\r?\n'
+            rb'(?:Hash: [A-Za-z0-9-]+(?:, [A-Za-z0-9-]+)*\r?\n)+\r?\n'
+            rb'.+?\r?\n-----BEGIN PGP SIGNATURE-----\r?\n'
+            rb'.+\r?\n-----END PGP SIGNATURE-----\r?\n?',
+            signatures[0], re.S) is None:
+        raise ValueError('InRelease must use the apt-compatible gpg --clearsign form')
     certificate = public_key(key)
     with tempfile.TemporaryDirectory(prefix='happyranch-apt-verify-') as temporary:
         work = Path(temporary)
