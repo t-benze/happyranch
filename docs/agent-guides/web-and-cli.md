@@ -911,9 +911,13 @@ the existing queue; notification loss never rolls back, remints or reapplies.
 
 Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
 requested”; inspect show/wait for the actual row/reason/nullable exit and output.
-Running without attributable ownership yields pending/finalizing/unknown/held or
-owner-unavailable409; signal/audit503 states request_issued true/false/null. Do not
-blindly retry. Startup retains unproven running jobs with explicit unknown liveness;
+Running without a signal target returns409 `job_runner_pending`,
+`job_runner_finalizing` or `job_liveness_unknown`. Unavailable attribution/history
+returns409 `job_owner_unavailable`. Stop no longer checks affected/causal team-move
+holds; the `team_move_native_held` response model and exception translator remain
+compatibility surfaces. Actual owned Stop remains possible under active root Pause.
+Signal/audit503 states request_issued true/false/null. Do not blindly retry.
+Startup retains unproven running jobs with explicit unknown liveness;
 missing PID/maps, daemon death, timeout and absent native layout prove no orphanhood.
 Actual DB attachment/original preparation/attempt/runner/Process fences prevent
 cross-org ID collisions and stale-owner signals/removal/writes. The original job
