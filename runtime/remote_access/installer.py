@@ -165,6 +165,17 @@ class ManagedInstaller:
         self, descriptor: int, path: str, expected: tuple[int, tuple[int, int] | None] | None,
     ) -> None:
         info = os.fstat(descriptor)
+        if (expected is None and path == "var/log" and info.st_uid == self.root_owner[0]
+                and not info.st_mode & 0o002):
+            # Ubuntu's root:syslog 0775 ancestor trusts syslog members for log
+            # entries. Never extend that trust to managed directories/parents.
+            try:
+                log_gid = self._lookup_group("syslog").gr_gid
+            except KeyError:
+                pass
+            else:
+                if info.st_gid == log_gid:
+                    return
         owner = expected[1] if expected else self.root_owner
         allowed_modes = (expected[0],) if expected else ()
         if expected and path == _CREDSTORE:
