@@ -1128,3 +1128,16 @@ authority only; own live-session repository-operation failure is denied versus
 unverified BLOCK -> Held. No daemon GitHub/network I/O, new credential, access
 observer, job finalizer or permission grant. Historical local adapters and U4
 clone preflight remain unchanged. See docs/superpowers/specs/2026-11-11-sequential-coding-u5.md.
+
+
+Sequential Coding U5b2a supplies only an unmounted original-live-Final selection
+and local records/journal interface. No new command, workflow selection endpoint
+or executable Final capability is available. Saved selection/intent/observation
+bytes establish no authority, effective access, merge or native settlement.
+U5b2b action/callback wiring plus U6/U7 remain; successful Final output is still
+Held. Future local use must reselect original live task/principal/SID/native
+owner/current authority before reservation/publication/action and retain one
+original-task fence across key/cwd/path variants. Failed/lost command evidence
+never becomes success after a later separate MERGED read and never permits
+reissue. Keep ACCESS-1, shared-OS-user/gh-credential limits, genuine FINAL callback
+and existing cancellation/native ownership; no job/daemon/recovery merge follows.

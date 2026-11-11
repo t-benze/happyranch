@@ -2377,3 +2377,17 @@ selected agents' own live repository operations, denied versus unverified
 BLOCK -> Held; it adds no checkpoint, credential or observer. Source/synthetic
 proof is separate from native settlement and real merge acceptance. See
 [the U5 design and preserved owners](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).
+
+
+Sequential U5b2a (TASK-15240) now supplies an UNMOUNTED original-live-Final
+selection service plus closed local intent/command/remote-observation readers
+and an exclusive original-task journal fence. Selection consumes U5a mandatory
+review/QA at the same current-authority/native-owner boundary, rechecks fixed
+subject/origin and captures original workspace. Local reservation/publication
+requires a fresh matching selection; saved syntax grants no capability/access.
+Historical selection/command/output families and Final CLI behavior are unchanged.
+U5b2b action/check/observation/callback wiring, U6 history and U7 transport remain;
+`guarded-repository-merge@1` success stays Held. Failed/lost command receipts
+remain uncertain after a separate MERGED read. No daemon effect, public command,
+job runner, schema change or live activation follows. Detailed limits and owners:
+[U5 spec](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).
