@@ -1189,3 +1189,17 @@ attachment remain U6b2. Retain prepared/unknown ownership, original budgets,
 committed callback bytes and Final intent/receipt uncertainty. Never use missing
 PID/ended SID, launcher TERM/INT or a Stop return as product cancellation or
 settlement. U5b2b2/U7 and Final success Held remain unchanged.
+
+
+## Sequential U6b2a source boundary
+
+The original-owner native-tail disposition interface is unmounted and grants
+no agent control tool, settlement receipt or cleanup permission. Positive actual
+original host/close/release observations qualify ONE owner only; all other
+captured owners and root protections remain required. Prepared/unknown/missing
+or uncertain observations stay unsettled; never clear tracker/journal ownership
+to force a safe result. U6b2b live retained-family/cross-family overlays, owner
+aggregation/history and Founder/native-tail attachment remain implementation.
+U6b1 stays unmounted; existing Founder cancellation, original budgets, Pause,
+Final receipt uncertainty and genuine FINAL callback contract are unchanged.
+See docs/superpowers/specs/2026-11-11-sequential-coding-u6.md.

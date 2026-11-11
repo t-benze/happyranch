@@ -1470,3 +1470,18 @@ Founder cancellation/cascade route and native-tail consumer. Existing mounted
 paths, U6a/U4/U5, Pause and Final receipt uncertainty remain unchanged. No schema,
 endpoint, retry or execution entitlement is added. U5b2b2/U7 remain required;
 Final success stays Held. See the [U6 remainder](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## U6b2a unmounted original-owner disposition (TASK-15325)
+
+`sequential_cancellation_tail.cancelled_owner_disposition_uncommitted` reads
+complete mixed history in its caller's original lock/snapshot/allowances, then
+qualifies one original cancelled source/visit against actual native host, close
+and release observations. Missing/prepared/unknown/uncertain or still-owned
+observations remain unsettled; conflicting history/identity refuses. It writes
+nothing and clears no owner. A positive one-owner observation is neither a
+reusable receipt nor whole-root clearance; every other captured owner and native
+root protection remains controlling. No caller is mounted. U6b2b still owns live
+retained-family/cross-family overlay composition, owner aggregation/history and
+Founder/native-tail attachment. U6b1, old Coding/document and U4/U5/Pause/Final
+owners stay unchanged. See the [current U6 remainder](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).

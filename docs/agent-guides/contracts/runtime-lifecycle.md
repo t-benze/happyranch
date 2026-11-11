@@ -958,3 +958,19 @@ stay retained. Cancelled sequential dependencies conservatively retain the
 incomplete disposition until U6b2 composes positive original-owner evidence and
 the native-tail consumer. Existing native-tail/Founder cancellation behavior and
 Pause generations remain unchanged. See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## U6b2a original-owner qualification, without attachment
+
+The new unmounted cancellation-tail interface requires the SAME original
+TaskInvocation/task/principal/SID/root/fingerprint and genuine safe native host,
+close/removal and reservation release observations. Prepared/unknown phases,
+sticky uncertainty, missing original host/outer proof, surviving journals or
+tracker/control/PID ownership cannot qualify. Current Pause generation may be
+later than the original entry generation. The reader never releases ownership
+or changes a native reason/result; PID absence, ended SID and Stop return remain
+insufficient. A positive result qualifies only that original owner, never the
+whole root; no aggregate teardown-incomplete flag may be cleared from it.
+Native consumers and Founder cancellation stay unchanged until U6b2b composes
+every captured owner, live retained-family overlays and the complete attachment.
+See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
