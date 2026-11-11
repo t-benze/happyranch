@@ -56,5 +56,5 @@ python3 -B packaging/linux/test_bundled_path.py -v
 For a smoke run, unpack outside the repository, use a new scratch
 `HAPPYRANCH_DAEMON_HOME` and `HAPPYRANCH_DAEMON_PORT=0`, then run the extracted
 `bin/happyranch --help` and `bin/happyranch-daemon`. Read the actual port from
-`<scratch-home>/daemon.port`, check `/health` and `/`, and SIGTERM/wait that
+`<scratch-home>/daemon.port`, check `/api/v1/health` and `/`, and SIGTERM/wait that
 owned daemon process. Keep the live daemon and its home out of the test.
