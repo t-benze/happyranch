@@ -2237,7 +2237,32 @@ quoted data and never grants current authority.
 
 S1 supplies read-only detail and bounded opaque source references. S2 adds
 Distill operations and immutable archives through this same source owner;
-imports and UI remain later slices. It never claims complete knowledge capture.
+S4 (TASK-15460) adds the retired-agent Web UI: the Agents
+"Terminated agents" tab opens `?view=terminated&source=<permanent ID>`, which
+reads the S1 retired-source GET (never the active roster) and shows coverage,
+this source's Ready archives, Distill confirmation, operation state/phase/IDs,
+immutable archive items and the read-only source-reference drawer in one
+right-hand drawer. It consumes only the existing S1/S2 mirrors in
+`web/src/lib/api/knowledge.ts` via `web/src/hooks/knowledge.ts`. The S2 API has
+no per-source operation list, so the browser keeps a small per-org/per-source
+localStorage ledger of its own submission and operation IDs (written before the
+POST); a lost response is re-sent only by an explicit "Check again" with the
+SAME submission ID; only a returned operation resolves it, so a refused
+recovery request keeps the original key recorded (new starts stay blocked and
+the copy does not claim nothing was started). A first send forgets its fresh
+key only on a final 400/401/403/404/409/422. Only an absent ledger value is
+empty: any present string, including "", must parse and validate. If that
+ledger cannot be read, or the new submission ID
+cannot be durably written and read back, nothing is sent and a bilingual error
+is shown; a failed operation-ID write after a response is surfaced and keeps
+the same key for "Check again". While any recorded attempt is unknown, loading
+or unreadable (its GET errored), no new key is minted: Distill/Try again stay
+blocked and only same-key recovery or a GET re-read is offered. A
+`capture_available=false` explanation is derived from the actual coverage and
+recorded errors (runtime, declared Claude corpus, inconsistent input) and shows
+the recorded cause codes. Attempts started in another browser are not listed until
+Ready. There is no cancellation, processor choice or recipient action. Instill
+(S5) remains a later slice. It never claims complete knowledge capture.
 See [Web/CLI contracts](web-and-cli.md#retired-knowledge-read-api-s1) and the
 [current specification](../superpowers/specs/2026-11-11-knowledge-distill-instill-v1.md).
 
