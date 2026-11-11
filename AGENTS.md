@@ -241,6 +241,8 @@ Stop and escalate before touching permission-model generation, auth or credentia
 
 ## Feature pointers
 
+- **Coding validation (THR-308 seq403):** generic audit scan/watermark removed with accepted detection loss; direct readers and non-audit checks remain. See [coding contract](docs/agent-guides/contracts/coding-workflow.md).
+
 One line per area; read the linked contract before changing it.
 
 - **Coding workflow** (disabled by default; built-in definition, Founder settings at `/orgs/:slug/settings/coding`, `scripts/setup_coding.py`): [coding-workflow.md](docs/agent-guides/contracts/coding-workflow.md)

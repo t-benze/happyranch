@@ -93,9 +93,9 @@ class _LoadValidation:
                 return self.full(conn, **kwargs)
             if self.saved is None or self.saved[0] != opening:
                 self.saved = None
-                # Keep the original reader's snapshot/advance publication
-                # ownership on a miss. Equal outside bookends bracket that
-                # entire coherent full read, including its transaction exit.
+                # Keep the original reader's snapshot ownership on a miss.
+                # Equal outside bookends bracket the entire coherent full read,
+                # including its transaction exit.
                 result = self.full(conn, **kwargs)
                 if _bookend(conn) == opening:
                     self.saved = (opening, result)
@@ -147,7 +147,7 @@ def org_load_validation(database: Any, *, org_slug: str) -> Iterator[None]:
 
 def read_org_layout(
     conn: sqlite3.Connection, *, expected_org_slug: str | None,
-    legacy: Callable[[], Any], budget: Any = None, advances: Any = None,
+    legacy: Callable[[], Any], budget: Any = None,
 ) -> Any:
     """Select a complete sequential read or the caller's unchanged legacy path.
 
@@ -159,9 +159,7 @@ def read_org_layout(
     from runtime.infrastructure.workflow_schema import _schema_snapshot, _structure_cells
     from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, read_sequential_history
 
-    owned = not conn.in_transaction
     selector = _ReadBudget()
-    collected: list[tuple[tuple[int, int], int]] = []
     with _schema_snapshot(conn):
         present = False
         with _sql_budget(conn, selector):
@@ -173,7 +171,7 @@ def read_org_layout(
                     present = True
         if present:
             history = read_sequential_history(conn, expected_org_slug=expected_org_slug,
-                retained_budget=budget, advances=collected, deadline=selector.deadline)
+                retained_budget=budget, deadline=selector.deadline)
             validated = history.retained
             if validated is None or validated[1] is None:
                 # Never reach install_or_recover's automatic Coding DDL branch
@@ -183,18 +181,12 @@ def read_org_layout(
         # End only our own selection snapshot BEFORE the original expression.
         return legacy()
     selector.check()
-    if owned:
-        from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
-        for file_key, last_id in collected:
-            _advance_audit_log_watermark(conn, file_key, last_id)
-    elif advances is not None:
-        advances.extend(collected)
     return validated
 
 
 def read_workflow_schema_for_org_load(
     conn: sqlite3.Connection, *, expected_org_slug: str | None,
-    writer_source: bool = False, budget: Any = None, advances: Any = None,
+    writer_source: bool = False, budget: Any = None,
 ) -> tuple:
     """Source-only: writer_source asserts a fresh BEGIN IMMEDIATE, no own writes.
 
@@ -202,9 +194,9 @@ def read_workflow_schema_for_org_load(
     OrgState.load scope legacy layouts use the original complete reader.
     """
     owner = _current.get()
-    kwargs = dict(expected_org_slug=expected_org_slug, budget=budget, advances=advances)
+    kwargs = dict(expected_org_slug=expected_org_slug, budget=budget)
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
-    return read_org_layout(conn, expected_org_slug=expected_org_slug, budget=budget, advances=advances,
+    return read_org_layout(conn, expected_org_slug=expected_org_slug, budget=budget,
         legacy=lambda: (_read_workflow_schema(conn, **kwargs) if owner is None else
                         owner.read(conn, writer_source=writer_source, **kwargs)))
 

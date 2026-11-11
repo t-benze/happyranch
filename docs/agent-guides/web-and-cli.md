@@ -46,9 +46,11 @@ Before any workflow DDL, the entire reserved coding family is observed. Partial,
 extra, case-changed, wrong-kind or malformed objects and real shared dependency
 failures refuse without repair or adoption. Body/interruption
 and COMMIT failures preserve the primary cause and secondary cleanup errors;
-uncertain COMMIT is not success or proof of absence. Audit-watermark advances
-publish only after positive COMMIT under the same lock. Failed unpublished org
-construction closes/refuses before attachment. Load-only source validation reuse
+uncertain COMMIT is not success or proof of absence. THR-308 seq403 removes the
+generic audit scan and process-local watermark, including publication; see the
+[coding removal contract](contracts/coding-workflow.md#current-coding-storage-and-setup--root13150--thr320seq261267).
+Failed unpublished org construction closes/refuses before attachment.
+Load-only source validation reuse
 uses coherent SQLite bookends (THR308seq348/353/354); writer target and public
 checks remain complete. See [runtime configuration](runtime-and-configuration.md).
 
@@ -462,7 +464,8 @@ with a reason only for revoked. Changed same-key bytes conflict.
 Mixed setup/import/mapping/P cold consumers share bounded native source/mapping
 capture/operation inventory and the enclosing row/byte/step budget. Full positive
 native-row equalities and unknown/orphan/duplicate refusal cover schema(data=False),
-OrgState reopen, recovery and drain; ordinary nonmapping watermark behavior stays.
+OrgState reopen, recovery and drain. The generic audit scan was removed per
+THR-308 seq403.
 Source expected_head remains NULL/own-development-output@1: it grants no arbitrary
 head disclosure, review, QA, CI or merge. K1.resolve remains unavailable because
 no genuine exact-subject read entitlement is produced here. Allocating source
@@ -536,8 +539,9 @@ whole-row family matching covers mappings, original capture audit and all five
 admission columns; orphan/foreign/malformed/unsupported families still refuse.
 Central schema validation, also data=False, reopen/recovery and drain/downgrade
 compose that same reader without recursive schema validation or ID exemptions.
-Central shared-table scans first discriminate ordinary history independently of
-coding-family accounting, including after mapping or queued enrollment. Expected
+Central non-audit shared-table scans first discriminate ordinary history
+independently of coding-family accounting, including after mapping or queued
+enrollment. Expected
 coding keys only locate freshly acquired rows; they never authorize acceptance.
 Coding candidates use singleton rowid keyset pages with explicit overflow refusal.
 Before their bounded Python fetch, every selected scalar/variable cell gates its
@@ -552,22 +556,23 @@ refuse earlier; they do not bound total SQLite/process/decoded-object memory.
 Complete expected mapping/own-admission/source-audit rows are derived once from
 validated records, indexed only for lookup, then compared in full with exact
 native types. Original capture inventory and required setup histories are cached
-only within this coherent call. No mapping row or supported audit is exempted
-by ID or watermark. Unknown/orphan/malformed/duplicate evidence still refuses.
+only within this coherent call. Direct history readers authenticate supported
+audit rows; non-audit mapping rows still compare completely, without ID exemptions.
+Unknown/orphan/malformed/duplicate evidence in these retained readers still refuses.
 The SAME enclosing traversal allowance also covers selected coding metadata discrimination:
 every structured node/member, duplicate pair and classified member string,
 and malformed lexical prefix/member/whitespace/string/escape visits consume it.
 Nested lists/objects and fallback after partial pairs-hook work never reset or
-replace that allowance. Exhaustion refuses before a normal return, positive
-admission or watermark advance. Ordinary shared rows do not spend this coding
+replace that allowance. Exhaustion refuses before a normal return or positive
+admission. Ordinary non-audit shared rows do not spend this coding
 allowance: decision prose mentioning workflow_start and noncoding org_config_write
 sections remain ordinary. Coding settings scope is selected by config:coding OR
 the decoded top-level section, preserving escaped/duplicate/malformed candidates
 and the original1024 coding-publication limit. JSON-decoder/encoding internals,
 total SQL/decoded-object/process memory and wall-clock work are not bounded by
-this traversal or raw-byte accounting. Ordinary scans retain their historical
-insert-only discriminator/watermark contract before and after mapping/start.
-Expected coding rows always revalidate below that ordinary watermark. This source
+this traversal or raw-byte accounting. Non-audit scans retain their discrimination
+before and after mapping/start. The generic audit scan and watermark are removed
+per THR-308 seq403, including their refusal and shared-budget charges. This source
 correction is not behavioral/security verification.
 Mapping/setup/import have no run/host tail; compatible J reader is always needed.
 F–J SQL/reference bytes and all historical document meanings are unchanged.

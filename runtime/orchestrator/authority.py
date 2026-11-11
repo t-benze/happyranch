@@ -2008,7 +2008,7 @@ def _build_release_schema_digest(layout: str, history: str, naming_version: int,
                     # startup installer: its additive coding side effect is
                     # separate from these original raw SQL/digest preimages.
                     with fresh.workflow_schema_transaction() as conn:
-                        _install_foundation(conn, expected_org_slug=None, advances=[])
+                        _install_foundation(conn, expected_org_slug=None)
                         if layout == "E":
                             _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
                             conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")

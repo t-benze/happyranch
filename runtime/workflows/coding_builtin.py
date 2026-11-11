@@ -321,7 +321,6 @@ class CodingBuiltinStore:
         """One safe attempt; no retries, repair, authority recovery or takeover."""
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
         from runtime.infrastructure.workflow_schema_load import read_org_layout
-        from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
         budget, census, states, after = _Budget(), _NativeCensusBudget(), {}, 0
         authority = self.org.workflow_authority
         phase = _RegistrationPhase(authority, self.db)
@@ -365,7 +364,6 @@ class CodingBuiltinStore:
                     if not self._writer_owned(admission, writer, reservation):
                         raise RuntimeError('coding_builtin_native_owner_changed')
                 phase = _RegistrationPhase(authority, self.db)
-                advances = []
                 try:
                     with phase.publisher, phase.database:
                         phase.capture(self.db)
@@ -376,9 +374,9 @@ class CodingBuiltinStore:
                                 after = self._native_suffix(conn, census, states, after)
                                 self._safety(conn, admission, states, census, own=writer.writer_id)
                                 _, inventory = read_org_layout(conn, expected_org_slug=self.org.slug,
-                                    budget=budget, advances=advances,
+                                    budget=budget,
                                     legacy=lambda: _read_workflow_schema(conn, expected_org_slug=self.org.slug,
-                                                                         budget=budget, advances=advances))
+                                                                         budget=budget))
                                 if inventory is None:
                                     raise ValueError('coding_builtin_storage_required')
                                 if inventory.release is None:
@@ -397,9 +395,9 @@ class CodingBuiltinStore:
                                     # Reconstruct complete target rows/FKs before this owner's COMMIT.
                                     del inventory
                                     _, target = read_org_layout(conn, expected_org_slug=self.org.slug,
-                                        budget=budget, advances=advances,
+                                        budget=budget,
                                         legacy=lambda: _read_workflow_schema(conn, expected_org_slug=self.org.slug,
-                                                                             budget=budget, advances=advances))
+                                                                             budget=budget))
                                     if target is None or target.release is None:
                                         raise ValueError('coding_builtin_target_invalid')
                                 after = self._native_suffix(conn, census, states, after)
@@ -408,9 +406,6 @@ class CodingBuiltinStore:
                                 phase.refusal = exc
                                 raise
                         phase.committed = True
-                        # Positive original COMMIT only, under the SAME DB lock.
-                        for file_key, last_id in advances:
-                            _advance_audit_log_watermark(conn, file_key, last_id)
                 except _Deferred as exc:
                     if (not phase.rolled_back(self.db, exc)
                             or not self._writer_owned(admission, writer, reservation)):

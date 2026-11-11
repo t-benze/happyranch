@@ -1,5 +1,11 @@
 # Ordinary audit coding-scan prefilter — THR308seq353/354
 
+> Superseded by THR-308 seq403: the generic audit scan, prefilter, process-local
+> watermark and scan diagnostic are removed. Unrecognised coding-shaped audit
+> rows and ordinary audit decoding/depth/size/digit failures are no longer
+> detected by that scan. Direct history readers and non-audit checks remain.
+> The text below records the former behavior, not a current requirement.
+
 TASK-14558, PR3 of the four-part startup-performance plan. This note supplements
 the historical C15 discriminator inventory in
 `2026-10-14-ordered-coding-workflow.md`; its original bytes remain preserved.
