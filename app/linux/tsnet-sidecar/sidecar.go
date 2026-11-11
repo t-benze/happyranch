@@ -121,9 +121,13 @@ func (s *Sidecar) Start(ctx context.Context) error {
 		s.closeEngine()
 		return ErrCredential
 	}
-	if err := commitConsumption(s.cfg); err != nil {
-		s.closeEngine()
-		return ErrCredential
+	// Empty input means an already-consumed enrollment. Its marker must stay
+	// untouched while tsnet resumes the durable state in the same directory.
+	if len(credential) != 0 {
+		if err := commitConsumption(s.cfg); err != nil {
+			s.closeEngine()
+			return ErrCredential
+		}
 	}
 	probe, err := s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
 	if err != nil || probe == nil || probe.Close() != nil {
@@ -159,10 +163,38 @@ func consumeInput(c Config) ([]byte, error) {
 	if err := requireOwnerDir(c.StateDir); err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(filepath.Join(c.StateDir, consumedMarker)); err == nil || !os.IsNotExist(err) {
+	marker := filepath.Join(c.StateDir, consumedMarker)
+	st, err := os.Lstat(marker)
+	if err == nil {
+		if !st.Mode().IsRegular() || st.Mode().Perm() != 0o600 || !ownedByCurrentUser(st) {
+			return nil, ErrCredential
+		}
+		// Recheck the opened inode, and never follow a link or block on a FIFO
+		// if the final entry changes between Lstat and open.
+		f, err := os.OpenFile(marker, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			return nil, ErrCredential
+		}
+		defer f.Close()
+		opened, err := f.Stat()
+		if err != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != 0o600 || !ownedByCurrentUser(opened) || !os.SameFile(st, opened) {
+			return nil, ErrCredential
+		}
+		digest := sha256.Sum256([]byte(c.RoleIdentity + "\x00" + c.ControlURL))
+		want := fmt.Sprintf("%x\n", digest)
+		content, err := io.ReadAll(io.LimitReader(f, int64(len(want)+1)))
+		if err != nil || string(content) != want {
+			return nil, ErrCredential
+		}
+		if _, err := os.Lstat(c.CredentialFile); !errors.Is(err, syscall.ENOENT) {
+			return nil, ErrCredential
+		}
+		return nil, nil
+	}
+	if !errors.Is(err, syscall.ENOENT) {
 		return nil, ErrCredential
 	}
-	st, err := os.Lstat(c.CredentialFile)
+	st, err = os.Lstat(c.CredentialFile)
 	if err != nil || st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || st.Mode().Perm() != 0o600 || !ownedByCurrentUser(st) {
 		return nil, ErrCredential
 	}
@@ -190,6 +222,11 @@ func noSymlinkPath(path string) error {
 	clean := filepath.Clean(path)
 	for current := clean; current != string(filepath.Separator); current = filepath.Dir(current) {
 		st, err := os.Lstat(current)
+		// Restart has no credential file. Only that final entry may be absent;
+		// still inspect every parent, including parents of a missing entry.
+		if current == clean && errors.Is(err, syscall.ENOENT) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
