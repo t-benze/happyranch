@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry")
+SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry", "repo-refresh")
 PROC_PIDTBSDINFO = 3
 
 
@@ -1441,6 +1441,11 @@ def main() -> int:
                 from suite_inode_telemetry import run as inode_telemetry
 
                 inode_telemetry(report)
+            elif args.suite == 'repo-refresh':
+                sys.path.insert(0, str(ROOT))
+                from scripts.mac_native.suite_repo_refresh import run as repo_refresh
+
+                repo_refresh(report)
             else:
                 {"truth": truth, "teardown": teardown, "disk-sweep": disk_sweep}[args.suite](report)
             report["completed"] = True

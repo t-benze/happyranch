@@ -640,6 +640,27 @@ or overloaded-column semantics, permission/sandbox changes, auth/credentials/
 notification changes, and Windows implementation are explicitly held for
 later founder rulings.
 
+### THR-346 S5 repository refresh on Darwin (2026-11-11)
+
+Repository refresh admits a healthy `macos-process-group` probe declaring
+`KILLS_TREE_BEST_EFFORT=BEST_EFFORT`; Linux's existing guaranteed admission is
+unchanged. Passthrough, unhealthy, missing capability and unknown best-effort
+backends remain refused. A Git descendant that leaves both the process group
+and the identity-safe descendant census (e.g. setsid plus reparenting) may escape
+detection. Engineering accepts this residual risk for the bounded refresh Git
+operations (fetch, merge --ff-only and configured recursive submodule checkout).
+Mac capability reporting remains BEST_EFFORT. Positive refresh still requires
+the original settled Popen, non-passthrough Boolean-quiescent receipt, no
+survivors, non-incomplete cleanup, no cleanup error and the same request.
+Detected survivors or uncertain/unavailable census retain false/stale status
+and latched uncertainty; settle, residue and lock order are unchanged.
+
+Refresh precedes only its caller's executor, not every workspace session.
+Linux and Darwin share Git's index/ref locks and the cooperative common-Git-dir
+lease; there is no workspace-idle claim or new admission reservation. The
+governing [preparation contract](../../agent-guides/contracts/runtime-lifecycle.md)
+describes the unchanged original-owner completion and evidence requirements.
+
 ### THR-346 S1 macOS correction (2026-11-10)
 
 The libproc `proc_bsdinfo` layout includes `pbi_xstatus` between status and PID.

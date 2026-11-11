@@ -225,8 +225,20 @@ Manual Git, hooks, other hosts and arbitrary same-UID writers do not cooperate;
 last-window/ABA, OS cleanup and persistence timing limits remain.
 
 Every Git child, including admission/control probes, uses the existing configured
-healthy HostSessionSupervisor and opaque backend lifecycle. Missing guaranteed
-containment is a pre-child stale refusal. There is no uncontained fallback,
+healthy HostSessionSupervisor and opaque backend lifecycle. Refresh admits
+`KILLS_TREE_GUARANTEED=GUARANTEED` (Linux unchanged), or exclusively the
+`macos-process-group` backend with `KILLS_TREE_BEST_EFFORT=BEST_EFFORT`.
+Unhealthy, passthrough, unknown best-effort backends and missing capability
+remain pre-child stale refusals. Darwin accepts the residual risk that a Git
+descendant leaving both the process group and identity-safe descendant census
+(for example setsid plus reparenting) may go undetected. The refresh mutations
+are fetch and merge --ff-only, plus recursive submodule checkout when configured;
+every detected survivor or uncertain/unavailable census still refuses positive
+refresh and latches uncertainty. This is best-effort containment, not a tree
+guarantee. Pre-spawn does not prove workspace idleness. Concurrent sessions use
+Git's own index/ref locks and the cooperative common-Git-directory lease under
+the same concurrency contract on Linux and Darwin; no workspace admission
+reservation is implied. There is no uncontained fallback,
 synthetic executor session or TaskInvocation.started observation for Git. Each
 child launches behind a stdin gate (`/bin/sh` reads one byte, then execs Git with
 the same PID and /dev/null stdin) so a sub-second Git exit cannot precede the

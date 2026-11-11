@@ -380,6 +380,28 @@ removed before success. Existing 30-minute, 32 MiB file, 4 MiB log and 64 KiB id
 probe limits remain. Namespace checks do not claim to serialize racing external
 renames or simultaneous differently-spelled writers.
 
+## S5 repository refresh probe
+
+`python3 -B scripts/mac_native/probe.py --suite repo-refresh --output /owned/probe.json`
+selects `SUITE=repo-refresh`. Linux emits skipped JSON and exits0. Darwin uses
+the real macOS process-group backend, HostSessionSupervisor, native producer
+reservation/audit preparation object and shipping refresh/completion path.
+A private bare origin and writer advance one commit beyond a tracked clone;
+named expected/actual rows require a healthy BEST_EFFORT probe, stale clone,
+actual Git admission, true refresh, exact new HEAD, Boolean-quiescent receipts,
+zero reported survivors and closed preparation. A real passthrough negative
+must leave the clone stale without opening a repository obligation.
+
+The suite uses only stdlib and the existing locked 18 bootstrap wheels, local
+Git, a private HOME/config and `$TMPDIR` scratch. It performs no network/daemon/
+frozen-app operation. Fixture Git commands have five-second deadlines and
+file-backed output capped at 4096 B; each product batch retains its original 30s budget.
+The suite has a 120s alarm and a 16KiB report cap; ordinary/catchable completion
+removes scratch. The existing job owns outer interruption cleanup. No job
+configuration, dependency or trigger changes; native Jenkins and frozen-app
+acceptance are separate authorized legs. Quiescence remains BEST_EFFORT: a
+descendant escaping both group and identity-safe census may go undetected.
+
 ## S9 inode telemetry probe
 
 `python3 -B scripts/mac_native/probe.py --suite inode-telemetry --output /owned/probe.json`

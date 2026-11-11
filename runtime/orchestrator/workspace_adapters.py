@@ -3220,7 +3220,16 @@ def _repo_refresh_batch(workspace: Path, preparation: Any, supervisor: Any, dead
     if preparation is None or supervisor is None:
         return results
     report = supervisor.probe()
-    if not report.healthy or report.level(Capability.KILLS_TREE_GUARANTEED) != CapabilityLevel.GUARANTEED:
+    # Darwin refresh accepts honest BEST_EFFORT: a Git descendant escaping both
+    # the group and identity-safe census (setsid + reparent) can go undetected.
+    # This accepted residual risk never relaxes per-child receipts/uncertainty.
+    # Pre-spawn is not workspace-idle proof; concurrent sessions retain Git's
+    # own locks and the cooperative common-Git-dir lease on both platforms.
+    if not report.healthy or not (
+        report.level(Capability.KILLS_TREE_GUARANTEED) == CapabilityLevel.GUARANTEED
+        or report.backend == "macos-process-group"
+        and report.level(Capability.KILLS_TREE_BEST_EFFORT) == CapabilityLevel.BEST_EFFORT
+    ):
         logger.debug("repo refresh skipped: containment_unavailable")
         return results
     # Discover without holding another repository, then acquire by physical

@@ -17,6 +17,171 @@ from runtime.orchestrator.workspace_adapters import (
 from runtime.runtime import RuntimeDir
 
 
+def _repo_refresh_test_backend():
+    """Backend-contract double: real Git/Popen; no claim of native containment."""
+    import subprocess
+
+    from runtime.platform.passthrough_backend import PassthroughBackend
+    from runtime.platform.session_backend import (
+        Capability,
+        CapabilityLevel,
+        CapabilityReport,
+        CleanupStatus,
+        Receipt,
+        RunningHandle,
+    )
+
+    class Backend(PassthroughBackend):
+        def probe(self):
+            return CapabilityReport(backend="macos-process-group", backend_version="test",
+                capabilities={Capability.KILLS_TREE_BEST_EFFORT: CapabilityLevel.BEST_EFFORT})
+
+        def launch(self, pending, spec):
+            process = subprocess.Popen(spec.argv, cwd=spec.cwd, env=spec.env,
+                stdin=spec.stdin, stdout=spec.stdout, stderr=spec.stderr,
+                text=spec.text, start_new_session=True)
+            return RunningHandle(backend="macos-process-group", token=pending.token,
+                request_id=pending.request_id, root_pid=process.pid, start_identity="test",
+                process=process)
+
+        def finish(self, running, terminal_reason, grace_seconds, **kwargs):
+            if running.process.poll() is None:
+                running.process.kill()
+            running.process.wait(timeout=2)
+            return Receipt(backend="macos-process-group", terminal_reason=terminal_reason,
+                cleanup_status=CleanupStatus.CLEAN, cleanup_duration_seconds=0.0,
+                quiescent=True, wall_time_seconds=0.0)
+
+    return Backend()
+
+
+@pytest.fixture
+def fresh_repo_refresh():
+    # Source-identity checks and native owner maps must not inherit earlier cases.
+    from importlib import reload
+
+    from runtime.orchestrator import workspace_adapters
+    original = dict(vars(workspace_adapters))
+    try:
+        reload(workspace_adapters)
+        yield
+    finally:
+        vars(workspace_adapters).clear()
+        vars(workspace_adapters).update(original)
+
+
+@pytest.mark.parametrize("backend_name,guaranteed", [
+    ("macos-process-group", False), ("linux-systemd", True),
+])
+def test_repo_refresh_supported_containment(tmp_path, monkeypatch, fresh_repo_refresh, backend_name, guaranteed):
+    """Gate coverage uses real Git/preparation; Linux label is a capability double."""
+    from dataclasses import replace
+
+    from runtime.orchestrator.host_supervisor import build_default_host_supervisor
+    from runtime.orchestrator.workspace_adapters import refresh_workspace_repos
+    from runtime.platform.session_backend import Capability, CapabilityLevel
+    from scripts.mac_native.suite_repo_refresh import (
+        git,
+        git_environment,
+        preparation,
+        stale_clone,
+    )
+
+    with git_environment(tmp_path):
+        workspace, old, target = stale_clone(tmp_path)
+        backend = _repo_refresh_test_backend()
+        if guaranteed:
+            probe = backend.probe()
+            monkeypatch.setattr(backend, "probe", lambda: replace(probe, backend=backend_name,
+                capabilities={Capability.KILLS_TREE_GUARANTEED: CapabilityLevel.GUARANTEED}))
+        receipts = []
+        supervisor = build_default_host_supervisor(backend=backend, publisher=receipts.append)
+        with preparation(tmp_path, "accepted") as owner:
+            assert old != target
+            assert refresh_workspace_repos(workspace, preparation=owner, host_supervisor=supervisor) == {"sample": True}
+            assert git(workspace / "repos/sample", "rev-parse", "HEAD") == target
+            assert receipts and all(r.quiescent is True and not r.survivors for r in receipts)
+            assert all(e.closed and not e.uncertain for e in owner._repository_preparations.values())
+
+
+@pytest.mark.parametrize("fault", ["non_quiescent", "survivor"])
+def test_repo_refresh_darwin_bad_receipt(tmp_path, monkeypatch, fresh_repo_refresh, fault):
+    from dataclasses import replace
+
+    from runtime.orchestrator.host_supervisor import build_default_host_supervisor
+    from runtime.orchestrator.workspace_adapters import refresh_workspace_repos
+    from runtime.platform.session_backend import SurvivorRecord
+    from scripts.mac_native.suite_repo_refresh import (
+        git_environment,
+        preparation,
+        stale_clone,
+    )
+
+    with git_environment(tmp_path):
+        workspace, _, _ = stale_clone(tmp_path)
+        backend = _repo_refresh_test_backend()
+        finish = backend.finish
+        injected = []
+
+        def faulty_finish(running, *args, **kwargs):
+            receipt = finish(running, *args, **kwargs)
+            # Corrupt the real merge's receipt after genuine Popen settlement.
+            # Earlier admission probes must succeed so no other guard owns refusal.
+            if "merge" in running.process.args:
+                injected.append(receipt)
+                if fault == "non_quiescent":
+                    return replace(receipt, quiescent=False)
+                return replace(receipt, quiescent=False, survivors=(SurvivorRecord(
+                    pid=999999, start_identity="synthetic", backend=receipt.backend,
+                    discovered_at=0.0, last_seen_at=0.0),))
+            return receipt
+
+        monkeypatch.setattr(backend, "finish", faulty_finish)
+        supervisor = build_default_host_supervisor(backend=backend)
+        with preparation(tmp_path, "bad-receipt") as owner:
+            assert refresh_workspace_repos(workspace, preparation=owner, host_supervisor=supervisor) == {"sample": False}
+            assert len(injected) == 1
+            assert owner.state.failed_cleanup
+            assert all(e.uncertain and not e.closed for e in owner._repository_preparations.values())
+
+
+@pytest.mark.parametrize("backend_name,healthy,capability", [
+    ("passthrough", True, "best_effort"),
+    ("unknown", True, "best_effort"),
+    ("macos-process-group", False, "best_effort"),
+    ("macos-process-group", True, None),
+    ("macos-process-group", True, "unavailable"),
+])
+def test_repo_refresh_refuses_unsupported_probe(tmp_path, monkeypatch, fresh_repo_refresh, backend_name, healthy, capability):
+    from runtime.orchestrator.host_supervisor import build_default_host_supervisor
+    from runtime.orchestrator.workspace_adapters import refresh_workspace_repos
+    from runtime.platform.session_backend import (
+        Capability,
+        CapabilityLevel,
+        CapabilityReport,
+    )
+    from scripts.mac_native.suite_repo_refresh import (
+        git,
+        git_environment,
+        preparation,
+        stale_clone,
+    )
+
+    with git_environment(tmp_path):
+        workspace, old, target = stale_clone(tmp_path)
+        report = CapabilityReport(backend=backend_name, backend_version="test", healthy=healthy,
+            capabilities={} if capability is None else {
+                Capability.KILLS_TREE_BEST_EFFORT: CapabilityLevel(capability)})
+        backend = _repo_refresh_test_backend()
+        monkeypatch.setattr(backend, "probe", lambda: report)
+        supervisor = build_default_host_supervisor(backend=backend)
+        with preparation(tmp_path, "refused") as owner:
+            assert refresh_workspace_repos(workspace, preparation=owner, host_supervisor=supervisor) == {"sample": False}
+            assert not owner._repository_preparations
+            assert old != target
+            assert git(workspace / "repos/sample", "rev-parse", "HEAD") == old
+
+
 @pytest.fixture
 def runtime(tmp_path: Path) -> OrgPaths:
     rt = RuntimeDir.init(tmp_path / "rt")

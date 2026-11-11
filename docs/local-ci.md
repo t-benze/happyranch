@@ -129,6 +129,12 @@ run the wrapper, Python units, integration or Product E2E. The native
 `inode-telemetry` suite runs all 12 rows: these nine fixtures followed by
 three real Mac `df` checks. See
 `ci/jenkins/mac-native-probe/README.md`; Linux dispatcher output is SKIPPED.
+
+The manual [S5 repo-refresh probe](../ci/jenkins/mac-native-probe/README.md#s5-repository-refresh-probe)
+drives real Darwin Git refresh and native preparation in private scratch using
+the existing locked 18 bootstrap wheels. Linux emits skipped JSON. Native Jenkins
+and frozen-app acceptance remain separate; local lint is not native evidence.
+
 Behavioral tests and builds are outside all/pre-push/required merge checks.
 Normal hooks stay enabled; never bypass hooks or the guarded worktree.
 Independent full code review and scoped QA remain mandatory. Static checks
