@@ -241,6 +241,16 @@ unverified and cancellation/Held owners. It shares the enclosing deadline,
 restores the enclosing SQL hook afterward, and still reaches original
 rollback-then-business-Held on validated success. Negative callbacks retain their
 original path. Historical Coding and U7a/U7b routes/semantics are unchanged.
+Before the added Final-path carrier decode, the dispatcher prepays
+`48 * 4 * len(summary) + 512` bytes and `len(summary)` traversal steps on its
+SAME original prefix allowance. The native result preflight already bounds the
+string; four bytes per character bounds UTF8, and carrier metadata plus decoded
+domain JSON has fewer tokens than carrier characters. This covers the new
+encoding/canonical/base64/domain parse and copy work before it starts, without
+encoding just to size the reservation. Exhaustion propagates as the original
+reader refusal with no committed effects, never malformed-output business-Held.
+The compatible callback reader retains its original R-M3-2 limits on the shared
+deadline; no cap, allowance, retry or historical decoder is changed.
 
 **Final success remains Held; U7c2 is implementation remainder.** Transport and
 validated observation do not implement a Final capability witness, recipients,

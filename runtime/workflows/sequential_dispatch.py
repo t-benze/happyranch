@@ -735,6 +735,14 @@ class SequentialDispatcher:
                                         terminal_digest = outer_digest = None
                                     if next(node.output_contract.type for node in compiled.definition.nodes
                                             if node.id == visit['node_id']) == 'guarded-repository-merge@1':
+                                        # Native result preflight already bounds this string. Prepay
+                                        # UTF8/canonical/base64/domain copies and both JSON trees
+                                        # BEFORE the new decoder, on the original prefix allowance.
+                                        # Four bytes per character bounds UTF8; carrier metadata
+                                        # plus decoded JSON has fewer tokens than carrier characters.
+                                        # Exhaustion remains a genuine reader refusal, outside Held.
+                                        budget.reserve(48 * 4 * len(result['output_summary']) + 512)
+                                        budget.work(len(result['output_summary']))
                                         value, _ = _carrier(result['output_summary'], contract='guarded-repository-merge@1',
                                             checks=(), status=result['status'], verdict=result['verdict'])
                                         if value['outcome'] == 'merged':
