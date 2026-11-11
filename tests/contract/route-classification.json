@@ -170,7 +170,9 @@
     "GET /api/v1/orgs/{slug}/settings/coding/options",
     "PUT /api/v1/orgs/{slug}/settings/coding",
     "GET /api/v1/orgs/{slug}/tasks/{task_id}/preparation-recovery",
-    "POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-preparation"
+    "POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-preparation",
+    "GET /api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}",
+    "GET /api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}/sources/{reference_id}"
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",

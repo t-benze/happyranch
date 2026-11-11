@@ -83,6 +83,16 @@ Required inputs read: the PRD at the pinned commit; the reconciliation table, fi
 
 ## S1 — Non-migrating retired-source capture
 
+**S1 implementation status (TASK-15282):** read-only source owner, two GET
+routes, CLI/typed TS mirrors and paired snapshots are implemented; independent
+review, QA and merge remain required. S2–S6 remain pending. Current contract:
+[retired sources](../../agent-guides/features-and-invariants.md#retired-knowledge-sources-s1-thr-296).
+The implementation uses the existing native task-scratch manifest as path evidence:
+its validated original root must agree with this retained source and current
+org layout. Missing/conflicting evidence is visibly not captured; relocation
+or provider retention is never inferred. No new metadata format or migration.
+
+
 Resolve the permanent source ID against the retained definition under `org/agents/_terminated/<name>.md` and its retained workspace `workspaces/_terminated/<name>/`; require genuine retirement and same-org ownership. Names are captured presentation data and historical path components, not identity authority. Do not infer an archive from an arbitrary directory, follow a caller-supplied path or resolve the ID to a new active workspace. Supported retirement archives ordinary workers (`agents.py:963`, `:994`, `:1008`); manager/empty-team retirement remains separate.
 
 Implement a source-owned read-only parser in a small knowledge source module. Do not instantiate `MemoryStore` for originals: its constructor creates directories (`learnings_store.py:228`). Do not call `_workspace_memory_store`, `migrate_workspace`, reindex, index regeneration or any write/repair. `_workspace_memory_store` resolves `workspaces/<agent>` and calls migration at `agents.py:3020`/`:3026`. Its legacy lazy migration is not a retired-reader strategy.
@@ -166,7 +176,7 @@ Imports affect future retrieval through normal memory interfaces in a **fresh re
 
 ## Routes, CLI, schemas and mirrors by slice
 
-The following are proposed minimal contracts for subsequent slices, not installed endpoints or commands. All IDs are same-org and server-resolved. Preserve existing auth/native/remote policy; adding a route is not a permission or remote-reachability grant. Classify each route explicitly through the existing contract owner before shipping.
+The S1 row is implemented by TASK-15282, pending independent delivery gates. The other rows remain proposed contracts for subsequent slices, not installed endpoints or commands. All IDs are same-org and server-resolved. Preserve existing auth/native/remote policy; adding a route is not a permission or remote-reachability grant. Classify each route explicitly through the existing contract owner before shipping.
 
 | Slice | Proposed HTTP surfaces under `/api/v1/orgs/{slug}` | CLI parity / client surfaces |
 | --- | --- | --- |

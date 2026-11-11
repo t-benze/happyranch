@@ -2190,6 +2190,49 @@ The dedicated `kb precedent` route was removed. Founder rulings flow through `ha
 
 Implementation: `runtime/infrastructure/kb_store.py` and `runtime/daemon/routes/kb.py`. Full rules: `docs/agent-guides/features-and-invariants.md`.
 
+## Retired knowledge sources (S1, THR-296)
+
+`runtime/knowledge/sources.py` reads retained ordinary-worker definitions and
+workspaces under `_terminated`, addressed by same-org permanent ID. Active,
+pending, unknown, aliased and missing-retained sources refuse. Retirement time
+is explicitly unknown: archive placement does not persist that date.
+
+Capture reads every `memory/MEM-*.md` and `memory/LRN-*.md` directly, including
+superseded/evicted bodies and promoted pointers, preserving frontmatter and
+source dates. A malformed/unreadable required entry blocks capture. Verified
+empty structured memory differs from absent memory and legacy-only
+`learnings.md`/`learnings/`, which remain unavailable. No memory store,
+migration, index/search/digest, repair, source/KB/DB write or source execution
+participates. KB links stay pointers.
+
+Claude capture requires retained native task-scratch manifests validated by the
+existing manifest owner, all agreeing on the original canonical workspace path
+and source ID under this org. Missing manifests yield missing path evidence;
+conflicting or invalid evidence yields ambiguous attribution. No guessed
+terminated-project path or relocated-path fallback is used. The collision check
+inventories this org's active/pending/retired definition and workspace names,
+including stray workspace names (`a_b` and `a-b` collide). Only Markdown in the
+one attributable original Claude project's `memory/` tree is read; symlinks,
+hardlinks and unsafe ancestors refuse. This observes retained files, not a
+provider retention guarantee. No other projects or raw sessions are searched.
+
+Each category carries included/excluded/unavailable, reason, count (null means
+unknown), UTC cutoff and errors. Runtime capture is required; unavailable
+Claude memory is an explicit gap. Once Claude files are declared available,
+a read failure blocks capture. Directory/file metadata bookends detect input
+changes and invalidate returned records. These observations are not a lock
+against a writer changing files after capture. Bounds are 4096 inventory entries,
+256 KiB per file, 16 MiB total reads, and 32 nested Claude directories; exceeding
+a bound refuses the affected capture rather than sampling. Other-provider text,
+unrestricted histories, shared KB bodies, credentials, generated instructions,
+skills, sessions and caches are excluded/unverified. Source text is untrusted
+quoted data and never grants current authority.
+
+This slice supplies read-only detail and bounded opaque source references, with
+no archives, curation, imports or UI. It never claims complete knowledge capture.
+See [Web/CLI contracts](web-and-cli.md#retired-knowledge-read-api-s1) and the
+[current specification](../superpowers/specs/2026-11-11-knowledge-distill-instill-v1.md).
+
 ## Per-Agent Learnings
 
 Task-start consultation (THR-091 seq633) is defined by

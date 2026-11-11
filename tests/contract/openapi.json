@@ -2307,6 +2307,54 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "source_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}/sources/{reference_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "reference_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "source_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/portability-preflight": {
       "GET": {
         "params": [
