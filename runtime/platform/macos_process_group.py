@@ -295,6 +295,10 @@ class MacOSProcessGroupBackend:
                     raise ProcessObservationUnavailable(session.observation_error)
             rss = [o.rss_bytes for o in members.values() if o.rss_bytes is not None]
             cpu = [o.cpu_seconds for o in members.values() if o.cpu_seconds is not None]
+            if len(rss) != len(members):
+                rss = []
+            if len(cpu) != len(members):
+                cpu = []
             return ResourceSample(
                 sampled_at=self._monotonic(),
                 memory_peak_bytes=sum(rss) if rss else None,

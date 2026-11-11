@@ -689,3 +689,41 @@ a recycled PID cannot reactivate a retired worker. Rescue signals individual
 identities, with no saved-group broadcast or atomic identity-and-signal claim.
 Native and frozen-app acceptance remain separate outstanding
 evidence; no new job, trigger, deploy or restart is introduced. `truth` is unchanged.
+
+### THR-346 S1 EPERM identity fallback (2026-11-11)
+
+This correction supersedes the unresolved-EPERM diagnosis above.
+
+Build #3 at `4fa5e4b78f79b723893e3d82ea442fd57088309b` established EPERM on
+one host PID during the all-PID checked scan. Other foreign-UID processes were
+readable; UID/PPID never authorizes row exclusion. EPERM alone now triggers a
+read-only `CTL_KERN/KERN_PROC/KERN_PROC_PID` sysctl identity fallback.
+Apple XNU `xnu-11417.101.15` public `proc.h`, `sysctl.h`, `vm.h` and type
+headers pin the arm64/x86_64 LP64 layout: `kinfo_proc`648 bytes, `extern_proc`296,
+PID40, state36, PPID560, PGID564, effective UID420. Product checks these sizes/
+offsets, exact returned size, requested PID, state and start-time ranges, and
+cross-checks its own identity with libproc/OS before admitting this ABI.
+ESRCH or successful zero-length sysctl means gone. Other errors/malformed data
+remain unknown; unresolved checked rows still poison observation permanently.
+Fallback identities participate in the same lineage and group decisions as
+libproc identities. They carry no task counters/nfiles; RSS/CPU is unavailable.
+A missing member counter makes that whole counter aggregate unavailable in both
+samplers; a completely observed zero still has sampled provenance.
+
+The teardown probe compares sysctl and independent libproc PID/PPID/PGID/start
+time for self/parent/child/grandchild and records bounded numeric distinct PID,
+read and triggering-errno counts for successful fallback use. Existing truth
+helpers and rescue authentication/bounds are unchanged. Native execution at the
+repaired head and frozen-app acceptance remain NOT RUN here.
+
+**Open manager question; finish behavior unchanged.** The current macOS section
+requires unknown observation to raise cleanup/measurement failure. Consequently
+finish still refuses before TERM/KILL on unresolved census uncertainty and its
+direct-child wait may time out (as build #3 demonstrated). This conflicts with
+the broad terminal-teardown and INCOMPLETE wording above. Returning only an
+INCOMPLETE/non-quiescent receipt in the backend would weaken the existing
+supervisor gate for finish-only macOS uncertainty: its best-effort receipt path
+does not itself mark measurement failure without an earlier sampler error.
+Reconcile the exception/receipt and authenticated termination contracts, plus
+any supervisor scope, before a separate lifecycle repair. This annotation
+records the conflict rather than changing that policy or claiming termination.

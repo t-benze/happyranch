@@ -120,10 +120,35 @@ eight failures, tagged launch/sample/finish; at most four distinct PIDs get a
 later `/bin/ps` numeric PID/PPID/PGID/UID/RUID observation plus bounded
 `getpwuid` name. Known worker membership is recorded separately; other rows
 remain unknown descendants. These later diagnostics do not authorize skipping
-any row. EPERM and unexplained short reads still fail closed, including for our
-own processes. The earlier build's cause remains unproven until native evidence
-identifies the actual failing PID/count/errno. Sample failure still attempts
+any row. Build #3 at `4fa5e4b78f79b723893e3d82ea442fd57088309b` observed EPERM
+for one unrelated PID; other foreign-UID rows were readable. It is not a UID
+exclusion rule. Product EPERM reads now try identity-only
+`CTL_KERN/KERN_PROC/KERN_PROC_PID` sysctl, validating the LP64 648-byte
+`kinfo_proc`, requested PID and start time. ESRCH/successful zero-length means
+gone; both reads failing or malformed fallback remains unknown and sticky.
+Fallback rows participate in normal lineage/group membership, with unavailable
+RSS/CPU (no invented counters or nfiles); a missing member counter makes that
+tree aggregate unavailable, while fully observed zero remains zero.
+
+The teardown suite additionally cross-checks sysctl PID/PPID/PGID/start identity
+against independent libproc decoding for self/parent/child/grandchild. Its
+`sysctl_fallback` records distinct host PID count (at most4096), read count and
+numeric triggering errno counts, with no argv/env or PID list. This is observation
+of successful fallback use, not a forced-permission test or frozen-app proof.
+The ABI follows Apple's pinned
+[`proc.h`](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.101.15/bsd/sys/proc.h),
+[`sysctl.h`](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.101.15/bsd/sys/sysctl.h)
+and public `vm.h`/type headers. Product initialization of the fallback also
+cross-checks its own identity against libproc and OS PID/PPID/PGID.
+
+Sample failure still attempts
 normal product finish, recording its refusal and absence of a receipt honestly.
+Finish is unchanged: when the census remains uncertain it refuses before group
+termination and its direct-child wait can time out. The spec's current macOS
+exception contract conflicts with its broad terminal-teardown/INCOMPLETE wording.
+Returning a best-effort INCOMPLETE receipt alone would not preserve the current
+supervisor admission gate for finish-only uncertainty. The manager must resolve
+that contract/scope question before a separate lifecycle change.
 
 Probe-owned TERM/KILL disposal runs before optional `ps`/account enrichment,
 whose per-command two-second timeout and four-PID cap remain. Each worker records
@@ -139,6 +164,7 @@ provide an atomic kernel identity-and-signal operation.
 Linux emits the same skipped JSON shape as `truth` and exits 0.
 
 Product imports use stdlib only. `truth` observations retain their S0 meaning.
-Native evidence: PENDING (leg 2); Linux skipped output and lint are not native
-proof. No Jenkins creation/reconfiguration, additional trigger, app build,
+Native evidence at the repaired head: NOT RUN. Prior build #3 failed as described
+above; Linux skipped output and lint are not native proof.
+No Jenkins creation/reconfiguration, additional trigger, app build,
 deployment or daemon restart is part of this slice.

@@ -656,6 +656,25 @@ def teardown_decode(libproc: Any, tree: dict[str, Any], check: Any) -> list[dict
     return rows
 
 
+def teardown_kinfo(libproc: Any, tree: dict[str, Any], check: Any) -> list[dict[str, Any]]:
+    """Cross-check product sysctl identity against independent libproc bytes."""
+    rows = []
+    for role, ground in {"self": identity(), **tree}.items():
+        pid = ground["pid"]
+        native = observe_proc(libproc._lib, CorrectedBsdinfo, pid)
+        fallback = libproc.kinfo_identity(pid)
+        expected = {key: native.get(key) for key in ("pid", "ppid", "pgid")}
+        start = native.get("start_time", {})
+        expected["start_identity"] = f"{start.get('seconds')}.{start.get('microseconds')}"
+        matches = {key: fallback is not None and fallback.get(key) == value
+                   for key, value in expected.items()}
+        row = {"role": role, "libproc": expected, "sysctl": fallback,
+               "sizeof_kinfo_proc": ct.sizeof(libproc._KinfoProc), "matches": matches}
+        rows.append(row)
+        check(f"kinfo_{role}_identity", "error" not in native and all(matches.values()), row)
+    return rows
+
+
 def libproc_failure_context(failures: list[dict[str, Any]], tree: dict[str, Any]) -> None:
     """Enrich at most four failed PID reads outside the product's scan deadline.
 
@@ -763,17 +782,31 @@ def teardown(report: dict[str, Any]) -> None:
     failures: list[dict[str, Any]] = []
     section["libproc_failures"] = failures
     section["diagnostic_limits"] = {"failure_records": 8, "os_context_pids": 4}
+    fallback_pids: set[int] = set()
+    # Numeric counts only, bounded by the existing4096-PID observation limit.
+    fallback_counts = {"host_pids": 0, "reads": 0, "errno_counts": {}}
+    section["sysctl_fallback"] = fallback_counts
     original_bsd_info = libproc.bsd_info
     stage = "launch"
 
     def observed_bsd_info(pid: int) -> dict | None:
         try:
-            return original_bsd_info(pid)
+            row = original_bsd_info(pid)
+            if row is not None and row.get("identity_source") == "sysctl":
+                if len(fallback_pids) >= 4096 and pid not in fallback_pids:
+                    raise RuntimeError("probe fallback PID observation cap exhausted")
+                fallback_pids.add(pid)
+                fallback_counts["host_pids"] = len(fallback_pids)
+                fallback_counts["reads"] += 1
+                code = int(row["fallback_errno"])
+                counts = fallback_counts["errno_counts"]
+                counts[code] = counts.get(code, 0) + 1
+            return row
         except Exception as exc:
             if len(failures) < 8:
                 row: dict[str, Any] = {"pid": pid, "stage": stage, "error": str(exc)[:512]}
                 for key, value in re.findall(r"(returned|expected|errno|errno_name)=(-?\w+)", str(exc)):
-                    row[key] = value if key == "errno_name" else int(value)
+                    row.setdefault(key, value if key == "errno_name" else int(value))
                 failures.append(row)
             raise  # Diagnostics never replace or swallow the checked refusal.
 
@@ -815,6 +848,7 @@ def teardown(report: dict[str, Any]) -> None:
             )
             check("three_generation_session_group", group_ok, tree)
             section["P05_decode"] = teardown_decode(libproc, tree, check)
+            section["kinfo_cross_check"] = teardown_kinfo(libproc, tree, check)
             stage = "sample"
             sample = None
             try:
