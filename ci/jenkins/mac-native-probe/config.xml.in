@@ -157,10 +157,228 @@ run_probe() {
     python3 --version
   } 2>&1 | capture_log "$WORKSPACE/evidence/identity.txt" "$((IDENTITY_LIMIT_BYTES - 22))"
   (
-    # Bound every regular file written by the probe (including probe.json).
-    # 4096 blocks is at most 4 MiB with Bash's 512/1024-byte block units.
-    ulimit -f 4096
-    python3 scripts/mac_native/probe.py --suite "$SUITE" --output "$WORKSPACE/evidence/probe.json"
+    # Bash -p (not POSIX mode): -f uses 1024-byte blocks, including Apple 3.2.
+    # One 32 MiB per-file cap covers both dependency bootstrap and probe.json.
+    ulimit -f 32768
+    unset PYTHONPATH PYTHONHOME
+    export HOME="$scratch/home" XDG_CACHE_HOME="$scratch/cache"
+    export PIP_CACHE_DIR="$scratch/cache/pip" PIP_NO_CACHE_DIR=1 PIP_CONFIG_FILE=/dev/null
+    export PYTHONNOUSERSITE=1 PYTHONUSERBASE="$scratch/user" PYTHONDONTWRITEBYTECODE=1
+    export TMPDIR="$scratch/tmp"
+    mkdir -p "$HOME" "$XDG_CACHE_HOME" "$TMPDIR"
+    # Stdlib only; no ensurepip, index resolution, sdist, or persistent install.
+    python3 -I -B - "$scratch" <<'BOOTSTRAP_PY'
+from __future__ import annotations
+
+import hashlib
+import platform
+import re
+import signal
+import stat
+import subprocess
+import sys
+import time
+import tomllib
+import urllib.parse
+import urllib.request
+import zipfile
+from pathlib import Path
+
+WHEEL_CAP = 16 * 1024 * 1024
+DOWNLOAD_CAP = 64 * 1024 * 1024
+EXTRACT_CAP = 128 * 1024 * 1024
+FILE_CAP = 32 * 1024 * 1024
+# Measured cleanup-helpers import set; versions/artifacts come only from uv.lock.
+# No metadata resolution, optional extras, entry points, pip, uv, or sdists.
+NEEDED = '''annotated-doc annotated-types anyio click fastapi pydantic
+pydantic-core pydantic-settings python-dateutil python-dotenv python-multipart
+pyyaml six sse-starlette starlette typing-extensions typing-inspection uvicorn'''.split()
+DEADLINE = time.monotonic() + 300
+
+
+def fail(message: str) -> None:
+    raise RuntimeError(message)
+
+
+def remaining() -> float:
+    value = DEADLINE - time.monotonic()
+    if value <= 0:
+        fail('300-second bootstrap deadline exceeded')
+    return value
+
+
+def alarm_timeout(signum: int, frame: object) -> None:
+    fail('300-second bootstrap deadline exceeded')
+
+
+def compatible(filename: str) -> bool:
+    fields = filename.removesuffix('.whl').rsplit('-', 3)
+    if not filename.endswith('.whl') or len(fields) != 4:
+        return False
+    _, python_tags, abi_tags, platform_tags = fields
+    for python_tag in python_tags.split('.'):
+        for abi_tag in abi_tags.split('.'):
+            for platform_tag in platform_tags.split('.'):
+                if python_tag == 'py3' and abi_tag == 'none' and platform_tag == 'any':
+                    return True
+                match = re.fullmatch(r'macosx_(\d+)_(\d+)_(arm64|universal2)', platform_tag)
+                if not match or tuple(map(int, match.group(1, 2))) > MAC_VERSION:
+                    continue
+                if python_tag == 'cp314' and abi_tag == 'cp314':
+                    return True
+                if re.fullmatch(r'cp3\d+', python_tag) and abi_tag == 'abi3':
+                    if 32 <= int(python_tag[2:]) <= 314:
+                        return True
+    return False
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: urllib.request.Request, fp: object, code: int,
+                         msg: str, headers: object, newurl: str) -> None:
+        fail('wheel redirect refused')
+
+
+def bootstrap() -> None:
+    global MAC_VERSION
+    if (platform.system(), platform.machine(), sys.version_info[:2]) != ('Darwin', 'arm64', (3, 14)):
+        fail('requires macOS arm64 CPython 3.14 (regular GIL build)')
+    if sysconfig_gil_disabled():
+        fail('free-threaded CPython is unsupported')
+    MAC_VERSION = tuple(map(int, platform.mac_ver()[0].split('.')[:2]))
+    scratch = Path(sys.argv[1]).resolve(strict=True)
+    with Path('uv.lock').open('rb') as handle:
+        lock = tomllib.load(handle)
+    selected = []
+    for name in NEEDED:
+        packages = [p for p in lock['package'] if p['name'] == name]
+        if len(packages) != 1:
+            fail(f'{name}: missing or ambiguous locked package')
+        package = packages[0]
+        candidates = []
+        for wheel in package.get('wheels', []):
+            url = urllib.parse.urlsplit(wheel['url'])
+            filename = url.path.rsplit('/', 1)[-1]
+            if not compatible(filename):
+                continue
+            if url.scheme != 'https' or url.netloc != 'files.pythonhosted.org' or url.query or url.fragment:
+                fail(f'{name}: unexpected wheel origin')
+            expected_prefix = name.replace('-', '_') + '-' + package['version'] + '-'
+            if not filename.startswith(expected_prefix):
+                fail(f'{name}: wheel identity mismatch')
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', wheel.get('hash', '')):
+                fail(f'{name}: missing locked SHA256')
+            size = wheel.get('size')
+            if type(size) is not int or not 0 < size <= WHEEL_CAP:
+                fail(f'{name}: missing size or wheel exceeds 16 MiB cap')
+            candidates.append((filename, wheel))
+        if not candidates:
+            fail(f'{name}: missing compatible locked wheel')
+        selected.append((name, *sorted(candidates, key=lambda item: item[0])[0]))
+    if sum(wheel['size'] for _, _, wheel in selected) > DOWNLOAD_CAP:
+        fail('locked downloads exceed 64 MiB total cap')
+    venv = scratch / 'venv'
+    subprocess.run([sys.executable, '-I', '-B', '-m', 'venv', '--without-pip', str(venv)],
+                   check=True, timeout=remaining())
+    site = venv / 'lib/python3.14/site-packages'
+    site.mkdir(parents=True, exist_ok=True)
+    downloads = scratch / 'wheels'
+    downloads.mkdir()
+    # Ignore ambient proxies (and their credentials); no cache or index client.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    downloaded = extracted = members = largest = 0
+    largest_name = ''
+    destinations = set()
+    for name, filename, wheel in selected:
+        remaining()
+        archive = downloads / filename
+        digest = hashlib.sha256()
+        received = 0
+        with opener.open(wheel['url'], timeout=min(20, remaining())) as response, archive.open('xb') as target:
+            if response.status != 200:
+                fail(f'{name}: wheel HTTP status is not 200')
+            length = response.headers.get('Content-Length')
+            if length is not None and int(length) != wheel['size']:
+                fail(f'{name}: download size mismatch')
+            while chunk := response.read(65536):
+                remaining()
+                received += len(chunk)
+                downloaded += len(chunk)
+                if received > min(wheel['size'], WHEEL_CAP) or downloaded > DOWNLOAD_CAP:
+                    fail(f'{name}: download size/cap exceeded')
+                digest.update(chunk)
+                target.write(chunk)
+        if received != wheel['size']:
+            fail(f'{name}: download size mismatch')
+        if digest.hexdigest() != wheel['hash'][7:]:
+            fail(f'{name}: SHA256 mismatch')
+        with zipfile.ZipFile(archive) as bundle:
+            plan = []
+            for member in bundle.infolist():
+                remaining()
+                members += 1
+                if members > 20000:
+                    fail('wheel member count exceeds 20000')
+                path = member.filename
+                parts = path.rstrip('/').split('/')
+                kind = stat.S_IFMT(member.external_attr >> 16)
+                if (member.orig_filename != path or path.startswith('/') or '\\' in path or ':' in path
+                        or any(p in ('', '.', '..') for p in parts)
+                        or kind not in (0, stat.S_IFREG, stat.S_IFDIR)
+                        or (kind == stat.S_IFDIR and not member.is_dir())):
+                    fail(f'{name}: unsafe ZIP member path/type')
+                if parts[0].endswith('.data'):
+                    if len(parts) < 3 or parts[1] not in ('purelib', 'platlib'):
+                        fail(f'{name}: unsupported wheel data scheme')
+                    parts = parts[2:]
+                if member.is_dir():
+                    continue
+                destination = site.joinpath(*parts)
+                if destination in destinations:
+                    fail(f'{name}: duplicate wheel destination')
+                destinations.add(destination)
+                extracted += member.file_size
+                if member.file_size > FILE_CAP or extracted > EXTRACT_CAP:
+                    fail(f'{name}: extracted file/128 MiB total cap exceeded')
+                plan.append((member, destination))
+            # All metadata and paths checked before extracting this wheel.
+            for member, destination in plan:
+                remaining()
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                written = 0
+                with bundle.open(member) as source, destination.open('xb') as target:
+                    while chunk := source.read(65536):
+                        remaining()
+                        written += len(chunk)
+                        if written > min(member.file_size, FILE_CAP):
+                            fail(f'{name}: extracted file size exceeded')
+                        target.write(chunk)
+                if written != member.file_size:
+                    fail(f'{name}: extracted size mismatch')
+                if written > largest:
+                    largest, largest_name = written, str(destination.relative_to(site))
+        archive.unlink()
+        print(f'bootstrap verified {name}: {received} wheel bytes', flush=True)
+    remaining()
+    print(f'bootstrap complete: wheels={len(selected)} download_bytes={downloaded} '
+          f'extracted_bytes={extracted} largest_file_bytes={largest} largest_file={largest_name}', flush=True)
+
+
+def sysconfig_gil_disabled() -> bool:
+    import sysconfig
+    return bool(sysconfig.get_config_var('Py_GIL_DISABLED'))
+
+
+signal.signal(signal.SIGALRM, alarm_timeout)
+signal.alarm(300)
+try:
+    bootstrap()
+except Exception as error:
+    print(f'dependency bootstrap failed: {type(error).__name__}: {str(error)[:300]}', file=sys.stderr)
+    sys.exit(1)
+finally:
+    signal.alarm(0)
+BOOTSTRAP_PY
+    "$scratch/venv/bin/python3" -B scripts/mac_native/probe.py --suite "$SUITE" --output "$WORKSPACE/evidence/probe.json"
   ) 2>&1 | capture_log "$WORKSPACE/evidence/probe.log"
   cat "$WORKSPACE/evidence/probe.log"
 }

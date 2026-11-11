@@ -12,6 +12,32 @@ This standalone Python helper operates an already-authorized **existing** Freest
 
 This PR852 distribution is a **candidate pending independent review, QA and exact-head CI**. Do not claim it is accepted or that a live Jenkins run succeeded. The old B2 catalog description saying “reviewed” is premature; this document is the candidate's current acceptance statement.
 
+## Existing Mac native probe job
+
+The separate existing `happyranch-mac-native-probe` Freestyle job uses the
+[reviewed template and bounds](../ci/jenkins/mac-native-probe/README.md).
+After immutable checkout/identity, its stdlib-only bootstrap takes the measured
+18-package `cleanup-helpers` import set from the checkout's `uv.lock` into a
+scratch-only venv without pip. It requires macOS arm64 regular CPython 3.14,
+selects only compatible locked binary/pure wheels and verifies each wheel's
+SHA256 **and** size before extraction; no index resolution or sdist fallback.
+Missing wheels, network/validation failures and unsafe ZIP members fail closed.
+Direct HTTPS to `files.pythonhosted.org` is required; proxies/redirects are refused.
+
+Bounds: 16 MiB/wheel, 64 MiB total downloads, 128 MiB extracted payload, 20,000
+ZIP members and 300 seconds bootstrap time inside the existing 30-minute job.
+Bootstrap and probe share a 32 MiB per-file cap (`ulimit -f 32768` in non-POSIX
+Bash, 1024-byte units; see the linked Apple Bash 3.2 source). Build/probe logs
+remain 4 MiB each, identity 64 KiB, console 1 MiB plus its fixed marker. Output
+caps fail nonzero. HOME/cache/user-site/temp writes stay in scratch; cleanup
+removes it and records `scratch_removed`. No persistent host install occurs.
+
+This source PR does not apply the config or run Jenkins. The manager/founder
+updates only the same existing job from a reviewed, merged template and records
+its source/config identity. No new job, trigger, required check, deployment or
+restart is authorized. Native execution needs its separate program allowance;
+required PR checks remain lint/static only.
+
 ## Immutable retrieval and copy
 
 Run these commands only after the acceptance gates and normal publication are verified. `SOURCE` is an immutable commit containing the exact helper; the checksum assertion must succeed before installation. A fresh temporary clone avoids reusing another task's checkout. The published PR may contain a later documentation commit with identical helper bytes.
