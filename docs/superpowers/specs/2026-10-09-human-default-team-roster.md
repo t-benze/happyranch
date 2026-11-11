@@ -1,13 +1,15 @@
 # Human-managed Default roster — current THR296 contract
 
-Current online continuation: Founder THR296seq135 approves seq130 under NEW
-TASK11345. A is satisfied; the first B slice supplies private durable state
-only. The [online contract](2026-10-14-online-team-move.md) controls the eventual
-coordinated two-agent demotion/retirement and admission/recovery scope. No move
-route/CLI, producer barrier, completion writer or operational capability is
-available in B. Source acceptance is separate from activation and actual live
-move authority. The offline contract/evidence below stays historical; its old
-correction limit does not constrain this new implementation root.
+Founder THR296 seq316 retires team moves: moving agents between teams is no
+longer supported. Knowledge distill/instill replaces that direction. The offline
+maintenance utility, runbook and utility-only cases are removed; online machinery
+is handled by later cleanup PRs. Founder-managed Default remains supported in
+fresh org creation and `happyranch teams ensure-default --org ORG`.
+
+The empty-Default contract below remains current. All consultant-transfer and
+maintenance descriptions are historical, confer no execution authority and
+supply no instructions for a supported operation. Prior missing evidence remains
+missing.
 
 
 Authority: Founder THR296 seq24 approving seq22/23; exact TASK10423 design
@@ -61,13 +63,13 @@ executed attribution; static lint establishes no behavioral PASS.
 This operation moves no consultants, clears no sessions and changes no existing
 AgentDef, policy/history/pins, memory, prompts, workspaces or team memberships.
 It adds no schema/auth/permission model or executable founder identity. The
-offline move remains deferred with all historical evidence/reservations and its
-own correction counter intact; that counter does not apply to this separate root.
+retired transfer work retains its historical evidence/reservations and correction
+counter; those do not apply to this separate empty-team operation.
 No new tests/cases/fixtures or ad hoc E2E follow. Python units remain RETIRED;
 general integration SKIPPED24342. Independent full review/scoped QA, lint-only
 checks, normal hooked nonforce publication and parent guarded merge remain.
 
-## Retained offline consultant-move contract
+## Historical offline consultant-transfer contract (retired)
 
 THR296 seq87 / TASK10953 permits exactly two follow-up utility corrections.
 `roster_delta` accepts the admitted multiline block workers list as well as
@@ -85,8 +87,8 @@ systemctl command/state property map and resolved fragment/drop-in file images;
 desktop identities contain the exact file image and section Exec/TryExec map.
 Each operator_declaration must explicitly equal the literal
 `unrelated-to-happyranch-and-runtime-writers`; missing/different values refuse.
-The runbook specifies the full property list and bounded supported desktop
-grammar. Check records declarations plus complete installed/loaded service and
+The former maintenance design specified the full property list and bounded
+desktop grammar. Check recorded declarations plus complete installed/loaded service and
 desktop inventories. Apply/recover use the same manifest and revalidate them.
 Missing/unknown/changed/uninspectable inventory, duplicate/conflicting/unused
 declarations and visible HappyRanch/daemon/executor writer identities refuse.
@@ -212,7 +214,7 @@ Successful maintenance/reboot/compensation needs real M. The finite hosted
 L/W entry, including independently pinned old-reader controls, is released by
 TASK10394; actual results and v24 evidence remain required. Missing traces,
 screenshots, RED/GREEN and repetitions are never PASS.
-See the operator runbook for candidate limitations and outstanding proof.
+The retired maintenance design supplied no executed proof of those properties.
 
 
 C7 launch-context source retains ten L-only parameters and separately requires

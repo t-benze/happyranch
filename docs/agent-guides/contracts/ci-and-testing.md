@@ -190,10 +190,11 @@ L/W source. Historical PR shards are superseded by merged PR1025's THR291seq69
 lint-only automation; retained behavioral sources are not automatic merge gates. Feature-only phase tracebacks/checkpoints survive earlier
 than final teardown; parent/command inner deadlines fail visibly within the
 unchanged 90-minute hosted limit. W10 retains exact accessible unforced worker
-selection using observed adjacent agent/team text. Held M fixtures no longer
-import retired unit helpers, but M/restore/reboot/paired-observer/causal/repetition
-proof remains absent. See docs/local-ci.md and the roster migration runbook;
-no feature or maintenance readiness follows from source correction.
+selection using observed adjacent agent/team text. Founder THR296 seq316 retires
+moving agents between teams; the offline maintenance cases C6/C8/C9 and their
+observers are removed with that utility. C1–C5, C7, settings and C10 browser
+sources remain for founder-managed Default and human-manager behavior. See
+`docs/local-ci.md`; retained source is not executed behavioral evidence.
 
 W10's owned HTTP proxy forwards actual daemon SSE headers and frames as streams.
 Finite-request settlement excludes only streams whose headers were forwarded;

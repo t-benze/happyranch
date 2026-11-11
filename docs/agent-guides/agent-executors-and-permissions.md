@@ -501,28 +501,33 @@ escalation fails the child and wakes its parent.
 Manager-only operations remain restricted. This wording does not grant powers
 or change callback identity, ordering, schemas or materialization algorithms.
 
-Maintenance rejects unexpected generated permission/skill grants before
-mutation; it does not change the native permission/materializer algorithms.
+Historical retired offline utility behavior: maintenance rejected unexpected
+generated permission/skill grants before mutation; it did not change the native
+permission/materializer algorithms.
 Generated/global fault cuts name only checked finite paths. The paired observer
 refuses unsupported descriptor transfers or lost receipts; it is not an executor
 enforcement mechanism or a positive M inhibition certificate.
 
-Moving consultant_head and consultant_codex changes their current roster
-membership and demotes the former manager. Canonical names, providers,
-workspaces, runtime/provider memory, Git registrations and history remain in
-place. An attached pending bootstrap manager has no executable active definition
+Historical retired offline transfer: moving consultant_head and consultant_codex
+changed their roster membership and demoted the former manager. Canonical names,
+providers, workspaces, runtime/provider memory, Git registrations and history
+remained in place.
+
+An attached pending bootstrap manager has no executable active definition
 or current manager-policy eligibility; approval/init use the existing lifecycle.
 The hosted Codex smoke stages that exact pending definition before attachment,
 then retains real authenticated approval and the genuine callback/launch witness.
 Founder is not an executor. Ordinary workers keep self-only delegation
 and acquire no manager/admin/policy/template powers. Existing supported
 materializers refresh declared generated instructions/skill links; their
-permission and authentication algorithms are unchanged. The bounded operator
-uses the existing task/thread/wake/dream/schedule/bootstrap union materializer
+permission and authentication algorithms are unchanged.
+
+Historical retired offline utility behavior: the bounded operator used the
+task/thread/wake/dream/schedule/bootstrap union materializer
 for both workers and its normal package/both-root integrity validator, then
-flushes the verified output before readiness. Operator migration
-clears both agents' provider resume IDs/watermarks using the native atomic
-reset/audit helper, while preserving thread delivery and breaker continuity.
+flushed the verified output before readiness. Operator migration cleared both
+agents' provider resume IDs/watermarks using the native atomic reset/audit
+helper, while preserving thread delivery and breaker continuity.
 
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.

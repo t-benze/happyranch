@@ -2042,12 +2042,11 @@ leadership is a localized label, never an executable option or synthetic null
 row. Engineering/Product policy eligibility remains guarded; worker policy GET
 and mutation denial require server evidence, not merely hidden controls.
 
-The bounded roster utility preserves unrelated canonical literal text and
-closed memory/history/thread delivery/breaker/frozen evidence. Completed replay
-requires operation-specific audit/journal/pointer facts, including zero rows and
-already-cleared rows; equality alone supplies no no-helper/no-write proof.
-C6/C8/C9 source assertions and finite crash/localization selections remain
-unexecuted under the existing Python/M holds.
+Moving agents between teams is no longer supported (Founder THR296 seq316).
+The offline maintenance utility, its runbook and utility-only C6/C8/C9 cases
+are removed. Founder-managed Default remains supported through fresh org
+creation and `happyranch teams ensure-default --org ORG`; human-manager and
+existing worker-context coverage remains.
 
 Selected human failed-leaf recovery retains its original exceptional operation
 after native drain exception or cancellation. Same-process same-result reentry
@@ -2059,17 +2058,15 @@ join the original owner; a distinct result identity uses its own operation.
 Human team leadership never adds an AgentDef or launch identity. Native
 thread-session invalidation atomically commits each consultant's resume reset
 and its audit, without changing delivery/breaker state, messages, memory or
-history. Compensation retains safely cleared resumes and publishes a new
-coherent authority generation; it never restores an old ready pointer.
+history.
 Workflow profile closure and version-aware authority readers must agree before
 readiness. Supported-version, malformed-principal/team/routing and current-capture
 checks refuse before new graph writes. Schema1 historical admission contexts,
 IDs and digests remain unchanged through schema2 publication and cold replay;
 template-definition schema1 and its @1 pins remain separate from authority JSON.
 Portability remains preflight/reconcile plus explicitly authorized
-closed-copy/restore/reopen; no archive/export/import service is added. The
-bounded utility requires stopped service, persistent external restart inhibition,
-closed verified backups and exact current-file CAS. No live migration is authorized.
+closed-copy/restore/reopen; no archive/export/import service is added.
+No live migration is authorized.
 
 ## Feature Modules Overview
 
