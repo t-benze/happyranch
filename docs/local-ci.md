@@ -2775,3 +2775,26 @@ the Linux maker had no PyInstaller installed and used the permitted simulated
 substitute. Native Mac/frozen Mac build/run are NOT RUN, not a lint-derived pass.
 The job's <=4MiB regular-file limit cannot accommodate a fresh freeze; no limit,
 job configuration, toolchain or CI-trigger change follows from this slice.
+
+
+## S7 filesystem case safety (THR-346)
+
+Focused native/platform regressions, outside the retired Python unit selection:
+
+```sh
+python -B -m unittest scripts.mac_native.test_case_safety -v
+python -B scripts/mac_native/probe.py --suite case-safety --output /absolute/owned/probe.json
+```
+
+The first command runs three focused tests against real store/route/parser code.
+Its test-side OS lookup adapter aliases only private fixture paths and preserves
+directory-entry spelling; the baseline really overwrites the original bytes.
+The native dispatcher skips on Linux. The manager separately runs `case-safety`
+on the existing Mac job; the new suite requires case-insensitive APFS scratch,
+records expected/actual rows, and starts no HTTP server or git/network operation.
+Git and native-writer bookkeeping are isolated only in probe fixtures.
+See [the native rows and bounds](../ci/jenkins/mac-native-probe/README.md#s7-case-safety-suite).
+No new CI check, trigger, Jenkins configuration or dependency is introduced.
+Frozen Mac-app acceptance and native execution remain separate evidence.
+The API declarations are unchanged; check the existing OpenAPI snapshot. The old
+web OpenAPI-coverage Vitest file was removed with THR-343 and is not restored.

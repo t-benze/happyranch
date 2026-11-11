@@ -92,6 +92,7 @@ class ArtifactStore:
         if len(content) > MAX_ARTIFACT_BYTES:
             raise ArtifactTooLarge(f"artifact_too_large: {len(content)}B > {MAX_ARTIFACT_BYTES}B")
         target = self.path_for(name)
+        self._check_case_collision(name)
         # Create intermediate directories for nested keys.
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +107,7 @@ class ArtifactStore:
         try:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(content)
+            self._check_case_collision(name)
             os.replace(tmp_path, target)
         except IsADirectoryError as exc:
             tmp_path.unlink(missing_ok=True)
@@ -121,6 +123,30 @@ class ArtifactStore:
             size_bytes=stat.st_size,
             modified_at=_iso(stat.st_mtime),
         )
+
+    def _check_case_collision(self, name: str) -> None:
+        """Refuse a different spelling that aliases an existing filesystem key.
+
+        Check every component, including logical folders. Directory enumeration
+        supplies stored spelling; lstat distinguishes an alias from a distinct
+        key on a case-sensitive filesystem (and includes dangling symlinks).
+        This check does not serialize concurrent external namespace changes.
+        """
+        parent = self._root
+        for segment in name.split("/"):
+            target = parent / segment
+            try:
+                target.lstat()
+            except (FileNotFoundError, NotADirectoryError):
+                return
+            names = {entry.name for entry in parent.iterdir()}
+            if segment not in names:
+                collision = next((key for key in names if key.casefold() == segment.casefold()), None)
+                if collision is not None:
+                    raise InvalidArtifactName(
+                        f"case_collision: {name!r} aliases existing component {collision!r}"
+                    )
+            parent = target
 
     def read(self, name: str) -> bytes:
         path = self.path_for(name)

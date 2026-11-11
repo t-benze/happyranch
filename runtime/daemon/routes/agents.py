@@ -57,7 +57,7 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.active_authority_policy import is_eligible_policy_manager
 from runtime.orchestrator.org_config import load_org_config
-from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
+from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor, validate_repo_key
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
@@ -604,6 +604,10 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
 async def manage_repo(
     slug: str, agent_name: str, body: ManageRepoBody, org: OrgDep,
 ) -> dict:
+    try:
+        validate_repo_key(body.repo_name)
+    except AgentParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     paths = OrgPaths(root=org.root)
     workspace = paths.workspaces_dir / agent_name
     if not workspace.exists():
