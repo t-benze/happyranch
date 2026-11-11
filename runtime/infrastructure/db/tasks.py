@@ -967,7 +967,7 @@ class TasksMixin:
     def _insert_task_row_uncommitted(self, task: TaskRecord, *, ownership: tuple[str, str] | None = None) -> None:
         """Private row primitive for a prechecked, caller-owned graph writer.
 
-        Ordinary callers retain _insert_task_uncommitted's native move guard.
+        Ordinary callers use _insert_task_uncommitted; PR-3a removes its move guard.
         Coding prechecks its complete prospective graph before inserting pins,
         so it never tries to classify a half-built cyclic workflow graph.
         """

@@ -109,7 +109,7 @@ Missing, malformed or Disabled settings refuse before callback persistence, spen
 or allocation. Disabled remains the default; ordinary routing remains legacy.
 Literal start@1 stays readable but is not a fresh-start path. Admitted start@2
 work retains its original pins across later disable/default changes and still
-requires current selected-role/repository authority, Pause/move and native proof.
+requires current selected-role/repository authority, Pause and native proof.
 
 Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
 this is neither per-org admission nor installed/loaded/operational acceptance.
@@ -191,7 +191,7 @@ persisting an unsupported start result, including on legacy I. Its production ow
 is always false in K3a; there is no caller/config readiness Boolean. Behind that
 boundary, the real single admission transaction validates the manager's own full
 INTEGER callback, actual ordinary-purpose TaskInvocation/SID and complete RetryClaim,
-current policy/Pause/move/ancestry, imported release, pinned role generation,
+current policy/Pause/ancestry, imported release, pinned role generation,
 implementer-only override, four current independent eligible principals, existing
 repository scopes, capacity and lower source limits. Existing v2 uncommitted
 spend/claim/ack methods keep their native evidence and CAS semantics inside that
@@ -220,7 +220,7 @@ are retained independently; every other25 task fields must agree. Saved queued
 rows compare all27 current native task fields exactly. K3a supplies no post-start
 heartbeat/PID/result/terminal bridge, so unsupported mutation/drift refuses.
 The existing native task row primitive is used only after complete prospective
-move checks; ordinary task insertion retains its original guard.
+native admission checks; PR-3a removes the move hold from ordinary task insertion.
 
 The saved reader independently checks these original native start predicates:
 The captured invocation has no uncertainty, including producer-settled uncertainty,
@@ -237,7 +237,7 @@ context pins, recovery and cutover drain. No schema DDL/reference changes, start
 upgrade, old-byte rewrite, custody Q/U/P issuance, R2 or daemon Git/object probe.
 Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
 `coding_source_waiting`, `coding_carrier`, `coding_attempt` ownership cannot launch
-through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause/move
+through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause
 rediscovery preserves this wait. Native cancellation of a selected queued graph
 is refused before mutation, including ancestor cascade and after the DB-lock wait;
 control/terminal writers remain later root-owned work. Initial selected move
@@ -324,7 +324,7 @@ remain required. No new reader-only publication or replacement authority framewo
 K2c adds current executable-manager CLI POST/GET
 `/api/v1/orgs/{slug}/workflows/coding/mappings?session_id=CURRENT` and
 nonallocating POST `/api/v1/orgs/{slug}/workflows/coding/role-selections?session_id=CURRENT`.
-These reuse existing native task-session/Pause/move/publication admission, with
+These reuse existing native task-session/Pause/publication admission, with
 no bearer fallback, browser or remote connector reachability. CLI forms are
 `workflows coding mapping-publish --org ORG --session-id CURRENT --from-file ABS --json`,
 `mapping-show --org ORG --session-id CURRENT --json`, and
@@ -376,7 +376,7 @@ corrupt-history500. Closed `workflow-coding-mapping-receipt@2` has exactly
 `format,id,generation,mapping_digest,mapping,replayed,current`; current is
 `{state:active|revoked,reason:null|Token}`. GET refuses currently revoked use.
 After every await and in the writer, native current session/owner/ancestry,
-Pause/move, full published policy and role/repository eligibility are rechecked.
+Pause, full published policy and role/repository eligibility are rechecked.
 
 Canonical `workflow-coding-role-selection-command@1` is exactly
 `{format,mapping:{id,generation,digest},implementer_override:null|{principal,team},subject}`.
@@ -434,7 +434,7 @@ work exactly `{repository_id,store_owner,object_format,base,paths,commands}`.
 Only import-release-coding, publish-coding-mapping and adopt-local-store source
 actions mint here, within the current reusable U and all narrower parent edges.
 Server derives genuine current task/principal/team/SID/manager_decision,
-ordinary invocation/Pause/move/complete ancestry, callback absence and original
+ordinary invocation/Pause/complete ancestry, callback absence and original
 limits. Native owners and executor enforcement are composed unchanged.
 The exact selected mapping/adopted store, source_rule/base_rule, executable
 manager repository policy and action/path/argv intersections precede private
@@ -506,7 +506,8 @@ independently before credential lookup/forwarding.
 
 Server selection derives the actual assigned executable team manager, task/SID,
 unique native manager_decision session_start, real ordinary/v2 TaskInvocation,
-Pause journal/generation, current tree/move admission and no own-SID callback.
+Pause journal/generation, current tree admission and no own-SID callback.
+PR-3a removes the former non-thread move-hold check from this selection.
 Reusable M.setup roots authorize publication and each adoption separately for
 its repository/action/store/format; neither roster membership nor a parsed
 capsule grants permission. Fixed coding import and complete published role and
@@ -3696,7 +3697,7 @@ claim and native task/session/parent chronology, mapped role eligibility and
 independence, mapping generation/adoption authenticity, run/context/binding/
 activation/request/receipt/contributor closure, journal replay/CAS and host/
 cleanup/provider/effect ownership. Current-use owners revalidate every setup/
-ancestor/grant, cancellation/Pause/move and actual executor permissions after
+ancestor/grant, cancellation/Pause and actual executor permissions after
 waits. Valid revoked history permits no new launch/disclosure/effect. No store,
 roster, object, provider, DB or network I/O, resolver or trusted flag is supplied.
 
@@ -4353,7 +4354,7 @@ predecessor identity and all retained contributors. Stage sequence becomes2;
 role generation/CAS/events increase independently. Same-principal retry remains1
 and original lower cumulative limits remain; no principal reselection, revision,
 host retry, source revival, settings remap or budget reset occurs. Current
-settings/authority/ancestry/Pause/move/independence/capacity are revalidated in
+settings/authority/ancestry/Pause/independence/capacity are revalidated in
 one caller-owned writer. Exact accepted original-result replay returns the SAME
 successor before fresh capacity checks. Full independent target reconstruction
 precedes COMMIT; notification follows, and cold recovery rediscovers that queue.
