@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 import uuid
@@ -928,7 +929,9 @@ class ConnectorSupervisor:
                     break
                 report = self.readiness_report()
                 if notified_ready and (not report.ready or not self._listener_running()):
-                    self._notify_fn("STATUS=readiness or listener lost; exiting for systemd recovery\n")
+                    self._report_readiness_loss(
+                        report, "readiness or listener lost; exiting for systemd recovery"
+                    )
                     self.shutdown()
                     return 1
                 if report.ready and not notified_ready and not self._provider_running:
@@ -939,7 +942,9 @@ class ConnectorSupervisor:
                 if self._shutdown:
                     break
                 if notified_ready and not self._listener_running():
-                    self._notify_fn("STATUS=listener lost during revocation reconciliation\n")
+                    self._report_readiness_loss(
+                        report, "listener lost during revocation reconciliation"
+                    )
                     self.shutdown()
                     return 1
                 if report.ready and self._listener_running():
@@ -950,6 +955,24 @@ class ConnectorSupervisor:
                         self._notify_fn("WATCHDOG=1\n")
             wait_fn(poll_seconds)
         return 0
+
+    def _report_readiness_loss(self, report: ReadinessReport, reason: str) -> None:
+        """Emit only gate names and listener/thread booleans, never details.
+
+        stderr reaches the service journal; STATUS retains the same observation
+        even if a later process reports healthy gates after systemd recovery.
+        """
+        provider = self._provider
+        thread = getattr(provider, "_thread", None)
+        message = (
+            f"{reason}; failing_gates={','.join(report.failing_gates) or 'none'}; "
+            f"provider_running={bool(self._provider_running)}; "
+            f"listener_listening={bool(provider is not None and provider.listening)}; "
+            f"listener_thread_present={thread is not None}; "
+            f"listener_thread_alive={bool(thread is not None and thread.is_alive())}"
+        )
+        print(message, file=sys.stderr, flush=True)
+        self._notify_fn(f"STATUS={message}\n")
 
     def _listener_running(self) -> bool:
         provider = self._provider
