@@ -129,6 +129,8 @@ def execute_selected_final(*, selection: SequentialCodingFinalSelection, task_id
     original = evidence['command']
     # A failed/partial receipt write cannot become local success. Keep the
     # original reservation and native error; this adapter never reissues.
+    if original['succeeded'] and guard.verdict != 'merged':
+        return LocalFinalObservation('uncertain', guard.error_detail or guard.verdict, attempt.directory, intent)
     with (attempt.directory / 'action-finished.json').open('rb') as stream:
         _check(local._remote_json(stream.read(1048577), 1048576) == original)
     _sync_directory(attempt.directory)
