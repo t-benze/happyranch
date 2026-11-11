@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { workflowActivations, workflowSubmissions, workflowReviews, workflowRevisions } from '@/lib/api';
+import { workflowActivations, workflowSubmissions, workflowReviews, workflowRevisions, workflowSequential } from '@/lib/api';
 import { clearSelectionCommands, ReviewIntegrityError, validateDetail, type ReviewDetail } from '@/lib/workflowReviewSelection';
 import type { WorkflowsApi } from './DataContext';
 
@@ -103,4 +103,27 @@ function useOwnerReturn() {
   const onError = useMutationRefusal();
   return useMutation({ retry: false, onError, mutationFn: ({ slug, body }: Parameters<ReturnType<WorkflowsApi['useOwnerReturn']>['mutateAsync']>[0]) => workflowRevisions.startDocumentRevision(slug, body.instance_id, body) });
 }
-export const realWorkflowsApi: WorkflowsApi = { useActivations, useReviewDetail, useHumanResponse, useOwnerReturn };
+/** Selection changes/refusals hide old data; cache never supplies fresh access. */
+function useSequentialRead<T>(kind: string, id: string, load: (slug: string, signal: AbortSignal) => Promise<T>) {
+  const { slug = '' } = useParams();
+  const qc = useQueryClient();
+  const key = ['workflow-sequential', slug, kind, id];
+  const query = useQuery({ queryKey: key, queryFn: ({ signal }) => load(slug, signal),
+    enabled: !!slug && !!id, staleTime: 0, gcTime: 0, retry: false,
+    refetchOnMount: 'always', refetchOnWindowFocus: 'always', placeholderData: undefined });
+  useEffect(() => () => {
+    const ownedKey = ['workflow-sequential', slug, kind, id];
+    void qc.cancelQueries({ queryKey: ownedKey, exact: true });
+    qc.removeQueries({ queryKey: ownedKey, exact: true });
+  }, [qc, slug, kind, id]);
+  return { ...query, data: query.isFetchedAfterMount && !query.isError && !query.isFetching ? query.data : undefined };
+}
+const sequentialReads = {
+  useSequentialDefinitions: () => useSequentialRead('definitions', 'catalog', workflowSequential.listSequentialDefinitions),
+  useSequentialDefinition: (id: string) => useSequentialRead('definition', id, (slug, signal) => workflowSequential.getSequentialDefinition(slug, id, signal)),
+  useSequentialSettings: (id: string) => useSequentialRead('settings', id, (slug, signal) => workflowSequential.getSequentialSettings(slug, id, signal)),
+  useSequentialRuns: () => useSequentialRead('runs', 'all', workflowSequential.listSequentialRuns),
+  useSequentialRun: (id: string) => useSequentialRead('run', id, (slug, signal) => workflowSequential.getSequentialRun(slug, id, signal)),
+  useTaskSequentialWorkflow: (id: string) => useSequentialRead('task', id, (slug, signal) => workflowSequential.getTaskSequentialWorkflow(slug, id, signal)),
+};
+export const realWorkflowsApi: WorkflowsApi = { ...sequentialReads, useActivations, useReviewDetail, useHumanResponse, useOwnerReturn };

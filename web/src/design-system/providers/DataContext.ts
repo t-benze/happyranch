@@ -19,6 +19,7 @@
  * See `web/DESIGN_SYSTEM.md` §8.
  */
 import { createContext, useContext } from 'react';
+import type * as Sequential from '@/lib/api/workflowSequential';
 import type { ReviewDetail } from '@/lib/workflowReviewSelection';
 import type { HumanReviewCommand, HumanReviewReceipt, DocumentRevisionCommand, DocumentRevisionReceipt, WorkflowActivationReceipt } from '@/lib/api/types';
 import type {
@@ -729,6 +730,12 @@ export interface WorkflowQuery<T> extends QueryLike<T> {
   refetch: () => Promise<unknown>;
 }
 export interface WorkflowsApi {
+  useSequentialDefinitions: () => WorkflowQuery<Sequential.SequentialDefinitions>;
+  useSequentialDefinition: (id: string) => WorkflowQuery<Sequential.SequentialDefinition>;
+  useSequentialSettings: (identity: string) => WorkflowQuery<Sequential.SequentialSettings>;
+  useSequentialRuns: () => WorkflowQuery<Sequential.SequentialRuns>;
+  useSequentialRun: (id: string) => WorkflowQuery<Sequential.SequentialRunDetail>;
+  useTaskSequentialWorkflow: (id: string) => WorkflowQuery<Sequential.SequentialTaskWorkflow>;
   useActivations: () => WorkflowQuery<WorkflowActivationReceipt[]>;
   useReviewDetail: (activationId: string, history: boolean) => WorkflowQuery<ReviewDetail> & { captureAdmission: (detail: ReviewDetail) => () => boolean };
   useHumanResponse: () => MutationLike<{ slug: string; activationId: string; body: HumanReviewCommand }, HumanReviewReceipt>;

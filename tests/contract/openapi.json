@@ -3720,6 +3720,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/tasks/{task_id}/sequential-workflow": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/teams": {
       "GET": {
         "params": [
@@ -5142,6 +5168,128 @@
           "409",
           "422",
           "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/definitions": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/definitions/{definition_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "definition_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/runs": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/runs/{run_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "run_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/settings": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "definition_identity",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422"
         ]
       }
     },

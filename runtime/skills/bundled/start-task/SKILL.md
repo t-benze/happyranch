@@ -1271,3 +1271,15 @@ reader remain unmounted; _advance still holds Final success. Preserve ACCESS-1,
 original Pause generation, mixed cancellation/exact committed callback drain,
 Option B UNSETTLED and shared OS-user/gh limits. No daemon/job/recovery effect,
 second CLI OrgState, historical family reuse, new command/credential/observer.
+
+
+## Sequential U7a read surface
+
+U7a adds existing-Founder-bearer browser projections only, with SELECT-only
+complete history/current-authority reads and no work allocation. It supplies
+no agent-session command or new credential/permission: continue using only
+original addressed inputs. U7b settings writes, U7c selected preflight/Final
+transport and U7d completion consumption remain. Final success stays Held;
+public fresh start remains OFF until U9's atomic old-start fence. No browser
+start, daemon repository I/O or Final job/recovery executor follows. See the
+current docs/superpowers/specs/2026-11-11-sequential-coding-u7.md.
