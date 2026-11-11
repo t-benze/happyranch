@@ -2232,8 +2232,9 @@ unrestricted histories, shared KB bodies, credentials, generated instructions,
 skills, sessions and caches are excluded/unverified. Source text is untrusted
 quoted data and never grants current authority.
 
-This slice supplies read-only detail and bounded opaque source references, with
-no archives, curation, imports or UI. It never claims complete knowledge capture.
+S1 supplies read-only detail and bounded opaque source references. S2 adds
+Distill operations and immutable archives through this same source owner;
+imports and UI remain later slices. It never claims complete knowledge capture.
 See [Web/CLI contracts](web-and-cli.md#retired-knowledge-read-api-s1) and the
 [current specification](../superpowers/specs/2026-11-11-knowledge-distill-instill-v1.md).
 

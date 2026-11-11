@@ -545,71 +545,101 @@ class SubmitTask(BaseModel):
     attachments: list[TaskAttachmentRef] | None = None
 
 
+def resolve_task_owner(body: SubmitTask, org: OrgState) -> tuple[str, str]:
+    registry = org.teams
+    if registry is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unknown_team", "valid": []},
+        )
+
+    def _require_known_team(t: str) -> None:
+        if t not in registry.teams():
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "unknown_team", "valid": registry.teams()},
+            )
+
+    from runtime.orchestrator.agent_def import AgentParseError
+    try:
+        active = {agent.name: agent for agent in prompt_loader.list_agents(OrgPaths(root=org.root))}
+    except AgentParseError:
+        # Canonical drift after attachment is still an admission refusal;
+        # do not allocate a task or claim an otherwise valid attachment.
+        raise HTTPException(status_code=400, detail={"code": "unknown_owner", "owner": body.owner}) from None
+    if body.owner is not None:
+        if body.owner not in registry.all_agents() or body.owner not in active:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "unknown_owner", "owner": body.owner,
+                        "valid": registry.all_agents()},
+            )
+        # The owner's own team is authoritative for routing/audit. Derive it
+        # when no team is requested; otherwise the requested team must match,
+        # so the task.team that children inherit can't diverge from the owner.
+        owner_team = (registry.team_for_agent(body.owner)
+                      or registry.team_for_manager(body.owner))
+        definition = active[body.owner]
+        expected_role = "manager" if registry.is_team_manager(body.owner) else "worker"
+        if definition.team != owner_team or definition.role != expected_role:
+            raise HTTPException(status_code=400, detail={"code": "unknown_owner", "owner": body.owner})
+        if body.team is None:
+            team = owner_team
+        else:
+            team = body.team
+            _require_known_team(team)
+            if owner_team != team:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "owner_team_mismatch", "owner": body.owner,
+                            "owner_team": owner_team, "requested_team": team},
+                )
+        assigned = body.owner
+    else:
+        team = body.team or registry.task_default_team
+        _require_known_team(team)
+        assigned = registry.executable_manager_for_team(team)
+        if assigned is None:
+            raise HTTPException(status_code=422, detail={"code": "owner_required_for_human_team", "team": team})
+        if (assigned not in active or active[assigned].team != team
+                or active[assigned].role != "manager"):
+            raise HTTPException(status_code=400, detail={"code": "unknown_owner", "owner": assigned})
+    return team, assigned
+
+
+def persist_root_task(
+    org: OrgState, body: SubmitTask, *, bind: Callable[[TaskRecord], None] | None = None,
+) -> TaskRecord:
+    """Ordinary root allocation with an optional atomic feature binding.
+
+    Caller holds org.db_lock. Keep the ordinary move-gate/DB lock order and
+    admission, task row and ownership insertion; never await before commit.
+    A failed binding rolls back the task too. Queue delivery follows commit.
+    """
+    db = org.db
+    move = getattr(db, '_team_move_coordinator', None)
+    with move.gate if move is not None else nullcontext():
+        with db._lock:
+            if db._conn.in_transaction:
+                raise RuntimeError('root submission requires its own transaction')
+            team, assigned = resolve_task_owner(body, org)
+            db._conn.execute('BEGIN IMMEDIATE')
+            try:
+                task = TaskRecord(id=db.next_task_id(), brief=body.brief, team=team, assigned_agent=assigned)
+                db._insert_task_uncommitted(task)
+                if bind is not None:
+                    bind(task)
+                db._conn.commit()
+            except BaseException:
+                db._conn.rollback()
+                raise
+    return task
+
+
 @router.post("/tasks")
 async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
-    def resolve_owner() -> tuple[str, str]:
-        registry = org.teams
-        if registry is None:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "unknown_team", "valid": []},
-            )
-
-        def _require_known_team(t: str) -> None:
-            if t not in registry.teams():
-                raise HTTPException(
-                    status_code=400,
-                    detail={"code": "unknown_team", "valid": registry.teams()},
-                )
-
-        from runtime.orchestrator.agent_def import AgentParseError
-        try:
-            active = {agent.name: agent for agent in prompt_loader.list_agents(OrgPaths(root=org.root))}
-        except AgentParseError:
-            # Canonical drift after attachment is still an admission refusal;
-            # do not allocate a task or claim an otherwise valid attachment.
-            raise HTTPException(status_code=400, detail={"code": "unknown_owner", "owner": body.owner}) from None
-        if body.owner is not None:
-            if body.owner not in registry.all_agents() or body.owner not in active:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"code": "unknown_owner", "owner": body.owner,
-                            "valid": registry.all_agents()},
-                )
-            # The owner's own team is authoritative for routing/audit. Derive it
-            # when no team is requested; otherwise the requested team must match,
-            # so the task.team that children inherit can't diverge from the owner.
-            owner_team = (registry.team_for_agent(body.owner)
-                          or registry.team_for_manager(body.owner))
-            definition = active[body.owner]
-            expected_role = "manager" if registry.is_team_manager(body.owner) else "worker"
-            if definition.team != owner_team or definition.role != expected_role:
-                raise HTTPException(status_code=400, detail={"code": "unknown_owner", "owner": body.owner})
-            if body.team is None:
-                team = owner_team
-            else:
-                team = body.team
-                _require_known_team(team)
-                if owner_team != team:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={"code": "owner_team_mismatch", "owner": body.owner,
-                                "owner_team": owner_team, "requested_team": team},
-                    )
-            assigned = body.owner
-        else:
-            team = body.team or registry.task_default_team
-            _require_known_team(team)
-            assigned = registry.executable_manager_for_team(team)
-            if assigned is None:
-                raise HTTPException(status_code=422, detail={"code": "owner_required_for_human_team", "team": team})
-            if (assigned not in active or active[assigned].team != team
-                    or active[assigned].role != "manager"):
-                raise HTTPException(status_code=400, detail={"code": "unknown_owner", "owner": assigned})
-        return team, assigned
-
-    team, assigned = resolve_owner()
+    team, assigned = resolve_task_owner(body, org)
     # Validate attachment refs if provided.
     # Every attachment reference is fully resolved/validated/normalized
     # BEFORE task persistence so no invalid reference creates an orphan task.
@@ -685,8 +715,8 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
     async with org.db_lock:
         # The lock acquisition may yield to a roster writer. Validate the
         # current executable identity again before allocation or attachment claims.
-        team, assigned = resolve_owner()
-        task_id = org.db.next_task_id()
+        team, assigned = resolve_task_owner(body, org)
+        task_id = org.db.next_task_id() if prevalidated_attachments else None
 
         # Re-check claimability INSIDE the lock — the pre-validation outside
         # is a fast-path hint; the authoritative claim gate is the
@@ -741,14 +771,8 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
                     },
                 )
         else:
-            org.db.insert_task(
-                TaskRecord(
-                    id=task_id,
-                    brief=body.brief,
-                    team=team,
-                    assigned_agent=assigned,
-                )
-            )
+            task = persist_root_task(org, body)
+            task_id = task.id
 
     enqueue_task(state, org.slug, task_id)
     return {"task_id": task_id, "team": team, "assigned_agent": assigned}
