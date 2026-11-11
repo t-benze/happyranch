@@ -146,11 +146,11 @@ class SystemdServiceManager:
 
     # ── lifecycle verbs ───────────────────────────────────────────────────
 
-    def start(self, unit_name: str) -> None:
-        self._systemctl("start", unit_name)
+    def start(self, unit_name: str, *, timeout: float = 10.0) -> None:
+        self._systemctl("start", unit_name, timeout=timeout)
 
-    def stop(self, unit_name: str) -> None:
-        self._systemctl("stop", unit_name)
+    def stop(self, unit_name: str, *, timeout: float = 10.0) -> None:
+        self._systemctl("stop", unit_name, timeout=timeout)
 
     def restart(self, unit_name: str) -> None:
         self._systemctl("restart", unit_name)
@@ -160,6 +160,19 @@ class SystemdServiceManager:
 
     def disable(self, unit_name: str) -> None:
         self._systemctl("disable", unit_name)
+
+    def show_properties(self, unit_name: str, properties: tuple[str, ...]) -> dict[str, str]:
+        """Read selected properties without interpreting systemd's value format."""
+        out = self._systemctl("show", unit_name, *(f"--property={key}" for key in properties))
+        result: dict[str, str] = {}
+        for line in out.splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key not in properties or key in result:
+                raise ServiceManagerError(f"malformed systemctl show output for {unit_name}")
+            result[key] = value
+        if set(result) != set(properties):
+            raise ServiceManagerError(f"missing systemctl show properties for {unit_name}")
+        return result
 
     def status(self, unit_name: str) -> ServiceStatus:
         out = self._systemctl(
