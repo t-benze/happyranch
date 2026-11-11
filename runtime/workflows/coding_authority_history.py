@@ -23,6 +23,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows.coding_saved_records import (
     CodingSavedRecordError, read_saved_issuance, read_saved_setup,
 )
@@ -104,11 +106,11 @@ class _Budget:
 
     def step(self) -> None:
         self.traversed += 1
-        _check(self.traversed <= _TRAVERSAL_LIMIT)
+        _budget_check(self.traversed <= _TRAVERSAL_LIMIT, _check, self, 'work', 1, _TRAVERSAL_LIMIT - self.traversed + 1)
 
     def candidate(self) -> None:
         self.accepted_rows += 1
-        _check(self.accepted_rows <= _CALL_ROW_LIMIT)
+        _budget_check(self.accepted_rows <= _CALL_ROW_LIMIT, _check, self, 'rows', 1, _CALL_ROW_LIMIT - self.accepted_rows + 1)
 
     @property
     def remaining_bytes(self) -> int:
@@ -130,7 +132,7 @@ class _Budget:
                 _check(len(value) <= _VALUE_LIMIT)
                 _check(value.decode('utf8').encode('utf8') == value)
                 self.consumed += len(value)
-                _check(self.consumed <= _BYTE_LIMIT)
+                _budget_check(self.consumed <= _BYTE_LIMIT, _check, self, 'bytes', len(value), _BYTE_LIMIT - self.consumed + len(value))
             elif storage == 'real':
                 _check(math.isfinite(value))
         return values
@@ -150,7 +152,7 @@ class _Budget:
                 _check(0 < size <= _VALUE_LIMIT)
                 if not charged:
                     self.consumed += size
-                    _check(self.consumed <= _BYTE_LIMIT)
+                    _budget_check(self.consumed <= _BYTE_LIMIT, _check, self, 'bytes', size, _BYTE_LIMIT - self.consumed + size)
         return values
 
 
@@ -178,14 +180,16 @@ def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
         kinds = ','.join("'" + kind + "'" for kind in choices)
         gates.append(f"(typeof({name}) IN ({kinds}) AND (typeof({name}) NOT IN ('text','blob') "
                      f"OR length(CAST({name} AS BLOB))<={value_limit}))")
-    valid = ' AND '.join(gates) + ' AND ? > 0 AND (' + size + ')<=?'
+    shape = ' AND '.join(gates)
+    valid = shape + ' AND ? > 0 AND (' + size + ')<=?'
     query = ('WITH candidate AS (SELECT rowid AS _scan_rowid,' + ','.join(names)
              + ' FROM ' + quote(table) + ' WHERE (' + where
              + ') AND rowid>=? ORDER BY rowid LIMIT 1), '
              + 'gated AS (SELECT *,(' + valid + ') AS _scan_valid FROM candidate) '
              + 'SELECT _scan_rowid,_scan_valid,'
              + ','.join(f'CASE WHEN _scan_valid THEN {name} ELSE NULL END' for name in names)
-             + ',' + ','.join(f'typeof({name})' for name in names) + ' FROM gated')
+             + ',' + ','.join(f'typeof({name})' for name in names)
+             + ',CASE WHEN ' + shape + ' THEN (' + size + ') ELSE NULL END FROM gated')
     after = -9223372036854775808
     count = 0
     cursor = conn.cursor()
@@ -200,8 +204,10 @@ def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
                 return
             budget.candidate()  # charge rejected/overflow candidates too
             count += 1
+            if count <= maximum and row[-1] is not None:
+                _budget_check(row[-1] <= budget.remaining_bytes, _check, budget, 'bytes', row[-1], budget.remaining_bytes)
             _check(count <= maximum and row[1] == 1)
-            identity, values, types = row[0], row[2:2 + len(names)], row[2 + len(names):]
+            identity, values, types = row[0], row[2:2 + len(names)], row[2 + len(names):-1]
             _check(type(identity) is int and identity >= after)
             native = {'text': str, 'blob': bytes, 'integer': int,
                       'real': float, 'null': type(None)}
@@ -211,7 +217,8 @@ def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
                 if storage in ('text', 'blob'):
                     raw = value.encode('utf8') if storage == 'text' else value
                     budget.consumed += len(raw)
-                    _check(len(raw) <= value_limit and budget.remaining_bytes >= 0)
+                    _check(len(raw) <= value_limit)
+                    _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', len(raw), budget.remaining_bytes + len(raw))
                 elif storage == 'real':
                     _check(math.isfinite(value))
             yield (identity, *values, *types) if with_rowid else (*values, *types)

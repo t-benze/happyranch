@@ -440,10 +440,11 @@ def _layout(conn: sqlite3.Connection) -> tuple[object, ...]:
 def _candidate_reserve(budget: _Budget, size: int) -> None:
     """Local candidate work envelope; does not change the baseline Budget API."""
     from runtime.workflows.coding_authority_history import _check
+    from runtime.workflows._read_exhaustion import check as _budget_check
     budget.step()
     _check(type(size) is int and size >= 0)
     budget.consumed += size
-    _check(budget.remaining_bytes >= 0)
+    _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', size, budget.remaining_bytes + size)
 
 
 def _structure_cells(conn: sqlite3.Connection, source: str, columns: tuple[str, ...], keys: tuple[str, ...], budget: _Budget, args: tuple=()) -> list[tuple]:
@@ -456,6 +457,7 @@ def _structure_cells(conn: sqlite3.Connection, source: str, columns: tuple[str, 
     SQLite preparation/internal allocation is not hard-RSS/time bounded.
     """
     from runtime.workflows.coding_authority_history import _check, _VALUE_LIMIT
+    from runtime.workflows._read_exhaustion import refuse
     _check(0 < len(columns) <= 8 and 0 < len(keys) <= 2)
     _candidate_reserve(budget, 4096)
     quote = lambda name: '"' + name.replace('"', '""') + '"'
@@ -471,7 +473,7 @@ def _structure_cells(conn: sqlite3.Connection, source: str, columns: tuple[str, 
         cursor.execute(f'SELECT {scalar} FROM ({source})', args)
         while True:
             if budget.accepted_rows >= 8192:
-                raise ValueError('workflow_owner_budget_exhausted')
+                refuse(ValueError('workflow_owner_budget_exhausted'), budget, 'rows', 1, 8192 - budget.accepted_rows)
             _candidate_reserve(budget, 128 * (len(keys) + 2 * len(columns)) + 64)
             row = cursor.fetchone()
             if row is None:
@@ -484,7 +486,7 @@ def _structure_cells(conn: sqlite3.Connection, source: str, columns: tuple[str, 
             _check(all((s is None or (type(s) is int and 0 <= s <= _VALUE_LIMIT) for s in sizes)))
             size = sum((s or 0 for s in sizes))
             if budget.accepted_rows >= 8192:
-                raise ValueError('workflow_owner_budget_exhausted')
+                refuse(ValueError('workflow_owner_budget_exhausted'), budget, 'rows', 1, 8192 - budget.accepted_rows)
             _candidate_reserve(budget, size * 24 + 256 * len(columns) + 512)
             payload = conn.execute(payload_sql, args + identity)
             payload_failure = None
@@ -493,7 +495,7 @@ def _structure_cells(conn: sqlite3.Connection, source: str, columns: tuple[str, 
                 _check(value is not None)
                 budget.candidate()
                 if budget.accepted_rows >= 8192:
-                    raise ValueError('workflow_owner_budget_exhausted')
+                    refuse(ValueError('workflow_owner_budget_exhausted'), budget, 'rows', 1, 8192 - budget.accepted_rows)
                 _candidate_reserve(budget, 128 * len(columns) + 64)
                 extra = payload.fetchone()
                 if extra is not None:

@@ -256,12 +256,19 @@ and before classifying its refusal. Original deadline exhaustion propagates as
 `workflow_seq_read_deadline_exhausted`; the callback reader's own read-exhausted
 refusal also propagates unchanged. Neither path records a business-Held overlay
 or commits DML. Validated selected success still rolls back to business-Held.
-At the mounted callback reader's refusal catch, negative remaining bytes on its
-SAME original projection allowance identify genuine byte exhaustion even when
-the metadata allocator reports a generic history error. It propagates as
+At the mounted callback reader's refusal catch, genuine exhaustion on the
+SAME original allowances propagates even when a nested allocator reports a
+generic history error. The mounted refusal is
 `sequential_final_observation_read_exhausted`, without a business-Held overlay.
-Standalone calls without an enclosing deadline and non-limit malformed-history
-classification retain their original behavior; the shared allocator is unchanged.
+R-M3-5 permits narrow protected-source exceptions at original allocator checks:
+failed reservations carry a typed causal signal with the original allowance,
+dimension, requested and remaining amounts. Existing outer exception classes and
+code strings remain unchanged, including retained copy shortfalls before any
+counter changes. SQLite progress retains its actual refusal for causal chaining.
+The mounted catch walks cause/context links across D/P/A/B/C/L/R; it never infers
+exhaustion from counter signs or traceback frames. Standalone calls without an
+enclosing deadline and genuine malformed history retain their classifications
+and persisted bytes. No cap, original deadline, allowance or retry is renewed.
 
 **Final success remains Held; U7c2 is implementation remainder.** Transport and
 validated observation do not implement a Final capability witness, recipients,

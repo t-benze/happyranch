@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows.coding_saved_records import _canonical, _check
 
 
@@ -16,7 +18,7 @@ def _read_json(raw: bytes, budget: Any, limit: int = 1048576) -> Any:
     from runtime.workflows.coding_saved_records import _json
     _check(type(raw) is bytes and 0 < len(raw) <= limit)
     charge = 4 * len(raw)
-    _check(charge <= budget.remaining_bytes)
+    _budget_check(charge <= budget.remaining_bytes, _check, budget, 'bytes', charge, budget.remaining_bytes)
     budget.consumed += charge
     return _decoded(_json(raw, limit), budget)
 
@@ -35,7 +37,7 @@ def _read_authority(value: dict, org: str, budget: Any) -> tuple[bytes, dict]:
         _check(type(text) is str and len(text) <= 4 * ((1048576 + 2) // 3))
         # Includes base64/UTF8 copies made by the original pure capture reader.
         charge = 4 * len(text)
-        _check(charge <= budget.remaining_bytes)
+        _budget_check(charge <= budget.remaining_bytes, _check, budget, 'bytes', charge, budget.remaining_bytes)
         budget.consumed += charge
         decoded[field] = _read_json(base64.b64decode(text, validate=True), budget)
     grant, _ = _capture(value, org, _Ancestry())

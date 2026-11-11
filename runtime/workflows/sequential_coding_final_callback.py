@@ -10,6 +10,8 @@ import sqlite3
 from dataclasses import dataclass
 from enum import StrEnum
 
+from runtime.workflows._read_exhaustion import exhausted
+
 from runtime.infrastructure.task_pause_controls import PauseControlError
 from runtime.workflows.authority import AuthorityAdmissionCapture, WorkflowAuthorityCoordinator
 from runtime.workflows.sequential_business_hold import BusinessHoldCause, _proof, hold_body
@@ -239,12 +241,13 @@ def read_final_callback_uncommitted(conn: sqlite3.Connection, *, org_slug: str, 
             return _read(conn, org_slug=org_slug, run_id=run_id, visit_id=visit_id, task_id=task_id,
                 principal=principal, session_id=session_id, result_id=result_id, authority=authority,
                 capture=capture, mixed=mixed, budget=budget)
-    except FinalObservationRefusal:
+    except FinalObservationRefusal as exc:
+        if deadline is not None and exhausted(exc):
+            raise FinalObservationRefusal(FinalObservationCause.LIMIT) from exc
         raise
     except (CodingEvidenceRefusal, SequentialRefusal, ValueError) as exc:
-        # The mounted reader's metadata allocator can report a generic history
-        # error after exhausting this same byte allowance. Preserve its refusal.
-        if deadline is not None and budget.remaining_bytes < 0:
+        # Preserve the actual failed reservation through generic history wrappers.
+        if deadline is not None and exhausted(exc):
             raise FinalObservationRefusal(FinalObservationCause.LIMIT) from None
         code = exc.code if isinstance(exc, SequentialRefusal) else str(exc)
         cause = (FinalObservationCause.LIMIT if code.startswith(('workflow_seq_read_', 'coding_read_'))
@@ -255,5 +258,7 @@ def read_final_callback_uncommitted(conn: sqlite3.Connection, *, org_slug: str, 
                  FinalObservationCause.CHANGED if code.startswith('workflow_seq_business_hold_') else
                  FinalObservationCause.UNVERIFIED)
         raise FinalObservationRefusal(cause) from None
-    except (sqlite3.Error, PauseControlError, TypeError, KeyError, AttributeError, StopIteration, UnicodeError, RecursionError):
+    except (sqlite3.Error, PauseControlError, TypeError, KeyError, AttributeError, StopIteration, UnicodeError, RecursionError) as exc:
+        if deadline is not None and exhausted(exc):
+            raise FinalObservationRefusal(FinalObservationCause.LIMIT) from exc
         raise FinalObservationRefusal(FinalObservationCause.UNVERIFIED) from None

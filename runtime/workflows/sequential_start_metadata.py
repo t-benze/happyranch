@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows.sequential_contracts import StartCommand
 from runtime.workflows.coding_authority_history import _TRAVERSAL_LIMIT
 
@@ -38,12 +40,13 @@ def _require(value: bool) -> None:
 def _step(budget: _Budget) -> None:
     # Decline BEFORE performing another operation if its original allowance
     # cannot admit it. The caller retains and raises its original first error.
-    _require(budget.traversed < _TRAVERSAL_LIMIT)
+    _budget_check(budget.traversed < _TRAVERSAL_LIMIT, _require, budget, 'work', 1, _TRAVERSAL_LIMIT - budget.traversed)
     budget.step()
 
 
 def _reserve(budget: _Budget, size: int) -> None:
-    _require(size >= 0 and budget.remaining_bytes >= size)
+    _require(size >= 0)
+    _budget_check(budget.remaining_bytes >= size, _require, budget, 'bytes', size, budget.remaining_bytes)
     _step(budget)
     budget.consumed += size
 

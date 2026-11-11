@@ -674,7 +674,8 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                             # remains mandatory even if the key is unchanged.
                             budget.consumed += len(raw)
                             if budget.remaining_bytes < 0:
-                                raise ValueError('workflow_coding_candidate_copy_bound')
+                                from runtime.workflows._read_exhaustion import refuse
+                                refuse(ValueError('workflow_coding_candidate_copy_bound'), budget, 'bytes', len(raw), budget.remaining_bytes + len(raw))
                             expected = _decoded(json.loads(raw), budget)
                             known.add(locator(expected))
                     rows = scans.enter_context(closing(_coding_candidate_rows(conn, table, selected_columns, allowed, budget,

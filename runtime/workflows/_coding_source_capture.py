@@ -8,6 +8,8 @@ import struct
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows.coding_authority_history import _Budget, _token
 from runtime.workflows.coding_saved_records import _canonical, _closed, _integer
 from runtime.workflows.coding_source_history import (
@@ -95,7 +97,8 @@ class OriginalSourceCapture:
 def _copy_bytes(raw: bytes, budget: _Budget) -> None:
     # Conservative copy accounting in ADDITION to raw fetched audit bytes.
     # JSON objects/SQLite allocations are not a total process-memory bound.
-    _check(len(raw) <= _VALUE_LIMIT and len(raw) <= budget.remaining_bytes)
+    _check(len(raw) <= _VALUE_LIMIT)
+    _budget_check(len(raw) <= budget.remaining_bytes, _check, budget, 'bytes', len(raw), budget.remaining_bytes)
     budget.consumed += len(raw)
 
 
@@ -105,7 +108,8 @@ def _base64(value: object, budget: _Budget) -> bytes:
     # independently validated by strict decode AND exact padded round-trip.
     _check(value.isascii() and len(value) % 4 == 0)
     size = len(value) // 4 * 3 - (len(value) - len(value.rstrip('=')))
-    _check(0 <= size <= _VALUE_LIMIT and size <= budget.remaining_bytes)
+    _check(0 <= size <= _VALUE_LIMIT)
+    _budget_check(size <= budget.remaining_bytes, _check, budget, 'bytes', size, budget.remaining_bytes)
     raw = base64.b64decode(value, validate=True)
     _check(base64.b64encode(raw).decode('ascii') == value)
     _copy_bytes(raw, budget)

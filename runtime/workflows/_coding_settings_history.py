@@ -6,6 +6,8 @@ import json
 import re
 from dataclasses import dataclass
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows._coding_settings_records import (
     HUMAN_RECORD, SettingsSnapshot, account, captured_configuration, parse_command,
 )
@@ -116,7 +118,7 @@ def publications(conn, org, budget) -> dict[str, HumanPublication]:
         _check(type(value['command_bytes_base64']) is str
                and len(value['command_bytes_base64']) <= 4 * ((65536 + 2) // 3))
         raw = base64.b64decode(value['command_bytes_base64'], validate=True)
-        _check(len(raw) <= budget.remaining_bytes)
+        _budget_check(len(raw) <= budget.remaining_bytes, _check, budget, 'bytes', len(raw), budget.remaining_bytes)
         budget.consumed += len(raw)
         _check(base64.b64encode(raw).decode('ascii') == value['command_bytes_base64'])
         command = account(parse_command(raw, org), budget)
