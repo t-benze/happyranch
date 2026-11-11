@@ -1003,3 +1003,11 @@ native row already stamped cancelled by the mixed stop. It emits its unchanged
 original terminal event without replacing the frozen cancellation timestamps.
 Standalone document cancellation/terminal bytes and ordering remain unchanged;
 this prevents a late native drain from invalidating Coding's original overlay.
+
+
+Mixed cancellation keeps legacy document intent and original document/Coding
+terminal/outer consumers inside an authenticated same-transaction composition. The
+original schema/semantic readers remain intact; complete target validation occurs after
+the temporary composition ends and before COMMIT. Sequential rows cannot change within
+that legacy scope. A read or terminal/control return supplies no additional settlement
+proof; Option B ordinary/document owners remain UNSETTLED.

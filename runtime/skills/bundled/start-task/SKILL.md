@@ -1234,3 +1234,11 @@ original budgets and failures. Launcher TERM/INT, ended SID, missing PID or a
 successful Stop request never supplies product cancellation/settlement proof.
 U5b2b2/U7–U9 and native/V3 acceptance remain separate; this source grants no new
 agent control, endpoint, job, effect, credential, admission or live operation.
+
+
+Mixed cancellation's document lookup and original cancelled document/Coding
+terminal/outer consumers use complete authenticated history in their same native
+transaction. Scope reset and complete target validation precede COMMIT; standalone
+validators and original event/settlement predicates remain unchanged. Captured
+ordinary/document owners still remain UNSETTLED under Option B. This composition is no
+callback, cleanup or live-operation entitlement.

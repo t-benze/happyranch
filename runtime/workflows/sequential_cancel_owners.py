@@ -154,7 +154,9 @@ class CancelOwners:
                 dispatcher = getattr(invocation.orch, '_workflow_coding_dispatch', None)
                 if (failed is False and dispatcher is not None and native_entry is not None
                         and getattr(invocation, 'coding_settled_entry', None) is native_entry):
-                    with db.coherent_read_view() as conn:
+                    from runtime.workflows.sequential_legacy_cancel import legacy_cancellation_scope
+                    with db.coherent_read_view() as conn, legacy_cancellation_scope(
+                            conn, org_slug=self.org.slug, task_id=invocation.task.id):
                         entry = dispatcher._entry(conn, invocation.task.id)
                         native = entry['native']
                         if kind == 'coding_source_waiting':

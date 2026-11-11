@@ -303,3 +303,30 @@ native row already stamped cancelled by the mixed stop. It emits its unchanged
 original terminal event without replacing the frozen cancellation timestamps.
 Standalone document cancellation/terminal bytes and ordering remain unchanged;
 this prevents a late native drain from invalidating Coding's original overlay.
+
+
+## Authenticated legacy cancellation scope (TASK-15380)
+
+The mounted document intent lookup runs inside
+`sequential_legacy_cancel.legacy_cancellation_scope`, after a complete mixed read on the
+SAME connection and transaction. Original document terminal and Coding terminal/outer
+writers, plus Coding aggregate observation, enter that composition only for a stamped
+cancelled native task. Standalone `_intent`, `_entry`, schema validation and their
+default writers retain their original refusal of sequential storage.
+
+The scope enrolls bounded sequential rows only after complete authentication, checks
+that legacy consumers leave those rows unchanged, resets the scope on success or
+failure, and validates the complete changed target before COMMIT. Both complete reads
+share the original deadline and retained allowance; copied rows use finite SQL/copy
+budgets. Mounted selection restores its operation SQL hook before original-owner capture
+and native comparison. Original event builders, semantic/settlement rules, Pause
+generation and U6b2a remain unchanged.
+
+Synthetic real-file production document activation plus sequential admission now reaches
+mounted cancellation and original running-document terminal drain. It preserves the
+committed native overlay and original event prefix, fences fresh work, drains only the
+exact precommitted callback, and runs controls after audit/CAS COMMIT outside locks.
+This does not establish a populated old-Coding positive or genuine native acceptance.
+Captured ordinary/document invocations remain UNSETTLED under Option B; a literal
+all-family-positive captured-owner outcome is therefore unavailable under that contract.
+No guard is bypassed to manufacture that result.

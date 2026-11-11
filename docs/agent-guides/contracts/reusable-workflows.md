@@ -1516,3 +1516,11 @@ existing safe root-tail consumer, still subject to native protections. Negative
 or impossible qualification delivers one incomplete batch; no cleanup retry or
 durable receipt is introduced. U5b2b2/U7–U9 and native/V3 acceptance remain
 separate. See the [current U6 owner table](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
+
+
+The U6 mixed stop authenticates combined history before composing legacy document lookup
+and the original cancelled document/Coding terminal/outer consumers on that same
+connection. Legacy consumers preserve sequential rows; the complete changed target is
+authenticated after scope reset. Default standalone validation remains unchanged. This
+composition repairs mounted cancellation without changing captured ordinary/document
+UNSETTLED qualification or granting native/V3 acceptance.

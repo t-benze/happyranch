@@ -678,3 +678,12 @@ native row already stamped cancelled by the mixed stop. It emits its unchanged
 original terminal event without replacing the frozen cancellation timestamps.
 Standalone document cancellation/terminal bytes and ordering remain unchanged;
 this prevents a late native drain from invalidating Coding's original overlay.
+
+
+For a mixed sequential business stop, original document intent selection uses an
+authenticated same-transaction legacy composition. The original terminal writer
+re-enters that composition for a stamped cancelled task and validates the complete
+changed target before COMMIT. It retains original events and an already committed native
+cancellation overlay. Standalone intent/schema validation remains unchanged; captured
+document owners remain UNSETTLED under Option B. See the U6 authenticated legacy
+cancellation scope contract.

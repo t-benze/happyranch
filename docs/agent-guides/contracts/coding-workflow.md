@@ -2461,3 +2461,11 @@ is necessary before the original safe root-tail disposition; no ownership is
 cleared to force it. Source/static and synthetic writer comparisons are separate
 from a full populated mixed-old-history or native/V3 acceptance claim. See the
 [current U6 owner table](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
+
+
+Mixed sequential cancellation composes the original Coding terminal/outer writers and
+aggregate `_entry` observation inside a complete authenticated same-transaction legacy
+scope for the stamped cancelled task. Original queued/native readers and settlement
+predicates run unchanged, and complete target validation follows scope reset before
+writer COMMIT. Standalone Coding validation retains its original refusal of sequential
+storage. This supplies no new positive owner proof, retry, recovery or Final permission.

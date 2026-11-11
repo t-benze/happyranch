@@ -185,18 +185,22 @@ async def cancel_mixed(org: Any, task_id: str, *, cascade: bool, actor: str,
                                 coding_selection, instances = affected(conn, task_id, cascade, saved, retained)
                                 if instances:
                                     _check(coding_selection.keys() <= selected.keys())
+                            from runtime.workflows.sequential_legacy_cancel import legacy_cancellation_scope
                             documents = []
-                            for key, kind, _, _ in history.owners:
-                                if key in live and kind in ('draft', 'f5'):
-                                    dispatcher = org.workflow_drafts if kind == 'draft' else org.workflow_reviews
-                                    _check(dispatcher is not None and dispatcher.org is org and dispatcher.db is org.db)
-                                    # Resolve original controls/intent before any DML.
-                                    intent = dispatcher._intent(conn, key)
-                                    documents.append((key, dispatcher, intent))
-                            from runtime.workflows.sequential_cancel_owners import CancelOwners
-                            owners = CancelOwners.capture(org, conn, selected, history, budget, saved=saved,
-                                retained_cancelled=retained_cancelled)
-                            _unchanged(conn, history, budget)
+                            with legacy_cancellation_scope(conn, org_slug=org.slug, task_id=task_id,
+                                    cancelled=False, retained_budget=retained, deadline=budget.deadline):
+                                for key, kind, _, _ in history.owners:
+                                    if key in live and kind in ('draft', 'f5'):
+                                        dispatcher = org.workflow_drafts if kind == 'draft' else org.workflow_reviews
+                                        _check(dispatcher is not None and dispatcher.org is org and dispatcher.db is org.db)
+                                        # Resolve original controls/intent before any DML.
+                                        intent = dispatcher._intent(conn, key)
+                                        documents.append((key, dispatcher, intent))
+                            with _sql_budget(conn, budget):
+                                from runtime.workflows.sequential_cancel_owners import CancelOwners
+                                owners = CancelOwners.capture(org, conn, selected, history, budget, saved=saved,
+                                    retained_cancelled=retained_cancelled)
+                                _unchanged(conn, history, budget)
                         for run, compiled, key in fresh:
                             cancel_fence_uncommitted(conn, org.db, org_slug=org.slug, run_id=run['id'],
                                 operation_key=key, expected_cas=run['cas'], compiled=compiled,

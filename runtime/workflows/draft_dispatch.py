@@ -87,13 +87,18 @@ class WorkflowDraftDispatcher:
         self._live: dict[str, tuple[str, str, object | None]] = {}
 
     @contextmanager
-    def _writer(self) -> Iterator[sqlite3.Connection]:
+    def _writer(self, *, cancellation_task_id: str | None = None) -> Iterator[sqlite3.Connection]:
         with self.db._lock:
             conn = self.db._conn
             conn.execute("BEGIN IMMEDIATE")
             try:
-                yield conn
-                validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                from contextlib import nullcontext
+                from runtime.workflows.sequential_legacy_cancel import legacy_cancellation_scope
+                scope = (nullcontext(False) if cancellation_task_id is None else
+                         legacy_cancellation_scope(conn, org_slug=self.org.slug, task_id=cancellation_task_id))
+                with scope:
+                    yield conn
+                    validate_workflow_schema(conn, expected_org_slug=self.org.slug)
                 conn.commit()
             except BaseException:
                 conn.rollback()
@@ -507,7 +512,7 @@ class WorkflowDraftDispatcher:
         try:
             with self._live_lock:
                 live = self._live.get(task_id)
-                with self._writer() as conn:
+                with self._writer(cancellation_task_id=task_id) as conn:
                     with _capture_root_worktree_transition(self.org.orchestrator, task_id, 'draft_dispatch.terminal', staged_transitions):
                         intent = self._intent(conn, task_id)
                         if (live is None or live[:2] != (intent["claim_token"], session_id)
