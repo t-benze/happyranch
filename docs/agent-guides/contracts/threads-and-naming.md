@@ -277,7 +277,33 @@ See the [current naming contract](../../superpowers/specs/2026-10-09-identity-na
 ## Explicit resolution and automatic archive (THR-339)
 
 The opener or its current executable team manager can resolve a task-composed
-thread in a substantive send from an active task session. Automatic archive
+thread in a substantive send from an active task session, or in its terminal
+reply/decline callback on another agent's answer. The existing callback bodies
+accept optional strict `resolution: {"next_owner": null | "agent_id"}`. Invocation
+resolution requires a pending REPLY or TASK_FOLLOWUP, participation, open task
+composition (no founder/dream composition), and opener/current executable manager
+authority; a human head grants nothing. DB-owned guards recheck the actual
+triggering MESSAGE: neither self nor founder, and no newer MESSAGE. BOOTSTRAP
+refuses400 `resolution_wrong_invocation_purpose`; a non-answer turn refuses409
+`resolution_not_answer_turn`; a newer MESSAGE refuses409 `resolution_stale`.
+Refusals consume nothing and append nothing. Founder holds (including the
+resolving reply's own address) or founder next_owner refuse409
+`founder_decision_pending`; unknown next_owner refuses422 `unknown_next_owner`.
+
+A resolving reply requires nonempty text (422 `resolution_body_required`),
+appends the decision, sets resolved_seq to its new seq, and settles the caller's
+invocation in one transaction with `thread_resolved`. It mints no new REPLY or
+catch-up tokens and preserves existing obligations. A resolving decline requires
+a nonempty reason (422 `resolution_reason_required`), appends no message and
+sets resolved_seq to the invocation's actual triggering_seq atomically with
+decline settlement/audit. Invocation resolution leaves resolved_from_task_id
+NULL; list/detail JSON and web types accept it, and archive admission depends
+on resolved_seq rather than task-session provenance. The audit retains existing
+send keys and adds via (send/reply/decline), triggering_seq (NULL for send),
+invocation_id for callbacks, and reason for decline only, with task_id=thread_id
+and agent=resolver. Later MESSAGE and founder resume still clear resolution.
+
+Automatic archive
 requires open + explicitly resolved + task-composed (neither founder-created nor
 dream-composed), no pending invocation of any purpose, no live reply-delivery
 range/slot or held deferral on an open exchange, and no unanswered founder
@@ -285,10 +311,10 @@ address. The archive transaction rechecks the shared owner relation and PR1's
 founder-hold predicate; settled rows and historical mentions already answered by
 the founder do not block. Later MESSAGE rows clear resolution.
 
-Post-commit checks follow resolving sends, invocation terminals, composing-task
+Post-commit checks follow resolving sends/replies/declines, invocation terminals, composing-task
 terminals (including subtasks), startup recovery and final exchange-hold release.
 Task termination only triggers cleanup: unresolved requests stay open with their
-composer visible. Silence, decline and elapsed time never resolve. Text-only
+composer visible. Silence, plain decline and elapsed time never resolve. Text-only
 promises are untracked in v1; leave resolution unset while work remains.
 Automatic `thread_archived` uses `agent='orchestrator'`, `task_id=<thread_id>` and
 `{turns_used, trigger, resolved_by, resolved_seq}`, with an orchestrator system
@@ -296,7 +322,7 @@ message and the existing transcript/SSE. Founder manual archive retains the
 exact founder actor and `{turns_used}` payload. Founder-created/dream-composed
 threads stay manual; the founder can inspect and resume any archived thread,
 which clears resolution. No route, schema or lifecycle value is added in PR2.
-See the current `2026-11-08-thread-resolution-auto-archive-design.md` spec.
+See the dated `2026-11-11-thread-invocation-resolution.md` design addendum.
 
 ## Functional naming UI and API contract
 

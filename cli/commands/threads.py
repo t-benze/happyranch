@@ -233,6 +233,16 @@ def cmd_threads_list(args: argparse.Namespace) -> None:
 
 
 
+def _validate_resolution_payload(payload: dict) -> None:
+    """Share the strict additive object shape across send/reply/decline."""
+    resolution = payload.get("resolution")
+    if resolution is not None and (
+        not isinstance(resolution, dict) or set(resolution) - {"next_owner"}
+        or (resolution.get("next_owner") is not None and not isinstance(resolution["next_owner"], str))
+    ):
+        identities.fail("resolution must be an object with optional string/null next_owner", code=2)
+
+
 def cmd_threads_reply(args: argparse.Namespace) -> None:
     import json as _json
     _shared.require_absolute_payload_path(args.from_file, kind="thread-reply")
@@ -242,6 +252,7 @@ def cmd_threads_reply(args: argparse.Namespace) -> None:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
     identities.validate_message_payload(body)
+    _validate_resolution_payload(body)
     client = OpcClient.from_env()
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
@@ -276,6 +287,7 @@ def cmd_threads_decline(args: argparse.Namespace) -> None:
     except (OSError, ValueError) as exc:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
+    _validate_resolution_payload(body)
     thread_id = args.thread_id or body.get("thread_id", "")
     r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/decline", json=body)
     if not _ok(r):
@@ -366,13 +378,7 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
     identities.validate_message_payload(payload)
-    # File-only additive resolution travels unchanged on the existing send.
-    resolution = payload.get("resolution")
-    if resolution is not None and (
-        not isinstance(resolution, dict) or set(resolution) - {"next_owner"}
-        or (resolution.get("next_owner") is not None and not isinstance(resolution["next_owner"], str))
-    ):
-        identities.fail("resolution must be an object with optional string/null next_owner", code=2)
+    _validate_resolution_payload(payload)
     # Agent-initiated send (THR-069): when --task-id is provided, attach
     # the binding fields so the daemon attributes to the agent.
     # FINDING 1 (REVISE): --session-id is REQUIRED when --task-id is supplied
