@@ -386,3 +386,91 @@ fake guarded-merge adapter exercises command loss; no real gh merge is called.
 This is source-interface diagnostic evidence only. Actual local raw remote
 observations, mounted selection/CLI/action/callback, native cancellation races,
 U6/U7 history/transport and real merge remain NOT RUN/deferred to their owners.
+
+
+## U5b2b1 shared LOCAL action adapter (TASK-15264)
+
+Base `6919f651b7424902de205d28c151e0333638f4d2` includes U5b2a PR1384
+and TASK-15250's Pause/Resume fix. Under the explicit 1800s split rule, this
+unit delivers **U5b2b1**, the common local core and unmounted sequential action /
+observation adapter. **U5b2b2 remains implementation:** genuine callback-observation
+validation through complete/selected history readers and the existing
+rollback-then-business-Held/cancellation owners, followed by compatible mounting.
+No callback or success producer precedes those boundaries. U6 mixed history and
+U7 genuine task-session transport are still required; this unit cannot admit
+`guarded-repository-merge@1` success. It keeps the existing unavailable-output
+Held. Local `merged` is diagnostic disposition only, never an engine witness,
+INTEGER result, host termination, positive outer settlement or advance.
+
+Assumptions declared before edits: no schema/table/column/index/migration is
+needed; split at the already compatible closed local record readers; keep the
+historical command/selection/output families and interpretation unchanged. The
+unchanged U5b2a concrete selection service supplies all reselect calls; no cached
+selection is an authority grant. No OrgState/dispatcher/route/CLI command/job
+registration is added. Native Pause, original admission generation, cancellation,
+current-authority and U4 clone-metadata owners are unchanged.
+
+`workflow_final_local` extracts the historical helper/check/PR readers verbatim
+and owns the historical guarded action/receipt/separate-read sequence. Historical
+`workflow_coding_finalize` consumes it while retaining its own selection,
+repository validation, command parsing, result families and outcome reduction.
+The shared core calls the existing `pr_ci_merge.guarded_merge` locally, with the
+full expected head, ordinary merge method and no admin flag. It retains original
+nonzero, transport-loss and exit0-with-lost-confirmation diagnostics. A later
+MERGED read does not rewrite the original command or authorize another action.
+
+`workflow_sequential_finalize.execute_selected_final` is an **unregistered local
+seam**, usable only by a future genuine live selected-manager adapter. It selects
+through `SequentialCodingFinalSelection.select`, validates literal original
+workspace/checkout-or-worktree/common-dir, raw origin digest/GitHub repository,
+SHA1 object format, original base/full H commits and local HEAD=H. It reserves
+one original Final-task directory through `reserve_attempt`; operation key,
+repository path and cwd cannot choose a second attempt. It saves raw check-runs,
+combined statuses and referenced Actions runs from bounded complete pages; requires
+one successful completed check for each literal required lint at H, matching
+check/run/suite/repository identities, aware ordered timestamps, no ambiguous
+same-name legacy status and the combined-status response's own H. Missing,
+pending, stale/old-head, ambiguous, skipped and neutral refuse with local Held,
+retaining raw/partial observations and reservation but zero intent/action. No
+caller Boolean or CI verdict is accepted by the sequential interface.
+
+After successful observations the existing journal persists selected pins,
+checks and intent with fsync before action. The sole perform callback reselects
+live owner/current authority, rechecks immutable local subject and exact persisted
+intent/directory identity, then closes with another fresh selection. A refused
+reselect keeps denied vs unverified causal diagnostics and causes zero action.
+Guarded action independently retains review/QA, open/non-draft, exact PR/head/base
+and clean-mergeability gates; review/QA derive from the concrete selection's
+mandatory settled U5a policy, never caller verdicts. Held/cancelled roots refuse
+through the unchanged selection owner. Existing/partial attempts are never
+removed, replayed, cleared or replenished.
+
+The adapter validates and exclusively saves command-result bytes through the
+U5b2a reader, retaining the complete original action receipt separately from its
+bounded diagnostic projection. It refuses missing/partial command-finished
+recording. Successful commands receive a fresh independent post-receipt remote
+read, rather than retimestamping an earlier observation. Failed/lost commands
+retain their original disposition after the core's separate read. The compatible
+remote reader requires exact repository/PR/URL/H, MERGED, a full actual lowercase
+SHA1, aware ordered merge/observation times and exact selection/command digests.
+Bad/missing reads retain uncertainty; no merge is reissued. Local results are
+neither accepted callbacks nor durable business-Held records. A future genuine
+manager must report its causal BLOCK through the original callback owner; U5b2b2
+must wire that adapter/validation before any command/producer mount.
+
+| Owner / changed symbols | Actual callers and boundary |
+| --- | --- |
+| `workflow_final_local`: extracted `_now`, `_write`, `_run`, `_remote_json`, `_api`, `_literal_directory`, `_pr`, `_checks`; `run_guarded_action` | Historical `_execute` consumes shared guard; unmounted sequential adapter consumes raw observations/action; journal imports file helpers directly. No daemon consumer. |
+| Historical `workflow_coding_finalize._execute` | Same registered historical CLI only. `_selected`, `_local_subject`, command handler and historical record owners retain interpretation. |
+| `workflow_sequential_finalize`: `LocalFinalObservation`, `_local_subject`, `_pr`, `observe_lints`, `execute_selected_final` | No production importer/registration. Concrete U5b2a service + journal + compatible local record readers only; U5b2b2 must supply reader/authority/cancellation/callback boundary before mount. |
+| `workflow_sequential_final_journal` helper import | Local-only helpers move to shared core; reservation/intent algorithms unchanged. |
+
+Native Impact: local CLI provenance/replay/compatibility risk, bounded to four
+Python files and this spec/contract/bundled-skill parity. No runtime service,
+schema, auth/permission/credential, native settlement, live configuration or
+production operation changes. ACCESS-1 PRD v1.0.4 / THR-336 msg131 and the shared
+OS-user/shared-gh-credential limitation remain controlling. No repository tests
+are added. Diagnostics use explicitly synthetic native/authority/settlement
+scaffolding and controlled fake Git/gh effects; no native/V3/real-merge claim.
+Required exact-H lint/static job, diff/AST/caller inventory, hosted snapshot and
+remaining independent review/QA/manager gates are recorded in the task handoff.

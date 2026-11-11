@@ -1146,3 +1146,15 @@ original-task fence across key/cwd/path variants. Failed/lost command evidence
 never becomes success after a later separate MERGED read and never permits
 reissue. Keep ACCESS-1, shared-OS-user/gh-credential limits, genuine FINAL callback
 and existing cancellation/native ownership; no job/daemon/recovery merge follows.
+
+
+Sequential Coding U5b2b1 extracts the historical LOCAL Final action core without
+changing its command/selection/output families, and supplies an unmounted
+sequential raw-lint/intent/action/remote-record adapter. It adds no callable public
+command or selection transport. Do not invoke the unregistered seam from a job,
+daemon or recovery runner. U5b2b2 must validate genuine callback observations
+through compatible history/authority/Held/cancellation owners before mounting;
+U6/U7 remain required and Final success stays Held. Saved local records never
+authorize replay; failed/lost commands keep their original uncertainty after a
+separate MERGED read. Keep the sole original-task fence, ACCESS-1/shared-user/gh
+limits and original genuine FINAL callback/native settlement.

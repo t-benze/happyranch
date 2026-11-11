@@ -2391,3 +2391,14 @@ U5b2b action/check/observation/callback wiring, U6 history and U7 transport rema
 remain uncertain after a separate MERGED read. No daemon effect, public command,
 job runner, schema change or live activation follows. Detailed limits and owners:
 [U5 spec](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).
+
+
+U5b2b1 (TASK-15264) moves historical Final raw observation/action helpers into
+`cli/commands/workflow_final_local.py`; the registered historical adapter retains
+its literal commands, selections and output interpretation. The separate
+`workflow_sequential_finalize` local adapter remains unmounted, with one original
+Final-task fence, selected-H raw lints, persisted intent, immediate live/current
+reselection and independent remote records. U5b2b2 callback/history/Held/cancellation
+validation and mount, U6 mixed history and U7 transport remain implementation.
+Sequential Final success stays Held. This supplies no daemon PR I/O or new
+credential, permission, live operation or native settlement authority.

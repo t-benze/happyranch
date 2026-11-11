@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from cli.commands.workflow_coding_finalize import _literal_directory, _write
+from cli.commands.workflow_final_local import _literal_directory, _write
 from runtime.workflows.sequential_coding_final_records import (
     CodingFinalIntent, CodingFinalSelection, FinalLintObservation, read_final_intent, read_final_selection,
 )
