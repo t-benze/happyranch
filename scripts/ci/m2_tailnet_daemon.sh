@@ -271,9 +271,10 @@ paired = pair('m2-client')
 allowed(paired)
 print('M2 step 2: paired tailnet -> sidecar -> connector -> real-daemon org teams returned 200')
 for label, credential in [('no credential', None), ('never-paired credential', 'hrpair_' + '0' * 32)]:
-    status, _ = request('GET', route, credential)
+    status, body = request('GET', route, credential)
     assert status == 403, f'{label}: expected 403, got {status}'
-    print(f'M2 step 3: unpaired {label} refused with {status}')
+    assert body == {'error': 'identity_denied'}, f'{label}: wrong refusal body {body!r}'
+    print(f'M2 step 3: unpaired {label} refused with 403 (identity_denied)')
 
 revoked = pair('m2-revoked-client')
 allowed(revoked)
@@ -283,26 +284,27 @@ print(ceremony('revoke', 'm2-revoked-client').strip())
 deadline = time.monotonic() + 30
 time.sleep(0.5)  # Allow more than two configured 0.2s connector poll intervals.
 while True:
-    status, _ = request('GET', route, revoked)
-    assert time.monotonic() < deadline, 'revoked credential refusal not observed within 30s'
-    if status == 403:
+    status, body = request('GET', route, revoked)
+    assert time.monotonic() < deadline, (
+        f'revoked identity_denied refusal not observed within 30s; last status={status}, body={body!r}')
+    if status == 403 and body == {'error': 'identity_denied'}:
         break
-    assert status == 200, f'revoked request returned unexpected status {status}'
+    assert status in (200, 403), f'revoked request returned unexpected status {status}, body={body!r}'
     time.sleep(0.2)
-print('M2 step 4: revoked device refused with 403 after bounded reconciliation wait')
+print('M2 step 4: revoked device refused with 403 (identity_denied) after bounded reconciliation wait')
 allowed(paired)
-for method, path in [
-    ('POST', '/api/v1/executor-binaries/register'),
-    ('POST', '/api/v1/runtime/custom-cli/m2-operation/commit'),
-    ('POST', '/api/v1/runtime/use'),
-    ('DELETE', '/api/v1/runtime/adapters/m2-adapter'),
-    ('DELETE', '/api/v1/orgs/m2-synthetic'),
-    ('GET', '/api/v1/auth/bootstrap'),
+for method, path, category in [
+    ('POST', '/api/v1/executor-binaries/register', 'method_denied'),
+    ('POST', '/api/v1/runtime/custom-cli/m2-operation/commit', 'route_denied'),
+    ('POST', '/api/v1/runtime/use', 'route_denied'),
+    ('DELETE', '/api/v1/runtime/adapters/m2-adapter', 'method_denied'),
+    ('DELETE', '/api/v1/orgs/m2-synthetic', 'route_denied'),
+    ('GET', '/api/v1/auth/bootstrap', 'route_denied'),
 ]:
     status, body = request(method, path, paired)
     assert status == 403, f'{method} {path}: expected 403, got {status}'
-    assert body == {'error': 'route_denied'}, f'{method} {path}: wrong refusal category'
-    print(f'M2 step 5: forbidden {method} {path} refused with 403 (route_denied)')
+    assert body == {'error': category}, f'{method} {path}: expected {category}, got {body!r}'
+    print(f'M2 step 5: forbidden {method} {path} refused with 403 ({category})')
 allowed(paired)
 status, body = request('GET', '/api/v1/orgs', paired)
 assert status == 200 and [org['slug'] for org in body['orgs']] == ['m2-synthetic']
