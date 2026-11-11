@@ -1311,3 +1311,43 @@ Source-only delivery includes disposable synthetic diagnostics, not real native/
 provider/full correction/V3 acceptance. U5 and U7 remain separate. See the
 [current U4 specification](../../superpowers/specs/2026-11-11-sequential-coding-u4.md#access-1--u4b3-attached-source-task-15167-root-task-15165)
 for the declaration, cause and evidence boundaries.
+
+
+## U5a Coding evidence reader and policy (THR-336 / TASK-15200)
+
+PRD v1.0.4 SHA256 `96925395de4e44cc5c1570deb512ec843fcfd72c0b3eaeff0423c00b58a07bb5`
+and Founder msg131 ACCESS-1 control current-authority versus agent-owned access.
+The new unmounted `sequential_coding_evidence.read_current_coding_evidence_uncommitted`
+performs SELECT-only full selected-run reducer replay, immutable admitted pins,
+original INTEGER callback/carrier, successful host and positive original outer
+proof joins under the caller's owned current-authority transaction. Original
+subject and current repository/base/head/PR/epoch must agree. Current active
+fixed worker/registered-manager bindings are rechecked before and after deriving
+policy; unavailable authority is unverified, proven lost eligibility is denied.
+No Git/network/access observation occurs.
+
+`sequential_coding_policy` unconditionally requires independent-code-review@1
+APPROVE and code-qa@1 PASS, regardless of Final inputs or omitted/rerouted graph
+nodes. Assessment content is exactly canonical
+`{format:workflow-sequential-code-assessment@1,change:<whole code-change declaration>}`
+with the existing 49152-byte JSON cap. That subject assertion is not approval;
+only the original settled native verdict/carrier can qualify. All retained
+code-change visit principals remain contributors across invalidated epochs;
+reviewer/QA/Final are distinct and absent from that complete set. Existing
+intent/action evidence refuses without another effect. Missing review/QA,
+staleness, non-independence, denied/unverified authority and uncertainty raise
+finite causes with no returned admissibility/executable selection/intent/action
+or SQL mutation. U5a does not persist Held.
+
+The successful in-process derivation carries original evidence/prefix pins and
+requires exactly Source Boundary Lint and Web Lint (Node 24); it is not a lint
+observation, live invocation proof, executable selection or lasting grant.
+There is no runtime caller/route/CLI/producer in U5a. Existing review/QA/Final
+successes remain held. U5b must attach assessment producers, translate refusals
+through the existing rollback-then-Held owner, prove the genuine live Final,
+re-read at each boundary and supply the common LOCAL Final-manager core/checks/
+one owned guarded action/independent remote observation. Historical Coding
+adapters, U4 owners, default admission and document behavior remain unchanged.
+Synthetic out-of-repo scaffolding is not native/V3/remote acceptance. Full split,
+caller inventory, effect/settlement separation and NOT-RUN obligations are in
+[the U5 specification](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).

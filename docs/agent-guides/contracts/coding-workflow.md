@@ -2355,3 +2355,22 @@ Incomplete/lookalike/unknown new tables cannot enroll. Normal installed schema
 readers outside this scope still refuse the extension. This source-inert reader
 composition does not enable the bundled v2 definition or change any admitted run.
 See [the reusable storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary).
+
+
+## Sequential U5a boundary (THR-336 / TASK-15200)
+
+Historical Coding selection/command/output families and their LOCAL Final
+adapter remain unchanged. New sequential U5a supplies only an unmounted
+current-evidence reader and pure trusted policy: settled exact-subject
+independent APPROVE plus QA PASS stay mandatory even if graph data omits or
+reroutes review/QA. Retained contributors cannot approve/check/finalize their
+own change. Refusal produces zero executable selection/intent/action; an
+admissibility projection grants none either. U5b still owes assessment/Final
+producers, genuine live Final ownership, exact-head two-lint observation and
+one expected-head non-admin LOCAL guarded merge/remote MERGED/full commit/aware
+time receipt. Daemon records/validates/advances only, with no PR/network effects.
+ACCESS-1 msg131 / PRD v1.0.4 requires current authority revalidation and the
+selected agents' own live repository operations, denied versus unverified
+BLOCK -> Held; it adds no checkpoint, credential or observer. Source/synthetic
+proof is separate from native settlement and real merge acceptance. See
+[the U5 design and preserved owners](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).

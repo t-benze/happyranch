@@ -1103,3 +1103,21 @@ Readiness remains unconditionally disabled; this grants no live allocation.
 Deferred native recovery/reassignment remain unavailable separately. Genuine
 current task/SID report-completion remains the final action; never fabricate
 an earlier result or another task's callback to work around a refusal.
+
+
+Sequential Coding U5a (THR-336 / TASK-15200) adds only an unmounted current-evidence
+reader and pure policy, with no new agent command or live allocation. Mandatory
+same-run/current repository/base/head/PR/epoch independent settled APPROVE and
+QA PASS cannot be waived by omitted/rerouted nodes. All retained change
+contributors remain excluded from reviewer/QA/Final roles. Parsing declarations,
+synthetic callbacks or an admissibility projection grants no executable Final
+selection/intent/action; refusal returns none. Live assessment producers using
+the new syntax are reserved to U5b; existing successful assessment/Final paths stay
+held. Only the selected genuine live Final manager may later use the LOCAL
+finalization core with fresh authority and exact-head Source Boundary Lint plus
+Web Lint (Node 24), one owned expected-head non-admin action and separate remote
+observation/native settlement. ACCESS-1 msg131 / PRD v1.0.4 means daemon current
+authority only; own live-session repository-operation failure is denied versus
+unverified BLOCK -> Held. No daemon GitHub/network I/O, new credential, access
+observer, job finalizer or permission grant. Historical local adapters and U4
+clone preflight remain unchanged. See docs/superpowers/specs/2026-11-11-sequential-coding-u5.md.
