@@ -1939,8 +1939,9 @@ class TasksMixin:
         ):
             raise _RetryEvidenceRefusal("invocation_binding")
         bindings = self._conn.execute(
-            "SELECT invocation_token FROM thread_invocations "
-            "WHERE dispatched_task_id=? AND thread_id=? AND agent_name=?",
+            "SELECT i.invocation_token FROM thread_invocation_dispatches d "
+            "JOIN thread_invocations i ON i.invocation_token=d.invocation_token "
+            "WHERE d.task_id=? AND i.thread_id=? AND i.agent_name=?",
             (successor["id"], thread_id, actor),
         ).fetchall()
         if len(bindings) != 1:
@@ -1950,7 +1951,7 @@ class TasksMixin:
         except ValueError as exc:
             raise _RetryEvidenceRefusal("invocation_binding") from exc
         if (
-            inv is None or inv.dispatched_task_id != successor["id"]
+            inv is None
             or inv.thread_id != thread_id or inv.agent_name != actor
             or inv.purpose not in (ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP)
             or inv.status not in (
@@ -4694,6 +4695,53 @@ class TasksMixin:
 
     @_task_move_admission
     @_synchronized
+    def dispatch_thread_task(
+        self, *, token: str, thread_id: str, dispatcher: str,
+        task: TaskRecord, request_digest: str,
+    ) -> dict:
+        """Commit the root, message, audit and invocation binding together."""
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            move = getattr(self, "_team_move_coordinator", None)
+            if move is not None:
+                move.threads.callback_uncommitted(token)
+            inv = self.get_pending_invocation(token)
+            thread = self.get_thread(thread_id)
+            if (inv is None or inv.thread_id != thread_id or inv.agent_name != dispatcher
+                    or inv.purpose not in (ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP)
+                    or thread is None or thread.status.value != "open"):
+                self._conn.rollback()
+                return {"ok": False, "code": "invocation_token_consumed"}
+            replay = self.get_thread_dispatch(token, request_digest)
+            if replay is not None:
+                self._conn.rollback()
+                return {"ok": True, "replayed": True, **replay}
+            self._insert_task_uncommitted(task)
+            seq = self._append_thread_message_uncommitted(
+                thread_id=thread_id, speaker=dispatcher, kind=ThreadMessageKind.SYSTEM,
+                system_payload={
+                    "kind_tag": "task_dispatched", "task_id": task.id,
+                    "dispatcher": dispatcher, "target_agent": task.assigned_agent,
+                    "team": task.team, "brief_preview": task.brief[:160],
+                },
+            )
+            self._record_dispatch_on_invocation_uncommitted(
+                token, task_id=task.id, request_digest=request_digest,
+            )
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id, agent=dispatcher, action="thread_dispatch",
+                payload={"task_id": task.id, "dispatcher": dispatcher,
+                         "target_agent": task.assigned_agent, "team": task.team},
+            )
+            self._conn.commit()
+            return {"ok": True, "replayed": False, "task_id": task.id,
+                    "system_message_seq": seq}
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    @_task_move_admission
+    @_synchronized
     def dispatch_task_followup_replacement(
         self,
         *,
@@ -4702,8 +4750,9 @@ class TasksMixin:
         dispatcher: str,
         task: TaskRecord,
         team: str,
+        request_digest: str,
     ) -> dict:
-        """Atomically admit the single replacement allowed to a task follow-up.
+        """Atomically admit replacements from the same task follow-up turn.
 
         The triggering SYSTEM message and the dedicated audit row are the
         existing persisted authority for the causal-root/replacement relation.
@@ -4731,9 +4780,10 @@ class TasksMixin:
             if row is None:
                 self._conn.rollback()
                 return {"ok": False, "code": "task_followup_dispatch_stale"}
-            if row["dispatched_task_id"] is not None:
+            replay = self.get_thread_dispatch(token, request_digest)
+            if replay is not None:
                 self._conn.rollback()
-                return {"ok": False, "code": "task_followup_dispatch_already_used"}
+                return {"ok": True, "replayed": True, **replay}
             try:
                 payload = json.loads(row["system_payload_json"] or "null")
             except (TypeError, json.JSONDecodeError):
@@ -4805,11 +4855,14 @@ class TasksMixin:
                 self._conn.rollback()
                 return {"ok": False, "code": "task_followup_dispatch_cause_invalid"}
 
-            spent = prior_replacement is not None or self._conn.execute(
-                """SELECT 1 FROM audit_log
-                    WHERE action = 'thread_task_followup_replacement_dispatched'
-                      AND json_extract(payload, '$.original_root_task_id') = ?""",
-                (original_id,),
+            spent = self._conn.execute(
+                """SELECT 1 FROM audit_log a
+                    LEFT JOIN thread_invocation_dispatches d
+                      ON d.task_id = json_extract(a.payload, '$.replacement_root_task_id')
+                    WHERE a.action = 'thread_task_followup_replacement_dispatched'
+                      AND (a.task_id = ? OR json_extract(a.payload, '$.original_root_task_id') = ?)
+                      AND (d.invocation_token IS NULL OR d.invocation_token != ?)""",
+                (original_id, original_id, token),
             ).fetchone() is not None
             if spent:
                 self._conn.rollback()
@@ -4845,15 +4898,9 @@ class TasksMixin:
                     "replacement_for_task_id": original_id,
                 },
             )
-            changed = self._conn.execute(
-                """UPDATE thread_invocations SET dispatched_task_id = ?
-                     WHERE invocation_token = ? AND status = 'pending'
-                       AND dispatched_task_id IS NULL""",
-                (task.id, token),
+            self._record_dispatch_on_invocation_uncommitted(
+                token, task_id=task.id, request_digest=request_digest,
             )
-            if changed.rowcount != 1:
-                self._conn.rollback()
-                return {"ok": False, "code": "task_followup_dispatch_already_used"}
             audit_payload = {
                 "thread_id": thread_id,
                 "original_root_task_id": original_id,
@@ -4878,7 +4925,8 @@ class TasksMixin:
                 }), now),
             )
             self._conn.commit()
-            return {"ok": True, "system_message_seq": sys_seq,
+            return {"ok": True, "replayed": False, "task_id": task.id,
+                    "system_message_seq": sys_seq,
                     "original_root_task_id": original_id}
         except Exception:
             self._conn.rollback()

@@ -120,6 +120,7 @@ class AuditLogger:
         actor: str = "founder",
         thread_id: str | None = None,
         resolution_path: str = "manual_break_glass",
+        thread_invocation_id: int | None = None,
     ) -> None:
         """Record that an escalated task was resolved.
 
@@ -135,6 +136,8 @@ class AuditLogger:
         }
         if thread_id is not None:
             payload["thread_id"] = thread_id
+        if thread_invocation_id is not None:
+            payload["thread_invocation_id"] = thread_invocation_id
         self._db.insert_audit_log(
             task_id=task_id,
             agent=actor,

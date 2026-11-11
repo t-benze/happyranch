@@ -805,20 +805,47 @@ class ThreadsMixin:
         return self._row_to_invocation(row) if row else None
 
     @_synchronized
-    def record_dispatch_on_invocation(
-        self, token: str, *, task_id: str
-    ) -> bool:
-        move = getattr(self, "_team_move_coordinator", None)
-        if move is not None:
-            move.threads.callback_uncommitted(token)
-        cursor = self._conn.execute(
-            "UPDATE thread_invocations SET dispatched_task_id = ? "
-            "WHERE invocation_token = ? AND status = 'pending' "
-            "AND dispatched_task_id IS NULL",
+    def get_thread_dispatch(self, token: str, request_digest: str) -> dict | None:
+        """Read the original dispatch result without allocating or enqueueing."""
+        row = self._conn.execute(
+            """SELECT d.task_id, t.team, t.assigned_agent, m.seq AS system_message_seq
+                 FROM thread_invocation_dispatches d
+                 JOIN tasks t ON t.id = d.task_id
+                 JOIN thread_invocations i ON i.invocation_token = d.invocation_token
+                 JOIN thread_messages m ON m.thread_id = i.thread_id
+                  AND m.kind = 'system'
+                  AND json_extract(m.system_payload_json, '$.kind_tag') = 'task_dispatched'
+                  AND json_extract(m.system_payload_json, '$.task_id') = d.task_id
+                WHERE d.invocation_token = ? AND d.request_digest = ?""",
+            (token, request_digest),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def _record_dispatch_on_invocation_uncommitted(
+        self, token: str, *, task_id: str, request_digest: str,
+    ) -> None:
+        """Caller owns the dispatch transaction; retain the legacy FIRST task."""
+        self._conn.execute(
+            "INSERT INTO thread_invocation_dispatches "
+            "(invocation_token, task_id, request_digest, created_at) VALUES (?, ?, ?, ?)",
+            (token, task_id, request_digest, _now().isoformat()),
+        )
+        self._conn.execute(
+            "UPDATE thread_invocations SET dispatched_task_id = COALESCE(dispatched_task_id, ?) "
+            "WHERE invocation_token = ?",
             (task_id, token),
         )
-        self._conn.commit()
-        return cursor.rowcount == 1
+
+    @_synchronized
+    def thread_invocation_resolved_task(self, invocation_id: int, task_id: str) -> bool:
+        """The existing resolution audit pins a replay to one invocation/task."""
+        return self._conn.execute(
+            """SELECT 1 FROM audit_log WHERE task_id = ? AND action = 'escalation_resolved'
+                 AND json_extract(payload, '$.thread_invocation_id') = ?
+                 AND json_extract(payload, '$.resolution_path') = 'thread_manual_supersede'
+                 AND json_extract(payload, '$.decision') = 'supersede'""",
+            (task_id, invocation_id),
+        ).fetchone() is not None
 
     @_synchronized
     def list_thread_invocations(

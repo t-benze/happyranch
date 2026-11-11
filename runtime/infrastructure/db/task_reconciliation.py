@@ -374,7 +374,11 @@ class TaskReconciliation:
 
     def dispatch(self, root: dict) -> dict:
         thread = root["dispatched_from_thread_id"]
-        rows = self.rows("SELECT * FROM thread_invocations WHERE dispatched_task_id=? ORDER BY id", (root["id"],))
+        rows = self.rows(
+            "SELECT i.* FROM thread_invocation_dispatches d JOIN thread_invocations i "
+            "ON i.invocation_token=d.invocation_token WHERE d.task_id=? ORDER BY i.id",
+            (root["id"],),
+        )
         require(len(rows) == 1, "invocation_binding")
         inv = rows[0]
         require(inv["thread_id"] == thread and inv["agent_name"] == self.scope["manager"]

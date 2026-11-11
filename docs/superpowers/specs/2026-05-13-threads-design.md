@@ -127,8 +127,7 @@ Usage v1 PR2b extension. `Database.reply_conversational` writes the link in the
 same transaction as the message only when that transaction itself terminalizes
 the matching thread/agent token (modern REPLY settlement, legacy REPLY fallback,
 BOOTSTRAP, or TASK_FOLLOWUP). A failed link rolls the message and terminal
-transition back together. Every other terminal path—including manual escalation
-resolution via `consume_invocation`, decline, failure, timeout, discard, and
+transition back together. Every other terminal path—including decline, failure, timeout, discard, and
 restart recovery—leaves it NULL. Legacy rows remain NULL without inference or
 backfill. NULL means “reply outcome not recorded” (legacy or no persisted
 message), not “no reply.”
@@ -277,7 +276,7 @@ An agent's authority on a thread is **co-presence with the founder**, scoped to 
 - Dispatch a task (`opc threads dispatch ...`) — see §7.
 - Submit a close-out (`opc threads close-out ...`) — only when `purpose='close_out'`.
 
-Authority is enforced via the invocation token (§3.6.1). Each token is single-use for reply/decline/close-out (terminal) and at-most-once for dispatch (the dispatch leg consumes only the dispatch slot on the row). Without a valid pending token, every callback returns 401 `invocation_token_invalid` or 409 `invocation_token_consumed`. This guarantees: one daemon-triggered invocation → at most one terminal callback + at most one dispatch from that agent on that thread at that seq.
+Authority is enforced via the invocation token (§3.6.1). Each token is single-use for reply/decline/close-out (terminal). Under THR-352, a pending REPLY, BOOTSTRAP or TASK_FOLLOWUP permits N distinct self-dispatches and N manager-authorized in-lineage escalation resolutions before its terminal callback. Dispatch and resolution leave the turn open. Without a valid pending token, callbacks return 401 `invocation_token_invalid` or 409 `invocation_token_consumed`.
 
 ### 4.3 Addressing semantics
 
@@ -431,7 +430,16 @@ Request:
 }
 ```
 
-Token validation: same as §5.3 steps 1–2 (with `agent_name=dispatcher`), plus `dispatched_task_id IS NULL` on the row (at most one dispatch per token). Else 409 `dispatch_already_used`. Invocation purpose may be `'reply'` or `'bootstrap'` (workers in a bootstrap turn can still dispatch). Close-out tokens may NOT dispatch (close-outs are about wrapping up, not creating new work) — purpose `'close_out'` returns 400 `wrong_invocation_purpose`.
+Token validation: same as §5.3 steps 1–2 (with `agent_name=dispatcher`).
+THR-352 removes the per-token dispatch slot restriction. Purposes are `reply`,
+`bootstrap` and `task_followup`; follow-up replacements remain manager-only with
+the same-token causal-root restriction (§ thread-task-followup design). Close-out
+purposes remain ineligible. Self-only dispatch and same-team authority apply.
+
+Idempotency: SHA-256 over compact UTF-8 JSON array (stripped brief, effective_team,
+effective_target, resolves-or-empty, purpose). The same pending token and digest
+return the original task ID and `replayed: true` with no new effects. Two identical
+dispatches in one turn are one dispatch. No count cap or rate limit is introduced.
 
 After token validation, role/team validation mirrors `POST /talks/{id}/dispatch` (see §7).
 
@@ -439,8 +447,8 @@ Effect:
 - Allocate `task_id`.
 - Insert `tasks` row with `dispatched_from_thread_id=<thread_id>`, `assigned_agent=effective_target`, `team=effective_team`.
 - Insert a `kind='system', kind_tag='task_dispatched'` message at next `seq` in the thread.
-- Set `thread_invocations.dispatched_task_id = task_id` (token stays `status='pending'` — the agent must still reply or decline).
-- Audit `task_dispatched` (scoped to the new task, payload includes `thread_id`) and `thread_dispatch` (scoped to the thread).
+- Insert a unique task binding into `thread_invocation_dispatches` (token + request_digest is also unique); keep `thread_invocations.dispatched_task_id` as the FIRST task only. Task, SYSTEM message, binding and thread_dispatch audit commit atomically. The token stays pending until reply or decline. Existing non-null legacy slots are idempotently backfilled with `legacy:<task_id>` digests, since effective historical requests cannot reliably be reconstructed.
+- Audit `thread_dispatch` scoped to the thread, with the new task ID.
 - Outside the lock, `enqueue_task(state, task_id)`.
 
 Response:
@@ -450,7 +458,9 @@ Response:
   "team": "engineering",
   "assigned_agent": "dev_agent",
   "dispatched_from_thread_id": "THR-014",
-  "system_message_seq": 5
+  "system_message_seq": 5,
+  "superseded_task_id": null,
+  "replayed": false
 }
 ```
 
@@ -962,7 +972,7 @@ No new top-level `OPC_` env vars in v1. Org-level config is the customization su
 | Agent callback missing `invocation_token` or token doesn't exist / mismatched `(thread_id, agent_name)` | 401 `invocation_token_invalid`. |
 | Agent callback presenting an already-consumed token | 409 `invocation_token_consumed`. |
 | Agent callback presenting a token whose purpose is wrong for the call (e.g., close_out token used for reply, or reply token used for close-out) | 400 `wrong_invocation_purpose`. |
-| Agent dispatch when the token already has `dispatched_task_id` set | 409 `dispatch_already_used`. |
+| Agent repeats a dispatch on the same pending token | Same canonical request: original task with `replayed: true`; distinct request: another task. Terminal tokens still return 409 `invocation_token_consumed`. |
 | Agent reply when not a participant | 403 `not_participant`. |
 | Agent reply with `in_response_to_seq` referencing a message that didn't address them | 400 `not_addressed`. |
 | `addressed_to` contains an agent who is not a current participant | 422 `addressee_not_participant`. |

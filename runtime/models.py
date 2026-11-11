@@ -4108,6 +4108,7 @@ class ThreadInvocation(BaseModel):
     executor: str | None = None
     model: str | None = None
     reply_message_seq: int | None = None
+    # Legacy FIRST dispatch only; thread_invocation_dispatches owns all bindings.
     dispatched_task_id: str | None = None
     decline_reason: str | None = None
 

@@ -1932,6 +1932,14 @@ class SchemaMixin:
                 ON thread_invocations(thread_id);
             CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
                 ON thread_invocations(status) WHERE status = 'pending';
+            CREATE TABLE IF NOT EXISTS thread_invocation_dispatches (
+                id INTEGER PRIMARY KEY,
+                invocation_token TEXT NOT NULL,
+                task_id TEXT NOT NULL UNIQUE,
+                request_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(invocation_token, request_digest)
+            );
             -- GitHub #688 Phase 1 Slice A: additive, provider-neutral
             -- per-(thread_id, agent_name) conversational REPLY delivery state.
             -- Intentionally dark until Slice B wires the route/runner
@@ -2256,6 +2264,16 @@ class SchemaMixin:
         self._migrate_session_token_usage_scope_columns()
         self._migrate_thread_invocation_attribution_columns()
         self._migrate_thread_invocation_reply_message_link()
+        # Preserve every legacy first-task binding. Legacy digests are namespaced:
+        # old rows cannot reconstruct the original effective request reliably.
+        self._conn.execute(
+            """INSERT OR IGNORE INTO thread_invocation_dispatches
+               (invocation_token, task_id, request_digest, created_at)
+               SELECT invocation_token, dispatched_task_id,
+                      'legacy:' || dispatched_task_id, enqueued_at
+                 FROM thread_invocations WHERE dispatched_task_id IS NOT NULL"""
+        )
+        self._conn.commit()
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
         # error so this is idempotent across restarts.

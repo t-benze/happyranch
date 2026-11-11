@@ -1685,11 +1685,13 @@ async def resolve_escalation_in_process(
     actor: str = "founder",
     thread_id: str | None = None,
     resolution_path: str = "manual_break_glass",
-) -> str:
+    thread_invocation_token: str | None = None,
+) -> str | dict:
     """Same DB transition / audit / queue re-enqueue as the HTTP handler at
     POST /tasks/{task_id}/resolve-escalation.
 
     Returns the new task status value (e.g. "pending" or "superseded").
+    Thread invocation callers receive {new_status, replayed} instead.
     Raises HTTPException for the same validation failures the route raises so
     the HTTP wrapper can re-raise as-is.
 
@@ -1713,6 +1715,14 @@ async def resolve_escalation_in_process(
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         assert_origin_unheld(org, task_id)
+        thread_invocation = None
+        if thread_invocation_token is not None:
+            async with org.db_lock:
+                thread_invocation = org.db.get_pending_invocation(thread_invocation_token)
+                if thread_invocation is None:
+                    raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+                if org.db.thread_invocation_resolved_task(thread_invocation.id, task_id):
+                    return {"new_status": TaskStatus.SUPERSEDED.value, "replayed": True}
         # Path B: an escalated task is status=ESCALATED.
         is_escalated = task.status == TaskStatus.ESCALATED
         if not is_escalated:
@@ -1744,6 +1754,14 @@ async def resolve_escalation_in_process(
                 )
             async with org.db_lock:
                 with origin_guard(org, task_id):
+                    if thread_invocation is not None:
+                        if org.db.get_pending_invocation(thread_invocation_token) is None:
+                            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+                        if org.db.thread_invocation_resolved_task(thread_invocation.id, task_id):
+                            return {"new_status": TaskStatus.SUPERSEDED.value, "replayed": True}
+                        current = org.db.get_task(task_id)
+                        if current is None or current.status != TaskStatus.ESCALATED:
+                            raise HTTPException(status_code=409, detail={"code": "task_not_escalated"})
                     audit = AuditLogger(org.db)
                     successor_id = org.db.next_task_id()
                     org.db.insert_task(TaskRecord(
@@ -1778,6 +1796,7 @@ async def resolve_escalation_in_process(
                         rationale=rationale,
                         actor=actor,
                         thread_id=thread_id, resolution_path=resolution_path,
+                        thread_invocation_id=thread_invocation.id if thread_invocation is not None else None,
                     )
                     # Best-effort: consume any open notification rows not already
                     # consumed by _supersede_predecessor_locked inside the helper.
@@ -1789,6 +1808,8 @@ async def resolve_escalation_in_process(
             _kill_jobs_for_terminating_task(org.orchestrator, task_id)
             if state.queue is not None:
                 enqueue_task(state, org.slug, successor_id)
+            if thread_invocation is not None:
+                return {"new_status": TaskStatus.SUPERSEDED.value, "replayed": False}
             return TaskStatus.SUPERSEDED.value
 
         # --- continue ---

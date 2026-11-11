@@ -624,6 +624,14 @@ _RELEASE_REFERENCE_PREIMAGES = (
             )""",
 """CREATE INDEX idx_task_attachments_task
                 ON task_attachments(task_id)""",
+"""CREATE TABLE thread_invocation_dispatches (
+                id INTEGER PRIMARY KEY,
+                invocation_token TEXT NOT NULL,
+                task_id TEXT NOT NULL UNIQUE,
+                request_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(invocation_token, request_digest)
+            )""",
 """CREATE TABLE thread_invocations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 thread_id TEXT NOT NULL,
@@ -1426,6 +1434,14 @@ CREATE TABLE thread_exchange_deferrals (
                 PRIMARY KEY (thread_id, exchange_id, agent_name),
                 FOREIGN KEY (thread_id, exchange_id)
                     REFERENCES thread_reply_exchange(thread_id, exchange_id)
+            );
+CREATE TABLE thread_invocation_dispatches (
+                id INTEGER PRIMARY KEY,
+                invocation_token TEXT NOT NULL,
+                task_id TEXT NOT NULL UNIQUE,
+                request_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(invocation_token, request_digest)
             );
 CREATE TABLE thread_invocations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
