@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth", "teardown")
+SUITES = ("truth", "teardown", "disk-sweep")
 PROC_PIDTBSDINFO = 3
 
 
@@ -973,6 +973,245 @@ def teardown(report: dict[str, Any]) -> None:
         raise RuntimeError("native teardown checks failed")
 
 
+def disk_sweep(report: dict[str, Any]) -> None:
+    """Native preview plus private destructive fixtures; never live cleanup."""
+    import socket
+    import sqlite3
+    import stat
+    from collections.abc import Iterator
+    from contextlib import closing, contextmanager
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(ROOT))
+    from runtime.daemon import _disk_sweep_fs as fs
+    from runtime.daemon import disk_sweeper as sweeper
+
+    checks: list[dict[str, Any]] = []
+    section: dict[str, Any] = {"checks": checks}
+    report["disk_sweep"] = section
+    deadline = time.monotonic() + 60
+
+    def check(name: str, passed: bool, observed: Any) -> None:
+        checks.append(dict(name=name, status="PASS" if passed else "FAIL", observed=observed))
+
+    def write(path: Path, data: bytes) -> None:
+        if len(data) > 4096:
+            raise RuntimeError("disk-sweep fixture write exceeds 4096 bytes")
+        path.write_bytes(data)
+
+    def seed(path: Path) -> list[str]:
+        path.mkdir(parents=True, mode=0o700)
+        write(path / "file", b"private disposable fixture\n")
+        os.symlink("../outside", path / "symlink")
+        os.link(path / "file", path / "hardlink")
+        previous = Path.cwd()
+        try:
+            os.chdir(path)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
+                endpoint.bind("socket")  # avoid sockaddr_un's short path limit
+        finally:
+            os.chdir(previous)
+        os.mkfifo(path / "fifo", 0o600)
+        return ["fifo", "file", "hardlink", "socket", "symlink"]
+
+    real_open, real_stat, real_unlink = os.open, os.stat, os.unlink
+
+    @contextmanager
+    def no_leaf_opens() -> Iterator[dict[str, int]]:
+        attempts = {"leaf_opens": 0, "directory_opens": 0}
+
+        def guarded_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+            # Check the actual object as well as flags, including dangling links.
+            observed = real_stat(path, dir_fd=kwargs.get("dir_fd"), follow_symlinks=False)
+            if not stat.S_ISDIR(observed.st_mode) or not flags & os.O_DIRECTORY:
+                attempts["leaf_opens"] += 1
+                raise AssertionError("product attempted a leaf open")
+            attempts["directory_opens"] += 1
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch.object(os, "open", guarded_open):
+            yield attempts
+
+    mounts = fs.mounts(deadline)
+    check("native_mount_table", "/" in mounts and len(mounts) > 0,
+          {"count": len(mounts), "root_present": "/" in mounts})
+    for failure in ("unavailable", "layout", "malformed"):
+        real_sizeof = ct.sizeof
+        if failure == "unavailable":
+            fault = patch.object(ct, "CDLL", side_effect=OSError("probe unavailable mount API"))
+        elif failure == "layout":
+            fault = patch.object(ct, "sizeof", side_effect=lambda value: 0 if value is fs._DarwinStatfs else real_sizeof(value))
+        else:
+            # Replace the bounded native table copy with unterminated fields.
+            fault = patch.object(ct, "string_at", side_effect=lambda pointer, size: b"x" * size)
+        reason = None
+        with fault:
+            try:
+                fs.mounts(deadline)
+            except fs.Retain as exc:
+                reason = str(exc)
+        check("mount_evidence_retains_" + failure, reason == "unknown_mount_evidence", reason)
+    # The workspace checkout is private to this job. Resolving its temp root
+    # avoids Darwin /var -> /private/var aliases in the no-follow product walk.
+    with tempfile.TemporaryDirectory(prefix=".disk-sweep-", dir=ROOT) as folder:
+        scratch = Path(folder).resolve(strict=True)
+        section["scratch_removed"] = False
+        write(scratch / "outside", b"outside symlink target preserved\n")
+        outside = (scratch / "outside").read_bytes()  # fixed <=4096-byte fixture
+
+        # Exercise discovery, SQLite ownership, manifest, age, mounts and both
+        # snapshot admissions through the real product sweep_org dry-run path.
+        org = scratch / "org"
+        workspace = org / "workspaces/probe"
+        tmp = workspace / ".happyranch/task-tmp"
+        manifests = workspace / ".happyranch/task-scratch-manifests"
+        manifests.mkdir(parents=True)
+        eligible = tmp / "TASK-1"
+        leaves = seed(eligible)
+        recent = tmp / "TASK-2"
+        recent.mkdir()
+        write(recent / "recent", b"recent fixture\n")
+        now = time.time() + 7200  # synthetic age clock; no wait or ctime forgery
+        os.utime(recent / "recent", (now, now))
+        for candidate in (eligible, recent):
+            manifest = dict(version=1, task_id=candidate.name, required_root=str(candidate),
+                            observed_root=str(candidate), root_classification="regenerable_scratch",
+                            manifest_classification="durable_recovery_artifact",
+                            lock_classification="durable_recovery_artifact", producers=[])
+            write(manifests / (candidate.name + ".json"), json.dumps(manifest).encode())
+        # Minimal read-only evidence fixture, not a runtime schema initializer.
+        # A 16-page ceiling bounds every SQLite write (64KiB at 4096/page).
+        with closing(sqlite3.connect(org / "happyranch.db")) as conn, conn:
+            conn.execute("PRAGMA page_size=4096")
+            conn.execute("PRAGMA max_page_count=16")
+            conn.execute("PRAGMA journal_mode=OFF")
+            conn.execute("CREATE TABLE tasks(id TEXT,parent_task_id TEXT,status TEXT,assigned_agent TEXT)")
+            conn.execute("CREATE TABLE audit_log(task_id TEXT,action TEXT,payload TEXT)")
+            conn.execute("CREATE TABLE jobs(task_id TEXT,status TEXT)")
+            conn.executemany("INSERT INTO tasks VALUES(?,?,?,?)", [
+                ("TASK-1", "TASK-3", "completed", "probe"),
+                ("TASK-2", "TASK-3", "completed", "probe"),
+                ("TASK-3", None, "completed", "probe"),
+            ])
+            conn.executemany("INSERT INTO audit_log VALUES(?,?,?)", [
+                (candidate.name, "session_start", json.dumps({"workspace": str(workspace)}))
+                for candidate in (eligible, recent)
+            ])
+        before = {p: fs.snapshot(p, deadline, scratch=True) for p in (eligible, recent)}
+        preview = sweeper.sweep_org(org, deadline, mode="dry_run", now=now)
+        states = {Path(c["path"]).name: (c["state"], c.get("reason")) for c in preview["candidates"]}
+        check("real_preview_classification", preview["outcome"] == "complete"
+              and states == {"TASK-1": ("eligible", None), "TASK-2": ("retained", "changed_within_hour")},
+              states)
+        check("preview_nonmutating", all(fs.trees_equal(tree, fs.snapshot(p, deadline, scratch=True), deadline)
+                                         for p, tree in before.items()), {"candidates": len(before)})
+
+        # A separate tree reaches real unlink: dry-run cannot test this branch.
+        target = scratch / "mutation"
+        seed(target)
+        tree = fs.snapshot(target, deadline, scratch=True)
+        removed: list[str] = []
+
+        def record_unlink(name: str, *, dir_fd: int) -> None:
+            real_unlink(name, dir_fd=dir_fd)
+            if len(removed) >= 5:
+                raise AssertionError("unexpected extra unlink")
+            removed.append(name)
+
+        with no_leaf_opens() as attempts, patch.object(os, "unlink", record_unlink):
+            fs.mutate(target, tree, deadline, remove=True, scratch=True)
+        check("all_leaf_types_removed_without_open", not target.exists() and sorted(removed) == leaves
+              and attempts["leaf_opens"] == 0 and attempts["directory_opens"] > 0,
+              dict(removed=removed, **attempts))
+        check("symlink_target_preserved", (scratch / "outside").read_bytes() == outside, True)
+
+        # The hardlink exception may relax only nlink/ctime, and only to the
+        # exact expected decrement. Other sibling changes remain retention.
+        for change in ("mode", "size", "mtime", "nlink"):
+            target = scratch / ("hardlink-" + change)
+            target.mkdir()
+            write(target / "a", b"original\n")
+            os.link(target / "a", target / "b")
+            tree = fs.snapshot(target, deadline, scratch=True)
+            removed = []
+
+            def changed_sibling(name: str, *, dir_fd: int) -> None:
+                real_unlink(name, dir_fd=dir_fd)
+                removed.append(name)
+                if name == "a":
+                    sibling = target / "b"
+                    if change == "mode":
+                        os.chmod(sibling, 0o400)
+                    elif change == "size":
+                        write(sibling, b"longer changed content\n")
+                    elif change == "mtime":
+                        os.utime(sibling, ns=(tree["b"].st_atime_ns, tree["b"].st_mtime_ns + 1000000000))
+                    else:
+                        os.link(sibling, scratch / "extra-hardlink")
+
+            reason = None
+            with no_leaf_opens() as attempts, patch.object(os, "unlink", changed_sibling):
+                try:
+                    fs.mutate(target, tree, deadline, remove=True, scratch=True)
+                except fs.Retain as exc:
+                    reason = str(exc)
+            check("changed_hardlink_retains_" + change, reason == "tree_changed_before_mutation"
+                  and removed == ["a"] and (target / "b").exists() and attempts["leaf_opens"] == 0,
+                  dict(reason=reason, removed=removed, **attempts))
+
+        # Inject at the final stat boundary, after visit's first leaf check.
+        # A spare inode exists before snapshot so replacement cannot reuse it.
+        for change in ("swap", "mode", "size", "mtime", "nlink", "ctime"):
+            target = scratch / change
+            target.mkdir()
+            leaf = target / "leaf"
+            write(leaf, b"original\n")
+            spare = scratch / (change + "-spare")
+            write(spare, b"replacement\n")
+            tree = fs.snapshot(target, deadline, scratch=True)
+            calls = 0
+            unlinks = 0
+
+            def changed_stat(name: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+                nonlocal calls
+                if name == "leaf" and kwargs.get("dir_fd") is not None:
+                    calls += 1
+                    if calls == 2:
+                        if change == "swap":
+                            os.replace(spare, leaf)
+                        elif change == "mode":
+                            os.chmod(leaf, 0o400)
+                        elif change == "size":
+                            write(leaf, b"longer changed content\n")
+                        elif change == "mtime":
+                            os.utime(leaf, ns=(tree["leaf"].st_atime_ns, tree["leaf"].st_mtime_ns + 1000000000))
+                        elif change == "nlink":
+                            os.link(leaf, scratch / "extra-link")
+                        else:
+                            os.chmod(leaf, 0o400)
+                            os.chmod(leaf, stat.S_IMODE(tree["leaf"].st_mode))
+                return real_stat(name, *args, **kwargs)
+
+            def count_unlink(name: str, *, dir_fd: int) -> None:
+                nonlocal unlinks
+                unlinks += 1
+                real_unlink(name, dir_fd=dir_fd)
+
+            reason = None
+            with no_leaf_opens() as attempts, patch.object(os, "stat", changed_stat), patch.object(os, "unlink", count_unlink):
+                try:
+                    fs.mutate(target, tree, deadline, remove=True, scratch=True)
+                except fs.Retain as exc:
+                    reason = str(exc)
+            check("changed_leaf_retains_" + change, reason == "identity_changed" and calls == 2
+                  and unlinks == 0 and leaf.exists() and attempts["leaf_opens"] == 0,
+                  dict(reason=reason, final_stat_reached=calls == 2, unlinks=unlinks, **attempts))
+    section["scratch_removed"] = not scratch.exists()
+    check("private_scratch_removed", section["scratch_removed"], section["scratch_removed"])
+    if any(row["status"] != "PASS" for row in checks):
+        raise RuntimeError("native disk-sweep checks failed")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=SUITES, default="truth")
@@ -1003,7 +1242,7 @@ def main() -> int:
         signal.signal(signal.SIGTERM, interrupt)
         signal.signal(signal.SIGINT, interrupt)
         try:
-            {"truth": truth, "teardown": teardown}[args.suite](report)
+            {"truth": truth, "teardown": teardown, "disk-sweep": disk_sweep}[args.suite](report)
             report["completed"] = True
         except Exception as exc:  # noqa: BLE001 -- emit partial JSON for any internal probe error
             report.update(
@@ -1022,6 +1261,8 @@ def main() -> int:
         if "internal_error" in report:
             print(report["internal_error"], file=sys.stderr)
     encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"
+    if args.suite == "disk-sweep" and len(encoded.encode("utf-8")) > 65536:
+        raise RuntimeError("disk-sweep report exceeds 64KiB")
     if args.output:
         args.output.write_text(encoded, encoding="utf-8")
     print(encoded, end="")

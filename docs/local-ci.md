@@ -2740,3 +2740,23 @@ test/protected proof/dispatch or deployment is allocated to this source chain.
 Failed12753/12755/BLOCK22272/12793 REVISE and latest40047851140 FAILED/HealthFAIL11/
 EACH56UNKNOWN-null-zeroPASS/skipped0 persist; old12724 custody/effects/retirement
 stay separate OPEN/UNKNOWN. Consumed ONE362/12741 is never reused.
+
+### THR-346 S2 native disk sweep
+
+The existing manager-operated `happyranch-mac-native-probe` job accepts
+`SUITE=disk-sweep` through the pinned Python allowlist, with no job configuration
+change. See [the probe contract](../ci/jenkins/mac-native-probe/README.md#s2-disk-sweep-suite).
+`python3 scripts/mac_native/probe.py --suite disk-sweep --output /absolute/probe.json`
+emits skipped JSON on Linux; that is not native proof. Darwin runs real nonmutating
+product preview over a bounded private synthetic org, then separate disposable
+mutation fixtures for file/symlink/internal-hardlink/socket/FIFO removal without
+leaf opens, plus final-stat and hardlink drift retention. Scratch is removed;
+fixture writes, SQLite size and report output are capped. No retired Python unit,
+integration or E2E execution is added to local/merge CI.
+
+Linux mountinfo/O_PATH behavior stays unchanged. Darwin uses a checked public
+XNU xnu-11417.101.15 getmntinfo/statfs ABI and full pre-unlink no-follow signatures,
+with only exact own-unlink nlink/ctime allowances. It never opens a leaf and loses
+Linux's post-unlink pinned-inode observation. The accepted non-atomic
+stat-to-unlink window remains within the existing same-UID threat model; static
+CI and a Linux logic demonstration cannot establish native/frozen parity.

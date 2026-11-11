@@ -84,8 +84,8 @@ From a checkout, using an existing Python 3.12–3.14 interpreter:
 python3 scripts/mac_native/probe.py --suite truth --output /absolute/probe.json
 ```
 
-Suites: `truth` (S0 observations) and `teardown` (THR-346 S1 product lifecycle).
-The existing job accepts either suite without configuration changes.
+Suites: `truth` (S0), `teardown` (S1 lifecycle), and `disk-sweep` (S2 cleanup).
+The existing job accepts these suites without configuration changes.
 JSON goes to stdout and the optional output path;
 human observations go to stderr. Linux prints `darwin-only`, emits skipped
 JSON and exits 0. Darwin findings, including a broken repo decoder or unavailable
@@ -203,3 +203,39 @@ Native evidence at the repaired head: NOT RUN. Prior build #3 failed as describe
 above; Linux skipped output and lint are not native proof.
 No Jenkins creation/reconfiguration, additional trigger, app build,
 deployment or daemon restart is part of this slice.
+
+## S2 disk-sweep suite
+
+```sh
+python3 scripts/mac_native/probe.py --suite disk-sweep --output /absolute/probe.json
+```
+
+The hyphenated name fits the existing shell identifier rule; only the pinned
+Python SUITES allowlist/dispatcher changes. No Jenkins configuration change,
+new job or trigger is needed. Native execution belongs to the program manager;
+authorship and Linux skipped JSON do not spend a native build or prove Darwin.
+
+The suite reads the real product Darwin mount set and checks unavailable, bad-layout
+and malformed evidence retention, then calls real `sweep_org`
+in dry-run mode over a private synthetic org with bounded SQLite ownership,
+manifest and terminal-lineage evidence. A synthetic age clock admits TASK-1 and
+retains recent TASK-2. Complete before/after snapshots must match: preview never
+exercises unlink and cannot prove mutation. A separate private tree invokes real
+`mutate(remove=True, scratch=True)` on a file/internal hardlink pair, symlink,
+Unix socket and FIFO. A test-side guard rejects every leaf open; observed unlink
+names and root removal prove all five leaves were removed. An outside symlink
+target must survive. Four hardlink sibling drift cases (mode/size/mtime/nlink)
+and six final-stat drift cases (swap/mode/size/mtime/nlink/ctime) require retention
+with no unapproved unlink. Changes are injected by test-side syscall wrappers;
+there is no production test-only seam.
+
+All fixtures live in a private temporary directory inside the job checkout,
+removed by its context manager; successful JSON additionally asserts removal.
+Each fixture payload/manifest is <=4096 bytes; SQLite uses 4096-byte pages with
+max_page_count=16 and no journal; the fixed table/row set cannot grow beyond
+64KiB. The suite has a shared 60-second cooperative product deadline, bounded
+case/diagnostic counts and a 64KiB serialized report cap before stdout/file
+writes. Existing job per-file/log/timeout limits still apply. Linux emits skipped
+JSON and exits0. This source probe does not establish frozen helper dispatch
+(S3), workspace-cleanup scanning (S4), native parity until executed, or physical
+space reclamation. Python units remain retired, integration skipped THR243seq42.

@@ -1,4 +1,4 @@
-"""Private Linux filesystem observations for THR307; no legacy cleanup policy.
+"""Private Linux/Darwin filesystem observations for THR307; no legacy cleanup policy.
 
 Paths are walked from / with O_NOFOLLOW, then all tree operations are dir-fd
 relative. No chmod follows symlinks. Mountpoints (including same-device bind
@@ -8,13 +8,17 @@ lock. The daemon supervisor bounds the owning process group, not a thread.
 """
 from __future__ import annotations
 
+import ctypes as ct
 import os
+import platform
 import re
 import stat
+import sys
 import time
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
+from threading import Lock
 
 
 class Retain(RuntimeError):
@@ -83,8 +87,110 @@ def directory(path: Path, deadline: float):
         os.close(fd)
 
 
+_DARWIN_MOUNT_LOCK = Lock()
+
+
+class _DarwinStatfs(ct.Structure):
+    """Public LP64 statfs ABI pinned to XNU xnu-11417.101.15 bsd/sys/mount.h.
+
+    https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.101.15/bsd/sys/mount.h
+    __DARWIN_STRUCT_STATFS64, MAXPATHLEN=1024, fsid_t=int32_t[2].
+    """
+
+    _fields_ = [
+        ('bsize', ct.c_uint32), ('iosize', ct.c_int32),
+        ('blocks', ct.c_uint64), ('bfree', ct.c_uint64),
+        ('bavail', ct.c_uint64), ('files', ct.c_uint64), ('ffree', ct.c_uint64),
+        ('fsid', ct.c_int32 * 2), ('owner', ct.c_uint32),
+        ('type', ct.c_uint32), ('flags', ct.c_uint32), ('subtype', ct.c_uint32),
+        ('fstype', ct.c_char * 16), ('mountpoint', ct.c_char * 1024),
+        ('source', ct.c_char * 1024), ('flags_ext', ct.c_uint32),
+        ('reserved', ct.c_uint32 * 7),
+    ]
+
+
+def _darwin_mounts(deadline: float) -> set[str]:
+    """Bounded native evidence; no procfs, shell parsing or silent ABI fallback."""
+    check(deadline)
+    offsets = dict(bsize=0, iosize=4, blocks=8, bfree=16, bavail=24,
+                   files=32, ffree=40, fsid=48, owner=56, type=60, flags=64,
+                   subtype=68, fstype=72, mountpoint=88, source=1112,
+                   flags_ext=2136, reserved=2140)
+    machine = platform.machine()
+    if (machine not in ('arm64', 'x86_64') or ct.sizeof(ct.c_void_p) != 8
+            or ct.sizeof(_DarwinStatfs) != 2168 or ct.alignment(_DarwinStatfs) != 8
+            or any(getattr(_DarwinStatfs, field).offset != offset for field, offset in offsets.items())):
+        raise Retain('unknown_mount_evidence')
+
+    def decode(value: _DarwinStatfs) -> str:
+        raw = bytes(value)
+        strings = []
+        for field, width in (('fstype', 16), ('mountpoint', 1024), ('source', 1024)):
+            check(deadline)
+            start = offsets[field]
+            content, nul, _ = raw[start:start + width].partition(b'\0')
+            if not content or not nul:
+                raise Retain('unknown_mount_evidence')
+            strings.append(os.fsdecode(content))
+        mountpoint = strings[1]
+        if (value.bsize == 0 or not mountpoint.startswith('/')
+                or mountpoint.startswith('//') or os.path.normpath(mountpoint) != mountpoint):
+            raise Retain('unknown_mount_evidence')
+        return mountpoint
+
+    try:
+        libc = ct.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+        suffix = '' if machine == 'arm64' else '$INODE64'
+        getmntinfo = getattr(libc, 'getmntinfo' + suffix)
+        getmntinfo.argtypes = [ct.POINTER(ct.POINTER(_DarwinStatfs)), ct.c_int]
+        getmntinfo.restype = ct.c_int
+        entries = ct.POINTER(_DarwinStatfs)()
+        # Serialize this reader's use of getmntinfo's process-global buffer.
+        if not _DARWIN_MOUNT_LOCK.acquire(timeout=max(0, deadline - time.monotonic())):
+            check(deadline)
+            raise Retain('unknown_mount_evidence')
+        try:
+            check(deadline)
+            count = getmntinfo(ct.byref(entries), 2)  # MNT_NOWAIT in the pinned header
+            check(deadline)
+            if not entries or not 0 < count <= 4096:
+                raise Retain('unknown_mount_evidence')
+            captured = ct.string_at(entries, count * ct.sizeof(_DarwinStatfs))
+        finally:
+            _DARWIN_MOUNT_LOCK.release()
+        result = set()
+        root = None
+        for index in range(count):
+            check(deadline)
+            value = _DarwinStatfs.from_buffer_copy(captured, index * 2168)
+            mountpoint = decode(value)
+            result.add(mountpoint)
+            if mountpoint == '/':
+                root = (tuple(value.fsid), value.type, value.bsize)
+        if root is None:
+            raise Retain('unknown_mount_evidence')
+        # Check the selected ABI against an independent native root observation.
+        statfs = getattr(libc, 'statfs' + suffix)
+        statfs.argtypes = [ct.c_char_p, ct.POINTER(_DarwinStatfs)]
+        statfs.restype = ct.c_int
+        value = _DarwinStatfs()
+        if statfs(b'/', ct.byref(value)) != 0:
+            raise Retain('unknown_mount_evidence')
+        check(deadline)
+        if decode(value) != '/' or (tuple(value.fsid), value.type, value.bsize) != root:
+            raise Retain('unknown_mount_evidence')
+        check(deadline)
+        return result
+    except (AttributeError, OSError, ValueError, TypeError) as exc:
+        raise Retain('unknown_mount_evidence') from exc
+
+
 def mounts(deadline: float) -> set[str]:
     check(deadline)
+    if sys.platform == 'darwin':
+        return _darwin_mounts(deadline)
+    if sys.platform != 'linux':
+        raise Retain('unknown_mount_evidence')
     result = set()
     with open('/proc/self/mountinfo', encoding='utf-8', errors='strict') as stream:
         for line in stream:
@@ -162,11 +268,25 @@ def mutate(path: Path, tree: dict, deadline: float, *, remove: bool, scratch: bo
     The caller refreshes ALL common gates immediately before entry. Each
     syscall rechecks the recorded inode and device. No external-link chmod,
     recursion into links, generic rm or unbounded chmod subprocess is used.
-    The scratch-only socket/FIFO policy matches snapshot; O_PATH descriptors
-    observe inodes only, with no endpoint/content I/O or permission repair.
+    The scratch-only socket/FIFO policy matches snapshot. Linux O_PATH pins
+    metadata and observes it after unlink. Darwin never opens a leaf: a final
+    no-follow stat precedes unlink-by-name, with no post-unlink observation.
+    Both paths have a non-atomic final-check/unlink window under the same-UID
+    threat model. Neither performs endpoint/content I/O or leaf mode repair.
     """
     repairs = {}
     own_inode_updates = {}
+
+    def matches(current: os.stat_result, expected: os.stat_result) -> bool:
+        expected_signature = signature(expected)
+        update = own_inode_updates.get(identity(expected))
+        if sys.platform == 'darwin':
+            if update is None:
+                return signature(current) == expected_signature
+            # Only our own successful unlink permits nlink/ctime movement.
+            return signature(current)[:-2] == expected_signature[:-2] and current.st_nlink == update
+        return signature(current) == (update if update is not None else expected_signature)
+
     with directory(path.parent, deadline) as parent:
         check(deadline)
         original = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
@@ -178,7 +298,7 @@ def mutate(path: Path, tree: dict, deadline: float, *, remove: bool, scratch: bo
             check(deadline)
             expected = tree[relative]
             current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if signature(current) != own_inode_updates.get(identity(expected), signature(expected)):
+            if not matches(current, expected):
                 raise Retain('tree_changed_before_mutation')
             if str(path / relative) in mountpoints or current.st_dev != original.st_dev:
                 raise Retain('filesystem_boundary')
@@ -209,6 +329,20 @@ def mutate(path: Path, tree: dict, deadline: float, *, remove: bool, scratch: bo
                         os.rmdir(name, dir_fd=parent_fd)
                 finally:
                     os.close(fd)
+            elif remove and sys.platform == 'darwin':
+                # Never open ANY Darwin leaf, including regular files and links.
+                # The verified parent fd contains this final no-follow check.
+                check(deadline)
+                try:
+                    final = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                except OSError as exc:
+                    raise Retain('identity_changed') from exc
+                if not matches(final, expected) or signature(final) != signature(current):
+                    raise Retain('identity_changed')
+                check(deadline)
+                os.unlink(name, dir_fd=parent_fd)
+                if final.st_nlink > 1:
+                    own_inode_updates[identity(expected)] = final.st_nlink - 1
             elif remove:
                 # O_PATH observes the link inode itself, including symlinks;
                 # track nlink/ctime changes caused by our own prior unlink so

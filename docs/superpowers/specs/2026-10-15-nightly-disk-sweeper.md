@@ -199,7 +199,7 @@ Every admission, including permission repair and the one Git retry, requires:
   org `process_exemptions` field remains empty and unused for compatibility;
   no synthetic exemptions are emitted. This supersedes the former four-name
   and zombie rules, not another cleanup owner's process gates. Filesystem
-  `/proc/self/mountinfo` containment below remains required.
+  platform-specific mount containment below remains required.
 * A complete no-follow descendant scan, all entries at least3600s old by BOTH
   mtime and ctime; atime is excluded because observations may update it. Root
   mtime alone never admits. Unreadable directories, devices/unknown special
@@ -232,8 +232,14 @@ change a surviving root's mtime and subsequent discovery position; ordering
 continues to use current root mtime.
 
 Paths open from `/` one component at a time with O_NOFOLLOW. Tree syscalls use
-verified directory fds and recorded inode/device identities. Mountinfo rejects
-same-device bind mounts as well as device changes. Internal symlinks are unlinked
+verified directory fds and recorded inode/device identities. Linux retains its
+`/proc/self/mountinfo` reader unchanged. Darwin uses native getmntinfo/statfs
+against the public XNU xnu-11417.101.15 LP64 statfs ABI (2168 bytes, all field
+offsets checked, arm64 or x86_64 INODE64 symbols). A bounded complete native table
+and independent root statfs agreement are required; malformed/unavailable evidence
+retains with `unknown_mount_evidence`. Other platforms retain. Mount evidence
+rejects same-device mounted paths as well as device changes. Internal symlinks
+are unlinked
 only, never traversed or chmodded; root/ancestor symlinks refuse. Permission repair
 adds owner-write on admitted directories through verified fds, never `chmod -R`.
 Tree mutations recheck identities and deadline before each syscall. POSIX unlink
@@ -254,8 +260,18 @@ and `.git` files/directories are disposable scratch content after BOTH task and
 structural root have ended and all other gates pass. Unix sockets and FIFOs
 are measured with no-follow stat/allocated inode blocks and unlinked through
 verified parent descriptors. They are never opened for endpoint/content I/O,
-read, connected, drained or signaled; existing O_PATH descriptors observe only
-inode metadata. Devices and unknown special types still retain. Both admission
+read, connected, drained or signaled. Linux O_PATH descriptors observe only
+inode metadata, including the pinned inode after unlink. Darwin never opens any
+leaf (regular files, symlinks, sockets or FIFOs): immediately before contained
+unlink it takes a no-follow stat through the verified parent fd and requires the
+full current/expected signature. Only after its own successful unlink of an inode
+with nlink>1 does it record that identity's expected nlink-1. A later sibling may
+differ from its snapshot only in ctime and exactly that recorded nlink; every
+other field must match. Unknown identities, stat errors and other drift retain.
+Darwin loses post-unlink observation and has a non-atomic stat-to-unlink window;
+Linux also has a window between fstat and unlink-by-name. This accepted limit
+within the existing same-UID threat model is not an atomic identity fence.
+Devices and unknown special types still retain. Both admission
 scans and mutation explicitly select the scratch policy; shared defaults, Git
 metadata census and every worktree scan/revalidation/repair/remove stay strict.
 Internal symlinks remain link-only, with outside targets untouched. `output/`, caches,
