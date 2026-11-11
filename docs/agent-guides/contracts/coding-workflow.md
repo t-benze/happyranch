@@ -375,11 +375,13 @@ Those receipts retain their original-head attribution. TASK12440 supplied the
 source composition; TASK12448 added65 reader/14 safeguard observations, but its
 first qualified0b021bf5 invocation returned native0/verifier2 before every reader
 case. That audit projection/type-arity failure remains setup INCOMPLETE, never
-sensitivity RED. ROOT12299 step26 / TASK12457 aligns bounded complete-J audit
-prefetch with all SIX original native columns and their unchanged strict storage
-types on the SAME allowance. Earlier-layout/unscoped/unbounded discrimination
-outcomes remain unchanged; the current ordinary-audit SQL prefilter is described
-under Current coding storage and setup above.
+sensitivity RED. At the original ROOT12299 step26 / TASK12457 head, bounded
+complete-J audit prefetch aligned with all SIX original native columns and their
+unchanged strict storage types on the SAME allowance; earlier-layout/unscoped/
+unbounded discrimination outcomes remained unchanged at that head. That guarantee
+is historical: THR-308 seq403 removes the generic audit scan and ordinary-audit SQL
+prefilter, deliberately changing those audit outcomes. See the removal contract
+under [Current coding storage and setup](#current-coding-storage-and-setup--root13150--thr320seq261267) above.
 
 The same maintained driver adds one pristine complete-J constructor assertion,
 for66 reader observations plus the unchanged14 safeguards. Constructor exception,
