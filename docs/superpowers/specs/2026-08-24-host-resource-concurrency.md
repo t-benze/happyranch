@@ -680,5 +680,12 @@ full product BSD decode for self and all workers to independent OS identities,
 and exercises missing/zero task counters on real census rows through both
 samplers with a probe-only wrapper that is restored afterward. Sample failure
 still attempts product finish and records refusal/no receipt distinctly from
-probe rescue. Native and frozen-app acceptance remain separate outstanding
+probe rescue. Rescue precedes optional bounded `ps` enrichment. Worker launch
+records retain native PID/start-time identities; each TERM/KILL requires a fresh
+matching identity, or retained unreaped direct-child ownership for a partially
+ready root. ESRCH/reaping permanently retires the worker. Unreadable or mismatched
+identity permanently forbids signals and remains unknown residue, never clean;
+a recycled PID cannot reactivate a retired worker. Rescue signals individual
+identities, with no saved-group broadcast or atomic identity-and-signal claim.
+Native and frozen-app acceptance remain separate outstanding
 evidence; no new job, trigger, deploy or restart is introduced. `truth` is unchanged.

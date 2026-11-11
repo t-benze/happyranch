@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ctypes as ct
 import ctypes.util
+import errno
 import hashlib
 import json
 import os
@@ -456,11 +457,118 @@ def truth(report: dict[str, Any]) -> None:
     }
 
 
+def teardown_identity(lib: Any, pid: int) -> list[int] | None:
+    """Read a native start tuple independently of the product census/decoder."""
+    value = CorrectedBsdinfo()
+    ct.set_errno(0)
+    count = lib.proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, ct.byref(value), ct.sizeof(value))
+    code = ct.get_errno()
+    if count != ct.sizeof(value):
+        if count <= 0 and code == errno.ESRCH:
+            return None
+        raise OSError(code, f"rescue identity pid={pid} returned={count} expected={ct.sizeof(value)}")
+    if value.pbi_pid != pid or value.pbi_start_tvsec == 0:
+        raise RuntimeError(f"invalid rescue identity for pid={pid}")
+    return [pid, int(value.pbi_start_tvsec), int(value.pbi_start_tvusec)]
+
+
+class TeardownRescue:
+    """Probe-owned identities: retirement is permanent, including uncertainty."""
+
+    def __init__(self, lib: Any) -> None:
+        self.lib = lib
+        self.process: subprocess.Popen[str] | None = None
+        self.workers: dict[int, dict[str, Any]] = {}
+        self.report: dict[str, Any] = {
+            "sigterm_pids": [], "sigkill_pids": [], "workers": self.workers,
+        }
+
+    def remember(self, ground: dict[str, Any]) -> None:
+        pid = ground["pid"]
+        if type(pid) is not int or pid <= 0:
+            raise RuntimeError("invalid worker PID")
+        launch = ground.get("launch_identity")
+        row = self.workers.setdefault(pid, {"state": "active", "direct_only": True})
+        if "launch_identity" in row:
+            if row["launch_identity"] != launch:
+                self.retire(pid, "unknown", "launch record changed")
+            return  # Never replace retained launch evidence or revive a worker.
+        row.update(launch_identity=launch, direct_only=False)
+        if (not isinstance(launch, list) or len(launch) != 3
+                or not all(type(value) is int for value in launch)
+                or launch[0] != pid or launch[1] <= 0 or not 0 <= launch[2] < 1_000_000):
+            self.retire(pid, "unknown", "launch identity unavailable")
+
+    def retire(self, pid: int, state: str, reason: str) -> None:
+        row = self.workers[pid]
+        if row["state"] == "active":
+            row.update(state=state, reason=reason[:512])
+
+    def observe_absence(self, pid: int) -> bool:
+        row = self.workers[pid]
+        if row["state"] != "active":
+            return row["state"] == "gone"
+        try:
+            if absent(pid):
+                self.retire(pid, "gone", "ESRCH")
+                return True
+        except OSError as exc:
+            self.retire(pid, "unknown", str(exc))
+        return False
+
+    def authenticated(self, pid: int) -> bool:
+        row = self.workers[pid]
+        if row["state"] != "active":
+            return False
+        # An unreaped direct child cannot have its PID recycled. Once reaped,
+        # never inspect/signal a new occupant of that number, even on reuse.
+        if self.process is not None and pid == self.process.pid:
+            if self.process.poll() is not None:
+                self.retire(pid, "gone", "direct child reaped")
+                return False
+            if row["direct_only"]:
+                return True  # Partial readiness: retained Popen owns this child.
+        if self.observe_absence(pid) or row["state"] != "active":
+            return False
+        try:
+            current = teardown_identity(self.lib, pid)
+        except Exception as exc:
+            self.retire(pid, "unknown", f"{type(exc).__name__}: {exc}")
+            return False
+        if current is None:
+            self.retire(pid, "gone", "identity read ESRCH")
+            return False
+        if current != row.get("launch_identity"):
+            self.retire(pid, "unknown", "start identity mismatch (possible PID reuse)")
+            return False
+        return True
+
+    def signal(self, pid: int, sig: int) -> None:
+        # Authenticate afresh immediately before EACH destructive signal.
+        if not self.authenticated(pid):
+            return
+        try:
+            os.kill(pid, sig)
+            self.report["sigterm_pids" if sig == signal.SIGTERM else "sigkill_pids"].append(pid)
+        except ProcessLookupError:
+            self.retire(pid, "gone", "signal ESRCH")
+        except OSError as exc:
+            self.retire(pid, "unknown", str(exc))
+
+
 def teardown_worker(role: str, registry: Path) -> None:
     """Sleeper chain with independent identities and direct-child reaping."""
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
-    own = identity()
+    own: dict[str, Any] = identity()
+    try:
+        lib = ct.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        lib.proc_pidinfo.argtypes = [ct.c_int, ct.c_int, ct.c_uint64, ct.c_void_p, ct.c_int]
+        lib.proc_pidinfo.restype = ct.c_int
+        own["launch_identity"] = teardown_identity(lib, own["pid"])
+    except Exception as exc:
+        own["launch_identity"] = None
+        own["launch_identity_error"] = f"{type(exc).__name__}: {exc}"[:512]
     (registry / f"{role}.json").write_text(json.dumps(own), encoding="utf-8")
     child = None
     try:
@@ -483,11 +591,13 @@ def teardown_worker(role: str, registry: Path) -> None:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         if child is not None:
-            child.terminate()
+            if child.poll() is None:  # Retained unreaped direct-child ownership.
+                child.terminate()
             try:
                 child.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                child.kill()
+                if child.poll() is None:
+                    child.kill()
                 child.wait(timeout=3)
             if child.stdout is not None:
                 child.stdout.close()
@@ -649,6 +759,7 @@ def teardown(report: dict[str, Any]) -> None:
         raise RuntimeError("product selection did not yield the macOS backend")
 
     libproc = backend._census.reader()._libproc
+    rescue = TeardownRescue(libproc._lib)
     failures: list[dict[str, Any]] = []
     section["libproc_failures"] = failures
     section["diagnostic_limits"] = {"failure_records": 8, "os_context_pids": 4}
@@ -688,9 +799,13 @@ def teardown(report: dict[str, Any]) -> None:
             ))
             if running.process is None:
                 raise RuntimeError("backend did not return its direct process handle")
+            rescue.process = running.process
+            rescue.workers[running.root_pid] = {"state": "active", "direct_only": True}
             tree = read_ready(running.process)
             section["tree"] = tree
             pids = [tree[role]["pid"] for role in ("parent", "child", "grandchild")]
+            for ground in tree.values():
+                rescue.remember(ground)
             group_ok = (
                 pids[0] == running.root_pid and len(set(pids)) == 3
                 and tree["child"]["ppid"] == pids[0]
@@ -739,9 +854,10 @@ def teardown(report: dict[str, Any]) -> None:
             section["signal_source"] = "receipt.cleanup_status; not independent delivery proof"
             # Observe BEFORE any probe-owned disposal can conceal a product leak.
             deadline = time.monotonic() + 3
-            while not all(absent(pid) for pid in pids) and time.monotonic() < deadline:
+            gone = {str(pid): rescue.observe_absence(pid) for pid in pids}
+            while not all(gone.values()) and time.monotonic() < deadline:
                 time.sleep(0.05)
-            gone = {str(pid): absent(pid) for pid in pids}
+                gone = {str(pid): rescue.observe_absence(pid) for pid in pids}
             section["post_finish_kill_zero_ESRCH"] = gone
             for pid, is_gone in gone.items():
                 check(f"pid_{pid}_gone_after_product_finish", is_gone, {"ESRCH": is_gone})
@@ -750,74 +866,75 @@ def teardown(report: dict[str, Any]) -> None:
         finally:
             libproc.bsd_info = original_bsd_info
             try:
-                libproc_failure_context(failures, tree)
-            except Exception as exc:
-                section["diagnostic_context_error"] = f"{type(exc).__name__}: {exc}"[:512]
-            # This disposal is separate from the product result and cannot turn
-            # a failed teardown check into PASS. Registry covers partial readiness.
-            cleanup: dict[str, Any] = {"sigterm_pids": [], "sigkill_pids": []}
-            section["probe_cleanup"] = cleanup
-            if running is not None:
-                if running.root_pid not in pids:
-                    pids.append(running.root_pid)
-                # Also cover a partially published tree. The unreaped direct
-                # child still owns this group; no arbitrary host group is used.
-                if running.process is not None and running.process.poll() is None:
+                # Rescue precedes optional ps/getpwuid enrichment. Registry
+                # records also cover partial readiness, never arbitrary groups.
+                cleanup = rescue.report
+                section["probe_cleanup"] = cleanup
+                if running is not None and running.process is not None:
+                    rescue.process = running.process
+                    rescue.workers.setdefault(running.root_pid,
+                                              {"state": "active", "direct_only": True})
+                roles = {}
+                registry_errors = []
+                for role in ("parent", "child", "grandchild"):
+                    path = registry / f"{role}.json"
                     try:
-                        os.killpg(running.root_pid, signal.SIGTERM)
-                        cleanup["sigterm_group"] = running.root_pid
-                    except ProcessLookupError:
-                        pass
-            for role in ("parent", "child", "grandchild"):
-                path = registry / f"{role}.json"
-                if path.exists():
-                    pid = json.loads(path.read_text(encoding="utf-8"))["pid"]
-                    if pid not in pids:
-                        pids.append(pid)
-            # TERM gives each parent a chance to reap before any escalation.
-            for pid in pids:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                    cleanup["sigterm_pids"].append(pid)
-                except ProcessLookupError:
-                    pass
-            if running is not None and running.process is not None:
-                try:
-                    running.process.wait(timeout=8)
-                except subprocess.TimeoutExpired:
-                    pass
-            # Leaf-first KILL + bounded wait lets surviving parents reap children.
-            leaf_first = []
-            for role in ("grandchild", "child", "parent"):
-                path = registry / f"{role}.json"
-                if path.exists():
-                    pid = json.loads(path.read_text(encoding="utf-8"))["pid"]
-                    leaf_first.append(pid)
-                    if pid not in pids:
-                        pids.append(pid)
-            leaf_first.extend(pid for pid in pids if pid not in leaf_first)
-            for pid in leaf_first:
-                if not absent(pid):
+                        with path.open(encoding="utf-8") as stream:
+                            ground = json.loads(stream.read(4096))
+                    except FileNotFoundError:
+                        continue
+                    except Exception as exc:
+                        registry_errors.append(f"{role}: {type(exc).__name__}: {exc}"[:512])
+                        continue
                     try:
-                        os.kill(pid, signal.SIGKILL)
-                        cleanup["sigkill_pids"].append(pid)
-                    except ProcessLookupError:
+                        rescue.remember(ground)
+                    except Exception as exc:
+                        registry_errors.append(f"{role}: {type(exc).__name__}: {exc}"[:512])
+                        continue
+                    roles[role] = ground["pid"]
+                # TERM gives each parent a chance to reap before escalation.
+                for pid in rescue.workers:
+                    rescue.signal(pid, signal.SIGTERM)
+                if rescue.process is not None:
+                    try:
+                        rescue.process.wait(timeout=8)
+                    except subprocess.TimeoutExpired:
                         pass
+                leaf_first = [roles[role] for role in ("grandchild", "child", "parent")
+                              if role in roles]
+                leaf_first.extend(pid for pid in rescue.workers if pid not in leaf_first)
+                for pid in leaf_first:
+                    rescue.signal(pid, signal.SIGKILL)
                     deadline = time.monotonic() + 3
-                    while not absent(pid) and time.monotonic() < deadline:
-                        if running is not None and running.process is not None:
-                            running.process.poll()
+                    while (rescue.workers[pid]["state"] == "active"
+                           and not rescue.observe_absence(pid) and time.monotonic() < deadline):
+                        if rescue.process is not None:
+                            rescue.process.poll()
                         time.sleep(0.05)
-            if running is not None and running.process is not None:
-                running.process.wait(timeout=3)
-                if running.process.stdout is not None:
-                    running.process.stdout.close()
-            elif pending is not None:
-                backend.abandon(pending)
-            cleanup["absent_pids"] = {str(pid): absent(pid) for pid in pids}
-            check("probe_cleanup_no_orphans", all(cleanup["absent_pids"].values()), cleanup)
-            if not all(cleanup["absent_pids"].values()):
-                raise RuntimeError("probe cleanup could not verify every owned PID absent")
+                if rescue.process is not None:
+                    try:
+                        rescue.process.wait(timeout=3)
+                        rescue.retire(rescue.process.pid, "gone", "direct child reaped")
+                    except subprocess.TimeoutExpired:
+                        rescue.retire(rescue.process.pid, "unknown", "direct child wait timed out")
+                    if rescue.process.stdout is not None:
+                        rescue.process.stdout.close()
+                elif pending is not None:
+                    backend.abandon(pending)
+                cleanup["absent_pids"] = {
+                    str(pid): rescue.observe_absence(pid) for pid in rescue.workers
+                }
+                cleanup["unknown_residue"] = [
+                    pid for pid, row in rescue.workers.items() if row["state"] != "gone"
+                ] + registry_errors
+                check("probe_cleanup_no_orphans", not cleanup["unknown_residue"], cleanup)
+                if cleanup["unknown_residue"]:
+                    raise RuntimeError("probe cleanup could not verify every owned worker gone")
+            finally:
+                try:
+                    libproc_failure_context(failures, tree)
+                except Exception as exc:
+                    section["diagnostic_context_error"] = f"{type(exc).__name__}: {exc}"[:512]
     if any(row["status"] != "PASS" for row in checks):
         raise RuntimeError("native teardown checks failed")
 

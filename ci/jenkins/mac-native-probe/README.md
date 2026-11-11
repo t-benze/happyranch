@@ -125,8 +125,17 @@ own processes. The earlier build's cause remains unproven until native evidence
 identifies the actual failing PID/count/errno. Sample failure still attempts
 normal product finish, recording its refusal and absence of a receipt honestly.
 
-Probe-owned TERM/KILL disposal and final PID absence
-are recorded separately; a cleanup rescue never changes a product FAIL to PASS.
+Probe-owned TERM/KILL disposal runs before optional `ps`/account enrichment,
+whose per-command two-second timeout and four-PID cap remain. Each worker records
+its native PID/start-time tuple before spawning descendants. Rescue authenticates
+that tuple afresh before each signal; an unreaped direct-child handle also covers
+the root during partial readiness. ESRCH or reaping permanently retires a worker,
+so reuse of its numeric PID cannot reactivate it. Unreadable/mismatched identities
+are permanently excluded from signalling and reported as unknown residue, never
+clean. Rescue uses individual identities rather than a saved process-group number.
+Signals, retired workers and final original-worker absence are recorded separately;
+a cleanup rescue never changes a product FAIL to PASS. These observations do not
+provide an atomic kernel identity-and-signal operation.
 Linux emits the same skipped JSON shape as `truth` and exits 0.
 
 Product imports use stdlib only. `truth` observations retain their S0 meaning.

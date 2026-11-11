@@ -1566,6 +1566,12 @@ EPERM is not proof that a row is outside a session. The existing Jenkins
 `teardown` suite records up to eight such failures, later numeric OS ownership
 context for at most four PIDs, full self/worker PID/PPID/PGID decode, P07
 missing-versus-zero counter cases, and product finish even after sample failure.
+Probe rescue runs before optional bounded diagnostic enrichment. Each signal
+requires a fresh match to the worker's recorded native start identity, or an
+unreaped direct-child handle for a partially ready root. ESRCH/reaping permanently
+retires workers; unreadable/mismatched identities are never signalled and remain
+unknown residue. Cleanup reports original-worker disappearance separately from
+product receipt checks; no atomic identity-and-signal guarantee is claimed.
 These diagnostics neither bypass checked reads nor prove frozen-app behavior.
 `truth` retains its original observations; no extra job or CI trigger is added.
 The only privilege exception
