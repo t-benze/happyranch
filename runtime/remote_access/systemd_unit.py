@@ -147,7 +147,7 @@ def render_connector_unit(spec: ConnectorUnitSpec) -> str:
 
 @dataclass(frozen=True)
 class SidecarUnitSpec:
-    """Fixed managed Linux sidecar service; no installation or enrollment."""
+    """Fixed managed Linux sidecar service with file-only enrollment input."""
 
     restart_sec: int = _DEFAULT_RESTART_SEC
     watchdog_sec: int = _DEFAULT_WATCHDOG_SEC
@@ -165,7 +165,11 @@ def render_sidecar_unit(spec: SidecarUnitSpec) -> str:
         f"PartOf={_MANAGED_TARGET}",
         "",
         "[Service]",
-        "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json",
+        "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json "
+        "--credential-file ${CREDENTIALS_DIRECTORY}/enrollment-key",
+        # Credential-name lookup tolerates absence on restart (systemd >= 247).
+        # The installer links this reserved name to /etc/happyranch/enrollment.key.
+        "LoadCredential=enrollment-key:happyranch-tsnet-enrollment",
         "User=happyranch",
         "Group=happyranch",
         "NotifyAccess=main",

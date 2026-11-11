@@ -154,10 +154,10 @@ func (s *Sidecar) Start(ctx context.Context) error {
 }
 
 func consumeInput(c Config) ([]byte, error) {
-	if err := noSymlinkPath(c.StateDir); err != nil {
+	if err := noSymlinkPath(c.StateDir, false); err != nil {
 		return nil, err
 	}
-	if err := noSymlinkPath(c.CredentialFile); err != nil {
+	if err := noSymlinkPath(c.CredentialFile, systemdInput(c)); err != nil {
 		return nil, err
 	}
 	if err := requireOwnerDir(c.StateDir); err != nil {
@@ -195,14 +195,45 @@ func consumeInput(c Config) ([]byte, error) {
 		return nil, ErrCredential
 	}
 	st, err = os.Lstat(c.CredentialFile)
-	if err != nil || st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || st.Mode().Perm() != 0o600 || !ownedByCurrentUser(st) {
+	if err != nil || !validInputFile(c, st) {
 		return nil, ErrCredential
 	}
-	b, err := os.ReadFile(c.CredentialFile)
+	f, err := os.OpenFile(c.CredentialFile, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, ErrCredential
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !validInputFile(c, opened) || !os.SameFile(st, opened) {
+		return nil, ErrCredential
+	}
+	b, err := io.ReadAll(f)
 	if err != nil || len(strings.TrimSpace(string(b))) == 0 {
 		return nil, ErrCredential
 	}
 	return b, nil
+}
+
+// Only the exact managed credential name in systemd's absolute directory gets
+// read-only credential semantics. The environment contains a path, never a key.
+func systemdInput(c Config) bool {
+	dir := os.Getenv("CREDENTIALS_DIRECTORY")
+	return filepath.IsAbs(dir) && filepath.Clean(dir) == dir && dir != "/" && c.CredentialFile == filepath.Join(dir, "enrollment-key")
+}
+
+func validInputFile(c Config, st os.FileInfo) bool {
+	if !st.Mode().IsRegular() {
+		return false
+	}
+	if !systemdInput(c) {
+		return st.Mode().Perm() == 0o600 && ownedByCurrentUser(st)
+	}
+	// systemd writes 0400 copies, granting the service read access via ownership
+	// or an ACL on a root-owned inode (whose read mask appears as 0440).
+	// Never accept a writable or world-readable credential copy.
+	owner, ok := st.Sys().(*syscall.Stat_t)
+	mode := st.Mode().Perm()
+	return ok && (mode == 0o400 || mode == 0o440) && owner.Nlink == 1 && (owner.Uid == 0 || ownedByCurrentUser(st))
 }
 
 func requireOwnerDir(path string) error {
@@ -218,19 +249,20 @@ func ownedByCurrentUser(st os.FileInfo) bool {
 	return ok && sys.Uid == uint32(os.Geteuid())
 }
 
-func noSymlinkPath(path string) error {
+func noSymlinkPath(path string, allowMissingParent bool) error {
 	clean := filepath.Clean(path)
 	for current := clean; current != string(filepath.Separator); current = filepath.Dir(current) {
 		st, err := os.Lstat(current)
-		// Restart has no credential file. Only that final entry may be absent;
-		// still inspect every parent, including parents of a missing entry.
-		if current == clean && errors.Is(err, syscall.ENOENT) {
+		// systemd can remove an empty per-unit credential directory. Only the
+		// exact managed input may also lack that immediate parent; every higher
+		// ancestor must still exist as a directory without symlinks.
+		if errors.Is(err, syscall.ENOENT) && (current == clean || (allowMissingParent && current == filepath.Dir(clean))) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		if st.Mode()&os.ModeSymlink != 0 {
+		if st.Mode()&os.ModeSymlink != 0 || (current != clean && !st.IsDir()) {
 			return ErrConfiguration
 		}
 	}
@@ -261,6 +293,12 @@ func commitConsumption(c Config) error {
 	}
 	if err = syncDir(c.StateDir); err != nil {
 		return err
+	}
+	// systemd owns the read-only copy until service teardown. The installer
+	// removes its root-owned source after both READY services pass drift checks.
+	if systemdInput(c) {
+		ok = true
+		return nil
 	}
 	if err = os.Remove(c.CredentialFile); err != nil {
 		return err

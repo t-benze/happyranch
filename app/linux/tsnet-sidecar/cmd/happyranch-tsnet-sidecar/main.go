@@ -28,6 +28,7 @@ func main() {
 func run(ctx context.Context, args []string) int {
 	flags := flag.NewFlagSet("happyranch-tsnet-sidecar", flag.ContinueOnError)
 	path := flags.String("config", "", "absolute path to sidecar JSON configuration")
+	credential := flags.String("credential-file", "", "absolute path to enrollment input (never a key literal)")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -35,7 +36,7 @@ func run(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "--config requires an absolute JSON path")
 		return 2
 	}
-	cfg, err := loadConfig(*path)
+	cfg, err := loadConfig(*path, *credential)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sidecar: configuration invalid")
 		return 2
@@ -43,7 +44,7 @@ func run(ctx context.Context, args []string) int {
 	return serve(ctx, sidecar.New(cfg, sidecar.NewTSNetEngine(), &net.Dialer{Timeout: 5 * time.Second}))
 }
 
-func loadConfig(path string) (sidecar.Config, error) {
+func loadConfig(path, credentialFile string) (sidecar.Config, error) {
 	// Nonblocking/no-follow admission prevents a replaced FIFO or symlink from
 	// turning a config read into an unbounded wait or an aliased state read.
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
@@ -64,6 +65,9 @@ func loadConfig(path string) (sidecar.Config, error) {
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return cfg, sidecar.ErrConfiguration
+	}
+	if credentialFile != "" {
+		cfg.CredentialFile = credentialFile
 	}
 	return cfg, cfg.Validate()
 }

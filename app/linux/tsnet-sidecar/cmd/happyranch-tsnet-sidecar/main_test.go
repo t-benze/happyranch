@@ -257,7 +257,7 @@ func TestLoadConfigAndRefuseUnsafeFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := loadConfig(path)
+			got, err := loadConfig(path, "")
 			if name == "valid" {
 				if err != nil || got != cfg {
 					t.Fatalf("config=%v err=%v", got, err)
@@ -267,8 +267,30 @@ func TestLoadConfigAndRefuseUnsafeFiles(t *testing.T) {
 			}
 		})
 	}
-	if _, err := loadConfig(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := loadConfig(filepath.Join(t.TempDir(), "missing"), ""); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing config: %v", err)
+	}
+}
+
+func TestLoadConfigCredentialOverride(t *testing.T) {
+	cfg := configForCommand(t)
+	cfg.CredentialFile = ""
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(t.TempDir(), "credentials", "enrollment-key")
+	got, err := loadConfig(path, want)
+	cfg.CredentialFile = want
+	if err != nil || got != cfg {
+		t.Fatalf("managed credential path override not applied: %v", err)
+	}
+	if _, err := loadConfig(path, "relative"); err == nil {
+		t.Fatal("relative override accepted")
 	}
 }
 
