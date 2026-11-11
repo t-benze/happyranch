@@ -195,7 +195,6 @@ PY
 }
 residue() {
   local path unit
-  runtime_directories
   for unit in "${services[@]}" "$target"; do
     absent "/etc/systemd/system/$unit"
     [[ $(systemctl show "$unit" -p LoadState --value) == not-found ]] || fail "still loaded: $unit"
