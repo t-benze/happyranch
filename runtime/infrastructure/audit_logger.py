@@ -14,6 +14,28 @@ class AuditLogger:
     def __init__(self, db: Database) -> None:
         self._db = db
 
+    def log_knowledge_distill(self, operation: dict, archive: dict | None = None) -> None:
+        """Idempotent lifecycle observation, excluding captures and result bodies.
+
+        Before allocation use the documented scope:id envelope; afterward the
+        actual ordinary task ID. Reconcile-on-read repairs a lost audit tail.
+        """
+        payload = {key: operation[key] for key in (
+            'operation_id', 'source_id', 'processor_id', 'task_id', 'session_id',
+            'result_id', 'state', 'phase',
+        )}
+        import json
+        payload['failure'] = json.loads(operation['failure_json']) if operation['failure_json'] else None
+        payload['archive_id'] = archive['archive_id'] if archive else None
+        payload['version'] = archive['version'] if archive else None
+        scope = operation['task_id'] or 'knowledge:' + operation['operation_id']
+        with self._db._lock:
+            if any(row['action'] == 'knowledge_distill' and row['payload'] == payload
+                   for row in self._db.get_audit_logs(scope)):
+                return
+            self._db.insert_audit_log(task_id=scope, agent=operation['processor_id'] or 'founder',
+                                      action='knowledge_distill', payload=payload)
+
     def log_session_start(
         self,
         task_id: str,

@@ -4,6 +4,7 @@ set -euo pipefail
 M1_BUILD=${M1_BUILD:-${RUNNER_TEMP:-/tmp}/managed-m1-build}
 M1_WORK=/var/tmp/happyranch-m1
 M1_LOGS=${M1_LOGS:-${RUNNER_TEMP:-/tmp}/managed-m1-logs}
+MANAGED_DOWNLOADS=${MANAGED_DOWNLOADS:-${RUNNER_TEMP:-/tmp}/managed-downloads}
 python=/opt/happyranch/venv/bin/python
 services=(happyranch-connector.service happyranch-tsnet-sidecar.service)
 target=happyranch-managed.target
@@ -78,14 +79,19 @@ provision() {
   for name in connector sidecar policy; do sudo install -m 0644 "$M1_BUILD/$name.json" "/etc/happyranch/$name.json"; done
   printf '%s\n' synthetic-m1-daemon-token | sudo install -m 0600 -o happyranch -g happyranch /dev/stdin /etc/happyranch/daemon.token
   sudo install -d -m 0700 "$M1_WORK"
-  curl --fail --location --retry 3 --connect-timeout 20 --max-time 120 \
-    https://github.com/juanfont/headscale/releases/download/v0.25.1/headscale_0.25.1_linux_amd64 -o "$M1_BUILD/headscale"
-  echo "d2cda0a5d748587f77c920a76cd1bf1ab429e5299ba5bc6b3dda90712721b45b  $M1_BUILD/headscale" | sha256sum --check
-  curl --fail --location --retry 3 --connect-timeout 20 --max-time 120 \
-    https://pkgs.tailscale.com/stable/tailscale_1.102.3_amd64.tgz -o "$M1_BUILD/tailscale.tgz"
-  echo "36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5  $M1_BUILD/tailscale.tgz" | sha256sum --check
-  tar -xzf "$M1_BUILD/tailscale.tgz" -C "$M1_BUILD"
-  sudo install -m 0755 "$M1_BUILD/headscale" "$M1_WORK/headscale"
+  mkdir -p "$MANAGED_DOWNLOADS"
+  if [[ ! -f $MANAGED_DOWNLOADS/headscale ]]; then
+    curl --fail --location --retry 3 --connect-timeout 20 --max-time 120 \
+      https://github.com/juanfont/headscale/releases/download/v0.25.1/headscale_0.25.1_linux_amd64 -o "$MANAGED_DOWNLOADS/headscale"
+  fi
+  echo "d2cda0a5d748587f77c920a76cd1bf1ab429e5299ba5bc6b3dda90712721b45b  $MANAGED_DOWNLOADS/headscale" | sha256sum --check
+  if [[ ! -f $MANAGED_DOWNLOADS/tailscale.tgz ]]; then
+    curl --fail --location --retry 3 --connect-timeout 20 --max-time 120 \
+      https://pkgs.tailscale.com/stable/tailscale_1.102.3_amd64.tgz -o "$MANAGED_DOWNLOADS/tailscale.tgz"
+  fi
+  echo "36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5  $MANAGED_DOWNLOADS/tailscale.tgz" | sha256sum --check
+  tar -xzf "$MANAGED_DOWNLOADS/tailscale.tgz" -C "$M1_BUILD"
+  sudo install -m 0755 "$MANAGED_DOWNLOADS/headscale" "$M1_WORK/headscale"
   sudo install -m 0755 "$M1_BUILD/tailscale_1.102.3_amd64/"{tailscale,tailscaled} "$M1_WORK/"
   sudo install -m 0644 "$M1_BUILD/fixture_http.py" "$M1_WORK/fixture_http.py"
   sudo openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \

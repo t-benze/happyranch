@@ -2178,6 +2178,45 @@ permissions or remote reachability. No retired Web coverage test/file is added.
 Source availability and consistency rules live in
 [retired knowledge sources](features-and-invariants.md#retired-knowledge-sources-s1-thr-296).
 
+## Knowledge Distill and archives (S2)
+
+The existing bearer-authenticated same-org knowledge router also serves:
+
+- `POST /api/v1/orgs/{slug}/knowledge/distill`: `{ "submission_id": "original-key", "source_id": "retired_id", "confirmed": true }`, optionally with `processor_id` naming an existing active executable owner.
+- `GET /api/v1/orgs/{slug}/knowledge/distill/{operation_id}`: Queued/Processing/Ready/Failed, observed phase, cutoff/last-update, closed failure cause, actual processor/task/session/result and archive/version references. Both POST and GET include the fixed capture's category/state/reason/count-or-unknown/cutoff/errors coverage, preserving unavailable/error reasons through failure, replay and reopen. Internal capture, confirmation JSON and corpus bodies are excluded.
+- `GET /api/v1/orgs/{slug}/knowledge/archives`: Ready selection metadata, coverage and item counts.
+- `GET /api/v1/orgs/{slug}/knowledge/archives/{archive_id}`: immutable manifest and curated items with opaque S1 source references; no arbitrary source paths or raw snapshot read.
+
+The default processor is the recorded retirement manager, revalidated through
+ordinary task owner/team admission. Missing historical evidence or ineligible
+owners produce Failed; explicitly choose an existing authorized processor in a
+new submission. Founder is never an executable processor. The processor receives
+only the S2a bounded quoted brief, then returns JSON in normal completion
+`summary`/HTTP `output_summary` with its normal `done` decision. Callback arrival
+alone is Processing until successful terminal completion. Other decisions or
+outcomes and invalid results fail; earlier Ready archives remain selectable.
+
+Use `happyranch knowledge distill --from-file ABS --org ORG`,
+`knowledge distill-show OP --org ORG`, `knowledge archives list --org ORG`, and
+`knowledge archives show ARCHIVE --org ORG`. These print JSON. Validate the
+absolute confirmation file/closed fields and opaque IDs locally before daemon
+discovery. Preserve the original submission key after a lost response; replay
+returns the same operation/capture. Changed confirmation conflicts (409), and
+another key cannot duplicate in-flight work. A confirmed Failed retry uses a new
+key. Reopen Processing via GET; reads reconcile the bound task/result after DB
+reopen and never dispatch a second task or publish twice. Unknown completion
+proof stays Processing with an explicit phase. The 262144-byte whole-brief and
+131072-byte result caps do not truncate, chunk or batch.
+
+Typed request/response mirrors live in `web/src/lib/api/knowledge.ts`; served
+models, the OpenAPI summary and existing route classification ship together.
+Classification adds no native/remote permission or reach. No UI or Instill route
+ships in S2. The focused synthetic command is
+`uv run python scripts/verify_knowledge_distill.py [CASE]` (outside retired suites).
+It exercises real HTTP/CLI/storage/task/completion owners; org attachment,
+retained retirement layout, launch facts and model output are synthetic.
+Real model curation and full S6 acceptance remain NOT RUN.
+
 ## CLI
 
 `happyranch cancel <task_id>` prints the daemon's cancelled-task summary, then
