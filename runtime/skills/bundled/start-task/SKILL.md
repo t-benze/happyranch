@@ -1177,3 +1177,15 @@ original budgets/uncertainty/Pause generation and genuine FINAL callback contrac
 are unchanged. Do not invent a command or treat launcher TERM/INT, ended SID,
 missing PID/control or successful Stop request as product cancellation/cleanup.
 See docs/superpowers/specs/2026-11-11-sequential-coding-u6.md.
+
+
+## Sequential U6b1 source boundary
+
+The U6b1 mixed cancellation producer is unmounted: its complete mixed-history
+checks and ordinary/new-sequential fences grant no agent cancellation/control
+command. Existing Founder task cancellation remains the mounted owner. Live
+retained-family composition, cross-family ordinary overlays and native-tail/route
+attachment remain U6b2. Retain prepared/unknown ownership, original budgets,
+committed callback bytes and Final intent/receipt uncertainty. Never use missing
+PID/ended SID, launcher TERM/INT or a Stop return as product cancellation or
+settlement. U5b2b2/U7 and Final success Held remain unchanged.

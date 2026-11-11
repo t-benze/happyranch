@@ -2415,3 +2415,17 @@ U5b2b2 original callback-observation validation/mount and U7 transport remain
 implementation remainder; sequential Final success stays Held. Pause generation
 and original receipt-recording uncertainty remain unchanged.
 [U6 specification](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## Sequential U6b1 and retained Coding preservation
+
+The unmounted mixed cancellation producer uses the complete U6a oracle and
+existing sequential engine fences. It can mutate only ordinary/new-sequential
+live rows; retained document/old-Coding live rows refuse. Original retained
+readers and cancellation writers stay byte-identical, and protected ancestor
+changes that those readers cannot authenticate roll back with zero committed
+writes. U6b2 must compose those original writers/overlays and attach the Founder
+route/native-tail consumer. This is implementation remainder, not missing proof.
+U5b2b2/U7 still own callback validation/mount and transport; Final success remains
+Held. No merge retry, reservation release, cleanup or live authority follows.
+[U6 specification](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).

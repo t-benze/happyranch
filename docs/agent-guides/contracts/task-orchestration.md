@@ -723,3 +723,15 @@ inert history readers; their inventory is not a cancellation write set. The
 existing ordinary-ancestor mixed refusal and direct selected-run cancellation
 remain unchanged. U6b owns mixed cascade/audit/CAS/native-tail integration, and
 U5b2b2/U7 remain separate. [U6 source contract](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## U6b1 producer interface; Founder attachment still U6b2
+
+The unmounted `sequential_mixed_cancel.cancel_mixed` can atomically cancel a
+normal live ordinary/new-sequential write set after complete mixed-history
+validation. Terminal dependency rows are retained; live retained document or old
+Coding work refuses. Ordinary point stops still refuse sequential/Coding-dependent
+ancestors. It neither replaces nor changes the existing task-cancel route.
+U6b2 still owns live retained-family writer composition, cross-family overlay
+closure, Founder route attachment and native-tail consumption. See the
+[precise U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).

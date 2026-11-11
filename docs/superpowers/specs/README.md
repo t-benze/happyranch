@@ -62,7 +62,7 @@ New specs should include a short status block near the top:
 
 | Spec | Status | Current source / notes |
 | --- | --- | --- |
-| [2026-11-11-sequential-coding-u6.md](2026-11-11-sequential-coding-u6.md) | current design; U6a inert readers | Mixed native/ownership closure under D2; U6b cancellation/native-tail producers remain unmounted. |
+| [2026-11-11-sequential-coding-u6.md](2026-11-11-sequential-coding-u6.md) | current design; U6a readers / U6b1 unmounted producer | Mixed history and ordinary/sequential stop interface; U6b2 retained-family writer composition and Founder/native-tail attachment remain. |
 | [2026-11-11-knowledge-distill-instill-v1.md](2026-11-11-knowledge-distill-instill-v1.md) | current design; implementation pending | THR-296 Option A / TASK-15170: pre-Ready curation with an existing task identity, retired-source capture, immutable archives and additive idle-only Instill; acceptance NOT RUN. |
 | [2026-10-11-agent-reasoning-effort.md](2026-10-11-agent-reasoning-effort.md) | current | THR298 optional static selection, adapter input-v2 opt-in/legacy wire, invocation plumbing and conditional authority projection |
 | [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md) | current | Separate org root control, final commitment, truthful drain, API/CLI/overview and compatible rollback |
