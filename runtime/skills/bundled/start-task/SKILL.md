@@ -1334,3 +1334,14 @@ ACCESS-1 remains current authority only, with agent-owned effective access and
 no daemon GitHub/network observer or new credentials. Your genuine current
 report-completion remains the FINAL action. Public fresh start stays OFF until
 U9; U7d/U8/U9 and live activation remain separate.
+
+Sequential U7c2b R-M3-6 redacts accepted Final observations ONLY at the Founder
+browser projection boundary. The existing content_utf8 contains the closed
+workflow-sequential-coding-final-summary@1 machine summary (outcome merged),
+while content_digest still names the original stored observation. No native
+pin, local path, SID/handle, intent/command/remote or proof record is copied to
+that summary. Stored observation/carrier bytes, complete replay, witness and
+all validators stay unchanged, as do every other output contract and the
+browser response shape. This grants no action/access/reissue authority. Keep
+causal BLOCK, original Pause, command=None receipt uncertainty/no reissue,
+U6b2a, Option B UNSETTLED, R-M3-2 limits and the genuine FINAL callback.

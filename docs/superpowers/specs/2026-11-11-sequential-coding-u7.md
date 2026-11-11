@@ -1,6 +1,6 @@
 # Sequential Coding U7: common transport and agent initiation
 
-> Status: current design; U7a/U7b/U7c1/U7c2b delivered in source, including complete Final acceptance; U7d remains.
+> Status: current design; U7a/U7b/U7c1/U7c2b delivered in source, including complete Final acceptance and R-M3-6 browser redaction; U7d remains.
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
 
 THR-336 / ROOT TASK-15165; TASK-15465, linked retry of pre-edit failed TASK-15462.
@@ -407,7 +407,8 @@ exhaustion escapes with zero DML/no COMMIT; a late target-validation refusal
 rolls back already staged DML and publishes nothing. Cooperative deadlines do
 not establish hard OS timing.
 
-Only `sequential_history` changes within the existing protected13 radius; engine,
+Within the existing protected13 radius, only `sequential_history` changes.
+R-M3-6 additionally permits `sequential_views.py` browser-only redaction; engine,
 selected validator, historical families, U6/native Pause and LOCAL action/receipt
 owners remain byte-identical. `_compose` is unchanged; `_advance` owns the Final
 branch. Original Pause generation, cancellation-before-action, command=None/no
@@ -422,3 +423,20 @@ integration SKIPPED THR243seq42, E2E untriggered. Exact-head local CI uses a job
 hosted checks are observed once. Independent review/scoped QA and manager
 guarded merge remain. All prior failed histories, spent allowances, Founder
 reservations, V3 end, PR1252 hold and PRD v1.0.4/msg131 remain unchanged.
+
+### R-M3-6 browser-only Final projection (TASK-15570)
+
+R-M3-6 / TASK-15570 authorizes the single additional protected-owner exception
+`sequential_views.py` for browser-only Final redaction. After unchanged complete
+replay, an accepted `guarded-repository-merge@1` output's existing `content_utf8`
+contains only canonical `{"format":"workflow-sequential-coding-final-summary@1","outcome":"merged"}`.
+No observation field, diagnostic, native pin/path/SID/handle, intent, command,
+remote record or other native proof is copied. `content_digest` still identifies
+the ORIGINAL stored output, not this browser summary. OutputView/RunDetail and
+all route/OpenAPI/classification/TS shapes stay unchanged; every other output
+contract retains its original verbatim content. Stored observation/carrier bytes,
+complete/selected history, witness preimage and all readers/validators keep their
+original behavior. This is solely a browser disclosure boundary, with no new
+agent capability, access grant or LOCAL action. Synthetic B/H projection parity
+and prior-H RED / exact-head GREEN evidence are in
+`dev_agent/output/TASK-15570/handoff.md`; no native/V3/real-merge claim follows.

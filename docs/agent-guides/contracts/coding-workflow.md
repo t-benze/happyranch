@@ -2586,3 +2586,18 @@ Public fresh start stays OFF until U9. U7d/U8/U9, native/V3/V5/M4 and genuine
 access/merge/activation acceptance remain separate. Source diagnostics are
 out-of-repo SYNTHETIC; units/Vitest RETIRED, integration SKIPPED24342 and no E2E.
 See the [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7c2b-complete-final-admission-task-15564).
+
+R-M3-6 / TASK-15570 authorizes the single additional protected-owner exception
+`sequential_views.py` for browser-only Final redaction. After unchanged complete
+replay, an accepted `guarded-repository-merge@1` output's existing `content_utf8`
+contains only canonical `{"format":"workflow-sequential-coding-final-summary@1","outcome":"merged"}`.
+No observation field, diagnostic, native pin/path/SID/handle, intent, command,
+remote record or other native proof is copied. `content_digest` still identifies
+the ORIGINAL stored output, not this browser summary. OutputView/RunDetail and
+all route/OpenAPI/classification/TS shapes stay unchanged; every other output
+contract retains its original verbatim content. Stored observation/carrier bytes,
+complete/selected history, witness preimage and all readers/validators keep their
+original behavior. This is solely a browser disclosure boundary, with no new
+agent capability, access grant or LOCAL action. Synthetic B/H projection parity
+and prior-H RED / exact-head GREEN evidence are in
+`dev_agent/output/TASK-15570/handoff.md`; no native/V3/real-merge claim follows.
