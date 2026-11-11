@@ -219,10 +219,27 @@ if len(ips) != 1:
 print(ips[0])'
 }
 sidecar_visible() { sidecar_ip >/dev/null; }
+wait_for_tailnet() {
+  local address=$1 deadline=$((SECONDS + 60)) remaining ping_timeout last_ping='not attempted'
+  # Netmap visibility can precede endpoint discovery. TSMP traverses WireGuard
+  # without either host's OS stack, including in userspace-networking mode.
+  while (( (remaining = deadline - SECONDS) > 0 )); do
+    ping_timeout=5
+    if (( remaining < ping_timeout )); then ping_timeout=$remaining; fi
+    if last_ping=$(sudo timeout "${remaining}s" "$M2_WORK/tailscale" --socket="$M2_WORK/peer.sock" \
+      ping --tsmp --c 1 --timeout "${ping_timeout}s" "$address" 2>&1); then
+      printf '%s\n' "$last_ping"
+      return 0
+    fi
+    if (( SECONDS < deadline )); then sleep 1; fi
+  done
+  fail "tailnet data path to $address not reachable within 60s; last ping: $last_ping"
+}
 request() {
   wait_for sidecar_visible
   local address
   address=$(sidecar_ip)
+  wait_for_tailnet "$address"
   # Credentials/codes stay in process memory and curl's stdin, never argv or logs.
   # No daemon token is read by this tailnet client.
   sudo -u happyranch "$python" - "$address" <<'PY'
