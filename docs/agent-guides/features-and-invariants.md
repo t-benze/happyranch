@@ -2287,9 +2287,17 @@ unwritable storage refuses with zero POSTs). An unknown outcome is settled only
 by a returned operation: a same-key re-send of the recorded body, or the
 recipient history listing that submission ID. A refused re-send keeps the key,
 and new confirmations stay blocked while any key is unresolved or the history
-read is loading/errored. Retry calls only `retryKnowledgeImport` on the original
-operation, only when the server marks items `retryable` and the operation read
-is current; held items show as held for checking and are never offered for
+read is loading/errored. A fresh confirmation also needs a current (successful,
+not re-fetching) eligibility read with `recipient_eligible: true`; otherwise the
+confirmation shows the actual Busy/ineligible blocker kinds/IDs and a read-only
+**Check again** (refetch only). Explicit same-key recovery of a recorded unknown
+confirmation is not gated by eligibility. Retry calls only `retryKnowledgeImport`
+on the original operation, only when the server marks items `retryable`, the
+operation read is current, the recipient history read is current (loading,
+errored or re-fetching history is unknown, never "no other operation"), no
+unknown confirmation is recorded and no different operation is in flight. The
+buttons and the action callbacks apply the same gates (the callbacks re-read the
+live query cache and ledger at click time); held items show as held for checking and are never offered for
 rewrite; an incomplete-intent refusal links the reserving original operation
 (from the eligibility mapping). Copy states that imported notes reach the
 recipient's next fresh session and nothing is pushed into a running session.

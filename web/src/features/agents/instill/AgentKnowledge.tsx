@@ -14,7 +14,7 @@ import { ApiError } from '@/lib/api';
 import { useAgentLearnings, useAgentsRoutes } from '@/hooks/agents';
 import { useTranslation } from '@/hooks/i18n';
 import {
-  useInstillAttempts, useKnowledgeArchives, useKnowledgeImports, useRetryImport, useStartInstill,
+  useInstillAdmission, useInstillAttempts, useKnowledgeArchives, useKnowledgeImports, useRetryImport, useStartInstill,
   type ImportOperation,
 } from '@/hooks/knowledge';
 import { classifyAgentError, renderAgentError } from '../strings';
@@ -34,6 +34,7 @@ export function AgentKnowledge({ agentName, displayName }: { agentName: string; 
   const { attempts, ledgerReadable } = useInstillAttempts(agentName);
   const { mutation: start, lastSubmissionId } = useStartInstill(agentName);
   const retry = useRetryImport(agentName);
+  const admission = useInstillAdmission(agentName);
   const [stack, setStack] = useState<InstillView[]>([]);
   const [chosen, setChosen] = useState<string | null>(null);
   const [explicit, setExplicit] = useState<Record<string, string[] | undefined>>({});
@@ -85,7 +86,8 @@ export function AgentKnowledge({ agentName, displayName }: { agentName: string; 
   const close = () => setStack([]);
 
   const confirm = useCallback((archiveId: string, archiveVersion: number, itemIds: string[]) => {
-    if (sending.current) return;
+    // Same gate as the button, re-read at the action boundary.
+    if (sending.current || !admission.canConfirm(archiveId)) return;
     sending.current = true;
     start.mutate({ selection: { archive_id: archiveId, archive_version: archiveVersion, item_ids: itemIds } }, {
       onSuccess: (op: ImportOperation) => {
@@ -94,7 +96,7 @@ export function AgentKnowledge({ agentName, displayName }: { agentName: string; 
       },
       onSettled: () => { sending.current = false; },
     });
-  }, [start]);
+  }, [start, admission]);
   const recover = useCallback((submissionId: string) => {
     if (sending.current) return;
     sending.current = true;
@@ -104,10 +106,10 @@ export function AgentKnowledge({ agentName, displayName }: { agentName: string; 
     });
   }, [start]);
   const doRetry = useCallback((operationId: string) => {
-    if (sending.current) return;
+    if (sending.current || !admission.canRetry(operationId)) return;
     sending.current = true;
     retry.mutate(operationId, { onSettled: () => { sending.current = false; } });
-  }, [retry]);
+  }, [retry, admission]);
 
   return (
     <>

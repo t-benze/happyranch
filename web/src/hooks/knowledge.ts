@@ -446,6 +446,36 @@ export function useInstillAttempts(recipientId: string | null) {
 }
 
 /**
+ * Action-boundary admission for a FRESH confirmation or a retry, read from the
+ * live query cache and ledger at click time (the buttons apply the same gate).
+ * Unread, loading, errored or re-fetching state is unknown and refuses.
+ * Same-key recovery of a recorded unknown confirmation is not gated here.
+ */
+export function useInstillAdmission(recipientId: string) {
+  const slug = useSlug();
+  const queryClient = useQueryClient();
+  const current = useCallback(<T,>(queryKey: unknown[]): T | null => {
+    const state = queryClient.getQueryState<T>(queryKey);
+    return state && state.status === 'success' && state.fetchStatus === 'idle' && state.data !== undefined ? state.data : null;
+  }, [queryClient]);
+  const quiet = useCallback((exceptOperationId: string | null): boolean => {
+    const ledger = readLedger<InstillAttempt>(instillKey(slug, recipientId), isInstillAttempt);
+    if (!ledger.ok || ledger.attempts.length > 0) return false;
+    const history = current<{ operations: api.ImportOperation[] }>(['knowledge', slug, 'imports', recipientId]);
+    if (!history) return false;
+    return !history.operations.some((op) => IMPORT_IN_FLIGHT.has(op.state) && op.operation_id !== exceptOperationId);
+  }, [current, slug, recipientId]);
+  const canConfirm = useCallback((archiveId: string): boolean => {
+    const eligibility = current<api.ImportEligibility>(['knowledge', slug, 'eligibility', recipientId, archiveId]);
+    return !!eligibility && eligibility.recipient_eligible === true && quiet(null);
+  }, [current, quiet, slug, recipientId]);
+  const canRetry = useCallback((operationId: string): boolean => (
+    !!current<api.ImportOperation>(['knowledge', slug, 'import', operationId]) && quiet(operationId)
+  ), [current, quiet, slug]);
+  return { canConfirm, canRetry };
+}
+
+/**
  * Local refusals around the Instill POST. `ledger_unavailable`,
  * `ledger_write_failed` and `unresolved_attempt` refuse BEFORE any request.
  * `recovery_refused` means the daemon refused a same-key re-send: that proves

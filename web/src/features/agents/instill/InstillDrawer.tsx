@@ -559,12 +559,17 @@ function ConfirmView({ recipient, archiveId, explicit, gate, start, onPop, onClo
   const items = (archive?.items ?? []).filter((i) => selection.includes(i.item_id));
   const unresolved = gate.unresolved;
   const recovering = !!unresolved && !start.pending;
+  // A fresh confirmation needs a CURRENT eligibility read (not a cached value
+  // being re-fetched) that says the recipient is eligible right now.
+  const eligibilityCurrent = eligibility.status === 'success' && !eligibility.isFetching;
+  const recipientEligible = eligibility.data?.recipient_eligible === true;
   const blockedReason = !gate.ledgerReadable ? t('knowledge.instill.ledger.unavailable')
     : !gate.historyReady ? t('knowledge.instill.gate.history')
       : gate.inflight ? t('knowledge.instill.gate.inflight', { operation: gate.inflight.operation_id })
-        : null;
+        : eligibility.status === 'success' && eligibility.isFetching ? t('knowledge.instill.gate.eligibility', { name: recipient.name })
+          : null;
   const canConfirm = !start.found && !!archive && selection.length > 0 && gate.ledgerReadable && gate.historyReady && !unresolved && !gate.inflight
-    && !start.pending && eligibility.status === 'success';
+    && !start.pending && eligibilityCurrent && recipientEligible;
   return (
     <Shell
       sourceName={recipient.name}
@@ -583,7 +588,7 @@ function ConfirmView({ recipient, archiveId, explicit, gate, start, onPop, onClo
               <Button onClick={() => start.onRecover(unresolved.submission_id)}>{t('knowledge.instill.recover.check')}</Button>
             ) : (
               <Button disabled={!canConfirm} loading={start.pending}
-                onClick={() => archive && start.onConfirm(archiveId, archive.version, selection)}>
+                onClick={() => { if (canConfirm && archive) start.onConfirm(archiveId, archive.version, selection); }}>
                 {t('knowledge.instill.confirm.go', { count: selection.length })}
               </Button>
             )}
@@ -611,6 +616,10 @@ function ConfirmView({ recipient, archiveId, explicit, gate, start, onPop, onClo
                     <p className="mt-1">{t('knowledge.instill.recover.body')}</p>
                     <p className="text-text-muted mt-1 font-mono text-xs break-all">{unresolved.submission_id}</p>
                   </Notice>
+                ) : null}
+                {!recovering && !start.found ? (
+                  <EligibilityNotice recipient={recipient} eligibility={eligibility.data} checking={eligibility.isFetching}
+                    onCheck={() => void eligibility.refetch()} />
                 ) : null}
                 {blockedReason ? (
                   <Notice tone="danger" role="status" icon={<CircleAlert size={16} aria-hidden="true" />}>
@@ -678,7 +687,7 @@ export function retryableCount(op: ImportOperation): number {
   return op.results.filter((r) => r.outcome === 'Failed' && r.retryable && !r.held).length;
 }
 
-function ReceiptView({ recipient, operationId, history, gate, retry, onPush, onClose, top }: InstillDrawerProps & { operationId: string; top: boolean }): JSX.Element {
+function ReceiptView({ recipient, operationId, history, historyError, gate, retry, onPush, onClose, top }: InstillDrawerProps & { operationId: string; top: boolean }): JSX.Element {
   const { t } = useTranslation();
   const utc = useUtc();
   const query = useKnowledgeImport(operationId);
@@ -693,8 +702,14 @@ function ReceiptView({ recipient, operationId, history, gate, retry, onPush, onC
   const retrying = retry.pending && retry.operationId === operationId;
   // Retry needs an authoritative, current read of THIS operation.
   const authoritative = query.status === 'success' && !query.isFetching;
-  const canRetry = !!op && authoritative && op.state !== 'Succeeded' && retryable > 0 && !retry.pending
-    && !(gate.inflight && gate.inflight.operation_id !== operationId);
+  // ...and a current read of the recipient's history (unread history is
+  // UNKNOWN, never "no other operation") with no unknown confirmation recorded.
+  const retryBlocked = !gate.ledgerReadable ? t('knowledge.instill.ledger.unavailable')
+    : !gate.historyReady ? (historyError ? t('knowledge.instill.gate.historyRetryError') : t('knowledge.instill.gate.historyRetry'))
+      : gate.unresolved ? t('knowledge.instill.gate.unresolvedRetry', { submission: gate.unresolved.submission_id })
+        : gate.inflight && gate.inflight.operation_id !== operationId ? t('knowledge.instill.gate.inflight', { operation: gate.inflight.operation_id })
+          : null;
+  const canRetry = !!op && authoritative && op.state !== 'Succeeded' && retryable > 0 && !retry.pending && retryBlocked === null;
   const retryError = retry.operationId === operationId ? retry.error : null;
   const sourceName = archive?.manifest.source_name
     ?? history?.find((o) => o.operation_id === operationId)?.source_id ?? op?.source_id ?? '';
@@ -718,7 +733,7 @@ function ReceiptView({ recipient, operationId, history, gate, retry, onPush, onC
                 <Button variant="ghost" onClick={onClose}>{t('knowledge.common.close')}</Button>
                 {op && (op.imported + op.skipped) > 0 ? <Button variant="outline" onClick={onClose}>{t('knowledge.instill.receipt.viewMemories')}</Button> : null}
                 {op && op.state !== 'Succeeded' && retryable > 0 ? (
-                  <Button disabled={!canRetry} loading={retrying} onClick={() => retry.onRetry(operationId)}>
+                  <Button disabled={!canRetry} loading={retrying} onClick={() => { if (canRetry) retry.onRetry(operationId); }}>
                     {t('knowledge.instill.receipt.retry', { count: retryable })}
                   </Button>
                 ) : null}
@@ -820,6 +835,16 @@ function ReceiptView({ recipient, operationId, history, gate, retry, onPush, onC
           ) : null}
           {retryable > 0 && op.state !== 'Succeeded' ? (
             <Notice tone="neutral" icon={<CircleAlert size={16} aria-hidden="true" />}>{t('knowledge.instill.receipt.retryNote', { count: retryable })}</Notice>
+          ) : null}
+          {retryable > 0 && op.state !== 'Succeeded' && !retry.pending && retryBlocked ? (
+            <Notice tone="danger" role="status" icon={<CircleAlert size={16} aria-hidden="true" />}>
+              <p>{retryBlocked}</p>
+              {gate.inflight && gate.inflight.operation_id !== operationId && gate.historyReady && !gate.unresolved ? (
+                <Button variant="outline" size="sm" className="mt-2" onClick={() => onPush({ kind: 'receipt', operationId: gate.inflight!.operation_id })}>
+                  {t('knowledge.instill.history.view')}
+                </Button>
+              ) : null}
+            </Notice>
           ) : null}
           {held > 0 ? (
             <Notice tone="neutral" icon={<CircleHelp size={16} aria-hidden="true" />}>
