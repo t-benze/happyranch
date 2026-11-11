@@ -1635,3 +1635,30 @@ The [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md
 records the pre-edit split, witness preimage, allowance accounting and evidence
 limits. ACCESS-1/current authority, agent-owned effective access, original Pause,
 receipt uncertainty/no reissue, U6 and historical owners remain unchanged.
+
+## U7c2b current Final admission (TASK-15564)
+
+This supersedes earlier dated U7c1/U7c2a Final-Held checkpoints. The post-outer
+dispatcher now admits validated Final success in its ORIGINAL locked authority
+transaction. Complete replay independently authenticates the persisted entire
+observation, INTEGER callback, original terminal/outer, selecting event/CAS,
+immutable subject, retained current-slot upstream development/APPROVE/PASS and
+exact recipient/check receipts. Same-transaction complete mixed target validation
+checks acceptance, transition/successor, terminal return and original caller
+fields before COMMIT/notification. Duplicate callback validates persisted
+publication without DML or duplicate notification. Late failure rolls back all
+staged publication. No LOCAL action is repeated.
+
+Original caps/deadline and R-M3-2 per-read allowances remain; new parse/copy/walk
+work prepays the original allowance and SQL hooks return to their owner. Genuine
+pre-write exhaustion escapes without DML/COMMIT; late target refusal rolls back
+staged DML. Malformed history stays unverified; current authority denied versus
+unverified remains distinct. ACCESS-1 rechecks current fixed eligible principals
+and unchanged subject/origin only. No daemon GitHub/network observer, credential
+or effective-access claim. Original Pause, receipt uncertainty command=None/no
+reissue, cancellation, U6b2a and Option B UNSETTLED retain their owners.
+
+Public fresh start stays OFF until U9. U7d/U8/U9, native/V3/V5/M4 and genuine
+access/merge/activation acceptance remain separate. Source diagnostics are
+out-of-repo SYNTHETIC; units/Vitest RETIRED, integration SKIPPED24342 and no E2E.
+See the [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7c2b-complete-final-admission-task-15564).

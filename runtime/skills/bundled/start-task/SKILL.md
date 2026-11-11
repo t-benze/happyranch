@@ -1321,3 +1321,16 @@ and same-transaction publication/return validation and mounts the consumer.
 Keep the same original allowances/deadline, causal BLOCK/receipt uncertainty,
 Pause/cancellation owners and genuine FINAL callback. Public fresh start remains
 OFF until U9; no job/recovery Final executor or live operation follows.
+
+Sequential U7c2b supersedes earlier source-checkpoint Final-Held descriptions:
+the daemon can accept the genuine original Final callback after positive outer
+settlement, complete persisted-output replay and same-transaction acceptance/
+transition/return/caller validation. Transport success or saved local records
+alone still grant no acceptance or repeat action. Duplicate delivery validates
+persisted publication without another write/notification. Preserve original
+causal BLOCK, command=None/receipt uncertainty/no reissue, Pause generation and
+cancellation owners, original caps/deadline and R-M3-2 per-read allowances.
+ACCESS-1 remains current authority only, with agent-owned effective access and
+no daemon GitHub/network observer or new credentials. Your genuine current
+report-completion remains the FINAL action. Public fresh start stays OFF until
+U9; U7d/U8/U9 and live activation remain separate.

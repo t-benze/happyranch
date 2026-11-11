@@ -720,7 +720,9 @@ class SequentialDispatcher:
                                     is_document = document_only(compiled, budget)
                                     is_code = next(node.output_contract.type for node in compiled.definition.nodes
                                                    if node.id == visit['node_id']) in ('code-change@1', 'independent-code-review@1', 'code-qa@1')
-                                    if is_document or is_code:
+                                    is_final = next(node.output_contract.type for node in compiled.definition.nodes
+                                                    if node.id == visit['node_id']) == 'guarded-repository-merge@1'
+                                    if is_document or is_code or is_final:
                                         context = document_binding_context if is_document else coding_binding_context
                                         start, bound = context(run, visit, compiled, capture, budget)
                                         # Original proofs are preflighted at 16 KiB by _evidence.
@@ -733,8 +735,15 @@ class SequentialDispatcher:
                                     else:
                                         start, bound = None, None
                                         terminal_digest = outer_digest = None
-                                    if next(node.output_contract.type for node in compiled.definition.nodes
-                                            if node.id == visit['node_id']) == 'guarded-repository-merge@1':
+                                    witness = None
+                                    if is_final and transition is not None:
+                                        from runtime.workflows.sequential_coding_final_history import validate_final_publication
+                                        validate_final_publication(conn, org_slug=self.org.slug, run_id=run_id,
+                                            visit_id=visit_id, task_id=visit['task_id'], result_id=result_id,
+                                            terminal_edge=terminal_edge, compiled=compiled, authority=self.org.workflow_authority,
+                                            capture=capture, bound=bound, budget=budget)
+                                        return None  # Authenticated replay: no writes or duplicate caller publication.
+                                    if is_final:
                                         # Native result preflight already bounds this string. Prepay
                                         # UTF8/canonical/base64/domain copies and both JSON trees
                                         # BEFORE the new decoder, on the original prefix allowance.
@@ -743,19 +752,21 @@ class SequentialDispatcher:
                                         # Exhaustion remains a genuine reader refusal, outside Held.
                                         budget.reserve(48 * 4 * len(result['output_summary']) + 512)
                                         budget.work(len(result['output_summary']))
-                                        value, _ = _carrier(result['output_summary'], contract='guarded-repository-merge@1',
+                                        value, final_content = _carrier(result['output_summary'], contract='guarded-repository-merge@1',
                                             checks=(), status=result['status'], verdict=result['verdict'])
                                         if value['outcome'] == 'merged':
                                             from runtime.workflows.sequential_coding_final_callback import (
-                                                FinalObservationCause, FinalObservationRefusal, read_final_callback_uncommitted,
+                                                FinalObservationCause, FinalObservationRefusal,
                                             )
+                                            from runtime.workflows.sequential_coding_final_output import build_final_witness_uncommitted
                                             budget.check()
                                             try:
-                                                read_final_callback_uncommitted(conn, org_slug=self.org.slug,
-                                                    run_id=run_id, visit_id=visit_id, task_id=visit['task_id'],
-                                                    principal=visit['principal'], session_id=visit['session_id'],
-                                                    result_id=result_id, authority=self.org.workflow_authority,
-                                                    capture=capture, deadline=budget.deadline)
+                                                witness = build_final_witness_uncommitted(conn, org_slug=self.org.slug,
+                                                    run=run, visit=visit, compiled=compiled, result=result,
+                                                    content_digest=hashlib.sha256(final_content).hexdigest(),
+                                                    carrier_digest=identity['carrier_digest'], terminal_digest=terminal_digest,
+                                                    outer_digest=outer_digest, authority=self.org.workflow_authority,
+                                                    capture=capture, budget=budget)
                                             except FinalObservationRefusal as exc:
                                                 budget.check()
                                                 if exc.cause is FinalObservationCause.LIMIT:
@@ -765,11 +776,27 @@ class SequentialDispatcher:
                                                 raise SequentialRefusal(cause) from None
                                             finally:
                                                 conn.set_progress_handler(budget.progress, 1000)
-                                            # U7c1 validates then retains the original unavailable-output Held.
-                                            # U7c2 owns witness/publication admission; no success output here.
-                                    envelope, content, recipients, checks = self._compose(conn, run, visit, compiled, result,
-                                        bound=bound, budget=budget, carrier_digest=identity['carrier_digest'],
-                                        terminal_digest=terminal_digest, outer_digest=outer_digest)
+                                    if witness is not None:
+                                        budget.reserve(48 * 65536 + 512)
+                                        budget.work(1024)  # <=1 output,32 findings,8 receipts: <512 model/container nodes.
+                                        node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+                                        recipients, checks = witness.recipients, witness.verified_checks
+                                        content = final_content
+                                        envelope = _bytes(dict(format='workflow-sequential-result@1', run_id=run_id,
+                                            visit_id=visit_id, definition_digest=compiled.pin.definition_digest,
+                                            input_selection_digest=visit['input_selection_digest'], outcome='merged',
+                                            outputs=[dict(slot=node.output_contract.slot, contract=node.output_contract.type,
+                                                epoch=visit['epoch'], producer_visit=visit_id, task_id=visit['task_id'],
+                                                session_id=visit['session_id'], result_id=result_id,
+                                                digest=hashlib.sha256(content).hexdigest())],
+                                            findings=[dict(source_visit=visit_id, source_result=result_id, text=text)
+                                                      for text in value['findings']],
+                                            capability_receipts=witness.capability_receipts))
+                                        parse_result(envelope)
+                                    else:
+                                        envelope, content, recipients, checks = self._compose(conn, run, visit, compiled, result,
+                                            bound=bound, budget=budget, carrier_digest=identity['carrier_digest'],
+                                            terminal_digest=terminal_digest, outer_digest=outer_digest)
                                     contract = next(node.output_contract.type for node in compiled.definition.nodes if node.id == visit['node_id'])
                                     # Parser/base64/snapshot temporaries and native summary die before acceptance.
                                     del result, terminal, outer, identity
@@ -782,9 +809,9 @@ class SequentialDispatcher:
                                     edge = dict(node.outcomes).get(parse_result(envelope).outcome)
                                     if isinstance(edge, NextEdge):
                                         target = next(node for node in compiled.definition.nodes if node.id == edge.node)
-                                        bound = (bound if bound is not None else _bound_agents(compiled, parse_start(run['start_bytes']), capture))[target.role]
+                                        target_binding = (bound if bound is not None else _bound_agents(compiled, parse_start(run['start_bytes']), capture))[target.role]
                                         successor = TaskRecord(id='TASK-SEQ-' + source, parent_task_id=run['carrier_task_id'],
-                                            assigned_agent=bound['name'], team=bound['team'], task_type='subtask',
+                                            assigned_agent=target_binding['name'], team=target_binding['team'], task_type='subtask',
                                             brief='Sequential node ' + target.id + '; follow only the bound node brief and domain supplement.')
                                 accept_result_uncommitted(conn, self.org.db, **common, visit_id=visit_id,
                                     task_id=visit['task_id'], principal=visit['principal'], session_id=visit['session_id'],
@@ -808,6 +835,12 @@ class SequentialDispatcher:
                                             'WHERE id IN (?,?)',
                                             ('Sequential run ' + run_id + ' returned.', visit['task_id'], visit['task_id'],
                                              run['source_task_id'], run['carrier_task_id']))
+                                if is_final and witness is not None:
+                                    from runtime.workflows.sequential_coding_final_history import validate_final_publication
+                                    validate_final_publication(conn, org_slug=self.org.slug, run_id=run_id,
+                                        visit_id=visit_id, task_id=visit['task_id'], result_id=result_id,
+                                        terminal_edge=terminal_edge, compiled=compiled, authority=self.org.workflow_authority,
+                                        capture=capture, bound=bound, budget=budget)
                         except (SequentialRefusal, WorkflowAuthorityError, ProfileCoordinatorError) as refusal:
                             if isinstance(refusal, (WorkflowAuthorityError, ProfileCoordinatorError)):
                                 try:

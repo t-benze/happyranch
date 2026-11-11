@@ -593,6 +593,11 @@ def _run_history(conn: sqlite3.Connection, run: dict, compiled: CompiledDefiniti
             _require(envelope.run_id == run['id'] and envelope.visit_id == visit['id']
                      and envelope.definition_digest == compiled.pin.definition_digest
                      and envelope.input_selection_digest == visit['input_selection_digest'], 'result_envelope_conflict')
+            if node.output_contract.type == 'guarded-repository-merge@1' and envelope.outputs:
+                from runtime.workflows.sequential_coding_final_history import validate_final_output
+                validate_final_output(conn, run=run, visit=visit, compiled=compiled, start=start,
+                    visits=visits, events=events, outputs=outputs, original=original,
+                    envelope=envelope, verified_checks=checks['checks'], budget=budget)
         else:
             _require(not outputs.get(visit['id']) and visit['state'] not in ('completed', 'failed'), 'visit_result_missing')
     first = visits[0]

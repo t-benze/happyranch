@@ -1,6 +1,6 @@
 # Sequential Coding U7: common transport and agent initiation
 
-> Status: current design; U7a/U7b/U7c1 and unmounted U7c2a witness delivered in source; U7c2b admission and U7d remain.
+> Status: current design; U7a/U7b/U7c1/U7c2b delivered in source, including complete Final acceptance; U7d remains.
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
 
 THR-336 / ROOT TASK-15165; TASK-15465, linked retry of pre-edit failed TASK-15462.
@@ -358,3 +358,67 @@ access/merge/native/V3/V5/M4 acceptance. Python units/Vitest RETIRED, integratio
 SKIPPED THR-243seq42, E2E untriggered. Independent review, scoped QA and manager
 guarded merge remain; merged is not deployed. U7d/U8/U9 and all Founder-reserved
 operations/holds remain separate.
+
+## U7c2b complete Final admission (TASK-15564)
+
+This section supersedes the earlier U7c1/U7c2a withheld-admission status. A
+validated `guarded-repository-merge@1` success is admitted through the existing
+post-positive-outer dispatcher. This is provenance acceptance of the original
+agent-owned operation, not a daemon observation of GitHub or permission to repeat
+it. Public fresh start remains OFF until U9; U7d/U8/U9 remain separate.
+
+The mount, complete-history acceptance and original-transaction publication
+validation ship together. The original authority/teams/DB locks and admission
+transaction enclose witness composition, accepted output/verified checks, the
+existing engine transition/successor, terminal return, caller-field projection
+and the complete mixed target oracle. Only that COMMIT precedes queue/caller
+notification. A late write, replay or validation failure rolls the whole staged
+publication back. No new transaction, schema, family or trusted Boolean is used.
+
+`sequential_coding_final_history.validate_final_output` is called by complete
+run replay on its existing allowance. It authenticates the entire canonical
+observation against the original INTEGER callback and successful terminal/outer
+proofs, immutable subject and selecting event/CAS, original native root/request/
+handle, mandatory independent settled development/APPROVE/PASS and the original
+retained current-slot prefix. Final's addressed inputs alone are insufficient.
+It recomputes exact sorted recipients, verified checks and deterministic Final
+receipt digests from the original fixed principals, without current-role lookup
+for historical attribution. No future visit contaminates the contributor set.
+The shared pure receipt derivation changes no preimage or persisted family.
+
+`validate_final_publication` reads complete mixed history before COMMIT, then
+validates the accepted result and terminal run-return obligation, exact original
+source/carrier completion fields, current fixed binding/origin and closing
+ACCESS-1 authority. Duplicate delivery validates persisted publication, writes
+nothing and emits no duplicate notification. It does not re-enter the reader
+for an unaccepted callback or reissue the LOCAL effect. Malformed/uncertain
+proofs refuse; current denied versus unverified authority remains distinct.
+
+New copies, parses, model dumps, hashes and traversals prepay the same caller
+allowance before work. Historical observation parsing reserves `48*49152+512`
+bytes and one traversal per actual content byte (a token upper bound); carrier
+decoding reserves `48*4*len(summary)+512` bytes and `len(summary)` traversals.
+The live witness retains its original fixed prepayment. Envelope composition
+prepays `48*65536+512` bytes and1024 traversals (one output,32 findings and8 receipts have fewer than512 model/container nodes). Whole-target reads each retain
+their OWN unchanged D2 A/B/C/L allowances on the SAME original operation
+deadline (R-M3-2). SQL-hook custody is restored at reader handoffs. No cap,
+deadline, attempt, retry or spent allowance is renewed. Genuine pre-write
+exhaustion escapes with zero DML/no COMMIT; a late target-validation refusal
+rolls back already staged DML and publishes nothing. Cooperative deadlines do
+not establish hard OS timing.
+
+Only `sequential_history` changes within the existing protected13 radius; engine,
+selected validator, historical families, U6/native Pause and LOCAL action/receipt
+owners remain byte-identical. `_compose` is unchanged; `_advance` owns the Final
+branch. Original Pause generation, cancellation-before-action, command=None/no
+reissue, U6b2a sequential-only and Option B ordinary/document UNSETTLED persist.
+No daemon network/GitHub I/O, observer, credential, permission, dependency,
+installation or live operation is introduced.
+
+Out-of-repo SYNTHETIC diagnostics and exact B/H inventories/commands are recorded
+in dev_agent/output/TASK-15564/handoff.md. Fake native/authority/effect fixtures
+are not genuine access/merge/native/V3/V5/M4 acceptance. Units/Vitest RETIRED,
+integration SKIPPED THR243seq42, E2E untriggered. Exact-head local CI uses a job;
+hosted checks are observed once. Independent review/scoped QA and manager
+guarded merge remain. All prior failed histories, spent allowances, Founder
+reservations, V3 end, PR1252 hold and PRD v1.0.4/msg131 remain unchanged.

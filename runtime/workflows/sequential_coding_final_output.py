@@ -1,4 +1,4 @@
-"""Unmounted U7c2a Final witness consumer; no result or publication writer.
+"""Final witness consumer; no result or publication writer.
 
 The caller owns the original authority/teams/DB locks and transaction. The
 complete callback reader authenticates the actual result, never a supplied
@@ -12,7 +12,7 @@ import sqlite3
 
 from runtime.workflows.authority import AuthorityAdmissionCapture, WorkflowAuthorityCoordinator
 from runtime.workflows.sequential_coding_final_callback import read_final_callback_uncommitted
-from runtime.workflows.sequential_coding_final_observation import FINAL_OBSERVATION_LIMIT
+from runtime.workflows.sequential_coding_final_observation import CodingFinalObservation, FINAL_OBSERVATION_LIMIT
 from runtime.workflows.sequential_coding_output import CodingWitness, coding_binding_context
 from runtime.workflows.sequential_contracts import SETTLEMENT_CHECK
 from runtime.workflows.sequential_definition import CompiledDefinition
@@ -33,8 +33,6 @@ def build_final_witness_uncommitted(conn: sqlite3.Connection, *, org_slug: str,
         budget: _ReadBudget) -> CodingWitness:
     """Read the genuine selected callback, then derive addressed receipts.
 
-    No production caller yet. U7c2b must supply compatible complete output
-    history and same-transaction acceptance/return validation before mounting.
     All added work spends the caller's SAME allowance and original deadline;
     mandatory nested complete reads retain their existing R-M3-2 allowances.
     No refusal is caught, retried or converted into business-Held here.
@@ -75,6 +73,21 @@ def build_final_witness_uncommitted(conn: sqlite3.Connection, *, org_slug: str,
     node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
     _require(node.output_contract.type == 'guarded-repository-merge@1')
     _, bound = coding_binding_context(run, visit, compiled, capture, budget)
+    budget.reserve(16384)
+    budget.work(len(bound))
+    return final_witness(run=run, visit=visit, compiled=compiled, observation=observation,
+        result_id=result['id'],
+        content_digest=content_digest, carrier_digest=carrier_digest, terminal_digest=terminal_digest,
+        outer_digest=outer_digest, bound={role: value['name'] for role, value in bound.items()}, budget=budget)
+
+
+def final_witness(*, run: dict, visit: dict, compiled: CompiledDefinition,
+        observation: CodingFinalObservation, result_id: int, content_digest: str, carrier_digest: str,
+        terminal_digest: str, outer_digest: str, bound: dict[str, str], budget: _ReadBudget) -> CodingWitness:
+    """Pure receipt derivation, reused only after live or historical proof reads."""
+    budget.work(len(compiled.definition.nodes) + len(bound))
+    node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+    org_slug = run['org_slug']
     recipients = document_recipients(compiled, node.output_contract.slot, budget)
     _require(bool(recipients) and all(role in bound for role in recipients))
     # The output digest binds the ENTIRE original observation: immutable change,
@@ -87,11 +100,12 @@ def build_final_witness_uncommitted(conn: sqlite3.Connection, *, org_slug: str,
     preimage = dict(format='workflow-sequential-coding-final-witness@1', org_slug=org_slug,
         run_id=run['id'], definition=compiled.pin.model_dump(mode='json'), start_digest=run['start_digest'],
         visit_id=visit['id'], node=node.id, role=node.role, epoch=visit['epoch'],
-        task_id=visit['task_id'], principal=result['agent'], session_id=visit['session_id'], result_id=result['id'],
+        task_id=visit['task_id'], principal=visit['principal'], session_id=visit['session_id'],
+        result_id=result_id,
         carrier_digest=carrier_digest, input_selection_digest=visit['input_selection_digest'],
         slot=node.output_contract.slot, contract=node.output_contract.type, content_digest=content_digest,
         selection_digest=observation.selection_digest,
-        recipients=[dict(role=role, principal=bound[role]['name']) for role in recipients],
+        recipients=[dict(role=role, principal=bound[role]) for role in recipients],
         terminal_digest=terminal_digest, outer_digest=outer_digest)
     receipts = []
     for check in node.completion_checks:
