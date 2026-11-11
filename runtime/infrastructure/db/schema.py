@@ -2236,6 +2236,11 @@ class SchemaMixin:
                 ON custom_skill_purge_events(org_slug, slug);
 
             """)
+        # Knowledge tables are additive and installed after the fresh block;
+        # keep their SQL and behavior with the feature, not the Database facade.
+        from runtime.knowledge.archives import install_archive_schema
+
+        install_archive_schema(self._conn)
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_task_id ON audit_log(task_id)"
         )

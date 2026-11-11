@@ -1,1 +1,1 @@
-"""Read-only retained knowledge sources; no archive or import operations."""
+"""Retained knowledge capture, curation and immutable archives; no imports."""
