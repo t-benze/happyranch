@@ -31,6 +31,7 @@ class DistillOperation(BaseModel):
     state: Literal['Queued', 'Processing', 'Ready', 'Failed']
     phase: str
     cutoff: str
+    coverage: list[Coverage]
     requested_processor_id: str | None
     processor_id: str | None
     task_id: str | None

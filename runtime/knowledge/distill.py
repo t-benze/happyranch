@@ -15,7 +15,7 @@ from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.knowledge.archives import ArchiveError, KnowledgeArchiveStore
 from runtime.knowledge.curation import CurationError, build_curation_input
 from runtime.knowledge.lifecycle_models import DistillOperation, DistillSubmission
-from runtime.knowledge.sources import RetiredSource, capture_retired_source
+from runtime.knowledge.sources import Coverage, RetiredSource, capture_retired_source
 from runtime.models import TaskStatus
 from runtime.orchestrator.orchestrator import completion_report_from_result_row
 
@@ -182,7 +182,8 @@ class DistillLifecycle:
         archive = next((a for a in self.store.list_ready(source_id=operation['source_id'])
                         if a['operation_id'] == operation_id), None) if operation['state'] == 'Ready' else None
         return DistillOperation(**{k: operation[k] for k in DistillOperation.model_fields
-                                  if k not in {'failure', 'archive_id', 'archive_version'}},
+                                  if k not in {'coverage', 'failure', 'archive_id', 'archive_version'}},
+                                coverage=[Coverage.model_validate(c) for c in json.loads(operation['capture_json'])['coverage']],
                                 failure=json.loads(operation['failure_json']) if operation['failure_json'] else None,
                                 archive_id=archive['archive_id'] if archive else None,
                                 archive_version=archive['version'] if archive else None)

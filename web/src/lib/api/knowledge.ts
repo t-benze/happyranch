@@ -71,6 +71,7 @@ export interface DistillOperation {
   state: 'Queued' | 'Processing' | 'Ready' | 'Failed';
   phase: string;
   cutoff: string;
+  coverage: SourceCoverage[];
   requested_processor_id: string | null;
   processor_id: string | null;
   task_id: string | null;

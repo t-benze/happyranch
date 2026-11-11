@@ -2183,7 +2183,7 @@ Source availability and consistency rules live in
 The existing bearer-authenticated same-org knowledge router also serves:
 
 - `POST /api/v1/orgs/{slug}/knowledge/distill`: `{ "submission_id": "original-key", "source_id": "retired_id", "confirmed": true }`, optionally with `processor_id` naming an existing active executable owner.
-- `GET /api/v1/orgs/{slug}/knowledge/distill/{operation_id}`: Queued/Processing/Ready/Failed, observed phase, cutoff/last-update, closed failure cause, actual processor/task/session/result and archive/version references. Internal capture and corpus bodies are excluded.
+- `GET /api/v1/orgs/{slug}/knowledge/distill/{operation_id}`: Queued/Processing/Ready/Failed, observed phase, cutoff/last-update, closed failure cause, actual processor/task/session/result and archive/version references. Both POST and GET include the fixed capture's category/state/reason/count-or-unknown/cutoff/errors coverage, preserving unavailable/error reasons through failure, replay and reopen. Internal capture, confirmation JSON and corpus bodies are excluded.
 - `GET /api/v1/orgs/{slug}/knowledge/archives`: Ready selection metadata, coverage and item counts.
 - `GET /api/v1/orgs/{slug}/knowledge/archives/{archive_id}`: immutable manifest and curated items with opaque S1 source references; no arbitrary source paths or raw snapshot read.
 
