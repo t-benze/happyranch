@@ -116,7 +116,8 @@ def fixture_checks(report: dict[str, Any]) -> None:
 
 
 def run(report: dict[str, Any]) -> None:
-    """Darwin only: compare one real df snapshot with the actual advisory."""
+    """Darwin only: run nine fixtures, then compare one real df snapshot."""
+    fixture_checks(report)
     checks: list[dict[str, Any]] = []
     section: dict[str, Any] = {"checks": checks, "bash": "/bin/bash"}
     report["inode_telemetry"] = section

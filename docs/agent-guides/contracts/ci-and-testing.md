@@ -116,7 +116,8 @@ The `all` target's temporary-filesystem inode advisory reads GNU inode columns
 on Linux and BSD `iused`/`ifree`/`%iused` columns on macOS (total = used + free).
 It warns at 90%, remains fail-open on unavailable or malformed measurements,
 and never cleans files. See `docs/local-ci.md` for the focused fixture command
-and `ci/jenkins/mac-native-probe/README.md` for the separate S9 native suite.
+and `ci/jenkins/mac-native-probe/README.md` for the S9 native suite, which runs
+all 12 rows (nine portable fixtures followed by three real-df checks).
 Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.

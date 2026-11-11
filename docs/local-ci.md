@@ -125,8 +125,9 @@ Run the bounded, stdlib-only fixtures with
 only the shipping advisory function under `/bin/bash -euo pipefail`, with
 test-side `df`/`uname` functions for GNU/BSD layouts, opposing block/inode
 pressure, large totals, malformed output and unavailable commands. They do not
-run the wrapper, Python units, integration or Product E2E. For real Mac `df`
-evidence, see the separate `inode-telemetry` suite in
+run the wrapper, Python units, integration or Product E2E. The native
+`inode-telemetry` suite runs all 12 rows: these nine fixtures followed by
+three real Mac `df` checks. See
 `ci/jenkins/mac-native-probe/README.md`; Linux dispatcher output is SKIPPED.
 Behavioral tests and builds are outside all/pre-push/required merge checks.
 Normal hooks stay enabled; never bypass hooks or the guarded worktree.

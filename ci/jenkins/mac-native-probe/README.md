@@ -353,10 +353,15 @@ stdlib Python, `/bin/bash`, `df`, `awk`, `uname` and `tee`, all already present
 on macOS. No dependency, job configuration, host or trigger change is needed.
 Only a separately authorized native leg operates the Jenkins job.
 
-The new `suite_inode_telemetry.py` extracts the shipping `observe_tmp_inodes`
-function without sourcing/running `local_ci.sh`. Apple `/bin/bash` executes
-that function against real `/bin/df -Pi` for a private directory inside the
-job's `$TMPDIR`; test-side `tee` saves the same sample for independent column
+The `inode-telemetry` suite runs all 12 rows: nine portable fixtures followed
+by three real-df checks. `suite_inode_telemetry.py` extracts the shipping
+`observe_tmp_inodes` function without sourcing/running `local_ci.sh`. The
+`inode_telemetry_fixtures` report section contains `gnu_low`, `gnu_warning`,
+`bsd_blocks_high_inodes_low`, `bsd_inodes_high_blocks_low`, `bsd_large_total`,
+`gnu_malformed`, `bsd_malformed`, `df_unavailable` and `uname_unavailable`.
+Apple `/bin/bash` then executes that function against real `/bin/df -Pi`
+for a private directory inside the job's `$TMPDIR`; test-side `tee` saves the
+same sample for independent column
 comparison. Named rows carry expected/actual values: `real_df_inode_values`
 compares used/free/total/percent with BSD inode columns 6–8 and their sum;
 `real_df_advisory_exit` expects 0; `real_df_warning_threshold` checks the 90%
@@ -371,7 +376,7 @@ existing job owns outer interruption cleanup and all file/log/time limits.
 No whole CI, build, daemon, external HOME/cache write or frozen bundle is used.
 On Linux the dispatcher emits its expected skipped JSON and exits0.
 
-Portable fixtures run separately with
+The same nine portable fixtures can also run on their own with
 `python3 -B scripts/mac_native/suite_inode_telemetry.py` (see `docs/local-ci.md`).
 They prove parsing/advisory behavior only; native Mac, frozen-app acceptance
 and Product E2E require their separately owned evidence.
