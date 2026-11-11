@@ -5,6 +5,10 @@ from runtime.infrastructure.thread_archive import after_thread_invocations_commi
 import uuid
 import time
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.orchestrator.teams import TeamsRegistry
 
 from runtime.infrastructure.db._shared import (
     _late_database_now as _now,
@@ -1526,6 +1530,8 @@ class ReplyDeliveryMixin:
         recipients: list[str],
         resolve: bool = False,
         resolution_next_owner: str | None = None,
+        resolution_teams: TeamsRegistry | None = None,
+        resolution_agents: set[str] | None = None,
         _addresses: MessageAddresses | None = None,
     ) -> tuple[int, list[ThreadReplyArrival]]:
         """Atomic conversational-arrival: append the message, raise the
@@ -1546,8 +1552,12 @@ class ReplyDeliveryMixin:
             self._conn.execute("BEGIN IMMEDIATE")
             self.validate_thread_message(_addresses)
             if resolve:
+                if not body_markdown or not body_markdown.strip():
+                    from runtime.infrastructure.db.threads import ThreadResolutionError
+                    raise ThreadResolutionError(422, "resolution_body_required")
                 self._validate_thread_resolution_uncommitted(
                     thread_id, speaker, founder_addressed=bool(_addresses and _addresses.founder_addressed),
+                    next_owner=resolution_next_owner, teams=resolution_teams, known_agents=resolution_agents,
                 )
             mentions = self._derive_conversational_mentions(
                 thread_id, speaker, kind, body_markdown, addresses=_addresses,
@@ -1641,6 +1651,7 @@ class ReplyDeliveryMixin:
         reply_message_seq: int | None = None,
         reply_thread_id: str | None = None,
         reply_agent_name: str | None = None,
+        allow_follow_on: bool = True,
     ) -> ThreadReplySettlement | None:
         """Settle a conversational REPLY terminal path inside the open
         transaction. Returns None when ``token`` is not the running token of
@@ -1808,7 +1819,7 @@ class ReplyDeliveryMixin:
             )
             if self._pair_held_by_open_exchange(thread_id, agent_name):
                 exchange_held = True
-            elif outcome in ("reply", "decline") or pending_catchup:
+            elif allow_follow_on and (outcome in ("reply", "decline") or pending_catchup):
                 follow_on = self._mint_reply_invocation_uncommitted(
                     thread_id, agent_name, new_ack + 1,
                 )
@@ -2008,6 +2019,12 @@ class ReplyDeliveryMixin:
         token: str,
         outcome: str,
         decline_reason: str | None = None,
+        resolve: bool = False,
+        thread_id: str | None = None,
+        speaker: str | None = None,
+        resolution_next_owner: str | None = None,
+        resolution_teams: TeamsRegistry | None = None,
+        resolution_agents: set[str] | None = None,
     ) -> tuple[ThreadReplySettlement | None, list[ThreadReplyArrival]]:
         """Settlement seam for caller-owned exchange enqueue (TASK-5966).
 
@@ -2023,6 +2040,15 @@ class ReplyDeliveryMixin:
         arrivals: list[ThreadReplyArrival] = []
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            inv = None
+            if resolve:
+                from runtime.infrastructure.db.threads import ThreadResolutionError
+                if not decline_reason or not decline_reason.strip():
+                    raise ThreadResolutionError(422, "resolution_reason_required")
+                inv = self._validate_invocation_resolution_uncommitted(
+                    thread_id, speaker, token, founder_addressed=False,
+                    next_owner=resolution_next_owner, teams=resolution_teams, known_agents=resolution_agents,
+                )
             move = getattr(self, "_team_move_coordinator", None)
             if move is not None:
                 move.threads.callback_uncommitted(token)
@@ -2030,7 +2056,18 @@ class ReplyDeliveryMixin:
                 token,
                 outcome=outcome,
                 decline_reason=decline_reason,
-            )
+            ) if inv is None or inv.purpose is ThreadInvocationPurpose.REPLY else None
+            if resolve:
+                if settlement is None:
+                    self._conn.execute(
+                        "UPDATE thread_invocations SET status='declined', consumed_at=?, decline_reason=? "
+                        "WHERE invocation_token=? AND status='pending'",
+                        (_now().isoformat(), decline_reason, token),
+                    )
+                self._resolve_thread_uncommitted(
+                    thread_id, seq=inv.triggering_seq, speaker=speaker, task_id=None,
+                    next_owner=resolution_next_owner, via="decline", invocation=inv, reason=decline_reason,
+                )
             if settlement is not None:
                 arrivals = self._evaluate_exchange_closure(
                     settlement.thread_id,
@@ -2053,15 +2090,21 @@ class ReplyDeliveryMixin:
         attachments: list[ThreadAttachment] | None,
         token: str,
         token_purpose: ThreadInvocationPurpose,
+        resolve: bool = False,
+        resolution_next_owner: str | None = None,
+        resolution_teams: TeamsRegistry | None = None,
+        resolution_agents: set[str] | None = None,
         _addresses: MessageAddresses | None = None,
     ) -> tuple[int, ThreadReplySettlement | None, list[ThreadReplyArrival]]:
         """Atomic reply: append the reply message, settle the held token, and
-        broadcast to every OTHER participant.
+        broadcast to every OTHER participant, unless explicitly resolving.
 
         Returns (seq, settlement, arrivals). ``settlement`` is None for a
         non-REPLY token (BOOTSTRAP/TASK_FOLLOWUP use the legacy consume); the
         broadcast to other participants always uses the coalescing arrival path
-        (replacing the legacy per-recipient REPLY mint).
+        (replacing the legacy per-recipient REPLY mint). A resolving reply
+        validates its actual answer turn and records resolution in this same
+        transaction, without broadcast, follow-on or exchange catch-up tokens.
         """
         now = _now().isoformat()
         arrivals: list[ThreadReplyArrival] = []
@@ -2072,6 +2115,17 @@ class ReplyDeliveryMixin:
             if move is not None:
                 move.threads.callback_uncommitted(token)
             self.validate_thread_message(_addresses)
+            inv = None
+            if resolve:
+                from runtime.infrastructure.db.threads import ThreadResolutionError
+                if not body_markdown or not body_markdown.strip():
+                    raise ThreadResolutionError(422, "resolution_body_required")
+                inv = self._validate_invocation_resolution_uncommitted(
+                    thread_id, speaker, token,
+                    founder_addressed=bool(_addresses and _addresses.founder_addressed),
+                    next_owner=resolution_next_owner, teams=resolution_teams, known_agents=resolution_agents,
+                )
+                token_purpose = inv.purpose
             participants = [
                 p["agent_name"] for p in self._conn.execute(
                     "SELECT agent_name FROM thread_participants WHERE thread_id = ?",
@@ -2083,7 +2137,8 @@ class ReplyDeliveryMixin:
             )
             # Refusal above precedes closure AND consumption/settlement. Due
             # catch-up remains enqueued even for a founder-only current reply.
-            arrivals.extend(self._evaluate_exchange_closure(thread_id))
+            if not resolve:
+                arrivals.extend(self._evaluate_exchange_closure(thread_id))
             seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id,
                 speaker=speaker,
@@ -2100,6 +2155,7 @@ class ReplyDeliveryMixin:
                     reply_message_seq=seq,
                     reply_thread_id=thread_id,
                     reply_agent_name=speaker,
+                    allow_follow_on=not resolve,
                 )
                 if settlement is None:
                     # Legacy/stale pending REPLY not owned by delivery state:
@@ -2133,6 +2189,15 @@ class ReplyDeliveryMixin:
                         "AND status = 'consumed' AND reply_message_seq IS NULL",
                         (seq, token, thread_id, speaker, token_purpose.value),
                     )
+            if resolve:
+                self._resolve_thread_uncommitted(
+                    thread_id, seq=seq, speaker=speaker, task_id=None,
+                    next_owner=resolution_next_owner, via="reply", invocation=inv,
+                )
+                # No acknowledgement round or exchange catch-up. Existing
+                # residual delivery obligations remain visible to archive admission.
+                self._conn.commit()
+                return seq, settlement, []
             recipients = [name for name in participants if name != speaker]
             # Phase-2 mention routing (THR-198, Slice B): REPLY tokens resolve
             # the broadcast at write time from the persisted structured

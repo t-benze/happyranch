@@ -6,7 +6,11 @@ import base64
 import binascii
 import json
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from runtime.orchestrator.teams import TeamsRegistry
 
 from runtime.infrastructure.db._shared import _late_database_now as _now, _synchronized
 from runtime.infrastructure.thread_mentions import parse_mentions
@@ -92,7 +96,7 @@ _THREAD_ARCHIVE_OWNERS_SQL = """
 
 
 class ThreadResolutionError(ValueError):
-    """Resolution refusal from the transaction owner; never a partial send."""
+    """Resolution refusal from the transaction owner; never a partial callback."""
 
     def __init__(self, status_code: int, code: str) -> None:
         super().__init__(code)
@@ -120,32 +124,79 @@ class ThreadsMixin:
 
     def _validate_thread_resolution_uncommitted(
         self, thread_id: str, speaker: str, *, founder_addressed: bool,
+        next_owner: str | None = None, teams: TeamsRegistry | None = None,
+        known_agents: set[str] | None = None,
     ) -> None:
         thread = self._conn.execute("SELECT * FROM threads WHERE id = ?", (thread_id,)).fetchone()
         if thread is None or thread["status"] != "open":
             raise ThreadResolutionError(400, "thread_not_open")
-        if thread["composed_from_task_id"] is None or thread["composed_by"] == "founder":
+        if (thread["composed_from_task_id"] is None or thread["composed_by"] == "founder"
+                or thread["composed_from_dream_id"] is not None):
             raise ThreadResolutionError(403, "thread_not_task_composed")
+        team = teams.team_for_agent(thread["composed_by"]) if teams is not None else None
+        manager = teams.executable_manager_for_team(team) if team is not None else None
+        if speaker != thread["composed_by"] and speaker != manager:
+            raise ThreadResolutionError(403, "thread_resolution_not_authorized")
         if not self._conn.execute(
             "SELECT 1 FROM thread_participants WHERE thread_id = ? AND agent_name = ?",
             (thread_id, speaker),
         ).fetchone():
             raise ThreadResolutionError(403, "not_a_participant")
+        if next_owner == "founder":
+            raise ThreadResolutionError(409, "founder_decision_pending")
+        if next_owner is not None and next_owner not in (known_agents or set()):
+            raise ThreadResolutionError(422, "unknown_next_owner")
         if founder_addressed or self._thread_has_founder_hold_uncommitted(thread_id):
             raise ThreadResolutionError(409, "founder_decision_pending")
 
+    def _validate_invocation_resolution_uncommitted(
+        self, thread_id: str, speaker: str, token: str, *, founder_addressed: bool,
+        next_owner: str | None, teams: TeamsRegistry | None, known_agents: set[str] | None,
+    ) -> ThreadInvocation:
+        """Recheck the actual turn and current thread before any callback effect."""
+        self._validate_thread_resolution_uncommitted(
+            thread_id, speaker, founder_addressed=founder_addressed,
+            next_owner=next_owner, teams=teams, known_agents=known_agents,
+        )
+        inv = self.get_pending_invocation(token)
+        if inv is None:
+            raise ThreadResolutionError(409, "invocation_token_consumed")
+        if inv.thread_id != thread_id or inv.agent_name != speaker:
+            raise ThreadResolutionError(401, "invocation_token_invalid")
+        if inv.purpose not in (ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.TASK_FOLLOWUP):
+            raise ThreadResolutionError(400, "resolution_wrong_invocation_purpose")
+        answer = self._conn.execute(
+            "SELECT kind, speaker FROM thread_messages WHERE thread_id=? AND seq=?",
+            (thread_id, inv.triggering_seq),
+        ).fetchone()
+        if answer is None or answer["kind"] != "message" or answer["speaker"] in (speaker, "founder"):
+            raise ThreadResolutionError(409, "resolution_not_answer_turn")
+        if self._conn.execute(
+            "SELECT 1 FROM thread_messages WHERE thread_id=? AND kind='message' AND seq>? LIMIT 1",
+            (thread_id, inv.triggering_seq),
+        ).fetchone():
+            raise ThreadResolutionError(409, "resolution_stale")
+        return inv
+
     def _resolve_thread_uncommitted(
-        self, thread_id: str, *, seq: int, speaker: str, task_id: str,
-        next_owner: str | None,
+        self, thread_id: str, *, seq: int, speaker: str, task_id: str | None,
+        next_owner: str | None, via: str = "send", invocation: ThreadInvocation | None = None,
+        reason: str | None = None,
     ) -> None:
         self._conn.execute(
             "UPDATE threads SET resolved_seq = ?, resolved_by = ?, resolved_at = ?, "
             "resolved_from_task_id = ?, resolution_next_owner = ? WHERE id = ?",
             (seq, speaker, _now().isoformat(), task_id, next_owner, thread_id),
         )
+        payload = {"seq": seq, "resolved_from_task_id": task_id, "next_owner": next_owner,
+                   "via": via, "triggering_seq": invocation.triggering_seq if invocation else None}
+        if invocation is not None:
+            payload["invocation_id"] = invocation.id
+        if via == "decline":
+            payload["reason"] = reason
         self.insert_audit_log_uncommitted(
             task_id=thread_id, agent=speaker, action="thread_resolved",
-            payload={"seq": seq, "resolved_from_task_id": task_id, "next_owner": next_owner},
+            payload=payload,
         )
 
     def _clear_thread_resolution_uncommitted(self, thread_id: str) -> int | None:

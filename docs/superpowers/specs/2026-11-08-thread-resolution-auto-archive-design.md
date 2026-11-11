@@ -149,3 +149,15 @@ New channels, privacy models, automatic closure of founder-created threads and
 TaskStatus lifecycle changes require returning to the founder. Normal independent
 review, scoped QA, lint/static CI, hooks and guarded manager merge still apply.
 Python units remain retired; general integration is SKIPPED THR-243 seq42.
+
+## 2026-11-11 clarification: explicit reply/decline resolution
+
+The historical statements above that decline never sets or establishes
+resolution apply to plain declines without the explicit `resolution` object.
+The [2026-11-11 invocation-resolution addendum](2026-11-11-thread-invocation-resolution.md)
+extends resolution to the opener's or its current executable team manager's
+REPLY or TASK_FOLLOWUP answer turn using `threads reply` or `threads decline`,
+under its atomic eligibility, answer-turn, staleness, founder-hold and next-owner
+guards. Both resolving callbacks also trigger post-commit archive evaluation
+alongside send. Later MESSAGE and founder resume still clear resolution;
+silence, plain declines, elapsed time and task termination never establish it.

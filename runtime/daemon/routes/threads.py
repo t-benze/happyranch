@@ -1506,6 +1506,11 @@ async def list_thread_tasks_endpoint(
 # ---------------------------------------------------------------------------
 
 
+class ThreadResolutionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    next_owner: str | None = None
+
+
 class ReplyBody(BaseModel):
     thread_id: str
     invocation_token: str
@@ -1513,6 +1518,7 @@ class ReplyBody(BaseModel):
     body_markdown: str = ""
     attachments: list[AttachmentRefBody] = Field(default_factory=list)
     in_response_to_seq: int
+    resolution: ThreadResolutionBody | None = None
 
 
 def _validate_invocation_token(
@@ -1562,6 +1568,8 @@ async def reply_thread_endpoint(
     if t.status is not ThreadStatus.OPEN:
         raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
 
+    if body.resolution is not None and not body.body_markdown.strip():
+        raise HTTPException(status_code=422, detail={"code": "resolution_body_required"})
     attachments = _normalize_all_attachments(
         org, body.attachments, uploaded_by=body.speaker, thread_id=thread_id,
     )
@@ -1587,14 +1595,22 @@ async def reply_thread_endpoint(
         if inv is None:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
         _validate_message_addresses(org, body_text)
-        seq, settlement, arrivals = org.db.reply_conversational(
-            thread_id=thread_id,
-            speaker=body.speaker,
-            body_markdown=body_text,
-            attachments=attachments,
-            token=body.invocation_token,
-            token_purpose=inv.purpose,
-        )
+        try:
+            seq, settlement, arrivals = org.db.reply_conversational(
+                thread_id=thread_id,
+                speaker=body.speaker,
+                body_markdown=body_text,
+                attachments=attachments,
+                token=body.invocation_token,
+                token_purpose=inv.purpose,
+                resolve=body.resolution is not None,
+                resolution_next_owner=body.resolution.next_owner if body.resolution is not None else None,
+                resolution_teams=org.teams,
+                resolution_agents={a.name for a in prompt_loader.list_agents(OrgPaths(org.root))}
+                    if body.resolution is not None else None,
+            )
+        except ThreadResolutionError as exc:
+            raise HTTPException(status_code=exc.status_code, detail={"code": exc.code}) from exc
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=body.speaker, kind="message",
@@ -1617,6 +1633,8 @@ async def reply_thread_endpoint(
         status="open",
     )
 
+    if body.resolution is not None:
+        await maybe_auto_archive_thread(org, thread_id, "resolving_reply")
     return {"thread_id": thread_id, "seq": seq, "kind": "message"}
 
 
@@ -1631,6 +1649,7 @@ class DeclineBody(BaseModel):
     speaker: str
     reason: str | None = None
     in_response_to_seq: int
+    resolution: ThreadResolutionBody | None = None
 
 
 @router.post("/threads/{thread_id}/decline")
@@ -1657,25 +1676,33 @@ async def decline_thread_endpoint(
     # any message as long as they hold a valid invocation token.
 
     reason = body.reason.strip() if body.reason else None
+    if body.resolution is not None and not reason:
+        raise HTTPException(status_code=422, detail={"code": "resolution_reason_required"})
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
         inv = org.db.get_pending_invocation(body.invocation_token)
         if inv is None:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-        if inv.purpose is ThreadInvocationPurpose.REPLY:
-            settlement, catch_up = org.db.settle_conversational_reply_with_exchange(
-                token=body.invocation_token,
-                outcome="decline",
-                decline_reason=reason,
-            )
-            if settlement is None:
+        if body.resolution is not None or inv.purpose is ThreadInvocationPurpose.REPLY:
+            try:
+                settlement, catch_up = org.db.settle_conversational_reply_with_exchange(
+                    token=body.invocation_token, outcome="decline", decline_reason=reason,
+                    resolve=body.resolution is not None, thread_id=thread_id, speaker=body.speaker,
+                    resolution_next_owner=body.resolution.next_owner if body.resolution is not None else None,
+                    resolution_teams=org.teams,
+                    resolution_agents={a.name for a in prompt_loader.list_agents(OrgPaths(org.root))}
+                        if body.resolution is not None else None,
+                )
+            except ThreadResolutionError as exc:
+                raise HTTPException(status_code=exc.status_code, detail={"code": exc.code}) from exc
+            if settlement is None and body.resolution is None:
                 # Legacy/stale pending REPLY not owned by delivery state.
                 ok = org.db.mark_invocation_declined(
                     body.invocation_token, decline_reason=reason,
                 )
             else:
                 ok = True
-                if settlement.follow_on_token is not None:
+                if settlement is not None and settlement.follow_on_token is not None:
                     tokens_to_enqueue.append(settlement.follow_on_token)
                 # TASK-5966: catch-up tokens minted by the closure evaluation
                 # at this settlement (decline route owns the enqueue).
@@ -1701,6 +1728,8 @@ async def decline_thread_endpoint(
         kind="decline_status", preview=None, status="open",
     )
 
+    if body.resolution is not None:
+        await maybe_auto_archive_thread(org, thread_id, "resolving_decline")
     return {"thread_id": thread_id, "status": "declined"}
 
 
@@ -2166,11 +2195,6 @@ def _task_in_thread_lineage(org, task_id: str, thread_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-class ThreadResolutionBody(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    next_owner: str | None = None
-
-
 class SendBody(BaseModel):
     body_markdown: str = ""
     attachments: list[AttachmentRefBody] = Field(default_factory=list)
@@ -2356,20 +2380,6 @@ async def _post_agent_message(
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
         _validate_message_addresses(org, body_text)
-        if resolution is not None:
-            thread = org.db.get_thread(thread_id)
-            if thread is None or thread.composed_from_task_id is None or thread.composed_by == "founder":
-                raise _SendThreadError(403, "thread_not_task_composed")
-            team = org.teams.team_for_agent(thread.composed_by)
-            manager = org.teams.executable_manager_for_team(team) if team is not None else None
-            if speaker != thread.composed_by and speaker != manager:
-                raise _SendThreadError(403, "thread_resolution_not_authorized")
-            if resolution.next_owner == "founder":
-                raise _SendThreadError(409, "founder_decision_pending")
-            if resolution.next_owner is not None and resolution.next_owner not in {
-                agent.name for agent in prompt_loader.list_agents(OrgPaths(org.root))
-            }:
-                raise _SendThreadError(422, "unknown_next_owner")
         try:
             seq, arrivals = org.db.record_conversational_arrival(
                 thread_id=thread_id, speaker=speaker,
@@ -2380,6 +2390,9 @@ async def _post_agent_message(
                 recipients=[] if resolution is not None else addressed,
                 resolve=resolution is not None,
                 resolution_next_owner=resolution.next_owner if resolution is not None else None,
+                resolution_teams=org.teams,
+                resolution_agents={a.name for a in prompt_loader.list_agents(OrgPaths(org.root))}
+                    if resolution is not None else None,
             )
         except ThreadResolutionError as exc:
             raise _SendThreadError(exc.status_code, exc.code) from exc

@@ -94,7 +94,7 @@ notification after commit can publish only the same genuine replacement token.
 
 ## Your invocation_token
 
-### Explicit task-session resolution (THR-339 PR1)
+### Explicit resolution from a task or answer turn (THR-339)
 
 When a task-composed thread's request is explicitly settled, its opener or the
 opener's executable team manager may resolve it in the substantive decision
@@ -106,11 +106,45 @@ message using the existing `threads send` file payload:
 
 Send with `happyranch threads send --org ORG --thread-id THR-ID --task-id TASK-ID
 --session-id CURRENT --from-file ABS`. This requires a current active,
-non-recovery TASK session and current participation; an invocation token alone
-does not authorize resolution. Do not put `resolution` on `threads reply`.
-`next_owner` may be null/omitted or a known active agent ID, never founder.
+non-recovery TASK session and current participation.
+
+The opener or its current executable team manager can also resolve from a
+pending REPLY or TASK_FOLLOWUP invocation caused by another agent's answer.
+Use the existing terminal callback with the same optional object:
+
+```json
+{"thread_id":"THR-ID","invocation_token":"CURRENT_TOKEN","speaker":"agent_id","in_response_to_seq":3,"body_markdown":"Accepted; the request is settled.","resolution":{"next_owner":null}}
+```
+
+Submit with `happyranch threads reply --org ORG --from-file ABS`. The nonempty
+reply is the decision record; resolution uses the newly appended reply seq.
+It settles your invocation atomically and creates no REPLY or catch-up tokens.
+For a silent settlement, supply a nonempty reason instead:
+
+```json
+{"thread_id":"THR-ID","invocation_token":"CURRENT_TOKEN","speaker":"agent_id","in_response_to_seq":3,"reason":"Answer accepted; no further action remains.","resolution":{"next_owner":null}}
+```
+
+Submit with `happyranch threads decline --org ORG --from-file ABS`. No message is
+appended; resolution uses the invocation's actual triggering seq and records
+its reason in the audit. A plain decline without `resolution` never resolves.
+
+Both forms require an open task-composed thread, current participation and
+opener/opener-manager authority; a human team head grants no agent authority.
+BOOTSTRAP refuses400 `resolution_wrong_invocation_purpose`. The token's actual
+trigger must be a MESSAGE by another agent, never yourself or founder
+(409 `resolution_not_answer_turn`). Any newer MESSAGE refuses409
+`resolution_stale`; handle that newer turn instead. Refusals leave the token
+pending and append nothing. Empty resolving reply/reason refuses422
+`resolution_body_required`/`resolution_reason_required`. An ineligible thread
+refuses403 `thread_not_task_composed`; an unauthorized resolver refuses403
+`thread_resolution_not_authorized`. Invocation tokens authorize only this
+bounded callback; no task-session or answerer-side authority follows.
+`next_owner` may be null/omitted or a known active agent ID, never founder
+(409 `founder_decision_pending`); unknown IDs refuse422 `unknown_next_owner`.
+The strict resolution object accepts only `next_owner` with string/null value.
 The nonempty body records the decision; there is no acknowledgement round and
-the resolving send creates no REPLY invocations. Do not send a separate ack or
+the resolving send or reply creates no REPLY invocations. Do not send a separate ack or
 promise a later resolution in prose instead of using the field.
 
 Pending founder addresses refuse409 `founder_decision_pending`, including an
@@ -123,10 +157,10 @@ unresolved while actionable work remains. Founder-created and dream-composed
 threads remain manual archive only. Task-composed threads auto-archive once
 explicitly resolved, all pending reply/bootstrap/task_followup invocations and
 live delivery ranges/held exchange deferrals settle, and no founder hold remains.
-Checks run after resolving send, invocation termination, composing-task termination
+Checks run after resolving send/reply/decline, invocation termination, composing-task termination
 and at daemon startup; exchange release also reevaluates settled holds. Task
 termination is cleanup only: unresolved requests stay open with their owner
-visible. Silence, declines and elapsed time never resolve a thread. The founder
+visible. Silence, plain declines and elapsed time never resolve a thread. The founder
 can inspect and resume any archived thread; resume clears resolution.
 
 Look for this line in your prompt:

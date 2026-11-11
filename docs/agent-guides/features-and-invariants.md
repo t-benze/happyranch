@@ -2754,12 +2754,26 @@ Traps:
   FAILED subtasks clear the chain and fall through to sibling-check +
   bounded-wake.
 
-Task-composed threads explicitly resolved by the opener or its executable team
-manager automatically archive only when all tracked invocation/delivery/exchange
-obligations settle and no founder hold remains. Post-commit send, invocation,
-composing-task terminal, startup and exchange-release checks re-read admission
-inside the existing archive transaction. Unresolved threads stay open with their
-owner visible; task termination, silence, declines and time never resolve them.
+The opener or its current executable team manager may explicitly resolve a
+task-composed thread in a substantive send from an active task session, or from
+its pending REPLY or TASK_FOLLOWUP invocation on another agent's answer, using
+the same strict `resolution` object. Invocation resolution requires participation,
+an open task-composed thread (neither founder-created nor dream-composed), an
+actual triggering MESSAGE by another agent (never self or founder), and no newer
+MESSAGE. Founder holds (including the resolving reply's own address) or founder
+`next_owner` refuse with `founder_decision_pending`; unknown owners refuse with
+`unknown_next_owner`, while a known active agent ID or null/omitted owner is
+accepted. A resolving reply requires nonempty text; a resolving decline requires
+a nonempty reason and appends no message. Resolution, callback settlement and
+the `thread_resolved` audit commit atomically. Later MESSAGE and founder resume
+clear resolution. A plain decline without `resolution` never resolves a thread.
+
+Explicitly resolved threads automatically archive only when all tracked
+invocation/delivery/exchange obligations settle and no founder hold remains.
+Post-commit resolving send/reply/decline, invocation-terminal, composing-task
+terminal, startup and exchange-release checks re-read admission inside the
+existing archive transaction. Unresolved threads stay open with their owner
+visible; task termination, silence and time never resolve them.
 Text-only promises are untracked in v1. Founder-created and dream-composed threads
 stay manual, and the founder can resume any archived thread (clearing resolution).
 See [threads and naming](contracts/threads-and-naming.md#explicit-resolution-and-automatic-archive-thr-339).
