@@ -264,7 +264,8 @@ export const instillKnowledge = (
   slug: string, recipientId: string, confirmation: InstillConfirmation,
 ): Promise<ImportOperation> =>
   request(`/orgs/${encodeURIComponent(slug)}/agents/${encodeURIComponent(recipientId)}/knowledge/imports`,
-    { method: 'POST', body: confirmation });
+    // One explicit click sends one POST: a 401 refreshes the bearer without re-sending.
+    { method: 'POST', body: confirmation, replayOnUnauthorized: false });
 
 export const listKnowledgeImports = (
   slug: string, recipientId: string,
@@ -275,7 +276,7 @@ export const getKnowledgeImport = (slug: string, operationId: string): Promise<I
   request(`/orgs/${encodeURIComponent(slug)}/knowledge/imports/${encodeURIComponent(operationId)}`);
 
 export const retryKnowledgeImport = (slug: string, operationId: string): Promise<ImportOperation> =>
-  request(`/orgs/${encodeURIComponent(slug)}/knowledge/imports/${encodeURIComponent(operationId)}/retry`, { method: 'POST' });
+  request(`/orgs/${encodeURIComponent(slug)}/knowledge/imports/${encodeURIComponent(operationId)}/retry`, { method: 'POST', replayOnUnauthorized: false });
 
 export const getKnowledgeImportEligibility = (
   slug: string, recipientId: string, archiveId: string,

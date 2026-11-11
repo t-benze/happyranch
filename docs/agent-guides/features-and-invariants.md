@@ -2278,14 +2278,22 @@ read-only source record and recipient memory note. Coverage is an expandable
 disclosure in preview and confirmation. Eligibility is advisory: Busy shows the
 actual blocker kinds/IDs and never cancels work or offers an override; confirm
 handles every server refusal with its closed code. Only the explicit Instill
-and Retry buttons POST, once per click (synchronous latch); back/forward,
+and Retry buttons POST, exactly once per click (synchronous latch, and the
+Instill/retry calls opt out of the shared client's 401 re-send with
+`replayOnUnauthorized: false`: a 401 still clears and re-acquires the master
+bearer but is thrown, never re-sent, so the next explicit click uses the fresh
+bearer; other callers keep the default re-send); back/forward,
 reference return and locale switches keep recipient, archive and selection and
 send nothing. Each confirmation mints a submission ID recorded with its exact
 body in a per-org/per-recipient localStorage ledger before the POST (same
 storage rules as Distill: only an absent value is empty; malformed, `''` or
 unwritable storage refuses with zero POSTs). An unknown outcome is settled only
 by a returned operation: a same-key re-send of the recorded body, or the
-recipient history listing that submission ID. A refused re-send keeps the key,
+recipient history listing that submission ID. While a confirmation is unknown,
+the confirmation view (title, question, archive/version facts, items and footer
+count) describes that recorded body, not the current default selection. A
+first-send 401 forgets its fresh key like the other pre-creation refusals. A
+refused re-send (including a 401) keeps the key,
 and new confirmations stay blocked while any key is unresolved or the history
 read is loading/errored. A fresh confirmation also needs a current (successful,
 not re-fetching) eligibility read with `recipient_eligible: true`; otherwise the

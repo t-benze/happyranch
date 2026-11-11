@@ -21,6 +21,13 @@ export interface RequestOptions {
    * Sends ``Authorization: Bearer <token>`` instead of the cached bearer.
    */
   auth?: { token: string };
+  /**
+   * Opt-in single send. `false`: on a master-bearer 401 the cached bearer is
+   * still cleared and re-acquired, but the request is NOT re-sent; the 401 is
+   * thrown so the caller's next explicit action uses the fresh bearer. Unset
+   * keeps the default one re-send.
+   */
+  replayOnUnauthorized?: boolean;
 }
 
 export class ApiError extends Error {
@@ -112,7 +119,9 @@ export async function request<T = unknown>(
     // Master-bearer retry (scoped tokens are single-use, so skip).
     clearToken();
     token = await getToken();
-    res = await doFetch(url, init, token);
+    if (opts.replayOnUnauthorized !== false) {
+      res = await doFetch(url, init, token);
+    }
   }
 
   if (res.status === 204) {

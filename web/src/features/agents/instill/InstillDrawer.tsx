@@ -552,12 +552,15 @@ function RefusalNotice({ error }: { error: unknown }): JSX.Element {
 function ConfirmView({ recipient, archiveId, explicit, gate, start, onPop, onClose, onPush, top }: InstillDrawerProps & { archiveId: string; top: boolean }): JSX.Element {
   const { t } = useTranslation();
   const utc = useUtc();
-  const archiveQuery = useKnowledgeArchive(archiveId);
-  const eligibility = useImportEligibility(recipient.id, archiveId);
-  const archive = archiveQuery.data;
-  const selection = effectiveSelection(explicit[archiveId], eligibility.data);
-  const items = (archive?.items ?? []).filter((i) => selection.includes(i.item_id));
   const unresolved = gate.unresolved;
+  // While a confirmation is unresolved, describe the RECORDED submission (the
+  // body a same-key Check again re-sends), never the current default selection.
+  const shownArchiveId = unresolved ? unresolved.archive_id : archiveId;
+  const archiveQuery = useKnowledgeArchive(shownArchiveId);
+  const eligibility = useImportEligibility(recipient.id, shownArchiveId);
+  const archive = archiveQuery.data;
+  const selection = unresolved ? unresolved.item_ids : effectiveSelection(explicit[archiveId], eligibility.data);
+  const items = (archive?.items ?? []).filter((i) => selection.includes(i.item_id));
   const recovering = !!unresolved && !start.pending;
   // A fresh confirmation needs a CURRENT eligibility read (not a cached value
   // being re-fetched) that says the recipient is eligible right now.
@@ -576,11 +579,11 @@ function ConfirmView({ recipient, archiveId, explicit, gate, start, onPop, onClo
       title={t('knowledge.instill.confirm.title', { count: selection.length })}
       top={top}
       onClose={onClose}
-      breadcrumb={<Crumbs parts={[{ label: t('knowledge.instill.title') }, { label: archiveId, onClick: onPop }, { label: t('knowledge.instill.confirm.crumb') }]} />}
+      breadcrumb={<Crumbs parts={[{ label: t('knowledge.instill.title') }, { label: shownArchiveId, onClick: onPop }, { label: t('knowledge.instill.confirm.crumb') }]} />}
       footer={(
         <>
           <div className="text-text-secondary min-w-0 text-xs">
-            <span className="text-text-primary font-semibold">{recipient.name}</span> · <span className="font-mono">{archiveId}</span> · <span className="text-text-primary font-semibold">{t('knowledge.instill.selectedCount', { count: selection.length })}</span>
+            <span className="text-text-primary font-semibold">{recipient.name}</span> · <span className="font-mono">{shownArchiveId}</span> · <span className="text-text-primary font-semibold">{t('knowledge.instill.selectedCount', { count: selection.length })}</span>
           </div>
           <div className="flex shrink-0 items-center gap-2 max-md:justify-end">
             <Button variant="ghost" onClick={onPop}>{t('knowledge.instill.confirm.back')}</Button>
@@ -633,13 +636,13 @@ function ConfirmView({ recipient, archiveId, explicit, gate, start, onPop, onClo
                 ) : null}
                 <p className="text-text-primary text-sm leading-relaxed">
                   {t('knowledge.instill.confirm.question', {
-                    count: selection.length, archive: archiveId, source: archive.manifest.source_name, name: recipient.name, id: recipient.id,
+                    count: selection.length, archive: shownArchiveId, source: archive.manifest.source_name, name: recipient.name, id: recipient.id,
                   })}
                 </p>
                 <Facts>
                   <Fact term={t('knowledge.facts.recipient')}>{recipientLine(recipient)}</Fact>
                   <Fact term={t('knowledge.instill.archive')}>
-                    <span className="font-mono text-xs break-all">{archiveId}</span> · {archive.manifest.source_name} · {t('knowledge.instill.pick.captured', { version: archive.version, date: utc(archive.manifest.cutoff) })}
+                    <span className="font-mono text-xs break-all">{shownArchiveId}</span> · {archive.manifest.source_name} · {t('knowledge.instill.pick.captured', { version: unresolved ? unresolved.archive_version : archive.version, date: utc(archive.manifest.cutoff) })}
                   </Fact>
                   <Fact term={t('knowledge.instill.selected')}>
                     <span className="font-semibold tabular-nums">{selection.length}</span>
