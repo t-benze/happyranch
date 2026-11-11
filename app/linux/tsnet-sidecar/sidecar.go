@@ -195,14 +195,45 @@ func consumeInput(c Config) ([]byte, error) {
 		return nil, ErrCredential
 	}
 	st, err = os.Lstat(c.CredentialFile)
-	if err != nil || st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || st.Mode().Perm() != 0o600 || !ownedByCurrentUser(st) {
+	if err != nil || !validInputFile(c, st) {
 		return nil, ErrCredential
 	}
-	b, err := os.ReadFile(c.CredentialFile)
+	f, err := os.OpenFile(c.CredentialFile, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, ErrCredential
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !validInputFile(c, opened) || !os.SameFile(st, opened) {
+		return nil, ErrCredential
+	}
+	b, err := io.ReadAll(f)
 	if err != nil || len(strings.TrimSpace(string(b))) == 0 {
 		return nil, ErrCredential
 	}
 	return b, nil
+}
+
+// Only the exact managed credential name in systemd's absolute directory gets
+// read-only credential semantics. The environment contains a path, never a key.
+func systemdInput(c Config) bool {
+	dir := os.Getenv("CREDENTIALS_DIRECTORY")
+	return filepath.IsAbs(dir) && filepath.Clean(dir) == dir && dir != "/" && c.CredentialFile == filepath.Join(dir, "enrollment-key")
+}
+
+func validInputFile(c Config, st os.FileInfo) bool {
+	if !st.Mode().IsRegular() {
+		return false
+	}
+	if !systemdInput(c) {
+		return st.Mode().Perm() == 0o600 && ownedByCurrentUser(st)
+	}
+	// systemd writes 0400 copies, granting the service read access via ownership
+	// or an ACL on a root-owned inode (whose read mask appears as 0440).
+	// Never accept a writable or world-readable credential copy.
+	owner, ok := st.Sys().(*syscall.Stat_t)
+	mode := st.Mode().Perm()
+	return ok && (mode == 0o400 || mode == 0o440) && owner.Nlink == 1 && (owner.Uid == 0 || ownedByCurrentUser(st))
 }
 
 func requireOwnerDir(path string) error {
@@ -261,6 +292,12 @@ func commitConsumption(c Config) error {
 	}
 	if err = syncDir(c.StateDir); err != nil {
 		return err
+	}
+	// systemd owns the read-only copy until service teardown. The installer
+	// removes its root-owned source after both READY services pass drift checks.
+	if systemdInput(c) {
+		ok = true
+		return nil
 	}
 	if err = os.Remove(c.CredentialFile); err != nil {
 		return err

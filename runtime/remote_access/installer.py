@@ -1,7 +1,8 @@
-"""Fresh-host managed systemd installation, without payload or enrollment setup.
+"""Fresh-host managed systemd installation with transient file-only enrollment input.
 
 Provision binaries/configuration separately before starting. No upgrade journal,
-rollback, credential copying, or automatic recovery is provided. Files already
+rollback or automatic recovery is provided. Enrollment sources are removed on
+success and failure; issue a fresh single-use key before retrying. Files already
 present must match the rendered units; interrupted installs need operator care.
 """
 from __future__ import annotations
@@ -32,6 +33,9 @@ UNITS = (
     "happyranch-managed.target",
 )
 _UNIT_DIR = "etc/systemd/system"
+_ENROLLMENT = "etc/happyranch/enrollment.key"
+_CREDSTORE = "etc/credstore"
+_CREDENTIAL_NAME = "happyranch-tsnet-enrollment"
 _STATE_DIRS = ("var/lib/happyranch-connector", "var/lib/happyranch-tsnet-sidecar")
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
@@ -42,7 +46,7 @@ class InstallerError(RuntimeError):
 
 
 def managed_units() -> dict[str, str]:
-    """Use the shared renderer verbatim; no enrollment or credential directives."""
+    """Use the shared renderers verbatim, including sidecar credential injection."""
     return {
         UNITS[0]: render_connector_unit(ConnectorUnitSpec(
             user="happyranch", group="happyranch",
@@ -110,6 +114,7 @@ class ManagedInstaller:
         layout: dict[str, tuple[int, tuple[int, int] | None]] = {path: (0o755, self.root_owner) for path in (
             "opt/happyranch", "opt/happyranch/bin", "etc/happyranch",
         )}
+        layout[_CREDSTORE] = (0o700, self.root_owner)
         for base in ("var/lib", "var/log", "run"):
             for name in ("happyranch-connector", "happyranch-tsnet-sidecar"):
                 # Include destinations before account creation, so preflight
@@ -162,6 +167,8 @@ class ManagedInstaller:
         info = os.fstat(descriptor)
         owner = expected[1] if expected else self.root_owner
         allowed_modes = (expected[0],) if expected else ()
+        if expected and path == _CREDSTORE:
+            allowed_modes += (0o755,)
         if expected and path == _STATE_DIRS[0]:
             # Creation follows systemd's mode; the trust-state store tightens
             # this directory to owner-only on save. Preserve either safe mode.
@@ -200,6 +207,7 @@ class ManagedInstaller:
                     pass
             except FileNotFoundError:
                 pass
+        self._check_enrollment()
         try:
             with self._directory(_UNIT_DIR) as parent:
                 for name, text in self.units.items():
@@ -235,17 +243,115 @@ class ManagedInstaller:
                     os.close(descriptor)
             os.fsync(parent)
 
-    def install(self) -> dict[str, str]:
-        """Create the layout/units, start, then reject drift; no rollback."""
+    def _key_info(self, info: os.stat_result) -> None:
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or (info.st_uid, info.st_gid) != self.root_owner
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 65536):
+            raise InstallerError("enrollment key must be a root-owned single-link regular 0600 file (at most 64 KiB)")
+
+    def _read_enrollment(self, path: Path) -> bytearray:
+        if not path.is_absolute() or ".." in path.parts:
+            raise InstallerError("--enrollment-key-file requires an absolute literal file path")
+        parent = os.open("/", _DIR_FLAGS)
         try:
+            for part in path.parts[1:-1]:
+                child = os.open(part, _DIR_FLAGS, dir_fd=parent)
+                os.close(parent)
+                parent = child
+            named = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            self._key_info(named)
+            descriptor = os.open(path.name, _FILE_FLAGS, dir_fd=parent)
+            try:
+                info = os.fstat(descriptor)
+                self._key_info(info)
+                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                    raise InstallerError("enrollment key changed while opening")
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    data = bytearray(stream.read(65537))
+                if not data.strip() or len(data) > 65536:
+                    raise InstallerError("enrollment key must be nonempty and at most 64 KiB")
+                return data
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(parent)
+
+    def _check_enrollment(self) -> bool:
+        """Validate only our fixed source and intentional credstore symlink."""
+        present = False
+        for relative in (_ENROLLMENT, f"{_CREDSTORE}/{_CREDENTIAL_NAME}"):
+            try:
+                with self._directory(str(Path(relative).parent)) as parent:
+                    info = os.stat(Path(relative).name, dir_fd=parent, follow_symlinks=False)
+                    if relative == _ENROLLMENT:
+                        self._key_info(info)
+                    elif (not stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
+                          or (info.st_uid, info.st_gid) != self.root_owner
+                          or os.readlink(_CREDENTIAL_NAME, dir_fd=parent) != str(self.root / _ENROLLMENT)):
+                        raise InstallerError("unsafe managed enrollment credstore entry")
+                    present = True
+            except FileNotFoundError:
+                pass
+        return present
+
+    def _write_enrollment(self, data: bytearray) -> None:
+        # Publish the lookup link durably before the source can exist. Cleanup
+        # unlinks/fsyncs the source first, so a surviving source remains visible
+        # to restart admission even if staging or cleanup is interrupted.
+        with self._directory(_CREDSTORE) as parent:
+            os.symlink(str(self.root / _ENROLLMENT), _CREDENTIAL_NAME, dir_fd=parent)
+            os.chown(_CREDENTIAL_NAME, *self.root_owner, dir_fd=parent, follow_symlinks=False)
+            os.fsync(parent)
+        with self._directory("etc/happyranch") as parent:
+            descriptor = os.open(
+                "enrollment.key", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600, dir_fd=parent,
+            )
+            try:
+                os.fchown(descriptor, *self.root_owner)
+                os.fchmod(descriptor, 0o600)
+                with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            os.fsync(parent)
+
+    def _remove_enrollment(self) -> None:
+        # Validate everything before any unlink; never follow a substituted path.
+        self._check_enrollment()
+        for relative in (_ENROLLMENT, f"{_CREDSTORE}/{_CREDENTIAL_NAME}"):
+            try:
+                with self._directory(str(Path(relative).parent)) as parent:
+                    try:
+                        os.unlink(Path(relative).name, dir_fd=parent)
+                    except FileNotFoundError:
+                        pass
+                    os.fsync(parent)
+            except FileNotFoundError:
+                pass
+
+    def install(self, *, enrollment_key_file: Path | None = None) -> dict[str, str]:
+        """Start then verify READY/drift; always discard staged enrollment input."""
+        if enrollment_key_file is None:
+            raise InstallerError("install requires --enrollment-key-file; obtain a fresh single-use Headscale key")
+        data = bytearray()
+        staged = False
+        try:
+            data = self._read_enrollment(enrollment_key_file)
             self._service_owner = self._account(create=False)
             self._preflight()
+            if self._check_enrollment():
+                raise InstallerError("enrollment residue exists; inspect and uninstall before retrying with a fresh key")
             self._service_owner = self._account(create=True)
             self._preflight()
             for path in self._layout():
                 with self._directory(path, create=True):
                     pass
             self._write_units()
+            staged = True
+            self._write_enrollment(data)
             self.manager.daemon_reload()
             self.manager.enable(UNITS[2])
             try:
@@ -259,7 +365,14 @@ class ManagedInstaller:
                     raise InstallerError(f"{exc}; stopping the target also failed: {stop_exc}") from exc
                 raise
         except (OSError, ServiceManagerError) as exc:
-            raise InstallerError(f"installation failed: {exc}; inspect partial files before retrying") from exc
+            raise InstallerError(f"installation failed: {exc}; inspect partial files and obtain a fresh key before retrying") from exc
+        finally:
+            data[:] = b"\x00" * len(data)
+            if staged:
+                try:
+                    self._remove_enrollment()
+                except (OSError, InstallerError) as exc:
+                    raise InstallerError("cannot remove staged enrollment input; revoke the key and inspect /etc/happyranch/enrollment.key and /etc/credstore/happyranch-tsnet-enrollment") from exc
 
     def check_drift(self) -> dict[str, str]:
         """Observe only file digest, fragment, drop-ins, reload and active state.
@@ -295,6 +408,7 @@ class ManagedInstaller:
         try:
             self._service_owner = self._account(create=False)
             self._preflight()
+            self._remove_enrollment()
             self.manager.stop(UNITS[2], timeout=50.0)
             self.manager.disable(UNITS[2])
             try:
@@ -345,13 +459,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("install", "uninstall", "check-drift"))
     parser.add_argument("--purge", action="store_true", help="also remove service state on uninstall")
+    parser.add_argument("--enrollment-key-file", type=Path, help="root-owned regular 0600 file containing a fresh single-use key (install only)")
     args = parser.parse_args(argv)
     if args.purge and args.command != "uninstall":
         parser.error("--purge is only valid with uninstall")
+    if args.enrollment_key_file is not None and args.command != "install":
+        parser.error("--enrollment-key-file is only valid with install")
     try:
         installer = ManagedInstaller()
         if args.command == "install":
-            installer.install()
+            installer.install(enrollment_key_file=args.enrollment_key_file)
         elif args.command == "uninstall":
             installer.uninstall(purge=args.purge)
         else:
