@@ -189,8 +189,6 @@ def _source(conn: sqlite3.Connection, org: Any, claim: RetryClaim, invocation: A
     except SequentialRefusal:
         raise SequentialRefusal('sequential_start_unavailable') from None
     _check(terminal.get('terminal_reason') == 'success' and terminal.get('cleanup_error') is None)
-    for task_id in seen:
-        org.db._check_team_move_task_uncommitted(task_id)
     for child in _engine_rows(conn, 'tasks', budget, 'parent_task_id=?', (claim.task_id,)):
         _check(child['status'] in ('completed', 'failed', 'cancelled', 'superseded'))
 

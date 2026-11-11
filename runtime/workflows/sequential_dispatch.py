@@ -1013,14 +1013,12 @@ class SequentialDispatcher:
                                 is_document = document_only(compiled, budget)
                                 if is_document:
                                     start, bound = document_binding_context(run, visit, compiled, capture, budget)
-                                    self.org.db._check_team_move_task_uncommitted(task_id)
                                     _check(bound[next(node.role for node in compiled.definition.nodes if node.id == visit['node_id'])]['name'] == agent,
                                            'sequential_output_access_unavailable')
                                 else:
                                     budget.work(len(compiled.definition.nodes))
                                     if coding_graph(compiled):
                                         start, bound = coding_binding_context(run, visit, compiled, capture, budget)
-                                        self.org.db._check_team_move_task_uncommitted(task_id)
                                     else:
                                         start, bound = parse_start(run['start_bytes']), None
                                 node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])

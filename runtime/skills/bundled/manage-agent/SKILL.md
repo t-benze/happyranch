@@ -11,9 +11,12 @@ description: Enroll, update, or terminate an agent. Write a JSON file and call h
 creates only the frozen literal table when absent, and validates before COMMIT.
 The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. Launch-admission and native
-writer hooks remain for the later cleanup slice; their holds and uncertainty
-rules still apply. No live state, audit history or stored move row is rewritten.
+`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
+task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
+Pause, identity, retry and native cleanup ownership remain. Thread admission,
+delivery release and coordinator/store active-row readers await PR-3b; the nightly
+disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
+audit history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a
@@ -153,20 +156,21 @@ read/resolve projections. Agent roster/enrollment `name` and canonical `revision
 retain their meanings; `addressable_name`, `name_revision` and `naming_status` are
 additive metadata, null/unavailable when names cannot be read. Never use a label
 as manage-agent's name, callback actor or expected canonical-definition revision.
-C3 now registers dream/wake/schedule/job native source, permanent org/agent and
-owning session before preparation, rechecks actual claims and final host/direct
-launch, and retains original retry budgets/SID/enqueue age on safe deferral.
+Dream/wake/schedule/job creation, claims and launch no longer check the move hold.
+Shared C3 admission registers native source, permanent org/agent and owning session,
+rechecks identity/claims and retains original retry budgets/SID/enqueue age on safe deferral.
 Pending work stays native; recurring schedule occurrences retain distinct
 history. Existing queue/timer release seams deduplicate redelivery; reapers
-preserve held or uncertain owners. Complete C3 causal census covers job waits,
+preserve lifecycle-owned uncertainty. Complete C3 causal census covers job waits,
 active bindings, remote attempts/workspaces, pending enrollment and writer tails;
 terminal rows or missing trackers never prove cleanup. Native profile/workflow,
 roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
-source/target membership, keeping their original synchronization and journals.
+membership, keeping their original synchronization and journals without a move-hold
+check. The nightly disk sweeper retains its separate native hold gate.
 Strict bounded version1 producer/writer audits append in existing audit_log;
 earlier uncertainty survives later clean outcomes. No extra table, permission
 or auth change. The online move/reset/publication service is removed;
-C3 admission and native writer ownership remain.
+Shared C3 admission and native writer ownership remain.
 All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
 Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
 
@@ -314,7 +318,7 @@ verification or new execution/activation authority.
 Current-main C3 composition preserves automatic job admission: omitted/false
 review_required executes through native owner checks; true refuses before allocation,
 legacy true pending is inert, and /run remains a tombstone. Authenticated later
-prerequisite loss rechecks move/causal ownership in the native Pause transaction
+prerequisite loss rechecks native causal task ownership in the Pause transaction
 before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
 that exact completed no-launch refusal may settle; partial scratch/environment,
 output or process effects and earlier uncertainty remain in producer history.

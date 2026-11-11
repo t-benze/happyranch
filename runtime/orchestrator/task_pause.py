@@ -201,7 +201,6 @@ class TaskInvocation:
                 raise DeferredRootPause("sequential_queue_unavailable")
         with self.store.writer(self.task.id, admission=True) as (root, row):
             self.store.held_uncommitted(self.task.id)
-            self.orch._team_moves.check_task_uncommitted(self.task)
             row = row or self.store.ensure_uncommitted(root["id"])
             _observe_settled_producers(self.store, row)
             entries = row["journal"]["entries"]

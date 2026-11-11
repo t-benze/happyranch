@@ -85,9 +85,6 @@ class WorkHoursStore:
 
     def insert(self, record: WorkHourRecord) -> None:
         with self._lock:
-            admission = native_owner_uncommitted(self._db)
-            if admission is not None:
-                admission.check_uncommitted(agents=(record.agent_name,))
             self._conn.execute(
                 """INSERT INTO work_hours (
                     id, agent_name, local_date, slot, mode, scheduled_for,
@@ -178,11 +175,6 @@ class WorkHoursStore:
             values.append(value)
         values.append(work_hour_id)
         with self._lock:
-            if fields.get('status') == WorkHourStatus.RUNNING:
-                admission = native_owner_uncommitted(self._db)
-                row = self._conn.execute('SELECT agent_name FROM work_hours WHERE id=?', (work_hour_id,)).fetchone()
-                if admission is not None and row is not None:
-                    admission.check_uncommitted(agents=(row['agent_name'],))
             self._conn.execute(
                 f"UPDATE work_hours SET {', '.join(assignments)} WHERE id = ?",
                 values,

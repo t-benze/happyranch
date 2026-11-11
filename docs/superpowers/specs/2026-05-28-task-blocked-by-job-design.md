@@ -25,8 +25,12 @@ integration files are SKIPPED THR211seq270/271 + THR243seq42, never PASS.
 ## Current job terminal/startup boundary
 
 Stop200 acknowledges an actual attributed signal request, never terminal state.
-Missing local ownership returns explicit pending/finalizing/unknown/held/unavailable
-409 diagnostics; signal/audit failure503 states request_issued true/false/null.
+Running without a signal target returns409 `job_runner_pending`,
+`job_runner_finalizing` or `job_liveness_unknown`. Unavailable attribution/history
+returns409 `job_owner_unavailable`. Stop no longer checks affected/causal team-move
+holds; the `team_move_native_held` response model and exception translator remain
+compatibility surfaces. Actual owned Stop remains possible under active root Pause.
+Signal/audit503 states request_issued true/false/null. Do not blindly retry.
 No already_terminal claim is made while the durable row runs. Startup preserves
 unproven running jobs with job_liveness_unknown; missing PID/maps, daemon death,
 timeout and absent native layout provide no orphan or descendant-retirement proof.
@@ -35,7 +39,8 @@ audit, actual producer observation and strict Pause disposition together before
 attributable local release and durable terminal hint/wake. Direct exit leaves
 quiescent=false; failed tails/older uncertainty remain. Lost CAS and ambiguous
 COMMIT never append duplicate terminal effects or invent cleanup. Existing
-all-terminal/claim/cancellation/Pause/move rules remain; unsupported decoded waiter
+all-terminal/claim/cancellation/Pause rules remain; non-thread rediscovery no
+longer checks a move hold. Unsupported decoded waiter
 shapes are not repaired. See the current [Jobs contract](2026-05-26-jobs-design.md).
 
 

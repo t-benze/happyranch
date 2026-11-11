@@ -196,7 +196,6 @@ def _current(invocation, *, refusal: bool = False) -> bool:
         try:
             if refusal:
                 store.held_uncommitted(task.id)
-                invocation.orch._team_moves.check_task_uncommitted(task)
             if getattr(invocation, "deferred_adoption_pending", False):
                 current = deferred_invocation(invocation.orch, task, invocation.metadata, adopt=False)
                 if current is None or not _same_deferred_owner(invocation, current):

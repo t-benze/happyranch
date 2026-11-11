@@ -22,7 +22,7 @@ this source change authorizes no live migration, enablement or workflow start.
 
 Normally admitted orgs receive the unchanged packaged coding v1 definition
 without a human import. Normal org recovery constructs the private immutable
-resource observation outside locks and registers only after the actual move,
+resource observation outside locks and registers only after the actual
 Pause, cutover, naming and authority safety tail. With serving-before-recovery,
 registration belongs to the deferred recovery owner, never early serving.
 Generic Database, schema/reference constructors and SELECT readers never register.
@@ -49,12 +49,9 @@ Strict storage/UTF8/duplicate/org/task/agent/first-active/immutable/transition
 checks and live/durable exclusions remain. Native reservation/settlement replay
 is separate work; these caps guarantee no SQL-engine, RSS or wall-time bound.
 
-Only registrar-owned pure refusals and the direct healthy `team_move_native_held`
-refusal can defer optional registration. The latter requires the producer's
-canonical operation identity, no cause/context/notes and the unchanged mounted
-owner; the exception class or message alone is insufficient. Wrapped move schema,
-complete history, scan-bound/deadline and SQL failures propagate unchanged, as do
-uncertain origins and opaque shared allowance errors. Each native cursor owns
+Only registrar-owned pure refusals can defer optional registration. Registration
+no longer checks a team-move hold. Native identity, complete history, scan bounds,
+SQL failures and cleanup uncertainty retain their existing handling. Each native cursor owns
 its consumer loop and explicit close. Safe preflight requires the exact body
 refusal, positive original rollback, BOTH successful publisher/DB exits, identical usable connection,
 no transaction and no secondary notes. Native entry is outside that interval.
@@ -201,7 +198,7 @@ Missing, malformed or Disabled settings refuse before callback persistence, spen
 or allocation. Disabled remains the default; ordinary routing remains legacy.
 Literal start@1 stays readable but is not a fresh-start path. Admitted start@2
 work retains its original pins across later disable/default changes and still
-requires current selected-role/repository authority, Pause/move and native proof.
+requires current selected-role/repository authority, Pause and native proof.
 
 Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
 this is neither per-org admission nor installed/loaded/operational acceptance.
@@ -283,7 +280,7 @@ persisting an unsupported start result, including on legacy I. Its production ow
 is always false in K3a; there is no caller/config readiness Boolean. Behind that
 boundary, the real single admission transaction validates the manager's own full
 INTEGER callback, actual ordinary-purpose TaskInvocation/SID and complete RetryClaim,
-current policy/Pause/move/ancestry, imported release, pinned role generation,
+current policy/Pause/ancestry, imported release, pinned role generation,
 implementer-only override, four current independent eligible principals, existing
 repository scopes, capacity and lower source limits. Existing v2 uncommitted
 spend/claim/ack methods keep their native evidence and CAS semantics inside that
@@ -312,7 +309,7 @@ are retained independently; every other25 task fields must agree. Saved queued
 rows compare all27 current native task fields exactly. K3a supplies no post-start
 heartbeat/PID/result/terminal bridge, so unsupported mutation/drift refuses.
 The existing native task row primitive is used only after complete prospective
-move checks; ordinary task insertion retains its original guard.
+native admission checks; PR-3a removes the move hold from ordinary task insertion.
 
 The saved reader independently checks these original native start predicates:
 The captured invocation has no uncertainty, including producer-settled uncertainty,
@@ -419,7 +416,7 @@ No schema DDL/reference changes, startup upgrade, old-byte rewrite, custody Q/U/
 issuance, R2 or daemon Git/object probe follows.
 Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
 `coding_source_waiting`, `coding_carrier`, `coding_attempt` ownership cannot launch
-through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause/move
+through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause
 rediscovery preserves this wait. Native cancellation of a selected queued graph
 is refused before mutation, including ancestor cascade and after the DB-lock wait;
 control/terminal writers remain later root-owned work. Initial selected move
@@ -506,7 +503,7 @@ remain required. No new reader-only publication or replacement authority framewo
 K2c adds current executable-manager CLI POST/GET
 `/api/v1/orgs/{slug}/workflows/coding/mappings?session_id=CURRENT` and
 nonallocating POST `/api/v1/orgs/{slug}/workflows/coding/role-selections?session_id=CURRENT`.
-These reuse existing native task-session/Pause/move/publication admission, with
+These reuse existing native task-session/Pause/publication admission, with
 no bearer fallback, browser or remote connector reachability. CLI forms are
 `workflows coding mapping-publish --org ORG --session-id CURRENT --from-file ABS --json`,
 `mapping-show --org ORG --session-id CURRENT --json`, and
@@ -558,7 +555,7 @@ corrupt-history500. Closed `workflow-coding-mapping-receipt@2` has exactly
 `format,id,generation,mapping_digest,mapping,replayed,current`; current is
 `{state:active|revoked,reason:null|Token}`. GET refuses currently revoked use.
 After every await and in the writer, native current session/owner/ancestry,
-Pause/move, full published policy and role/repository eligibility are rechecked.
+Pause, full published policy and role/repository eligibility are rechecked.
 
 Canonical `workflow-coding-role-selection-command@1` is exactly
 `{format,mapping:{id,generation,digest},implementer_override:null|{principal,team},subject}`.
@@ -616,7 +613,7 @@ work exactly `{repository_id,store_owner,object_format,base,paths,commands}`.
 Only import-release-coding, publish-coding-mapping and adopt-local-store source
 actions mint here, within the current reusable U and all narrower parent edges.
 Server derives genuine current task/principal/team/SID/manager_decision,
-ordinary invocation/Pause/move/complete ancestry, callback absence and original
+ordinary invocation/Pause/complete ancestry, callback absence and original
 limits. Native owners and executor enforcement are composed unchanged.
 The exact selected mapping/adopted store, source_rule/base_rule, executable
 manager repository policy and action/path/argv intersections precede private
@@ -688,7 +685,8 @@ independently before credential lookup/forwarding.
 
 Server selection derives the actual assigned executable team manager, task/SID,
 unique native manager_decision session_start, real ordinary/v2 TaskInvocation,
-Pause journal/generation, current tree/move admission and no own-SID callback.
+Pause journal/generation, current tree admission and no own-SID callback.
+PR-3a removes the former non-thread move-hold check from this selection.
 Reusable M.setup roots authorize publication and each adoption separately for
 its repository/action/store/format; neither roster membership nor a parsed
 capsule grants permission. Fixed coding import and complete published role and
@@ -1148,7 +1146,7 @@ claim and native task/session/parent chronology, mapped role eligibility and
 independence, mapping generation/adoption authenticity, run/context/binding/
 activation/request/receipt/contributor closure, journal replay/CAS and host/
 cleanup/provider/effect ownership. Current-use owners revalidate every setup/
-ancestor/grant, cancellation/Pause/move and actual executor permissions after
+ancestor/grant, cancellation/Pause and actual executor permissions after
 waits. Valid revoked history permits no new launch/disclosure/effect. No store,
 roster, object, provider, DB or network I/O, resolver or trusted flag is supplied.
 
@@ -1623,7 +1621,7 @@ outputs retain original native evidence and cause, without an invented receipt.
 Callback persistence does not advance. The complete reader reselects the actual
 INTEGER result/task/SID/principal/attempt and positive successful real host and
 tracker/task-tail/worktree/settle_live/close/move-release settlement. Unknown or
-retained original owners hold. A separate current-authority/Pause/move/capacity
+retained original owners hold. A separate current-authority/Pause/capacity
 transaction accepts the exact subject, records its actual contributor and queues
 one distinct pinned reviewer, using native uncommitted task insertion. The
 business writer performs no await, file/remote I/O, enqueue or commit. Full target
@@ -1685,7 +1683,7 @@ nonapproval output, unknown/failed/blocked ownership and historical held reviews
 cannot allocate QA. A separate current-authority transaction reselects the whole
 graph, original developer contribution and independent reviewer result, mapping/
 release/effective four distinct roles, qa_engineer principal/team and existing
-repository scopes, Pause/move/capacity and pinned attempt/revision/event limits.
+repository scopes, Pause/capacity and pinned attempt/revision/event limits.
 
 New workflow-coding-event@4 / edge-command@2 / edge@2 / edge-admission@2 encode
 review_staged (code_review+APPROVE), stage_queued and advance in order, with ONE
@@ -1747,7 +1745,7 @@ successful/quiescent/positively outer-settled QA PASS while the run is still qa.
 It reselects all THREE original INTEGER callbacks, exact task/SID/principal/
 attempt/outcome/subject and genuine host/claim/positive tracker/task-tail/worktree/
 close/final move-release closure. Current mapping/release/four distinct executable
-principals, repository scopes, Pause/move/capacity and original budgets precede
+principals, repository scopes, Pause/capacity and original budgets precede
 ONE uncommitted manager leaf, ordered review_staged -> stage_queued -> advance,
 run CAS and independent complete target validation; notification follows COMMIT.
 Original-result replay returns that leaf. The SQL stage remains manager_closeout;
@@ -1782,7 +1780,7 @@ successful @2 still requires complete original capture and all positive gates.
 The source wait/carrier never impersonates this task or reuses an upstream SID.
 The narrowly selected GET /workflows/coding/runs/{instance_id}/final-manager
 requires exactly session_id=CURRENT, the current original nonrecovery manager's
-OWN running leaf/run/attempt/principal/native owner, current Pause/move/authority/
+OWN running leaf/run/attempt/principal/native owner, current Pause/authority/
 roles/scopes before private decoding and again on return. It returns workflow-coding-final-selection@2 with the selected repository reference,
 original workspace capture, pins and three original selected summaries/verdicts.
 The opaque repository ID is independently reconstructed by the EXISTING canonical
@@ -1913,7 +1911,7 @@ scope@3 and native-admission@2. Fresh starts require the exact current explicit
 human settings publication and mapping/release pins; historical start@1 families
 retain their own readers. Admitted continuation retains its original settings and
 effective selected roles across later disable/default changes, with current native
-authority/Pause/move/host/callback/positive outer closure still mandatory.
+authority/Pause/host/callback/positive outer closure still mandatory.
 Coding-specific cross-team attribution and complete one-budget move projection
 are connected; generic execution/reservations and source readiness are unchanged.
 No coding start, queue or native launch is enabled. See the ordered-coding-workflow
@@ -2000,7 +1998,7 @@ predecessor identity and all retained contributors. Stage sequence becomes2;
 role generation/CAS/events increase independently. Same-principal retry remains1
 and original lower cumulative limits remain; no principal reselection, revision,
 host retry, source revival, settings remap or budget reset occurs. Current
-settings/authority/ancestry/Pause/move/independence/capacity are revalidated in
+settings/authority/ancestry/Pause/independence/capacity are revalidated in
 one caller-owned writer. Exact accepted original-result replay returns the SAME
 successor before fresh capacity checks. Full independent target reconstruction
 precedes COMMIT; notification follows, and cold recovery rediscovers that queue.

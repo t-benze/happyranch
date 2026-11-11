@@ -11,9 +11,12 @@ description: Shared daily/manual own-workspace cleanup contract — bounded, Git
 creates only the frozen literal table when absent, and validates before COMMIT.
 The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. Launch-admission and native
-writer hooks remain for the later cleanup slice; their holds and uncertainty
-rules still apply. No live state, audit history or stored move row is rewritten.
+`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
+task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
+Pause, identity, retry and native cleanup ownership remain. Thread admission,
+delivery release and coordinator/store active-row readers await PR-3b; the nightly
+disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
+audit history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a
@@ -72,7 +75,7 @@ Custom-skill authority validates before reservations; only explicit native
 validation/rollback/temporary-cleanup evidence can settle a refused writer.
 No history deletion, automatic recovery, apply or execution authority follows.
 
-A retained team-move admission hold reserves affected agents and source/target membership. The native cleanup trigger defers before work allocation, without advancing an occurrence; real cleanup tasks and unknown process/workspace tails block the move. Never delete another owner’s workspace, clear uncertainty or fabricate settlement to free a hold. Existing cleanup authority and all preservation gates remain. The online operator surface is removed; behavior remains UNEXECUTED.
+The native workspace-cleanup trigger no longer checks a team-move hold. Its existing cleanup authority, writer ownership and all preservation gates remain. Never delete another owner’s workspace, clear uncertainty or fabricate settlement. The separate nightly disk sweeper retains its move-hold and native uncertainty gates. Behavior remains UNEXECUTED.
 
 One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
 Its only supported content is a JSON object containing exactly `stop` with a
@@ -868,7 +871,7 @@ verification or new execution/activation authority.
 Current-main C3 composition preserves automatic job admission: omitted/false
 review_required executes through native owner checks; true refuses before allocation,
 legacy true pending is inert, and /run remains a tombstone. Authenticated later
-prerequisite loss rechecks move/causal ownership in the native Pause transaction
+prerequisite loss rechecks native causal task ownership in the Pause transaction
 before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
 that exact completed no-launch refusal may settle; partial scratch/environment,
 output or process effects and earlier uncertainty remain in producer history.

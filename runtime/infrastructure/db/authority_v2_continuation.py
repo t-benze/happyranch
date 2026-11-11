@@ -3374,7 +3374,6 @@ class AuthorityV2ContinuationMixin:
                 status="generation_pending", reason=reason, **kw,
             )
 
-        self._check_team_move_task_uncommitted(root_task_id)
         store = getattr(self, "_task_pause_store", None)
         if store is not None:
             store.held_uncommitted(root_task_id)

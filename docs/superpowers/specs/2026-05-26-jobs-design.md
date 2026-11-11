@@ -58,8 +58,10 @@ HTTP200 `{ok:true,id}` means a real Stop signal request was issued; CLI says
 actual nonrunning status, including pending, and existing session/auth precedence
 is unchanged. Running without a signal target returns409: `job_runner_pending`,
 `job_runner_finalizing`, or `job_liveness_unknown`, each with job_id/status.
-Actual affected/causal move refusal uses `team_move_native_held` with
-job_id/status/operation_id; unavailable attribution/history uses
+Non-thread job Stop no longer checks an affected/causal move hold. The existing
+409 `team_move_native_held` response model with job_id/status/operation_id and
+exception translator remain for compatibility; they do not establish a live
+move-hold check. Unavailable attribution/history uses
 `job_owner_unavailable` with job_id/status (nullable)/unavailable_code. Actual
 owned Stop remains possible under root Pause. No refusal clears holds/history.
 503 `job_stop_unavailable` has job_id, request_issued (true/false/null), and
@@ -98,7 +100,8 @@ exit/duration remain intact. Source delivery does not repair historical jobs.
 
 wait/SSE terminal hints require a fresh authoritative terminal row; status,
 reason and nullable result come from that row. Existing native-list all-terminal
-waiter, queue/claim, cancellation, Pause/move and startup rediscovery rules remain.
+waiter, queue/claim, cancellation, Pause and startup rediscovery rules remain;
+non-thread rediscovery no longer checks a move hold.
 Decoded wrong JSON shapes and a parked missing-row producer are unsupported,
 UNVERIFIED manager debt; this change adds no waiter validator or backstop repair.
 

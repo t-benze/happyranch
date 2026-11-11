@@ -661,7 +661,6 @@ class WorkflowAuthorityCoordinator:
         Once file ownership is reserved, a later writer must fail closed and
         leave recovery to complete the already-started publication.
         """
-        self._require_move_publication_owner(publisher_invocation)
         with self._transaction() as conn:
             active = self._active_journal(conn, self.namespace)
             if active is not None:
@@ -1021,7 +1020,6 @@ class WorkflowAuthorityCoordinator:
         publisher_invocation: str | None = None,
     ) -> int:
         """Capture then publish the next generation through durable stages."""
-        self._require_move_publication_owner(publisher_invocation)
         with self._publisher_lock:
             if (fence_journal_id is None) != (publisher_invocation is None):
                 raise WorkflowAuthorityError("publication_fence_binding_incomplete")
@@ -1364,7 +1362,6 @@ class WorkflowAuthorityCoordinator:
 
     def recover(self, *, move_invocation: str | None = None) -> str:
         """Reconcile one interrupted publisher using only durable ownership."""
-        self._require_move_publication_owner(move_invocation)
         with self._publisher_lock:
             # A prepared journal has not reserved or replaced canonical bytes.
             # Inspect it without acquiring the write lease so an incoherent

@@ -11,9 +11,12 @@ description: Run an authorized script in the background; inspect its actual resu
 creates only the frozen literal table when absent, and validates before COMMIT.
 The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. Launch-admission and native
-writer hooks remain for the later cleanup slice; their holds and uncertainty
-rules still apply. No live state, audit history or stored move row is rewritten.
+`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
+task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
+Pause, identity, retry and native cleanup ownership remain. Thread admission,
+delivery release and coordinator/store active-row readers await PR-3b; the nightly
+disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
+audit history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a
@@ -67,9 +70,13 @@ backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
 Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
 requested”; inspect show/wait for the actual row/reason/nullable exit and output.
-Running without attributable ownership yields pending/finalizing/unknown/held or
-owner-unavailable409; signal/audit503 states request_issued true/false/null. Do not
-blindly retry. Startup retains unproven running jobs with explicit unknown liveness;
+Running without a signal target returns409 `job_runner_pending`,
+`job_runner_finalizing` or `job_liveness_unknown`. Unavailable attribution/history
+returns409 `job_owner_unavailable`. Stop no longer checks affected/causal team-move
+holds; the `team_move_native_held` response model and exception translator remain
+compatibility surfaces. Actual owned Stop remains possible under active root Pause.
+Signal/audit503 states request_issued true/false/null. Do not blindly retry.
+Startup retains unproven running jobs with explicit unknown liveness;
 missing PID/maps, daemon death, timeout and absent native layout prove no orphanhood.
 Actual DB attachment/original preparation/attempt/runner/Process fences prevent
 cross-org ID collisions and stale-owner signals/removal/writes. The original job
@@ -91,7 +98,7 @@ Custom-skill authority validates before reservations; only explicit native
 validation/rollback/temporary-cleanup evidence can settle a refused writer.
 No history deletion, automatic recovery, apply or execution authority follows.
 
-A retained team-move admission hold defers new affected job creation/automatic launch under its native task/session/job owner. Pending/running jobs, actual wait/resume callbacks and unknown process/remote-workspace cleanup block the move. A safe already-admitted no-launch deferral keeps its exact runner and submission; do not approve/reject/stop or resubmit it to clear a hold. Terminal job status alone is not process-tree quiescence. No move/apply authority follows; behavior remains UNEXECUTED.
+Job creation and automatic launch no longer check a team-move hold. Shared task/session/job ownership, Pause controls and cleanup uncertainty remain. A safe already-admitted no-launch deferral keeps its exact runner and submission. Terminal job status alone is not process-tree quiescence. No live repair or cleanup authority follows; behavior remains UNEXECUTED.
 
 ## THR-247 recovery-turn exception
 
@@ -423,7 +430,7 @@ verification or new execution/activation authority.
 Current-main C3 composition preserves automatic job admission: omitted/false
 review_required executes through native owner checks; true refuses before allocation,
 legacy true pending is inert, and /run remains a tombstone. Authenticated later
-prerequisite loss rechecks move/causal ownership in the native Pause transaction
+prerequisite loss rechecks native causal task ownership in the Pause transaction
 before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
 that exact completed no-launch refusal may settle; partial scratch/environment,
 output or process effects and earlier uncertainty remain in producer history.

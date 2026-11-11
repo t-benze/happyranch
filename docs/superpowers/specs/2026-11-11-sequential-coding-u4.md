@@ -71,7 +71,8 @@ No config/setup repository selector is added.
 Before probing, `_selected` requires one original live sequential invocation
 owned by the attached dispatcher, actual task/principal/SID, active run and
 selected running code-change visit, no native completion/accepted result,
-uncancelled ancestry and current team-move/authority eligibility. The repository
+uncancelled ancestry and current authority eligibility. PR-3a removes the
+non-thread move-hold check. The repository
 key selects only this principal's current configured origin, under its native
 `workspaces/<principal>/repos/<key>` path. Unknown repository/scope is Held.
 This is selected task-session service authentication, not a public API promise.

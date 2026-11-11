@@ -1278,17 +1278,6 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
     from runtime.orchestrator.team_move import DeferredTeamMove
     store = getattr(orch._db, "_task_pause_store", None)
     if store is None:
-        from runtime.infrastructure.team_move_store import TeamMoveError, validate_team_move_schema
-        try:
-            with orch._db._lock:
-                installed = validate_team_move_schema(orch._db._conn, org_slug=orch._slug)
-        except TeamMoveError as exc:
-            logger.warning('task %s move admission unavailable: %s', task_id, exc.code)
-            orch._team_moves.defer_task(task_id, metadata)
-            return
-        if installed:
-            orch._team_moves.defer_task(task_id, metadata)
-            return
         return _run_step_body(orch, task_id, metadata)
     task = orch._db.get_task(task_id)
     if task is None or task.cancelled_at is not None or task.status in TERMINAL_STATES:

@@ -1,4 +1,4 @@
-"""C3 remaining native producer/writer admission. D owns operation/recovery.
+"""Shared native producer/writer admission; the module name is historical.
 
 The short gate never spans await, filesystem work or provider execution.
 Registered ownership does span them, and survives as strict audit evidence.
@@ -116,7 +116,7 @@ def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlemen
     # serialized against the operation's SAME DB COMMIT without reverse gate.
     gate = nullcontext() if db._lock._is_owned() else admission.move.gate
     with gate, db._lock:
-        if not settlement:
+        if not settlement and publisher == 'disk_sweep':
             admission.check_uncommitted(agents=agents, teams=teams, global_write=unknown_membership or not (agents or teams))
         if durable:
             admission.write_writer(state)
@@ -392,6 +392,7 @@ def _release_job_terminal(owner, candidate, *, callback=None):
 
 
 class ProducerMoveAdmission:
+    """Historical name for shared native producer, retry and writer ownership."""
     def __init__(self, move):
         self.move, self.db = move, move.store.db
         self.store = ProducerAdmissionStore(self.db, move.store.org_slug)
@@ -424,11 +425,9 @@ class ProducerMoveAdmission:
             raise DeferredTeamMove('team_move_native_held', row['operation_id'])
 
     def check_job_uncommitted(self, record):
-        self.check_uncommitted(agents=(record.agent_name,))
         task = self.db.get_task(record.task_id)
         if task is None:
             raise DeferredTeamMove('team_move_job_task_owner_unavailable')
-        self.move.check_task_uncommitted(task)
 
     def history_uncommitted(self):
         try:
@@ -449,11 +448,7 @@ class ProducerMoveAdmission:
         return states.get((kind, row['id'], self.occurrence(kind, row)))
 
     def preserve_uncommitted(self, kind, source_id, agent_id):
-        """Early native reapers preserve held OR lifecycle-owned uncertainty."""
-        try:
-            self.check_uncommitted(agents=(agent_id,))
-        except DeferredTeamMove:
-            return True
+        """Early native reapers preserve lifecycle-owned uncertainty."""
         return any(state.kind == kind and state.source_id == source_id and (not state.producer_settled or state.deferred or state.unknown)
             for state in self.history_uncommitted().values())
 
@@ -462,7 +457,6 @@ class ProducerMoveAdmission:
             row = self.db._conn.execute(f'SELECT * FROM {_TABLES[kind]} WHERE id=?', (source_id,)).fetchone()
             if row is None:
                 return None
-            self.check_uncommitted(agents=(row['agent_name'],))
             teams = self.move._teams_reader() if self.move._teams_reader else None
             if teams is None or row['agent_name'] not in teams.all_agents():
                 raise DeferredTeamMove('team_move_producer_identity_unavailable')
@@ -509,7 +503,6 @@ class ProducerMoveAdmission:
         state = owner.state
         if self.live.get((state.kind, state.source_id)) is not owner or not owner.owner_live:
             raise DeferredTeamMove('team_move_producer_owner_missing')
-        self.check_uncommitted(agents=(state.agent_id,))
         row = self.db._conn.execute(f'SELECT * FROM {_TABLES[state.kind]} WHERE id=?', (state.source_id,)).fetchone()
         if row is None or row['agent_name'] != state.agent_id:
             raise DeferredTeamMove('team_move_producer_owner_changed')
@@ -781,7 +774,6 @@ def native_claim(db, agent_id):
         yield
         return
     with admission.move.gate, db._lock:
-        admission.check_uncommitted(agents=(agent_id,))
         yield
 
 

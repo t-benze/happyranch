@@ -214,10 +214,6 @@ def admit_uncommitted(conn: sqlite3.Connection, db: Database, *, org_slug: str,
     for task in (carrier_task, visit_task):
         _require(not _native_rows(conn, 'tasks', ('id',), (('text',),), task.id, admission.budget),
                  'native_identity_conflict')
-    # Preserve native move checks before entering a half-built cyclic graph.
-    db._check_team_move_task_uncommitted(source.task_id)
-    db._check_team_move_task_uncommitted(carrier_task)
-    db._check_team_move_task_uncommitted(visit_task)
     admission.budget.check()
     conn.execute('PRAGMA defer_foreign_keys=ON')
     ids = admission.ids
@@ -520,7 +516,6 @@ def transition_uncommitted(conn: sqlite3.Connection, db: Database, *, org_slug: 
                          and task.dispatched_from_thread_id is None and task.zombie_flagged_at is None,
                          'native_task_not_pristine')
                 _require(not _native_rows(conn, 'tasks', ('id',), (('text',),), task.id, budget), 'native_identity_conflict')
-                db._check_team_move_task_uncommitted(task)
                 visit_next = _identity('visit', run_id, str(decision.after.visits))
                 successor = dict(node=node.id, visit_id=visit_next, task_id=task.id)
             raw = _bytes(dict(format='workflow-sequential-transition@1', run_id=run_id,

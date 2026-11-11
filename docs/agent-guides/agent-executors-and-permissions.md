@@ -7,9 +7,12 @@
 creates only the frozen literal table when absent, and validates before COMMIT.
 The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. Launch-admission and native
-writer hooks remain for the later cleanup slice; their holds and uncertainty
-rules still apply. No live state, audit history or stored move row is rewritten.
+`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
+task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
+Pause, identity, retry and native cleanup ownership remain. Thread admission,
+delivery release and coordinator/store active-row readers await PR-3b; the nightly
+disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
+audit history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a
@@ -127,7 +130,7 @@ alone proves neither a live writer nor successful cleanup.
 
 A complete already-persisted proof can close only its selected NEW obligation
 before the ordinary Git failure handler. Current original owner, loaded/source/boot
-agreement, root/Pause/move/task/session eligibility, cooperative resource exclusion
+agreement, root/Pause/task/session eligibility, cooperative resource exclusion
 and the exact state digest are rechecked under the existing writer. Missing proof,
 escaping preparation interval, lost owner or persistence failure keeps sticky
 failed_cleanup/UNKNOWN before fallible attribution. No Boolean reset, retry-policy
@@ -177,18 +180,18 @@ Adapter removal translates only `ProfileCoordinatorError` from its coordinator
 span to HTTP409 with `detail.code`. Unrelated exceptions keep their existing
 handling; removal, audit and compensation stay with the native adapter-store owner.
 
-## Retained C1–C3 launch-admission hooks
+## Shared C1–C3 preparation ownership
 
-C1 connects holds to task allocation/claim, preparation and final Pause/host
-commitment, without changing executor permission enforcement. Permanent agent
+Task allocation/claim and final launch no longer check the move hold. Shared C1
+preparation and final Pause/host commitment retain executor permission enforcement. Permanent agent
 identity comes from trusted task ownership and survives host retries. Causal
 task/workflow closure and actual retry/callback/cleanup ownership participate;
 unknown quiescence stays reserved. Manage-agent retains team/role and cannot
 transfer or demote agents. Preserve histories/IDs/paths/permissions and Engineering
 routing. The online operator and D operation/recovery are removed.
-Move admission deferral propagates through the inner launch handler to the existing
+Shared preparation refusals propagate through the inner launch handler to the existing
 pending-work owner without task failure, parent wake, followup or callback consumption.
-Malformed installed state retains its actionable admission error. Direct 429 and
+Frozen schema validation remains separate from task admission. Direct 429 and
 supervised passthrough retries preserve each returned uncertain attempt as a separate
 Pause journal/reservation blocker; the next actual attempt keeps the original retry
 budget, session and enqueue age and rechecks durable admission before FIFO/commit.
@@ -239,20 +242,21 @@ remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retaine
 unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
 These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
 
-C3 now registers dream/wake/schedule/job native source, permanent org/agent and
-owning session before preparation, rechecks actual claims and final host/direct
-launch, and retains original retry budgets/SID/enqueue age on safe deferral.
+Dream/wake/schedule/job creation, claims and launch no longer check the move hold.
+Shared C3 admission registers native source, permanent org/agent and owning session,
+rechecks identity/claims and retains original retry budgets/SID/enqueue age on safe deferral.
 Pending work stays native; recurring schedule occurrences retain distinct
 history. Existing queue/timer release seams deduplicate redelivery; reapers
-preserve held or uncertain owners. Complete C3 causal census covers job waits,
+preserve lifecycle-owned uncertainty. Complete C3 causal census covers job waits,
 active bindings, remote attempts/workspaces, pending enrollment and writer tails;
 terminal rows or missing trackers never prove cleanup. Native profile/workflow,
 roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
-source/target membership, keeping their original synchronization and journals.
+membership, keeping their original synchronization and journals without a move-hold
+check. The nightly disk sweeper retains its separate native hold gate.
 Strict bounded version1 producer/writer audits append in existing audit_log;
 earlier uncertainty survives later clean outcomes. No extra table, permission
 or auth change. The online move/reset/publication service is removed;
-C3 admission and native writer ownership remain.
+Shared C3 admission and native writer ownership remain.
 All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
 Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
 
@@ -1540,7 +1544,7 @@ starts.
 Current-main C3 composition preserves automatic job admission: omitted/false
 review_required executes through native owner checks; true refuses before allocation,
 legacy true pending is inert, and /run remains a tombstone. Authenticated later
-prerequisite loss rechecks move/causal ownership in the native Pause transaction
+prerequisite loss rechecks native causal task ownership in the Pause transaction
 before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
 that exact completed no-launch refusal may settle; partial scratch/environment,
 output or process effects and earlier uncertainty remain in producer history.

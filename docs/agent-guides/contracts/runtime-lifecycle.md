@@ -70,7 +70,7 @@ settlement makes an unclosed preparation unknown, and unknown owners cannot safe
 be adopted for another launch. FAILED with `launch_refused` uses normal failure,
 parent enqueue and thread followup; it never clears `failed_cleanup`, unknown
 journal/process evidence, retry lineage or worktree guards. Existing smaller host,
-provider and recovery ceilings remain. Intentional Pause/team-move deferral,
+provider and recovery ceilings remain. Intentional Pause/shared-preparation deferral,
 child/job/capacity/backoff waits, shutdown and stale/current-owner loss consume no
 allowance. Current-owner and authentic callback fences precede evidence and are
 rechecked inside failure transition; later continuations have separate keys.
@@ -285,7 +285,7 @@ alone proves neither a live writer nor successful cleanup.
 
 A complete already-persisted proof can close only its selected NEW obligation
 before the ordinary Git failure handler. Current original owner, loaded/source/boot
-agreement, root/Pause/move/task/session eligibility, cooperative resource exclusion
+agreement, root/Pause/task/session eligibility, cooperative resource exclusion
 and the exact state digest are rechecked under the existing writer. Missing proof,
 escaping preparation interval, lost owner or persistence failure keeps sticky
 failed_cleanup/UNKNOWN before fallible attribution. No Boolean reset, retry-policy
@@ -368,7 +368,7 @@ native owner's live writers. The nightly sweep only changes workspace scratch an
 worktrees, never startup's publication inputs. The org load check and the
 profile coordinator's `reconcile_startup` classification apply the same
 predicate. An unavailable native owner keeps every record blocking; the record
-stays UNKNOWN and still blocks team move.
+stays UNKNOWN; it is never cleared by this startup exception.
 
 Whole-runtime construction records its actual candidate on the original caller's
 owner before later fallible work. Both normal startup and runtime replacement
@@ -629,7 +629,7 @@ independent complete references include it; historical preimages stay unchanged.
 Strict older readers may refuse; compatible-reader rollback preserves index/history.
 
 - **Atomic pending parent-wake admission.** Receipt-owned cleanup tails and startup recovery can produce the same bounded parent wake concurrently. Every shipping parent-wake producer and the startup delegated/blocked-job dedupe paths use `TaskQueue.enqueue_if_absent`, which claims an ephemeral per-task reservation under the queue lock, runs generation-aware/DB-aware publication with that lock released, then clears the reservation on success, refusal, or failure. A concurrent bounded producer loses to either the reservation or an actual pending item. Dequeue atomically ends pending suppression so a later legitimate transition can wake the task again; unrelated FIFO ordering and ordinary non-coalescing enqueue are unchanged. Tests join every cleanup worker they create before another sweep, queue assertions, or shared `jobs_runner` restoration because durable settlement is not cleanup completion.
-- **Graceful daemon shutdown preserves blocked-on-job recovery.** Lifespan teardown permanently stops `TaskQueue` consumers and producer admission before signalling in-flight jobs. A genuinely owned signal request preserves the first actual timeout/cap/task/shutdown/Stop cause; a natural pre-signal exit keeps its result. The original job owner commits its row, terminal audit, producer observation and strict Pause disposition together; persistence failure remains unknown, never a fabricated terminal result. The stopped queue refuses `enqueue`, `put_nowait`, and `enqueue_if_absent` (`False`), so a terminal-job hook cannot claim the waiter during teardown. The task stays `in_progress(blocked_on_job)` with its session unchanged; startup rediscovers only genuine all-terminal waits through Branch 3 / the lifespan scan plus pending-item dedupe, subject to cancellation, Pause and move admission. Unproven running jobs remain running/unknown. Resume headers and non-JSON `happyranch jobs show` expose the stored reason and exit code; the existing `task_resumed_from_jobs.job_outcomes` status values remain unchanged.
+- **Graceful daemon shutdown preserves blocked-on-job recovery.** Lifespan teardown permanently stops `TaskQueue` consumers and producer admission before signalling in-flight jobs. A genuinely owned signal request preserves the first actual timeout/cap/task/shutdown/Stop cause; a natural pre-signal exit keeps its result. The original job owner commits its row, terminal audit, producer observation and strict Pause disposition together; persistence failure remains unknown, never a fabricated terminal result. The stopped queue refuses `enqueue`, `put_nowait`, and `enqueue_if_absent` (`False`), so a terminal-job hook cannot claim the waiter during teardown. The task stays `in_progress(blocked_on_job)` with its session unchanged; startup rediscovers only genuine all-terminal waits through Branch 3 / the lifespan scan plus pending-item dedupe, subject to cancellation and Pause admission. Unproven running jobs remain running/unknown. Resume headers and non-JSON `happyranch jobs show` expose the stored reason and exit code; the existing `task_resumed_from_jobs.job_outcomes` status values remain unchanged.
 
 
 ## Sequential ownership startup/recovery hold (THR336 U3a)
@@ -923,9 +923,9 @@ admission_writer, `_entry` and document/non-document rendering. Protected captur
 configuration discovery/parsing stays uncharged as **F-U3f-AUTH, OPEN, owner ROOT
 engineering_manager**, the existing shared-dispatcher follow-up. This is separate
 from F-U3f-ENTRY and is not accounting PASS. No duplicate canonical/effective-
-profile acquisition occurs. R-U3f-SB5-3 preserves the mandatory native team-move
-guard unchanged and classifies its uncharged MoveRequest/task-closure parsing as
-F-U3f-MOVE (OPEN, owner ROOT engineering_manager), shared by native writers.
+profile acquisition occurs. PR-3a removes non-thread team-move admission calls.
+R-U3f-SB5-3/F-U3f-MOVE records the earlier uncharged-parser checkpoint; remaining
+thread/coordinator cleanup is PR-3b, owned by ROOT engineering_manager.
 C1 defers terminal/outer digests to the document branch after context validation,
 prepaying `48 * 16384 + 512` bytes and one step before each serialization on the
 original budget. The repository-success hold and foreign-result refusal have

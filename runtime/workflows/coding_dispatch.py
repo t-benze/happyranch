@@ -280,7 +280,6 @@ class CodingDispatcher:
                   *, callback: bool = False) -> dict:
         from runtime.workflows._coding_settings_execution import _current_configuration, _settings_family
         from runtime.workflows.activation import author_capacity_blocked
-        from runtime.workflows.coding_bootstrap import effective_bindings
         _check(callback or _settings_family(entry['command']))
         _check(not self.org._runner_admission_closed and invocation.orch is self.org.orchestrator
                and invocation.owner == 'coding' and invocation.workflow_dispatcher is self
@@ -301,9 +300,7 @@ class CodingDispatcher:
                and entry['attempt']['task_id'] == invocation.task.id
                and entry['attempt']['principal'] == invocation.agent)
         for task in entry['tasks'].values():
-            self.db._check_team_move_task_uncommitted(task['id'])
             _check(task['cancelled_at'] is None and task['zombie_flagged_at'] is None)
-        self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(entry['run']['instance_id'], entry['roles']))
         if not callback:
             invocation.store.held_uncommitted(invocation.task.id)
         if not callback and author_capacity_blocked(conn, author=invocation.agent, task_id=invocation.task.id, active_sessions=sessions):
@@ -392,7 +389,7 @@ class CodingDispatcher:
             manager_teams=list(self.org.teams.teams_for_manager(entry['source']['principal'])),
             tasks=[encode_row(closure[k]) for k in sorted(closure)], bindings=bindings,
             pause=encode_row({k: v for k, v in pause.items() if k != 'journal'}), invocation=native,
-            move=None if (move := invocation.orch._team_moves.active_uncommitted()) is None else encode_row(move),
+            move=None,
             capacity=capacity, max_revise_rounds=entry['source']['budgets']['max_revise_rounds'],
             effective_bindings_base64=base64.b64encode(effective_bindings(entry['run']['instance_id'], entry['roles'])).decode('ascii'))
         if _settings_family(entry['command']) and entry['attempt']['stage'] == 'development':
@@ -908,14 +905,12 @@ class CodingDispatcher:
                    (principal.task_id, principal.principal_id, principal.session_id)
                and native['phase'] == 'running' and native['generation'] == pause['generation']
                and not native['context'].get('execution_unknown') and not native['context'].get('producer_settled'))
-        self.db._check_team_move_task_uncommitted(principal.task_id)
         return owner
 
     async def selected_final(self, *, principal: Any, instance: str) -> dict:
         """Selected metadata only; no GitHub/file I/O in ownership/read snapshots."""
         from runtime.orchestrator import prompt_loader
         from runtime.workflows._coding_settings_execution import _current_configuration
-        from runtime.workflows.coding_bootstrap import effective_bindings
         from runtime.workflows.coding_progression import final_selection
         org = self.org
         principal.revalidate()
@@ -949,9 +944,6 @@ class CodingDispatcher:
                                    and entry['native']['terminal'] is None and entry['native']['callback'] is None)
                             snapshot = _read_json(current.ready.snapshot_bytes, inventory.budget)
                             _current_configuration(entry['mapping'], snapshot, entry['command'], inventory.budget)
-                            for task in entry['tasks']:
-                                self.db._check_team_move_task_uncommitted(task)
-                            self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(instance, entry['roles']))
                             _check(entry['native'].get('workspace') == self._final_workspace(owner, entry))
                             result = final_selection(entry, budget=inventory.budget)
                             _check(result['format'] in ('workflow-coding-final-selection@2', 'workflow-coding-final-selection@3'))

@@ -17,7 +17,7 @@ from runtime.workflows._coding_registered_release import read_registered_release
 from runtime.workflows._coding_settings_execution import _configuration, _read_json, _resolve_start
 from runtime.workflows.activation import author_capacity_blocked
 from runtime.workflows.coding_authority_history import _Budget
-from runtime.workflows.coding_bootstrap import effective_bindings, encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief
+from runtime.workflows.coding_bootstrap import encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
 from runtime.workflows.coding_source_history import _session_start
 from runtime.workflows.coding_start_history import claim_for, rows, same
@@ -121,8 +121,6 @@ class CodingStartStore:
                and not entry['context'].get('execution_unknown')
                and entry['fingerprint']['count'] + 1 == claim.step
                and entry['fingerprint']['brief_digest'] == _hash(source['brief'].encode('utf8')))
-        for row in [source, *ancestors]:
-            self.db._check_team_move_task_uncommitted(row['id'])
         result_rows = list(rows(conn, 'task_results', budget,
             where='task_id=? AND session_id=?', args=(claim.task_id, claim.current_session_id)))
         _check(len(result_rows) == 1)
@@ -161,7 +159,6 @@ class CodingStartStore:
                 effective = effective_mapping(entry['mapping'], entry['command'])
                 roles._current(conn, principal, current, effective,
                     command=entry['command'], budget=inventory.budget)
-                self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(instance_id, entry['roles']))
                 return self.project(instance_id, entry)
 
     async def get_final(self, *, principal: Any, instance_id: str) -> dict:
@@ -318,13 +315,11 @@ class CodingStartStore:
             assigned_agent=roles['implementer']['principal'], team=roles['implementer']['team'],
             brief=task_brief(command['work']), created_at=stamp, updated_at=stamp,
             session_timeout_seconds=source_before['session_timeout_seconds'])
-        self.db._check_team_move_task_uncommitted(leaf)
         pins, context, _binding = pinned_rows(org=self.org.slug, command=command, source=source,
             native_source=native, authority=authority, mapping=mapping, roles=roles,
             template=template, carrier_id=carrier_id, instance_id=instance, created_at=now)
         # Native task serializer uses ISO UTC; journal captures those exact bytes.
         conn.execute('UPDATE tasks SET created_at=?,updated_at=? WHERE id=?', (now, now, carrier_id))
-        self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(instance, roles))
         for table, values in pins.items():
             for row in values:
                 names = ','.join(row)

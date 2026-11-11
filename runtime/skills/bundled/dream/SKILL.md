@@ -11,9 +11,12 @@ description: Use this skill only when the daemon starts a private scheduled drea
 creates only the frozen literal table when absent, and validates before COMMIT.
 The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. Launch-admission and native
-writer hooks remain for the later cleanup slice; their holds and uncertainty
-rules still apply. No live state, audit history or stored move row is rewritten.
+`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
+task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
+Pause, identity, retry and native cleanup ownership remain. Thread admission,
+delivery release and coordinator/store active-row readers await PR-3b; the nightly
+disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
+audit history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a
@@ -72,7 +75,7 @@ Custom-skill authority validates before reservations; only explicit native
 validation/rollback/temporary-cleanup evidence can settle a refused writer.
 No history deletion, automatic recovery, apply or execution authority follows.
 
-During a retained team-move admission hold, the native scheduler/runner retains due or pending work without consuming its occurrence. Running work is a blocker. Let the real dream owner revalidate and issue its genuine callback; never create a replacement occurrence, fake completion or reset a window. Source behavior remains UNEXECUTED; the online operator surface is removed.
+Dream scheduling and launch no longer check a team-move hold. The native owner retains occurrence, identity, retry and cleanup ownership. Let it revalidate and issue its genuine callback; never create a replacement occurrence, fake completion or reset a window. Source behavior remains UNEXECUTED.
 
 This is a private reflection invocation. It is not a task, thread, or thread.
 

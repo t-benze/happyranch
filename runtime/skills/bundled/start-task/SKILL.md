@@ -1018,7 +1018,7 @@ New-family stage supplements carry the original settings pin and authenticated
 scope; later defaults or disable publications do not replace that assignment.
 Each selected principal uses its own actual team and authorized tools. Preserve
 original owner/key/evidence on refusal or uncertainty; never fabricate an actor,
-callback, native settlement or clearance. Current native/Pause/move/repository
+callback, native settlement or clearance. Current native/Pause/repository
 authority and genuine final-session callback obligations remain unchanged.
 
 

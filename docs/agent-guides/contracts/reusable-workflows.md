@@ -1122,11 +1122,10 @@ foreign-result refusals retain zero proof serializations; supported code-change
 scopes now prepay the same proof copies. There is
 no budget reset/refund, new parser or change to protected proof/key/CAS/effect
 fragments. `_compose` keeps its original internal digest interface.
-**F-U3f-MOVE remains open, owner ROOT engineering_manager:** native team-move
-fence parsing (MoveRequest and task closure) is not charged to any reader
-budget, a pre-existing class shared by native writers including sequential_engine.
-Keep the design-mandated node_instruction guard unchanged. This is classified
-follow-up, not a publication blocker or accounting PASS. The three disclosed
+**F-U3f-MOVE historical checkpoint, owner ROOT engineering_manager:** PR-3a
+removes non-thread MoveRequest/task-closure admission calls, including
+sequential_engine and node_instruction. Thread/coordinator cleanup remains PR-3b.
+The prior uncharged-parser disclosure is historical, never accounting PASS. The three disclosed
 classes are F-U3f-AUTH, F-U3f-ENTRY and F-U3f-MOVE; any other NEW uncharged
 history/evidence/definition/output work requires STOP to ROOT. Source
 measurements do not certify hard RSS or OS timing.
