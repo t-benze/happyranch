@@ -9,10 +9,11 @@ natively on `ubuntu-22.04` (x86_64) and `ubuntu-22.04-arm` (aarch64). It has no
 automatic trigger and is not a required PR or merge check.
 
 Each successful matrix leg uploads a `happyranch-linux-<arch>-<run>-<attempt>`
-artifact containing `happyranch-<version>-linux-<arch>.tar.gz` and its
-`.tar.gz.sha256` file. Version comes from the committed `pyproject.toml`.
+artifact containing `happyranch_<debversion>_<debarch>.deb`, the intermediate
+`happyranch-<version>-linux-<arch>.tar.gz` and its `.tar.gz.sha256` file.
+Version comes from the committed `pyproject.toml`.
 Verify with `sha256sum -c happyranch-<version>-linux-<arch>.tar.gz.sha256`.
-The tarball is an intermediate input to the later .deb packaging work.
+The tarball is an intermediate build input; the installable product is the .deb.
 
 To build locally on Linux x86_64 or aarch64, use a clean committed checkout,
 uv, Node 24/npm, Go 1.23.12+, git, GNU tar, gzip and sha256sum. No host
@@ -41,12 +42,12 @@ The extracted payload contains `python/`, `web/dist/`, `licenses/`,
 The two POSIX launchers resolve their prefix from their own `bin/` location,
 execute the bundled interpreter with `-I -m`, and default
 `HAPPYRANCH_WEB_DIST` to that prefix's `web/dist` only when unset. Invoke them
-from the extracted directory; symlink installation belongs to the .deb phase.
+from the extracted directory; the .deb installs absolute forwarding wrappers.
 The daemon launcher exports `HAPPYRANCH_BUNDLED_BIN=<prefix>/bin`, which startup
 places first on agents' PATH, removing duplicate copies. This is source mode
 (`sys.frozen` is false). Installed runtime data and bundled skills are retained.
-The remote-access connector's `/opt/happyranch/venv/bin/python` layout is owned
-by the later .deb PR.
+The remote-access connector's `/opt/happyranch/venv/bin/python` layout stays
+separate from desktop packaging (see the installation layout below).
 
 Focused PATH tests drive the real executor module with stdlib unittest,
 outside the retired pytest suite:
@@ -68,15 +69,15 @@ The payload also contains `bin/happyranch-app`,
 `share/applications/happyranch.desktop.in`, and the existing clay brand artwork
 under `share/icons/hicolor/` (16, 32, 64, 128, 256, 512, 1024 PNG and scalable
 SVG). The builder copies the existing Mac PNGs and Web SVG without changing them.
-The desktop entry is a template: the .deb phase must replace `@APP_EXEC@`
-with its installed launcher path and install the menu entry/icons. This payload
-stage does not install files into `/opt` or `/usr/share`.
+The desktop entry is a template: the deb builder replaces `@APP_EXEC@`
+with `/usr/bin/happyranch-app` and installs the menu entry/icons. Building the
+payload alone does not install files into `/opt` or `/usr/share`.
 
 The window launcher resolves its payload prefix relative to `bin/`, then runs
 **`/usr/bin/python3 -I`** with system PyGObject, GTK 3.0 and WebKit2 **4.1**.
 The host needs `python3-gi`, `gir1.2-gtk-3.0`, and
 `gir1.2-webkit2-4.1`; they are apt-provided, never installed into the bundled
-CPython. These will become package Depends in the .deb phase. The window does
+CPython. These are package Depends. The window does
 not import HappyRanch. Its child uses the existing `bin/happyranch-daemon`,
 which continues to run bundled CPython 3.12.10.
 
@@ -132,3 +133,133 @@ failure, and allows a subsequent close to retry. There is no crash/SIGKILL
 recovery promise for the window itself, nor process-tree shutdown guarantee for
 arbitrary daemon-launched workloads. Independent QA must supply real Ubuntu
 22.04/Debian 12 GUI screenshots; lint and these focused tests do not prove that.
+
+## Build the Debian package
+
+On Linux, install build-host `python3` (>= 3.10), `dpkg` and `coreutils`.
+The builder needs neither root nor system GI, executes no payload code, and
+downloads nothing. Supply the verified tarball from the preceding build:
+
+```sh
+bash packaging/linux/build-deb.sh /absolute/dist/happyranch-0.1.0-linux-x86_64.tar.gz
+# Optional fresh literal absolute output directory (default: beside tarball):
+bash packaging/linux/build-deb.sh /absolute/dist/happyranch-0.1.0-linux-x86_64.tar.gz --dist-dir /tmp/linux-deb-output
+dpkg-deb -I /tmp/linux-deb-output/happyranch_0.1.0-1_amd64.deb
+dpkg-deb -c /tmp/linux-deb-output/happyranch_0.1.0-1_amd64.deb
+# Focused native packaging checks; synthetic payload, real dpkg-deb:
+/usr/bin/python3 -B packaging/linux/test_build_deb.py -v
+```
+
+The payload's `build-info.json` records the installed HappyRanch distribution
+version from `pyproject.toml` in its dependency inventory. Packaging uses that
+version and architecture, checks the top-level directory agrees, refuses unsafe
+archive members/escaping links and existing outputs, and calls
+`dpkg-deb --root-owner-group`. It does not infer architecture from the build
+host or execute a foreign interpreter: `x86_64` maps to Debian `amd64`, and
+`aarch64` maps to `arm64`. The manual workflow retains its original two native
+matrix rows and uploads the .deb alongside its intermediate inputs.
+The package omits generated `__pycache__` directories, normalizes shared-library
+and documentation files to mode 0644, and adds a Debian changelog. Original PR1
+license/notice bytes remain in `/usr/share/doc/happyranch/licenses/`; the Debian
+copyright file points there and to the system Apache-2.0 common license.
+
+Debian version mapping is deliberately explicit: dotted numeric releases stay
+unchanged, `aN`/`bN`/`rcN` become `~aN`/`~bN`/`~rcN`, `.postN` becomes
+`+postN`, and `.devN` becomes `~devN` (after any preceding suffix). The packaging
+revision is `-1`. Thus `0.1.0` → `0.1.0-1`, `1.2.3rc1` → `1.2.3~rc1-1`,
+`1.2.3.dev2` → `1.2.3~dev2-1`, and `1.2.3.post1` → `1.2.3+post1-1`.
+Other version forms require an explicit mapping review and are refused.
+
+### Installed layout and connector separation
+
+The single payload prefix is **`/opt/happyranch-desktop`**. The existing
+connector scripts (`scripts/ci/m1_install_ready_uninstall.sh`,
+`m2_tailnet_daemon.sh`, and the M3 recovery consumer) use
+`/opt/happyranch/{venv,bin}`, `/etc/happyranch`, service state under `/var/lib`
+and `/run`, and `happyranch-connector.service` /
+`happyranch-tsnet-sidecar.service`. Their provisioning also requires
+`/opt/happyranch` to be absent. A separate prefix avoids owning even that parent.
+The desktop package installs no connector files, configuration, accounts,
+systemd units or enablement, and never invokes the connector installer. See
+[the connector contract](../agent-guides/contracts/remote-access-and-remote-jobs.md).
+
+| Package path | Purpose |
+| --- | --- |
+| `/opt/happyranch-desktop/` | Relocatable payload, bundled Python, daemon, Web UI and desktop source; generated bytecode caches omitted |
+| `/usr/bin/happyranch`, `/usr/bin/happyranch-app` | POSIX wrappers that exec the real absolute payload launcher, preserving arguments and exit status; direct symlinks would break the launchers' `$0` prefix lookup |
+| `/usr/share/applications/happyranch.desktop` | Generated PR2 template; Exec/TryExec `/usr/bin/happyranch-app`, Icon `happyranch` |
+| `/usr/share/icons/hicolor/{16x16,…,1024x1024,scalable}/apps/happyranch.*` | Existing brand icons |
+| `/usr/share/doc/happyranch/` | Debian copyright/changelog, unchanged PR1 licenses/notices/inventories and build-info |
+
+No maintainer scripts are needed. Ubuntu/Debian's `desktop-file-utils` and
+`hicolor-icon-theme` dpkg triggers refresh their caches when installed. Package
+removal deletes only package-owned files; it does not signal a running app or
+daemon. Quit the desktop app before upgrading/removing it. The default user
+home `~/.local/share/happyranch` (or `$XDG_DATA_HOME/happyranch`) is preserved,
+including on purge. The package never owns user data or `~/.happyranch`.
+
+### Runtime dependencies
+
+All direct Depends names are available in both stock Jammy (22.04, with
+updates/security and universe enabled) and Bookworm (12, with security updates):
+
+| Depends | Reason | Archive verification |
+| --- | --- | --- |
+| `python3 (>= 3.10)` | System interpreter for the GI window; daemon/CLI use bundled CPython3.12 | [Jammy](https://packages.ubuntu.com/jammy/python3), [Bookworm](https://packages.debian.org/bookworm/python3) |
+| `python3-gi` | System PyGObject binding | [Jammy](https://packages.ubuntu.com/jammy/python3-gi), [Bookworm](https://packages.debian.org/bookworm/python3-gi) |
+| `gir1.2-gtk-3.0` | GTK3 namespace and transitive shared libraries | [Jammy](https://packages.ubuntu.com/jammy/gir1.2-gtk-3.0), [Bookworm](https://packages.debian.org/bookworm/gir1.2-gtk-3.0) |
+| `gir1.2-webkit2-4.1` | WebKit2 4.1 namespace/engine and transitive libraries | [Jammy](https://packages.ubuntu.com/jammy/gir1.2-webkit2-4.1), [Bookworm](https://packages.debian.org/bookworm/gir1.2-webkit2-4.1) |
+| `git` | Runtime repository/worktree operations | [Jammy](https://packages.ubuntu.com/jammy/git), [Bookworm](https://packages.debian.org/bookworm/git) |
+| `ca-certificates` | HTTPS trust for runtime clients and git | [Jammy](https://packages.ubuntu.com/jammy/ca-certificates), [Bookworm](https://packages.debian.org/bookworm/ca-certificates) |
+| `libc6 (>= 2.35)` | Explicit supported Linux ABI floor (Jammy 2.35, Bookworm 2.36) | [Jammy](https://packages.ubuntu.com/jammy/libc6), [Bookworm](https://packages.debian.org/bookworm/libc6) |
+| `libgcc-s1` | GCC unwind runtime used by bundled native Python extensions | [Jammy](https://packages.ubuntu.com/jammy/libgcc-s1), [Bookworm](https://packages.debian.org/bookworm/libgcc-s1) |
+
+GI's packages pull in GTK/WebKit's native dependency graph. The Go sidecar is
+built with `CGO_ENABLED=0`; it needs no system Go. Node, npm, uv, compilers and
+Python development headers are build tools, not desktop runtime requirements.
+Provider/executor CLIs and their credentials are provisioned separately by the
+user; the package does not install or authenticate them. No executor binary is
+required to open the local UI or use CLI help. A graphical desktop session is
+needed for the window; Xvfb/Openbox are acceptance tools, not product Depends.
+
+### Install, remove, reinstall
+
+```sh
+sudo apt install ./happyranch_0.1.0-1_amd64.deb
+happyranch --help
+happyranch-app
+# Or select HappyRanch from the applications menu.
+# Quit HappyRanch first, then:
+sudo apt remove happyranch
+# User app data remains. Reinstall with the same apt install command.
+sudo apt install ./happyranch_0.1.0-1_amd64.deb
+```
+
+For arm64 use `happyranch_<debversion>_arm64.deb`. These local .deb commands
+precede the later founder-signed apt repository/signing work; no key handling
+or repository publication is part of this builder.
+
+### Lintian review
+
+Save the actual `lintian --no-tag-display-limit <package.deb>` output alongside
+`dpkg-deb -I` and `-c`. A lintian exit status alone does not establish that its
+reported errors are absent. Review tags individually. This package deliberately
+uses `/opt` as required by the desktop layout, rather than Debian's usual
+unbundled `/usr` layout. Consequently `dir-or-file-in-opt` is expected.
+The PR1 private CPython and CGO-disabled Go sidecar also retain their upstream
+embedded libraries, static linkage and debug symbols: `embedded-library`,
+`statically-linked-binary` and `unstripped-binary-or-object` reflect that existing
+payload contract. `hardening-no-pie` on bundled CPython is inherited as well.
+These findings are recorded, not hidden with lintian overrides.
+
+For `shell-script-fails-syntax-check` on Python stdlib files such as `cgi.py`,
+inspect the shipped headers and verify Python parsing with the bundled runtime.
+Relocatable shell/Python headers can confuse the distro shell parser; these
+files are imported or run by Python, not used as app shell entry points.
+Do not classify invalid Python as a policy-only finding. Other inherited
+payload warnings include timestamped upstream timezone archives, script modes
+and interpreter conventions. Preserve the vendor payload and notices rather
+than rewriting third-party files to silence these tags. CLI manual pages are
+not shipped in v1 (`happyranch --help` supplies usage). Any newly introduced
+metadata, mode or missing-dependency error needs correction or a specific
+disposition in release evidence.

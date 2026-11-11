@@ -47,11 +47,18 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = "$EXPECTED_ARCH"
           bash packaging/linux/build-payload.sh
-      - name: Upload payload and checksum
+      - name: Build Debian desktop package
+        run: |
+          set -euo pipefail
+          payloads=(dist/linux/*.tar.gz)
+          test "${#payloads[@]}" -eq 1
+          bash packaging/linux/build-deb.sh "${payloads[0]}"
+      - name: Upload package, intermediate payload and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: happyranch-linux-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
+            dist/linux/*.deb
             dist/linux/*.tar.gz
             dist/linux/*.tar.gz.sha256
