@@ -445,3 +445,47 @@ The same nine portable fixtures can also run on their own with
 `python3 -B scripts/mac_native/suite_inode_telemetry.py` (see `docs/local-ci.md`).
 They prove parsing/advisory behavior only; native Mac, frozen-app acceptance
 and Product E2E require their separately owned evidence.
+
+
+## S4 cleanup-process-use suite
+
+`scripts/mac_native/suite_cleanup_process_use.py` owns the one extensible S4
+suite, registered as `cleanup-process-use`. PR2 adds scratch routing to this same
+module. It needs only stdlib in addition to the unchanged locked 18-wheel job
+bootstrap; no job parameters, dependencies, host tools or timeout change.
+
+| Rows | Boundary and required outcome |
+| --- | --- |
+| BSD mount / spaces / empty / malformed / relative / truncated × three shipping parsers; self location | Execute actual embedded/nested functions and source definitions in a path with spaces, with PATH containing only python3. Invalid evidence refuses. No candidate action. |
+| Shared class / exception / checked state, ABI, denied and loader rows | Single binding identity, pinned layout and numeric strict-read failures; simulated ctypes rows are labeled. |
+| cwd / fd / fd-closed mmap / thread cwd | Owned native children supply PID and independent cwd/fstat ground truth; shipping scanner must BLOCK with exit3 and the matching reference/PID. |
+| Idle | Clear only with complete evidence; otherwise UNKNOWN/exit2 with actual reasons retains. Public negative region coverage is currently unestablished. No idle PASS/eligibility claim. |
+| Simulated EPERM / short / cap / churn / reuse / renamed inode / deadline | Test-side libproc/sysctl buffer/errno fixtures exercise shipping reader/scanner decisions. These are not native permission proof. |
+| Real EPERM | Actual kernel errno/PID evidence if observed; otherwise explicitly NOT OBSERVED. No host exemption or elevation. |
+| Darwin receipt schema | Complete schema accepts, wrong platform/missing or incomplete lane/Boolean counters refuse; schema fixtures are not authenticated-job proof. |
+| Observer / protected mounts / snapshot / preserved | Shipping read-only commands and metadata API, no findmnt/procfs fabrication. Offline preservation and missing-owner observer refuse at their actual gates; snapshot/protected host evidence is checked separately. |
+
+The approved preview proves individual observation gates only. Idle `eligible`
+at the candidate-runner boundary is **not proven**. Never invoke candidate
+cleanup or `observe ... run` as a dry-run. Source-native acceptance and real
+EPERM observation are separate from simulated evidence. Frozen-app acceptance
+is **NOT RUN/out of S4**; external PATH python3 remains the installed skill's
+existing prerequisite. Scratch all-PID collectors are PR2, with EPERM retaining.
+
+From an existing checkout/interpreter, portable fixtures (including synthetic
+native syscall buffers) can run in under one minute without pytest:
+
+```sh
+python3 -B scripts/mac_native/suite_cleanup_process_use.py --fixtures
+python3 -B scripts/mac_native/probe.py --suite cleanup-process-use --output /absolute/probe.json
+```
+
+The dispatcher cleanly skips on Linux (`platform=linux, skipped=true`). Native
+Darwin requires the existing job-owned TMPDIR, records exact SHA/source hashes
+and per-row expected/actual/provenance. A single 240s suite allowance includes a
+reserved 10s owned-child cleanup window; command streams retain at most64KiB,
+report at most32KiB. Children are released, TERM/KILL if needed, reaped and group
+absence verified before fixture disposal; cleanup uncertainty exits nonzero.
+Admitted kernel I/O is not hard-preemptible. Native execution is a separate
+manager-owned leg: S4 budget starts 0/3, PR1 execution1, PR2 execution2, one
+reserved correction; source changes never replenish or submit that budget.

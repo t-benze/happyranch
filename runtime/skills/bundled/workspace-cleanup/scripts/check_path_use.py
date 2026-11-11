@@ -1035,6 +1035,66 @@ def _deepest_non_primary_worktree(
     return primary, deepest[0]
 
 
+def _darwin_scan(target: str, containing_worktree: str | os.PathLike | None,
+                 bounds: Bounds, agent_uid: int, clock) -> ScanResult:
+    # Fixed sibling source works in installed skills and the frozen runpy route.
+    import importlib.util
+    from pathlib import Path
+
+    started = clock()
+    path = Path(__file__).resolve().with_name("darwin_process.py")
+    native = sys.modules.get("darwin_process")
+    if native is None:
+        spec = importlib.util.spec_from_file_location("darwin_process", path)
+        native = importlib.util.module_from_spec(spec)
+        sys.modules["darwin_process"] = native
+        try:
+            exec(compile(path.read_bytes(), str(path), "exec"), native.__dict__)
+        except BaseException:
+            del sys.modules["darwin_process"]
+            raise
+    elif Path(native.__file__).resolve() != path:
+        raise ImportError("unexpected Darwin process module source")
+    result = ScanResult(state="unknown", target=os.path.realpath(target))
+    roots = {}
+    containing = None
+    try:
+        if os.path.abspath(target) != result.target:
+            raise ValueError("candidate_aliased")
+        value = os.lstat(result.target)
+        if not stat_mod.S_ISDIR(value.st_mode):
+            raise ValueError("candidate_not_literal_directory")
+        roots[result.target] = (value.st_dev, value.st_ino)
+        if os.path.basename(result.target) in CACHE_BASENAMES:
+            accessor = RealProc()
+            accessor.bind_admission(lambda: clock() - started < bounds.deadline_seconds)
+            registered = _deepest_non_primary_worktree(
+                accessor.registered_worktrees(result.target, DEFAULT_MAX_WORKTREES))
+            if registered is None:
+                raise ValueError("containing_worktree_unresolved")
+            containing = registered[1]
+            if containing_worktree is not None and os.path.abspath(containing_worktree) != containing:
+                raise ValueError("containing_worktree_mismatch")
+            value = os.lstat(containing)
+            if not stat_mod.S_ISDIR(value.st_mode) or os.path.realpath(containing) != containing:
+                raise ValueError("containing_worktree_aliased")
+            roots[containing] = (value.st_dev, value.st_ino)
+        elif containing_worktree is not None and os.path.abspath(containing_worktree) != result.target:
+            raise ValueError("containing_worktree_mismatch")
+        observed = native.scan_paths(roots, bounds, agent_uid=agent_uid, clock=clock, started=started)
+        result.state = observed["state"]
+        result.hits = observed["hits"]
+        result.reasons = observed["reasons"]
+        result.coverage = observed["coverage"]
+        result.cycles = observed["cycles"]
+        result.coverage.update(target_dev_ino=list(roots[result.target]),
+            containing_worktree=containing,
+            containing_worktree_dev_ino=list(roots[containing]) if containing else None)
+    except (OSError, ValueError) as exc:
+        result.reasons.append(str(exc))
+    return result
+
+
 def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
          agent_uid: int | None = None, bounds: Bounds | None = None,
          clock=time.monotonic,
@@ -1049,6 +1109,9 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
     worktree blocks. An unresolvable containing worktree is unknown, never a
     literal-path fallback.
     """
+    if sys.platform == "darwin" and proc is None:
+        return _darwin_scan(os.fspath(target), containing_worktree, bounds or Bounds(),
+                            os.getuid() if agent_uid is None else agent_uid, clock)
     raw_proc = proc or RealProc()
     bounds = bounds or Bounds()
     self_pid = str(self_pid if self_pid is not None else os.getpid())

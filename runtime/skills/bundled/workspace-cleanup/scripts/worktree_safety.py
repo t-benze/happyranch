@@ -94,10 +94,12 @@ def snapshot_tree(candidate, containing, primary, workspace, destination, budget
             if proc.returncode:
                 raise RuntimeError("mount_table_unavailable")
             for line in proc.stdout.splitlines():
-                match = re.search(r" on (.+?) \(", line)
-                if not match:
+                match = re.fullmatch(r".+ on (/.*?) \([^()\r\n]+\)", line)
+                if not match or os.path.normpath(match.group(1)) != match.group(1):
                     raise RuntimeError("malformed_mount_table")
                 result.add(os.path.abspath(match.group(1)))
+            if not result or "/" not in result:
+                raise RuntimeError("empty_or_incomplete_mount_table")
             return result
 
     def identity(path):

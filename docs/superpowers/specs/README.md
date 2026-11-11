@@ -1,5 +1,7 @@
 # Superpowers Specs Index
 
+- **current**: [Darwin cleanup process-use observations](2026-11-11-darwin-cleanup-process-use.md) — THR-346 S4 PR1; conservative negative coverage and separate native/frozen evidence.
+
 Current THR307 contract: [`2026-10-15-nightly-disk-sweeper.md`](2026-10-15-nightly-disk-sweeper.md).
 
 Current combined naming contract: [`2026-10-09-identity-names-core.md`](2026-10-09-identity-names-core.md). Core/API/routing, CLI/prompt and UI/types are published in open PR1021. THR293seq34/35 requires twelve readable E2E scenarios. The current spec attributes completed maker receipts and correction evidence to their actual sources. Independent review/behavioral QA and guarded merge remain separate; mock-backed checks do not establish daemon/DB/browser acceptance.
