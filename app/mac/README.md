@@ -36,6 +36,14 @@ reports Stop incomplete (including a native KILL error when present), retains
 the handle and keeps Start disabled. A pending Restart waits for the real exit
 callback. External daemons are not signaled through this managed-child path.
 
+Switching from HOME to CLIENT stops the managed child before changing the role.
+If it survives, the switch is refused: the effective and saved role stay HOME,
+the live handle stays owned, the state stays stopping, Start stays disabled,
+and the Stop incomplete diagnostic remains visible. This also applies when
+an earlier Stop already left the child alive; that switch attempt preserves
+the existing diagnostic without sending signals again. Retry the role switch
+after the child has exited.
+
 Startup retains 30 health attempts at 0.5-second intervals (HTTP requests may
 each take up to five seconds). After reaching running, checks continue five
 seconds after each completed attempt, including while unhealthy. One failed

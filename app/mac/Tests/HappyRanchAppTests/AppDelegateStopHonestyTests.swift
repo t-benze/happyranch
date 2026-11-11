@@ -88,6 +88,56 @@ struct AppDelegateStopHonestyTests {
         #expect(factory.launchCallCount == 0)
     }
 
+    @Test("HOME to CLIENT refuses a surviving managed child", arguments: [false, true])
+    func roleSwitchKeepsHomeWhileChildSurvives(stoppedEarlier: Bool) throws {
+        let savedPreference = UserDefaults.standard.object(forKey: "connectionRolePreference")
+        defer {
+            if let savedPreference {
+                UserDefaults.standard.set(savedPreference, forKey: "connectionRolePreference")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "connectionRolePreference")
+            }
+        }
+        let delegate = AppDelegate()
+        delegate.processController = FakeProcessController()
+        delegate.connectionRolePreference = .home
+        delegate.supervisor.configure(homeDir: "/unused")
+        try delegate.supervisor.start()
+        let handle = StopObservation()
+        delegate.currentHandle = handle
+        delegate.supervisor.onHealthCheckPassed(pid: handle.processIdentifier, port: 9876)
+        delegate.refreshDerivedState()
+        try #require(delegate.supervisor.state == .running)
+
+        var earlierDiagnostic: String?
+        if stoppedEarlier {
+            delegate.stopDaemon()
+            try #require(delegate.supervisor.state == .stopping)
+            try #require(handle.isRunning)
+            try #require(delegate.stateText.contains("Stop incomplete"))
+            earlierDiagnostic = delegate.stateText
+        }
+
+        delegate.switchConnectionRole(to: .client)
+
+        #expect(handle.terms == 1)
+        #expect(handle.kills == 1)
+        #expect(handle.isRunning)
+        #expect(delegate.currentHandle === handle)
+        #expect(delegate.supervisor.isManagedBySelf)
+        #expect(delegate.connectionRole == .home)
+        #expect(delegate.connectionRolePreference == .home)
+        #expect(UserDefaults.standard.string(forKey: "connectionRolePreference") == "home")
+        #expect(delegate.supervisor.state == .stopping)
+        #expect(!delegate.canStart)
+        #expect(delegate.stateText == "Stop incomplete: daemon still running; SIGKILL errno: \(EPERM)")
+        let launchLog = delegate.diagnostics.collect()["launcher_log"] as? String
+        #expect(launchLog?.contains("Managed Stop: still running") == true)
+        if let earlierDiagnostic {
+            #expect(delegate.stateText == earlierDiagnostic)
+        }
+    }
+
     @Test("scripted Stop escalates a disposable TERM-ignoring child")
     func stopEscalatesRealChild() throws {
         let scratch = FileManager.default.temporaryDirectory

@@ -714,7 +714,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Switch the connection role to the given preference, handling in-flight teardown.
     ///
     /// - HOME → CLIENT: stops running daemon subprocess (via ``stopDaemon(confirmed:)``)
-    ///   and home connector, then persists the CLIENT preference.
+    ///   and home connector, then persists the CLIENT preference. Refuses the
+    ///   switch while the managed child survives, including an earlier Stop.
     /// - CLIENT → HOME: disconnects client bridge (via ``disconnectRemote()``),
     ///   then persists the HOME preference which configures the supervisor.
     ///
@@ -733,6 +734,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             if supervisor.isManagedBySelf,
                supervisor.state == .running || supervisor.state == .starting || supervisor.state == .unhealthy {
                 stopDaemon(confirmed: true)
+            }
+            // Stop can return with a live child, including one already .stopping.
+            // Preserve its HOME role, ownership and incomplete-Stop diagnostic.
+            if supervisor.isManagedBySelf, currentHandle?.isRunning == true {
+                return
             }
             // Stop home connector (also done by setRolePreference, but be explicit).
             if homeConnector != nil {
