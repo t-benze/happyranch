@@ -187,8 +187,9 @@ Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
 through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause
 rediscovery preserves this wait. Native cancellation of a selected queued graph
 is refused before mutation, including ancestor cascade and after the DB-lock wait;
-control/terminal writers remain later root-owned work. Initial selected move
-projection contains effective actual roles, not unselected replacement candidates.
+control/terminal writers remain later root-owned work. The initial selected move
+projection is historical; PR-3b removes the unused move-only closure reader.
+Current coding ownership and strict saved history remain unchanged.
 
 GET `/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}?session_id=CURRENT`
 and `workflows coding run-show INSTANCE --org ORG --session-id CURRENT --json`

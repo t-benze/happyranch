@@ -396,9 +396,9 @@ support._storage/start/native positives; those still require a separately
 allocated genuine owner venue. Fresh FULL independent review and actual
 same-final-head executable QA remain gates before live-manager guarded merge;
 no native start or readiness override is supplied.
-New settings/progression and literal @3/team_move
-readers, repeated-binding inventory reuse and native controls remain root-owned
-prerequisites. No complete admission/readiness closure is claimed. The earlier
+Settings/progression and literal @3 readers, repeated-binding inventory reuse
+and native controls remain root-owned prerequisites. The earlier team_move
+reader checkpoint is historical; PR-3b removes the unused move-only closure. No complete admission/readiness closure is claimed. The earlier
 SOURCE checkpoint's F5-R1c/F8-R1c UNEXECUTED venue statement is historical.
 TASK12407's42+14 GREEN/five repetitions remain historical, as do its adverse
 M6 partial27/native0/incomplete2 and S1/S3 cause-only results. Accepted step18
@@ -419,8 +419,9 @@ Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
 through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause
 rediscovery preserves this wait. Native cancellation of a selected queued graph
 is refused before mutation, including ancestor cascade and after the DB-lock wait;
-control/terminal writers remain later root-owned work. Initial selected move
-projection contains effective actual roles, not unselected replacement candidates.
+control/terminal writers remain later root-owned work. The initial selected move
+projection is historical; PR-3b removes the unused move-only closure reader.
+Current coding ownership and strict saved history remain unchanged.
 
 GET `/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}?session_id=CURRENT`
 and `workflows coding run-show INSTANCE --org ORG --session-id CURRENT --json`
@@ -1912,22 +1913,19 @@ human settings publication and mapping/release pins; historical start@1 families
 retain their own readers. Admitted continuation retains its original settings and
 effective selected roles across later disable/default changes, with current native
 authority/Pause/host/callback/positive outer closure still mandatory.
-Coding-specific cross-team attribution and complete one-budget move projection
-are connected; generic execution/reservations and source readiness are unchanged.
+Coding-specific cross-team attribution remains connected. PR-3b removes the
+unused move-only closure projection; generic execution/reservations and source
+readiness are unchanged.
 No coding start, queue or native launch is enabled. See the ordered-coding-workflow
 spec's settings-pinned execution section for exact family, snapshot and evidence
 boundaries. Source/static acceptance is separate from genuine scratch/Founder
 page/operator/backup/rollback acceptance retained by ROOT12568.
 
-The retained producer census owns its complete SQL batch through
-`Database.coherent_read_view`, before task enumeration/full fetch and causal
-reconstruction. Complete coding/schema/data/source/naming/ownership/Pause
-validation joins that same caller view with its original cumulative allowance;
-`caller_owned_coding_snapshot_required` remains enforced. Native/file/host/thread
-capture stays outside these SQL views. Supported admission callers have no outer
-SQL transaction. A joined caller transaction stays open and supplies no latest-state
-admission proof. Generic audit watermark collectors/publication were removed per
-THR-308 seq403. SQL coherence does not exempt drift or prove runtime behavior.
+PR-3b removes the unused move-only producer census and its task/workflow closure
+reader. Complete native coding/schema/data/source/naming/ownership/Pause readers
+keep their original views and cumulative allowances. Generic audit watermark
+collectors/publication remain removed per THR-308 seq403. Source/static evidence
+does not establish runtime behavior or clear historical uncertainty.
 
 The Founder page is `/orgs/:slug/settings/coding` (TASK12632): org-keyed view,
 four org-wide cross-team selectors, one explicit frozen key/body per Save, 409

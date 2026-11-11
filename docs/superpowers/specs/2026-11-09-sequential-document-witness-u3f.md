@@ -296,7 +296,8 @@ PASS. F-U3f-AUTH and F-U3f-ENTRY remain separately open. The complete transitive
 inventory classifies other uncharged sites as inherited zero delta; any NEW
 uncharged work beyond these three disclosed classes requires STOP to ROOT.
 
-Live thread/coordinator cleanup remains PR-3b, owned by ROOT engineering_manager.
+PR-3b removes the scoped thread/coordinator readers; Founder settlement,
+delivery-release permission, R1 retry and nightly-sweeper readers remain reserved.
 
 Fresh B/candidate source observations on each SAME physical SEED fixture:
 

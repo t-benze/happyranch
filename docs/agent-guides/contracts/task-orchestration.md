@@ -606,8 +606,9 @@ configuration parsing remains uncharged (F-U3f-AUTH, owner ROOT
 engineering_manager), an existing shared-dispatcher class rather than accounting
 PASS. PR-3a removes the non-thread team-move guard, including node_instruction
 and sequential_engine admission calls. The earlier R-U3f-SB5-3/F-U3f-MOVE
-checkpoint records historical uncharged parsing; thread/coordinator cleanup
-remains PR-3b, owned by ROOT engineering_manager.
+checkpoint records historical uncharged parsing. PR-3b removes the scoped
+thread/coordinator readers while Founder settlement,
+delivery-release permission, R1 retry and nightly-sweeper readers remain reserved.
 U3f C1 used document-only digest deferral; U4b3 extends it only to
 code-change composition: terminal/outer serialization occurs only
 in the document or supported code-change branch, each prepaid at `48 * 16384 + 512` bytes and one step

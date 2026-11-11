@@ -924,8 +924,9 @@ configuration discovery/parsing stays uncharged as **F-U3f-AUTH, OPEN, owner ROO
 engineering_manager**, the existing shared-dispatcher follow-up. This is separate
 from F-U3f-ENTRY and is not accounting PASS. No duplicate canonical/effective-
 profile acquisition occurs. PR-3a removes non-thread team-move admission calls.
-R-U3f-SB5-3/F-U3f-MOVE records the earlier uncharged-parser checkpoint; remaining
-thread/coordinator cleanup is PR-3b, owned by ROOT engineering_manager.
+R-U3f-SB5-3/F-U3f-MOVE records the earlier uncharged-parser checkpoint.
+PR-3b removes the scoped thread/coordinator readers while Founder settlement,
+delivery-release permission, R1 retry and nightly-sweeper readers remain reserved.
 C1 defers terminal/outer digests to the document branch after context validation,
 prepaying `48 * 16384 + 512` bytes and one step before each serialization on the
 original budget. The repository-success hold and foreign-result refusal have

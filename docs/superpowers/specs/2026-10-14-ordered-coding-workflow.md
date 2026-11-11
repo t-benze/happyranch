@@ -313,9 +313,9 @@ support._storage/start/native positives; those still require a separately
 allocated genuine owner venue. Fresh FULL independent review and actual
 same-final-head executable QA remain gates before live-manager guarded merge;
 no native start or readiness override is supplied.
-New settings/progression and literal @3/team_move
-readers, repeated-binding inventory reuse and native controls remain root-owned
-prerequisites. No complete admission/readiness closure is claimed. The earlier
+Settings/progression and literal @3 readers, repeated-binding inventory reuse
+and native controls remain root-owned prerequisites. The earlier team_move
+reader checkpoint is historical; PR-3b removes the unused move-only closure. No complete admission/readiness closure is claimed. The earlier
 SOURCE checkpoint's F5-R1c/F8-R1c UNEXECUTED venue statement is historical.
 TASK12407's42+14 GREEN/five repetitions remain historical, as do its adverse
 M6 partial27/native0/incomplete2 and S1/S3 cause-only results. Accepted step18
@@ -336,8 +336,9 @@ Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
 through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause
 rediscovery preserves this wait. Native cancellation of a selected queued graph
 is refused before mutation, including ancestor cascade and after the DB-lock wait;
-control/terminal writers remain later root-owned work. Initial selected move
-projection contains effective actual roles, not unselected replacement candidates.
+control/terminal writers remain later root-owned work. The initial selected move
+projection is historical; PR-3b removes the unused move-only closure reader.
+Current coding ownership and strict saved history remain unchanged.
 
 GET `/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}?session_id=CURRENT`
 and `workflows coding run-show INSTANCE --org ORG --session-id CURRENT --json`
