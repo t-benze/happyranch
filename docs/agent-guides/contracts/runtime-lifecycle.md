@@ -315,26 +315,6 @@ deployment/restart, historical clearance, retry allocation or E2E acceptance.
 Behavioral/native/proof results are NOT RUN unless separately attributed; Python
 units remain RETIRED and general integration INCLUDING callback SKIPPED24342.
 
-Team-move GET/POST requests register their service task and original attached
-org native-user lifetime before native submission. An admitted apply/recover
-handoff shares that original lease with its loop-owned runner, including after
-shutdown fences fresh org admission. Request disconnect, repeated cancellation
-or a cancelled bridge never establishes native return. Service close owns one
-shielded join: fence new requests, join admitted request handoffs, then snapshot,
-cancel and join operation runners. Uncertain submission/return or restricted
-context close retains strong owners/handles and refuses remove/swap/DB close.
-Restricted DB acquisition and both inner inspection connections register their
-actual handles to the SAME service/native task before fallible validation, even
-when no context is returned. Each original helper attempts close once; affine
-inspection connections close on their acquiring thread. Positive original close
-alone removes that handle. Failed cleanup retains the owner and safe close code
-beside the primary failure in diagnostic readback; native return, a saved terminal
-receipt and a later successful observation never establish handle retirement.
-A service-owned redelivery child shares the original org lifetime through native
-generation claim, real loop queue put and native exact acknowledgement/failure.
-Its parent joins it across repeated cancellation before returning or closing;
-uncertain native return retains both queue reservation and service close barrier.
-Synchronous generation publishers keep their original entry and error behavior.
 Dynamic attachment registers its strong child and native submission ticket before
 cancellable work, captures the actual loaded/unpublished DB and native close
 outcome, and joins each native interval through repeated cancellation. Loop queue,
@@ -406,7 +386,7 @@ The four async runner entrypoints retain a private org lifetime through native
 finish (including failure), beyond the refresh Future. Org unload refuses active
 runners and fences detached instances against late starts. Runtime registration
 (including the same root) and /runtime/use preflight ALL old orgs for tasks,
-runners and team-move holds before any close or registration/activation effect.
+runners before any close or registration/activation effect.
 Shutdown refuses runtime replacement before construction; idle replacement closes
 and fences every retired instance before publishing new OrgStates. A busy later
 org leaves earlier orgs open, with busy refusals mapped to409. Native task queue

@@ -52,21 +52,11 @@ NOT RUN/PROOF NOT RUN, integration SKIPPED24342/211270–271, units RETIRED.
 
 **Current THR-229 contract.** The current implementation contains the complete dual-text control/editor path, selector-family launch binding, strict completion admission, automatic pre-final/final/post-final continuation, startup/reaper recovery, authenticated publication/admission, and single-use next-result spend. The historical shipping proof (unit source retired by THR-291 seq40) ran a real ordinary child through queue/Dispatcher/run-step/provider launch on a fully historical-migrated database, retains `REQUEST_CHANGES` and the accepted raw-DDL inequality as diagnostics, wakes the same root, reports an arbitrary-reason escalation with a valid dual assessment through the real CLI, observes that root Pending before tagged dequeue, and spends/applies exactly one reserved next result. Every live manager with exactly one matching `teams.yaml` registration uses the same team-scoped surface, server-projected neutral v2 starter, selector/binding path, and downstream identity propagation; workers and stale, mismatched, or duplicate registrations fail closed before policy access. Existing persisted Engineering identities remain unchanged, while legacy compatibility is data-driven by `POLICY_BY_TEAM`. The UI retains immutable dual-text history but removes the two legacy read-only sections and eager requests. `web/scripts/screenshot-harness/shot-thr229-v2-policy.mjs` remains the owned browser receipt. No production policy is saved or activated by landing code. Older THR-229 checkpoint paragraphs below are historical implementation snapshots: their statements that later stages, the hook, recovery, or editor were dark/unimplemented apply only to that named checkpoint and are superseded by this current-state paragraph. Source merge is not rollout: compatible binaries must be deployed and every old manager launch/completion consumer drained before any future production activation; rollback is compatible-code-only. Exact-final-head CI, independent review/QA, guarded merge, deployment, and natural production continuation remain outstanding/unobserved, so the combined feature remains unaccepted.
 
-The team-move redelivery path splits this unchanged publisher at native
-classification/discovery/claim, the actual loop-owned queue put, and native exact
-acknowledgement/failure. Synchronous callers drive the same state machine directly.
-No native DB lease/cursor crosses the publication step; a service-owned lifetime
-joins through cancellation and retains uncertain submissions and queue reservations.
-Dynamic attachment uses that same publisher with pre-submission task-put outcomes:
+Dynamic attachment uses the generation publisher with pre-submission task-put outcomes:
 the original bounded reservation is retained while any actual put is unretired,
 including when native failure bookkeeping catches the submission exception.
 Known callback failure remains a completed outcome with the original error;
 native return or bridge cancellation alone cannot retire the attachment owner.
-Restricted DB/inner inspection acquisition likewise retains the original service
-owner before validation; only positive original close retires each actual handle.
-Constructor/close failure retains primary and safe secondary diagnostics, without
-another closer, publication, retry or authority grant. Affine inspection cleanup
-stays on its acquiring thread; a later read or terminal receipt clears nothing.
 All original generation refusals, tagged metadata and final admission fences remain.
 
 **Current THR-229 v2 schema-observation correction (founder seq351).** The v2 decision path no longer performs a schema-integrity/reference comparison or schema recheck. Candidate and pin rows still store the real claim-time raw-schema digest, inventory digest, and object count as observed-only diagnostics; those values are never placeholders, compared, or rechecked, and structural differences cannot produce a v2 `schema_drift` refusal. Genuine observation failure retains the bounded `claim_failed` outcome. The historical fixture remains real migration-path test support, while the legacy v1 full-schema comparison (with S1 F/E references) and every non-schema v2 fence remain in force. The checkpoint C3a and issue #918 paragraphs below are historical implementation records superseded only for this removed gate; their recovery and idempotency behavior remains current.

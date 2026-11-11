@@ -695,7 +695,7 @@ class DaemonState:
     async def remove_org(self, slug: str) -> None:
         async with self.orgs_lock:
             # Local checks only: C may own the DB through a stalled COMMIT.
-            # Reach finite revoke before any DB-backed task/move preflight.
+            # Reach finite revoke before any DB-backed task preflight.
             if self._runner_shutdown:
                 raise _OrgBusyError("daemon_shutting_down")
             current = self.orgs_snapshot().get(slug)

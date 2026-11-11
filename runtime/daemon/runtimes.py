@@ -61,6 +61,7 @@ def activate(path: Path) -> None:
     """
     resolved = Path(path).resolve()
     state = load()
+    RuntimeDir.load(resolved)  # preserve runtime validation before registry writes
     if resolved not in state.registered:
         raise ValueError(f"{resolved} is not in the registry; call register() first")
     state.active = resolved
