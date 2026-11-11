@@ -114,6 +114,21 @@ and `strict=false`; source configuration is not external enforcement.
 
 Default/`all` and `web` run only source boundary lint (all), Node24 colour scan,
 ESLint and TypeScript `--noEmit` analysis, with locked `npm ci` setup.
+The `all` target also prints an advisory for `${TMPDIR:-/tmp}` inode use.
+Linux uses GNU `df -Pi` inode columns 2–5. macOS uses BSD columns 6–8
+(`iused`, `ifree`, `%iused`), deriving total from used + free. At 90% it warns;
+an unavailable/malformed measurement remains advisory and never fails CI or
+authorizes cleanup. The parsing uses Apple Bash 3.2-compatible syntax.
+
+Run the bounded, stdlib-only fixtures with
+`python3 -B scripts/mac_native/suite_inode_telemetry.py`. They extract and run
+only the shipping advisory function under `/bin/bash -euo pipefail`, with
+test-side `df`/`uname` functions for GNU/BSD layouts, opposing block/inode
+pressure, large totals, malformed output and unavailable commands. They do not
+run the wrapper, Python units, integration or Product E2E. The native
+`inode-telemetry` suite runs all 12 rows: these nine fixtures followed by
+three real Mac `df` checks. See
+`ci/jenkins/mac-native-probe/README.md`; Linux dispatcher output is SKIPPED.
 Behavioral tests and builds are outside all/pre-push/required merge checks.
 Normal hooks stay enabled; never bypass hooks or the guarded worktree.
 Independent full code review and scoped QA remain mandatory. Static checks

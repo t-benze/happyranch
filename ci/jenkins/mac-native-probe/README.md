@@ -344,3 +344,39 @@ PYPROBE
 Run that command under an external <=60-second timeout and output/file caps;
 record it as Linux source/simulated-frozen logic only. Do not use Linux results
 as native or frozen proof. Python units remain retired; integration stays skipped.
+
+## S9 inode telemetry probe
+
+`python3 -B scripts/mac_native/probe.py --suite inode-telemetry --output /owned/probe.json`
+registers `SUITE=inode-telemetry` in the existing dispatcher. It needs only
+stdlib Python, `/bin/bash`, `df`, `awk`, `uname` and `tee`, all already present
+on macOS. No dependency, job configuration, host or trigger change is needed.
+Only a separately authorized native leg operates the Jenkins job.
+
+The `inode-telemetry` suite runs all 12 rows: nine portable fixtures followed
+by three real-df checks. `suite_inode_telemetry.py` extracts the shipping
+`observe_tmp_inodes` function without sourcing/running `local_ci.sh`. The
+`inode_telemetry_fixtures` report section contains `gnu_low`, `gnu_warning`,
+`bsd_blocks_high_inodes_low`, `bsd_inodes_high_blocks_low`, `bsd_large_total`,
+`gnu_malformed`, `bsd_malformed`, `df_unavailable` and `uname_unavailable`.
+Apple `/bin/bash` then executes that function against real `/bin/df -Pi`
+for a private directory inside the job's `$TMPDIR`; test-side `tee` saves the
+same sample for independent column
+comparison. Named rows carry expected/actual values: `real_df_inode_values`
+compares used/free/total/percent with BSD inode columns 6–8 and their sum;
+`real_df_advisory_exit` expects 0; `real_df_warning_threshold` checks the 90%
+warning against the actual inode percentage. The report retains the df sample,
+advisory text and Bash version. A failed row exits nonzero.
+
+Each Bash command has a five-second deadline, incrementally drained output
+capped at 16KiB and kill/reap on failure. Snapshot reads are capped at 16KiB;
+the successful suite report is capped at 32KiB before the dispatcher's formatted
+JSON (below 64KiB). Scratch is removed on ordinary/catchable completion; the
+existing job owns outer interruption cleanup and all file/log/time limits.
+No whole CI, build, daemon, external HOME/cache write or frozen bundle is used.
+On Linux the dispatcher emits its expected skipped JSON and exits0.
+
+The same nine portable fixtures can also run on their own with
+`python3 -B scripts/mac_native/suite_inode_telemetry.py` (see `docs/local-ci.md`).
+They prove parsing/advisory behavior only; native Mac, frozen-app acceptance
+and Product E2E require their separately owned evidence.

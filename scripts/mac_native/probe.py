@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers")
+SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "inode-telemetry")
 PROC_PIDTBSDINFO = 3
 
 
@@ -1433,6 +1433,10 @@ def main() -> int:
         try:
             if args.suite == 'cleanup-helpers':
                 cleanup_helpers(report, args.frozen_daemon)
+            elif args.suite == 'inode-telemetry':
+                from suite_inode_telemetry import run as inode_telemetry
+
+                inode_telemetry(report)
             else:
                 {"truth": truth, "teardown": teardown, "disk-sweep": disk_sweep}[args.suite](report)
             report["completed"] = True
