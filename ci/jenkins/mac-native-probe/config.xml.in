@@ -35,29 +35,103 @@
       <command><![CDATA[#!/bin/bash -p
 set +x
 set -euo pipefail
+exec 3>&1 4>&2
 unset BASH_ENV ENV CDPATH GIT_DIR GIT_WORK_TREE GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export LC_ALL=C GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 umask 077
+CONSOLE_LIMIT_BYTES=1048576
+# All console writes, including saved-fd and cleanup diagnostics, share this cap.
+# Drain excess input so a full console cannot SIGPIPE cleanup or replace its rc.
+capture_console() {
+  local rc=0 extra
+  trap '' INT TERM HUP PIPE
+  head -c "$CONSOLE_LIMIT_BYTES" || rc=1
+  if extra=$(head -c 1 | wc -c); then
+    if [ "$extra" -ne 0 ]; then
+      printf '\n[console output truncated at %s bytes]\n' "$CONSOLE_LIMIT_BYTES" || rc=1
+      rc=1
+    fi
+  else
+    rc=1
+  fi
+  cat > /dev/null || rc=1
+  return "$rc"
+}
+# Bootstrap failures remain nonzero; suppress diagnostics until the cap is active.
+exec 2>/dev/null
 : "${WORKSPACE:?Jenkins workspace required}"
 cd "$WORKSPACE"
 mkdir -p evidence
 # Only these job-owned outputs are replaced; the checkout is always freshly created.
-rm -f evidence/probe.json evidence/probe.log evidence/identity.txt evidence/build.log
-scratch=''
-cleanup() {
-  local rc=$?
+rm -f evidence/probe.json evidence/probe.log evidence/identity.txt evidence/build.log evidence/.console-pipe
+mkfifo evidence/.console-pipe
+# An ordinary child can be waited for on the Mac's shipped Bash 3.2.
+capture_console < evidence/.console-pipe >&3 2>/dev/null &
+console_pid=$!
+exec > evidence/.console-pipe 2>&1
+exec 3>&1 4>&2
+finish_console() {
+  local rc=${1:-$?}
   trap - EXIT
+  if ! rm -f -- "$WORKSPACE/evidence/.console-pipe"; then
+    [ "$rc" -ne 0 ] || rc=1
+  fi
+  if ! exec 1>&- 2>&- 3>&- 4>&-; then
+    [ "$rc" -ne 0 ] || rc=1
+  fi
+  if ! wait "$console_pid"; then
+    [ "$rc" -ne 0 ] || rc=1
+  fi
+  exit "$rc"
+}
+trap finish_console EXIT
+scratch=''
+LOG_LIMIT_BYTES=4194304
+IDENTITY_LIMIT_BYTES=65536
+# Read one byte beyond the cap to distinguish exact-size output from overflow.
+# The writer closes its pipe on overflow; pipefail makes the build fail closed.
+capture_log() {
+  local limit=${2:-$LOG_LIMIT_BYTES} extra
+  head -c "$limit" > "$1" || return 1
+  extra=$(head -c 1 | wc -c) || return 1
+  if [ "$extra" -ne 0 ]; then
+    printf 'Log exceeded %s bytes: %s\n' "$limit" "$1" >&4
+    return 1
+  fi
+}
+cleanup() {
+  local rc=$? removed size
+  trap - EXIT
+  set +e
   if [ -n "$scratch" ]; then
     if rm -rf -- "$scratch"; then
-      printf 'scratch_removed=true\n' >> "$WORKSPACE/evidence/identity.txt"
+      removed=true
     else
-      printf 'scratch_removed=false\n' >> "$WORKSPACE/evidence/identity.txt"
-      rc=1
+      removed=false
+      [ "$rc" -ne 0 ] || rc=1
+    fi
+    # The identity producer reserves 22 bytes for the longest possible receipt.
+    if ! printf 'scratch_removed=%s\n' "$removed" >> "$WORKSPACE/evidence/identity.txt"; then
+      [ "$rc" -ne 0 ] || rc=1
     fi
   fi
-  cat "$WORKSPACE/evidence/build.log"
-  exit "$rc"
+  if [ -f "$WORKSPACE/evidence/build.log" ]; then
+    if ! head -c "$CONSOLE_LIMIT_BYTES" "$WORKSPACE/evidence/build.log" >&3; then
+      [ "$rc" -ne 0 ] || rc=1
+    fi
+    if size=$(wc -c < "$WORKSPACE/evidence/build.log"); then
+      if [ "$size" -gt "$CONSOLE_LIMIT_BYTES" ]; then
+        [ "$rc" -ne 0 ] || rc=1
+        if ! printf '\n[build.log console copy truncated at %s bytes]\n' "$CONSOLE_LIMIT_BYTES" >&3; then
+          [ "$rc" -ne 0 ] || rc=1
+        fi
+      fi
+    else
+      [ "$rc" -ne 0 ] || rc=1
+    fi
+  fi
+  finish_console "$rc"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -66,7 +140,6 @@ run_probe() {
   [[ "${SOURCE_SHA:-}" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'SOURCE_SHA must be 40 hex characters'; return 2; }
   [[ "${SUITE:-}" =~ ^[a-z][a-z0-9-]{0,47}$ ]] || { echo 'Invalid SUITE syntax'; return 2; }
   test "$(uname -s)" = Darwin
-  scratch=$(mktemp -d "$WORKSPACE/native-probe.XXXXXX")
   mkdir "$scratch/source"
   cd "$scratch/source"
   git init --quiet
@@ -82,12 +155,19 @@ run_probe() {
     printf 'job=%s\nbuild_number=%s\nbuild_url=%s\n' "${JOB_NAME:-}" "${BUILD_NUMBER:-}" "${BUILD_URL:-}"
     command -v python3
     python3 --version
-  } > "$WORKSPACE/evidence/identity.txt"
-  python3 scripts/mac_native/probe.py --suite "$SUITE" --output "$WORKSPACE/evidence/probe.json" > "$WORKSPACE/evidence/probe.log" 2>&1
+  } 2>&1 | capture_log "$WORKSPACE/evidence/identity.txt" "$((IDENTITY_LIMIT_BYTES - 22))"
+  (
+    # Bound every regular file written by the probe (including probe.json).
+    # 4096 blocks is at most 4 MiB with Bash's 512/1024-byte block units.
+    ulimit -f 4096
+    python3 scripts/mac_native/probe.py --suite "$SUITE" --output "$WORKSPACE/evidence/probe.json"
+  ) 2>&1 | capture_log "$WORKSPACE/evidence/probe.log"
   cat "$WORKSPACE/evidence/probe.log"
 }
+# The parent owns scratch and cleanup; no log redirect is active in its EXIT trap.
+scratch=$(mktemp -d "$WORKSPACE/native-probe.XXXXXX")
 # Preserve the actual failing command status (do not call this function in an if).
-run_probe > "$WORKSPACE/evidence/build.log" 2>&1
+(run_probe) 2>&1 | capture_log "$WORKSPACE/evidence/build.log"
 ]]></command>
     </hudson.tasks.Shell>
   </builders>
