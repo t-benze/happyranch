@@ -17,6 +17,7 @@ struct ProcessHandleCaptureProtocolTests {
         var capturedStandardError: String?
         var capturedStandardOutput: String?
         func terminate() {}
+        func forceKill() -> Int32? { nil }
     }
 
     @Test("ProcessHandle protocol declares capturedStandardError and capturedStandardOutput")

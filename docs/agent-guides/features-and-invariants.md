@@ -2606,6 +2606,24 @@ and operational H-v1 duties remain separately gated.
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
 Content updates, including slug changes, preserve the edited entry's lifecycle,
 salience, provenance, scope and `last_verified` from storage under the write lock.
+The S3a Instill owner also preserves `inherited_from` and the separate
+`imported_at` through MemoryStore reads, search/list/index and supported updates.
+`inherited` records source knowledge, never recipient experience or current
+Founder authority. Its source block binds archive/version/item, source permanent
+ID and per-reference source dates (null explicitly unknown); readable content
+retains original attribution and warnings. The dedicated inherited writer adds
+new local MEM IDs without supersession, replacement or import-triggered compaction,
+including retries at/above the configured threshold. Ordinary compaction remains
+unchanged. S3b adds authenticated exact confirmation, history, operation/retry and one
+read-only recipient/archive eligibility route (see the web-and-cli guide).
+Memory get/list/search HTTP and CLI JSON/text return `provenance: inherited`,
+`inherited_from` (archive/version/item/source plus per-reference authored/observed
+dates, with explicit null = unknown) and separate `imported_at`. The recipient's
+local writer attribution never claims personal experience or current authority.
+Preview cannot import; a fresh recipient session retrieves through normal memory
+interfaces, while existing conversations are unchanged. Once inherited notes
+exist, use compatible daemon/CLI/UI readers and writers; preserve notes/receipts
+on rollback and stop incompatible writers rather than stripping provenance.
 Editing an evicted or superseded entry keeps that state; restoration uses the
 explicit lifecycle route. Promoted entries remain locked against content edits
 (HTTP 409). A supplied `supersedes` still marks its target through the existing
@@ -3272,11 +3290,9 @@ record actual daemon/browser outcomes separately from MSW/component evidence. Th
 current case record, mutations and unselected historical branches are in
 `docs/superpowers/specs/2026-10-09-identity-names-core.md` under Current finite
 naming verification source. Standalone OpenAPI --check and a genuine served
-schema comparison are both retained in the hosted receipts. Clean hooked
-publication precedes each authorized disposable GitHub naming operation. The
-naming-only workflow and `scripts/identity_names_hosted.sh` are published on the
-open naming PR; each corrected source requires its own attributed verification. The
-runner preserves source/evidence sentinels through init/prepare/work/export with
+schema comparison are both retained in the historical hosted receipts.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
+The retained runner preserves source/evidence sentinels through init/prepare/work/export with
 a bounded offline mount holder, refuses output truncation, and reserves cleanup
 under one job-start deadline. Python unit retirement and
 general integration exception retain their exact scope; no behavioral acceptance,

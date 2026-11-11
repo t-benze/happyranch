@@ -3101,22 +3101,9 @@ The Web inbox reads one active Open, Archived or All stream in 50-row pages. Hea
 
 Refresh restarts at a null cursor, privately stages a prefix to prior depth and commits it together. Org/bucket/generation ownership and abort signals reject late results. Inbox reconnect/events, focus and local thread mutations reconcile rows and totals. Pin freezes paging, snapshots actual legacy/infinite/detail caches, reorders loaded Open rows only, conditionally rolls back owned writes and restarts authoritatively. Scoped scroll offset/anchor/depth survives detail/back; restoration waits for enough content or termination and retains its target through errors. User movement cancels pending restoration. Command palette reads only committed active-org caches without fetching. CLI calls retain the existing omitted-pagination contract.
 
-### Manual local-CI receipt contract
+### Retired manual local-CI receipt lane
 
-The nightly workflow's default manual lane takes `all_only` (boolean, default
-false); there is no `run_integration` toggle. Explicit `naming_only=true` with
-`all_only=false`, exact published `naming_source_sha` and immutable amd64
-`naming_image` suppresses the broad manual lane and selects only finite naming.
-The default lane invokes the extracted receipt-producing
-`uv run python scripts/nightly_local_ci_all.py` runner from the checkout root,
-which records actual checkout/source/tool provenance and the
-`scripts/local_ci.sh all` command exit. The manual cap is the approved 150
-minutes; general integration retains its 30-minute cap and exact schedule-only
-predicate, so all three manual input cases skip it. THR-291 seq40 retired
-Python unit source, G named-case controls/repetitions and the PR1011 unit entry.
-The wrapper verifies source boundary and Web static checks only under seq69,
-with units RETIRED and first daily E2E PENDING. General integration remains SKIPPED under THR243 seq42, never PASS.
-See `docs/local-ci.md` for current checks and selectors.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
 ## Functional naming UI and API contract
 
@@ -3312,11 +3299,9 @@ record actual daemon/browser outcomes separately from MSW/component evidence. Th
 current case record, mutations and unselected historical branches are in
 `docs/superpowers/specs/2026-10-09-identity-names-core.md` under Current finite
 naming verification source. Standalone OpenAPI --check and a genuine served
-schema comparison are both retained in the hosted receipts. Clean hooked
-publication precedes each authorized disposable GitHub naming operation. The
-naming-only workflow and `scripts/identity_names_hosted.sh` are published on the
-open naming PR; each corrected source requires its own attributed verification.
-Its ordinary selection is exactly 20 function selectors / 23 parameterized cases
+schema comparison are both retained in the historical hosted receipts.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
+The retained naming script selects exactly 20 function selectors / 23 parameterized cases
 for the same twelve scenarios, including C1/four C2/F1. Named daemon receipts,
 complete full-definition/CLI/readback evidence and every selected JUnit outcome
 are required. The exact offline workload container contains nested CLI sessions;
@@ -4758,3 +4743,47 @@ REPLY/BOOTSTRAP/TASK_FOLLOWUP transitions, not process exits. Contained stop use
 existing backend controls; direct/passthrough work waits for original exit/timeout
 and records an attributable could-not-stop audit. Neither an abort response nor
 an audit proves process cleanup. New arrivals retain their own native identities.
+
+
+## Knowledge Instill and learned sources (S3)
+
+The bearer-authenticated same-org knowledge router delegates confirmation and
+retry to `InstillLifecycle`; it adds no identity or permission model:
+
+- `POST /agents/{recipient_id}/knowledge/imports`: exact JSON `{submission_id, archive_id, archive_version, item_ids, confirmed:true}`. Reuse the same key/body after an uncertain response; a changed selection with that key is refused.
+- `GET /agents/{recipient_id}/knowledge/imports`: `{operations:[...]}` learned-source history with archive/source/version, counts, item mappings and operation links, including failed attempts. History remains readable for known retired/pending recipients; it grants no write eligibility.
+- `GET /knowledge/imports/{operation_id}`: original receipt and per-item outcomes, target MEM IDs, pending counts, timestamps and held/retryable causes.
+- `POST /knowledge/imports/{operation_id}/retry`: same fixed selection, preserves successes and writes only missing proven-unwritten items. A held item requires exact reserved-ID reconciliation; it is never a blind duplicate write.
+- `GET /agents/{recipient_id}/knowledge/imports/eligibility/{archive_id}`: read-only advisory recipient eligibility, actual Busy references and per-item eligibility/default selection/prior mapping. Incomplete intents are not default-selected. Mapping `completed_at` is the receipt date; actual note `imported_at` is returned by memory reads. Use S2 archive detail for text, attribution, coverage and warnings. Preview has no reservation or import effect; confirmation revalidates admission.
+
+All paths are under `/api/v1/orgs/{slug}`. Unknown/non-Ready/foreign archive IDs
+and unknown operations/items return 404 with closed feature codes; pending or
+retired recipients are refused with `knowledge_import_recipient_not_active_authorized`
+(404). Busy returns 409 `knowledge_import_busy_finish_wait_then_retry`, actual
+`{kind,id}` blockers and `finish/wait, then retry`. Invalid confirmation is 422
+`knowledge_import_invalid_confirmation`; zero selection is 422
+`knowledge_import_zero_selection`. Other owner refusals remain 409 closed codes.
+No raw captures, internal confirmations, reserved note content or note bodies
+appear in these operation/eligibility projections. Audit remains body-free.
+
+CLI JSON commands are `happyranch knowledge instill RECIPIENT --from-file ABS`,
+`knowledge imports list RECIPIENT`, `knowledge imports show OPERATION`, and
+`knowledge imports retry OPERATION`, each with `--org ORG`. The confirmation file
+must be absolute, valid bounded JSON without duplicate keys and match the served
+strict model. IDs, org and local file/body arguments are checked before daemon
+discovery. Keep the original submission key after transport uncertainty.
+
+Memory HTTP get/list/search and `happyranch memory get|list|search` JSON/text
+present `provenance: inherited`, `inherited_from` and the separate `imported_at`.
+Source dates stay explicit null when unknown. Compatible daemon/CLI/UI readers
+and writers are required; preserve notes and receipts on rollback, stop imports
+and incompatible writers, and restore a compatible release. Never strip metadata
+or relabel inherited material as the recipient's experience. Retrieval uses normal
+memory tools in a fresh recipient session; running/resumed conversations are not
+rewritten. S5 UI remains separate work.
+
+`web/src/lib/api/knowledge.ts` mirrors all five routes. Memory types live in
+`web/src/lib/api/types.ts`; static inspection pairs mirrors/classification with
+the OpenAPI snapshot. Classification grants no remote reachability. The retired
+Web OpenAPI-coverage test remains retired. Focused exercise:
+`uv run --frozen python scripts/verify_knowledge_instill.py [CASE]`.

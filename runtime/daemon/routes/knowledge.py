@@ -1,7 +1,12 @@
 """Knowledge source, Distill and archive surfaces; existing bearer policy."""
 from __future__ import annotations
 
+from typing import Any, Callable, Coroutine
+
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from starlette.responses import Response
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
@@ -10,11 +15,33 @@ from runtime.knowledge.sources import (
 )
 from runtime.knowledge.archives import ArchiveError
 from runtime.knowledge.distill import DistillLifecycle
+from runtime.knowledge.instill import InstillLifecycle
+from runtime.knowledge.imports import ImportError
 from runtime.knowledge.lifecycle_models import (
     ArchiveList, ArchiveSelection, DistillOperation, DistillSubmission, KnowledgeArchive,
+    ImportEligibility, ImportHistory, ImportOperation, ImportRefusal, InstillConfirmation,
 )
 
-router = APIRouter(dependencies=[require_token()])
+
+class KnowledgeRoute(APIRoute):
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def validated(request: Request) -> Response:
+            try:
+                return await handler(request)
+            except RequestValidationError as error:
+                # Body-free transport errors; never echo confirmation content.
+                if self.path.endswith('/agents/{recipient_id}/knowledge/imports') and request.method == 'POST':
+                    empty = any(e['loc'] == ('body', 'item_ids') and e['type'] == 'too_short'
+                                and e.get('input') == [] for e in error.errors())
+                    code = 'knowledge_import_zero_selection' if empty else 'knowledge_import_invalid_confirmation'
+                    raise HTTPException(status_code=422, detail={'code': code}) from None
+                raise
+        return validated
+
+
+router = APIRouter(dependencies=[require_token()], route_class=KnowledgeRoute)
 
 
 def _refuse(error: SourceError):
@@ -87,3 +114,63 @@ async def archive_show(slug: str, archive_id: str, org: OrgDep, request: Request
         return KnowledgeArchive.model_validate(lifecycle.store.get_archive(archive_id))
     except ArchiveError as error:
         _archive_refuse(error)
+
+
+_IMPORT_RESPONSES = {
+    401: {'description': 'Existing bearer authentication required'},
+    404: {'model': ImportRefusal, 'description': 'Unknown or unavailable same-org identity'},
+    409: {'model': ImportRefusal, 'description': 'Closed admission or selection refusal'},
+    422: {'model': ImportRefusal, 'description': 'Invalid exact confirmation'},
+}
+
+
+def _import_refuse(error: ImportError) -> None:
+    status = 404 if error.code in {
+        'knowledge_import_not_found', 'knowledge_import_recipient_not_found',
+        'knowledge_import_ready_same_org_archive_required',
+        'knowledge_import_unknown_item', 'knowledge_import_recipient_not_active_authorized',
+    } else 409
+    detail = {'code': error.code, 'blockers': error.blockers}
+    if error.code == 'knowledge_import_busy_finish_wait_then_retry':
+        detail['message'] = 'finish/wait, then retry'
+    raise HTTPException(status_code=status, detail=detail) from None
+
+
+@router.post('/agents/{recipient_id}/knowledge/imports', response_model=ImportOperation, responses=_IMPORT_RESPONSES)
+async def instill(slug: str, recipient_id: str, body: InstillConfirmation, org: OrgDep) -> ImportOperation:
+    try:
+        return await InstillLifecycle(org).submit(recipient_id, body)
+    except ImportError as error:
+        _import_refuse(error)
+
+
+@router.get('/agents/{recipient_id}/knowledge/imports', response_model=ImportHistory, responses=_IMPORT_RESPONSES)
+async def imports(slug: str, recipient_id: str, org: OrgDep) -> ImportHistory:
+    try:
+        return ImportHistory(operations=await InstillLifecycle(org).list(recipient_id))
+    except ImportError as error:
+        _import_refuse(error)
+
+
+@router.get('/agents/{recipient_id}/knowledge/imports/eligibility/{archive_id}', response_model=ImportEligibility, responses=_IMPORT_RESPONSES)
+async def import_eligibility(slug: str, recipient_id: str, archive_id: str, org: OrgDep) -> ImportEligibility:
+    try:
+        return await InstillLifecycle(org).eligibility(recipient_id, archive_id)
+    except ImportError as error:
+        _import_refuse(error)
+
+
+@router.get('/knowledge/imports/{operation_id}', response_model=ImportOperation, responses=_IMPORT_RESPONSES)
+async def import_show(slug: str, operation_id: str, org: OrgDep) -> ImportOperation:
+    try:
+        return await InstillLifecycle(org).show(operation_id)
+    except ImportError as error:
+        _import_refuse(error)
+
+
+@router.post('/knowledge/imports/{operation_id}/retry', response_model=ImportOperation, responses=_IMPORT_RESPONSES)
+async def import_retry(slug: str, operation_id: str, org: OrgDep) -> ImportOperation:
+    try:
+        return await InstillLifecycle(org).retry(operation_id)
+    except ImportError as error:
+        _import_refuse(error)

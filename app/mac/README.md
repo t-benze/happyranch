@@ -25,6 +25,56 @@ SwiftPM release dead stripping. Retained native sources can inspect ABI exports;
 uses basic bundle checks. Native tests remain separate from automated lint/static
 merge checks.
 
+## Managed daemon Stop and health
+
+Stop sends TERM to the app's current managed child, waits up to five seconds,
+then sends KILL if it is still running and waits up to two more seconds. The
+waits use elapsed monotonic time. Diagnostics record the observed exit status
+and actual uncaught signal, including an exit during the TERM grace. A signal
+request alone never counts as an exit. If the child remains running, the app
+reports Stop incomplete (including a native KILL error when present), retains
+the handle and keeps Start disabled. A pending Restart waits for the real exit
+callback. External daemons are not signaled through this managed-child path.
+
+Quit cancels any pending Restart before exit callbacks can run during teardown,
+so an exiting child cannot launch a replacement. It attempts the same bounded
+TERM/KILL teardown for any live child the app owns, including one still stopping
+after an earlier incomplete Stop or a refused HOME to CLIENT switch. If the
+same owned handle has exited, Quit synchronously settles the supervisor and
+records its actual exit code and signal before returning; it does not depend
+on a queued MainActor callback running before app termination. Exit settlement
+is consumed once per launch, so a later callback cannot settle it again or
+restart it. The callback can still record captured output. If the
+child survives again, the outcome remains
+Stop incomplete and ownership is retained; Quit never fabricates an exit.
+External daemons remain untouched.
+
+Switching from HOME to CLIENT stops the managed child before changing the role.
+If it survives, the switch is refused: the effective and saved role stay HOME,
+the live handle stays owned, the state stays stopping, Start stays disabled,
+and the Stop incomplete diagnostic remains visible. This also applies when
+an earlier Stop already left the child alive; that switch attempt preserves
+the existing diagnostic without sending signals again. Retry the role switch
+after the child has exited.
+
+Startup retains 30 health attempts at 0.5-second intervals (HTTP requests may
+each take up to five seconds). After reaching running, checks continue five
+seconds after each completed attempt, including while unhealthy. One failed
+check or unavailable port file marks a running daemon unhealthy; a successful
+check restores running. Stopping, process exit, or a replacement handle ends
+the old monitor; an HTTP response arriving after Stop cannot revive it.
+
+The manual native `supervisor` probe discovers developer directory, macOS SDK,
+Swift path and Swift >=6 first. Missing tooling produces UNAVAILABLE rows and
+nonzero `toolchain unavailable`, without a build/test attempt. It runs focused
+`swift test` for `AppDelegateStopHonestyTests|ManagedHealthPollingTests`, then
+repeats the scripted TERM-ignoring disposable-child test with `--skip-build`.
+HOME, temporary files, SwiftPM scratch/cache/config/security paths, compiler
+module caches and products stay in build scratch. Release/no-debug compilation
+reduces debug product size; the existing 32 MiB/file cap is never raised.
+The full Swift suite, GUI integration and frozen-app acceptance are separate
+and are not proven by this focused source suite.
+
 ## Internal candidate build
 
 Use a clean independently reviewed full commit/tree, an arm64 Mac, Xcode16 /

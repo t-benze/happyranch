@@ -2241,6 +2241,9 @@ class SchemaMixin:
         from runtime.knowledge.archives import install_archive_schema
 
         install_archive_schema(self._conn)
+        from runtime.knowledge.imports import install_import_schema
+
+        install_import_schema(self._conn)
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_task_id ON audit_log(task_id)"
         )

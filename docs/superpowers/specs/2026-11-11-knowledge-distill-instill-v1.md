@@ -149,6 +149,73 @@ Use the existing audit envelope `(task_id, agent, action, payload)` and real tas
 
 ## S3 — Additive, idle-only Instill
 
+**S3a owner (TASK-15403):** `runtime/knowledge/instill.py` implements fixed confirmed
+selection, replay/reopen, same-operation retry and recipient operation history;
+`imports.py` owns the additive operations/items installer and durable reserved-ID
+intents/receipts. `admission.py` uses exactly the six exhaustive readers below,
+point-reading every returned ID (including thread invocation tokens) and refusing
+unknown attribution or inconsistent reads. No HTTP/CLI/TS/snapshot surface is
+mounted by S3a; S3b retains ownership of authenticated Founder confirmation,
+public memory projections, imports routes and mirrors. These owner capabilities
+do not establish deployed support or the S6 fresh-session journey.
+
+The owner acquires `teams_lock`, then `org.db_lock`, then the SAME database
+RLock. There is no await after acquiring that RLock until the entire confirmed
+batch has been accounted for. Each item rechecks current native executable
+owner/team/role admission, initialized writable memory and all six categories.
+Ordinary task submission/memory routes share `org.db_lock`; dream admission and
+roster retirement share `teams_lock`; synchronous event-loop producers cannot
+interleave the no-await segment, and DB worker-thread starts block on the RLock.
+This is the existing single-daemon coordination boundary, not a fence against
+external same-UID/multiprocess filesystem writers. Eligibility/completeness loss
+stops the remaining selected items with explicit non-success causes.
+
+An original `submission_id` reopens its unchanged confirmation; a changed
+selection requires a new key. Per-item identity is shared across confirmations.
+Each intent fixes the exact serialized inherited note and reserved MEM ID before
+file creation. A durable `writing` marker precedes the exclusive file create;
+read-back and index generation precede receipt COMMIT. `writing` after interruption
+projects as held even if operation accounting was interrupted. Retry inspects
+that SAME ID: exact bytes and round-tripped identity/provenance can finalize,
+but contradictory, absent or unreadable possibly-written evidence stays held,
+without a new ID or second write. Only an intent/proven-unwritten failure with
+absence checked may write. Successful receipts remain immutable and retries
+never remove successful notes. Counts derive from fixed per-selection outcomes;
+held items count failed, with `retryable:false`.
+
+**Overlapping incomplete intents (design B):** a fresh confirmation encountering
+another operation's incomplete intent records Failed with
+`knowledge_import_incomplete_intent_retry_original_operation`, the reserved MEM
+ID and `retryable:false`. It leaves that intent and recipient files untouched;
+possibly-written evidence remains held. Recovery belongs to the original
+operation's same-operation retry. The refusal remains fixed on replay/retry of
+the new operation, even after the original completes. A completed mapping is
+always Skipped when encountered. The writing operation's Imported item result
+and completed receipt commit in the same SQL transaction, so interruption before
+later accounting cannot change its label. History and body-free feature audits
+derive from these same per-operation outcomes. The completed-mapping label never
+depends on reservation ownership.
+
+`MemoryStore.write_inherited_entry` is an exclusive additive write path that
+never invokes ordinary `write_entry`, supersession or compaction. It retains the
+configured ordinary compaction policy; ordinary future writes can still compact.
+`inherited_from` contains archive ID/version/item, source permanent ID and
+per-reference authored/observed dates (null explicitly unknown); `imported_at`
+is separate. Readable content retains original attribution, warnings and current
+authority qualifications. Store reads/search/list/index and later supported
+updates preserve source metadata; S3b exposes the same metadata through memory HTTP list/get/search and CLI JSON/text reads, with typed TS memory mirrors.
+
+**Compatible-release prerequisite:** before S3b enables confirmation, daemon,
+CLI and UI writers/readers must all support inherited provenance and its metadata
+round-trip. The inspected old reader can display an unknown provenance string;
+it does not universally refuse, and older writes/updates may reject or strip
+metadata. A rollback must keep notes and operation/item receipts intact and stop
+imports/older writers until a compatible release is restored. Do not convert
+inherited to experiential/directive or strip `inherited_from` to enable downgrade.
+This owner slice adds no destructive conversion or automatic compatibility gate
+to an older binary. Deployment/activation and that supported-combination check
+remain outside S3a.
+
 The Founder independently opens an active approved recipient’s page and selects any same-org Ready archive, across source teams/providers. Reject pending/retired/uninitialized/unwritable recipients, foreign/non-Ready archives and identical source/recipient permanent IDs. Show existing mappings and prior versions. Default-select all eligible not-yet-imported items; allow deselection. Stale/superseded/evicted, forbidden or unavailable items are visibly ineligible. Eligible uncertainty/conflicts require warnings. Zero selection writes nothing. Preview/navigation cannot import; confirmation fixes recipient, archive/version and exact item IDs. A different selection requires a new confirmation.
 
 At write admission, reuse the existing quiescence concept and blocker kinds from `_collect_quiescence_conflicts` (`agents.py:388`), **not its capped reads as proof of idle**. S3 must completely enumerate every category below using DB-side status filters, or refuse the import whenever completeness of any category cannot be established. A matching recipient row is Busy with actual kind/ID references and “finish/wait, then retry.” This includes a curation task if that processor is now the recipient. No cancellation, global shutdown or team-move machinery is added.
@@ -179,8 +246,8 @@ Extend provenance additively with `inherited`, preserving the meanings of experi
 Identity is `(org, archive ID, archive version, item ID, recipient permanent ID)`, never body similarity, title, filename or source MEM ID alone. Every successful item has a retrievable target MEM ID. Shared receipt uniqueness covers repeats and different confirmed selections; later archive versions do not silently update prior imports.
 
 1. Persist the fixed operation and an item intent, including reserved target MEM ID and exact expected inherited content, before touching recipient files.
-2. Revalidate admission and inspect existing receipts/intents. A completed mapping is skipped with its existing MEM ID; it is not written again.
-3. Write the new note through the additive no-compaction path, read it back and confirm its identity/content/provenance, then durably commit the exact receipt/mapping. File and SQLite effects are not one atomic transaction: the intermediate intent is necessary.
+2. Revalidate admission and inspect existing receipts/intents. A completed mapping is skipped with its existing MEM ID; it is not written again. A different operation's incomplete intent is refused with the closed original-operation-retry reason above, without changing that intent or writing its file.
+3. Write the new note through the additive no-compaction path, read it back and confirm its identity/content/provenance, then durably commit the exact receipt/mapping together with that operation's Imported result. File and SQLite effects are not one atomic transaction: the intermediate intent is necessary.
 4. If the response/receipt fails after a possible write, mark the item held for reconciliation. Inspect the original reserved MEM ID and exact attribution/content. A proven matching write can finalize its receipt; proven unwritten intent may resume. Missing, contradictory or unreadable evidence stays uncertain, with no fresh ID or blind second write.
 5. A partial retry retains the original fixed selection and operation. Keep successes, return mappings for skips and write only confirmed missing/failed-unwritten items. A changed selection needs new confirmation and still respects global item identity. Never roll back by deleting successful notes.
 
@@ -190,14 +257,14 @@ Imports affect future retrieval through normal memory interfaces in a **fresh re
 
 ## Routes, CLI, schemas and mirrors by slice
 
-S1 is implemented by TASK-15282 and S2 by TASK-15315/TASK-15354, subject to their independent delivery gates. Later rows remain proposed contracts, not installed endpoints or commands. All IDs are same-org and server-resolved. Preserve existing auth/native/remote policy; adding a route is not a permission or remote-reachability grant. Classify each route explicitly through the existing contract owner before shipping.
+S1 is implemented by TASK-15282 and S2 by TASK-15315/TASK-15354, subject to their independent delivery gates. S3b (TASK-15436) adds the S3 public surfaces below; S4–S6 remain later work. All IDs are same-org and server-resolved. Preserve existing auth/native/remote policy; adding a route is not a permission or remote-reachability grant. Classify each route explicitly through the existing contract owner before shipping.
 
 | Slice | Proposed HTTP surfaces under `/api/v1/orgs/{slug}` | CLI parity / client surfaces |
 | --- | --- | --- |
 | S0 | None. | None; docs only. |
 | S1 | `GET /knowledge/retired-agents/{source_id}` (retained detail + coverage); `GET /knowledge/retired-agents/{source_id}/sources/{reference_id}` (validated bounded source record/unavailable reason). Use existing terminated enrollments for roster navigation. | `happyranch knowledge retired show SOURCE`; `knowledge retired source SOURCE REFERENCE`. Matching typed functions in `web/src/lib/api/knowledge.ts`. |
 | S2 (source implemented) | `POST /knowledge/distill` (fixed source confirmation, original submission identity); `GET /knowledge/distill/{operation_id}`; `GET /knowledge/archives` (Ready selection); `GET /knowledge/archives/{archive_id}` (manifest + immutable version/items, with safe source references). | `knowledge distill --from-file ABS`; `knowledge distill-show OP`; `knowledge archives list/show`. TS functions and typed lifecycle/coverage/archive records. JSON confirmation is `{submission_id, source_id, confirmed:true, processor_id?}`. A confirmed Failed retry uses a new submission; uncertain submission reuses its original key or GET. |
-| S3 | `POST /agents/{recipient_id}/knowledge/imports` (exact confirmed archive/version/item IDs); `GET /agents/{recipient_id}/knowledge/imports`; `GET /knowledge/imports/{operation_id}`; `POST /knowledge/imports/{operation_id}/retry` (same selection, missing items only). Existing memory reads also return inherited provenance. | `knowledge instill RECIPIENT --from-file ABS`; `knowledge imports list/show/retry`. TS functions for confirm, learned sources, receipts and safe partial retry; no mutation on preview. |
+| S3 (source implemented) | `POST /agents/{recipient_id}/knowledge/imports` (exact confirmed archive/version/item IDs); `GET /agents/{recipient_id}/knowledge/imports`; `GET /knowledge/imports/{operation_id}`; `POST /knowledge/imports/{operation_id}/retry` (same selection, missing items only). `GET /agents/{recipient_id}/knowledge/imports/eligibility/{archive_id}` is the one read-only S5 picker projection: current advisory recipient eligibility/blockers and exact per-item prior mappings (including held intents), default selection and ineligibility codes. Archive contents/warnings remain on the S2 archive read. Existing memory reads also return inherited provenance. | `knowledge instill RECIPIENT --from-file ABS`; `knowledge imports list/show/retry`. TS functions for confirm, learned sources, receipts and safe partial retry; no mutation on preview. |
 | S4 | Uses S1/S2 reads and confirmed Distill POST; no parallel FE-only API. | Retired detail, coverage, operation and archive components/hooks; route navigation and read-only source links. |
 | S5 | Uses S2 archive reads, S3 confirmation/retry/receipt and normal recipient memory read. | Active detail Instill drawer, selection, single-drawer confirmation, receipt and learned-source list. |
 | S6 | No acceptance-only product route or bypass. | Actual CLI/daemon/UI and fresh-session memory retrieval. |

@@ -537,3 +537,15 @@ access failures (denied versus unverified BLOCK -> Held), with zero daemon PR/
 network I/O or new access observer/credential. U5a supplies no executable
 selection on success or refusal; existing assessment/Final success paths stay
 held. See docs/superpowers/specs/2026-11-11-sequential-coding-u5.md.
+
+Sequential Coding U5b2b2 / R-M3-3 adds only an unmounted closed Final callback
+observation parser/reader, with complete/selected U6 history, original callback/
+host/positive outer proofs and current authority. Its valid observation grants
+no effect or success admission. Failed/uncertain/missing command (including
+recording-failure command=None) remains causal BLOCK with empty content/claims
+and retained local records, never a merged bundle or second action. U7 owns
+selected task-session Final transport, genuine live manager-local adapter mount,
+acceptance wiring and success decision. No production caller or _advance wiring
+is added; Final success stays Held. Neither execute_selected_final nor observation/
+intent/action production may run in a job, daemon, second CLI OrgState or recovery
+runner. R-M3-2 keeps unchanged per-complete-read allowances on one deadline.

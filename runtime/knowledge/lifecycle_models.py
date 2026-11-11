@@ -109,3 +109,104 @@ class ArchiveSelection(BaseModel):
 
 class ArchiveList(BaseModel):
     archives: list[ArchiveSelection]
+
+
+class InstillConfirmation(BaseModel):
+    """Original key and exact selection; replay never expands the selection."""
+    model_config = ConfigDict(extra='forbid', strict=True)
+    submission_id: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
+    archive_id: str = Field(min_length=1, max_length=128)
+    archive_version: int = Field(gt=0)
+    item_ids: list[str] = Field(min_length=1)
+    confirmed: Literal[True]
+
+    @field_validator('confirmed', mode='before')
+    @classmethod
+    def require_confirmation(cls, value: object) -> object:
+        if value is not True:
+            raise ValueError('explicit_confirmation_required')
+        return value
+
+    @field_validator('item_ids')
+    @classmethod
+    def unique_selection(cls, value: list[str]) -> list[str]:
+        if any(not v for v in value) or len(set(value)) != len(value):
+            raise ValueError('unique_nonempty_item_ids_required')
+        return value
+
+
+class ImportItemResult(BaseModel):
+    item_id: str
+    outcome: Literal['Pending', 'Imported', 'Skipped', 'Failed']
+    memory_id: str | None = None
+    reason: str | None = None
+    held: bool = False
+    retryable: bool = False
+
+
+class ImportOperation(BaseModel):
+    operation_id: str
+    submission_id: str
+    archive_id: str
+    archive_version: int
+    source_id: str
+    recipient_id: str
+    item_ids: list[str]
+    state: Literal['Queued', 'Processing', 'Succeeded', 'Partially failed', 'Failed']
+    phase: str
+    created_at: str
+    updated_at: str
+    started_at: str | None
+    finished_at: str | None
+    selected: int
+    imported: int
+    skipped: int
+    failed: int
+    pending: int
+    results: list[ImportItemResult]
+
+
+class ImportHistory(BaseModel):
+    operations: list[ImportOperation]
+
+
+class ImportMapping(BaseModel):
+    operation_id: str
+    memory_id: str
+    state: Literal['intent', 'writing', 'unwritten', 'held', 'completed']
+    reason: str | None
+    completed_at: str | None
+
+
+class ImportEligibilityItem(BaseModel):
+    item_id: str
+    eligible: bool
+    reason: str | None
+    default_selected: bool
+    mapping: ImportMapping | None
+
+
+class ImportBlocker(BaseModel):
+    kind: str
+    id: str
+
+
+class ImportEligibility(BaseModel):
+    recipient_id: str
+    archive_id: str
+    archive_version: int
+    source_id: str
+    recipient_eligible: bool
+    reason: str | None
+    blockers: list[ImportBlocker]
+    items: list[ImportEligibilityItem]
+
+
+class ImportRefusalDetail(BaseModel):
+    code: str
+    blockers: list[ImportBlocker] = Field(default_factory=list)
+    message: str | None = None
+
+
+class ImportRefusal(BaseModel):
+    detail: ImportRefusalDetail
