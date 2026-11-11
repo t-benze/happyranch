@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+PREFIX=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+exec /usr/bin/python3 -I "$PREFIX/share/happyranch/desktop/happyranch_window.py" --prefix "$PREFIX" "$@"

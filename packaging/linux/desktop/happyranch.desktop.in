@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=HappyRanch
+Comment=Open the HappyRanch workspace
+Comment[zh_CN]=打开 HappyRanch 工作区
+Exec=@APP_EXEC@
+TryExec=@APP_EXEC@
+Icon=happyranch
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
+StartupWMClass=happyranch-app

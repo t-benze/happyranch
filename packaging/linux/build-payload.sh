@@ -168,6 +168,19 @@ export HAPPYRANCH_WEB_DIST HAPPYRANCH_BUNDLED_BIN
 exec "$PREFIX/python/bin/python3" -I -m runtime.daemon "$@"
 DAEMON
 chmod 755 "$PAYLOAD/bin/happyranch" "$PAYLOAD/bin/happyranch-daemon"
+# The window uses apt's system Python/GI, independently of bundled CPython.
+install -m 755 "$WORK/source/packaging/linux/bin/happyranch-app" "$PAYLOAD/bin/happyranch-app"
+mkdir -p "$PAYLOAD/share/happyranch/desktop" "$PAYLOAD/share/applications"
+cp "$WORK/source/packaging/linux/desktop/happyranch_window.py" "$PAYLOAD/share/happyranch/desktop/"
+cp "$WORK/source/packaging/linux/desktop/happyranch.desktop.in" "$PAYLOAD/share/applications/"
+# Reuse the existing clay brand artwork; no generated/new icon design.
+for size in 16 32 64 128 256 512 1024; do
+    icon_dir="$PAYLOAD/share/icons/hicolor/${size}x${size}/apps"
+    mkdir -p "$icon_dir"
+    cp "$WORK/source/app/mac/Resources/AppIcon.appiconset/icon_${size}.png" "$icon_dir/happyranch.png"
+done
+mkdir -p "$PAYLOAD/share/icons/hicolor/scalable/apps"
+cp "$WORK/source/web/public/happyranch-icon-clay.svg" "$PAYLOAD/share/icons/hicolor/scalable/apps/happyranch.svg"
 "$PAYLOAD/python/bin/python3" -I "$WORK/source/packaging/linux/collect-notices.py" \
     "$WORK/source" "$PAYLOAD"
 "$PAYLOAD/python/bin/python3" -I - "$PAYLOAD" "$SOURCE_SHA" "$ARCH" <<'PYCHECK'
