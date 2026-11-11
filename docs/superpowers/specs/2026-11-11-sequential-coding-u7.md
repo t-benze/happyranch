@@ -1,6 +1,6 @@
 # Sequential Coding U7: common transport and agent initiation
 
-> Status: current design; U7a reads and U7b settings CAS/lookup delivered in source; U7c1 selected reads/local Final mount delivered in source; U7c2 admission and U7d remain.
+> Status: current design; U7a/U7b/U7c1 and unmounted U7c2a witness delivered in source; U7c2b admission and U7d remain.
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
 
 THR-336 / ROOT TASK-15165; TASK-15465, linked retry of pre-edit failed TASK-15462.
@@ -286,3 +286,75 @@ custody and PRD v1.0.4 / Founder msg131 ACCESS-1 remain controlling. Public fres
 start stays OFF until U9. OpenAPI/classification parity and OUT-OF-REPO SYNTHETIC
 actual-route/local-mount fake-effect diagnostics accompany the source; no repo
 tests, Vitest restoration, integration/E2E/live operation or merge occurs.
+
+## U7c2a unmounted Final witness consumer (TASK-15549)
+
+**Split declared before edits:** this unit supplies the compatible Final witness,
+recipients and verified-check composition only, without a production caller.
+Complete output-history acceptance and same-transaction publication/return
+validation remain implementation in **U7c2b**. They must land together with the
+mount. Final success stays original rollback-then-business-Held; public fresh
+start stays OFF until U9. This is the brief's permitted consumer-first split.
+Admission remains withheld because a valid observation and transient witness
+alone do not authenticate a persisted Final output through complete replay or
+prove acceptance/transition/return publication in the original transaction.
+No positive admission, successor or caller-return acceptance is claimed here.
+
+`sequential_coding_final_output.build_final_witness_uncommitted` runs only inside
+the caller's original authority/teams/DB locks and transaction. It calls the
+existing U5b2b2 reader itself, including complete mixed history, exact selected
+INTEGER callback, original successful host/positive outer, current ACCESS-1
+authority, immutable subject, mandatory independent APPROVE/PASS, original Pause
+and cancellation checks. It accepts no caller-created validated-observation
+object or trusted Boolean. It returns the existing internal `CodingWitness`,
+never an OutputRef, accepted result, storage write or executable Final selection.
+
+The supplied original content digest must equal the canonical ENTIRE validated
+observation. Original carrier/terminal/outer digests and result identity must
+match; definition/start/input/CAS/epoch pins must match the same selection.
+Recipients reuse U4b3's producer plus all declared `current.slot` consumers,
+including optional inputs, in sorted role order under the original fixed
+bindings. Each node completion check gets a deterministic evidence digest of
+the internal `workflow-sequential-coding-final-witness@1` preimage: org/run/full
+definition pin/start/visit/node/role/epoch, task/principal/SID/INTEGER result,
+carrier/input/slot/contract/content/selection digests, addressed role/principal
+pairs, original terminal/outer digests and the check. The content digest binds
+the immutable change, saved intent and both literal lints, successful original
+command and separate remote MERGED/full-commit/aware-time observation. These
+are provenance declarations; ACCESS-1 leaves effective access to the selected
+agent's own operation. No daemon remote observer, credential or access grant.
+Verified checks are exactly settlement followed by the node's existing checks.
+
+The caller supplies its SAME original `_ReadBudget`; this consumer constructs
+none. The existing nested reader retains its unchanged per-read R-M3-2
+allowances on that original deadline. Entry, handoff and final-return checks
+retain the deadline. Before the new model dump/canonical copy/hash, reserve
+`48 * 49152 + 512` bytes and 49152 traversal steps on the caller allowance.
+Before preimage construction reserve 262144 bytes and 512 steps; before EACH
+bounded evidence copy/check/hash reserve `48 * 16384 + 512` bytes and 512 steps.
+Node/binding/recipient walks also charge the same allowance before their work.
+No cap rises, reset, retry, fork or replenishment; conservative prepayment can
+refuse a legitimate large history. The consumer has no refusal catch or Boolean
+fallback. Every original read exhaustion escapes unchanged, with no Held writer,
+DML or COMMIT, and the original SQL hook is restored even on refusal. Genuine
+malformed history keeps the existing unverified classification. Standalone
+readers, exception classes/strings, historical bytes and action code are unchanged.
+
+| Owner | Consumer / preserved boundary |
+| --- | --- |
+| New Final witness consumer | No production importer/caller; actual reader and witness exercised only by out-of-repo synthetic diagnostics. |
+| U7c1 mounted reader and `_advance` / `_compose` | Byte-unchanged. Validated success still rolls back, then records finite unavailable-output Held with NULL selected result and no Final output/checks/successor/transition/return. |
+| Complete/selected history, engine acceptance/return, U6/native Pause and LOCAL action/receipt owners | Byte-unchanged. U7c2b must finish compatible history and same-transaction admission before mounting. |
+
+No schema, auth/permission, dependency, route, command, settings or external
+contract change. TASK-15250 Pause generation, TASK-15272/15275 command=None/no
+reissue, U6b2a sequential-only, Option B ordinary/document UNSETTLED, all prior
+failures and spent allowances remain. Exact B/H, changed-symbol/caller inventory,
+protected byte/AST comparison, exhaustion-site inventory, synthetic positive
+witness/negative/refusal evidence, actual mounted Held control and exact-H
+local-CI job receipt are in `dev_agent/output/TASK-15549/handoff.md`. All synthetic
+facts use disposable native/authority scaffolding and fake effects, not genuine
+access/merge/native/V3/V5/M4 acceptance. Python units/Vitest RETIRED, integration
+SKIPPED THR-243seq42, E2E untriggered. Independent review, scoped QA and manager
+guarded merge remain; merged is not deployed. U7d/U8/U9 and all Founder-reserved
+operations/holds remain separate.

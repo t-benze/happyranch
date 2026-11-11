@@ -1618,3 +1618,20 @@ U7c2 still owes compatible Final witness/output acceptance, U7d agent initiation
 and U9 atomic fresh-start cutover. Full command/route grammar, audience exclusions,
 per-read allowances and SYNTHETIC evidence limits: [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md).
 No schema/permission/credential/access observer or live operation is introduced.
+
+## U7c2a unmounted Final witness (TASK-15549)
+
+The compatible Final consumer now rereads the actual selected callback through
+the original complete reader and derives deterministic receipts/verified checks
+and addressed recipients in the caller's original locked transaction. It binds
+the complete canonical observation digest, original INTEGER result and
+carrier/host/outer proof digests, immutable selection pins and fixed recipients.
+All new copies/walks prepay the SAME original allowance/deadline; refusal escapes
+unchanged and the original SQL hook is restored. There is no production caller,
+write, effect or admission. **Final success stays Held.** U7c2b still must supply
+complete output-history acceptance and same-transaction publication/return
+validation before mounting; public fresh start stays OFF until U9.
+The [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md)
+records the pre-edit split, witness preimage, allowance accounting and evidence
+limits. ACCESS-1/current authority, agent-owned effective access, original Pause,
+receipt uncertainty/no reissue, U6 and historical owners remain unchanged.

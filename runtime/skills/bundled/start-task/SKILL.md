@@ -1312,3 +1312,12 @@ Final success STILL rolls back then business-Held. U7c2 owes compatible Final
 witness/output acceptance; U7d and atomic U9 fresh-start cutover remain. No job,
 recovery runner, daemon PR executor, second CLI OrgState, new permission/credential,
 access observer or live activation follows. ACCESS-1/shared-user/gh limits remain.
+
+Sequential U7c2a adds only an unmounted internal Final witness consumer with
+original complete-reader provenance, addressed recipients and verified checks.
+It supplies no agent command, OutputRef, accepted output, effect or permission.
+Final success stays Held until U7c2b implements complete output-history acceptance
+and same-transaction publication/return validation and mounts the consumer.
+Keep the same original allowances/deadline, causal BLOCK/receipt uncertainty,
+Pause/cancellation owners and genuine FINAL callback. Public fresh start remains
+OFF until U9; no job/recovery Final executor or live operation follows.
