@@ -1472,7 +1472,9 @@ def main() -> int:
             print(f"Filesystem: {report['filesystem']}", file=sys.stderr)
         if "internal_error" in report:
             print(report["internal_error"], file=sys.stderr)
-    encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"
+    encoded = json.dumps(report, indent=None if args.suite == 'cleanup-process-use' else 2,
+                         separators=(',', ':') if args.suite == 'cleanup-process-use' else None,
+                         sort_keys=True) + "\n"
     if args.suite == "disk-sweep" and len(encoded.encode("utf-8")) > 65536:
         raise RuntimeError("disk-sweep report exceeds 64KiB")
     if args.output:

@@ -99,6 +99,29 @@ build. Review, scoped QA, exact-head lint and guarded merge remain.
 Python units are retired; general integration is SKIPPED THR-243 seq42. No ad hoc
 Product E2E. Static/source/simulated evidence never becomes native/frozen proof.
 
+The build15 evidence-loss fix keeps all named rows and independent facts. Only
+this source suite's dispatcher output uses compact JSON, with the same keys and
+values; suite registration and job/bootstrap caps are unchanged. Size includes
+final completion/error fields and newline. Worktree hit diagnostics omit repeated
+paths, keep at most four PID/kind/device-inode hits, two reasons and128 stderr
+characters. Scratch/real-errno reasons keep at most four distinct192-character
+entries, with explicit middle elision retaining PID/errno ends. Above28KiB the
+suite first removes optional worktree hits/stderr/additional reasons and protected
+errors and records them in `optional_detail_omitted`; worktree state, exit, lanes
+and the first reason remain. It retains every row's name/status/expected/
+actual/provenance, source SHA/hashes, owned PID/start/cwd/device-inode ground truth,
+boot UUID, ABI, scratch decision/count/coverage/boot facts and child/fixture cleanup.
+`row_status` is validated even after native/cleanup failure; failure text includes
+observed/failed counts. If mandatory evidence alone still exceeds32KiB, the suite
+fails with `report_capped=true`/`evidence=INCOMPLETE` and retains the oversized
+evidence instead of silently discarding rows. This negative is not within-cap
+acceptance. Build15 remains a failed native run with all92 rows UNOBSERVED.
+Four new portable `report_*` rows cover96-row realistic worst-case encoding
+(256-character paths, 64-bit identities, full diagnostic list bounds), optional
+overflow, irreducible mandatory overflow and early failure. The realistic case
+must fit below28KiB with all rows/facts intact. These fixtures do not replace
+native review/QA or spend the manager's reserved execution3 (2of3 already used).
+
 ## S4c scratch and existing consumers
 
 The same suite now includes scratch evidence, coverage and report observations.
