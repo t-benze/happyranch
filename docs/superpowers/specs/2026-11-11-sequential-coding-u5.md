@@ -52,8 +52,9 @@ and `code-qa@1` PASS composition and addressed assessment disclosure through
 native authenticator under the original current-authority ownership. Negative
 REQUEST_CHANGES/REVISE/BLOCK callbacks retain their ordinary no-output path.
 
-**U5b2 pending:** Final live-owner selection and common local CLI finalization
-core; adapt historical `cli/commands/workflow_coding_finalize.py` without changing
+**U5b2 split:** TASK-15240 implements U5b2a unmounted live-owner selection
+and local journal records/readers (details below). U5b2b still owes the common
+local CLI finalization core; adapt historical `cli/commands/workflow_coding_finalize.py` without changing
 its admitted families; use `runtime/daemon/pr_ci_merge.guarded_merge` only as the
 existing locally called guard requires; selected-head lint observation and owned
 intent/action/remote-observation validation. `guarded-repository-merge@1` success
@@ -65,7 +66,7 @@ cancellation boundary.
 | Owner / symbols | Callers, consumers and responsibility |
 | --- | --- |
 | New `sequential_coding_policy.py`: `CodeAssessmentDeclaration`, `read_code_assessment`, `SettledCodingResult`, `CurrentCodingEvidence`, `CodingAdmissibility`, `mandatory_coding_assessments`, `derive_coding_admissibility`, refusal enum/exception | U5b1 output producer consumes the assessment syntax; the Final SQL reader consumes policy. No executable Final consumer. All data classes are in-process projections, with no authenticated Boolean or executable capability. |
-| New `sequential_coding_evidence.py`: `read_current_coding_evidence_uncommitted`, `_pinned`, `_read`, `_settled` | U5b1 `_settled_input` calls `_settled` for original upstream callback/host/outer joins. The full Final reader has no production caller, route, CLI, settings consumer or registration; U5b2 remains pending. SQL SELECTs and pure validation only. |
+| New `sequential_coding_evidence.py`: `read_current_coding_evidence_uncommitted`, `_pinned`, `_read`, `_settled` | U5b1 `_settled_input` calls `_settled` for original upstream callback/host/outer joins. U5b2a reuses `_read` under its same original allowance and live-owner boundary; no route, CLI, settings consumer or registration. SQL SELECTs and pure validation only. |
 | `sequential_history`: `_run_history`, `_outputs`, `_native_rows`, `_ReadBudget`; `sequential_run_validation`: `_selected_layout`, `_read_selected`, `_selected_settings`, `_prior_state` | Existing complete/selected readers and engine keep ownership. U5a replays the whole selected run, not incremental trust in old result/envelope writes. Original admitted pins are read without selecting today's settings. |
 | `sequential_business_hold.hold_body`, `_proof` | Existing hold writer/readers remain owners. U5a reuses their SELECT-only native INTEGER callback + successful terminal + positive original outer authenticator, discarding the reconstructed hold body. It writes no hold. |
 | `sequential_coding_output`: declaration, `coding_binding_context`, `_assessment_declaration`, `_settled_input`, `_assessment_inputs`, `build_coding_witness`, `authorize_coding_input`, `coding_assessment_supplement`; `sequential_repository_subject.read_repository_subject` | U5b1 extends the existing output/disclosure owner. Reuse exact declared change syntax, fixed bindings/current eligibility, original committed subject and U5a settled proofs. Do not adopt historical Coding repository capability or reobserve Git. |
@@ -278,3 +279,104 @@ scaffolding. Cases cover review APPROVE/REQUEST_CHANGES/BLOCK, QA PASS/REVISE/BL
 stale full subjects/head/PR/base/epoch, denied/unverified current authority, shared
 budget exhaustion and continued Final refusal. It supplies no real live fetch,
 native workflow, selected-head lint, Final execution, deployment or runtime PASS.
+
+
+## U5b2a live selection and local journal interface (TASK-15240)
+
+Base `0e78217f2af8306863b31b0ee8d237819e5671e8` includes U5a PR1380 and
+U5b1 PR1382. Under the brief's 1800-second split rule, this unit delivers the
+**unmounted** live-selection and local intent/observation records/readers boundary.
+No database table, column, index, migration, public command or historical family
+changes. U5b2b below remains required implementation, not a verification-only tail.
+
+`SequentialCodingFinalSelection.select` captures authority outside ownership,
+then takes the existing authority/teams/DB locks, original session binding lease
+and admission writer. It proves one original sequential TaskInvocation in the
+native live store; admitted/committed/unsettled/launch-observed facts; original
+running Pause journal entry and root/generation; matching original host request
+and supported opaque running handle; active non-recovery task/principal/SID;
+no terminal, callback, cancellation or team-move refusal. Original OrgPaths
+supplies the fixed manager workspace. Bounded ancestor-pointer and journal-byte
+preflight precede the unchanged native Pause reader; no full task briefs are read
+by that live-owner preflight. No OS scan, process poll, repository access
+observer, file read, Git or network operation is performed in this boundary.
+These are current native owner facts, not an OS-level future-liveness lease.
+
+Inside that SAME boundary, U5a's `_read`/`derive_coding_admissibility` fully
+replay the selected history and require original settled independent review/QA,
+unchanged full subject and current authority. Valid omitted/rerouted graphs
+reach mandatory policy: absent review refuses missing review, satisfied review
+without QA refuses missing QA. The current Final binding's configured origin
+must still hash to the original committed raw-origin digest. Recheck authority,
+original native owner/handle/workspace and cancellation before returning any
+selection. Refusal returns no selection/intent/action. The original read budget
+covers entry, admission-validator accounting, both authority/native bookends,
+U5a replay/policy, projection, serialization and closing validation. Exhaustion
+remains refusal; no fresh allowance is created at lock entry.
+
+`sequential_coding_final_records` owns closed internal selection, lint, intent,
+command-result and remote-observation models and compatible bounded canonical
+readers. The selection fixes native invocation/workspace and all definition,
+start, CAS/event/input pins, retained contributors and three exact settled result
+references with original carrier/terminal/outer digests. Parsing these records
+proves no issuer, effective access, successful remote check or command. Intent
+syntax requires exactly the two literal successful selected-head lints, distinct
+check identities and aware ordered timestamps; missing/pending/old-head/ambiguous/
+skipped/neutral data refuses. The future observer must authenticate actual raw
+provider observations; constructing a record supplies no such observation.
+
+`workflow_sequential_final_journal` is an unmounted LOCAL helper. A trusted fresh
+selection callback must reproduce the exact original selection before reservation
+and before/after intent publication. The original existing manager workspace and
+Final task alone choose `output/<task>/sequential-coding-finalize`: operation key,
+invocation/cwd/path variants cannot choose another attempt. Exclusive mkdir,
+literal directory checks, parent-directory fsync and exclusive fsynced file writes
+preserve one reservation and selected/check/intent bytes before any future action.
+Existing or partial reservations refuse; errors and cancellation never remove
+or clear them. Selection refusal before reservation creates no directory/intent/
+action. Refusal after reservation retains uncertainty. Metadata bookends are
+observations, not a hostile shared-user racing-rename fence.
+
+Command-result and independently read remote-observation records stay separate.
+Remote observation must match exact repository/PR/URL/H, MERGED, full lowercase
+actual SHA1 and timezone-aware merge/observation times, with exact command and
+selection digests. A failed/lost command, including command exit0 with lost remote
+confirmation, remains uncertain even if a later separate read sees MERGED.
+Neither parsing nor local disposition reduction creates a capability witness,
+native callback, settlement, recovery permission or second action.
+
+**U5b2b remaining:** extract/consume the common LOCAL CLI finalization action
+core while preserving historical command/selection/output interpretation; wire
+actual selected-head raw check/run/status observations; persist before-effect
+intent; re-read live selection/current authority and immutable local repository
+subject before the sole locally called expected-head non-admin guarded merge;
+retain original command failure and independent remote observation; validate the
+genuine callback observation through compatible complete/selected history readers
+and the existing rollback-then-business-Held/cancellation owners. No producer may
+mount ahead of that reader/authority/cancellation boundary. Existing historical
+`workflow_coding_finalize.py` and `pr_ci_merge` are byte-unchanged in U5b2a; only
+the local journal imports their existing exclusive-write/directory helpers.
+
+**Final success remains Held.** U5b2a deliberately supplies no action producer,
+public Final selection/command, callback witness or dispatcher mount. Additionally
+U6 must close mixed history and U7 must supply genuine task-session transport;
+a local observation cannot bypass either or replace native terminal/positive
+outer settlement. Therefore `guarded-repository-merge@1` retains the existing
+unavailable-output hold. No admitted success, real merge, native/V3 acceptance,
+live installation/configuration or deployment is claimed. ACCESS-1 and the
+shared-OS-user/shared-gh-credential limitation remain controlling.
+
+| Added owner | Consumers and preservation boundary |
+| --- | --- |
+| `sequential_coding_final`: `_require`, `_native_pause`, `_live_owner`, `select_final_uncommitted`, `SequentialCodingFinalSelection.select` | Unmounted internal worker-thread service; consumes original dispatcher/Pause/tracker, authority and U5a reader/policy; no OrgState/route/CLI/config registration. |
+| `sequential_coding_final_records`: closed models, canonical readers, `record_digest`, `final_disposition` | Consumed by that service and the unmounted local journal; syntax/reduction only, no callback/output witness or storage migration. |
+| `workflow_sequential_final_journal`: `_current`, `attempt_directory`, `_sync_directory`, `FinalAttempt`, `reserve_attempt` | No production caller; future U5b2b selected-manager adapter must provide genuine fresh selection. Reuses existing local historical helpers without altering historical interpretation. |
+
+Disposable diagnostics invoke the actual new service/U5a reader/policy using
+explicitly synthetic authority, native live owner/request/handle/Pause and prior
+callback/host/outer scaffolding. They exercise policy/refusal, same-boundary full
+evidence, original-task journal variants and strict record readers. A controlled
+fake guarded-merge adapter exercises command loss; no real gh merge is called.
+This is source-interface diagnostic evidence only. Actual local raw remote
+observations, mounted selection/CLI/action/callback, native cancellation races,
+U6/U7 history/transport and real merge remain NOT RUN/deferred to their owners.

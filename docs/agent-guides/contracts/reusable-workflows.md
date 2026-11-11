@@ -1376,3 +1376,29 @@ traversal and native reads; exhaustion stays a reader refusal. No new cause or
 schema is needed. U5b2 Final capability/local execution remains unavailable,
 including guarded-repository-merge@1 success. No activation, access observer,
 credential, daemon network I/O or historical Final adapter change follows.
+
+
+## U5b2a internal Final interface (THR-336 / TASK-15240)
+
+The unmounted `sequential_coding_final` service joins the actual original running
+TaskInvocation/Pause/host handle/session with U5a full current-evidence derivation
+in one current-authority boundary, then rechecks native pins and authority before
+returning selection metadata. Omitted review/QA still reaches mandatory policy.
+Original configured origin, subject, native workspace and all selection/result
+pins are fixed. No executable command or lasting grant follows saved metadata.
+
+Closed internal local records/readers and `workflow_sequential_final_journal`
+supply a reader-first U5b2a split. A fresh genuine selection adapter is required
+before exclusive original-Final-task reservation and intent publication; cwd,
+operation key or path variants cannot replace that fence. Partial/error facts
+remain reserved. Intent syntax requires the two exact successful selected-H lints;
+syntax alone proves no provider observation. Original command result and later
+remote MERGED observation remain separate; failed/lost commands stay uncertain.
+
+U5b2b still owes common local CLI action/check observation, expected-head non-admin
+guarded merge, genuine callback validation and mount. U6 mixed-history closure
+and U7 task-session transport also remain. Final success keeps its existing
+unavailable-output Held; the daemon performs no GitHub/network I/O. No schema,
+historical Coding ABI, authority/permission owner or native settlement changes.
+ACCESS-1/shared OS-user and gh credential limits remain. See the
+[U5 split and caller inventory](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).
