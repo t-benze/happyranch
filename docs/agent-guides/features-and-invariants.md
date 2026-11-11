@@ -2247,7 +2247,15 @@ right-hand drawer. It consumes only the existing S1/S2 mirrors in
 no per-source operation list, so the browser keeps a small per-org/per-source
 localStorage ledger of its own submission and operation IDs (written before the
 POST); a lost response is re-sent only by an explicit "Check again" with the
-SAME submission ID. Attempts started in another browser are not listed until
+SAME submission ID. If that ledger cannot be read, or the new submission ID
+cannot be durably written and read back, nothing is sent and a bilingual error
+is shown; a failed operation-ID write after a response is surfaced and keeps
+the same key for "Check again". While any recorded attempt is unknown, loading
+or unreadable (its GET errored), no new key is minted: Distill/Try again stay
+blocked and only same-key recovery or a GET re-read is offered. A
+`capture_available=false` explanation is derived from the actual coverage and
+recorded errors (runtime, declared Claude corpus, inconsistent input) and shows
+the recorded cause codes. Attempts started in another browser are not listed until
 Ready. There is no cancellation, processor choice or recipient action. Instill
 (S5) remains a later slice. It never claims complete knowledge capture.
 See [Web/CLI contracts](web-and-cli.md#retired-knowledge-read-api-s1) and the

@@ -12,10 +12,10 @@ import { Button } from '@/design-system/primitives/Button';
 import { useTranslation } from '@/hooks/i18n';
 import { ApiError } from '@/lib/api';
 import {
-  useDistillOperation, useKnowledgeArchive, useRetiredKnowledgeReference,
+  DistillLedgerError, useDistillOperation, useKnowledgeArchive, useRetiredKnowledgeReference,
   type RetiredKnowledgeSource, type KnowledgeArchiveSelection, type CuratedKnowledgeItem, type KnowledgeArchive,
 } from '@/hooks/knowledge';
-import { CoverageList, Fact, Facts, Notice, OperationStateBadge, Pill, SectionLabel, useUtc } from './KnowledgeParts';
+import { BlockedReason, CoverageList, Fact, Facts, Notice, OperationStateBadge, Pill, SectionLabel, useUtc } from './KnowledgeParts';
 import { DISPOSITION_LABEL, EXCLUSION_LABEL, ITEM_CATEGORY, ITEM_FLAG, PHASE_LABEL, SUBMIT_ERROR, failureKey } from './knowledgeCopy';
 
 export type KnowledgeView =
@@ -34,9 +34,13 @@ interface DrawerProps {
   /** Called by the drawer when it has closed; restores focus to the opener. */
   onClosed: () => void;
   readyArchives: KnowledgeArchiveSelection[];
-  /** False while another attempt is in flight or unconfirmed, or the source is blocked. */
+  /** False while another attempt is in flight or unconfirmed, the ledger is unreadable, or the source is blocked. */
   canStart: boolean;
-  start: { pending: boolean; error: unknown; onConfirm: () => void };
+  /**
+   * `recoverySubmissionId`: an unknown-outcome submission recorded by this
+   * browser. While set, the only start action is `onRecover` with that SAME ID.
+   */
+  start: { pending: boolean; error: unknown; onConfirm: () => void; recoverySubmissionId: string | null; onRecover: (submissionId: string) => void };
 }
 
 export function KnowledgeDrawer(props: DrawerProps): JSX.Element {
@@ -126,14 +130,35 @@ function sourceLine(source: RetiredKnowledgeSource, t: ReturnType<typeof useTran
 }
 
 export function submitErrorKey(error: unknown): string {
+  if (error instanceof DistillLedgerError) return error.code;
   if (error instanceof ApiError && error.status >= 400 && error.status < 500) return error.code ?? `http_${error.status}`;
   return 'unknown';
 }
 
-function ConfirmView({ source, start, onClose, top }: DrawerProps & { top: boolean }): JSX.Element {
+function ConfirmView({ source, start, canStart, onClose, top }: DrawerProps & { top: boolean }): JSX.Element {
   const { t } = useTranslation();
   const blocked = !source.capture_available;
   const code = start.error ? submitErrorKey(start.error) : null;
+  const recovery = start.recoverySubmissionId;
+  // While an outcome is unknown the only action re-sends that SAME submission.
+  const recovering = !!recovery && !start.pending;
+  const operationId = start.error instanceof DistillLedgerError ? start.error.operationId : null;
+  let message: ReactNode;
+  if (code) {
+    message = (
+      <p role="alert" className="text-status-escalated">
+        {SUBMIT_ERROR[code] ? t(SUBMIT_ERROR[code], { code, operation: operationId ?? '—' })
+          : code === 'unknown' ? t('knowledge.submitError.unknown')
+            : t('knowledge.submitError.refused', { code })}
+      </p>
+    );
+  } else if (recovering) {
+    message = <p role="status" className="text-status-escalated">{t('knowledge.confirm.recoverPending')}</p>;
+  } else if (!canStart && !blocked && !start.pending) {
+    message = <p role="status" className="text-status-escalated">{t('knowledge.confirm.unresolved')}</p>;
+  } else {
+    message = <p>{t('knowledge.confirm.question', { name: source.name, id: source.source_id })}</p>;
+  }
   return (
     <Shell
       sourceName={source.name}
@@ -143,20 +168,17 @@ function ConfirmView({ source, start, onClose, top }: DrawerProps & { top: boole
       footer={(
         <>
           <div className="text-text-secondary min-w-0 text-xs leading-relaxed md:max-w-md">
-            {code ? (
-              <p role="alert" className="text-status-escalated">
-                {code === 'unknown' ? t('knowledge.submitError.unknown')
-                  : SUBMIT_ERROR[code] ? t(SUBMIT_ERROR[code]) : t('knowledge.submitError.refused', { code })}
-              </p>
-            ) : (
-              <p>{t('knowledge.confirm.question', { name: source.name, id: source.source_id })}</p>
-            )}
+            {message}
           </div>
           <div className="flex shrink-0 items-center gap-2 max-md:justify-end">
             <Button variant="ghost" onClick={onClose}>{t('knowledge.confirm.notNow')}</Button>
-            <Button onClick={start.onConfirm} disabled={blocked || start.pending} loading={start.pending}>
-              {t('knowledge.confirm.start')}
-            </Button>
+            {recovering ? (
+              <Button onClick={() => start.onRecover(recovery)}>{t('knowledge.attempts.checkAgain')}</Button>
+            ) : (
+              <Button onClick={start.onConfirm} disabled={!canStart || blocked || start.pending} loading={start.pending}>
+                {t('knowledge.confirm.start')}
+              </Button>
+            )}
           </div>
         </>
       )}
@@ -173,7 +195,7 @@ function ConfirmView({ source, start, onClose, top }: DrawerProps & { top: boole
       {blocked ? (
         <div className="mt-4">
           <Notice tone="danger" role="alert" icon={<CircleAlert size={16} aria-hidden="true" />}>
-            {t('knowledge.blocked')}
+            <BlockedReason source={source} />
           </Notice>
         </div>
       ) : null}

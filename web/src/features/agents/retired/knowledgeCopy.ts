@@ -126,4 +126,26 @@ export const SOURCE_ERROR: Record<string, MessageKey> = {
 export const SUBMIT_ERROR: Record<string, MessageKey> = {
   knowledge_source_inflight_reopen_operation: 'knowledge.submitError.inflight',
   knowledge_submission_conflict: 'knowledge.submitError.conflict',
+  // Local ledger refusals (DistillLedgerError codes).
+  ledger_unavailable: 'knowledge.submitError.ledgerUnavailable',
+  ledger_write_failed: 'knowledge.submitError.ledgerWriteFailed',
+  unresolved_attempt: 'knowledge.submitError.unresolved',
+  ledger_mapping_failed: 'knowledge.submitError.ledgerMappingFailed',
 };
+
+/**
+ * Why S1 reports capture_available=false, derived from the actual coverage and
+ * recorded errors (never assumed to be runtime memory). Falls back to a
+ * category-neutral sentence when no recorded cause is recognised.
+ */
+export function blockedKeys(source: {
+  errors: string[];
+  coverage: { category: string; state: string; errors: string[] }[];
+}): MessageKey[] {
+  const keys: MessageKey[] = [];
+  const runtime = source.coverage.find((c) => c.category === 'runtime_memory');
+  if (runtime?.state === 'unavailable' && runtime.errors.some((e) => e !== 'inconsistent_input')) keys.push('knowledge.blocked');
+  if (source.errors.some((e) => e.startsWith('declared_claude_corpus_failed:'))) keys.push('knowledge.blocked.claude');
+  if (source.errors.includes('inconsistent_input')) keys.push('knowledge.blocked.inconsistent');
+  return keys.length ? keys : ['knowledge.blocked.generic'];
+}

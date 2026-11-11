@@ -9,7 +9,9 @@
  * browser keeps a small per-org/per-source ledger of its own submission IDs
  * and returned operation IDs. A submission ID is written BEFORE the POST so a
  * lost response can be explicitly re-sent with the SAME key (server replay
- * returns the original operation; it never starts a second one).
+ * returns the original operation; it never starts a second one). If the ledger
+ * cannot be read or the key cannot be durably written, nothing is sent; while
+ * any recorded attempt is unknown or unconfirmed, no new key is minted.
  */
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -125,30 +127,58 @@ export interface DistillAttempt {
 const LEDGER_LIMIT = 20;
 const listeners = new Set<() => void>();
 const ledgerKey = (slug: string, sourceId: string) => `happyranch.knowledge.distill.${slug}.${sourceId}`;
-const snapshots = new Map<string, { raw: string | null; value: DistillAttempt[] }>();
 
-function readLedger(key: string): DistillAttempt[] {
-  let raw: string | null = null;
-  try { raw = window.localStorage.getItem(key); } catch { raw = null; }
+/** Ledger read: `ok=false` when storage is unreadable or the stored ledger is malformed. */
+export interface LedgerSnapshot { ok: boolean; attempts: DistillAttempt[] }
+const UNREADABLE = Symbol('unreadable');
+const snapshots = new Map<string, { raw: string | null | typeof UNREADABLE; value: LedgerSnapshot }>();
+
+function readLedger(key: string): LedgerSnapshot {
+  let raw: string | null | typeof UNREADABLE;
+  try { raw = window.localStorage.getItem(key); } catch { raw = UNREADABLE; }
   const cached = snapshots.get(key);
   if (cached && cached.raw === raw) return cached.value;
-  let value: DistillAttempt[] = [];
-  try {
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(parsed)) {
-      value = parsed.filter((entry): entry is DistillAttempt =>
-        !!entry && typeof entry.submission_id === 'string'
-        && (entry.operation_id === null || typeof entry.operation_id === 'string')
-        && typeof entry.submitted_at === 'string');
-    }
-  } catch { value = []; }
+  let value: LedgerSnapshot = { ok: false, attempts: [] };
+  if (raw !== UNREADABLE) {
+    try {
+      const parsed: unknown = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) {
+        const attempts = parsed.filter((entry): entry is DistillAttempt =>
+          !!entry && typeof entry.submission_id === 'string'
+          && (entry.operation_id === null || typeof entry.operation_id === 'string')
+          && typeof entry.submitted_at === 'string');
+        // A dropped entry could be an unresolved submission: treat as unreadable.
+        value = { ok: attempts.length === parsed.length, attempts };
+      }
+    } catch { /* malformed: unreadable */ }
+  }
   snapshots.set(key, { raw, value });
   return value;
 }
 
-function writeLedger(key: string, next: DistillAttempt[]): void {
-  try { window.localStorage.setItem(key, JSON.stringify(next.slice(-LEDGER_LIMIT))); } catch { /* storage unavailable */ }
+/**
+ * Persist the ledger and prove it by reading the exact bytes back. Returns false
+ * when storage refuses or does not hold the write (quota, disabled storage).
+ * Trimming never drops an unresolved submission (operation_id null).
+ */
+function writeLedger(key: string, next: DistillAttempt[]): boolean {
+  let kept = next;
+  if (kept.length > LEDGER_LIMIT) {
+    const excess = kept.length - LEDGER_LIMIT;
+    let dropped = 0;
+    kept = kept.filter((entry) => {
+      if (dropped < excess && entry.operation_id !== null) { dropped += 1; return false; }
+      return true;
+    });
+  }
+  const serialized = JSON.stringify(kept);
+  let ok = false;
+  try {
+    window.localStorage.setItem(key, serialized);
+    ok = window.localStorage.getItem(key) === serialized;
+  } catch { ok = false; }
   listeners.forEach((listener) => listener());
+  return ok;
 }
 
 function subscribe(listener: () => void): () => void {
@@ -161,14 +191,14 @@ function subscribe(listener: () => void): () => void {
 export function useDistillAttempts(sourceId: string | null) {
   const slug = useSlug();
   const key = sourceId && slug ? ledgerKey(slug, sourceId) : null;
-  const attempts = useSyncExternalStore(subscribe, () => (key ? readLedger(key) : EMPTY));
+  const snapshot = useSyncExternalStore(subscribe, () => (key ? readLedger(key) : EMPTY));
   const forget = useCallback((submissionId: string) => {
     if (!key) return;
-    writeLedger(key, readLedger(key).filter((entry) => entry.submission_id !== submissionId));
+    writeLedger(key, readLedger(key).attempts.filter((entry) => entry.submission_id !== submissionId));
   }, [key]);
-  return { attempts, forget };
+  return { attempts: snapshot.attempts, ledgerReadable: snapshot.ok, forget };
 }
-const EMPTY: DistillAttempt[] = [];
+const EMPTY: LedgerSnapshot = { ok: true, attempts: [] };
 
 function newSubmissionId(): string {
   const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -178,8 +208,25 @@ function newSubmissionId(): string {
 }
 
 /**
+ * Local refusal before or after the Distill POST. `ledger_unavailable` and
+ * `ledger_write_failed` refuse BEFORE any POST; `unresolved_attempt` refuses a
+ * fresh key while an earlier attempt is unknown or unconfirmed;
+ * `ledger_mapping_failed` means the POST answered but its operation ID could not
+ * be saved — the submission ID stays recorded for a same-key "Check again".
+ */
+export type DistillLedgerCode = 'ledger_unavailable' | 'ledger_write_failed' | 'unresolved_attempt' | 'ledger_mapping_failed';
+export class DistillLedgerError extends Error {
+  constructor(readonly code: DistillLedgerCode, readonly operationId: string | null = null) {
+    super(code);
+    this.name = 'DistillLedgerError';
+  }
+}
+
+/**
  * Confirmed Distill submission. `submissionId` re-sends an earlier unknown
- * outcome with its original key; omitted, a new key is recorded before POST.
+ * outcome with its original key. Omitted, a new key is minted only when every
+ * recorded attempt has a confirmed terminal state, and only after that key is
+ * durably recorded; otherwise nothing is sent.
  */
 export function useStartDistill(sourceId: string) {
   const slug = useSlug();
@@ -187,26 +234,48 @@ export function useStartDistill(sourceId: string) {
   return useMutation({
     mutationFn: async ({ submissionId }: { submissionId?: string }) => {
       const key = ledgerKey(slug, sourceId);
+      const ledger = readLedger(key);
+      if (!ledger.ok) throw new DistillLedgerError('ledger_unavailable');
       const submission_id = submissionId ?? newSubmissionId();
-      if (!submissionId) {
-        writeLedger(key, [...readLedger(key), { submission_id, operation_id: null, submitted_at: new Date().toISOString() }]);
+      if (submissionId) {
+        // Recovery re-sends only a key this browser actually recorded.
+        if (!ledger.attempts.some((entry) => entry.submission_id === submissionId)) {
+          throw new DistillLedgerError('ledger_unavailable');
+        }
+      } else {
+        const unresolved = ledger.attempts.some((entry) => {
+          if (entry.operation_id === null) return true;
+          const op = queryClient.getQueryData<api.DistillOperation>(['knowledge', slug, 'distill', entry.operation_id]);
+          return !op || IN_FLIGHT.has(op.state);
+        });
+        if (unresolved) throw new DistillLedgerError('unresolved_attempt');
+        const recorded = writeLedger(key, [...ledger.attempts, { submission_id, operation_id: null, submitted_at: new Date().toISOString() }]);
+        if (!recorded || !readLedger(key).attempts.some((entry) => entry.submission_id === submission_id)) {
+          throw new DistillLedgerError('ledger_write_failed');
+        }
       }
+      let operation: api.DistillOperation;
       try {
-        const operation = await api.distillKnowledge(slug, { submission_id, source_id: sourceId, confirmed: true });
-        writeLedger(key, readLedger(key).map((entry) => (
-          entry.submission_id === submission_id ? { ...entry, operation_id: operation.operation_id } : entry
-        )));
-        queryClient.setQueryData(['knowledge', slug, 'distill', operation.operation_id], operation);
-        return operation;
+        operation = await api.distillKnowledge(slug, { submission_id, source_id: sourceId, confirmed: true });
       } catch (error) {
         // A definitive refusal created no operation; forget the key. Anything
         // else (transport loss, 5xx) keeps the key for an explicit same-key check.
         const status = (error as { status?: number }).status;
         if (typeof status === 'number' && status >= 400 && status < 500) {
-          writeLedger(key, readLedger(key).filter((entry) => entry.submission_id !== submission_id));
+          writeLedger(key, readLedger(key).attempts.filter((entry) => entry.submission_id !== submission_id));
         }
         throw error;
       }
+      queryClient.setQueryData(['knowledge', slug, 'distill', operation.operation_id], operation);
+      const current = readLedger(key);
+      const mapped = current.ok && writeLedger(key, current.attempts.map((entry) => (
+        entry.submission_id === submission_id ? { ...entry, operation_id: operation.operation_id } : entry
+      )));
+      if (!mapped || !readLedger(key).attempts.some((entry) => entry.submission_id === submission_id && entry.operation_id === operation.operation_id)) {
+        // The pending entry (same submission ID) remains for "Check again".
+        throw new DistillLedgerError('ledger_mapping_failed', operation.operation_id);
+      }
+      return operation;
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ['knowledge', slug, 'archives'] });

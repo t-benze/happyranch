@@ -19,7 +19,7 @@ import {
   useDistillAttempts, useDistillOperations, useKnowledgeArchives, useRetiredKnowledgeSource, useStartDistill,
   type DistillOperation, type DistillAttempt, type KnowledgeSourceRecord,
 } from '@/hooks/knowledge';
-import { CoverageList, Notice, OperationStateBadge, useUtc } from './KnowledgeParts';
+import { BlockedReason, CoverageList, Notice, OperationStateBadge, useUtc } from './KnowledgeParts';
 import { KnowledgeDrawer, RetiredBadge, type KnowledgeView } from './KnowledgeDrawer';
 import { SOURCE_ERROR } from './knowledgeCopy';
 
@@ -37,7 +37,7 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
   const routes = useAgentsRoutes();
   const sourceQuery = useRetiredKnowledgeSource(sourceId);
   const archivesQuery = useKnowledgeArchives();
-  const { attempts } = useDistillAttempts(sourceId);
+  const { attempts, ledgerReadable } = useDistillAttempts(sourceId);
   const known = attempts.filter((a): a is DistillAttempt & { operation_id: string } => a.operation_id !== null);
   const unknown = attempts.filter((a) => a.operation_id === null);
   const operations = useDistillOperations(known.map((a) => a.operation_id));
@@ -51,10 +51,13 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
   );
   const opRows = known.map((attempt, index) => ({ attempt, query: operations[index] })).reverse();
   const inflight = opRows.find((row) => row.query?.data && (row.query.data.state === 'Queued' || row.query.data.state === 'Processing'));
-  // A new attempt waits until every known attempt's state was read and every
-  // unknown-outcome submission was explicitly re-checked (server refuses a
-  // duplicate in-flight attempt regardless).
-  const unconfirmed = opRows.some((row) => row.query?.isLoading) || unknown.length > 0;
+  // A new attempt waits until every known attempt has an authoritatively read
+  // state (loading, read error and absent data all count as unconfirmed), every
+  // unknown-outcome submission was explicitly re-checked with its same key, and
+  // this browser's ledger is readable (server refuses a duplicate in-flight
+  // attempt regardless).
+  const unconfirmed = opRows.some((row) => !row.query?.data) || unknown.length > 0 || !ledgerReadable;
+  const canStart = !!sourceQuery.data?.capture_available && !inflight && !unconfirmed;
 
   const push = (view: KnowledgeView) => {
     returnFocus.current[stack.length] = document.activeElement as HTMLElement | null;
@@ -80,6 +83,8 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
     setStack((s) => [...s.slice(0, -1), view]);
   };
   const confirm = (submissionId?: string) => {
+    // A fresh key is minted only while starting is currently allowed.
+    if (!submissionId && !canStart) return;
     start.mutate({ submissionId }, {
       onSuccess: (op: DistillOperation) => setStack((s) => (s.length ? [...s.slice(0, -1), { kind: 'operation', operationId: op.operation_id }] : s)),
     });
@@ -152,9 +157,12 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
           </div>
           <p className="text-text-secondary text-sm">
             {t('knowledge.intro')}
-            {blocked ? ` ${t('knowledge.blocked')}` : ''}
+            {blocked ? <>{' '}<BlockedReason source={source} /></> : null}
           </p>
-          {!blocked && !inflight && unconfirmed ? (
+          {!ledgerReadable ? (
+            <Notice tone="danger" role="alert" icon={<CircleAlert size={16} aria-hidden="true" />}>{t('knowledge.ledgerUnavailable')}</Notice>
+          ) : null}
+          {!blocked && !inflight && unconfirmed && ledgerReadable ? (
             <p className="text-text-muted text-xs">{t('knowledge.unconfirmedHint')}</p>
           ) : null}
           <CoverageList coverage={source.coverage} mode="summary" label={t('knowledge.coverage.heading')} />
@@ -251,8 +259,14 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
         onClose={close}
         onClosed={() => returnFocus.current[0]?.focus()}
         readyArchives={ready}
-        canStart={!distillDisabled && !inflight}
-        start={{ pending: start.isPending, error: start.error, onConfirm: () => confirm() }}
+        canStart={canStart}
+        start={{
+          pending: start.isPending,
+          error: start.error,
+          onConfirm: () => confirm(),
+          recoverySubmissionId: unknown[0]?.submission_id ?? null,
+          onRecover: (submissionId) => confirm(submissionId),
+        }}
       />
     </div>
   );
@@ -314,7 +328,11 @@ function AttemptRows({ rows, unknown, utc, onOpen, onCheck, checking }: {
                 </button>
               </p>
             </div>
-            {op ? <OperationStateBadge state={op.state} /> : null}
+            {op ? <OperationStateBadge state={op.state} /> : query?.isError ? (
+              <Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => void query.refetch()}>
+                {t('knowledge.attempts.checkAgain')}
+              </Button>
+            ) : null}
           </li>
         );
       })}

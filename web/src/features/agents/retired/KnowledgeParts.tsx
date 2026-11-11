@@ -7,8 +7,8 @@ import { Check, CircleAlert, CircleDot, CircleX, Circle, ChevronDown } from 'luc
 import { TONE_CLASS, type Tone } from '@/design-system/patterns/semanticTone';
 import { useTranslation } from '@/hooks/i18n';
 import { formatDateShapeFor } from '@/lib/i18n';
-import type { SourceCoverage, DistillOperation } from '@/hooks/knowledge';
-import { COVERAGE_LABEL, COVERAGE_QUALIFIER, COVERAGE_REASON, coverageCode } from './knowledgeCopy';
+import type { SourceCoverage, DistillOperation, RetiredKnowledgeSource } from '@/hooks/knowledge';
+import { COVERAGE_LABEL, COVERAGE_QUALIFIER, COVERAGE_REASON, blockedKeys, coverageCode } from './knowledgeCopy';
 
 export function useUtc(): (value: string | null | undefined) => string {
   const { locale, t } = useTranslation();
@@ -152,5 +152,17 @@ export function Notice({ tone, icon, role, children }: { tone: 'info' | 'danger'
       {icon ? <span className="text-text-muted mt-0.5 shrink-0">{icon}</span> : null}
       <div className="min-w-0">{children}</div>
     </div>
+  );
+}
+
+/** Inline blocking explanation from the source's actual coverage/errors, plus the recorded cause codes. */
+export function BlockedReason({ source }: { source: RetiredKnowledgeSource }): JSX.Element {
+  const { t } = useTranslation();
+  const causes = Array.from(new Set(source.errors));
+  return (
+    <>
+      {blockedKeys(source).map((key) => t(key)).join(' ')}
+      {causes.length ? <span className="text-text-muted font-mono text-xs break-all"> ({causes.join(', ')})</span> : null}
+    </>
   );
 }
