@@ -105,14 +105,16 @@ def wait_for_health(child: subprocess.Popen, home: Path, cancel: threading.Event
 def stop_child(child: subprocess.Popen, home: Path, term_timeout: float = 5,
                kill_timeout: float = 2, *, markers_absent_at_spawn: bool = False) -> None:
     """Signal only the Popen child; bounded TERM/KILL waits also reap it."""
-    owned_port = read_owned_port(home, child.pid)
     pid_file, port_file = home / "daemon.pid", home / "daemon.port"
+    pinned: dict[Path, int] = {}
     try:
-        # Pin the observed inode without following links or reading a device.
-        port_fd = os.open(port_file, os.O_PATH | os.O_NOFOLLOW)
-    except FileNotFoundError:
-        port_fd = None
-    try:
+        # Pin both inodes before TERM: even an empty PID may be mid-write.
+        # O_PATH never follows a symlink or reads a device/FIFO.
+        for path in (pid_file, port_file):
+            try:
+                pinned[path] = os.open(path, os.O_PATH | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                pass
         if child.poll() is None:
             try:
                 child.terminate()
@@ -131,36 +133,39 @@ def stop_child(child: subprocess.Popen, home: Path, term_timeout: float = 5,
                     raise LaunchError("Daemon stop incomplete; child has not exited.") from exc
         else:
             child.wait()
-        # The supervisor admits an empty home before spawning this
-        # child. That launch fact also owns port-only publication: the daemon
-        # writes its port before its PID. Callers without it need a matching PID.
-        # A replacement PID still protects all foreign markers after the reap.
-        # A normal daemon may already have removed both files itself.
-        try:
-            owner = pid_file.read_text().strip()
-        except FileNotFoundError:
-            owner = None
-        if owner == str(child.pid):
-            port_file.unlink(missing_ok=True)
-            pid_file.unlink(missing_ok=True)
-        elif owner is None and (owned_port is not None or markers_absent_at_spawn):
+        if not markers_absent_at_spawn:
+            return
+        remaining = []
+        for path in (pid_file, port_file):
             try:
-                port_after = port_file.lstat()
-                # Preserve replacement files, symlinks and shared inodes. A port
-                # first published during TERM is still from the admitted launch.
-                if not stat.S_ISREG(port_after.st_mode) or port_after.st_nlink != 1:
-                    return
-                if port_fd is not None:
-                    port_before = os.fstat(port_fd)
-                    if (port_before.st_dev, port_before.st_ino) != (port_after.st_dev, port_after.st_ino):
-                        return
-                if owned_port is None or port_file.read_text().strip() == str(owned_port):
-                    port_file.unlink()
+                # Publication may start during TERM. The admitted empty home
+                # and confirmed reap own that late publication as well.
+                if path not in pinned:
+                    pinned[path] = os.open(path, os.O_PATH | os.O_NOFOLLOW)
+                before, after = os.fstat(pinned[path]), path.lstat()
             except FileNotFoundError:
-                pass
+                continue
+            if (not stat.S_ISREG(after.st_mode) or after.st_nlink != 1 or
+                    (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)):
+                return
+            remaining.append(path)
+        if pid_file in remaining:
+            owner = pid_file.read_bytes()
+            # Path.write_text can leave no digits or any decimal prefix when
+            # interrupted before the daemon installs its cleanup handlers.
+            if owner and not (owner.isdigit() and str(child.pid).encode("ascii").startswith(owner)):
+                return
+        # Validate the whole pair before removing either marker. A replacement
+        # PID or port protects the remaining state even if its bytes match.
+        for path in remaining:
+            before, after = os.fstat(pinned[path]), path.lstat()
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                return
+        for path in remaining:
+            path.unlink(missing_ok=True)
     finally:
-        if port_fd is not None:
-            os.close(port_fd)
+        for fd in pinned.values():
+            os.close(fd)
 
 
 def run_gui(prefix: Path, home: Path) -> int:

@@ -175,100 +175,161 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(paths, [])
         self.assertIsNone(external.poll())
 
-    def test_stop_terms_and_reaps_only_owned_child_and_clears_markers(self) -> None:
+    @staticmethod
+    def marker_snapshot(home: Path) -> dict[str, tuple[int, int, bytes]]:
+        result = {}
+        for name in ("daemon.port", "daemon.pid"):
+            path = home / name
+            if path.exists():
+                info = path.stat()
+                result[name] = (info.st_dev, info.st_ino, path.read_bytes())
+        return result
+
+    @staticmethod
+    def publication_body(home: Path, port: str, pid: str, external_pid: int) -> str:
+        # Actual child writes and a ready pipe establish the filesystem boundary.
+        return (f"h = pathlib.Path({str(home)!r})\n"
+                f"port = {port!r}\npid = {pid!r}\n"
+                "if port != 'absent':\n"
+                "    (h / 'daemon.port').write_text("
+                "{'empty': '', 'partial': '54', 'complete': '54321'}[port])\n"
+                "if pid != 'absent':\n"
+                "    (h / 'daemon.pid').write_text("
+                "{'empty': '', 'prefix-first': str(os.getpid())[:1], "
+                "'prefix-last': str(os.getpid())[:-1], 'matching': str(os.getpid()), "
+                f"'different': {str(external_pid)!r}}}[pid])")
+
+    def check_publications(self, already_exited: bool) -> None:
         external = self.spawn()
-        for publication in ("complete", "port-only", "empty-port", "finishing-port"):
+        for port in ("absent", "empty", "partial", "complete"):
+            for pid in ("absent", "empty", "prefix-first", "prefix-last", "matching", "different"):
+                with self.subTest(port=port, pid=pid, already_exited=already_exited):
+                    home = self.home / f"{port}-{pid}"
+                    home.mkdir()
+                    window.prepare_home(home)
+                    child = self.spawn(self.publication_body(home, port, pid, external.pid))
+                    before = self.marker_snapshot(home)
+                    if already_exited:
+                        # waitid observes real exit without reaping: stop_child owns the reap.
+                        child.terminate()
+                        os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+                    window.stop_child(child, home, 0.5, 0.5, markers_absent_at_spawn=True)
+                    self.assertEqual(child.returncode, -signal.SIGTERM)
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(child.pid, os.WNOHANG)
+                    self.assertIsNone(external.poll())
+                    if pid == "different":
+                        self.assertEqual(self.marker_snapshot(home), before)
+                        with self.assertRaises(window.LaunchError):
+                            window.prepare_home(home)
+                    else:
+                        self.assertEqual(self.marker_snapshot(home), {})
+                        window.prepare_home(home)
+
+    def test_stop_terms_and_reaps_only_owned_child_and_clears_markers(self) -> None:
+        self.check_publications(already_exited=False)
+        # Same-inode completion and first publication inside TERM remain owned.
+        for publication in ("finish-port", "finish-pid", "publish-both"):
             with self.subTest(publication=publication):
                 home = self.home / publication
                 home.mkdir()
                 window.prepare_home(home)
-                # The ready pipe synchronizes with the real child's port write,
-                # before the daemon would publish its PID.
-                port = "" if publication in ("empty-port", "finishing-port") else "54321"
-                body = f"p = pathlib.Path({str(home / 'daemon.port')!r})\np.write_text({port!r})"
-                if publication == "finishing-port":
-                    body += ("\ndef finish_port(*_args):\n"
-                             "    p.write_text('54321')\n    raise SystemExit(0)\n"
-                             "signal.signal(signal.SIGTERM, finish_port)")
+                initial = ("absent", "absent") if publication == "publish-both" else (
+                    "empty", "empty" if publication == "finish-pid" else "absent")
+                body = self.publication_body(home, *initial, 0)
+                body += ("\ndef finish(*_args):\n"
+                         "    (h / 'daemon.port').write_text('54321')\n"
+                         "    (h / 'daemon.pid').write_text(str(os.getpid()))\n"
+                         "    raise SystemExit(0)\n"
+                         "signal.signal(signal.SIGTERM, finish)")
                 child = self.spawn(body)
-                if publication == "complete":
-                    (home / "daemon.pid").write_text(str(child.pid))
-                self.assertEqual((home / "daemon.port").read_text(), port)
-                self.assertEqual((home / "daemon.pid").exists(), publication == "complete")
                 window.stop_child(child, home, 0.5, 0.5, markers_absent_at_spawn=True)
-                self.assertEqual(child.returncode, 0 if publication == "finishing-port"
-                                 else -signal.SIGTERM)
+                self.assertEqual(child.returncode, 0)
                 with self.assertRaises(ChildProcessError):
                     os.waitpid(child.pid, os.WNOHANG)
-                self.assertIsNone(external.poll())
-                self.assertFalse((home / "daemon.pid").exists())
-                self.assertFalse((home / "daemon.port").exists())
+                self.assertEqual(self.marker_snapshot(home), {})
                 window.prepare_home(home)
 
     def test_stop_kills_term_resistant_child_then_reaps(self) -> None:
+        window.prepare_home(self.home)
         child = self.spawn(ignore_term=True)
         self.publish(child.pid)
-        window.stop_child(child, self.home, 0.03, 1)
+        window.stop_child(child, self.home, 0.03, 1, markers_absent_at_spawn=True)
         self.assertEqual(child.returncode, -signal.SIGKILL)
         with self.assertRaises(ChildProcessError):
             os.waitpid(child.pid, os.WNOHANG)
         self.assertFalse((self.home / "daemon.pid").exists())
         self.assertFalse((self.home / "daemon.port").exists())
+        window.prepare_home(self.home)
 
     def test_stop_preserves_replaced_external_markers(self) -> None:
-        window.prepare_home(self.home)
-        child = self.spawn()
         external = self.spawn()
-        self.publish(external.pid, "45678")
-        window.stop_child(child, self.home, 0.5, 0.5, markers_absent_at_spawn=True)
-        self.assertEqual(child.returncode, -signal.SIGTERM)
-        self.assertIsNone(external.poll())
-        self.assertTrue((self.home / "daemon.pid").exists())
-        self.assertTrue((self.home / "daemon.port").exists())
-        self.assertEqual((self.home / "daemon.pid").read_text(), str(external.pid))
-        self.assertEqual((self.home / "daemon.port").read_text(), "45678")
+        # No launch fact: even empty or coincidentally matching contents preserve.
+        for pid in ("absent", "empty", "prefix-first", "matching", "different"):
+            with self.subTest(no_launch_fact=pid):
+                home = self.home / f"unproven-{pid}"
+                home.mkdir()
+                (home / "daemon.port").write_text("54")
+                # Port really predates launch; prepare_home refuses it.
+                with self.assertRaises(window.LaunchError):
+                    window.prepare_home(home)
+                child = self.spawn(self.publication_body(home, "partial", pid, external.pid))
+                before = self.marker_snapshot(home)
+                window.stop_child(child, home, 0.5, 0.5)
+                self.assertEqual(self.marker_snapshot(home), before)
+                self.assertEqual(child.returncode, -signal.SIGTERM)
+                with self.assertRaises(window.LaunchError):
+                    window.prepare_home(home)
+                self.assertIsNone(external.poll())
 
-        (self.home / "daemon.pid").unlink()
-        child = self.spawn()
-        window.stop_child(child, self.home, 0.5, 0.5)
-        self.assertTrue((self.home / "daemon.port").exists())
-        self.assertEqual((self.home / "daemon.port").read_text(), "45678")
-        self.assertIsNone(external.poll())
-        (self.home / "daemon.port").unlink()
-
-        window.prepare_home(self.home)
-        port_file = str(self.home / "daemon.port")
-        child = self.spawn(
-            f"p = pathlib.Path({port_file!r})\np.write_text('54321')\n"
-            "def replace_port(*_args):\n"
-            "    p.unlink()\n    p.write_text('45678')\n    raise SystemExit(0)\n"
-            "signal.signal(signal.SIGTERM, replace_port)")
-        window.stop_child(child, self.home, 0.5, 0.5, markers_absent_at_spawn=True)
-        self.assertEqual(child.returncode, 0)
-        self.assertTrue((self.home / "daemon.port").exists())
-        self.assertEqual((self.home / "daemon.port").read_text(), "45678")
-        self.assertIsNone(external.poll())
-
-    def test_stop_reaps_already_exited_child_and_removes_owned_stale_state(self) -> None:
-        for publication in ("complete", "port-only", "empty-port"):
-            with self.subTest(publication=publication):
-                home = self.home / publication
+        for raw in ("0", "not-a-pid", "１２", " ", "123\n"):
+            with self.subTest(non_prefix=raw):
+                home = self.home / f"invalid-{raw.encode().hex()}"
                 home.mkdir()
                 window.prepare_home(home)
-                port = "" if publication == "empty-port" else "54321"
-                child = self.spawn(
-                    f"pathlib.Path({str(home / 'daemon.port')!r}).write_text({port!r})")
-                if publication == "complete":
-                    (home / "daemon.pid").write_text(str(child.pid))
-                child.terminate()
-                child.wait(timeout=2)
-                window.stop_child(child, home, markers_absent_at_spawn=True)
-                self.assertEqual(child.returncode, -signal.SIGTERM)
-                with self.assertRaises(ChildProcessError):
-                    os.waitpid(child.pid, os.WNOHANG)
-                self.assertFalse((home / "daemon.pid").exists())
-                self.assertFalse((home / "daemon.port").exists())
-                window.prepare_home(home)
+                child = self.spawn()
+                (home / "daemon.pid").write_text(raw)
+                (home / "daemon.port").write_text("54321")
+                before = self.marker_snapshot(home)
+                window.stop_child(child, home, 0.5, 0.5, markers_absent_at_spawn=True)
+                self.assertEqual(self.marker_snapshot(home), before)
+                with self.assertRaises(window.LaunchError):
+                    window.prepare_home(home)
+                self.assertIsNone(external.poll())
+
+        for marker in ("daemon.port", "daemon.pid"):
+            publications = (("complete", "absent"), ("complete", "empty"),
+                            ("complete", "prefix-last"), ("complete", "matching"))
+            if marker == "daemon.pid":
+                # Replacing a PID requires a PID inode before TERM. With no
+                # prior inode it is first publication (covered above).
+                publications = (("absent", "empty"), *publications[1:])
+            for port, pid in publications:
+                with self.subTest(replaced=marker, port=port, pid=pid):
+                    home = self.home / f"replace-{marker}-{port}-{pid}"
+                    home.mkdir()
+                    window.prepare_home(home)
+                    body = self.publication_body(home, port, pid, external.pid)
+                    body += ("\ndef replace(*_args):\n"
+                             f"    (h / 'replacement').replace(h / {marker!r})\n"
+                             "    raise SystemExit(0)\n"
+                             "signal.signal(signal.SIGTERM, replace)")
+                    child = self.spawn(body)
+                    # Matching-looking replacement bytes still do not confer ownership.
+                    replacement = home / "replacement"
+                    replacement.write_text(str(child.pid) if marker == "daemon.pid" else "54321")
+                    info = replacement.stat()
+                    expected = self.marker_snapshot(home)
+                    expected[marker] = (info.st_dev, info.st_ino, replacement.read_bytes())
+                    window.stop_child(child, home, 0.5, 0.5, markers_absent_at_spawn=True)
+                    self.assertEqual(child.returncode, 0)
+                    self.assertEqual(self.marker_snapshot(home), expected)
+                    with self.assertRaises(window.LaunchError):
+                        window.prepare_home(home)
+                    self.assertIsNone(external.poll())
+
+    def test_stop_reaps_already_exited_child_and_removes_owned_stale_state(self) -> None:
+        self.check_publications(already_exited=True)
 
 
 if __name__ == "__main__":

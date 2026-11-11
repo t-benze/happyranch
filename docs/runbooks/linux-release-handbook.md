@@ -121,7 +121,12 @@ in English and Simplified Chinese (desktop LANG); raw diagnostics stay verbatim.
 Closing the window, Ctrl+Q, SIGTERM or SIGINT requests shutdown. The window
 sends SIGTERM only to its child, waits five seconds, then SIGKILL and a two-second
 wait if needed, and reaps it. After confirmed exit it removes remaining markers
-only when ownership still matches; replacement external state is preserved.
+only with its empty-at-launch ownership fact and unchanged single-link regular
+marker inodes. That includes interrupted port/PID writes: an absent, empty or
+ASCII decimal-prefix PID is owned partial publication; a complete matching PID
+is also owned. Different/non-prefix PID contents, pre-existing markers and a
+replacement of either observed inode preserve the remaining state. A partial
+write may finish on its pinned inode during shutdown.
 A stop that cannot observe exit retains ownership and the lock, displays the
 failure, and allows a subsequent close to retry. There is no crash/SIGKILL
 recovery promise for the window itself, nor process-tree shutdown guarantee for
