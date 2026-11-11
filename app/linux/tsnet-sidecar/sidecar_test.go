@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -20,10 +21,14 @@ type fakeEngine struct {
 	events                        *[]string
 	listenEntered, listenRelease  chan struct{}
 	closed                        chan struct{}
+	credential                    []byte
+	config                        EngineConfig
 }
 
-func (f *fakeEngine) Start(context.Context, EngineConfig, []byte) (RedemptionReceipt, error) {
+func (f *fakeEngine) Start(_ context.Context, config EngineConfig, credential []byte) (RedemptionReceipt, error) {
 	*f.events = append(*f.events, "start")
+	f.credential = append([]byte(nil), credential...)
+	f.config = config
 	return f.receipt, f.startErr
 }
 func (f *fakeEngine) Listen(string) (net.Listener, error) {
@@ -53,6 +58,210 @@ func validConfig(t *testing.T) Config {
 		t.Fatal(err)
 	}
 	return Config{StateDir: state, CredentialFile: cred, ControlURL: "https://headscale.private.example", RoleIdentity: "home-sidecar-123", ExpectedPeer: "mac-client-123", ListenAddr: ":443", ConnectorAddr: "127.0.0.1:9443", DERPPolicy: "private-only"}
+}
+
+// The persisted digest for validConfig's role and control URL, including the
+// newline written by the enrollment path.
+const validMarkerContent = "4ccf9915c9a0f9ec80c8f2d635003fa3be78185085a10a89e62f5264e8adff2f\n"
+
+func consumedConfig(t *testing.T) Config {
+	t.Helper()
+	cfg := validConfig(t)
+	if err := os.Remove(cfg.CredentialFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, consumedMarker), []byte(validMarkerContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestStartWithConsumedCredentialReusesDurableState(t *testing.T) {
+	cfg := consumedConfig(t)
+	marker := filepath.Join(cfg.StateDir, consumedMarker)
+	before, err := os.Lstat(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	l := &oneListener{blockAfter: true, closed: make(chan struct{}), accepted: make(chan struct{}), events: &events}
+	e := &fakeEngine{listener: l, receipt: RedemptionReceipt{true, true, true}, events: &events}
+	probeClient, probeServer := net.Pipe()
+	defer probeServer.Close()
+	s := New(cfg, e, dialFunc(func(context.Context, string, string) (net.Conn, error) {
+		events = append(events, "probe")
+		return probeClient, nil
+	}))
+	t.Cleanup(func() { _ = s.Stop() })
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("restart with consumed marker and no credential: %v", err)
+	}
+	if len(e.credential) != 0 || e.config != (EngineConfig{cfg.StateDir, cfg.ControlURL, cfg.RoleIdentity, cfg.ExpectedPeer}) {
+		t.Fatal("restart did not reuse the configured state without an auth key")
+	}
+	if strings.Join(events, ",") != "start,probe,listen" {
+		t.Fatalf("startup gates = %v", events)
+	}
+	after, err := os.Lstat(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(marker)
+	if err != nil || string(content) != validMarkerContent || !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) {
+		t.Fatalf("consumed marker changed: %v", err)
+	}
+	if _, err := os.Lstat(cfg.CredentialFile); !errors.Is(err, syscall.ENOENT) {
+		t.Fatalf("credential recreated: %v", err)
+	}
+}
+
+func TestConsumedMarkerRejectsCredentialWithoutReadingIt(t *testing.T) {
+	for _, name := range []string{"regular", "fifo", "directory", "symlink", "dangling-symlink", "symlinked-parent", "missing-parent", "non-directory-parent"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := consumedConfig(t)
+			var err error
+			switch name {
+			case "regular", "non-directory-parent":
+				err = os.WriteFile(cfg.CredentialFile, []byte("unused-enrollment-input"), 0o600)
+				if err == nil {
+					err = os.Chtimes(cfg.CredentialFile, time.Unix(1, 0), time.Unix(1, 0))
+				}
+				if name == "non-directory-parent" {
+					cfg.CredentialFile = filepath.Join(cfg.CredentialFile, "child")
+				}
+			case "fifo":
+				err = syscall.Mkfifo(cfg.CredentialFile, 0o600)
+			case "directory":
+				err = os.Mkdir(cfg.CredentialFile, 0o700)
+			case "symlink":
+				err = os.Symlink(filepath.Join(cfg.StateDir, consumedMarker), cfg.CredentialFile)
+			case "dangling-symlink":
+				err = os.Symlink(filepath.Join(cfg.StateDir, "absent"), cfg.CredentialFile)
+			case "symlinked-parent":
+				alias := filepath.Join(t.TempDir(), "alias")
+				err = os.Symlink(filepath.Dir(cfg.CredentialFile), alias)
+				cfg.CredentialFile = filepath.Join(alias, "credential")
+			case "missing-parent":
+				cfg.CredentialFile = filepath.Join(filepath.Dir(cfg.CredentialFile), "absent", "credential")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := []string{}
+			e := &fakeEngine{events: &events}
+			if err := New(cfg, e, &net.Dialer{}).Start(context.Background()); !errors.Is(err, ErrCredential) || len(events) != 0 {
+				t.Fatalf("err=%v events=%v", err, events)
+			}
+			if name == "regular" {
+				st, err := os.Lstat(cfg.CredentialFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if st.Sys().(*syscall.Stat_t).Atim.Sec != 1 {
+					t.Fatal("present credential was read")
+				}
+			}
+		})
+	}
+}
+
+func TestRestartRejectsHostileConsumedMarker(t *testing.T) {
+	for _, name := range []string{"symlink", "dangling-symlink", "directory", "fifo", "wrong-mode", "wrong-content", "wrong-role", "wrong-control"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := consumedConfig(t)
+			marker := filepath.Join(cfg.StateDir, consumedMarker)
+			var err error
+			switch name {
+			case "symlink", "dangling-symlink", "directory", "fifo":
+				if err := os.Remove(marker); err != nil {
+					t.Fatal(err)
+				}
+				switch name {
+				case "symlink", "dangling-symlink":
+					target := filepath.Join(cfg.StateDir, "target")
+					if name == "symlink" {
+						if err := os.WriteFile(target, []byte(validMarkerContent), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					err = os.Symlink(target, marker)
+				case "directory":
+					err = os.Mkdir(marker, 0o700)
+				case "fifo":
+					err = syscall.Mkfifo(marker, 0o600)
+				}
+			case "wrong-mode":
+				err = os.Chmod(marker, 0o644)
+			case "wrong-content":
+				err = os.WriteFile(marker, []byte("untrusted-marker\n"), 0o600)
+			case "wrong-role":
+				cfg.RoleIdentity = "home-sidecar-other"
+			case "wrong-control":
+				cfg.ControlURL = "https://other.private.example"
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := []string{}
+			if err := New(cfg, &fakeEngine{events: &events}, &net.Dialer{}).Start(context.Background()); !errors.Is(err, ErrCredential) || len(events) != 0 {
+				t.Fatalf("err=%v events=%v", err, events)
+			}
+		})
+	}
+}
+
+func TestRestartRetainsStartupFailureGates(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		receipt    RedemptionReceipt
+		startErr   error
+		probeErr   error
+		probeClose bool
+		listenErr  error
+		want       error
+	}{
+		{name: "engine-start", receipt: RedemptionReceipt{true, true, true}, startErr: errors.New("engine failed"), want: ErrCredential},
+		{name: "not-redeemed", receipt: RedemptionReceipt{false, true, true}, want: ErrCredential},
+		{name: "not-durable", receipt: RedemptionReceipt{true, false, true}, want: ErrCredential},
+		{name: "peer-not-visible", receipt: RedemptionReceipt{true, true, false}, want: ErrCredential},
+		{name: "probe", receipt: RedemptionReceipt{true, true, true}, probeErr: errors.New("probe failed"), want: ErrConnector},
+		{name: "probe-close", receipt: RedemptionReceipt{true, true, true}, probeClose: true, want: ErrConnector},
+		{name: "listen", receipt: RedemptionReceipt{true, true, true}, listenErr: errors.New("listen failed"), want: ErrListener},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := consumedConfig(t)
+			events := []string{}
+			l := &oneListener{blockAfter: true, closed: make(chan struct{}), accepted: make(chan struct{}), events: &events}
+			e := &fakeEngine{listener: l, receipt: tc.receipt, startErr: tc.startErr, listenErr: tc.listenErr, events: &events}
+			probeClient, probeServer := net.Pipe()
+			defer probeClient.Close()
+			defer probeServer.Close()
+			s := New(cfg, e, dialFunc(func(context.Context, string, string) (net.Conn, error) {
+				events = append(events, "probe")
+				if tc.probeClose {
+					return &errorCloseConn{}, nil
+				}
+				return probeClient, tc.probeErr
+			}))
+			t.Cleanup(func() { _ = s.Stop() })
+			if err := s.Start(context.Background()); !errors.Is(err, tc.want) {
+				t.Fatalf("err=%v, want %v", err, tc.want)
+			}
+			wantEvents := "start,engine-close"
+			if tc.want == ErrConnector {
+				wantEvents = "start,probe,engine-close"
+			} else if tc.want == ErrListener {
+				wantEvents = "start,probe,listen,engine-close"
+			}
+			if strings.Join(events, ",") != wantEvents || s.Running() || len(e.credential) != 0 {
+				t.Fatalf("failed restart admission: events=%v running=%v", events, s.Running())
+			}
+			content, err := os.ReadFile(filepath.Join(cfg.StateDir, consumedMarker))
+			if err != nil || string(content) != validMarkerContent {
+				t.Fatalf("marker changed on failed restart: %v", err)
+			}
+		})
+	}
 }
 
 func TestValidateRejectsUnsafeTopology(t *testing.T) {
@@ -168,6 +377,13 @@ func TestStartSuccessConsumesCredentialThenProxiesRawBytes(t *testing.T) {
 	_ = probeServer.Close()
 	if _, err := os.Stat(cfg.CredentialFile); !os.IsNotExist(err) {
 		t.Fatalf("credential remains: %v", err)
+	}
+	if string(e.credential) != "secret-value\n" {
+		t.Fatal("first enrollment did not pass the credential to the engine")
+	}
+	marker, err := os.ReadFile(filepath.Join(cfg.StateDir, consumedMarker))
+	if err != nil || string(marker) != validMarkerContent {
+		t.Fatalf("first enrollment did not persist the identity digest: %v", err)
 	}
 	<-listener.accepted
 	go tailClient.Write([]byte("raw-request"))
