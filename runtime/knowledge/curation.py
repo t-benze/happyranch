@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from collections import Counter
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Literal
 
@@ -21,6 +22,12 @@ KNOWLEDGE_CURATION_MAX_RESULT_BYTES = 131072
 
 ATTRIBUTION_UNVERIFIED = 'source reports a Founder preference; attribution unverified'
 _RESTRICTED = {'superseded', 'evicted', 'stale', 'promoted'}
+# These exclude protected source material itself. Content-quality exclusions
+# (incidental/unsupported/unusable) and redundant duplicates are not protective.
+_PROTECTIVE_EXCLUSIONS = {
+    'credentials', 'instructions_permissions', 'skills_identity_sessions_caches',
+    'unrelated_private', 'task_conversation_history',
+}
 _ITEM_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z', re.ASCII)
 
 
@@ -48,6 +55,8 @@ class Disposition(_Closed):
         'unsupported', 'unusable', 'redundant',
     ] | None
     count: int | None = Field(ge=0)
+    # Only redundancy implies another entry: it must be selected and used.
+    retained_reference_id: str | None = None
 
 
 class Attribution(_Closed):
@@ -158,6 +167,10 @@ def build_curation_input(capture: RetiredSource) -> str:
         'Exclude credentials, generated instructions/permissions, skills/identity/session/cache state, unrelated private '
         'content and unrestricted histories. Excluded dispositions use reason equal to the exclusion_category code '
         'and count or null; NEVER echo excluded content in results or diagnostics. '
+        'A redundant exclusion must set retained_reference_id to a distinct captured entry selected '
+        'and cited by a kept item in this same result; other dispositions leave it null. '
+        'Full bodies of protective exclusions must not occur in ANY output string, even under other references; '
+        'matching collapses whitespace but otherwise preserves exact text. '
         'An all-excluded result requires genuine per-entry exclusions, never a disguised processing failure. '
         'Only a verified empty capture permits explicitly_empty=true. '
         'Return ONLY a complete JSON object matching this schema, as your structured completion content. '
@@ -200,11 +213,26 @@ def _date(value: str | None) -> None:
         raise CurationError('curation_invalid_date') from None
 
 
+def _output_strings(value: object) -> Iterator[str]:
+    """Visit every string value, including nested notes and future fields."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _output_strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _output_strings(child)
+
+
 def validate_curation_output(capture: RetiredSource, raw: str) -> CurationResult:
     """Validate bytes, completeness, provenance and eligibility without effects.
 
     This validates a source-reported curation contract, not usefulness, truth,
-    secret detection or native processor completion; S2b owns genuine execution.
+    exhaustive secret detection or native processor completion; S2b owns genuine
+    execution. Known protective-excluded full bodies are matched with Unicode
+    whitespace collapsed, case/codepoints otherwise unchanged. Partial bodies
+    are outside this structural protection; no semantic classifier is implied.
     """
     records = _capture_records(capture)
     if not isinstance(raw, str) or not raw.strip():
@@ -245,8 +273,18 @@ def validate_curation_output(capture: RetiredSource, raw: str) -> CurationResult
                 raise CurationError('curation_exclusion_echo_or_missing_category')
         elif disposition.exclusion_category is not None:
             raise CurationError('curation_unexpected_exclusion')
+        if disposition.exclusion_category != 'redundant' and disposition.retained_reference_id is not None:
+            raise CurationError('curation_unexpected_retained_reference')
         if _restricted(records[ref]) and disposition.disposition != 'reference_only':
             raise CurationError('curation_lifecycle_disposition')
+    protected_bodies = {
+        ' '.join(records[ref].body.split()) for ref, disposition in dispositions.items()
+        if disposition.disposition == 'excluded' and disposition.exclusion_category in _PROTECTIVE_EXCLUSIONS
+    } - {''}  # Empty/whitespace-only bodies contain no protected text.
+    for text in _output_strings(result.model_dump(mode='json')):
+        normalized = ' '.join(text.split())
+        if any(body in normalized for body in protected_bodies):
+            raise CurationError('curation_excluded_content_echo')
     ids = [i.item_id for i in result.items]
     if len(ids) != len(set(ids)) or any(not _ITEM_ID.fullmatch(i) for i in ids):
         raise CurationError('curation_duplicate_or_invalid_item_id')
@@ -310,6 +348,14 @@ def validate_curation_output(capture: RetiredSource, raw: str) -> CurationResult
             if not item.warnings or any(not w.strip() for w in item.warnings):
                 raise CurationError('curation_warning_missing')
         used.update(item.references)
+    for ref, disposition in dispositions.items():
+        if disposition.exclusion_category == 'redundant':
+            keeper = disposition.retained_reference_id
+            if (keeper == ref or keeper not in dispositions
+                    or dispositions[keeper].disposition != 'selected' or not used[keeper]):
+                raise CurationError('curation_redundant_keeper_missing')
     if any(d.disposition == 'selected' and not used[ref] for ref, d in dispositions.items()):
         raise CurationError('curation_selected_entry_dropped')
+    if records and not result.items and any(d.disposition != 'excluded' for d in dispositions.values()):
+        raise CurationError('curation_empty_unjustified')
     return result
