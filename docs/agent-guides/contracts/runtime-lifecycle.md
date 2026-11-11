@@ -946,3 +946,15 @@ cancellation still refuses. U6b must compose native root-tail consumers before
 attachment. Ended SID, missing PID, launcher TERM/INT and successful Stop request
 remain insufficient settlement/cancellation proof. See the
 [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## U6b1 native handoff remains unmounted
+
+The U6b1 mixed producer captures original root transitions through COMMIT and
+returns opaque controls for later outside-lock consumption. It invokes no
+control, signals no PID, clears no tracker/journal and infers no native/effect
+settlement. Prepared/unknown/running owners and original Final receipt uncertainty
+stay retained. Cancelled sequential dependencies conservatively retain the
+incomplete disposition until U6b2 composes positive original-owner evidence and
+the native-tail consumer. Existing native-tail/Founder cancellation behavior and
+Pause generations remain unchanged. See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).

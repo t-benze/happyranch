@@ -1444,3 +1444,30 @@ root-tail composition; existing mixed refusal/direct selected cancellation stay.
 U5b2b2 callback validation/mount and U7 transport remain required; Final success
 stays Held. No graph/task/result/effect/budget/Pause history is rewritten. See
 [U6 specification and remainder](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## U6b1 unmounted mixed stop producer (TASK-15301)
+
+`sequential_mixed_cancel.cancel_mixed` consumes the U6a full mixed oracle before
+and after one admission writer transaction. It separates the normal live
+ordinary cascade from terminal dependency discovery and whole sequential-family
+fences. Live document/old-Coding mutation refuses pending their original writer
+composition. Retained-family or unrelated native row drift rolls back the whole
+transaction. Native rows outside the precise live write set, original result
+identities, returned/cancelled graphs and all limits stay unchanged. Existing
+engine fences own CAS/event ordering; original task_cancelled audits retain their
+shape. Only an already committed callback can drain unchanged through the
+existing dispatcher, without new result/visit/output/Final work.
+
+This interface is **unmounted**. It returns opaque controls and captures original
+root transitions through COMMIT, but performs no Stop, native-tail consumption,
+cleanup or publication. Controls may run only after COMMIT/outside locks. Any
+prepared/running/unknown journal/control ownership retains teardown-incomplete;
+retained cancelled sequential graphs conservatively retain it too, pending the
+U6b2 positive-original-owner composition. No PID or successful control return
+supplies settlement. U6b2 must compose live retained-family writers, authenticate
+cross-family ordinary overlays, refine native-tail disposition and attach the
+Founder cancellation/cascade route and native-tail consumer. Existing mounted
+paths, U6a/U4/U5, Pause and Final receipt uncertainty remain unchanged. No schema,
+endpoint, retry or execution entitlement is added. U5b2b2/U7 remain required;
+Final success stays Held. See the [U6 remainder](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).

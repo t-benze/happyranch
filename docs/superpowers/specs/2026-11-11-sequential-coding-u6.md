@@ -115,3 +115,64 @@ only in the daemon and selected-agent own live operations for effective access;
 no daemon GitHub/network I/O or access observer. TASK-15250 Pause generation and
 TASK-15275 receipt-recording uncertainty semantics remain unchanged.
 Merged != deployed. Independent review/QA and manager guarded merge remain.
+
+
+## U6b1 split declared before edits (TASK-15301)
+
+Fetched B=`b089e8512a5661ab62ac8a1ca2cf3d1538dbf2f2`. The authorized
+records/reader/producer split delivers an **unmounted producer interface** in
+`sequential_mixed_cancel.py`. U6b2 still owns coherent live retained-family writer
+composition, authenticated cross-family ordinary overlays, positive-original-owner
+native-tail disposition and Founder cancel/cascade/native-tail attachment. No
+partial producer is mounted. Prior U6a paragraphs describe its delivered head;
+its readers and all original mounted cancellation paths remain byte-identical.
+
+Assumptions before editing: no schema change; no new route/CLI/transport or public
+command; existing old Coding/document writers/readers and U4/U5/Pause/dispatcher/
+engine/business-Held/Final receipt owners remain byte-identical. No code is moved.
+This producer reuses their interfaces without broadening their acceptance. If an
+ordinary ancestor change conflicts with a retained owner's frozen capture, the
+complete target oracle refuses and the whole transaction rolls back. U6b2 must
+solve that composition at original owner boundaries before mounting anything.
+
+The new coroutine captures current authority before coroutine locks, uses the
+original admission immediate writer, and reads complete mixed history before
+live membership discovery. The normal live descendant walk stops at terminal
+ordinary rows; separate terminal dependency traversal reaches retained sequential
+families. Fresh sequential family members expand atomically; hidden live work
+under a terminal dependency refuses. Live retained document/Coding rows refuse.
+Ordinary point stops refuse sequential/Coding-dependent ancestry. Returned and
+cancelled families receive no new fence, task write or control. Each fresh run
+uses the original engine CAS fence/event; live task overlays retain the existing
+audit shape. A fresh exact native comparison after opaque control discovery and
+the complete post-write oracle reject drift. Post-write native task comparison
+permits only the derived cancellation fields on the exact live write set;
+original result identities, owners, parents and all other native fields match.
+
+Each complete read keeps D2 A/B/C/L limits; both reads share the original
+operation deadline and retained-family cumulative allowance. Extra discovery,
+copying, native comparison and control collection use one additional finite
+operation budget/deadline, with no reset on refusal. Existing run event/visit/
+epoch/return limits and native attempt budgets stay with their original owners.
+The coroutine performs no native control or external effect. It returns controls
+only for newly cancelled live rows, with original root transition captures kept
+through COMMIT. Original journal/control/PID uncertainty is inspected without
+clearing ownership; retained cancelled sequential families conservatively keep
+teardown-incomplete until U6b2 can compose positive original-owner evidence.
+No safe cleanup or remote-effect clearance follows from a successful return.
+
+| New owner | Consumers / boundary |
+| --- | --- |
+| `_tasks`, `_affected` | Exact native projection and bounded write-set selection under the full oracle. Not a general history reader. |
+| `_unchanged` | Pre-write native comparison after control discovery, original transaction/budget. |
+| `cancel_mixed` | No production importer. Internal producer only, returns the existing cancellation delivery shape; U6b2 owns route/native-tail attachment. |
+| Original U6a, U4/U5, old Coding/document, engine/dispatcher/business-Held/Pause/Final owners | Byte/AST-identical; no code moved or new entitlement. |
+
+Evidence is out-of-repo synthetic, not V3/native acceptance. Exact-H source imports,
+counters, callback drain/refusal, actual producer ancestor/deep-document/terminal
+cases, uncertainty and rollback observations are recorded in TASK-15301 handoff.
+Mounted Founder mixed cancellation, live old-Coding/document composition, full
+populated old-Coding lifecycle acceptance, native Stop/root-tail integration,
+real concurrency/host/outer/effect proof, U5b2b2/U7, V3/V5/M4 and all live operations
+remain NOT RUN/implementation as applicable. No repository tests are added.
+PRD v1.0.4/msg131 ACCESS-1 and every preserved boundary above remain controlling.
