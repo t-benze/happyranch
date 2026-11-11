@@ -122,7 +122,8 @@ The archive transaction rechecks all predicates at decision time, including
 `composed_from_dream_id IS NULL`. Its shared owner relation includes pending
 invocations of every purpose, queued/running/unacknowledged delivery ranges and
 held deferrals on open exchanges. Settled delivery rows and breaker history do
-not block. Existing move admission remains in force. The transaction archives,
+not block. PR-3b removes the move-only participant-write hold from archive
+admission; native predicates remain. The transaction archives,
 resets sessions, appends the system message as `orchestrator`, and commits
 `thread_archived` with agent `orchestrator`, task_id equal to the thread ID and
 payload `{turns_used, trigger, resolved_by, resolved_seq}` atomically.

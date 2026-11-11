@@ -236,9 +236,9 @@ support._storage/start/native positives; those still require a separately
 allocated genuine owner venue. Fresh FULL independent review and actual
 same-final-head executable QA remain gates before live-manager guarded merge;
 no native start or readiness override is supplied.
-New settings/progression and literal @3/team_move
-readers, repeated-binding inventory reuse and native controls remain root-owned
-prerequisites. No complete admission/readiness closure is claimed. The earlier
+Settings/progression and literal @3 readers, repeated-binding inventory reuse
+and native controls remain root-owned prerequisites. The earlier team_move
+reader checkpoint is historical; PR-3b removes the unused move-only closure. No complete admission/readiness closure is claimed. The earlier
 SOURCE checkpoint's F5-R1c/F8-R1c UNEXECUTED venue statement is historical.
 TASK12407's42+14 GREEN/five repetitions remain historical, as do its adverse
 M6 partial27/native0/incomplete2 and S1/S3 cause-only results. Accepted step18
@@ -259,8 +259,9 @@ Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
 through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause
 rediscovery preserves this wait. Native cancellation of a selected queued graph
 is refused before mutation, including ancestor cascade and after the DB-lock wait;
-control/terminal writers remain later root-owned work. Initial selected move
-projection contains effective actual roles, not unselected replacement candidates.
+control/terminal writers remain later root-owned work. The initial selected move
+projection is historical; PR-3b removes the unused move-only closure reader.
+Current coding ownership and strict saved history remain unchanged.
 
 GET `/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}?session_id=CURRENT`
 and `workflows coding run-show INSTANCE --org ORG --session-id CURRENT --json`
@@ -760,10 +761,13 @@ The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
 `--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
 task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
-Pause, identity, retry and native cleanup ownership remain. Thread admission,
-delivery release and coordinator/store active-row readers await PR-3b; the nightly
-disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
-audit history or stored move row is rewritten.
+Pause, identity, retry and native cleanup ownership remain. PR-3b also removes
+ordinary participant/session-write, reply-delivery claim/probe and scheduler
+redelivery move checks, plus dead move-only projection/publication APIs.
+Reserved readers remain in Founder abort/attestation and callback/uncertainty
+settlement, delivery-release permission/recovery, the archived-thread retry chain
+and nightly disk-sweeper native writer/layout/hold gates. No live state, audit
+history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a
@@ -772,15 +776,11 @@ their original history interpretation but refuse ambiguous new retry/reentry
 with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
 Manage-agent retains team/role and cannot transfer agents.
 
-Historical task attribution is separate from current launch eligibility. The
-complete parent/child/revisit/chain/fanout/workflow closure retains task team keys,
-recorded participants and permanent IDs, including retired actors authenticated
-by the existing strict naming owner or native INTEGER task/result/SID attribution.
-It never resolves settled history through today's manager or requires re-enrollment.
-Unknown identity/graph facts remain actionable census blockers without discarding
-collected inventory; dependent sessions/jobs/recovery callbacks/workflows remain
-joined even for terminal tasks. New execution still requires a current executable
-owner. No historical record, team, callback or binding is rewritten.
+Historical task attribution remains separate from current launch eligibility.
+PR-3b removes the unused move-only task/workflow closure census. New execution
+still requires a current executable owner. Strict saved history, native identity,
+Pause and cleanup ownership remain; no historical record, team, callback or
+binding is rewritten.
 
 The SAME INTEGER thread invocation/agent/SID preparation owner spans native
 materialization, integrity, repository refresh and launch-spec/cache preparation,
@@ -1111,27 +1111,31 @@ host terminal ordering. All purposes and actual host/direct429, eviction and
 bounded-nudge paths participate. The existing thread audit owner stores strict
 bounded append-only attempt/deferral evidence; no schema or task-Pause format
 changes. Unknown prior retries stay blockers after later clean outcomes.
-Captured actual running turns alone may settle under WAITING; no drain label
-admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
+Reserved callback/settlement readers still require the captured actual running
+owner under WAITING; they grant no new launch entitlement. The unused move-only
+capture/drain entrypoints are removed. Queue dedup spans queued/in-flight work;
+typed deferrals release
 notification ownership, and complete durable runnable discovery/redelivery keeps
 pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
 and raw reapers preserve held/C2-owned history. A pending receipt whose
 producer settled without deferral or unknown cleanup and has no live owner
 takes ordinary daemon_restart recovery; a shutdown cancellation after every
-attempt settled quiescent records no failed_cleanup. Participant/session writes
-retain their admission guards; messages remain admissible. The bounded
-thread census/drain and post-release seams remain in the launch-admission layer.
+attempt settled quiescent records no failed_cleanup. Ordinary participant/session writes
+no longer consult the move hold; native transaction and identity checks remain.
+The unused move-only census/drain/post-release entrypoints are removed. Reserved
+recovery, callback/settlement and delivery-release permission readers remain.
 Behavior remains UNEXECUTED,
 integration SKIPPED24342; no new product tests/fixtures or activation authority.
-Native archive admission precedes delivery discard, BOOTSTRAP reaping, status,
-participant resets, their audits and the archive system message in one DB-owned
-transaction serialized against a forward decision. Refusal leaves all those
-obligations and history unchanged; transcript files/events follow COMMIT.
+Native archive admission no longer checks the move-only participant-write hold.
+Delivery discard, BOOTSTRAP reaping, status, participant resets, audits and the
+archive system message retain their single DB-owned transaction. Native refusal
+leaves obligations/history unchanged; transcript files/events follow COMMIT.
 Authentic provider eviction audit and compare-and-clear of the attempted stale
 SID commit before fallback phase selection/admission. Only the actual live
 producer's durable launched/settled initial attempt can record that observation
-under a winning hold; callback/drain/new-launch and general participant guards
-remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retained;
+under a winning hold. Its actual owner validation and reserved callback/settlement
+checks remain; ordinary participant/session-write move guards are removed.
+Watermarks, delivery ranges/tokens and runtime SID are retained;
 unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
 These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
 
@@ -1140,9 +1144,8 @@ Shared C3 admission registers native source, permanent org/agent and owning sess
 rechecks identity/claims and retains original retry budgets/SID/enqueue age on safe deferral.
 Pending work stays native; recurring schedule occurrences retain distinct
 history. Existing queue/timer release seams deduplicate redelivery; reapers
-preserve lifecycle-owned uncertainty. Complete C3 causal census covers job waits,
-active bindings, remote attempts/workspaces, pending enrollment and writer tails;
-terminal rows or missing trackers never prove cleanup. Native profile/workflow,
+preserve lifecycle-owned uncertainty. The unused move-only C3 causal census is removed. Native lifecycle and writer
+history readers remain; terminal rows or missing trackers never prove cleanup. Native profile/workflow,
 roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
 membership, keeping their original synchronization and journals without a move-hold
 check. The nightly disk sweeper retains its separate native hold gate.
@@ -4423,9 +4426,10 @@ For the new settings-pinned family, the actual selected executable final manager
 initiates execution from its own result. Four distinct eligible permanent actors
 may belong to different teams. Every stage retains its actual role/team and
 current repository authority; configuration confers no access. The original
-implementer-only override determines the effective four roles. Move projection
-includes selected future roles and actual causal history, while unused defaults/
-replacements alone create no binding dependency. Historical native same-team
+implementer-only override determines the effective four roles. PR-3b removes
+the unused move-only projection of selected future roles and causal history.
+Current native coding ownership and immutable saved history remain unchanged.
+Historical native same-team
 families keep their predicates and immutable bytes.
 
 Current valid disable/default changes do not replace an admitted run's settings

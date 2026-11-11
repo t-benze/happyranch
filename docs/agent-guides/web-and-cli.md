@@ -240,8 +240,9 @@ Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
 through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause
 rediscovery preserves this wait. Native cancellation of a selected queued graph
 is refused before mutation, including ancestor cascade and after the DB-lock wait;
-control/terminal writers remain later root-owned work. Initial selected move
-projection contains effective actual roles, not unselected replacement candidates.
+control/terminal writers remain later root-owned work. The initial selected move
+projection is historical; PR-3b removes the unused move-only closure reader.
+Current coding ownership and strict saved history remain unchanged.
 
 GET `/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}?session_id=CURRENT`
 and `workflows coding run-show INSTANCE --org ORG --session-id CURRENT --json`
@@ -742,10 +743,13 @@ The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
 `--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
 task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
-Pause, identity, retry and native cleanup ownership remain. Thread admission,
-delivery release and coordinator/store active-row readers await PR-3b; the nightly
-disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
-audit history or stored move row is rewritten.
+Pause, identity, retry and native cleanup ownership remain. PR-3b also removes
+ordinary participant/session-write, reply-delivery claim/probe and scheduler
+redelivery move checks, plus dead move-only projection/publication APIs.
+Reserved readers remain in Founder abort/attestation and callback/uncertainty
+settlement, delivery-release permission/recovery, the archived-thread retry chain
+and nightly disk-sweeper native writer/layout/hold gates. No live state, audit
+history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a
@@ -754,15 +758,11 @@ their original history interpretation but refuse ambiguous new retry/reentry
 with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
 Manage-agent retains team/role and cannot transfer agents.
 
-Historical task attribution is separate from current launch eligibility. The
-complete parent/child/revisit/chain/fanout/workflow closure retains task team keys,
-recorded participants and permanent IDs, including retired actors authenticated
-by the existing strict naming owner or native INTEGER task/result/SID attribution.
-It never resolves settled history through today's manager or requires re-enrollment.
-Unknown identity/graph facts remain actionable census blockers without discarding
-collected inventory; dependent sessions/jobs/recovery callbacks/workflows remain
-joined even for terminal tasks. New execution still requires a current executable
-owner. No historical record, team, callback or binding is rewritten.
+Historical task attribution remains separate from current launch eligibility.
+PR-3b removes the unused move-only task/workflow closure census. New execution
+still requires a current executable owner. Strict saved history, native identity,
+Pause and cleanup ownership remain; no historical record, team, callback or
+binding is rewritten.
 
 The SAME INTEGER thread invocation/agent/SID preparation owner spans native
 materialization, integrity, repository refresh and launch-spec/cache preparation,

@@ -2346,7 +2346,8 @@ attribution. Full independent review and genuine FAILED12291-linked same-final-h
 QA remain root-owned, followed by two exact-head lints and genuine live-manager
 guarded merge/remote observation. Python units stay RETIRED; general integration
 INCLUDING callback is SKIPPED THR243seq42; E2E/build/native lifecycle tests are not
-selected. Full consume/support/settings/@3/team_move and actual actors/scopes,
+selected. The former move-only `team_move` reader prerequisite is historical
+after PR-3b. Full consume/support/settings/@3 and actual actors/scopes,
 release import, installed/serving runtime, scratch merge/rollback/two-org/backup
 remain separate unfinished prerequisites. No coding readiness or live operation
 follows from this support.
@@ -2596,7 +2597,8 @@ This increment changes closed start syntax and coding reader composition, not
 routes/classification or settings-client transport. The supported idle-schema
 operator checks served-summary parity; CLI help checks command registration.
 They do not prove full callback schema semantics, persisted settings pins,
-cross-team progression, native move projection or interrupted settlement.
+cross-team progression or interrupted settlement. The former native move
+projection checkpoint is historical after PR-3b.
 Accepted F5-R1a/b/c and F6/F8-R2a/b/e executable contracts remain NOT RUN / PROOF
 NOT RUN without the genuine compatible venue. Under Founder320seq99/v25, no new
 proof tooling or routine unchanged W1/client repetition is required. Missing Swift
