@@ -170,14 +170,16 @@ intentional_stop() {
   recover "$((SECONDS + 90))"
 }
 crash_loop() {
-  local unit=${services[0]} deadline=$((SECONDS + 120)) pid last_pid=0 kills=0 restarts
+  local unit=${services[0]} deadline=$((SECONDS + 240)) pid last_pid=0 kills=0 restarts
+  # Keep the crash loop and 15s stability check well inside the 300s budget window.
   # Never reset accounting or start anything until systemd gives up. Each
-  # observed new process is killed once, including starts before notify-READY.
+  # notify-READY process is killed once, starting with step 4's running process.
   while [[ $(property "$unit" ActiveState) != failed ]]; do
-    (( SECONDS < deadline )) || fail 'connector did not reach its shipped start limit within 120s'
+    (( SECONDS < deadline )) || fail 'connector did not reach its shipped start limit within 240s'
     pid=$(property "$unit" MainPID)
-    if [[ $pid =~ ^[0-9]+$ ]] && (( pid > 1 && pid != last_pid )); then
-      (( kills < 5 )) || fail 'connector exceeded five crash starts without start-limit-hit'
+    if [[ $(property "$unit" ActiveState) == active && $(property "$unit" SubState) == running &&
+          $pid =~ ^[0-9]+$ ]] && (( pid > 1 && pid != last_pid )); then
+      (( kills < 5 )) || fail 'connector reached a sixth notify-READY process without start-limit refusal'
       echo "Crash $((kills + 1)): MainPID=$pid NRestarts=$(property "$unit" NRestarts)"
       sudo kill -9 "$pid" || fail 'could not crash connector during start-limit test'
       last_pid=$pid
@@ -185,13 +187,16 @@ crash_loop() {
     fi
     sleep 0.1
   done
-  [[ $(property "$unit" Result) == start-limit-hit ]] || fail 'connector failed for a reason other than start-limit-hit'
   restarts=$(property "$unit" NRestarts)
-  echo "Start limit hit after $kills kills; NRestarts=$restarts"
+  echo "Connector failed after $kills kills; Result=$(property "$unit" Result); NRestarts=$restarts"
+  (( kills == 5 )) || fail 'connector was refused before exactly five notify-READY kills'
+  [[ $(property "$unit" ActiveState) == failed && $(property "$unit" MainPID) == 0 ]] || fail 'connector is not failed with MainPID=0'
+  sudo journalctl -b --no-pager --after-cursor "$cursor" -u "$unit" \
+    --grep='Start request repeated too quickly' | grep -F 'Start request repeated too quickly' || fail 'no connector start-limit refusal in the step 5 journal'
   deadline=$((SECONDS + 15))
   while (( SECONDS < deadline )); do
-    [[ $(property "$unit" ActiveState) == failed && $(property "$unit" Result) == start-limit-hit &&
-       $(property "$unit" MainPID) == 0 && $(property "$unit" NRestarts) == "$restarts" ]] || fail 'connector did not stay failed after start-limit-hit'
+    [[ $(property "$unit" ActiveState) == failed && $(property "$unit" MainPID) == 0 &&
+       $(property "$unit" NRestarts) == "$restarts" ]] || fail 'connector did not stay failed after start-limit refusal'
     sleep 1
   done
   sudo systemctl reset-failed "${services[@]}" || fail 'explicit step 5 reset-failed failed'
