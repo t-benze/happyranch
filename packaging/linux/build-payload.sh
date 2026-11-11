@@ -16,27 +16,29 @@ case "$(uname -m)" in
     aarch64) ARCH=aarch64; GO_ARCH=arm64 ;;
     *) echo LINUX_ARCH_UNSUPPORTED >&2; exit 2 ;;
 esac
-for tool in python3 uv git tar gzip npm node go sha256sum; do
+for tool in uv git tar gzip npm node go sha256sum; do
     command -v "$tool" >/dev/null || { echo "LINUX_TOOL_MISSING: $tool" >&2; exit 2; }
 done
 # Same inherited uv/Python admission policy as build_daemon.sh. Never print
 # environment values. All installations/caches are private to this build.
-python3 -I - <<'PYENV'
-import os
-allowed = {'UV_CACHE_DIR', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_NO_PROGRESS', 'UV_PYTHON'}
-if any(k.startswith('UV_') and k not in allowed for k in os.environ):
-    raise SystemExit('LINUX_UV_ENV_CONFLICT: unset inherited UV_* controls')
-if 'UV_PYTHON' in os.environ and os.environ['UV_PYTHON'] != '3.12':
-    raise SystemExit('LINUX_UV_ENV_CONFLICT: only literal UV_PYTHON=3.12 is admitted')
-if 'VIRTUAL_ENV' in os.environ:
-    raise SystemExit('LINUX_VIRTUAL_ENV_CONFLICT: unset VIRTUAL_ENV')
-if any(k.startswith('PYTHON') for k in os.environ):
-    raise SystemExit('LINUX_PYTHON_ENV_CONFLICT: unset inherited PYTHON* controls')
-if os.environ.get('UV_OFFLINE', 'false').lower() not in ('false', '0'):
-    raise SystemExit('LINUX_DOWNLOADS_PROHIBITED: fresh private build needs network')
-if os.environ.get('UV_PYTHON_DOWNLOADS', 'automatic') != 'automatic':
-    raise SystemExit('LINUX_DOWNLOADS_PROHIBITED: Python downloads must be permitted')
-PYENV
+# Use the already-required Node tool to admit controls before uv installs Python.
+node - <<'JSENV'
+const env = process.env;
+const fail = message => { console.error(message); process.exit(1); };
+const allowed = new Set(['UV_CACHE_DIR', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_NO_PROGRESS', 'UV_PYTHON']);
+if (Object.keys(env).some(k => k.startsWith('UV_') && !allowed.has(k)))
+    fail('LINUX_UV_ENV_CONFLICT: unset inherited UV_* controls');
+if (env.UV_PYTHON !== undefined && env.UV_PYTHON !== '3.12')
+    fail('LINUX_UV_ENV_CONFLICT: only literal UV_PYTHON=3.12 is admitted');
+if (env.VIRTUAL_ENV !== undefined)
+    fail('LINUX_VIRTUAL_ENV_CONFLICT: unset VIRTUAL_ENV');
+if (Object.keys(env).some(k => k.startsWith('PYTHON')))
+    fail('LINUX_PYTHON_ENV_CONFLICT: unset inherited PYTHON* controls');
+if (!['false', '0'].includes((env.UV_OFFLINE ?? 'false').toLowerCase()))
+    fail('LINUX_DOWNLOADS_PROHIBITED: fresh private build needs network');
+if ((env.UV_PYTHON_DOWNLOADS ?? 'automatic') !== 'automatic')
+    fail('LINUX_DOWNLOADS_PROHIBITED: Python downloads must be permitted');
+JSENV
 unset UV_PYTHON
 [ "$(node -p 'process.versions.node.split(".")[0]')" = 24 ] || {
     echo LINUX_NODE_24_REQUIRED >&2; exit 2;
@@ -49,32 +51,6 @@ if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --q
     echo LINUX_SOURCE_DIRTY: commit the reviewed build inputs first >&2; exit 2
 fi
 SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-VERSION="$(python3 -I - "$REPO_ROOT/pyproject.toml" <<'PYVERSION'
-import sys, tomllib
-project = tomllib.load(open(sys.argv[1], 'rb'))
-expected_uv = {'sources': {'pyinstaller': [{
-    'path': 'packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody5-py3-none-macosx_10_13_universal2.whl',
-    'marker': "sys_platform == 'darwin'"}]}}
-if project.get('tool', {}).get('uv') != expected_uv:
-    raise SystemExit('LINUX_UV_PROJECT_CONFIG_CHANGED: review before building')
-version = project['project']['version']
-if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-' for c in version):
-    raise SystemExit('LINUX_VERSION_INVALID')
-print(version)
-PYVERSION
-)"
-NAME="happyranch-$VERSION-linux-$ARCH"
-python3 -I - "$DIST" "$NAME" <<'PYDIST'
-import os, sys
-from pathlib import Path
-dest = Path(sys.argv[1])
-if not dest.is_absolute() or dest.resolve() != dest:
-    raise SystemExit('LINUX_DIST_PATH_INVALID: use a literal absolute path')
-dest.mkdir(parents=True, exist_ok=True)
-for suffix in ('', '.tar.gz', '.tar.gz.sha256'):
-    if os.path.lexists(dest / (sys.argv[2] + suffix)):
-        raise SystemExit('LINUX_OUTPUT_EXISTS: choose a fresh destination')
-PYDIST
 umask 077
 # Do not inherit TMPDIR or discover an enclosing project/.venv. uv --no-config
 # disables user/system/project overrides; Linux runtime has no local uv sources.
@@ -89,7 +65,7 @@ PYTHON_REQUEST=cpython@3.12.10
 uv python install --no-config --install-dir "$UV_PYTHON_INSTALL_DIR" --no-bin "$PYTHON_REQUEST"
 export UV_PYTHON_DOWNLOADS=never
 MANAGED_PYTHON="$(uv python find --no-config --managed-python --no-python-downloads --no-project "$PYTHON_REQUEST")"
-python3 -I - "$MANAGED_PYTHON" "$UV_PYTHON_INSTALL_DIR" <<'PYSELECT'
+"$MANAGED_PYTHON" -I - "$MANAGED_PYTHON" "$UV_PYTHON_INSTALL_DIR" <<'PYSELECT'
 import os, stat, sys
 from pathlib import Path
 exe, install = map(Path, sys.argv[1:])
@@ -112,6 +88,33 @@ if (sys.implementation.name != 'cpython' or sys.version_info[:3] != (3, 12, 10)
 print(prefix)
 PYBASE
 )"
+# All helper Python runs use the verified private interpreter, including TOML reads.
+VERSION="$("$MANAGED_PYTHON" -I - "$REPO_ROOT/pyproject.toml" <<'PYVERSION'
+import sys, tomllib
+project = tomllib.load(open(sys.argv[1], 'rb'))
+expected_uv = {'sources': {'pyinstaller': [{
+    'path': 'packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody5-py3-none-macosx_10_13_universal2.whl',
+    'marker': "sys_platform == 'darwin'"}]}}
+if project.get('tool', {}).get('uv') != expected_uv:
+    raise SystemExit('LINUX_UV_PROJECT_CONFIG_CHANGED: review before building')
+version = project['project']['version']
+if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-' for c in version):
+    raise SystemExit('LINUX_VERSION_INVALID')
+print(version)
+PYVERSION
+)"
+NAME="happyranch-$VERSION-linux-$ARCH"
+"$MANAGED_PYTHON" -I - "$DIST" "$NAME" <<'PYDIST'
+import os, sys
+from pathlib import Path
+dest = Path(sys.argv[1])
+if not dest.is_absolute() or dest.resolve() != dest:
+    raise SystemExit('LINUX_DIST_PATH_INVALID: use a literal absolute path')
+dest.mkdir(parents=True, exist_ok=True)
+for suffix in ('', '.tar.gz', '.tar.gz.sha256'):
+    if os.path.lexists(dest / (sys.argv[2] + suffix)):
+        raise SystemExit('LINUX_OUTPUT_EXISTS: choose a fresh destination')
+PYDIST
 # Noneditable wheel install: runtime dependencies only, no build/dev group.
 # Refuse dependency sdists; missing native wheels require an explicit decision.
 uv sync --no-config --project "$WORK/source" --directory "$WORK/source" \

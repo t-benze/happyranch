@@ -15,7 +15,9 @@ Verify with `sha256sum -c happyranch-<version>-linux-<arch>.tar.gz.sha256`.
 The tarball is an intermediate input to the later .deb packaging work.
 
 To build locally on Linux x86_64 or aarch64, use a clean committed checkout,
-Python 3.12+, uv, Node 24/npm, Go 1.23.12+, git, GNU tar, gzip and sha256sum.
+uv, Node 24/npm, Go 1.23.12+, git, GNU tar, gzip and sha256sum. No host
+Python is required; the builder installs its private pinned CPython 3.12.10
+before running any Python helper, including project metadata reads.
 Network access to the pinned Python/dependency sources is required. Unset
 `VIRTUAL_ENV`, inherited `PYTHON*` and uv selection/configuration controls
 before invoking the build; unsupported controls and offline mode are refused.
