@@ -887,7 +887,7 @@ alone proves neither a live writer nor successful cleanup.
 
 A complete already-persisted proof can close only its selected NEW obligation
 before the ordinary Git failure handler. Current original owner, loaded/source/boot
-agreement, root/Pause/move/task/session eligibility, cooperative resource exclusion
+agreement, root/Pause/task/session eligibility, cooperative resource exclusion
 and the exact state digest are rechecked under the existing writer. Missing proof,
 escaping preparation interval, lost owner or persistence failure keeps sticky
 failed_cleanup/UNKNOWN before fallible attribution. No Boolean reset, retry-policy

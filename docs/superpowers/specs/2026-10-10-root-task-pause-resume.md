@@ -298,7 +298,7 @@ settlement makes an unclosed preparation unknown, and unknown owners cannot safe
 be adopted for another launch. FAILED with `launch_refused` uses normal failure,
 parent enqueue and thread followup; it never clears `failed_cleanup`, unknown
 journal/process evidence, retry lineage or worktree guards. Existing smaller host,
-provider and recovery ceilings remain. Intentional Pause/team-move deferral,
+provider and recovery ceilings remain. Intentional Pause or shared preparation deferral,
 child/job/capacity/backoff waits, shutdown and stale/current-owner loss consume no
 allowance. Current-owner and authentic callback fences precede evidence and are
 rechecked inside failure transition; later continuations have separate keys.

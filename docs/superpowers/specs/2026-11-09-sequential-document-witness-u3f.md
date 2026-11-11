@@ -287,14 +287,16 @@ these add 1,573,888 bytes and two steps only on the reached document branch.
 Non-document hold/foreign-result scopes gain zero proof serializations. No
 reset/refund, new compile, snapshot clone or protected-fragment edit follows.
 
-C2 stays unchanged, as design line125 requires. **F-U3f-MOVE — OPEN, owner ROOT
-engineering_manager:** native team-move fence parsing (MoveRequest plus task
-closure) is uncharged to any reader budget, the pre-existing class shared by
-native writers including sequential_engine. Current source fixtures do not
-exercise an active move; this is classification, never behavioral/accounting
+C2 stays unchanged, as design line125 requires. **F-U3f-MOVE historical
+checkpoint, owner ROOT engineering_manager:** the earlier source parsed native
+team-move fences (MoveRequest plus task closure) without charging a reader budget.
+PR-3a removes those non-thread admission calls, including sequential_engine and
+node_instruction; the earlier fixture observation is historical, never accounting
 PASS. F-U3f-AUTH and F-U3f-ENTRY remain separately open. The complete transitive
 inventory classifies other uncharged sites as inherited zero delta; any NEW
-uncharged work beyond these three classes requires STOP to ROOT.
+uncharged work beyond these three disclosed classes requires STOP to ROOT.
+
+Live thread/coordinator cleanup remains PR-3b, owned by ROOT engineering_manager.
 
 Fresh B/candidate source observations on each SAME physical SEED fixture:
 

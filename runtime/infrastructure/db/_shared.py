@@ -66,11 +66,11 @@ def _synchronized(method):
 
 
 def _task_move_admission(method):
-    """Outer move gate for task allocation/claims, before the DB decorator.
+    """Outer move-named serialization gate, before the DB decorator.
 
-    A caller-owned DB transaction must use its uncommitted check directly,
-    never acquire another gate beneath DB. Its allocation is durable before
-    the move writer can commit a hold; the move census must see that task.
+    A caller-owned DB transaction must never acquire another gate beneath DB.
+    Shared lock ordering remains; non-thread task allocation/claims no longer
+    require the retired uncommitted move-hold check.
     """
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):

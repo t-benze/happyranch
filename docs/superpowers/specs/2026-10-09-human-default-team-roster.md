@@ -4,7 +4,8 @@ Founder THR296 seq316 retires team moves: moving agents between teams is no
 longer supported. Knowledge distill/instill replaces that direction. The offline
 maintenance utility, runbook and utility-only cases are removed. The online
 operator surface and operation/recovery machinery are also removed; retained
-launch-admission hooks await the later cleanup slice. Founder-managed Default remains supported in
+thread admission and coordinator/store readers await PR-3b; PR-3a removes
+non-thread move-hold checks. Founder-managed Default remains supported in
 fresh org creation and `happyranch teams ensure-default --org ORG`.
 
 The empty-Default contract below remains current. All consultant-transfer and

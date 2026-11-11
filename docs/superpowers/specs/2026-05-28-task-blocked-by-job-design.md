@@ -35,7 +35,8 @@ audit, actual producer observation and strict Pause disposition together before
 attributable local release and durable terminal hint/wake. Direct exit leaves
 quiescent=false; failed tails/older uncertainty remain. Lost CAS and ambiguous
 COMMIT never append duplicate terminal effects or invent cleanup. Existing
-all-terminal/claim/cancellation/Pause/move rules remain; unsupported decoded waiter
+all-terminal/claim/cancellation/Pause rules remain; non-thread rediscovery no
+longer checks a move hold. Unsupported decoded waiter
 shapes are not repaired. See the current [Jobs contract](2026-05-26-jobs-design.md).
 
 
