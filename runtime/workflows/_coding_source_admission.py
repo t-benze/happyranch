@@ -56,7 +56,7 @@ def source_storage(conn, org_slug, budget, setups, captures, mappings):
         _check(values[0] not in rows)
         rows[values[0]] = dict(zip(_COLUMNS, values, strict=True))
     if not rows and mappings is None:
-        return {}, {}  # Ordinary nonmapping audit/watermark path remains unchanged.
+        return {}, {}
     captures.load()
     operations = {}
     for operation, audit in captures.operations.values():

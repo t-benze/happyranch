@@ -235,6 +235,12 @@ For a genuine executable team manager's OWN source callback, sequential start us
 
 ## Explicit settings-pinned coding composition (ROOT13015)
 
+THR-308 seq403 removes generic audit_log coding scanning and its watermark.
+Complete coding validation no longer detects arbitrary unrecognised coding audit
+rows or ordinary audit decoding/depth/size/digit failures through that scan.
+Direct audit-backed history readers, non-audit coding checks and structural/FK/
+integrity checks remain; budget limits are unchanged and scan charges disappear.
+
 Only the configured current executable agent manager composes start@2 for its
 OWN genuine callback. `workflows coding run-start --from-file ABS --emit-decision`
 validates and prints only; keep the original file/key. New callbacks/start actions

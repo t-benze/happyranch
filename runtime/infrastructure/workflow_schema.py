@@ -810,11 +810,10 @@ def _validate_cutover_data(
 def _validate_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None = None,
     validate_data: bool = True,
-    advances: list[tuple[tuple[int, int], int]] | None = None,
 ) -> Literal["F", "E", "G", "H", "I", "J"]:
     with _schema_snapshot(conn):
         return _read_installed(conn, expected_org_slug=expected_org_slug,
-                               validate_data=validate_data, advances=advances)[0]
+                               validate_data=validate_data)[0]
 
 
 @contextmanager
@@ -943,13 +942,12 @@ def _coding_document_exclusions(conn: sqlite3.Connection) -> frozenset[str]:
 def _read_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None,
     validate_data: bool = True, budget: _Budget | None = None,
-    advances: list[tuple[tuple[int, int], int]] | None = None,
 ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
     layout, coding_extension = _read_structure(conn)
 
     from runtime.infrastructure.workflow_coding_schema import _read_coding_data
     coding = _read_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
-                               budget=budget, advances=advances)
+                               budget=budget)
     # Unknown native admission owners (including unsupported coding families)
     # never become a legacy observation on an earlier workflow layout.
     from runtime.infrastructure.task_pause_controls import validate_pause_schema
@@ -1012,10 +1010,9 @@ class WorkflowCompatibilityStore:
         before_commit: Callable[[], None] | None = None,
         expected_org_slug: str | None = None,
     ) -> Literal["installed_legacy_only", "reopened"]:
-        # Keep the connection exclusively owned through transaction exit AND
-        # publication. Only this existing-layout branch is write-free.
+        # Keep the connection exclusively owned through transaction exit.
+        # Only this existing-layout branch is write-free.
         with self._database._lock:
-            advances: list[tuple[tuple[int, int], int]] = []
             with self._database.workflow_schema_transaction() as conn:
                 from runtime.infrastructure.workflow_coding_schema import (
                     CANONICAL_WORKFLOW_CODING_DDL, has_coding_schema_objects,
@@ -1027,46 +1024,36 @@ class WorkflowCompatibilityStore:
                 if actual[0] or coding_present:
                     from runtime.infrastructure.workflow_schema_load import read_workflow_schema_for_org_load
                     layout = read_workflow_schema_for_org_load(
-                        conn, expected_org_slug=expected_org_slug, writer_source=True, advances=advances,
+                        conn, expected_org_slug=expected_org_slug, writer_source=True,
                     )[0]
                     result = "reopened"
                 else:
                     _validate_coding_dependencies(conn)
-                    _install_foundation(conn, expected_org_slug=expected_org_slug,
-                                        advances=advances)
+                    _install_foundation(conn, expected_org_slug=expected_org_slug)
                     layout = 'F'
                     result = "installed_legacy_only"
                 if not coding_present:
                     _validate_coding_dependencies(conn)
                     source_indexes = _owner_indexes_present(conn)
                     source_layout = layout
-                    advances.clear()
                     _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
                     from runtime.infrastructure.workflow_task_ownership import refresh_binding_view
                     refresh_binding_view(conn, source_layout, coding_extension=True)
                     if source_indexes:
                         _install_owner_indexes(conn, source_layout, coding_extension=True,
                                                existing=source_indexes)
-                    _validate_installed(conn, expected_org_slug=expected_org_slug,
-                                        advances=advances)
-                    layout = _read_workflow_schema(conn, expected_org_slug=expected_org_slug,
-                                                   advances=advances)[0]
+                    _validate_installed(conn, expected_org_slug=expected_org_slug)
+                    layout = _read_workflow_schema(conn, expected_org_slug=expected_org_slug)[0]
                 indexes = _owner_indexes_present(conn)
                 required = _owner_index_statements(layout, coding_extension=True)
                 if any(statement.split()[2] not in indexes for statement in required):
-                    advances.clear()
                     _install_owner_indexes(conn, layout, coding_extension=True, existing=indexes)
-                    _read_workflow_schema(conn, expected_org_slug=expected_org_slug, advances=advances)
+                    _read_workflow_schema(conn, expected_org_slug=expected_org_slug)
                 if before_commit is not None and result == "installed_legacy_only":
                     before_commit()
                     if not conn.in_transaction:
                         raise ValueError('workflow_install_transaction_lost')
-                    advances.clear()
-                    _read_workflow_schema(conn, expected_org_slug=expected_org_slug, advances=advances)
-            # No exception/interruption/failed COMMIT reaches publication.
-            from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
-            for file_key, last_id in advances:
-                _advance_audit_log_watermark(conn, file_key, last_id)
+                    _read_workflow_schema(conn, expected_org_slug=expected_org_slug)
             return result
 
 
@@ -1082,8 +1069,7 @@ def install_or_recover(
     )
 
 
-def _install_foundation(conn: sqlite3.Connection, *, expected_org_slug: str | None,
-                        advances: list[tuple[tuple[int, int], int]] | None = None) -> None:
+def _install_foundation(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> None:
     _execute_ddl(conn, CANONICAL_WORKFLOW_DDL)
     timestamp = datetime.now(timezone.utc).isoformat()
     conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
@@ -1105,7 +1091,7 @@ def _install_foundation(conn: sqlite3.Connection, *, expected_org_slug: str | No
             timestamp,
         ),
     )
-    _validate_installed(conn, expected_org_slug=expected_org_slug, advances=advances)
+    _validate_installed(conn, expected_org_slug=expected_org_slug)
 
 
 def draft_migration_guidance(*, org_slug: str, runtime_root: str = '<absolute-root>') -> str:
@@ -1397,14 +1383,11 @@ def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str
 
 def _read_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None,
                           budget: _Budget | None = None,
-                          advances: list[tuple[tuple[int, int], int]] | None = None,
                           ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
-    """Complete composition; advances is output for a cooperating outer owner."""
-    owned = not conn.in_transaction
-    collected: list[tuple[tuple[int, int], int]] = []
+    """Complete composition in one coherent schema snapshot."""
     with _schema_snapshot(conn):
         layout, coding = _read_installed(conn, expected_org_slug=expected_org_slug,
-                                         budget=budget, advances=collected)
+                                         budget=budget)
         # Only our own reconstructed coding inventory proves the inner reader
         # performed source/naming/team validation on this unchanged snapshot.
         # Independent installed/metadata consumers retain those inner checks.
@@ -1413,14 +1396,6 @@ def _read_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | 
             # Optional org extension: validate, never install or admit it.
             from runtime.infrastructure.team_move_store import validate_team_move_schema
             validate_team_move_schema(conn, org_slug=expected_org_slug)
-    # Late validation, interruption and unsuccessful snapshot exit never reach
-    # publication. A joined writer/read view has its own success/exit boundary.
-    if owned:
-        from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
-        for file_key, last_id in collected:
-            _advance_audit_log_watermark(conn, file_key, last_id)
-    elif advances is not None:
-        advances.extend(collected)
     return layout, coding
 
 

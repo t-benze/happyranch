@@ -11,7 +11,7 @@ foreign, malformed and orphan state; authentic bootstrap bindings are supported
 for either origin. No DDL/reference/history rewrite or old-reader downgrade.
 Registration runs once after the legitimate recovery/authority safety tail,
 never early serving, constructors or reads. Genuine native writer ownership,
-complete source/target validation and positive-COMMIT watermark apply. ONE local
+complete source/target validation and positive COMMIT apply. ONE local
 native census (all suffixes/state/live/fixed probes) shares 8192 rows/16MiB/2097152
 visits, separate from original source/release/target 8192/16MiB/16384; cells stay 16384.
 Only local pure refusal or direct healthy `team_move_native_held` may defer;
@@ -203,22 +203,12 @@ complete validation reconstructs fresh state, and caller-owned transactions stay
 open. Public schema readers retain their layout/None returns. Standalone
 role/import/template readers retain their existing defaults and provenance.
 
-Startup install_or_recover privately collects validated audit device/inode/last-rowid
-and publishes only after positive COMMIT under the same Database RLock. Generic
-complete readers and task classification collect privately and publish that exact
-verified prefix only after all validation/classification and successful exit from
-their own read snapshot. Classification retains the Database lock through publication,
-including coding-absent recovery. Joined writer/savepoint/coherent-view readers do
-not publish automatically; private collectors are output for explicit cooperating
-owners, never validation proof. Failure, reconciliation, interruption, unsuccessful
-snapshot exit, uncertain/failed COMMIT or detected identity/MAX regression cannot
-publish. Independent installed/metadata readers retain source/naming/team/document
-checks, including validate_data=False with coding present. The generic wrapper omits
-only duplicate source/team checks proven by its own same-snapshot coding inventory;
-absent/unproven coding retains them. Physical/FK, native/mutable and complete history
-checks and the original cumulative allowance remain. Expected coding rows revalidate
-below ordinary watermarks. This assumes cooperative insert-only history, not arbitrary
-same-UID rewrites; no mutable inventory cache or expanded file-identity trust follows.
+THR-308 seq403 removes generic audit_log coding scanning and its process-local
+watermark/collectors, including charges to the shared budget. Unrecognised coding
+shapes and ordinary audit decoding/UTF8/depth/size/digit failures are no longer
+detected by that scan. Direct audit-backed readers, non-audit coding checks,
+structural/integrity/FK checks and budget limits remain unchanged; supported
+histories can gain remaining allowance without changing authority content.
 
 PR1165's prerequisite merged at fee7aa7222dbc80e16492258c15f8fa3214fabad,
 with independent TASK12436 APPROVE and synthetic executable TASK12438 PASS at
@@ -492,7 +482,8 @@ with a reason only for revoked. Changed same-key bytes conflict.
 Mixed setup/import/mapping/P cold consumers share bounded native source/mapping
 capture/operation inventory and the enclosing row/byte/step budget. Full positive
 native-row equalities and unknown/orphan/duplicate refusal cover schema(data=False),
-OrgState reopen, recovery and drain; ordinary nonmapping watermark behavior stays.
+OrgState reopen, recovery and drain. The generic audit scan was removed per
+THR-308 seq403.
 Source expected_head remains NULL/own-development-output@1: it grants no arbitrary
 head disclosure, review, QA, CI or merge. K1.resolve remains unavailable because
 no genuine exact-subject read entitlement is produced here. Allocating source
@@ -566,8 +557,9 @@ whole-row family matching covers mappings, original capture audit and all five
 admission columns; orphan/foreign/malformed/unsupported families still refuse.
 Central schema validation, also data=False, reopen/recovery and drain/downgrade
 compose that same reader without recursive schema validation or ID exemptions.
-Central shared-table scans first discriminate ordinary history independently of
-coding-family accounting, including after mapping or queued enrollment. Expected
+Central non-audit shared-table scans first discriminate ordinary history
+independently of coding-family accounting, including after mapping or queued
+enrollment. Expected
 coding keys only locate freshly acquired rows; they never authorize acceptance.
 Coding candidates use singleton rowid keyset pages with explicit overflow refusal.
 Before their bounded Python fetch, every selected scalar/variable cell gates its
@@ -582,22 +574,23 @@ refuse earlier; they do not bound total SQLite/process/decoded-object memory.
 Complete expected mapping/own-admission/source-audit rows are derived once from
 validated records, indexed only for lookup, then compared in full with exact
 native types. Original capture inventory and required setup histories are cached
-only within this coherent call. No mapping row or supported audit is exempted
-by ID or watermark. Unknown/orphan/malformed/duplicate evidence still refuses.
+only within this coherent call. Direct history readers authenticate supported
+audit rows; non-audit mapping rows still compare completely, without ID exemptions.
+Unknown/orphan/malformed/duplicate evidence in these retained readers still refuses.
 The SAME enclosing traversal allowance also covers selected coding metadata discrimination:
 every structured node/member, duplicate pair and classified member string,
 and malformed lexical prefix/member/whitespace/string/escape visits consume it.
 Nested lists/objects and fallback after partial pairs-hook work never reset or
 replace that allowance. Exhaustion refuses before a normal return, positive
-admission or watermark advance. Ordinary shared rows do not spend this coding
+admission. Ordinary non-audit shared rows do not spend this coding
 allowance: decision prose mentioning workflow_start and noncoding org_config_write
 sections remain ordinary. Coding settings scope is selected by config:coding OR
 the decoded top-level section, preserving escaped/duplicate/malformed candidates
 and the original1024 coding-publication limit. JSON-decoder/encoding internals,
 total SQL/decoded-object/process memory and wall-clock work are not bounded by
-this traversal or raw-byte accounting. Ordinary scans retain their historical
-insert-only discriminator/watermark contract before and after mapping/start.
-Expected coding rows always revalidate below that ordinary watermark. This source
+this traversal or raw-byte accounting. Non-audit scans retain their discrimination
+before and after mapping/start. The generic audit scan and watermark are removed
+per THR-308 seq403, including their refusal and shared-budget charges. This source
 correction is not behavioral/security verification.
 Mapping/setup/import have no run/host tail; compatible J reader is always needed.
 F–J SQL/reference bytes and all historical document meanings are unchanged.
