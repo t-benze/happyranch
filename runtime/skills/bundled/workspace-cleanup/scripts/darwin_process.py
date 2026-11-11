@@ -509,7 +509,8 @@ class DarwinReader:
         self.admit()
 
     def _self_vnode(self, node: VnodePath, value: os.stat_result) -> None:
-        identity, path = decode_vnode(node)
+        identity = decode_vnode(node)
+        path = decode_vnode_path(node)
         if identity != (value.st_dev, value.st_ino) or not os.path.samestat(os.stat(path), value):
             raise ProcessObservationUnavailable('native vnode/path self-check failed')
 
@@ -584,17 +585,22 @@ class DarwinReader:
         return os.fsdecode(raw)
 
 
-def decode_vnode(node: VnodePath, *, optional: bool = False) -> tuple[tuple[int, int], str] | None:
-    """A zero optional vnode is explicit; partial identity/path is uncertainty."""
-    value = node.info.vi_stat
-    raw = bytes(node)[VnodePath.path.offset:VnodePath.path.offset + 1024]
+def decode_vnode(node: VnodePath, *, optional: bool = False) -> tuple[int, int] | None:
+    """Validate native identity independently of possibly unavailable path evidence."""
     if optional and not any(bytes(node)):
         return None
+    value = node.info.vi_stat
+    if not value.ino or not value.mode or node.info.vi_type <= 0:
+        raise ProcessObservationUnavailable('incomplete vnode identity')
+    return int(value.dev), int(value.ino)
+
+
+def decode_vnode_path(node: VnodePath) -> str:
+    raw = bytes(node)[VnodePath.path.offset:VnodePath.path.offset + 1024]
     content, nul, _ = raw.partition(b'\0')
-    if (not value.ino or not value.mode or not content or not nul
-            or not content.startswith(b'/') or node.info.vi_type <= 0):
-        raise ProcessObservationUnavailable('incomplete vnode identity/path')
-    return (int(value.dev), int(value.ino)), os.fsdecode(content)
+    if not content or not nul or not content.startswith(b'/'):
+        raise ProcessObservationUnavailable('incomplete vnode path')
+    return os.fsdecode(content)
 
 
 def parse_mount_table(text: str) -> list[dict]:
@@ -680,11 +686,19 @@ def scan_paths(roots: dict[str, tuple[int, int]], bounds: Any, *, agent_uid: int
 
     def match(pid: int, kind: str, node: VnodePath, *, optional: bool = False) -> tuple | None:
         admit()
-        decoded = decode_vnode(node, optional=optional)
-        if decoded is None:
+        identity = decode_vnode(node, optional=optional)
+        if identity is None:
             return None
-        identity, path = decoded
         matched = inventory.get(identity)
+        try:
+            path = decode_vnode_path(node)
+        except ProcessObservationUnavailable:
+            # vn_getpath can fail after native identity was filled. Keep known
+            # inode use, then latch the incomplete lane through the normal gap.
+            if matched and len(hits) < 64:
+                hits.append({'pid': str(pid), 'kind': kind, 'path': '',
+                             'dev_ino': list(identity), 'candidate_path': matched})
+            raise
         canonical = os.path.realpath(path)
         lexical = any(path == root or path.startswith(root.rstrip('/') + '/') for root in roots)
         beneath = any(canonical == root or canonical.startswith(root.rstrip('/') + '/') for root in roots)

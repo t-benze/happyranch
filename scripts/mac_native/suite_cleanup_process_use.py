@@ -229,7 +229,7 @@ class SimulatedKernel:
         node.info.vi_stat.dev, node.info.vi_stat.ino = value.st_dev, value.st_ino
         node.info.vi_stat.mode = value.st_mode
         node.info.vi_type = 2 if path.is_dir() else 1
-        node.path = os.fsencode(label or path)
+        node.path = os.fsencode(path if label is None else label)
 
     def population(self, kind, info, pointer, size):
         pointer._obj[0] = os.getpid()
@@ -249,7 +249,7 @@ class SimulatedKernel:
             self.vnode(value.cwd, Path.cwd())
         elif flavor == 1:
             self.fd_tables += 1
-            if self.mode in ('positive_precedence', 'alias_or_renamed_reference', 'denied_kept'):
+            if self.mode in ('positive_precedence', 'alias_or_renamed_reference', 'alias_or_renamed_reference_empty_path', 'denied_kept'):
                 value[0].fd, value[0].kind = 99999, 1
                 return ct.sizeof(self.native.FdInfo)
             if self.mode == 'fd_churn' and self.fd_tables == 1:
@@ -272,7 +272,8 @@ class SimulatedKernel:
                 ct.set_errno(errno.EPERM)
                 return 0
             self.vnode(pointer._obj.vnode, self.path,
-                       label='/no-longer-resolvable/held.bin' if self.mode == 'alias_or_renamed_reference' else None)
+                       label=('/no-longer-resolvable/held.bin' if self.mode == 'alias_or_renamed_reference'
+                              else '' if self.mode == 'alias_or_renamed_reference_empty_path' else None))
         else:
             self.vnode(pointer._obj.vnode, Path.cwd())
         return size
@@ -306,6 +307,7 @@ def simulated_scans(rows: list, scratch: Path) -> None:
     for name, state, cause in (
         ('positive_precedence', 'blocked', 'public_region_negative'),
         ('alias_or_renamed_reference', 'blocked', 'public_region_negative'),
+        ('alias_or_renamed_reference_empty_path', 'blocked', 'incomplete vnode path'),
         ('denied_kept', 'unknown', 'denied'),
         ('reuse', 'unknown', 'identity_changed'),
         ('short_identity_scan', 'unknown', 'short_read'),
@@ -315,7 +317,14 @@ def simulated_scans(rows: list, scratch: Path) -> None:
         with patch.object(sys, 'platform', 'darwin'), patch.object(ct, 'CDLL', return_value=kernel), patch.object(ctypes.util, 'find_library', return_value='fixture-libproc'), patch.object(subprocess, 'run', side_effect=lambda *a, **k: simulated_mount(k)):
             result = native.scan_paths({str(candidate): (identity.st_dev, identity.st_ino)},
                                         scanner.Bounds(), agent_uid=12345)
-        check(rows, name, [state, True], [result['state'], any(cause in item for item in result['reasons'])],
+        expected, actual = [state, True], [result['state'], any(cause in item for item in result['reasons'])]
+        if name.startswith('alias_or_renamed_reference'):
+            expected.append(True)
+            actual.append(any(hit['kind'] == 'fd' and hit['dev_ino'] == [held.stat().st_dev, held.stat().st_ino]
+                              and hit['candidate_path'] == str(held)
+                              and hit['path'] == ('' if name.endswith('_empty_path') else '/no-longer-resolvable/held.bin')
+                              for hit in result['hits']))
+        check(rows, name, expected, actual,
               'simulated libproc/sysctl buffers and errno; actual scanner')
 
 
@@ -331,7 +340,7 @@ elif kind in ('fd', 'region'):
     handle = path.open('r+b')
     identity = list((os.fstat(handle.fileno()).st_dev, os.fstat(handle.fileno()).st_ino))
     if kind == 'region':
-        mapping = mmap.mmap(handle.fileno(), 0)
+        mapping = mmap.mmap(handle.fileno(), 0, trackfd=False)
         handle.close()
         handle = None
 elif kind == 'thread':
@@ -424,6 +433,19 @@ def run(report: dict) -> None:
             if kind in ('fd', 'region'):
                 value = (candidates[kind] / 'held.bin').stat()
                 check(checks, kind + '_ground_inode', [value.st_dev, value.st_ino], ground['dev_ino'], 'owned child fstat')
+            if kind == 'region':
+                # Independent native fd census before the scanner: mmap must
+                # retain only its region reference, never an mmap-owned dup fd.
+                remaining = []
+                for row in reader.table(process.pid, 1, native.FdInfo, 4096, empty=True):
+                    if row.kind == 1:
+                        vnode = reader.fd_path(process.pid, row.fd).vnode.info.vi_stat
+                        if (vnode.dev, vnode.ino) == (value.st_dev, value.st_ino):
+                            remaining.append(int(row.fd))
+                ground['held_file_fds'] = remaining
+                check(checks, 'region_no_held_file_fd', [], remaining, 'independent native fd census before scanner')
+                if remaining:
+                    raise RuntimeError('region fixture still holds target fd')
             grounds[kind] = ground
         detail['ground_truth'] = grounds
         for kind, path in candidates.items():
@@ -457,8 +479,8 @@ def run(report: dict) -> None:
             'preserved', str(candidates['idle']), str(primary), 'TASK-5'], scratch, deadline)
         check(checks, 'preservation_without_remote_retains', [2, True],
               [code, json.loads(stdout).get('refused')], 'shipping preserved CLI, offline gate refusal')
-        # No live task identity is forged. Existing read-only observer must keep
-        # the missing owner gate visible while collecting real Darwin host facts.
+        # Missing binding must refuse before owner admission; no live task
+        # identity is supplied. Collect real Darwin host facts separately.
         manifest, history, output = scratch / 'manifest.json', scratch / 'history.json', scratch / 'observation'
         manifest.write_text('[]')
         history.write_text('{}')
@@ -472,7 +494,9 @@ def run(report: dict) -> None:
         check(checks, 'observer_native_host', ['darwin', True, True],
               [observed['context'].get('platform'), observed['context']['complete'],
                bool(observed['context']['mounts'])], 'shipping read-only observer')
-        check(checks, 'observer_missing_owner_retains', [2, False], [code, observed['complete']])
+        check(checks, 'observer_missing_binding_retains', [2, False, ['scope_or_marker_unset'], False, False],
+              [code, observed['complete'], observed['errors'][len(observed['context']['errors']):],
+               'binding' in observed, 'owner_receipt' in observed], 'shipping observer; exact pre-owner binding refusal')
         check(checks, 'observer_without_findmnt', True,
               'findmnt' not in observed['context'] and 'reads' not in observed['context'])
         sys.path.insert(0, str(SCRIPTS))

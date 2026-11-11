@@ -458,12 +458,12 @@ bootstrap; no job parameters, dependencies, host tools or timeout change.
 | --- | --- |
 | BSD mount / spaces / empty / malformed / relative / truncated × three shipping parsers; self location | Execute actual embedded/nested functions and source definitions in a path with spaces, with PATH containing only python3. Invalid evidence refuses. No candidate action. |
 | Shared class / exception / checked state, ABI, denied and loader rows | Single binding identity, pinned layout and numeric strict-read failures; simulated ctypes rows are labeled. |
-| cwd / fd / fd-closed mmap / thread cwd | Owned native children supply PID and independent cwd/fstat ground truth; shipping scanner must BLOCK with exit3 and the matching reference/PID. |
+| cwd / fd / fd-closed mmap / thread cwd | Owned native children supply PID and independent cwd/fstat ground truth. The mmap uses `trackfd=False` (CPython 3.13+); an independent native fd census must find no fd targeting held.bin before scanning. The shipping scanner must BLOCK with exit3 and the matching reference/PID, including a region hit for the fd-free mapping. |
 | Idle | Clear only with complete evidence; otherwise UNKNOWN/exit2 with actual reasons retains. Public negative region coverage is currently unestablished. No idle PASS/eligibility claim. |
-| Simulated EPERM / short / cap / churn / reuse / renamed inode / deadline | Test-side libproc/sysctl buffer/errno fixtures exercise shipping reader/scanner decisions. These are not native permission proof. |
+| Simulated EPERM / short / cap / churn / reuse / renamed inode (including unavailable path) / deadline | Test-side libproc/sysctl buffer/errno fixtures exercise shipping reader/scanner decisions. Known dev/inode inventory hits must still BLOCK when vn_getpath supplies an empty path; unresolved negatives retain UNKNOWN. These are not native permission proof. |
 | Real EPERM | Actual kernel errno/PID evidence if observed; otherwise explicitly NOT OBSERVED. No host exemption or elevation. |
 | Darwin receipt schema | Complete schema accepts, wrong platform/missing or incomplete lane/Boolean counters refuse; schema fixtures are not authenticated-job proof. |
-| Observer / protected mounts / snapshot / preserved | Shipping read-only commands and metadata API, no findmnt/procfs fabrication. Offline preservation and missing-owner observer refuse at their actual gates; snapshot/protected host evidence is checked separately. |
+| Observer / protected mounts / snapshot / preserved | Shipping read-only commands and metadata API, no findmnt/procfs fabrication. Offline preservation refuses at its remote-history gate. The observer with stripped binding fields must refuse with exactly `scope_or_marker_unset` after host collection, without a binding or owner receipt; this is missing-binding coverage, not owner-check acceptance. Snapshot/protected host evidence is checked separately. |
 
 The approved preview proves individual observation gates only. Idle `eligible`
 at the candidate-runner boundary is **not proven**. Never invoke candidate
