@@ -306,7 +306,7 @@ The selection's `pause_generation` retains that invocation's original journal
 generation. Pause/Resume may advance the root control generation without changing
 the original owner/session/handle or requiring those two generations to equal.
 Held roots still refuse selection. Existing or partial reservations stay fenced;
-Resume never rewrites the journal, allocates a SID or permits reservation replay.
+Selection never rewrites the journal, allocates a SID or permits reservation replay.
 
 Inside that SAME boundary, U5a's `_read`/`derive_coding_admissibility` fully
 replay the selected history and require original settled independent review/QA,
