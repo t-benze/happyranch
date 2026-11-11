@@ -1,5 +1,6 @@
 # Founder THR-346 seq43/44 approves this ONE manual Linux build workflow.
 # THR-291: packaging is not a required PR/merge check; manual dispatch only.
+# Build and installed-.deb smoke share the existing native two-architecture job.
 name: Build Linux App Payload
 
 on:
@@ -53,6 +54,19 @@ jobs:
           payloads=(dist/linux/*.tar.gz)
           test "${#payloads[@]}" -eq 1
           bash packaging/linux/build-deb.sh "${payloads[0]}"
+      - name: Smoke installed Debian desktop package
+        run: |
+          set -euo pipefail
+          packages=(dist/linux/*.deb)
+          test "${#packages[@]}" -eq 1
+          bash packaging/linux/smoke-installed-deb.sh "${packages[0]}" "$RUNNER_TEMP/installed-deb-evidence"
+      - name: Upload installed package smoke evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: happyranch-installed-deb-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/installed-deb-evidence/
       - name: Upload package, intermediate payload and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

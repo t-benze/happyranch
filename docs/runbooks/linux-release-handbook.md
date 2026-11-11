@@ -158,10 +158,60 @@ archive members/escaping links and existing outputs, and calls
 host or execute a foreign interpreter: `x86_64` maps to Debian `amd64`, and
 `aarch64` maps to `arm64`. The manual workflow retains its original two native
 matrix rows and uploads the .deb alongside its intermediate inputs.
+The same build job then runs the installed-package smoke on **both** rows and
+uploads `happyranch-installed-deb-<arch>-<run>-<attempt>`, including on failure.
+This adds steps only: the manual trigger, matrix, read-only contents permission
+and required PR/merge checks remain unchanged.
 The package omits generated `__pycache__` directories, normalizes shared-library
 and documentation files to mode 0644, and adds a Debian changelog. Original PR1
 license/notice bytes remain in `/usr/share/doc/happyranch/licenses/`; the Debian
 copyright file points there and to the system Apache-2.0 common license.
+
+### Installed-package smoke (disposable Ubuntu 22.04)
+
+```sh
+# Normal non-root user with passwordless sudo; fresh evidence directory:
+bash packaging/linux/smoke-installed-deb.sh /absolute/happyranch_0.1.0-1_arm64.deb /tmp/installed-deb-evidence
+```
+
+Run only on a disposable machine with no registered `happyranch` package. The
+script installs and removes that package. It first asserts native dpkg
+architecture, installs the .deb and its Depends from stock Jammy archives with
+recommendations disabled, checks apt consistency, runs `happyranch --help`, and
+imports system GTK3/WebKit2 4.1 **before** installing display-test tools. Package
+inventories before/after this phase record what was already present. Only then
+does it install Xvfb, Openbox, xdotool, scrot, desktop-file-utils and dbus-x11
+(plus their dependencies). No build/runtime dependency is added as a test tool.
+
+It validates `/usr/share/applications/happyranch.desktop` and executes its
+installed Exec command as the normal user, with Xvfb, a window manager, private
+D-Bus and isolated HOME/XDG directories. Like PR2 QA it discovers the port from
+the app home's `daemon.pid`/`daemon.port`, verifies the daemon is the app's child,
+checks HTTP200/status `ok` at `/api/v1/health`, and compares `/` byte for byte
+with the installed built `web/dist/index.html`. It captures the actual focused
+window in `window.png`; a reviewer must view the PNG to assess rendered content.
+Ctrl+Q must exit the app with status0, leave no daemon process and remove both
+markers. Package removal must leave no package-specific files, links or
+directories and must preserve the entire user-data home (bytes and metadata),
+including a sentinel. Shared system directories are excluded from payload
+leftover checks. The isolated user-data fixture is deleted only after that
+preservation assertion. Failures return nonzero; teardown cannot change a
+failed assertion to a pass.
+
+Evidence contains `result.json` (stage, individual checks, command exit codes,
+architecture, package hash, PID/port, removal/preservation result and cleanup
+errors), `window.png`, installed desktop entry, served HTML and command/display
+logs. Failed runs may have only partial evidence; absent screenshots/checks are
+not passing results. Download both architecture artifacts from the exact-head
+manual run, inspect the real job/step logs and `result.json`, and actually view
+both screenshots. Record the run ID, head SHA and evidence paths in the PR.
+
+**Hosted-runner smoke is not a clean-machine test.** GitHub runner images carry
+preinstalled software; successful pre-display install/import checks cannot prove
+that every dependency is declared on an otherwise empty machine. Native arm64
+Ubuntu22.04 runner evidence does not qualify a clean arm64 install or Debian12.
+Keep those checks explicitly NOT RUN until separately exercised. This workflow
+remains manual-only and must never become a required PR/merge check.
 
 Debian version mapping is deliberately explicit: dotted numeric releases stay
 unchanged, `aN`/`bN`/`rcN` become `~aN`/`~bN`/`~rcN`, `.postN` becomes
