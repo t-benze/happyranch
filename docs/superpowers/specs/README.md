@@ -63,6 +63,7 @@ New specs should include a short status block near the top:
 
 | Spec | Status | Current source / notes |
 | --- | --- | --- |
+| [2026-11-11-knowledge-distill-instill-v1.md](2026-11-11-knowledge-distill-instill-v1.md) | current design; implementation pending | THR-296 Option A / TASK-15170: pre-Ready curation with an existing task identity, retired-source capture, immutable archives and additive idle-only Instill; acceptance NOT RUN. |
 | [2026-10-11-agent-reasoning-effort.md](2026-10-11-agent-reasoning-effort.md) | current | THR298 optional static selection, adapter input-v2 opt-in/legacy wire, invocation plumbing and conditional authority projection |
 | [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md) | current | Separate org root control, final commitment, truthful drain, API/CLI/overview and compatible rollback |
 | `2026-10-01-escalation-reason-display.md` | implemented | THR-279 read-side current-episode reason projection; current contract in `docs/agent-guides/web-and-cli.md`. |
