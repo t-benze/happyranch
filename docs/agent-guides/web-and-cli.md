@@ -240,8 +240,9 @@ Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
 through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause
 rediscovery preserves this wait. Native cancellation of a selected queued graph
 is refused before mutation, including ancestor cascade and after the DB-lock wait;
-control/terminal writers remain later root-owned work. Initial selected move
-projection contains effective actual roles, not unselected replacement candidates.
+control/terminal writers remain later root-owned work. The initial selected move
+projection is historical; PR-3b removes the unused move-only closure reader.
+Current coding ownership and strict saved history remain unchanged.
 
 GET `/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}?session_id=CURRENT`
 and `workflows coding run-show INSTANCE --org ORG --session-id CURRENT --json`
@@ -742,10 +743,13 @@ The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
 `--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
 task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
-Pause, identity, retry and native cleanup ownership remain. Thread admission,
-delivery release and coordinator/store active-row readers await PR-3b; the nightly
-disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
-audit history or stored move row is rewritten.
+Pause, identity, retry and native cleanup ownership remain. PR-3b also removes
+ordinary participant/session-write, reply-delivery claim/probe and scheduler
+redelivery move checks, plus dead move-only projection/publication APIs.
+Reserved readers remain in Founder abort/attestation and callback/uncertainty
+settlement, delivery-release permission/recovery, the archived-thread retry chain
+and nightly disk-sweeper native writer/layout/hold gates. No live state, audit
+history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a
@@ -754,15 +758,11 @@ their original history interpretation but refuse ambiguous new retry/reentry
 with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
 Manage-agent retains team/role and cannot transfer agents.
 
-Historical task attribution is separate from current launch eligibility. The
-complete parent/child/revisit/chain/fanout/workflow closure retains task team keys,
-recorded participants and permanent IDs, including retired actors authenticated
-by the existing strict naming owner or native INTEGER task/result/SID attribution.
-It never resolves settled history through today's manager or requires re-enrollment.
-Unknown identity/graph facts remain actionable census blockers without discarding
-collected inventory; dependent sessions/jobs/recovery callbacks/workflows remain
-joined even for terminal tasks. New execution still requires a current executable
-owner. No historical record, team, callback or binding is rewritten.
+Historical task attribution remains separate from current launch eligibility.
+PR-3b removes the unused move-only task/workflow closure census. New execution
+still requires a current executable owner. Strict saved history, native identity,
+Pause and cleanup ownership remain; no historical record, team, callback or
+binding is rewritten.
 
 The SAME INTEGER thread invocation/agent/SID preparation owner spans native
 materialization, integrity, repository refresh and launch-spec/cache preparation,
@@ -2177,6 +2177,45 @@ with their existing owners: classification/registration does not grant new
 permissions or remote reachability. No retired Web coverage test/file is added.
 Source availability and consistency rules live in
 [retired knowledge sources](features-and-invariants.md#retired-knowledge-sources-s1-thr-296).
+
+## Knowledge Distill and archives (S2)
+
+The existing bearer-authenticated same-org knowledge router also serves:
+
+- `POST /api/v1/orgs/{slug}/knowledge/distill`: `{ "submission_id": "original-key", "source_id": "retired_id", "confirmed": true }`, optionally with `processor_id` naming an existing active executable owner.
+- `GET /api/v1/orgs/{slug}/knowledge/distill/{operation_id}`: Queued/Processing/Ready/Failed, observed phase, cutoff/last-update, closed failure cause, actual processor/task/session/result and archive/version references. Both POST and GET include the fixed capture's category/state/reason/count-or-unknown/cutoff/errors coverage, preserving unavailable/error reasons through failure, replay and reopen. Internal capture, confirmation JSON and corpus bodies are excluded.
+- `GET /api/v1/orgs/{slug}/knowledge/archives`: Ready selection metadata, coverage and item counts.
+- `GET /api/v1/orgs/{slug}/knowledge/archives/{archive_id}`: immutable manifest and curated items with opaque S1 source references; no arbitrary source paths or raw snapshot read.
+
+The default processor is the recorded retirement manager, revalidated through
+ordinary task owner/team admission. Missing historical evidence or ineligible
+owners produce Failed; explicitly choose an existing authorized processor in a
+new submission. Founder is never an executable processor. The processor receives
+only the S2a bounded quoted brief, then returns JSON in normal completion
+`summary`/HTTP `output_summary` with its normal `done` decision. Callback arrival
+alone is Processing until successful terminal completion. Other decisions or
+outcomes and invalid results fail; earlier Ready archives remain selectable.
+
+Use `happyranch knowledge distill --from-file ABS --org ORG`,
+`knowledge distill-show OP --org ORG`, `knowledge archives list --org ORG`, and
+`knowledge archives show ARCHIVE --org ORG`. These print JSON. Validate the
+absolute confirmation file/closed fields and opaque IDs locally before daemon
+discovery. Preserve the original submission key after a lost response; replay
+returns the same operation/capture. Changed confirmation conflicts (409), and
+another key cannot duplicate in-flight work. A confirmed Failed retry uses a new
+key. Reopen Processing via GET; reads reconcile the bound task/result after DB
+reopen and never dispatch a second task or publish twice. Unknown completion
+proof stays Processing with an explicit phase. The 262144-byte whole-brief and
+131072-byte result caps do not truncate, chunk or batch.
+
+Typed request/response mirrors live in `web/src/lib/api/knowledge.ts`; served
+models, the OpenAPI summary and existing route classification ship together.
+Classification adds no native/remote permission or reach. No UI or Instill route
+ships in S2. The focused synthetic command is
+`uv run python scripts/verify_knowledge_distill.py [CASE]` (outside retired suites).
+It exercises real HTTP/CLI/storage/task/completion owners; org attachment,
+retained retirement layout, launch facts and model output are synthetic.
+Real model curation and full S6 acceptance remain NOT RUN.
 
 ## CLI
 

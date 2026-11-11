@@ -1,13 +1,13 @@
-"""Thread-specific admission, captured-turn drain and durable redelivery seams.
+"""Thread preparation, native retry/abort ownership and reserved move readers.
 
-C2 never writes an operation, reset, roster or COMPLETE. D owns those decisions.
+Founder settlement, delivery-release permission and archived-thread redelivery
+retain their existing checks. Dead move-only reset/capture/drain APIs are removed.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import threading
-import time
 import uuid
 from concurrent.futures import Future
 from contextlib import contextmanager, nullcontext
@@ -682,7 +682,6 @@ class ThreadMoveAdmission:
         if owner.abort_control.token.cancelled:
             raise DeferredTeamMove("thread_invocation_aborted")
         self._abort_predecessors_uncommitted(owner)
-        self.check_agent_uncommitted(owner.identity.agent_id)
         if not self.db._thread_release_pair_permitted_uncommitted(owner.inv.thread_id, owner.identity.agent_id):
             raise DeferredTeamMove("thread_delivery_release_permission_revoked")
         inv = self.db.get_pending_invocation(owner.inv.invocation_token)
@@ -748,157 +747,6 @@ class ThreadMoveAdmission:
                 or state.attempts[-1].executor != executor
                 or not state.attempts[-1].launched or not state.attempts[-1].settled):
             raise DeferredTeamMove("team_move_thread_eviction_owner_unavailable")
-
-    def participant_write_uncommitted(self, agent_id: str, *, token: str | None = None) -> None:
-        row = self.held_uncommitted(agent_id)
-        if row is None:
-            return
-        if row["decision_bytes"] is not None:
-            reset = getattr(self, "_reset_owner", None)
-            if reset == (row["operation_id"], agent_id) and row["phase"] == "reset":
-                return  # Only the synchronous audited native reset owner below.
-            raise DeferredTeamMove("team_move_thread_participant_write_held", row["operation_id"])
-        if token is not None:
-            self.callback_uncommitted(token)
-
-    def reset_operation_agent(self, operation_id: str, agent_id: str):
-        """Native audited reset, with exact operation replay and post-state proof.
-
-        No caller actor/rows/success flags. Attribution comes only from the saved
-        future-service admission; this method does not itself admit a founder.
-        The existing DB reset owner retains its actual transaction and row count.
-        """
-        from runtime.infrastructure.team_move_store import ResetEvidence, TeamMoveError, _digest
-        import json
-        with self.db._lock:
-            row = self.move.active_uncommitted()
-            if (row is None or row["operation_id"] != operation_id or row["phase"] != "reset"
-                    or row["principal"] != "founder" or getattr(self, "_reset_owner", None) is not None
-                    or agent_id not in _decode(MoveRequest, row["request_bytes"]).affected_agents):
-                raise TeamMoveError("team_move_reset_owner")
-            scope = "config:team-move:" + operation_id + ":" + agent_id
-            audits = self.db._conn.execute(
-                "SELECT id,agent,payload FROM audit_log WHERE task_id=? AND action='thread_session_invalidated' ORDER BY id", (scope,)
-            ).fetchall()
-            def post_state():
-                rows = self.db._conn.execute(
-                    "SELECT thread_id,agent_name,agent_session_id,last_resumed_seq FROM thread_participants WHERE agent_name=? ORDER BY thread_id", (agent_id,)
-                ).fetchall()
-                if any(r["agent_session_id"] is not None or r["last_resumed_seq"] != 0 for r in rows):
-                    raise TeamMoveError("team_move_reset_post_state")
-                return rows
-            if audits:
-                if len(audits) != 1 or audits[0]["agent"] != row["principal"]:
-                    raise TeamMoveError("team_move_reset_audit_unknown")
-                from runtime.infrastructure.team_move_store import _unique_object
-                payload = json.loads(audits[0]["payload"], object_pairs_hook=_unique_object)
-                rows = post_state()
-                if payload != {"reason": "team_move", "rows": len(rows), "name": agent_id} or not rows:
-                    raise TeamMoveError("team_move_reset_audit_unknown")
-                audit_id = audits[0]["id"]
-            else:
-                # The guarded owner is meaningful ONLY under this same RLock.
-                self._reset_owner = (operation_id, agent_id)
-                try:
-                    count = self.db.reset_thread_sessions_for_agent(agent_id,
-                        audit_scope_id=scope, audit_agent=row["principal"], audit_reason="team_move")
-                finally:
-                    self._reset_owner = None
-                rows = post_state()
-                if count != len(rows):
-                    raise TeamMoveError("team_move_reset_count_changed")
-                saved = self.db._conn.execute(
-                    "SELECT id FROM audit_log WHERE task_id=? AND action='thread_session_invalidated' ORDER BY id", (scope,)
-                ).fetchall()
-                if len(saved) != (1 if count else 0):
-                    raise TeamMoveError("team_move_reset_audit_unknown")
-                audit_id = saved[0]["id"] if saved else None
-            raw = json.dumps([tuple(r) for r in rows], separators=(",", ":"), ensure_ascii=False).encode()
-            return ResetEvidence(rows=len(rows), audit_id=audit_id, post_state_digest=_digest(raw))
-
-    def capture_running_uncommitted(self, operation_id: str) -> tuple[dict, ...]:
-        """D calls under move gate/DB AFTER durable WAITING intent commits.
-
-        Capture is not a launch entitlement; commit always checks hold. Only
-        this exact live attempt may finish callback/cleanup under old context.
-        """
-        if not self.move.gate._is_owned() or not self.db._lock._is_owned():
-            raise DeferredTeamMove("team_move_thread_capture_lock_owner")
-        row = self.move.active_uncommitted()
-        if row is None or row["operation_id"] != operation_id or row["phase"] != "waiting":
-            raise DeferredTeamMove("team_move_thread_capture_owner")
-        request = _decode(MoveRequest, row["request_bytes"])
-        if operation_id not in self.captured:
-            self.captured[operation_id] = frozenset((o.inv.id, o.session_id, o.state.preparation_id)
-                for o in self.live.values() if request.drain_threads and o.attempt_open
-                and o.state.attempts[-1].launched
-                and o.identity.agent_id in request.affected_agents)
-        return tuple(dict(invocation_id=i, session_id=s, preparation_id=p)
-            for i, s, p in sorted(self.captured[operation_id]))
-
-    def census(self, agent_ids: tuple[str, ...]) -> tuple[dict, ...]:
-        """Complete thread evidence; never an org-wide/process idle certificate."""
-        with self.db._lock:
-            result = []
-            for raw in self.db._conn.execute("SELECT * FROM thread_invocations ORDER BY id"):
-                inv = self.db._row_to_invocation(raw)
-                if inv.agent_name not in agent_ids:
-                    continue
-                state = self.store.read_uncommitted(inv)
-                owner = self.live.get(inv.id)
-                code = None
-                if state and state.retry_initialized is None and inv.status is ThreadInvocationStatus.PENDING:
-                    code = "thread_retry_initialization_unknown"
-                elif state and (state.unknown or not state.producer_settled):
-                    code = "thread_cleanup_unknown" if state.unknown else ("thread_running" if owner and owner.attempt_open and owner.state.attempts[-1].launched else "thread_preparation_or_lost_owner")
-                elif inv.status is ThreadInvocationStatus.PENDING:
-                    code = "thread_pending_obligation" if inv.started_at is None or (state and state.deferred) else "thread_legacy_owner_unknown"
-                if code and (self.db.get_thread(inv.thread_id) is None
-                        or not self.db.is_thread_participant(inv.thread_id, inv.agent_name)):
-                    code = "thread_identity_unavailable"
-                if code:
-                    result.append(dict(code=code, invocation_id=inv.id, thread_id=inv.thread_id,
-                        agent_id=inv.agent_name, session_id=inv.session_id,
-                        preparation_id=state.preparation_id if state else None,
-                        attempts=tuple(a.model_dump() for a in state.attempts) if state else ()))
-            for table, predicate, code in (
-                    ("thread_reply_breaker_episodes", "state='probe' OR probe_lease_id IS NOT NULL", "thread_breaker_probe"),
-                    ("thread_exchange_deferrals", "state='held' OR catchup_pending=1", "thread_exchange_or_catchup"),
-                    ("thread_reply_delivery_state", "running_invocation_token IS NOT NULL", "thread_running_delivery")):
-                for row in self.db._conn.execute(f"SELECT * FROM {table} WHERE {predicate}"):
-                    if row["agent_name"] in agent_ids:
-                        result.append(dict(code=code, thread_id=row["thread_id"], agent_id=row["agent_name"]))
-            for row in self.db._conn.execute("SELECT thread_id,agent_name,acknowledged_through_seq,required_through_seq FROM thread_reply_delivery_state WHERE required_through_seq>acknowledged_through_seq"):
-                if row["agent_name"] in agent_ids:
-                    result.append(dict(code="thread_pending_obligation", thread_id=row["thread_id"],
-                        agent_id=row["agent_name"], acknowledged_through_seq=row["acknowledged_through_seq"],
-                        required_through_seq=row["required_through_seq"]))
-            # Exchanges may include an affected cohort with no deferral row.
-            for row in self.db._conn.execute("SELECT thread_id,exchange_id FROM thread_reply_exchange WHERE state='open'"):
-                if any(self.db.is_thread_participant(row["thread_id"], a) for a in agent_ids):
-                    result.append(dict(code="thread_open_exchange", thread_id=row["thread_id"], exchange_id=row["exchange_id"]))
-            return tuple(result)
-
-    def _drain_blockers(self, operation_id: str) -> tuple[dict, ...]:
-        with self.move.gate, self.db._lock:
-            row = self.move.active_uncommitted()
-            if row is None or row["operation_id"] != operation_id or row["phase"] != "waiting":
-                raise DeferredTeamMove("team_move_thread_drain_owner")
-            if operation_id not in self.captured:
-                raise DeferredTeamMove("team_move_thread_capture_missing")
-            ids = _decode(MoveRequest, row["request_bytes"]).affected_agents
-            return tuple(b for b in self.census(ids) if b["code"] != "thread_pending_obligation")
-
-    async def bounded_drain(self, operation_id: str, *, timeout_seconds: float = 30.0, native=None) -> tuple[dict, ...]:
-        if not 0 <= timeout_seconds <= 30:
-            raise ValueError("thread drain deadline must be bounded by 30 seconds")
-        deadline = time.monotonic() + timeout_seconds
-        while True:
-            blockers = (self._drain_blockers(operation_id) if native is None
-                else await native(lambda: self._drain_blockers(operation_id)))
-            if not blockers or time.monotonic() >= deadline:
-                return blockers  # D owns deadline refusal/forward decision.
-            await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
 
     def _settled_without_owner(self, inv: Any, state: Any) -> bool:
         # The producer finished with certain cleanup and no deferral, and no
@@ -966,18 +814,6 @@ class ThreadMoveAdmission:
         with self.db._lock:
             return tuple(inv.id for inv in self.db.list_pending_thread_invocations()
                 if self.preserve_recovery_uncommitted(inv))
-
-    def _released_tokens(self) -> tuple[str, ...]:
-        with self.move.gate, self.db._lock:
-            if self.move.active_uncommitted() is not None:
-                raise DeferredTeamMove("team_move_release_not_committed")
-            return self.runnable_tokens()
-
-    async def redeliver_after_release(self, queue: Any, *, native=None) -> None:
-        tokens = self._released_tokens() if native is None else await native(self._released_tokens)
-        from runtime.daemon.thread_queue import ThreadJob
-        for token in tokens:
-            await queue.put_once(ThreadJob(org_slug=self.move.store.org_slug, invocation_token=token))
 
     def runnable_tokens(self) -> tuple[str, ...]:
         """Durable release/redelivery census, no process-local defer list.

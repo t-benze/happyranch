@@ -94,7 +94,6 @@ def _live_owner(org: Any, dispatcher: Any, conn: sqlite3.Connection, task_id: st
              and bool(running.token) and running.process is not None and running.process.returncode is None)
     paths = owner.orch._paths
     _require(paths.root == org.root and paths.workspaces_dir == org.root / 'workspaces')
-    org.db._check_team_move_task_uncommitted(task_id)
     pin = FinalNativePin(root_task_id=root_id, invocation_id=owner.identity,
         request_id=request.logical_id, handle_id=running.token, backend=running.backend,
         # Pause/Resume advances control generation; the running invocation

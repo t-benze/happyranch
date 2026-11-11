@@ -172,6 +172,10 @@
     "GET /api/v1/orgs/{slug}/tasks/{task_id}/preparation-recovery",
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-preparation",
     "GET /api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}",
+    "POST /api/v1/orgs/{slug}/knowledge/distill",
+    "GET /api/v1/orgs/{slug}/knowledge/distill/{operation_id}",
+    "GET /api/v1/orgs/{slug}/knowledge/archives",
+    "GET /api/v1/orgs/{slug}/knowledge/archives/{archive_id}",
     "GET /api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}/sources/{reference_id}"
   ],
   "excluded": {

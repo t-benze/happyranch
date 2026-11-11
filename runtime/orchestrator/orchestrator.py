@@ -205,7 +205,7 @@ class Orchestrator:
         return self._db
 
     def redeliver_team_move_tasks(self, *, native: Callable | None = None) -> Any:
-        """Task-only release seam for D; no operation release or startup owner."""
+        """Redeliver native deferred tasks under the historical method name."""
         if native is not None:
             return self._redeliver_team_move_tasks_native(native)
         from runtime.orchestrator.authority import enqueue_task_generation_aware

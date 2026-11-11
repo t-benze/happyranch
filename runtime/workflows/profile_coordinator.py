@@ -29,9 +29,6 @@ import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass, field
-from contextvars import ContextVar
-
-_move_batch_owner = ContextVar("profile_move_batch_owner", default=None)
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -528,7 +525,7 @@ class ProfileCoordinator:
             return tuple(members)
 
     def _assert_no_active_operation(
-        self, profile_name: str | None, *, move_org=None, attaching_org=None, captured_orgs=None,
+        self, profile_name: str | None, *, attaching_org=None, captured_orgs=None,
     ) -> None:
         """Check native DB owners and retained startup publication holds."""
         if (self._startup_unknown
@@ -1835,101 +1832,3 @@ class ProfileCoordinator:
             self._startup_unknown = unknown
             if self._hold_startup is not None:
                 self._hold_startup(self._startup_holds)
-
-    def _move_batch_inputs(self, org: OrgState, operation_id: str) -> tuple:
-        from runtime.infrastructure.team_move_store import MoveRequest, _decode
-        move = org.db._team_move_coordinator
-        row = move.store.read()
-        if row is None or row["operation_id"] != operation_id:
-            raise ProfileCoordinatorError("profile_move_owner_required")
-        request = _decode(MoveRequest, row["request_bytes"])
-        import base64
-        from runtime.orchestrator.agent_def import parse_agent_text
-        definitions = tuple(parse_agent_text(base64.b64decode(image.before_base64).decode().replace("\r\n", "\n"),
-            expected_name=agent) for agent, image in zip(request.affected_agents, request.files[:2]))
-        names = tuple(sorted({name for definition in definitions if (name := _dependency_profile(definition.executor)) is not None}))
-        return definitions, names
-
-    @asynccontextmanager
-    async def consumer_batch_writer(self, *, org, operation_id, native=None):
-        """ONE D-owned interval for the exact two unchanged executor consumers.
-
-        The operation row itself is the durable native writer: emitting a C3
-        writer whose failed tail becomes immutable unknown would prevent the
-        forward-recovery operation from reconciling its OWN known partial work.
-        No other native writer's history is adopted/cleared. The ordinary C3 hold
-        still refuses every conflicting writer. Empty dependency sets are real.
-        """
-        if native is None:
-            definitions, names = self._move_batch_inputs(org, operation_id)
-        else:
-            definitions, names = await native(lambda: self._move_batch_inputs(org, operation_id))
-        org.workflow_authority._profile_coordinator = self
-        async with org.workflow_authority._async_writer_lock:
-            interval = _MoveBatchInterval(self, org, operation_id, definitions, names)
-            yield interval
-            # Deliberately no automatic compensation or publication on exit.
-            # D owns the immutable decision and exact SAME publication journal.
-
-
-@dataclass(frozen=True)
-class _MoveBatchCapture:
-    operation_revision: int
-    roster_revision: tuple
-    dependency_mirror: tuple
-    database_changes: tuple[int, int]
-    writer_epoch: int
-
-
-class _MoveBatchInterval:
-    def __init__(self, profiles, org, operation_id, definitions, names):
-        self.profiles, self.org, self.operation_id = profiles, org, operation_id
-        self.definitions, self.names = definitions, names
-
-    def _observation(self):
-        """Only native DB/revision/epoch facts; safe in a short DB-only leaf."""
-        db = self.org.db
-        move = db._team_move_coordinator
-        with db._lock:
-            row = move.active_uncommitted()
-            if row is None or row["operation_id"] != self.operation_id:
-                raise ProfileCoordinatorError("profile_move_owner_required")
-            return _MoveBatchCapture(row["state_revision"], self.profiles._roster_revision(self.org)[:2],
-                self.profiles._dependency_mirror_snapshot(self.org),
-                (db._conn.total_changes, db._conn.execute("PRAGMA data_version").fetchone()[0]),
-                move.producers.writer_epoch)
-
-    def capture(self):
-        """Complete native discovery before any profile/publication lease."""
-        before = self._observation()
-        current = tuple(prompt_loader.load_agent(OrgPaths(self.org.root), d.name) for d in self.definitions)
-        if any(actual is None or (actual.executor, actual.model, actual.reasoning_effort, actual.allow_rules, actual.repos)
-                != (original.executor, original.model, original.reasoning_effort, original.allow_rules, original.repos)
-                for original, actual in zip(self.definitions, current)):
-            raise ProfileCoordinatorError("profile_move_consumer_changed")
-        projection = self.org.workflow_authority._profile_projection()
-        from runtime.workflows.authority import _agent_projection
-        definitions = [_agent_projection(d, status="active") for d in prompt_loader.list_agents(OrgPaths(self.org.root))]
-        self.profiles.validate_requirements(definitions, projection)
-        if not self.profiles._closure_coherent(self.org):
-            raise ProfileCoordinatorError("profile_dependency_incoherent")
-        self.revalidate(before)
-        return before
-
-    def revalidate(self, capture):
-        if self._observation() != capture:
-            raise ProfileCoordinatorError("profile_move_capture_changed")
-
-    @contextmanager
-    def segment(self, capture):
-        """Only synchronous mutation; no discovery/census/publication capture."""
-        token = _move_batch_owner.set((self.org.slug, self.operation_id))
-        try:
-            with self.profiles._profile_leases(self.names, wait=True):
-                for name in self.names or (None,):
-                    self.profiles._assert_no_active_operation(name, move_org=self.org)
-                with self.org.workflow_authority._publisher_lock:
-                    self.revalidate(capture)
-                    yield
-        finally:
-            _move_batch_owner.reset(token)

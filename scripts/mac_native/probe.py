@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety")
+SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry")
 PROC_PIDTBSDINFO = 3
 
 
@@ -1437,6 +1437,10 @@ def main() -> int:
                 sys.path.insert(0, str(ROOT))
                 from scripts.mac_native.suite_case_safety import case_safety
                 case_safety(report)
+            elif args.suite == 'inode-telemetry':
+                from suite_inode_telemetry import run as inode_telemetry
+
+                inode_telemetry(report)
             else:
                 {"truth": truth, "teardown": teardown, "disk-sweep": disk_sweep}[args.suite](report)
             report["completed"] = True

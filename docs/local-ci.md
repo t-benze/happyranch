@@ -114,6 +114,21 @@ and `strict=false`; source configuration is not external enforcement.
 
 Default/`all` and `web` run only source boundary lint (all), Node24 colour scan,
 ESLint and TypeScript `--noEmit` analysis, with locked `npm ci` setup.
+The `all` target also prints an advisory for `${TMPDIR:-/tmp}` inode use.
+Linux uses GNU `df -Pi` inode columns 2–5. macOS uses BSD columns 6–8
+(`iused`, `ifree`, `%iused`), deriving total from used + free. At 90% it warns;
+an unavailable/malformed measurement remains advisory and never fails CI or
+authorizes cleanup. The parsing uses Apple Bash 3.2-compatible syntax.
+
+Run the bounded, stdlib-only fixtures with
+`python3 -B scripts/mac_native/suite_inode_telemetry.py`. They extract and run
+only the shipping advisory function under `/bin/bash -euo pipefail`, with
+test-side `df`/`uname` functions for GNU/BSD layouts, opposing block/inode
+pressure, large totals, malformed output and unavailable commands. They do not
+run the wrapper, Python units, integration or Product E2E. The native
+`inode-telemetry` suite runs all 12 rows: these nine fixtures followed by
+three real Mac `df` checks. See
+`ci/jenkins/mac-native-probe/README.md`; Linux dispatcher output is SKIPPED.
 Behavioral tests and builds are outside all/pre-push/required merge checks.
 Normal hooks stay enabled; never bypass hooks or the guarded worktree.
 Independent full code review and scoped QA remain mandatory. Static checks
@@ -2346,7 +2361,8 @@ attribution. Full independent review and genuine FAILED12291-linked same-final-h
 QA remain root-owned, followed by two exact-head lints and genuine live-manager
 guarded merge/remote observation. Python units stay RETIRED; general integration
 INCLUDING callback is SKIPPED THR243seq42; E2E/build/native lifecycle tests are not
-selected. Full consume/support/settings/@3/team_move and actual actors/scopes,
+selected. The former move-only `team_move` reader prerequisite is historical
+after PR-3b. Full consume/support/settings/@3 and actual actors/scopes,
 release import, installed/serving runtime, scratch merge/rollback/two-org/backup
 remain separate unfinished prerequisites. No coding readiness or live operation
 follows from this support.
@@ -2596,7 +2612,8 @@ This increment changes closed start syntax and coding reader composition, not
 routes/classification or settings-client transport. The supported idle-schema
 operator checks served-summary parity; CLI help checks command registration.
 They do not prove full callback schema semantics, persisted settings pins,
-cross-team progression, native move projection or interrupted settlement.
+cross-team progression or interrupted settlement. The former native move
+projection checkpoint is historical after PR-3b.
 Accepted F5-R1a/b/c and F6/F8-R2a/b/e executable contracts remain NOT RUN / PROOF
 NOT RUN without the genuine compatible venue. Under Founder320seq99/v25, no new
 proof tooling or routine unchanged W1/client repetition is required. Missing Swift

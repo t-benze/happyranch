@@ -178,7 +178,7 @@ class TaskQueue:
         self._admission_lock = threading.RLock()
         self._pending_counts: Counter[tuple[str, str]] = Counter()
         self._admission_reservations: set[tuple[str, str]] = set()
-        # Only the team-move async publisher needs an insertion receipt that
+        # Native async redelivery needs an insertion receipt that
         # survives dequeue while its native generation acknowledgement runs.
         self._native_publication_puts: dict[tuple[str, str], bool] = {}
         self._queue: asyncio.Queue[_QueueItem] = _TrackedAsyncQueue(
@@ -279,7 +279,7 @@ class TaskQueue:
     async def _enqueue_if_absent_native(
         self, slug: str, task_id: str, *, publisher: Callable[[], Awaitable[str]],
     ) -> bool:
-        """Same bounded reservation for the joined team-move publisher only."""
+        """Same bounded reservation for the joined native deferred-work publisher."""
         if not self._reserve_bounded_enqueue(slug, task_id, track_put=True):
             return False
         key = slug, task_id

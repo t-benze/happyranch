@@ -2228,9 +2228,6 @@ class Database(
         self, thread_id: str, agent_name: str, *, added_by: str
     ) -> bool:
         """Insert a participant. Returns True if inserted, False if duplicate."""
-        move = getattr(self, "_team_move_coordinator", None)
-        if move is not None:
-            move.threads.participant_write_uncommitted(agent_name)
         try:
             self._conn.execute(
                 "INSERT INTO thread_participants (thread_id, agent_name, added_at, added_by) "
@@ -2513,9 +2510,6 @@ class Database(
     ) -> bool:
         """Insert a thread participant WITHOUT committing (caller owns the
         transaction). Returns True if inserted, False if duplicate."""
-        move = getattr(self, "_team_move_coordinator", None)
-        if move is not None:
-            move.threads.participant_write_uncommitted(agent_name)
         try:
             self._conn.execute(
                 "INSERT INTO thread_participants (thread_id, agent_name, added_at, added_by) "

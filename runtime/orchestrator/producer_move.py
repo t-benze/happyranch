@@ -9,7 +9,6 @@ import uuid
 import logging
 import hashlib
 import json
-import re
 import time
 from datetime import datetime, timezone
 from contextlib import contextmanager, nullcontext
@@ -515,152 +514,10 @@ class ProducerMoveAdmission:
         if self.state_for_uncommitted(state.kind, row) != state:
             raise DeferredTeamMove('team_move_producer_evidence_changed')
 
-    def census(self, request):
-        """Complete C3 joins for D. Missing provenance is a blocker, never idle.
-
-        D additionally joins C1/C2, host/tracker and native workflow ownership
-        before any decision. This method never releases an operation.
-        """
-        blockers = []
-        if self.move.gate._is_owned() or self.db._lock._is_owned():
-            raise DeferredTeamMove('team_move_census_requires_unlocked_capture')
-        with self.db._lock:
-            writer_epoch = self.writer_epoch
-        from runtime.orchestrator import prompt_loader
-        from runtime.orchestrator._paths import OrgPaths
-        active_sessions = None if self.sessions is None else self.sessions.iter_active()
-        try:
-            if self.root is None:
-                raise ValueError('org root unavailable')
-            pending = prompt_loader.list_pending(OrgPaths(root=self.root))
-        except (OSError, ValueError, TypeError):
-            pending = None
-        def add(kind, identity, remedy):
-            blockers.append(dict(kind=kind, owner_id=identity, remedy=remedy))
-        # Own the snapshot before fetching tasks or any dependent SQL history.
-        with self.db.coherent_read_view():
-            states = self.history_uncommitted()
-            if self.writer_epoch != writer_epoch:
-                add('native_writer_snapshot_changed', request.source_team, 'Recollect pending enrollment and writer snapshot before decision')
-            if pending is None:
-                add('pending_enrollment_unknown', request.source_team, 'Resolve pending enrollment inventory before decision')
-            else:
-                for agent in pending:
-                    if agent.team == request.source_team or agent.name in request.affected_agents:
-                        add('pending_source_enrollment', agent.name, 'Pending enrollment owner must revise or resolve enrollment before source retirement')
-            affected = set(request.affected_agents)
-            causal = set()
-            for row in self.db._conn.execute('SELECT id FROM tasks'):
-                try:
-                    task = self.db.get_task(row['id'])
-                    if self.move._task_closure_uncommitted(task, request):
-                        causal.add(row['id'])
-                except (DeferredTeamMove, ValueError, TypeError) as exc:
-                    code = exc.code if isinstance(exc, DeferredTeamMove) else 'team_move_task_record_unavailable'
-                    add('task_owner_unknown', row['id'], f'Resolve native causal ownership ({code}) before fresh preview')
-                    causal.add(row['id'])
-            # An accepted callback is still owned work until its native consumer
-            # settles it. A terminal task or callback timestamp cannot erase it.
-            for recovery in self.db._conn.execute('SELECT * FROM task_completion_recoveries'):
-                if recovery['task_id'] in causal or recovery['agent'] in affected:
-                    if recovery['state'] not in ('callback_consumed', 'expired', 'restart_settled', 'superseded') or recovery['settled_at'] is None:
-                        add('task_recovery_callback', str(recovery['id']),
-                            'Resolve the original task/recovery callback and process cleanup through its native owner')
-            if active_sessions is None:
-                add('session_owner_unknown', request.source_team, 'Obtain actual SessionTracker and host ownership census')
-            else:
-                for task_id, agent_id, session_id in active_sessions:
-                    if agent_id in affected or task_id in causal:
-                        add('active_session', session_id, 'Wait for actual task/session and host cleanup; never infer from terminal task rows')
-            for kind, table in _TABLES.items():
-                for row in self.db._conn.execute(f'SELECT * FROM {table}'):
-                    related = row['agent_name'] in affected
-                    if kind == 'job':
-                        if self.db.get_task(row['task_id']) is None:
-                            add('job_owner_unknown', row['id'], 'Resolve the real owning task; do not infer settlement from status')
-                        related |= row['task_id'] in causal
-                    if not related:
-                        continue
-                    state = self.state_for_uncommitted(kind, row, states)
-                    if kind == 'schedule' and row['status'] in ('armed', 'paused'):
-                        # Persisted team is creation attribution only: the real
-                        # spawn callback resolves current membership by agent ID.
-                        # Explicit retired-team content and unknown future kinds
-                        # are opaque obligations, never silently reinterpreted.
-                        content = row['normalized_brief'] + '\n' + row['source_instruction']
-                        if row['kind'] not in ('one_shot', 'weekly', 'recurring') or re.search(
-                                r'(?<![\w-])' + re.escape(request.source_team) + r'(?![\w-])', content, re.IGNORECASE):
-                            add('schedule_retired_binding', row['id'], 'Owner must explicitly resolve retired-team content or unsupported binding before fresh preview')
-                    elif row['status'] in ('running', 'firing') or (kind == 'job' and row['status'] == 'pending'):
-                        add(kind, row['id'], 'Wait for native owner and actual cleanup; do not stop or fabricate callback')
-                    if 'session_id' in row.keys() and row['session_id'] is not None and (kind == 'schedule' or row['status'] in ('running', 'firing')):
-                        add(kind + '_session', row['id'], 'Settle actual session and host cleanup')
-                    if state is not None and (state.unknown or not state.producer_settled):
-                        add(kind + '_cleanup_unknown', row['id'], 'Resolve original preparation/file/package effects and every process attempt through the native owner; no automatic retry')
-                    if kind == 'job' and state is None and row['started_at'] is not None:
-                        add('job_legacy_cleanup_unproven', row['id'], 'Obtain native process cleanup evidence; terminal row is insufficient')
-            # Audit evidence remains relevant even if a source row was removed.
-            for state in states.values():
-                if state.agent_id in affected and (state.unknown or not state.producer_settled):
-                    add('producer_ownership', state.source_id, 'Reconcile original retry initialization, preparation/file/package and process evidence; no automatic reentry or takeover')
-            for row in self.db._conn.execute('SELECT id,blocked_on_job_ids FROM tasks WHERE blocked_on_job_ids IS NOT NULL'):
-                import json
-                try:
-                    ids = json.loads(row['blocked_on_job_ids'])
-                    if not isinstance(ids, list) or any(not isinstance(x, str) for x in ids):
-                        raise ValueError('job waits')
-                    for jid in ids:
-                        job = self.db.get_job(jid)
-                        if job is None or row['id'] in causal or job.agent_name in affected or job.task_id in causal:
-                            add('job_resume_callback', row['id'], 'Settle the actual job wait/resume callback under its task owner')
-                except (ValueError, TypeError):
-                    add('job_wait_owner_unknown', row['id'], 'Repair native wait attribution before fresh preview')
-            tables = {r[0] for r in self.db._conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
-            remote_layout = {'remote_job_attempts', 'remote_runner_workspaces', 'remote_phase_receipts'}
-            if remote_layout.intersection(tables) and not remote_layout.issubset(tables):
-                add('remote_layout_incomplete', request.source_team, 'Restore native complete remote owner/receipt layout before census')
-            if remote_layout.issubset(tables):
-                for row in self.db._conn.execute('SELECT a.*,j.agent_name,j.task_id FROM remote_job_attempts a LEFT JOIN jobs j ON j.id=a.job_id'):
-                    if row['agent_name'] is None or row['agent_name'] in affected or row['task_id'] in causal:
-                        # Even a terminal remote attempt needs its native complete
-                        # receipt/workspace reconciliation; no new remote engine.
-                        if row['state'] != 'terminal' or row['terminal_committed_at'] is None or row['terminal_digest'] is None:
-                            add('remote_attempt_unsettled', row['id'], 'Resolve runner attempt and authenticated terminal receipt')
-                        else:
-                            add('remote_cleanup_unproven', row['id'], 'Native remote receipt and workspace/process reconciliation are required; a terminal digest is not cleanup proof')
-                causal_workspaces = set()
-                for remote in self.db._conn.execute('SELECT a.workspace_id,j.task_id,j.agent_name FROM remote_job_attempts a LEFT JOIN jobs j ON j.id=a.job_id'):
-                    if remote['task_id'] is None or remote['task_id'] in causal or remote['agent_name'] in affected:
-                        causal_workspaces.add(remote['workspace_id'])
-                for row in self.db._conn.execute('SELECT * FROM remote_runner_workspaces'):
-                    if (row['agent_name'] in affected or row['id'] in causal_workspaces) and (row['state'] in ('leased', 'recreate_pending', 'uncertain') or row['active_attempt_id'] is not None):
-                        add('remote_workspace', row['id'], 'Native workspace owner must reconcile lease/process uncertainty')
-            if 'workflow_profile_operations' in tables:
-                for row in self.db._conn.execute("SELECT id,state FROM workflow_profile_operations WHERE state NOT IN ('published','aborted')"):
-                    add('profile_operation', row['id'], 'Wait for original profile coordinator journal to settle')
-            if 'workflow_publication_journals' in tables:
-                for row in self.db._conn.execute("SELECT id,state,publisher_invocation FROM workflow_publication_journals WHERE state NOT IN ('cache_installed','aborted')"):
-                    add('publication_writer', row['id'], 'Compose exact native publisher ownership; never steal or exempt a different journal')
-            for writer in self.writers.values():
-                if not (writer['agents'] or writer['teams']) or affected.intersection(writer['agents']) or set((request.source_team, request.target_team)).intersection(writer['teams']):
-                    add('native_writer', writer['owner_id'], 'Wait for owning writer/compensation and its own journal to settle')
-            try:
-                for writer in self.writer_store.history_uncommitted().values():
-                    if writer.state != 'settled' and (not (writer.agents or writer.teams)
-                            or affected.intersection(writer.agents)
-                            or set((request.source_team, request.target_team)).intersection(writer.teams)):
-                        add('native_writer_' + writer.state, writer.writer_id,
-                            'Reconcile original native writer/journal and process effects; no timeout takeover')
-            except (ValueError, TypeError):
-                add('native_writer_evidence_unknown', request.source_team, 'Repair native writer evidence under its owner')
-        return tuple(blockers)
-
     def _released_sources(self) -> tuple:
         """Native notification selection only; never new launch permission."""
         selected = []
         with self.move.gate, self.db._lock:
-            if self.move.active_uncommitted() is not None:
-                raise DeferredTeamMove('team_move_release_not_committed')
             states = self.history_uncommitted()
             for kind in ('dream', 'wake', 'schedule'):
                 status = 'firing' if kind == 'schedule' else 'pending'
