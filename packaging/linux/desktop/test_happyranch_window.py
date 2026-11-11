@@ -176,16 +176,34 @@ class LifecycleTests(unittest.TestCase):
         self.assertIsNone(external.poll())
 
     def test_stop_terms_and_reaps_only_owned_child_and_clears_markers(self) -> None:
-        child = self.spawn()
         external = self.spawn()
-        self.publish(child.pid)
-        window.stop_child(child, self.home, 0.5, 0.5)
-        self.assertEqual(child.returncode, -signal.SIGTERM)
-        with self.assertRaises(ChildProcessError):
-            os.waitpid(child.pid, os.WNOHANG)
-        self.assertIsNone(external.poll())
-        self.assertFalse((self.home / "daemon.pid").exists())
-        self.assertFalse((self.home / "daemon.port").exists())
+        for publication in ("complete", "port-only", "empty-port", "finishing-port"):
+            with self.subTest(publication=publication):
+                home = self.home / publication
+                home.mkdir()
+                window.prepare_home(home)
+                # The ready pipe synchronizes with the real child's port write,
+                # before the daemon would publish its PID.
+                port = "" if publication in ("empty-port", "finishing-port") else "54321"
+                body = f"p = pathlib.Path({str(home / 'daemon.port')!r})\np.write_text({port!r})"
+                if publication == "finishing-port":
+                    body += ("\ndef finish_port(*_args):\n"
+                             "    p.write_text('54321')\n    raise SystemExit(0)\n"
+                             "signal.signal(signal.SIGTERM, finish_port)")
+                child = self.spawn(body)
+                if publication == "complete":
+                    (home / "daemon.pid").write_text(str(child.pid))
+                self.assertEqual((home / "daemon.port").read_text(), port)
+                self.assertEqual((home / "daemon.pid").exists(), publication == "complete")
+                window.stop_child(child, home, 0.5, 0.5, markers_absent_at_spawn=True)
+                self.assertEqual(child.returncode, 0 if publication == "finishing-port"
+                                 else -signal.SIGTERM)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(child.pid, os.WNOHANG)
+                self.assertIsNone(external.poll())
+                self.assertFalse((home / "daemon.pid").exists())
+                self.assertFalse((home / "daemon.port").exists())
+                window.prepare_home(home)
 
     def test_stop_kills_term_resistant_child_then_reaps(self) -> None:
         child = self.spawn(ignore_term=True)
@@ -198,10 +216,11 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse((self.home / "daemon.port").exists())
 
     def test_stop_preserves_replaced_external_markers(self) -> None:
+        window.prepare_home(self.home)
         child = self.spawn()
         external = self.spawn()
         self.publish(external.pid, "45678")
-        window.stop_child(child, self.home, 0.5, 0.5)
+        window.stop_child(child, self.home, 0.5, 0.5, markers_absent_at_spawn=True)
         self.assertEqual(child.returncode, -signal.SIGTERM)
         self.assertIsNone(external.poll())
         self.assertTrue((self.home / "daemon.pid").exists())
@@ -209,15 +228,47 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual((self.home / "daemon.pid").read_text(), str(external.pid))
         self.assertEqual((self.home / "daemon.port").read_text(), "45678")
 
-    def test_stop_reaps_already_exited_child_and_removes_owned_stale_state(self) -> None:
+        (self.home / "daemon.pid").unlink()
         child = self.spawn()
-        child.terminate()
-        child.wait(timeout=2)
-        self.publish(child.pid)
-        window.stop_child(child, self.home)
-        self.assertEqual(child.returncode, -signal.SIGTERM)
-        self.assertFalse((self.home / "daemon.pid").exists())
-        self.assertFalse((self.home / "daemon.port").exists())
+        window.stop_child(child, self.home, 0.5, 0.5)
+        self.assertTrue((self.home / "daemon.port").exists())
+        self.assertEqual((self.home / "daemon.port").read_text(), "45678")
+        self.assertIsNone(external.poll())
+        (self.home / "daemon.port").unlink()
+
+        window.prepare_home(self.home)
+        port_file = str(self.home / "daemon.port")
+        child = self.spawn(
+            f"p = pathlib.Path({port_file!r})\np.write_text('54321')\n"
+            "def replace_port(*_args):\n"
+            "    p.unlink()\n    p.write_text('45678')\n    raise SystemExit(0)\n"
+            "signal.signal(signal.SIGTERM, replace_port)")
+        window.stop_child(child, self.home, 0.5, 0.5, markers_absent_at_spawn=True)
+        self.assertEqual(child.returncode, 0)
+        self.assertTrue((self.home / "daemon.port").exists())
+        self.assertEqual((self.home / "daemon.port").read_text(), "45678")
+        self.assertIsNone(external.poll())
+
+    def test_stop_reaps_already_exited_child_and_removes_owned_stale_state(self) -> None:
+        for publication in ("complete", "port-only", "empty-port"):
+            with self.subTest(publication=publication):
+                home = self.home / publication
+                home.mkdir()
+                window.prepare_home(home)
+                port = "" if publication == "empty-port" else "54321"
+                child = self.spawn(
+                    f"pathlib.Path({str(home / 'daemon.port')!r}).write_text({port!r})")
+                if publication == "complete":
+                    (home / "daemon.pid").write_text(str(child.pid))
+                child.terminate()
+                child.wait(timeout=2)
+                window.stop_child(child, home, markers_absent_at_spawn=True)
+                self.assertEqual(child.returncode, -signal.SIGTERM)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(child.pid, os.WNOHANG)
+                self.assertFalse((home / "daemon.pid").exists())
+                self.assertFalse((home / "daemon.port").exists())
+                window.prepare_home(home)
 
 
 if __name__ == "__main__":

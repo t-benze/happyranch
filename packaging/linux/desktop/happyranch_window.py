@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -102,43 +103,64 @@ def wait_for_health(child: subprocess.Popen, home: Path, cancel: threading.Event
 
 
 def stop_child(child: subprocess.Popen, home: Path, term_timeout: float = 5,
-               kill_timeout: float = 2) -> None:
+               kill_timeout: float = 2, *, markers_absent_at_spawn: bool = False) -> None:
     """Signal only the Popen child; bounded TERM/KILL waits also reap it."""
     owned_port = read_owned_port(home, child.pid)
-    if child.poll() is None:
-        try:
-            child.terminate()
-        except ProcessLookupError:
-            pass
-        try:
-            child.wait(timeout=term_timeout)
-        except subprocess.TimeoutExpired:
+    pid_file, port_file = home / "daemon.pid", home / "daemon.port"
+    try:
+        # Pin the observed inode without following links or reading a device.
+        port_fd = os.open(port_file, os.O_PATH | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        port_fd = None
+    try:
+        if child.poll() is None:
             try:
-                child.kill()
+                child.terminate()
             except ProcessLookupError:
                 pass
             try:
-                child.wait(timeout=kill_timeout)
-            except subprocess.TimeoutExpired as exc:
-                raise LaunchError("Daemon stop incomplete; child has not exited.") from exc
-    else:
-        child.wait()
-    # After a confirmed exit, clear only markers still naming this child.
-    # A normal daemon may already have removed both files itself.
-    pid_file, port_file = home / "daemon.pid", home / "daemon.port"
-    try:
-        owner = pid_file.read_text().strip()
-    except FileNotFoundError:
-        owner = None
-    if owner == str(child.pid):
-        port_file.unlink(missing_ok=True)
-        pid_file.unlink(missing_ok=True)
-    elif owner is None and owned_port is not None:
+                child.wait(timeout=term_timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    child.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    child.wait(timeout=kill_timeout)
+                except subprocess.TimeoutExpired as exc:
+                    raise LaunchError("Daemon stop incomplete; child has not exited.") from exc
+        else:
+            child.wait()
+        # The supervisor admits an empty home before spawning this
+        # child. That launch fact also owns port-only publication: the daemon
+        # writes its port before its PID. Callers without it need a matching PID.
+        # A replacement PID still protects all foreign markers after the reap.
+        # A normal daemon may already have removed both files itself.
         try:
-            if port_file.read_text().strip() == str(owned_port):
-                port_file.unlink()
+            owner = pid_file.read_text().strip()
         except FileNotFoundError:
-            pass
+            owner = None
+        if owner == str(child.pid):
+            port_file.unlink(missing_ok=True)
+            pid_file.unlink(missing_ok=True)
+        elif owner is None and (owned_port is not None or markers_absent_at_spawn):
+            try:
+                port_after = port_file.lstat()
+                # Preserve replacement files, symlinks and shared inodes. A port
+                # first published during TERM is still from the admitted launch.
+                if not stat.S_ISREG(port_after.st_mode) or port_after.st_nlink != 1:
+                    return
+                if port_fd is not None:
+                    port_before = os.fstat(port_fd)
+                    if (port_before.st_dev, port_before.st_ino) != (port_after.st_dev, port_after.st_ino):
+                        return
+                if owned_port is None or port_file.read_text().strip() == str(owned_port):
+                    port_file.unlink()
+            except FileNotFoundError:
+                pass
+    finally:
+        if port_fd is not None:
+            os.close(port_fd)
 
 
 def run_gui(prefix: Path, home: Path) -> int:
@@ -231,7 +253,7 @@ def run_gui(prefix: Path, home: Path) -> int:
         finally:
             while child is not None:
                 try:
-                    stop_child(child, home)
+                    stop_child(child, home, markers_absent_at_spawn=True)
                     if closing:
                         error = None
                     break
