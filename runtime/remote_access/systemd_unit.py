@@ -115,6 +115,9 @@ def render_connector_unit(spec: ConnectorUnitSpec) -> str:
     lines.append("Wants=network-online.target")
     lines.extend(_START_LIMIT)
     lines.append(f"PartOf={_MANAGED_TARGET}")
+    if spec.system:
+        # Re-pull the BindsTo sidecar when the connector recovers (systemd >= 249).
+        lines.append("Upholds=happyranch-tsnet-sidecar.service")
     lines.append("")
     lines.append("[Service]")
     exec_line = " ".join(_quote_systemd_arg(arg) for arg in spec.exec_start)
