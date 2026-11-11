@@ -143,6 +143,60 @@ class KnowledgeArchiveStore:
         with self._lock:
             return self._operation(operation_id)
 
+    def find_submission(self, submission_id: str) -> dict | None:
+        """Reopen before recapture: observation cutoff is fixed at first submit."""
+        with self._lock:
+            row = self._conn.execute(
+                'SELECT operation_id FROM knowledge_distill_operations WHERE org_slug=? AND submission_id=?',
+                (self._org, submission_id),
+            ).fetchone()
+            return self._operation(row['operation_id']) if row else None
+
+    def list_inflight(self) -> list[dict]:
+        with self._lock:
+            return [dict(row) for row in self._conn.execute(
+                "SELECT * FROM knowledge_distill_operations WHERE org_slug=? AND state IN ('Queued','Processing')",
+                (self._org,),
+            ).fetchall()]
+
+    def select_processor(self, operation_id: str, processor_id: str) -> None:
+        """Fix the resolved default before admission; retries cannot substitute."""
+        with self._transaction():
+            operation = self._operation(operation_id)
+            if operation['state'] != 'Queued' or operation['processor_id'] not in (None, processor_id):
+                raise ArchiveError('knowledge_illegal_transition')
+            self._conn.execute(
+                'UPDATE knowledge_distill_operations SET processor_id=?,updated_at=? WHERE org_slug=? AND operation_id=?',
+                (processor_id, _now(), self._org, operation_id),
+            )
+
+    def bind_task_uncommitted(self, operation_id: str, processor_id: str, task_id: str) -> None:
+        """Called only inside ordinary root submission's SAME transaction/lock."""
+        if not self._conn.in_transaction:
+            raise ArchiveError('knowledge_binding_transaction_required')
+        operation = self._operation(operation_id)
+        if operation['state'] != 'Queued' or operation['task_id'] is not None:
+            raise ArchiveError('knowledge_illegal_transition')
+        if operation['processor_id'] not in (None, processor_id):
+            raise ArchiveError('knowledge_processor_mismatch')
+        self._conn.execute(
+            "UPDATE knowledge_distill_operations SET state='Processing',phase='awaiting_task',"
+            'processor_id=?,task_id=?,updated_at=? WHERE org_slug=? AND operation_id=?',
+            (processor_id, task_id, _now(), self._org, operation_id),
+        )
+
+    def observe(self, operation_id: str, phase: str, session_id: str | None) -> dict:
+        """Persist an observed phase/generation, never manufacture progress."""
+        with self._transaction():
+            operation = self._operation(operation_id)
+            if operation['state'] == 'Processing' and (operation['phase'], operation['session_id']) != (phase, session_id):
+                self._conn.execute(
+                    'UPDATE knowledge_distill_operations SET phase=?,session_id=?,updated_at=? '
+                    'WHERE org_slug=? AND operation_id=?',
+                    (phase, session_id, _now(), self._org, operation_id),
+                )
+            return self._operation(operation_id)
+
     def submit(self, submission_id: str, capture: RetiredSource, confirmation: dict,
                *, processor_id: str | None = None) -> dict:
         """Idempotent fixed submission; oversize/unavailable capture persists Failed.
