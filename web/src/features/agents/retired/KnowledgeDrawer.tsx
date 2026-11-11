@@ -143,11 +143,13 @@ function ConfirmView({ source, start, canStart, onClose, top }: DrawerProps & { 
   // While an outcome is unknown the only action re-sends that SAME submission.
   const recovering = !!recovery && !start.pending;
   const operationId = start.error instanceof DistillLedgerError ? start.error.operationId : null;
+  // A refused recovery names the daemon's own code, not the local wrapper code.
+  const shownCode = start.error instanceof DistillLedgerError && start.error.refusal ? start.error.refusal : code;
   let message: ReactNode;
   if (code) {
     message = (
       <p role="alert" className="text-status-escalated">
-        {SUBMIT_ERROR[code] ? t(SUBMIT_ERROR[code], { code, operation: operationId ?? '—' })
+        {SUBMIT_ERROR[code] ? t(SUBMIT_ERROR[code], { code: shownCode ?? code, operation: operationId ?? '—' })
           : code === 'unknown' ? t('knowledge.submitError.unknown')
             : t('knowledge.submitError.refused', { code })}
       </p>

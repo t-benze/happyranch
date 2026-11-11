@@ -3051,6 +3051,7 @@ export const en = {
   "knowledge.submitError.ledgerUnavailable": "This browser can’t read its record of Distill submissions. Nothing was sent.",
   "knowledge.submitError.ledgerWriteFailed": "This browser couldn’t save the submission record, so nothing was sent. Allow site storage for this page, then try again.",
   "knowledge.submitError.unresolved": "An earlier attempt is unknown or unconfirmed. Nothing was sent.",
+  "knowledge.submitError.recoveryRefused": "The daemon refused this check ({code}). That doesn’t settle the original submission: its outcome is still unknown, it stays recorded here, and no new attempt can start. Use “Check again” to re-send the same submission.",
   "knowledge.submitError.ledgerMappingFailed": "Distillation started as operation {operation}, but this browser couldn’t save it. The submission stays listed as unknown; use “Check again” to record it with the same submission.",
   "knowledge.facts.source": "Source",
   "knowledge.facts.permanentId": "Permanent ID",

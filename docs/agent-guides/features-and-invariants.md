@@ -2247,7 +2247,12 @@ right-hand drawer. It consumes only the existing S1/S2 mirrors in
 no per-source operation list, so the browser keeps a small per-org/per-source
 localStorage ledger of its own submission and operation IDs (written before the
 POST); a lost response is re-sent only by an explicit "Check again" with the
-SAME submission ID. If that ledger cannot be read, or the new submission ID
+SAME submission ID; only a returned operation resolves it, so a refused
+recovery request keeps the original key recorded (new starts stay blocked and
+the copy does not claim nothing was started). A first send forgets its fresh
+key only on a final 400/401/403/404/409/422. Only an absent ledger value is
+empty: any present string, including "", must parse and validate. If that
+ledger cannot be read, or the new submission ID
 cannot be durably written and read back, nothing is sent and a bilingual error
 is shown; a failed operation-ID write after a response is surfaced and keeps
 the same key for "Check again". While any recorded attempt is unknown, loading

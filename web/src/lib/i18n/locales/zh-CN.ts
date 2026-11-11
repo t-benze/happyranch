@@ -2862,6 +2862,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "knowledge.submitError.ledgerUnavailable": "此浏览器无法读取提炼提交记录。未发送任何内容。",
   "knowledge.submitError.ledgerWriteFailed": "此浏览器无法保存提交记录，因此未发送任何内容。请允许此页面使用站点存储，然后重试。",
   "knowledge.submitError.unresolved": "之前的一次尝试结果未知或尚未确认。未发送任何内容。",
+  "knowledge.submitError.recoveryRefused": "守护进程拒绝了此次核对（{code}）。这并不能确定原提交的结果：其结果仍未知，仍记录在此，且不能开始新的尝试。请使用“再次核对”重新发送同一提交。",
   "knowledge.submitError.ledgerMappingFailed": "提炼已作为操作 {operation} 开始，但此浏览器无法保存该记录。此提交仍显示为结果未知；请使用“再次核对”以同一提交记录它。",
   "knowledge.facts.source": "来源",
   "knowledge.facts.permanentId": "永久 ID",

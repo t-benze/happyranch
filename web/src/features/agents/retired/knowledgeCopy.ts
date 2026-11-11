@@ -131,6 +131,7 @@ export const SUBMIT_ERROR: Record<string, MessageKey> = {
   ledger_write_failed: 'knowledge.submitError.ledgerWriteFailed',
   unresolved_attempt: 'knowledge.submitError.unresolved',
   ledger_mapping_failed: 'knowledge.submitError.ledgerMappingFailed',
+  recovery_refused: 'knowledge.submitError.recoveryRefused',
 };
 
 /**

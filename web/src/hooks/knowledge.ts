@@ -128,7 +128,7 @@ const LEDGER_LIMIT = 20;
 const listeners = new Set<() => void>();
 const ledgerKey = (slug: string, sourceId: string) => `happyranch.knowledge.distill.${slug}.${sourceId}`;
 
-/** Ledger read: `ok=false` when storage is unreadable or the stored ledger is malformed. */
+/** Ledger read: `ok=false` when storage is unreadable or any stored value is malformed (an empty string included). */
 export interface LedgerSnapshot { ok: boolean; attempts: DistillAttempt[] }
 const UNREADABLE = Symbol('unreadable');
 const snapshots = new Map<string, { raw: string | null | typeof UNREADABLE; value: LedgerSnapshot }>();
@@ -141,7 +141,9 @@ function readLedger(key: string): LedgerSnapshot {
   let value: LedgerSnapshot = { ok: false, attempts: [] };
   if (raw !== UNREADABLE) {
     try {
-      const parsed: unknown = raw ? JSON.parse(raw) : [];
+      // Only a genuinely absent key is an empty ledger; every present string
+      // (including '') must parse and validate, else it is unreadable.
+      const parsed: unknown = raw === null ? [] : JSON.parse(raw);
       if (Array.isArray(parsed)) {
         const attempts = parsed.filter((entry): entry is DistillAttempt =>
           !!entry && typeof entry.submission_id === 'string'
@@ -213,14 +215,20 @@ function newSubmissionId(): string {
  * fresh key while an earlier attempt is unknown or unconfirmed;
  * `ledger_mapping_failed` means the POST answered but its operation ID could not
  * be saved — the submission ID stays recorded for a same-key "Check again".
+ * `recovery_refused` means the daemon refused a same-key recovery request
+ * (`refusal` carries its code); that does not settle the ORIGINAL submission,
+ * so its key stays recorded and new starts stay blocked.
  */
-export type DistillLedgerCode = 'ledger_unavailable' | 'ledger_write_failed' | 'unresolved_attempt' | 'ledger_mapping_failed';
+export type DistillLedgerCode = 'ledger_unavailable' | 'ledger_write_failed' | 'unresolved_attempt' | 'ledger_mapping_failed' | 'recovery_refused';
 export class DistillLedgerError extends Error {
-  constructor(readonly code: DistillLedgerCode, readonly operationId: string | null = null) {
+  constructor(readonly code: DistillLedgerCode, readonly operationId: string | null = null, readonly refusal: string | null = null) {
     super(code);
     this.name = 'DistillLedgerError';
   }
 }
+
+/** Final responses to a first send that prove no operation was created for its key. */
+const NO_OPERATION_STATUSES = new Set([400, 401, 403, 404, 409, 422]);
 
 /**
  * Confirmed Distill submission. `submissionId` re-sends an earlier unknown
@@ -258,10 +266,23 @@ export function useStartDistill(sourceId: string) {
       try {
         operation = await api.distillKnowledge(slug, { submission_id, source_id: sourceId, confirmed: true });
       } catch (error) {
-        // A definitive refusal created no operation; forget the key. Anything
-        // else (transport loss, 5xx) keeps the key for an explicit same-key check.
         const status = (error as { status?: number }).status;
-        if (typeof status === 'number' && status >= 400 && status < 500) {
+        const refused = typeof status === 'number' && status >= 400 && status < 500;
+        if (submissionId) {
+          // Recovery of an earlier unknown submission: only a returned operation
+          // resolves it. A refusal of THIS request proves nothing about the
+          // original, so its key always stays recorded (new starts stay blocked).
+          if (refused) {
+            const code = (error as { code?: string | null }).code;
+            throw new DistillLedgerError('recovery_refused', null, code ?? `http_${status}`);
+          }
+          throw error;
+        }
+        // First send of a freshly minted key: forget it only for refusals the
+        // daemon returns before or instead of creating an operation (bearer
+        // auth, request validation, source/archive refusal). Anything else
+        // (other 4xx, 5xx, transport loss) keeps the key for a same-key check.
+        if (typeof status === 'number' && NO_OPERATION_STATUSES.has(status)) {
           writeLedger(key, readLedger(key).attempts.filter((entry) => entry.submission_id !== submission_id));
         }
         throw error;
