@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import HappyRanchSupervisor
 
 /// Production implementation of ProcessControlling that wraps Foundation.Process.
@@ -93,6 +94,11 @@ final class RealProcessHandle: ProcessHandle, @unchecked Sendable {
 
     func terminate() {
         process.terminate()
+    }
+
+    func forceKill() -> Int32? {
+        guard process.isRunning else { return nil }
+        return kill(process.processIdentifier, SIGKILL) == 0 ? nil : errno
     }
 
     // MARK: - Async pipe drain (FINDING 3 fix)

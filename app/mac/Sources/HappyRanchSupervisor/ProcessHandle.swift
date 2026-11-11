@@ -30,4 +30,8 @@ public protocol ProcessHandle: AnyObject, Sendable {
 
     /// Send SIGTERM to the process.
     func terminate()
+
+    /// Send SIGKILL if still running. Returns the native errno on failure.
+    /// Success only means the signal was sent; callers must still observe exit.
+    func forceKill() -> Int32?
 }

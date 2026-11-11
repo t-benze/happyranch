@@ -92,6 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// after the follow-on start is issued.
     private var pendingRestart = false
 
+    /// Quit may observe exit before the queued launch callback can settle it.
+    /// Both paths consume the current launch's exit at most once.
+    private var managedExitSettled = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Foreground the app as a regular Dock-present application so a bare
         // `swift run` executable gets a visible window without requiring a .app bundle.
@@ -133,12 +137,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Terminate the managed daemon if it's still alive.
+        // Quit cancels Restart before teardown pumps the exit callbacks.
+        pendingRestart = false
+        // Retry bounded teardown for any live owned child, including .stopping
+        // after an incomplete Stop or refused role switch. Keep the actual outcome.
         // External daemons are NEVER terminated on quit.
-        if supervisor.isManagedBySelf,
-           supervisor.state == .running || supervisor.state == .starting || supervisor.state == .unhealthy {
+        guard supervisor.isManagedBySelf, let handle = currentHandle else { return }
+        if handle.isRunning {
             terminateManagedProcess()
         }
+        // Termination is synchronous: a nested run loop need not run a queued
+        // MainActor Task before this method returns and the app exits.
+        guard currentHandle === handle, !handle.isRunning else { return }
+        let status = handle.terminationStatus
+        settleManagedProcessExit(
+            exitCode: status,
+            signal: handle.terminationReason == .uncaughtSignal ? status : nil)
     }
 
     // MARK: - Daemon home
@@ -290,6 +304,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // waiting for a restart's termination handler shouldn't leave a
         // stale flag).
         pendingRestart = false
+        guard currentHandle?.isRunning != true else {
+            stateText = "Cannot start: the previous managed daemon is still running"
+            return
+        }
         do {
             try supervisor.start()
             refreshDerivedState()
@@ -398,6 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: - Process management
 
     private func launchDaemonProcess() {
+        managedExitSettled = false
         let pc = processController
         let mode = Self.packagingMode()
 
@@ -447,7 +466,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 environment: childEnv,
                 terminationHandler: { @Sendable [weak self] exitedHandle in
                     let exitCode = exitedHandle.terminationStatus
-                    let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
+                    let signal = exitedHandle.terminationReason == .uncaughtSignal ? exitCode : nil as Int32?
                     let stderr = exitedHandle.capturedStandardError
                     let stdout = exitedHandle.capturedStandardOutput
                     Task { @MainActor [weak self] in
@@ -462,13 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         if let stdout = stdout {
                             self.diagnostics.recordDaemonStdout(stdout)
                         }
-                        self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
-                        self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
-                        self.refreshDerivedState()
-                        if self.pendingRestart {
-                            self.pendingRestart = false
-                            self.startDaemon()
-                        }
+                        self.settleManagedProcessExit(exitCode: exitCode, signal: signal)
                     }
                 }
             )
@@ -508,7 +521,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 ),
                 terminationHandler: { @Sendable [weak self] exitedHandle in
                     let exitCode = exitedHandle.terminationStatus
-                    let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
+                    let signal = exitedHandle.terminationReason == .uncaughtSignal ? exitCode : nil as Int32?
                     let stderr = exitedHandle.capturedStandardError
                     let stdout = exitedHandle.capturedStandardOutput
                     Task { @MainActor [weak self] in
@@ -527,17 +540,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         if let stdout = stdout {
                             self.diagnostics.recordDaemonStdout(stdout)
                         }
-                        self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
-                        self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
-                        self.refreshDerivedState()
-
-                        // Restart continuation: if a restart was requested,
-                        // the termination-completion path performs the
-                        // follow-on start now that the supervisor has settled.
-                        if self.pendingRestart {
-                            self.pendingRestart = false
-                            self.startDaemon()
-                        }
+                        self.settleManagedProcessExit(exitCode: exitCode, signal: signal)
                     }
                 }
             )
@@ -559,29 +562,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
-    /// Send SIGTERM to the managed daemon and wait for exit.
-    /// Escalates (forces state to crashed) if the process doesn't exit within a bounded wait.
-    func terminateManagedProcess() {
-        guard let handle = currentHandle, handle.isRunning else {
-            return
+    /// Called only after the current child's exit has actually been observed.
+    private func settleManagedProcessExit(exitCode: Int32, signal: Int32?) {
+        guard !managedExitSettled else { return }
+        managedExitSettled = true
+        supervisor.onProcessExited(exitCode: exitCode, signal: signal)
+        diagnostics.recordExit(exitCode: exitCode, signal: signal)
+        refreshDerivedState()
+        if pendingRestart {
+            pendingRestart = false
+            startDaemon()
         }
+    }
+
+    /// Stop only our current child; a timeout never fabricates an exit.
+    func terminateManagedProcess() {
+        guard supervisor.isManagedBySelf, let handle = currentHandle else { return }
 
         try? supervisor.stop()
         refreshDerivedState()
-
-        handle.terminate() // SIGTERM
-
-        // Bounded wait for the process to exit
-        let deadline = Date().addingTimeInterval(5.0)
-        while handle.isRunning && Date() < deadline {
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+        let outcome = ManagedProcessStop.stop(handle)
+        switch outcome {
+        case .exited(let status, let signal):
+            diagnostics.recordLaunchLog("Managed Stop: exited, status=\(status), signal=\(signal.map(String.init) ?? "none")")
+        case .stillRunning(let error):
+            diagnostics.recordLaunchLog("Managed Stop: still running, SIGKILL errno=\(error.map(String.init) ?? "none")")
         }
-
-        if handle.isRunning {
-            // Escalate: process didn't respond to SIGTERM
-            diagnostics.recordExit(exitCode: -1, signal: 9)
-            supervisor.forceState(.crashed)
+        if case .stillRunning(let killError) = outcome,
+           let current = currentHandle, current === handle {
+            // Keep .stopping and Start disabled. The real exit callback alone
+            // records termination status and performs any pending restart.
             refreshDerivedState()
+            stateText = "Stop incomplete: daemon still running; SIGKILL errno: \(killError.map(String.init) ?? "none")"
         }
     }
 
@@ -600,11 +612,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         let portFile = URL(fileURLWithPath: "\(home)/daemon.port")
         let reader = PortReader()
 
-        // Poll for port file and health check
-        for _ in 0..<30 { // 30 attempts, ~15 seconds total
-            guard supervisor.state == .starting || supervisor.state == .unhealthy else {
-                break
-            }
+        var polling = ManagedHealthPolling()
+        while !Task.isCancelled, let delay = polling.nextDelay(state: supervisor.state) {
+            guard let handle = currentHandle, handle.processIdentifier == pid, handle.isRunning else { return }
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch { return }
+            guard currentHandle === handle, handle.isRunning,
+                  [.starting, .running, .unhealthy].contains(supervisor.state) else { return }
 
             // Try to read the port
             if let port = try? reader.readPort(from: portFile) {
@@ -613,6 +628,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 let (success, latencyMs, errorMessage) = await probe.check()
 
                 await MainActor.run {
+                    // A Stop or new launch may have happened during HTTP I/O.
+                    guard currentHandle === handle, handle.isRunning,
+                          [.starting, .running, .unhealthy].contains(supervisor.state) else { return }
                     if success {
                         let wasRecovering = (supervisor.state != .running)
                         supervisor.onHealthCheckPassed(pid: pid, port: port)
@@ -629,14 +647,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         refreshDerivedState()
                     }
                 }
+            } else {
+                supervisor.onHealthCheckFailed()
+                diagnostics.recordHealthProbe(success: false, latencyMs: 0, errorMessage: "Daemon port unavailable")
+                refreshDerivedState()
             }
-
-            // Only continue if still in a state that warrants probing
-            guard supervisor.state == .starting || supervisor.state == .unhealthy else {
-                break
-            }
-
-            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
         }
     }
 
@@ -711,7 +726,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Switch the connection role to the given preference, handling in-flight teardown.
     ///
     /// - HOME → CLIENT: stops running daemon subprocess (via ``stopDaemon(confirmed:)``)
-    ///   and home connector, then persists the CLIENT preference.
+    ///   and home connector, then persists the CLIENT preference. Refuses the
+    ///   switch while the managed child survives, including an earlier Stop.
     /// - CLIENT → HOME: disconnects client bridge (via ``disconnectRemote()``),
     ///   then persists the HOME preference which configures the supervisor.
     ///
@@ -730,6 +746,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             if supervisor.isManagedBySelf,
                supervisor.state == .running || supervisor.state == .starting || supervisor.state == .unhealthy {
                 stopDaemon(confirmed: true)
+            }
+            // Stop can return with a live child, including one already .stopping.
+            // Preserve its HOME role, ownership and incomplete-Stop diagnostic.
+            if supervisor.isManagedBySelf, currentHandle?.isRunning == true {
+                return
             }
             // Stop home connector (also done by setRolePreference, but be explicit).
             if homeConnector != nil {
@@ -955,6 +976,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         stateText = supervisor.state.description
         let s = supervisor.state
         canStart = (s == .stopped || s == .crashed || s == .stalePid || s == .failed)
+            && currentHandle?.isRunning != true
         canStop = s.canStop
         canRestart = canStop && supervisor.isManagedBySelf
     }

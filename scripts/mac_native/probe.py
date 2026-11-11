@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry")
+SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry", "supervisor")
 PROC_PIDTBSDINFO = 3
 
 
@@ -1441,6 +1441,9 @@ def main() -> int:
                 from suite_inode_telemetry import run as inode_telemetry
 
                 inode_telemetry(report)
+            elif args.suite == 'supervisor':
+                from suite_supervisor import supervisor
+                supervisor(report)
             else:
                 {"truth": truth, "teardown": teardown, "disk-sweep": disk_sweep}[args.suite](report)
             report["completed"] = True
