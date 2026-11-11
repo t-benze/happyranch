@@ -204,6 +204,8 @@ class LifecycleTests(unittest.TestCase):
         window.stop_child(child, self.home, 0.5, 0.5)
         self.assertEqual(child.returncode, -signal.SIGTERM)
         self.assertIsNone(external.poll())
+        self.assertTrue((self.home / "daemon.pid").exists())
+        self.assertTrue((self.home / "daemon.port").exists())
         self.assertEqual((self.home / "daemon.pid").read_text(), str(external.pid))
         self.assertEqual((self.home / "daemon.port").read_text(), "45678")
 
