@@ -530,35 +530,13 @@ class ProfileCoordinator:
     def _assert_no_active_operation(
         self, profile_name: str | None, *, move_org=None, attaching_org=None, captured_orgs=None,
     ) -> None:
-        """Check native DB owners only; diagnostic discovery owns no leases.
-
-        Ordinary writers retain diagnostic holds until successful native org
-        attachment. Its already-open DB is revalidated here before mutation;
-        only add_org removes the diagnostic after joining the shared org map.
-        A None profile still checks diagnostics for EMPTY dependency sets.
-        """
+        """Check native DB owners and retained startup publication holds."""
         if (self._startup_unknown
                 or (self._startup_holds and profile_name is None
                     and (captured_orgs is None or self._startup_holds.keys() & set(captured_orgs)))
                 or profile_name in self._startup_hold_profiles):
             raise ProfileCoordinatorError("profile_consumer_changed")
         with self._capture_orgs() as orgs:
-            diagnostics = getattr(self, "_move_diagnostic_orgs", {})
-            admitted = _move_batch_owner.get()
-            for slug, root in tuple(diagnostics.items()):
-                owner = move_org if move_org is not None else attaching_org
-                if owner is None or slug != owner.slug or root != owner.root:
-                    raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
-                # Discovery/strict path resolution/open/close already belong to the
-                # outside-lease startup/attachment owner. Never reacquire a DB or
-                # erase a diagnostic based on absence observed by a profile writer.
-                with owner.db._lock:
-                    row = owner.db._team_move_coordinator.active_uncommitted()
-                if move_org is not None:
-                    if row is None or admitted != (slug, row["operation_id"]):
-                        raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
-                elif row is not None:
-                    raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
             if profile_name is None:
                 return
             for org in orgs.values():
@@ -1695,7 +1673,7 @@ class ProfileCoordinator:
             captures = {}
             edges: dict[str, set[str]] = {slug: set() for slug in orgs}
             reasons = dict(self._startup_holds)
-            unknown = self._startup_unknown or bool(getattr(self, "_move_diagnostic_orgs", None))
+            unknown = self._startup_unknown
             first = next(iter(reasons.values()), None)
             def refused(slugs: Sequence[str], exc: Exception, *, uncertain: bool = False) -> None:
                 nonlocal first, unknown

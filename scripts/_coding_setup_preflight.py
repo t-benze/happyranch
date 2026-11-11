@@ -159,7 +159,6 @@ def inspect_org_owners(conn: sqlite3.Connection, layout: str, org: str) -> None:
 
 def observe_maintenance(home: Path, selected: Path) -> dict:
     from runtime.runtime import RuntimeDir
-    from runtime.orchestrator.team_move_startup import require_runtime_reader, diagnostic_move_orgs
     from scripts.migrate_workflow_submission_schema import resolve_org_database
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
     from runtime.infrastructure.workflow_coding_schema import _validate_coding_dependencies
@@ -172,9 +171,6 @@ def observe_maintenance(home: Path, selected: Path) -> dict:
         root = Path(name)
         runtime = RuntimeDir.load(root)
         result['runtimes'].append((str(root), identity(root), digest_file(root / 'happyranch.yaml')))
-        diagnostics = require_runtime_reader(runtime) | diagnostic_move_orgs(runtime)
-        if diagnostics:
-            raise Hold(f'{root}: diagnostic orgs {diagnostics}; original move/org owner must reconcile')
         directory = literal(root / 'orgs')
         entries = sorted(directory.iterdir())
         if len(entries) > 1024:
