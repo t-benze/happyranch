@@ -824,6 +824,14 @@ not completion. Truthful anomalies and required escalations remain.
 
 A held/deferred task is unfinished, not terminal/orphan evidence. Preserve its worktree and original owner. Terminal lifecycle alone cannot discharge possible-launch, host/tree or cleanup ACTION uncertainty; use the existing authoritative evidence and non-force contract. Pause does not change scheduler/selector eligibility or authorize reclamation. Real admitted cleanup runs under its existing owner after commitment; interrupted ACTION stays unknown and must not be replayed.
 
+Frozen Mac daemon cleanup helpers enter the fixed hidden `--cleanup-helper`
+dispatch (`disk-sweep`, `worktree-safety`, `check-path-use`) before daemon startup.
+Source helper argv stays Python `-m`/script-based. The sweep revision hashes
+loader code (`code-sha256:`), with no loose-source requirement or fabricated
+fallback; unavailable code prevents worker launch. This grants agents no new
+cleanup authority. The root owner still retains unavailable scanner evidence;
+Darwin process-use parity and manual mount-parser fixes remain S4.
+
 ## Separate future root-terminal owner
 
 This manual/daily procedure keeps its marker, age, ordinal, peer/history,

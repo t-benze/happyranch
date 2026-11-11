@@ -2079,6 +2079,12 @@ excluded.
 Dirty, local-only, open/closed-unmerged PR, active session/control/PID/job,
 unsettled host/recovery, held, successor-use-unresolved, foreign, protected or
 unknown evidence retains. Terminality and a cleared tracker are not quiescence.
+Frozen daemons invoke the fixed hidden `--cleanup-helper worktree-safety` and
+`--cleanup-helper check-path-use` entries for preservation, scanner, snapshot and
+post-action checks. Source installs keep the existing Python script argv. The
+dispatch executes the same bundled scripts before daemon startup; unavailable
+scanner evidence still retains and never grants removal (Darwin scanner is S4).
+
 The release-bundled `workspace-cleanup/scripts/worktree_safety.py` is the shared
 Git preservation, recursive snapshot and protected-identity owner for the root
 pass and manual runner. Fresh complete owning PR pages are repeated. A live
