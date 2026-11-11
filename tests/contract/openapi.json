@@ -5219,6 +5219,52 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/sequential/final-manager": {
+      "GET": {
+        "params": [
+          [
+            "change",
+            "query"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/repository-preflight": {
+      "GET": {
+        "params": [
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/sequential/runs": {
       "GET": {
         "params": [

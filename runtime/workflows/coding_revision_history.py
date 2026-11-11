@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows.coding_authority_history import _decoded
 from runtime.workflows.coding_bootstrap import decode_row, encode_row, identity
 from runtime.workflows.coding_revision import ROLES, attempt_identity, current_stage, independent, returned_findings, revision_brief, revision_scope, scope_allowance, _copy_allowance
@@ -28,7 +30,7 @@ def upstream_pins(attempts: dict, stages: dict, revision: int, instance: str, wo
                and n['terminal'] == 'success' and n['claim'] is not None and not n.get('ownership_unknown')
                and r is not None and type(r['output_summary']) is str and len(r['output_summary']) <= 65536)
         budget.consumed += 12 * len(r['output_summary'])
-        _check(budget.remaining_bytes >= 0)
+        _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', 12 * len(r['output_summary']), budget.remaining_bytes + 12 * len(r['output_summary']))
         output = parse_stage_output(r, instance=instance, attempt=a, work=work, subject=subject)
         _decoded(output, budget)
         _check(output['outcome'] == outcome and output['findings'] not in findings
@@ -68,7 +70,7 @@ def replay_revision(conn: Any, org: str, budget: Any, storage: Any, *, event: di
     callback = state['callback']
     _check(callback is not None and type(callback['output_summary']) is str and len(callback['output_summary']) <= 65536)
     budget.consumed += 12 * len(callback['output_summary'])
-    _check(budget.remaining_bytes >= 0)
+    _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', 12 * len(callback['output_summary']), budget.remaining_bytes + 12 * len(callback['output_summary']))
     scope = None if current['stage'] == 'development' else _read_scope(current, budget)
     stages = {**settled_stages, current['id']: state}
     if current['stage'] == 'manager_closeout':

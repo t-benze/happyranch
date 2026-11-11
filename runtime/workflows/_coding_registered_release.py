@@ -131,5 +131,5 @@ def read_registered_release(conn: sqlite3.Connection, *, expected_org_slug: str 
         for column, value in (('template_identity_id', identity), ('template_version_id', version)):
             _absent(conn, 'workflow_template_publish_operations', column, value, budget)
         return release
-    except (ValueError, TypeError, KeyError, IndexError, UnicodeError, RecursionError, OverflowError, sqlite3.Error):
-        raise ValueError('coding_registered_release_history_invalid') from None
+    except (ValueError, TypeError, KeyError, IndexError, UnicodeError, RecursionError, OverflowError, sqlite3.Error) as exc:
+        raise ValueError('coding_registered_release_history_invalid') from exc

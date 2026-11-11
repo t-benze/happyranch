@@ -16,8 +16,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 
+from runtime.workflows._read_exhaustion import check as _budget_check
 from runtime.workflows.coding_authority_history import (
     CodingAuthorityHistoryError, _Budget, _CALL_ROW_LIMIT, _SetupHistoryReader, _token,
+    _check as _authority_check,
 )
 from runtime.workflows.coding_capability_history import (
     CodingCapabilityHistory, CodingCapabilityHistoryError, _history,
@@ -115,14 +117,17 @@ def _projection(columns: tuple[str, ...], allowed: tuple[tuple[str, ...], ...],
     # invalid/oversized data yields NULL with ORIGINAL typeof still projected.
     size = '+'.join(f"CASE WHEN typeof({name}) IN ('text','blob') "
                     f"THEN length(CAST({name} AS BLOB)) ELSE 0 END" for name in columns)
-    fields = []
+    fields, shape = [], []
     for name, types in zip(columns, allowed):
         choices = ','.join("'" + kind + "'" for kind in types)
         length = f' AND length(CAST({name} AS BLOB))<={_VALUE_LIMIT}' if 'text' in types else ''
+        shape.append(f"typeof({name}) IN ({choices}) AND (typeof({name}) NOT IN ('text','blob') "
+                     f"OR length(CAST({name} AS BLOB))<={_VALUE_LIMIT})")
         value = f'CAST({name} AS BLOB)' if 'text' in types else name
         fields.append(f'CASE WHEN ? > 0 AND _row_bytes<=? AND typeof({name}) IN ({choices})'
                       f'{length} THEN {value} ELSE NULL END')
     fields.extend(f'typeof({name})' for name in columns)
+    fields.append('CASE WHEN ' + ' AND '.join(shape) + ' THEN _row_bytes ELSE NULL END')
     return ('WITH native AS (SELECT ' + ','.join(columns) + ',' + size
             + ' AS _row_bytes FROM ' + table + ' ' + selection + ') SELECT '
             + ','.join(fields) + ' FROM native')
@@ -151,6 +156,9 @@ def _native_rows(conn: sqlite3.Connection, sql: str, args: tuple,
         while (row := cursor.fetchone()) is not None:
             budget.candidate()  # before type/grammar/conflict rejection
             budget.step()
+            if row[-1] is not None:
+                _budget_check(row[-1] <= budget.remaining_bytes, _authority_check, budget, 'bytes', row[-1], budget.remaining_bytes)
+            row = row[:-1]  # strip the private bounded scalar; public native shape is unchanged
             values = budget.native_row(row, types)
             yield NativeSourceRecord(tuple(NativeSourceColumn(name, storage, value)
                 for name, storage, value in zip(columns, row[len(columns):], values)))

@@ -5,6 +5,8 @@ encoders receive only independently reconstructed native history at each call.
 """
 from __future__ import annotations
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows.coding_bootstrap import final_scope, identity
 from runtime.workflows.coding_saved_records import _check, _hash
 from runtime.workflows.coding_authority_history import _decoded
@@ -43,7 +45,7 @@ def returned_findings(attempts: dict, stages: dict, instance: str, work: dict, b
         r = native['callback']
         _check(type(r['output_summary']) is str and len(r['output_summary']) <= 65536)
         budget.consumed += 12 * len(r['output_summary'])
-        _check(budget.remaining_bytes >= 0)
+        _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', 12 * len(r['output_summary']), budget.remaining_bytes + 12 * len(r['output_summary']))
         output = parse_stage_output(r, instance=instance, attempt=a, work=work)
         _decoded(output, budget)
         _check(a['state'] == 'completed' and native['source_settled'] and native['cleanup_recorded']
@@ -133,7 +135,7 @@ def fulfilled_revision(attempt: dict, callback: dict | None, work: dict, budget:
         return False
     _check(type(callback['output_summary']) is str and len(callback['output_summary']) <= 65536)
     budget.consumed += 12 * len(callback['output_summary'])
-    _check(budget.remaining_bytes >= 0)
+    _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', 12 * len(callback['output_summary']), budget.remaining_bytes + 12 * len(callback['output_summary']))
     scope = _read_json(attempt['scope_bytes'], budget, 1048576)
     try:
         output = parse_stage_output(callback, instance=attempt['instance_id'], attempt=attempt, work=work)
@@ -160,6 +162,7 @@ def _copy_allowance(value: object, budget: object) -> None:
     while pending:
         item = pending.pop()
         budget.step()
+        opening = budget.remaining_bytes
         if type(item) is dict:
             pending.extend(item.keys())
             pending.extend(item.values())
@@ -169,4 +172,4 @@ def _copy_allowance(value: object, budget: object) -> None:
             budget.consumed += 12 * len(item)
         elif type(item) is bytes:
             budget.consumed += 4 * len(item)
-        _check(budget.remaining_bytes >= 0)
+        _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', opening - budget.remaining_bytes, opening)

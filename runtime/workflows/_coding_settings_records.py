@@ -8,6 +8,8 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows._coding_role_records import (
     Closed, MappingPin, Release, RoleMapping,
 )
@@ -155,7 +157,7 @@ def account(value: object, budget: _Budget) -> object:
         else:
             _check(item is None or type(item) is bool)
             estimate += 5
-        _check(estimate <= budget.remaining_bytes)
+        _budget_check(estimate <= budget.remaining_bytes, _check, budget, 'bytes', estimate, budget.remaining_bytes)
     budget.consumed += estimate
     raw = _canonical(value)
     _check(len(raw) <= VALUE_LIMIT and len(raw) <= estimate)
@@ -206,7 +208,7 @@ def read_human_record(raw: bytes, *, expected_org_slug: str, budget: _Budget | N
         _check(type(encoded) is str and len(encoded) <= 4 * ((VALUE_LIMIT + 2) // 3))
         decoded = base64.b64decode(encoded, validate=True)
         _check(base64.b64encode(decoded).decode('ascii') == encoded)
-        _check(3 * len(decoded) <= budget.remaining_bytes)
+        _budget_check(3 * len(decoded) <= budget.remaining_bytes, _check, budget, 'bytes', 3 * len(decoded), budget.remaining_bytes)
         budget.consumed += 3 * len(decoded)
         account(_json(decoded, VALUE_LIMIT), budget)
     command_raw, _ = _command_bytes(record, COMMAND_LIMIT)
@@ -238,7 +240,7 @@ def captured_configuration(record: dict, command: dict, previous: dict | None,
         return  # Complete previous history was authenticated by this caller.
     _check(command['mapping']['authority'] == capture['pin'])
     raw = base64.b64decode(capture['snapshot_bytes_base64'], validate=True)
-    _check(len(raw) <= budget.remaining_bytes)
+    _budget_check(len(raw) <= budget.remaining_bytes, _check, budget, 'bytes', len(raw), budget.remaining_bytes)
     budget.consumed += len(raw)
     snapshot = account(_json(raw, VALUE_LIMIT), budget)
     human_configuration(command['mapping'], snapshot, budget)

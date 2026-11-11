@@ -17,6 +17,8 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows.coding_authority_history import (
     CodingAuthorityHistoryError, SetupIssuanceHistory, _Budget,
     _SetupHistoryReader, _canonical, _capture_admission, _digest,
@@ -257,7 +259,9 @@ def _read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
         cursor.row_factory = None
         try:
             cursor.execute("SELECT CASE WHEN ? > 0 AND typeof(id)='text' "
-                "AND length(CAST(id AS BLOB))<=min(128,?) THEN id ELSE NULL END,typeof(id) "
+                "AND length(CAST(id AS BLOB))<=min(128,?) THEN id ELSE NULL END,typeof(id),"
+                "CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=128 "
+                "THEN length(CAST(id AS BLOB)) ELSE NULL END "
                 "FROM workflow_coding_mappings ORDER BY generation DESC,id LIMIT 1",
                 (8192 - budget.accepted_rows, budget.remaining_bytes))
             row = cursor.fetchone()
@@ -270,6 +274,9 @@ def _read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
             current_snapshot(conn, expected_org_slug, budget, None, captures)
             return None, {}
         budget.candidate()
+        if row[-1] is not None:
+            _budget_check(row[-1] <= budget.remaining_bytes, _check, budget, 'bytes', row[-1], budget.remaining_bytes)
+        row = row[:-1]
         _check(row[0] is not None and row[1] == 'text')
         budget.row(row, ('text',), counted=True)
         _token(row[0])

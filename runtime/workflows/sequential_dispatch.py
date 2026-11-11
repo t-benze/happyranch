@@ -733,6 +733,40 @@ class SequentialDispatcher:
                                     else:
                                         start, bound = None, None
                                         terminal_digest = outer_digest = None
+                                    if next(node.output_contract.type for node in compiled.definition.nodes
+                                            if node.id == visit['node_id']) == 'guarded-repository-merge@1':
+                                        # Native result preflight already bounds this string. Prepay
+                                        # UTF8/canonical/base64/domain copies and both JSON trees
+                                        # BEFORE the new decoder, on the original prefix allowance.
+                                        # Four bytes per character bounds UTF8; carrier metadata
+                                        # plus decoded JSON has fewer tokens than carrier characters.
+                                        # Exhaustion remains a genuine reader refusal, outside Held.
+                                        budget.reserve(48 * 4 * len(result['output_summary']) + 512)
+                                        budget.work(len(result['output_summary']))
+                                        value, _ = _carrier(result['output_summary'], contract='guarded-repository-merge@1',
+                                            checks=(), status=result['status'], verdict=result['verdict'])
+                                        if value['outcome'] == 'merged':
+                                            from runtime.workflows.sequential_coding_final_callback import (
+                                                FinalObservationCause, FinalObservationRefusal, read_final_callback_uncommitted,
+                                            )
+                                            budget.check()
+                                            try:
+                                                read_final_callback_uncommitted(conn, org_slug=self.org.slug,
+                                                    run_id=run_id, visit_id=visit_id, task_id=visit['task_id'],
+                                                    principal=visit['principal'], session_id=visit['session_id'],
+                                                    result_id=result_id, authority=self.org.workflow_authority,
+                                                    capture=capture, deadline=budget.deadline)
+                                            except FinalObservationRefusal as exc:
+                                                budget.check()
+                                                if exc.cause is FinalObservationCause.LIMIT:
+                                                    raise
+                                                cause = (exc.code if exc.code in (BusinessHoldCause.AUTHORITY_DENIED.value,
+                                                    BusinessHoldCause.AUTHORITY_UNVERIFIED.value) else BusinessHoldCause.CAPABILITY.value)
+                                                raise SequentialRefusal(cause) from None
+                                            finally:
+                                                conn.set_progress_handler(budget.progress, 1000)
+                                            # U7c1 validates then retains the original unavailable-output Held.
+                                            # U7c2 owns witness/publication admission; no success output here.
                                     envelope, content, recipients, checks = self._compose(conn, run, visit, compiled, result,
                                         bound=bound, budget=budget, carrier_digest=identity['carrier_digest'],
                                         terminal_digest=terminal_digest, outer_digest=outer_digest)

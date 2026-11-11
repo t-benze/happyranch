@@ -1,6 +1,6 @@
 # Sequential Coding U7: common transport and agent initiation
 
-> Status: current design; U7a reads and U7b settings CAS/lookup delivered in source; U7c–U7d remain.
+> Status: current design; U7a reads and U7b settings CAS/lookup delivered in source; U7c1 selected reads/local Final mount delivered in source; U7c2 admission and U7d remain.
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
 
 THR-336 / ROOT TASK-15165; TASK-15465, linked retry of pre-edit failed TASK-15462.
@@ -190,3 +190,99 @@ preserved. V3 ends2026-11-23T08:48:38Z; extension, live settings/admission/roles
 installation/migration/deploy/restart, genuine Coding scratch and effect recovery
 remain Founder-reserved. PR1252 remains held. F-1=(i), Decision1=B (48KiB JSON),
 Decision2=1, SB-1=(a). Merged != deployed.
+
+
+## U7c1 selected task-session transport (TASK-15494)
+
+This source unit mounts two SELECT-only GETs under `/api/v1/orgs/{slug}`:
+`/workflows/sequential/repository-preflight?session_id=…` returns only the
+original committed RepositoryChangeSubject (repository identity/key/origin digest,
+SHA1/base/scope). An unbound subject refuses409; this read does not resolve/bind
+one or release editing. U4a/U4b2 retain resolution, positive-COMMIT binding and
+clone metadata ownership. There are no four-role duty/access fields.
+`/workflows/sequential/final-manager?session_id=…&change=…` validates the bounded
+canonical code-change declaration against the selected full settled history and
+returns the existing closed Final selection to its OWN live manager only.
+The declaration is untrusted; it grants no repository/merge capability.
+
+Both routes require the existing CLI surface and exact live ordinary session
+binding; supplied SID only looks up that binding. Task/principal/current SID and
+native invocation/workspace are server-derived. Bearer, browser Origin, foreign,
+recovery, ended/replaced and nonselected sessions refuse. Native absent404
+precedes ownership409. Native agent-only and managed-connector audiences are
+excluded: native SurfaceAllowList explicitly denies these two new GETs; the
+managed allowlist is unchanged/default-denied. No TS/browser mirror or
+agent-permission/credential change.
+No-store, strict empty body/query, current ACCESS-1 authority and original native
+owner/cancellation bookends precede disclosure. The profile/publisher/DB/binding
+read fences own BEGIN/rollback with no durable admission lease or DML. Full mixed
+oracle and original per-read D2 allowances share one five-second deadline with
+one finite projection allowance; refusal never renews it.
+
+`happyranch workflows sequential repository-preflight --org ORG --session-id SID
+--json` reads that subject. `happyranch workflows sequential finalize --org ORG
+--session-id SID --from-file ABS --json` consumes a closed canonical <=49152-byte
+workflow-sequential-finalize-command@1 with exactly format, operation_key,
+repository_path and change (the whole selected code-change declaration). It
+contains no supplied task/principal/native pin. Keep original key/body after
+transport uncertainty. This LOCAL command obtains fresh HTTP selections at every
+existing U5b2b1 adapter reselect; no second CLI OrgState, daemon Git/gh/network I/O,
+job/recovery executor or fresh start is introduced. The original-task local fence,
+intent, expected-head non-admin guard, separate remote read and recording-fault
+uncertainty remain unchanged across key/cwd/path variants. It exclusively saves
+the compatible callback.json before printing the canonical generic callback
+STRING. It does not call report-completion. The genuine manager must use that
+string in its own FINAL callback, preserving causal BLOCK and empty content/claims
+for uncertain/failed receipts. Lost output/persistence never authorizes reissue.
+
+The original post-positive-outer dispatcher now invokes U5b2b2's complete/selected
+callback reader before successful Final composition, retaining denied versus
+unverified and cancellation/Held owners. It shares the enclosing deadline,
+restores the enclosing SQL hook afterward, and still reaches original
+rollback-then-business-Held on validated success. Negative callbacks retain their
+original path. Historical Coding and U7a/U7b routes/semantics are unchanged.
+Before the added Final-path carrier decode, the dispatcher prepays
+`48 * 4 * len(summary) + 512` bytes and `len(summary)` traversal steps on its
+SAME original prefix allowance. The native result preflight already bounds the
+string; four bytes per character bounds UTF8, and carrier metadata plus decoded
+domain JSON has fewer tokens than carrier characters. This covers the new
+encoding/canonical/base64/domain parse and copy work before it starts, without
+encoding just to size the reservation. Exhaustion propagates as the original
+reader refusal with no committed effects, never malformed-output business-Held.
+The compatible callback reader retains its original R-M3-2 limits on the shared
+deadline; no cap, allowance, retry or historical decoder is changed.
+The dispatcher checks that SAME original deadline at the callback-reader handoff
+and before classifying its refusal. Original deadline exhaustion propagates as
+`workflow_seq_read_deadline_exhausted`; the callback reader's own read-exhausted
+refusal also propagates unchanged. Neither path records a business-Held overlay
+or commits DML. Validated selected success still rolls back to business-Held.
+At the mounted callback reader's refusal catch, genuine exhaustion on the
+SAME original allowances propagates even when a nested allocator reports a
+generic history error. The mounted refusal is
+`sequential_final_observation_read_exhausted`, without a business-Held overlay.
+R-M3-5 permits narrow protected-source exceptions at original allocator checks:
+failed reservations carry a typed causal signal with the original allowance,
+dimension, requested and remaining amounts. Existing outer exception classes and
+code strings remain unchanged, including retained copy shortfalls before any
+counter changes. SQLite progress retains its actual refusal for causal chaining.
+The mounted catch walks cause/context links across D/P/A/B/C/L/R; it never infers
+exhaustion from counter signs or traceback frames. Standalone calls without an
+enclosing deadline and genuine malformed history retain their classifications
+and persisted bytes. No cap, original deadline, allowance or retry is renewed.
+Sequential-start recognition retains genuine exhaustion as the cause of the
+caller's already handled first error before returning its original Boolean
+fallback. Both queued and central-metadata rethrows therefore preserve it;
+ordinary unmatched recognition still returns False with its original error.
+
+**Final success remains Held; U7c2 is implementation remainder.** Transport and
+validated observation do not implement a Final capability witness, recipients,
+verified-check composition or complete output-history acceptance. U7c2 must add
+those compatible consumers and same-transaction publication/return validation
+before admitting guarded-repository-merge@1 success; it is not a flag change or
+verification-only task. This split is the brief's permitted first coherent unit,
+not product/external-contract or authority expansion. No positive admission or
+native/V3/V5/M4/genuine access/real-merge acceptance is claimed. Shared OS-user/gh
+custody and PRD v1.0.4 / Founder msg131 ACCESS-1 remain controlling. Public fresh
+start stays OFF until U9. OpenAPI/classification parity and OUT-OF-REPO SYNTHETIC
+actual-route/local-mount fake-effect diagnostics accompany the source; no repo
+tests, Vitest restoration, integration/E2E/live operation or merge occurs.

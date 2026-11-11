@@ -9,10 +9,14 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, get_args, get_origin
 
 from pydantic import BaseModel
+
+from runtime.workflows._read_exhaustion import check as _budget_check
+from runtime.workflows._read_exhaustion import exhausted
 
 from runtime.workflows.sequential_contracts import StartCommand
 from runtime.workflows.coding_authority_history import _TRAVERSAL_LIMIT
@@ -38,12 +42,13 @@ def _require(value: bool) -> None:
 def _step(budget: _Budget) -> None:
     # Decline BEFORE performing another operation if its original allowance
     # cannot admit it. The caller retains and raises its original first error.
-    _require(budget.traversed < _TRAVERSAL_LIMIT)
+    _budget_check(budget.traversed < _TRAVERSAL_LIMIT, _require, budget, 'work', 1, _TRAVERSAL_LIMIT - budget.traversed)
     budget.step()
 
 
 def _reserve(budget: _Budget, size: int) -> None:
-    _require(size >= 0 and budget.remaining_bytes >= size)
+    _require(size >= 0)
+    _budget_check(budget.remaining_bytes >= size, _require, budget, 'bytes', size, budget.remaining_bytes)
     _step(budget)
     budget.consumed += size
 
@@ -232,6 +237,7 @@ def recognized_start(raw: object, *, location: str, result_id: int | None,
     if (location != 'task_results.decision_json' or not sequential or budget is None
             or type(result_id) is not int or result_id <= 0):
         return False
+    original_error = sys.exception()
     try:
         value = _json(raw, budget)
         _require(set(value) in ({'action', 'workflow'}, {'action', 'workflow', '_manager_self_evaluation'})
@@ -275,6 +281,10 @@ def recognized_start(raw: object, *, location: str, result_id: int | None,
                          and _original(command, row['start_bytes'], len(raw), budget))
         _require(len(referenced) <= 1)
         clean = _residual(value, budget, reserved)
-    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError) as exc:
+        # Both callers rethrow their retained first error after False. Keep the
+        # actual failed reservation reachable through that original exception.
+        if original_error is not None and exhausted(exc):
+            original_error.__cause__ = exc
         return False
     return clean

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows.coding_authority_history import _capture_admission, _decoded
 from runtime.workflows.coding_bootstrap import decode_row, encode_row, identity, final_brief, final_scope, qa_brief, qa_scope, review_brief, review_scope
 from runtime.workflows._coding_settings_execution import _read_authority, _read_json
@@ -181,7 +183,7 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body:
     _check(type(callback['output_summary']) is str and len(callback['output_summary']) <= 65536)
     # Reserve conservative UTF8/decoded/canonical copies before nested parsing.
     budget.consumed += 12 * len(callback['output_summary'])
-    _check(budget.remaining_bytes >= 0)
+    _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', 12 * len(callback['output_summary']), budget.remaining_bytes + 12 * len(callback['output_summary']))
     output = parse_stage_output(callback, instance=run['instance_id'], attempt=current,
                                work=command['work'], subject=subject)
     _decoded(output, budget)
@@ -346,7 +348,7 @@ def replay_qa(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, bo
     callback = state['callback']
     _check(callback is not None and type(callback['output_summary']) is str and len(callback['output_summary']) <= 65536)
     budget.consumed += 12 * len(callback['output_summary'])
-    _check(budget.remaining_bytes >= 0)
+    _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', 12 * len(callback['output_summary']), budget.remaining_bytes + 12 * len(callback['output_summary']))
     output = parse_stage_output(callback, instance=run['instance_id'], attempt=current,
         work=command['work'], subject=_read_json(current['scope_bytes'], budget, 1048576)['subject'])
     _decoded(output, budget)
@@ -397,7 +399,7 @@ def replay_qa(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, bo
                    and native['terminal'] == 'success' and original is not None
                    and type(original['output_summary']) is str and len(original['output_summary']) <= 65536)
             budget.consumed += 12 * len(original['output_summary'])
-            _check(budget.remaining_bytes >= 0)
+            _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', 12 * len(original['output_summary']), budget.remaining_bytes + 12 * len(original['output_summary']))
             prior = parse_stage_output(original, instance=run['instance_id'], attempt=upstream,
                 work=command['work'], subject=output['subject'])
             _decoded(prior, budget)
@@ -475,7 +477,7 @@ def replay_final(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
                and not n.get('ownership_unknown') and r is not None
                and type(r['output_summary']) is str and len(r['output_summary']) <= 65536)
         budget.consumed += 12 * len(r['output_summary'])
-        _check(budget.remaining_bytes >= 0)
+        _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', 12 * len(r['output_summary']), budget.remaining_bytes + 12 * len(r['output_summary']))
         o = parse_stage_output(r, instance=run['instance_id'], attempt=a, work=command['work'], subject=subject)
         _decoded(o, budget)
         _check(o['outcome'] == outcome and o['findings'] not in findings)
@@ -489,7 +491,7 @@ def replay_final(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
     callback = state['callback']
     _check(callback is not None and type(callback['output_summary']) is str and len(callback['output_summary']) <= 65536)
     budget.consumed += 12 * len(callback['output_summary'])
-    _check(budget.remaining_bytes >= 0)
+    _budget_check(budget.remaining_bytes >= 0, _check, budget, 'bytes', 12 * len(callback['output_summary']), budget.remaining_bytes + 12 * len(callback['output_summary']))
     if kind == 'manager_completed':
         _check(current['stage'] == 'manager_closeout' and len(attempts) == 4
                and state.get('final_output') is None and facts['admission'] is None

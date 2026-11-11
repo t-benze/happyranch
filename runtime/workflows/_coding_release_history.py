@@ -12,6 +12,8 @@ import re
 import sqlite3
 from dataclasses import dataclass
 
+from runtime.workflows._read_exhaustion import check as _budget_check
+
 from runtime.workflows.coding_authority_history import _Budget, _bounded_rows, _capture_admission, _rows
 from runtime.workflows.coding_saved_records import _Ancestry, _capture, _json, _timestamp
 from runtime.workflows.release_templates import (
@@ -36,7 +38,8 @@ def _steps(budget: _Budget, count: int) -> None:
 
 
 def _copies(budget: _Budget, size: int) -> None:
-    _check(0 <= size <= budget.remaining_bytes)
+    _check(0 <= size)
+    _budget_check(size <= budget.remaining_bytes, _check, budget, 'bytes', size, budget.remaining_bytes)
     budget.consumed += size
 
 
@@ -308,5 +311,5 @@ def read_release_import(conn: sqlite3.Connection, *, expected_org_slug: str | No
             _check(len(rows) == 1 and history.matches(table, rows[0]))
         # Complete queued/native inventory closes downstream rows for both origins.
         return history
-    except (ValueError, TypeError, KeyError, IndexError, UnicodeError, RecursionError, OverflowError, sqlite3.Error):
-        raise ValueError('coding_release_import_history_invalid') from None
+    except (ValueError, TypeError, KeyError, IndexError, UnicodeError, RecursionError, OverflowError, sqlite3.Error) as exc:
+        raise ValueError('coding_release_import_history_invalid') from exc

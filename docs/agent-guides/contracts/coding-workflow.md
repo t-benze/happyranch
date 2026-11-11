@@ -2518,3 +2518,27 @@ one PUT, matching-original-only reconciliation and no locale-triggered work.
 No new rendered UI, bearer fallback, agent/native audience entitlement, remote
 allowlist, repository setup selector, admission action, fresh start or Final mount.
 Final success stays Held; U7c/U7d, U8/U9 and native/V3 acceptance remain separate.
+
+
+## U7c1 selected task-session reads and LOCAL Final mount (TASK-15494)
+
+Two task-session-only GETs expose the committed subject at
+`/workflows/sequential/repository-preflight` and the live selected Final manager
+selection at `/workflows/sequential/final-manager`. Subject read is zero-write;
+unbound subject refuses and does not bind/release editing. Both derive native
+task/principal/current SID from the original binding, reject browser/bearer,
+foreign/recovery/ended sessions, and bookend current ACCESS-1 authority, full
+mixed history, native owner and cancellation under a SELECT-only snapshot.
+Native SurfaceAllowList excludes the two new GETs. Existing audience rules,
+managed allowlist and auth grants are unchanged; no TS/browser mirror.
+
+`workflows sequential finalize` mounts U5b2b1 locally through fresh HTTP
+selections, without a second CLI OrgState or daemon effect/network I/O. Original
+intent/fence/expected-head non-admin action/separate-read/receipt uncertainty
+remain. The command saves/prints the compatible unchanged callback carrier;
+only the genuine manager's own FINAL callback supplies native provenance.
+U5b2b2 validates after positive outer settlement; **Final success remains Held**.
+U7c2 still owes compatible Final witness/output acceptance, U7d agent initiation,
+and U9 atomic fresh-start cutover. Full command/route grammar, audience exclusions,
+per-read allowances and SYNTHETIC evidence limits: [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md).
+No schema/permission/credential/access observer or live operation is introduced.

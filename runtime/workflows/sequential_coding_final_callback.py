@@ -1,4 +1,4 @@
-"""Unmounted, SELECT-only Final callback observation validation (R-M3-3).
+"""SELECT-only Final callback validation (R-M3-3), consumed by U7c1.
 
 Caller owns the original authority/teams/DB locks, capture and read transaction.
 No action, acceptance, Held writer, transport or executable selection is returned.
@@ -9,6 +9,8 @@ import hashlib
 import sqlite3
 from dataclasses import dataclass
 from enum import StrEnum
+
+from runtime.workflows._read_exhaustion import exhausted
 
 from runtime.infrastructure.task_pause_controls import PauseControlError
 from runtime.workflows.authority import AuthorityAdmissionCapture, WorkflowAuthorityCoordinator
@@ -216,15 +218,16 @@ def _read(conn: sqlite3.Connection, *, org_slug: str, run_id: str, visit_id: str
 
 def read_final_callback_uncommitted(conn: sqlite3.Connection, *, org_slug: str, run_id: str, visit_id: str,
         task_id: str, principal: str, session_id: str, result_id: int,
-        authority: WorkflowAuthorityCoordinator, capture: AuthorityAdmissionCapture) -> ValidatedFinalObservation:
+        authority: WorkflowAuthorityCoordinator, capture: AuthorityAdmissionCapture,
+        deadline: float | None = None) -> ValidatedFinalObservation:
     """Complete mixed oracle then selected proof read, with zero writes.
 
     R-M3-2: the mandatory complete read owns unchanged D2 A/B/C/L allowances;
     selected projection/validation owns one finite budget on the SAME original
     deadline. No retries, resetting, cached evidence or caller-supplied callback.
-    U7 alone may later wire this reader into acceptance and mount local action.
+    U7c1 validates before retaining business-Held; U7c2 still owns admission.
     """
-    budget = _ReadBudget()
+    budget = _ReadBudget() if deadline is None else _ReadBudget(deadline=deadline)
     try:
         _require(type(conn) is sqlite3.Connection and conn.in_transaction
                  and authority._db._conn is conn and authority._org_slug == org_slug and capture is not None,
@@ -238,9 +241,14 @@ def read_final_callback_uncommitted(conn: sqlite3.Connection, *, org_slug: str, 
             return _read(conn, org_slug=org_slug, run_id=run_id, visit_id=visit_id, task_id=task_id,
                 principal=principal, session_id=session_id, result_id=result_id, authority=authority,
                 capture=capture, mixed=mixed, budget=budget)
-    except FinalObservationRefusal:
+    except FinalObservationRefusal as exc:
+        if deadline is not None and exhausted(exc):
+            raise FinalObservationRefusal(FinalObservationCause.LIMIT) from exc
         raise
     except (CodingEvidenceRefusal, SequentialRefusal, ValueError) as exc:
+        # Preserve the actual failed reservation through generic history wrappers.
+        if deadline is not None and exhausted(exc):
+            raise FinalObservationRefusal(FinalObservationCause.LIMIT) from None
         code = exc.code if isinstance(exc, SequentialRefusal) else str(exc)
         cause = (FinalObservationCause.LIMIT if code.startswith(('workflow_seq_read_', 'coding_read_'))
                  or 'exhausted' in code or 'limit_exceeded' in code else
@@ -250,5 +258,7 @@ def read_final_callback_uncommitted(conn: sqlite3.Connection, *, org_slug: str, 
                  FinalObservationCause.CHANGED if code.startswith('workflow_seq_business_hold_') else
                  FinalObservationCause.UNVERIFIED)
         raise FinalObservationRefusal(cause) from None
-    except (sqlite3.Error, PauseControlError, TypeError, KeyError, AttributeError, StopIteration, UnicodeError, RecursionError):
+    except (sqlite3.Error, PauseControlError, TypeError, KeyError, AttributeError, StopIteration, UnicodeError, RecursionError) as exc:
+        if deadline is not None and exhausted(exc):
+            raise FinalObservationRefusal(FinalObservationCause.LIMIT) from exc
         raise FinalObservationRefusal(FinalObservationCause.UNVERIFIED) from None

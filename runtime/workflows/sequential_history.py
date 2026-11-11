@@ -15,9 +15,11 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, TypeVar, TYPE_CHECKING
+from typing import Annotated, ClassVar, Literal, TypeVar, TYPE_CHECKING
 
 from pydantic import BeforeValidator, Field
+
+from runtime.workflows._read_exhaustion import ReadExhaustion, check as _budget_check
 
 from runtime.infrastructure.workflow_schema import (
     _candidate_structure, _canonical_connection, _execute_ddl, _read_workflow_schema,
@@ -113,6 +115,7 @@ class _ReadBudget(_Budget):
     deadline: float = field(default_factory=lambda: time.monotonic() + 5.0)
     sql_steps: int = 0
     sql_limit: int = 2000000
+    _sql_exhaustion: ClassVar[ReadExhaustion | None] = None
 
     @property
     def remaining_bytes(self) -> int:
@@ -121,12 +124,15 @@ class _ReadBudget(_Budget):
         return 64 * 1048576 - self.consumed
 
     def check(self) -> None:
-        _require(time.monotonic() < self.deadline, 'read_deadline_exhausted')
+        now = time.monotonic()
+        _budget_check(now < self.deadline, lambda ok: _require(ok, 'read_deadline_exhausted'),
+                      self, 'deadline', 0, self.deadline - now)
 
     def step(self) -> None:
         self.check()
         self.traversed += 1
-        _require(self.traversed <= 65536, 'read_work_exhausted')
+        _budget_check(self.traversed <= 65536, lambda ok: _require(ok, 'read_work_exhausted'),
+                      self, 'work', 1, 65536 - self.traversed + 1)
 
     def candidate(self) -> None:
         self.check()
@@ -135,7 +141,8 @@ class _ReadBudget(_Budget):
     def reserve(self, size: int) -> None:
         self.step()
         self.consumed += size
-        _require(self.remaining_bytes >= 0, 'read_bytes_exhausted')
+        _budget_check(self.remaining_bytes >= 0, lambda ok: _require(ok, 'read_bytes_exhausted'),
+                      self, 'bytes', size, self.remaining_bytes + size)
 
     def work(self, count: int) -> None:
         for _ in range(count):
@@ -143,7 +150,15 @@ class _ReadBudget(_Budget):
 
     def progress(self) -> int:
         self.sql_steps += 1000
-        return int(self.sql_steps > self.sql_limit or time.monotonic() >= self.deadline)
+        if self.sql_steps > self.sql_limit:
+            self._sql_exhaustion = ReadExhaustion('interrupted', self, 'sql', 1000,
+                                                self.sql_limit - self.sql_steps + 1000)
+            return 1
+        now = time.monotonic()
+        if now >= self.deadline:
+            self._sql_exhaustion = ReadExhaustion('interrupted', self, 'deadline', 0, self.deadline - now)
+            return 1
+        return 0
 
 
 @contextmanager
@@ -153,6 +168,10 @@ def _sql_budget(conn: sqlite3.Connection, budget: _ReadBudget) -> Iterator[None]
     try:
         yield
         budget.check()
+    except (ValueError, sqlite3.Error) as exc:
+        if budget._sql_exhaustion is not None:
+            raise exc from budget._sql_exhaustion
+        raise
     finally:
         conn.set_progress_handler(None, 0)
 
@@ -751,7 +770,8 @@ def _legacy_history(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget
         budget.consumed += legacy_budget.consumed - opening[0]
         budget.accepted_rows += legacy_budget.accepted_rows - opening[1]
         budget.traversed += legacy_budget.traversed - opening[2]
-    _require(budget.accepted_rows <= _CALL_ROW_LIMIT, 'read_rows_exhausted')
+    _budget_check(budget.accepted_rows <= _CALL_ROW_LIMIT, lambda ok: _require(ok, 'read_rows_exhausted'),
+                  budget, 'rows', budget.accepted_rows, _CALL_ROW_LIMIT)
     budget.reserve(0)
     return retained
 
