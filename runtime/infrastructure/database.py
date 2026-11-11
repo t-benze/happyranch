@@ -2717,6 +2717,7 @@ class Database(
         agent_name: str,
         triggering_seq: int,
         purpose: ThreadInvocationPurpose,
+        uncommitted: bool = False,
     ) -> ThreadInvocation:
         import uuid as _uuid
         token = _uuid.uuid4().hex
@@ -2727,7 +2728,8 @@ class Database(
             "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
             (thread_id, agent_name, token, triggering_seq, purpose.value, now),
         )
-        self._conn.commit()
+        if not uncommitted:
+            self._conn.commit()
         return ThreadInvocation(
             id=cursor.lastrowid,
             thread_id=thread_id,

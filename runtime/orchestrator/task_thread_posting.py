@@ -19,6 +19,9 @@ def _append_followup_system_and_reinvoke(
 ) -> None:
     """Append a SYSTEM message + optionally mint/enqueue a TASK_FOLLOWUP re-invocation.
 
+    Superseded terminals reuse one atomically committed message/invocation/
+    audit set and republish the pending token through ThreadQueue.put_once.
+
     Shared tail for `_maybe_post_thread_followup` (terminal) and
     `_maybe_post_thread_escalation`. Race-aware: the atomic cap-projection +
     conditional bump + mint is serialized by the RLock on
@@ -40,53 +43,62 @@ def _append_followup_system_and_reinvoke(
     db = orch._db
     audit = orch._audit
 
-    # Append system message (separate from the atomic cap+mint below — the
-    # system message ordering relative to concurrent system messages is not
-    # part of the atomicity invariant we're protecting).
-    from runtime.models import ThreadMessageKind as _TMK
-    sys_seq = db.append_thread_message(
-        thread_id=thread_id, speaker=dispatcher,
-        kind=_TMK.SYSTEM,
-        system_payload=system_payload,
-    )
+    followup_created = True
+    if system_payload.get("status") == "superseded" and reinvoke:
+        inv, followup_created = db.supersession_followup_once(
+            thread_id=thread_id, dispatcher=dispatcher, original_id=original_id,
+            source_task_id=source_task_id, system_payload=system_payload,
+        )
+        if inv is None:
+            return  # The original followup has already settled.
+    else:
+        # Append system message (separate from the atomic cap+mint below — the
+        # system message ordering relative to concurrent system messages is not
+        # part of the atomicity invariant we're protecting).
+        from runtime.models import ThreadMessageKind as _TMK
+        sys_seq = db.append_thread_message(
+            thread_id=thread_id, speaker=dispatcher,
+            kind=_TMK.SYSTEM,
+            system_payload=system_payload,
+        )
 
-    if not reinvoke:
-        # Historical legacy stored-payload compatibility path.
-        # TASK-3604 removed daemon auto-revisit creation; all current
-        # production callers pass ``auto_revisit_spawned=False`` (and thus
-        # ``reinvoke=True``). No current code path populates
-        # ``revisit_task_id`` or enters this branch.  The branch, audit
-        # log, and conditional are retained for compatibility with
-        # ``_maybe_post_thread_followup``'s ``auto_revisit_spawned``
-        # contract so that any pre-TASK-3604 stored system payload whose
-        # stored ``reinvoke`` field resolved to ``False`` is still handled
-        # correctly.
-        audit.log_thread_followup_skipped(
+        if not reinvoke:
+            # Historical legacy stored-payload compatibility path.
+            # TASK-3604 removed daemon auto-revisit creation; all current
+            # production callers pass ``auto_revisit_spawned=False`` (and thus
+            # ``reinvoke=True``). No current code path populates
+            # ``revisit_task_id`` or enters this branch.  The branch, audit
+            # log, and conditional are retained for compatibility with
+            # ``_maybe_post_thread_followup``'s ``auto_revisit_spawned``
+            # contract so that any pre-TASK-3604 stored system payload whose
+            # stored ``reinvoke`` field resolved to ``False`` is still handled
+            # correctly.
+            audit.log_thread_followup_skipped(
+                thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+                reason="auto_revisit_spawned",
+                successor_task_id=system_payload.get("revisit_task_id"),
+            )
+            return
+
+        # Atomic cap-projection + conditional bump + mint.  Closes the TOCTOU race
+        # where two concurrent root completions on the same thread both read the
+        # same pending count, both skip the bump, both mint, and leave the thread
+        # with more obligations than turn_cap.  The @_synchronized RLock on
+        # mint_followup_invocation_with_cap_extend serializes all three steps.
+        inv, new_cap = db.mint_followup_invocation_with_cap_extend(
+            thread_id=thread_id,
+            agent_name=dispatcher,
+            triggering_seq=sys_seq,
+        )
+        if new_cap is not None:
+            audit.log_thread_turn_cap_auto_extended(
+                thread_id, original_task_id=original_id,
+                reason="task_followup", new_cap=new_cap,
+            )
+        audit.log_thread_task_followup_enqueued(
             thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
-            reason="auto_revisit_spawned",
-            successor_task_id=system_payload.get("revisit_task_id"),
+            dispatcher=dispatcher, invocation_token=inv.invocation_token,
         )
-        return
-
-    # Atomic cap-projection + conditional bump + mint.  Closes the TOCTOU race
-    # where two concurrent root completions on the same thread both read the
-    # same pending count, both skip the bump, both mint, and leave the thread
-    # with more obligations than turn_cap.  The @_synchronized RLock on
-    # mint_followup_invocation_with_cap_extend serializes all three steps.
-    inv, new_cap = db.mint_followup_invocation_with_cap_extend(
-        thread_id=thread_id,
-        agent_name=dispatcher,
-        triggering_seq=sys_seq,
-    )
-    if new_cap is not None:
-        audit.log_thread_turn_cap_auto_extended(
-            thread_id, original_task_id=original_id,
-            reason="task_followup", new_cap=new_cap,
-        )
-    audit.log_thread_task_followup_enqueued(
-        thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
-        dispatcher=dispatcher, invocation_token=inv.invocation_token,
-    )
 
     # Enqueue onto the org's thread queue. The queue is bound to the daemon's
     # main event loop, but run_step runs on a worker thread, so we cross the
@@ -106,11 +118,13 @@ def _append_followup_system_and_reinvoke(
                 main_loop,
             )
         except Exception as exc:
+            if not followup_created:
+                return  # Keep replay from duplicating diagnostic audit rows.
             audit.log_thread_followup_skipped(
                 thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
                 reason="enqueue_failed", detail=str(exc),
             )
-    else:
+    elif followup_created:
         # Defence: queue or loop not yet wired (e.g., test orchestrator constructed
         # without daemon context). Invocation stays PENDING; audit so the
         # operator can detect it if needed. In production this path is never

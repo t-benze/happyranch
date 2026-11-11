@@ -4707,6 +4707,15 @@ class TasksMixin:
             self._conn.rollback()
             raise
 
+    @_synchronized
+    def superseded_tasks_for_successor(self, successor_id: str) -> list[str]:
+        """Recover the exact committed predecessor/family publication set."""
+        return [row['task_id'] for row in self._conn.execute(
+            """SELECT task_id FROM audit_log WHERE action = 'escalation_superseded'
+                AND json_extract(payload, '$.successor_root') = ? ORDER BY id""",
+            (successor_id,),
+        ).fetchall()]
+
     @contextmanager
     def thread_continuation_transaction(self) -> Iterator[None]:
         """Own successor, supersession and replay proof under one writer lock.

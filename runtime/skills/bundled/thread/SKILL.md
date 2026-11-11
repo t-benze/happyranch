@@ -291,6 +291,10 @@ that same request on the same pending token returns the original task with
 successor is still pending, replay restores a missing queue notification; an
 already queued successor is not duplicated. Dispatch with `resolves` commits
 its successor, predecessor/family supersession and replay binding together.
+Parent wakes and thread followups run after commit even when successor enqueue
+fails; replay restores those publications for the predecessor and closed family.
+Superseded-root followup messages, invocations and audits are atomic and reused;
+pending followup tokens are published idempotently and consumed tokens stay consumed.
 Two identical requests in one turn therefore mean one dispatch.
 
 Managers may also resolve multiple in-lineage escalations using
@@ -298,8 +302,8 @@ Managers may also resolve multiple in-lineage escalations using
 A successful resolution keeps the token pending; repeating a resolution for the
 same task on that token returns `replayed: true`. The successor, supersession
 and invocation-ID replay audit commit together; replay restores a missing
-notification for a still-pending successor without duplicating queued work.
-Reply or decline afterwards.
+notification for a still-pending successor and the committed parent/followup
+tail without duplicating rows or queued work. Reply or decline afterwards.
 
 Dispatching does NOT end the turn — you MUST still issue a reply or decline
 afterwards to release the invocation token. If you exit without either, the

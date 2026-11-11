@@ -1845,7 +1845,6 @@ async def dispatch_from_thread_endpoint(
 
         predecessor = None
         pred_block_kind = None
-        family_closed: list[str] = []
         if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP:
             async with org.teams_lock:
                 if not org.teams.is_team_manager(dispatcher):
@@ -1925,7 +1924,7 @@ async def dispatch_from_thread_endpoint(
                             from runtime.daemon.routes.tasks import (
                                 _close_predecessor_family_and_run_tail,
                             )
-                            family_closed = _close_predecessor_family_and_run_tail(
+                            _close_predecessor_family_and_run_tail(
                                 org, audit,
                                 predecessor=predecessor,
                                 successor_root=task_id,
@@ -1945,10 +1944,13 @@ async def dispatch_from_thread_endpoint(
                 )} | {"dispatched_from_thread_id": thread_id,
                      "superseded_task_id": resolves or None, "replayed": True}
 
-        enqueue_task(state, slug, task_id)
-        if resolves and predecessor is not None:
+        try:
+            state.queue.enqueue_if_absent(
+                slug, task_id, publisher=lambda: enqueue_task(state, slug, task_id),
+            )
+        finally:
             from runtime.daemon.routes.tasks import _run_superseded_task_tail
-            _run_superseded_task_tail(org, [predecessor.id, *family_closed])
+            _run_superseded_task_tail(org, org.db.superseded_tasks_for_successor(task_id))
 
         await _publish_thread_event(
             org, slug,

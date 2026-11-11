@@ -261,7 +261,12 @@ See the [current naming contract](../../superpowers/specs/2026-10-09-identity-na
   in-lineage escalations in all three purposes;
   same-token/task replay uses the persisted escalation_resolved invocation ID.
   Resolution commits successor, predecessor/family supersession and that audit
-  atomically. Parent wakes and thread followups run after commit.
+  atomically. Parent wakes and thread followups run after commit even when
+  successor enqueue fails. Replay recovers the predecessor and closed family
+  from committed supersession audits and repeats their publication. Production
+  parent wakes and thread-token publication deduplicate queued work; superseded
+  root followups reuse one atomic message, invocation and audit set, including
+  after a followup write failure. A consumed followup is never reminted.
   Dispatch and resolution leave the invocation pending; terminal reply/decline
   alone consumes it and settles conversational delivery. Follow-up dispatch
   still forbids `resolves`. Self-only authority, team, participant, manager,

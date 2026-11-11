@@ -1182,6 +1182,7 @@ class ThreadsMixin:
         agent_name: str,
         triggering_seq: int,
         cap_delta_if_over: int = 1,
+        uncommitted: bool = False,
     ) -> "tuple[ThreadInvocation, int | None]":
         """Atomically mint a TASK_FOLLOWUP invocation, auto-extending turn_cap
         by ``cap_delta_if_over`` if the projection (turns_used + pending + 1)
@@ -1194,6 +1195,9 @@ class ThreadsMixin:
         leave the thread with more counted obligations than turn_cap permits.
         The @_synchronized lock on this method (backed by threading.RLock)
         serializes the read-compare-bump-mint sequence.
+
+        With uncommitted=True, join the caller's writer transaction instead
+        of committing the invocation and cap change independently.
 
         Because Database._lock is an RLock (re-entrant), calling
         self.mint_thread_invocation from within this @_synchronized method is
@@ -1239,11 +1243,65 @@ class ThreadsMixin:
             agent_name=agent_name,
             triggering_seq=triggering_seq,
             purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+            uncommitted=uncommitted,
         )
-        # No separate commit needed: mint_thread_invocation commits inside its
-        # own @_synchronized acquisition. The cap UPDATE above is committed by
-        # mint_thread_invocation's commit (SQLite commits all pending changes).
+        # The invocation commits the cap change too, unless the caller owns
+        # the surrounding transaction via uncommitted=True.
         return inv, new_cap
+
+    def supersession_followup_once(
+        self, *, thread_id: str, dispatcher: str, original_id: str,
+        source_task_id: str, system_payload: dict,
+    ) -> tuple[ThreadInvocation | None, bool]:
+        """Commit one superseded-terminal message, invocation and audit set.
+
+        Existing SYSTEM payload fields identify the terminal event; the
+        invocation's triggering_seq identifies its publication. Replays reuse
+        those records, including when the invocation is already consumed.
+        """
+        from runtime.infrastructure.audit_logger import AuditLogger
+
+        with self.thread_continuation_transaction():
+            row = self._conn.execute(
+                """SELECT seq FROM thread_messages
+                    WHERE thread_id = ? AND kind = 'system'
+                      AND json_extract(system_payload_json, '$.task_id') = ?
+                      AND json_extract(system_payload_json, '$.status') = 'superseded'
+                      AND json_extract(system_payload_json, '$.kind_tag') = 'task_completed'
+                    ORDER BY seq LIMIT 1""",
+                (thread_id, source_task_id),
+            ).fetchone()
+            if row is None:
+                seq = self._append_thread_message_uncommitted(
+                    thread_id=thread_id, speaker=dispatcher,
+                    kind=ThreadMessageKind.SYSTEM, system_payload=system_payload,
+                )
+            else:
+                seq = row['seq']
+            saved = self._conn.execute(
+                """SELECT invocation_token FROM thread_invocations
+                    WHERE thread_id = ? AND agent_name = ? AND triggering_seq = ?
+                      AND purpose = 'task_followup' ORDER BY id LIMIT 1""",
+                (thread_id, dispatcher, seq),
+            ).fetchone()
+            if saved is not None:
+                return self.get_pending_invocation(saved['invocation_token']), False
+            inv, new_cap = self.mint_followup_invocation_with_cap_extend(
+                thread_id=thread_id, agent_name=dispatcher, triggering_seq=seq,
+                uncommitted=True,
+            )
+            audit = AuditLogger(self)
+            if new_cap is not None:
+                audit.log_thread_turn_cap_auto_extended(
+                    thread_id, original_task_id=original_id,
+                    reason='task_followup', new_cap=new_cap, uncommitted=True,
+                )
+            audit.log_thread_task_followup_enqueued(
+                thread_id, original_task_id=original_id,
+                terminal_task_id=source_task_id, dispatcher=dispatcher,
+                invocation_token=inv.invocation_token, uncommitted=True,
+            )
+            return inv, True
 
     @_synchronized
     def set_thread_pinned_uncommitted(self, thread_id: str, *, pinned: bool) -> None:

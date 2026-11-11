@@ -1261,8 +1261,10 @@ class AuditLogger:
         terminal_task_id: str,
         dispatcher: str,
         invocation_token: str,
+        uncommitted: bool = False,
     ) -> None:
-        self._db.insert_audit_log(
+        insert = self._db.insert_audit_log_uncommitted if uncommitted else self._db.insert_audit_log
+        insert(
             task_id=terminal_task_id,
             agent=dispatcher,
             action="thread_task_followup_enqueued",
@@ -1302,8 +1304,10 @@ class AuditLogger:
         original_task_id: str,
         reason: str,
         new_cap: int,
+        uncommitted: bool = False,
     ) -> None:
-        self._db.insert_audit_log(
+        insert = self._db.insert_audit_log_uncommitted if uncommitted else self._db.insert_audit_log
+        insert(
             task_id=original_task_id,
             agent="orchestrator",
             action="thread_turn_cap_auto_extended",

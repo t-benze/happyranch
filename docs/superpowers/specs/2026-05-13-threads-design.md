@@ -441,6 +441,11 @@ effective_target, resolves-or-empty, purpose). The same pending token and digest
 return the original task ID and `replayed: true` without another task, message,
 audit or supersession. Replay republishes a still-pending successor only when
 it is absent from the task queue, recovering post-commit enqueue failure.
+Committed predecessor/family parent wakes and thread followups run even if that
+enqueue fails, and replay repeats those publications using the supersession
+audits. A superseded-root followup atomically stores one message, invocation and
+audit set; replay reuses and deduplicates its pending token, never reminting a
+consumed followup.
 With `resolves`, predecessor/delegated-child eligibility is revalidated in the
 same transaction as successor creation, family supersession and replay binding. Two identical
 dispatches in one turn are one dispatch. No count cap or rate limit is introduced.

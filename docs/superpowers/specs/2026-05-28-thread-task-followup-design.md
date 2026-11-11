@@ -202,7 +202,12 @@ TASK_FOLLOWUP token. Every root has its own dispatch binding, task_dispatched
 message and thread_dispatch/replacement audit. Same-token identical requests
 replay the original task with `replayed: true` and no duplicate task, message,
 audit or supersession. Replay restores an absent queue notification for a
-still-pending successor without duplicating queued work. There is no
+still-pending successor without duplicating queued work. Dispatch-with-resolves
+and escalation resolution also recover committed predecessor/family parent
+wakes and superseded-root followups, even after an enqueue fault. Each such
+followup atomically stores one SYSTEM message, invocation and audit set; replay
+reuses its pending token through idempotent thread publication, and does not
+remint a consumed token. There is no
 replacement count cap or rate limit.
 
 The cross-invocation spent rule is retained: any prior replacement of the causal

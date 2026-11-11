@@ -1675,12 +1675,16 @@ def _reject_retired_th166_task_envelope(body: ResolveEscalationBody) -> None:
 
 
 def _enqueue_pending_thread_successor(org, state, task_id: str | None) -> None:
-    """Recover a post-commit publication without duplicating queued work."""
-    task = org.db.get_task(task_id) if task_id else None
-    if task is not None and task.status == TaskStatus.PENDING and state.queue is not None:
-        state.queue.enqueue_if_absent(
-            org.slug, task_id, publisher=lambda: enqueue_task(state, org.slug, task_id),
-        )
+    """Recover the successor and its committed supersession tail independently."""
+    try:
+        task = org.db.get_task(task_id) if task_id else None
+        if task is not None and task.status == TaskStatus.PENDING and state.queue is not None:
+            state.queue.enqueue_if_absent(
+                org.slug, task_id, publisher=lambda: enqueue_task(state, org.slug, task_id),
+            )
+    finally:
+        if task_id:
+            _run_superseded_task_tail(org, org.db.superseded_tasks_for_successor(task_id))
 
 
 async def resolve_escalation_in_process(
@@ -1732,7 +1736,10 @@ async def resolve_escalation_in_process(
                     raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
                 if org.db.thread_invocation_resolved_task(thread_invocation.id, task_id):
                     successor_id = org.db.thread_resolution_successor(thread_invocation.id, task_id)
-                    _enqueue_pending_thread_successor(org, state, successor_id)
+                    try:
+                        _enqueue_pending_thread_successor(org, state, successor_id)
+                    finally:
+                        _kill_jobs_for_terminating_task(org.orchestrator, task_id)
                     return {"new_status": TaskStatus.SUPERSEDED.value, "replayed": True}
         # Path B: an escalated task is status=ESCALATED.
         is_escalated = task.status == TaskStatus.ESCALATED
@@ -1795,7 +1802,7 @@ async def resolve_escalation_in_process(
                         # Canonical supersede tail: closes predecessor + revisit family,
                         # wakes parents, emits thread followups (THR-080 #4).
                         # Replaces the old manual _supersede_predecessor_locked + tail.
-                        family_closed = _close_predecessor_family_and_run_tail(
+                        _close_predecessor_family_and_run_tail(
                             org, audit,
                             predecessor=task,
                             successor_root=successor_id,
@@ -1822,15 +1829,12 @@ async def resolve_escalation_in_process(
                             org.db.consume_escalation_notification(
                                 nrow["feishu_message_id"], consumed_by="superseded", uncommitted=True,
                             )
-            if replayed:
+            try:
                 _enqueue_pending_thread_successor(org, state, successor_id)
+            finally:
+                _kill_jobs_for_terminating_task(org.orchestrator, task_id)
+            if replayed:
                 return {"new_status": TaskStatus.SUPERSEDED.value, "replayed": True}
-            # Publish the successor first: a failing followup must not strand it.
-            if state.queue is not None:
-                enqueue_task(state, org.slug, successor_id)
-            _run_superseded_task_tail(org, [task_id, *family_closed])
-            # Post-tail specifics: kill jobs.
-            _kill_jobs_for_terminating_task(org.orchestrator, task_id)
             if thread_invocation is not None:
                 return {"new_status": TaskStatus.SUPERSEDED.value, "replayed": False}
             return TaskStatus.SUPERSEDED.value
