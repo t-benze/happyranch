@@ -17,7 +17,7 @@ from runtime.workflows.coding_revision import current_stage, independent
 from runtime.workflows._coding_import_support import _capture
 from runtime.workflows._coding_settings_execution import _current_configuration, _read_json
 from runtime.workflows.coding_authority_history import _Budget, _decoded
-from runtime.workflows.coding_bootstrap import effective_bindings, encode_row, identity, final_brief, final_scope, qa_brief, qa_scope, review_brief, review_scope
+from runtime.workflows.coding_bootstrap import encode_row, identity, final_brief, final_scope, qa_brief, qa_scope, review_brief, review_scope
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
 from runtime.workflows.coding_start import CodingStartError, queued_storage, require_ready
 from runtime.workflows.coding_start_history import rows
@@ -158,14 +158,12 @@ def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: 
         _check(len(selected) == 1)
         row = selected[0]
         closure[key] = row
-        db._check_team_move_task_uncommitted(key)
         _check(row['cancelled_at'] is None and row['zombie_flagged_at'] is None
                and row['active_chain'] is None and row['active_fanout'] is None)
         pending.extend(r['id'] for r in rows(conn, 'tasks', budget,
             where='parent_task_id=? OR revisit_of_task_id=?', args=(key, key), maximum=512))
         pending.extend(row[k] for k in ('parent_task_id', 'revisit_of_task_id') if row[k] is not None)
     _check(not any(e['task_id'] in closure for e in pause['journal']['entries']))
-    db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(entry['run']['instance_id'], roles))
     qa = entry['attempt']['stage'] == 'code_review'
     final = entry['attempt']['stage'] == 'qa'
     from runtime.workflows.coding_revision import ROLES
@@ -188,11 +186,10 @@ def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: 
     pin = authority['pin']
     record = dict(id=authority['admission_record_id'], namespace=pin['namespace'], generation=pin['generation'],
         request_digest=_hash(_canonical(entry['command'])), admitted_by='service:' + dispatcher.producer)
-    move = org.orchestrator._team_moves.active_uncommitted()
     result = dict(format='workflow-coding-edge-admission@3' if final else 'workflow-coding-edge-admission@2' if qa else 'workflow-coding-edge-admission@1', authority=authority, record=record,
         tasks=[encode_row(closure[k]) for k in sorted(closure)],
         pause=encode_row({k: v for k, v in pause.items() if k != 'journal'}),
-        move=None if move is None else encode_row(move), sessions=[list(s) for s in sessions],
+        move=None, sessions=[list(s) for s in sessions],
         capacity_tasks=[encode_row(r) for r in rows(conn, 'tasks', budget,
             where="assigned_agent=? AND status='in_progress' AND block_kind IS NULL AND cancelled_at IS NULL AND current_session_id IS NOT NULL",
             args=(reviewer,))],
@@ -318,7 +315,6 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
         created_at=datetime.fromisoformat(now.replace('Z', '+00:00')),
         updated_at=datetime.fromisoformat(now.replace('Z', '+00:00')),
         session_timeout_seconds=entry['source']['budgets']['session_timeout_seconds'])
-    dispatcher.db._check_team_move_task_uncommitted(task)
     scope = _canonical(final_scope(org=dispatcher.org.slug, instance=instance, command=entry['command'],
         roles=entry['roles'], qa=qa_attempt, subject=output['subject'], task_id=task_id, upstream=upstream,
         repository_reference=selected_repository(entry['mapping'], entry['command']['work']))

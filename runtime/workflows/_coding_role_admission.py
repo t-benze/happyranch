@@ -77,7 +77,6 @@ def native_owner(org: Any, principal: WorkflowTemplatePrincipal, conn: sqlite3.C
            and task._value('orchestration_step_count') == entry['fingerprint']['count'] + 1
            and task._text('brief') is not None
            and hashlib.sha256(task._value('brief')).hexdigest() == entry['fingerprint']['brief_digest'])
-    org.orchestrator._team_moves.check_task_uncommitted(org.db.get_task(principal.task_id))
     return issuer, tuple(chain), start, owner
 
 

@@ -182,7 +182,6 @@ class SequentialRepositoryPreflight:
                                         or _discover_result(conn, visit) is not None
                                         or _cancelled(conn, run, visit)):
                                     raise SequentialRefusal('sequential_repository_session_unavailable')
-                                self.org.db._check_team_move_task_uncommitted(task_id)
                                 start = _parse(run['start_bytes'], parse_start, budget)
                                 bound = _bound_agents(compiled, start, capture)
                                 node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])

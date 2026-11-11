@@ -156,20 +156,21 @@ read/resolve projections. Agent roster/enrollment `name` and canonical `revision
 retain their meanings; `addressable_name`, `name_revision` and `naming_status` are
 additive metadata, null/unavailable when names cannot be read. Never use a label
 as manage-agent's name, callback actor or expected canonical-definition revision.
-C3 now registers dream/wake/schedule/job native source, permanent org/agent and
-owning session before preparation, rechecks actual claims and final host/direct
-launch, and retains original retry budgets/SID/enqueue age on safe deferral.
+Dream/wake/schedule/job creation, claims and launch no longer check the move hold.
+Shared C3 admission registers native source, permanent org/agent and owning session,
+rechecks identity/claims and retains original retry budgets/SID/enqueue age on safe deferral.
 Pending work stays native; recurring schedule occurrences retain distinct
 history. Existing queue/timer release seams deduplicate redelivery; reapers
-preserve held or uncertain owners. Complete C3 causal census covers job waits,
+preserve lifecycle-owned uncertainty. Complete C3 causal census covers job waits,
 active bindings, remote attempts/workspaces, pending enrollment and writer tails;
 terminal rows or missing trackers never prove cleanup. Native profile/workflow,
 roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
-source/target membership, keeping their original synchronization and journals.
+membership, keeping their original synchronization and journals without a move-hold
+check. The nightly disk sweeper retains its separate native hold gate.
 Strict bounded version1 producer/writer audits append in existing audit_log;
 earlier uncertainty survives later clean outcomes. No extra table, permission
 or auth change. The online move/reset/publication service is removed;
-C3 admission and native writer ownership remain.
+Shared C3 admission and native writer ownership remain.
 All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
 Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
 

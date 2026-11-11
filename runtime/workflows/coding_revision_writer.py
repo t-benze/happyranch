@@ -104,7 +104,6 @@ def advance_revision(dispatcher: Any, conn: Any, entry: dict, result_id: int, ca
         assigned_agent=binding['principal'], team=binding['team'], brief=revision_brief(entry['command']['work'], destination),
         created_at=datetime.fromisoformat(now.replace('Z', '+00:00')), updated_at=datetime.fromisoformat(now.replace('Z', '+00:00')),
         session_timeout_seconds=entry['source']['budgets']['session_timeout_seconds'])
-    dispatcher.db._check_team_move_task_uncommitted(task)
     generation = 1 + sum(a['stage'] == destination for a in entry['attempts'].values())
     sequence = 1 + sum(a['stage'] == destination and a['revision'] == revision for a in entry['attempts'].values())
     _check(sequence == 1)
@@ -187,7 +186,6 @@ def advance_manager(dispatcher: Any, conn: Any, entry: dict, result_id: int, cap
         assigned_agent=binding['principal'], team=binding['team'], brief=revision_brief(entry['command']['work'], 'manager_closeout'),
         created_at=datetime.fromisoformat(now.replace('Z', '+00:00')), updated_at=datetime.fromisoformat(now.replace('Z', '+00:00')),
         session_timeout_seconds=limits['session_timeout_seconds'])
-    dispatcher.db._check_team_move_task_uncommitted(task)
     generation = 1 + sum(a['stage'] == 'manager_closeout' for a in entry['attempts'].values())
     a = dict(id=attempt_identity(run['instance_id'], current['revision'], 'manager_closeout', sequence, generation),
         instance_id=run['instance_id'], revision=current['revision'], stage='manager_closeout',

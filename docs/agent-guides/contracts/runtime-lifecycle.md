@@ -70,7 +70,7 @@ settlement makes an unclosed preparation unknown, and unknown owners cannot safe
 be adopted for another launch. FAILED with `launch_refused` uses normal failure,
 parent enqueue and thread followup; it never clears `failed_cleanup`, unknown
 journal/process evidence, retry lineage or worktree guards. Existing smaller host,
-provider and recovery ceilings remain. Intentional Pause/team-move deferral,
+provider and recovery ceilings remain. Intentional Pause/shared-preparation deferral,
 child/job/capacity/backoff waits, shutdown and stale/current-owner loss consume no
 allowance. Current-owner and authentic callback fences precede evidence and are
 rechecked inside failure transition; later continuations have separate keys.
@@ -368,7 +368,7 @@ native owner's live writers. The nightly sweep only changes workspace scratch an
 worktrees, never startup's publication inputs. The org load check and the
 profile coordinator's `reconcile_startup` classification apply the same
 predicate. An unavailable native owner keeps every record blocking; the record
-stays UNKNOWN and still blocks team move.
+stays UNKNOWN; it is never cleared by this startup exception.
 
 Whole-runtime construction records its actual candidate on the original caller's
 owner before later fallible work. Both normal startup and runtime replacement
@@ -923,9 +923,9 @@ admission_writer, `_entry` and document/non-document rendering. Protected captur
 configuration discovery/parsing stays uncharged as **F-U3f-AUTH, OPEN, owner ROOT
 engineering_manager**, the existing shared-dispatcher follow-up. This is separate
 from F-U3f-ENTRY and is not accounting PASS. No duplicate canonical/effective-
-profile acquisition occurs. R-U3f-SB5-3 preserves the mandatory native team-move
-guard unchanged and classifies its uncharged MoveRequest/task-closure parsing as
-F-U3f-MOVE (OPEN, owner ROOT engineering_manager), shared by native writers.
+profile acquisition occurs. PR-3a removes non-thread team-move admission calls.
+R-U3f-SB5-3/F-U3f-MOVE records the earlier uncharged-parser checkpoint; remaining
+thread/coordinator cleanup is PR-3b, owned by ROOT engineering_manager.
 C1 defers terminal/outer digests to the document branch after context validation,
 prepaying `48 * 16384 + 512` bytes and one step before each serialization on the
 original budget. The repository-success hold and foreign-result refusal have

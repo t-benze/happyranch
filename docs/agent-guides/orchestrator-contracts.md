@@ -1113,18 +1113,18 @@ Adapter removal translates only `ProfileCoordinatorError` from its coordinator
 span to HTTP409 with `detail.code`. Unrelated exceptions keep their existing
 handling; removal, audit and compensation stay with the native adapter-store owner.
 
-## Retained C1–C3 launch-admission hooks
+## Shared C1–C3 preparation ownership
 
-C1 connects holds to task allocation/claim, preparation and final Pause/host
-commitment, without changing executor permission enforcement. Permanent agent
+Task allocation/claim and final launch no longer check the move hold. Shared C1
+preparation and final Pause/host commitment retain executor permission enforcement. Permanent agent
 identity comes from trusted task ownership and survives host retries. Causal
 task/workflow closure and actual retry/callback/cleanup ownership participate;
 unknown quiescence stays reserved. Manage-agent retains team/role and cannot
 transfer or demote agents. Preserve histories/IDs/paths/permissions and Engineering
 routing. The online operator and D operation/recovery are removed.
-Move admission deferral propagates through the inner launch handler to the existing
+Shared preparation refusals propagate through the inner launch handler to the existing
 pending-work owner without task failure, parent wake, followup or callback consumption.
-Malformed installed state retains its actionable admission error. Direct 429 and
+Frozen schema validation remains separate from task admission. Direct 429 and
 supervised passthrough retries preserve each returned uncertain attempt as a separate
 Pause journal/reservation blocker; the next actual attempt keeps the original retry
 budget, session and enqueue age and rechecks durable admission before FIFO/commit.
@@ -1175,20 +1175,21 @@ remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retaine
 unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
 These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
 
-C3 now registers dream/wake/schedule/job native source, permanent org/agent and
-owning session before preparation, rechecks actual claims and final host/direct
-launch, and retains original retry budgets/SID/enqueue age on safe deferral.
+Dream/wake/schedule/job creation, claims and launch no longer check the move hold.
+Shared C3 admission registers native source, permanent org/agent and owning session,
+rechecks identity/claims and retains original retry budgets/SID/enqueue age on safe deferral.
 Pending work stays native; recurring schedule occurrences retain distinct
 history. Existing queue/timer release seams deduplicate redelivery; reapers
-preserve held or uncertain owners. Complete C3 causal census covers job waits,
+preserve lifecycle-owned uncertainty. Complete C3 causal census covers job waits,
 active bindings, remote attempts/workspaces, pending enrollment and writer tails;
 terminal rows or missing trackers never prove cleanup. Native profile/workflow,
 roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
-source/target membership, keeping their original synchronization and journals.
+membership, keeping their original synchronization and journals without a move-hold
+check. The nightly disk sweeper retains its separate native hold gate.
 Strict bounded version1 producer/writer audits append in existing audit_log;
 earlier uncertainty survives later clean outcomes. No extra table, permission
 or auth change. The online move/reset/publication service is removed;
-C3 admission and native writer ownership remain.
+Shared C3 admission and native writer ownership remain.
 All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
 Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
 
@@ -5603,7 +5604,7 @@ settlement makes an unclosed preparation unknown, and unknown owners cannot safe
 be adopted for another launch. FAILED with `launch_refused` uses normal failure,
 parent enqueue and thread followup; it never clears `failed_cleanup`, unknown
 journal/process evidence, retry lineage or worktree guards. Existing smaller host,
-provider and recovery ceilings remain. Intentional Pause/team-move deferral,
+provider and recovery ceilings remain. Intentional Pause/shared-preparation deferral,
 child/job/capacity/backoff waits, shutdown and stale/current-owner loss consume no
 allowance. Current-owner and authentic callback fences precede evidence and are
 rechecked inside failure transition; later continuations have separate keys.

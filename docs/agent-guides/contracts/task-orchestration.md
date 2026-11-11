@@ -604,9 +604,10 @@ profile-mirror/digest-map work, and carries the same allowance/deadline through
 admission_writer, `_entry` and document/non-document rendering. Protected capture
 configuration parsing remains uncharged (F-U3f-AUTH, owner ROOT
 engineering_manager), an existing shared-dispatcher class rather than accounting
-PASS. R-U3f-SB5-3 keeps the design-mandated native team-move guard unchanged;
-its MoveRequest/task-closure parsing is classified F-U3f-MOVE, OPEN, owner ROOT
-engineering_manager, the existing uncharged class shared by native writers.
+PASS. PR-3a removes the non-thread team-move guard, including node_instruction
+and sequential_engine admission calls. The earlier R-U3f-SB5-3/F-U3f-MOVE
+checkpoint records historical uncharged parsing; thread/coordinator cleanup
+remains PR-3b, owned by ROOT engineering_manager.
 U3f C1 used document-only digest deferral; U4b3 extends it only to
 code-change composition: terminal/outer serialization occurs only
 in the document or supported code-change branch, each prepaid at `48 * 16384 + 512` bytes and one step

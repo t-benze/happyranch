@@ -169,10 +169,6 @@ class WorkflowDraftDispatcher:
         async with self.org.workflow_authority._async_writer_lock:
             async with self.org.db_lock:
                 with self.org.workflow_authority.admission_writer(capture) as conn:
-                    from runtime.infrastructure.team_move_store import validate_team_move_schema
-                    from runtime.orchestrator.team_move import DeferredTeamMove
-                    if validate_team_move_schema(conn, org_slug=self.org.slug):
-                        raise DeferredTeamMove("team_move_unowned_workflow_producer")
                     intent = self._intent(conn, task_id)
                     if intent["state"] != "queued":
                         return None
@@ -309,7 +305,6 @@ class WorkflowDraftDispatcher:
         capture = invocation.draft_capture
         self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
         intent = self._intent(conn, invocation.task.id)
-        self.db._check_team_move_workflow_uncommitted(intent["instance_id"])
         if (intent["state"] != "queued" or intent["host_launch_started"]
                 or intent["assigned_principal"] != invocation.agent
                 or intent["host_execution_key"] != invocation.draft_request_key):
