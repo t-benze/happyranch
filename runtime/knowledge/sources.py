@@ -11,10 +11,11 @@ import json
 import os
 import re
 import stat
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NoReturn
 
 import yaml
 from pydantic import BaseModel, Field
@@ -119,17 +120,35 @@ def _open(path: Path, *, directory: bool = False):
 class _Observation:
     def __init__(self):
         self.facts: dict[Path, tuple | None] = {}
+        self.inconsistent = False
         self.bytes = 0
         self.files = 0
         self.entries = 0
 
+    def fail_inconsistent(self) -> NoReturn:
+        # Optional-category handlers may wrap this error; never lose the fact.
+        self.inconsistent = True
+        raise SourceError('inconsistent_input')
+
+    @contextmanager
+    def opened(self, path: Path, *, directory: bool = False) -> Iterator[int]:
+        try:
+            with _open(path, directory=directory) as fd:
+                yield fd
+        except (OSError, SourceError) as error:
+            if self.facts.get(path) is not None and (
+                isinstance(error, OSError) or error.code.startswith('unsafe_source_')
+            ):
+                self.fail_inconsistent()
+            raise
+
     def remember(self, path: Path, value: tuple | None) -> None:
         if path in self.facts and self.facts[path] != value:
-            raise SourceError('inconsistent_input')
+            self.fail_inconsistent()
         self.facts[path] = value
 
     def listing(self, path: Path) -> list[str]:
-        with _open(path, directory=True) as fd:
+        with self.opened(path, directory=True) as fd:
             before = _signature(os.fstat(fd))
             names = []
             with os.scandir(fd) as entries:
@@ -139,13 +158,13 @@ class _Observation:
                     if self.entries > MAX_FILES:
                         raise SourceError('source_inventory_limit')
             if before != _signature(os.fstat(fd)):
-                raise SourceError('inconsistent_input')
+                self.fail_inconsistent()
             self.remember(path, before)
             return sorted(names)
 
     def exists(self, path: Path, *, directory: bool = False) -> bool:
         try:
-            with _open(path, directory=directory) as fd:
+            with self.opened(path, directory=directory) as fd:
                 self.remember(path, _signature(os.fstat(fd)))
             return True
         except FileNotFoundError:
@@ -156,7 +175,7 @@ class _Observation:
         self.files += 1
         if self.files > MAX_FILES:
             raise SourceError('source_inventory_limit')
-        with _open(path) as fd:
+        with self.opened(path) as fd:
             before = _signature(os.fstat(fd))
             with os.fdopen(os.dup(fd), 'rb') as stream:
                 raw = stream.read(MAX_FILE_BYTES + 1)
@@ -164,7 +183,7 @@ class _Observation:
             if len(raw) > MAX_FILE_BYTES or self.bytes > MAX_TOTAL_BYTES:
                 raise SourceError('source_byte_limit')
             if before != _signature(os.fstat(fd)):
-                raise SourceError('inconsistent_input')
+                self.fail_inconsistent()
             self.remember(path, before)
         try:
             return raw.decode('utf-8')
@@ -172,6 +191,8 @@ class _Observation:
             raise SourceError('source_invalid_utf8') from None
 
     def verify(self) -> None:
+        if self.inconsistent:
+            self.fail_inconsistent()
         for path, expected in self.facts.items():
             try:
                 # Directory metadata and negative observations are bookended too.
@@ -180,9 +201,9 @@ class _Observation:
             except FileNotFoundError:
                 actual = None
             except (OSError, SourceError):
-                raise SourceError('inconsistent_input') from None
+                self.fail_inconsistent()
             if actual != expected:
-                raise SourceError('inconsistent_input')
+                self.fail_inconsistent()
 
 
 class _UniqueLoader(yaml.SafeLoader):
@@ -291,6 +312,9 @@ def _path_evidence(obs: _Observation, workspace: Path, original: Path) -> None:
                 expected_root=original / '.happyranch' / 'task-tmp' / name[:-5],
             ):
                 raise SourceError('unproven_retention')
+        except FileNotFoundError:
+            # The manifest was enumerated, so this is movement, not absence.
+            obs.fail_inconsistent()
         except SourceError:
             raise
         except (ValueError, TaskScratchError, RecursionError):
@@ -341,15 +365,19 @@ def _claude(obs: _Observation, root: Path, workspace: Path, source_id: str, home
             raise SourceError('source_depth_limit')
         for name in obs.listing(parent):
             path = parent / name
-            row = path.lstat()
+            try:
+                row = path.lstat()
+            except FileNotFoundError:
+                obs.fail_inconsistent()
             if stat.S_ISLNK(row.st_mode):
                 raise SourceError('unsafe_source_type_or_alias')
             if stat.S_ISDIR(row.st_mode):
+                obs.remember(path, _signature(row))
                 inventory(path, depth + 1)
             elif name.lower().endswith('.md'):
                 # Establish availability BEFORE declaring the category included.
                 if not obs.exists(path):
-                    raise SourceError('inconsistent_input')
+                    obs.fail_inconsistent()
                 paths.append(path)
     inventory(directory)
     records = []
@@ -410,7 +438,7 @@ def capture_retired_source(root: Path, source_id: str) -> RetiredSource:
         for name in names:
             try:
                 if not obs.exists(directory / name):
-                    raise SourceError('runtime_entry_missing')
+                    obs.fail_inconsistent()
             except (OSError, SourceError) as exc:
                 code = exc.code if isinstance(exc, SourceError) else 'runtime_entry_unreadable'
                 raise SourceError(f'{code}:{name}') from None
