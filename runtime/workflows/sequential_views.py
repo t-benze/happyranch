@@ -212,16 +212,24 @@ def _project(conn: sqlite3.Connection, org: Any, kind: str, selected: str | None
     for visit in visits:
         budget.step()
         result = None if visit['result_bytes'] is None else _parse(visit['result_bytes'], parse_result, budget)
+        # Successful Final findings are arbitrary native-bearing text. Keep the
+        # browser projection closed without changing the stored envelope.
         visit_views.append(VisitView(**{key: visit[key] for key in
             ('id', 'node_id', 'ordinal', 'epoch', 'task_id', 'principal', 'state')},
             selected=bool(visit['selected']), outcome=None if result is None else result.outcome,
-            findings=() if result is None else tuple(finding.text for finding in result.findings)))
+            findings=() if result is None or any(output.contract == 'guarded-repository-merge@1'
+                for output in result.outputs) else tuple(finding.text for finding in result.findings)))
     outputs = _engine_rows(conn, 'workflow_seq_outputs', budget, 'run_id=?', (run.id,))
     # Only the existing Founder bearer reader reaches this projection. Task
     # sessions cannot use it to bypass the addressed-input disclosure owner.
+    # R-M3-6: complete replay authenticates Final's original observation, but
+    # only this closed summary crosses the browser boundary. Keep its stored
+    # digest and all other output contracts unchanged; never copy native proof.
     output_views = tuple(OutputView(**{key: item[key] for key in
         ('id', 'visit_id', 'slot', 'contract', 'epoch', 'content_digest')},
-        content_utf8=item['content_bytes'].decode('utf8')) for item in outputs)
+        content_utf8='{"format":"workflow-sequential-coding-final-summary@1","outcome":"merged"}'
+        if item['contract'] == 'guarded-repository-merge@1'
+        else item['content_bytes'].decode('utf8')) for item in outputs)
     holds = []
     for row in _engine_rows(conn, 'workflow_seq_evidence', budget, 'run_id=? AND kind=?', (run.id, 'observation')):
         value = _decode(row['evidence_bytes'], budget)

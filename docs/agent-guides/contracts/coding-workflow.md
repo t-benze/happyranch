@@ -2559,3 +2559,50 @@ The [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md
 records the pre-edit split, witness preimage, allowance accounting and evidence
 limits. ACCESS-1/current authority, agent-owned effective access, original Pause,
 receipt uncertainty/no reissue, U6 and historical owners remain unchanged.
+
+## U7c2b current Final admission (TASK-15564)
+
+This supersedes earlier dated U7c1/U7c2a Final-Held checkpoints. The post-outer
+dispatcher now admits validated Final success in its ORIGINAL locked authority
+transaction. Complete replay independently authenticates the persisted entire
+observation, INTEGER callback, original terminal/outer, selecting event/CAS,
+immutable subject, retained current-slot upstream development/APPROVE/PASS and
+exact recipient/check receipts. Same-transaction complete mixed target validation
+checks acceptance, transition/successor, terminal return and original caller
+fields before COMMIT/notification. Duplicate callback validates persisted
+publication without DML or duplicate notification. Late failure rolls back all
+staged publication. No LOCAL action is repeated.
+
+Original caps/deadline and R-M3-2 per-read allowances remain; new parse/copy/walk
+work prepays the original allowance and SQL hooks return to their owner. Genuine
+pre-write exhaustion escapes without DML/COMMIT; late target refusal rolls back
+staged DML. Malformed history stays unverified; current authority denied versus
+unverified remains distinct. ACCESS-1 rechecks current fixed eligible principals
+and unchanged subject/origin only. No daemon GitHub/network observer, credential
+or effective-access claim. Original Pause, receipt uncertainty command=None/no
+reissue, cancellation, U6b2a and Option B UNSETTLED retain their owners.
+
+Public fresh start stays OFF until U9. U7d/U8/U9, native/V3/V5/M4 and genuine
+access/merge/activation acceptance remain separate. Source diagnostics are
+out-of-repo SYNTHETIC; units/Vitest RETIRED, integration SKIPPED24342 and no E2E.
+See the [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7c2b-complete-final-admission-task-15564).
+
+R-M3-6 / TASK-15570 authorizes the single additional protected-owner exception
+`sequential_views.py` for browser-only Final redaction. After unchanged complete
+replay, an accepted `guarded-repository-merge@1` output's existing `content_utf8`
+contains only canonical `{"format":"workflow-sequential-coding-final-summary@1","outcome":"merged"}`.
+Successful Final visits also project `findings` as an empty array: arbitrary
+finding text can carry native material, and the existing outcome conveys success.
+No observation or finding text, diagnostic, native pin/path/SID/handle, intent,
+command, remote record or other native proof is copied. `content_digest` still identifies
+the ORIGINAL stored output, not this browser summary. OutputView/RunDetail and
+all route/OpenAPI/classification/TS shapes stay unchanged; every other output
+contract retains its original verbatim content. Stored observation/carrier bytes,
+complete/selected history, witness preimage and all readers/validators keep their
+original behavior. This is solely a browser disclosure boundary, with no new
+agent capability, access grant or LOCAL action. Synthetic B/H projection parity
+and prior-H RED / exact-head GREEN evidence are in
+`dev_agent/output/TASK-15570/handoff.md`. TASK-15571 found a sibling findings leak;
+TASK-15572 extends the existing keeper with nonempty native-bearing findings and
+records its correction in `dev_agent/output/TASK-15572/handoff.md`. Prior failure
+history remains; no native/V3/real-merge claim follows.
