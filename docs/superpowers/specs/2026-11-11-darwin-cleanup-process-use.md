@@ -2,7 +2,7 @@
 
 > Status: current
 > Current source: bundled workspace-cleanup skill and jobs-and-cleanup guide
-> Scope: S4 PR1 (S4a + S4b0 + S4b); S4c follows separately
+> Scope: S4 PR1 (S4a + S4b0 + S4b) and PR2 (S4c)
 
 The target is the Mac app's daemon, with Linux parity. Source-native evidence is
 an observation venue; frozen-app acceptance is outside S4 and remains NOT RUN.
