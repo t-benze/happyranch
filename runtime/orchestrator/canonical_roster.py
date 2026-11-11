@@ -1,8 +1,9 @@
-"""Coherent canonical reads and the short online-move replacement window.
+"""Shared process-local fence for coherent canonical roster reads/publication.
 
 Process-local cooperation only. No DB/gate is acquired here; callers must enter
 before DB ownership, never across an await. Direct external edits still require
-exact byte/identity revalidation by the operation owner.
+exact byte/identity revalidation by the native owner. The former online-move
+replacement consumer is removed.
 """
 from __future__ import annotations
 

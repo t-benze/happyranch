@@ -296,7 +296,8 @@ native live store; admitted/committed/unsettled/launch-observed facts; original
 running Pause journal entry and original admission generation; independently
 unheld current root control; matching original host request
 and supported opaque running handle; active non-recovery task/principal/SID;
-no terminal, callback, cancellation or team-move refusal. Original OrgPaths
+no terminal, callback or cancellation. PR-3b removes the move-only task check;
+the session, task, Pause, authority and host checks remain. Original OrgPaths
 supplies the fixed manager workspace. Bounded ancestor-pointer and journal-byte
 preflight precede the unchanged native Pause reader; no full task briefs are read
 by that live-owner preflight. No OS scan, process poll, repository access

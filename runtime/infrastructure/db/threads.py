@@ -75,8 +75,8 @@ def _thread_page_cursor(
         raise ValueError("invalid_thread_cursor") from exc
 
 
-# The complete archive-owner relation, shared by move admission and automatic
-# settlement admission. Breaker history is an owner, never a live obligation.
+# The complete archive-owner relation for automatic settlement admission.
+# Breaker history is an owner, never a live obligation.
 _THREAD_ARCHIVE_OWNERS_SQL = """
     SELECT agent_name, 'invocation' AS source, purpose, 1 AS live
     FROM thread_invocations WHERE thread_id=:thread_id AND status='pending'
@@ -525,11 +525,11 @@ class ThreadsMixin:
         archive_message_speaker: str = "founder",
         auto_archive_trigger: str | None = None,
     ) -> int | None:
-        """Own the complete native archive transaction, including admission.
+        """Own the complete native archive transaction and its status predicates.
 
-        The DB RLock serializes the first affected-participant check through
-        COMMIT against a move decision on this same DB owner. No move gate is
-        acquired beneath DB. Refusal or failure leaves status, resume pointers,
+        The DB RLock spans BEGIN IMMEDIATE through COMMIT. Automatic archival
+        checks resolution, origin, live owners and the Founder hold before
+        changing state. Refusal or failure leaves status, resume pointers,
         delivery obligations, breaker/exchange continuity and audits unchanged.
         Standalone discard/reaper callers keep their own commit ownership.
         Transcript filesystem work and event publication follow this commit.

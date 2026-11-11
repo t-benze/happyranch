@@ -1,8 +1,9 @@
-"""Org-owned online move journal (THR296 seq135, B plus private D readback).
+"""Retained org-owned move compatibility storage (THR296 seq135).
 
-Native org attachment owns release preparation; generic DB never installs. E supplies actual founder admission;
-models confer no identity authority. General transitions still refuse COMPLETE;
-only D's private native readback transaction can commit the terminal receipt.
+Native org attachment owns release preparation; generic DB never installs.
+Founder admission E and completion readback D were historical online consumers;
+both are removed. Models confer no identity authority. General transitions still
+refuse COMPLETE; the retained private completion leaf restores no online service.
 """
 from __future__ import annotations
 
@@ -263,7 +264,7 @@ class TerminalReceipt(Closed):
 
 
 class CompletedReceipt(Closed):
-    """Saved facts produced only by D's native completion readback owner."""
+    """Saved historical facts from D's former native completion readback owner."""
     version: Literal[1]
     operation_id: Identifier
     request_digest: Digest
@@ -888,10 +889,11 @@ class TeamMoveStore:
 
 
     def _complete_uncommitted(self, row: dict, receipt: CompletedReceipt) -> dict:
-        """Private leaf of D's native readback transaction; no public transition.
+        """Retained private completion leaf; the historical D caller is removed.
 
-        D owns the gate/DB transaction and revalidates its native captures before
-        entering this leaf. A caller success Boolean is never accepted here.
+        The leaf still requires an owned DB transaction and validates current
+        row/staging history. A caller success Boolean is never accepted here;
+        this compatibility code supplies no live completion/readback service.
         """
         if not self.db._lock._is_owned() or not self.db._conn.in_transaction:
             raise TeamMoveError("team_move_completion_transaction_owner")

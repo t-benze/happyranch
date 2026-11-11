@@ -68,7 +68,7 @@ class TeamsRegistry:
 
     @classmethod
     def from_bytes(cls, contents: bytes, *, root: Path | None = None) -> "TeamsRegistry":
-        """Pure parser shared by ordinary loading and complete move candidates."""
+        """Parse complete registry bytes without filesystem reads or publication."""
         raw = yaml.safe_load(contents.decode("utf-8")) or {}
         if not isinstance(raw, dict):
             raise ValueError("teams.yaml must be a mapping")

@@ -259,10 +259,11 @@ class TeamMoveCoordinator:
         return tuple(records)
 
     def blockers(self) -> tuple[dict, ...]:
-        """Complete preparation registry for later D census, never idle proof.
+        """Snapshot the retained in-process preparation registry, never idle proof.
 
-        Persistent Pause journals, durable tasks/workflows, host/remote/session
-        owners must ALSO be joined by D, particularly after process loss.
+        The historical D census consumer is removed. This registry alone cannot
+        establish persistent Pause, task/workflow or host/remote/session closure,
+        particularly after process loss.
         """
         with self.store.db._lock:
             return tuple(dict(owner_id=r.owner_id, task_id=r.task_id, session_id=r.session_id,

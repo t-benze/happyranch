@@ -178,7 +178,7 @@ class TaskQueue:
         self._admission_lock = threading.RLock()
         self._pending_counts: Counter[tuple[str, str]] = Counter()
         self._admission_reservations: set[tuple[str, str]] = set()
-        # Only the team-move async publisher needs an insertion receipt that
+        # Native async redelivery needs an insertion receipt that
         # survives dequeue while its native generation acknowledgement runs.
         self._native_publication_puts: dict[tuple[str, str], bool] = {}
         self._queue: asyncio.Queue[_QueueItem] = _TrackedAsyncQueue(

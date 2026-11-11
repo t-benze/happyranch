@@ -1951,9 +1951,10 @@ class HostSessionSupervisor:
                 yield (host, residue)
 
     def team_move_census(self, org: str, agents: tuple[str, ...]) -> tuple[dict, ...]:
-        """Actual unbounded native ownership/residue observation for D.
+        """Native ownership/residue observation for Founder predecessor attestation.
 
-        Never infer identity from logical_id or use the bounded health DTO as a
+        This unbounded census retains its historical identifier. Never infer
+        identity from logical_id or use the bounded health DTO as a
         clearance certificate. Unattributed host residue blocks conservatively.
         This reads ownership only and changes no host admission/cleanup policy.
         """
