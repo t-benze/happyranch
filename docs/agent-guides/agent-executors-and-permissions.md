@@ -1017,7 +1017,15 @@ instead of the canonical source checkout. When the worktree is removed, every
 agent using that venv loses the ability to import the ``cli`` and ``runtime``
 packages.
 
-**Preserved:** ``PATH`` (including daemon-normalized standard tool directories),
+At startup, `_normalize_path` prepends missing standard tool directories. A
+source-mode payload can set `HAPPYRANCH_BUNDLED_BIN` to its launcher directory:
+all existing copies of that directory are removed from PATH, then exactly one
+copy is placed first, ahead of the standard directories. Without that signal,
+source-mode behavior is unchanged. Frozen bundles continue to derive their
+first CLI directory from `sys.executable`, with precedence over the env signal.
+See the [Linux build handbook](../runbooks/linux-release-handbook.md).
+
+**Preserved:** ``PATH`` (including daemon-normalized bundled and standard tool directories),
 ``HAPPYRANCH_ORG_SLUG``, and all other ``HAPPYRANCH_*`` runtime variables.
 
 ### Worktree Rule (hard)
