@@ -31,6 +31,24 @@ export interface ThreadTaskSummary {
   originating_task_id?: string | null;
 }
 
+/** Agent-only response mirrors; these routes require an invocation token. */
+export interface ThreadDispatchResponse {
+  task_id: string;
+  team: string;
+  assigned_agent: string;
+  dispatched_from_thread_id: string;
+  system_message_seq: number;
+  superseded_task_id: string | null;
+  replayed: boolean;
+}
+
+export interface ThreadResolveEscalationResponse {
+  ok: boolean;
+  task_id: string;
+  new_status: string;
+  replayed: boolean;
+}
+
 export interface ComposeThreadBody {
   subject: string;
   recipients: string[];

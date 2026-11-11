@@ -120,6 +120,8 @@ class AuditLogger:
         actor: str = "founder",
         thread_id: str | None = None,
         resolution_path: str = "manual_break_glass",
+        thread_invocation_id: int | None = None,
+        uncommitted: bool = False,
     ) -> None:
         """Record that an escalated task was resolved.
 
@@ -135,7 +137,10 @@ class AuditLogger:
         }
         if thread_id is not None:
             payload["thread_id"] = thread_id
-        self._db.insert_audit_log(
+        if thread_invocation_id is not None:
+            payload["thread_invocation_id"] = thread_invocation_id
+        insert = self._db.insert_audit_log_uncommitted if uncommitted else self._db.insert_audit_log
+        insert(
             task_id=task_id,
             agent=actor,
             action="escalation_resolved",
@@ -486,6 +491,7 @@ class AuditLogger:
         actor: str,
         founder_note: str | None = None,
         thread_id: str | None = None,
+        uncommitted: bool = False,
     ) -> None:
         """Record that an escalated or in_progress(delegated) task was auto-resolved to
         SUPERSEDED because a human-authorized continuation
@@ -498,7 +504,8 @@ class AuditLogger:
         surface triggered it; `thread_id` (set on the thread-dispatch path)
         cites the dispatching thread ruling. THR-018 tier #3, §3a.
         """
-        self._db.insert_audit_log(
+        insert = self._db.insert_audit_log_uncommitted if uncommitted else self._db.insert_audit_log
+        insert(
             task_id=predecessor_task_id,
             agent="founder",
             action="escalation_superseded",
@@ -1254,8 +1261,10 @@ class AuditLogger:
         terminal_task_id: str,
         dispatcher: str,
         invocation_token: str,
+        uncommitted: bool = False,
     ) -> None:
-        self._db.insert_audit_log(
+        insert = self._db.insert_audit_log_uncommitted if uncommitted else self._db.insert_audit_log
+        insert(
             task_id=terminal_task_id,
             agent=dispatcher,
             action="thread_task_followup_enqueued",
@@ -1295,8 +1304,10 @@ class AuditLogger:
         original_task_id: str,
         reason: str,
         new_cap: int,
+        uncommitted: bool = False,
     ) -> None:
-        self._db.insert_audit_log(
+        insert = self._db.insert_audit_log_uncommitted if uncommitted else self._db.insert_audit_log
+        insert(
             task_id=original_task_id,
             agent="orchestrator",
             action="thread_turn_cap_auto_extended",

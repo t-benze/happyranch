@@ -168,8 +168,8 @@ class ThreadInvocationPurpose(StrEnum):
 
 - `reply` (`threads.py:713`) and `decline` (`threads.py:770`) today require `purpose ∈ {REPLY, BOOTSTRAP}` via `_validate_invocation_token`. **Both lists must be extended to include `TASK_FOLLOWUP`** so the dispatcher can land its followup as a reply or, if there's nothing material to add, a decline.
 - `dispatch` admits `{REPLY, BOOTSTRAP, TASK_FOLLOWUP}`. A `TASK_FOLLOWUP`
-  dispatch is manager-only and may create exactly one true replacement root for
-  the causal original root. Admission is a single `BEGIN IMMEDIATE`
+  dispatch is manager-only and may create N distinct replacement roots for
+  the causal original root on the SAME invocation token (THR-352). Admission is a single `BEGIN IMMEDIATE`
   transaction; the triggering system payload, existing task/thread links, and
   dedicated replacement audit are the authority. Prompt prose and process
   memory are not. Ordinary reply/bootstrap behavior is unchanged.
@@ -197,15 +197,30 @@ The actual `TASK-NNN` and `<status>` are read off the triggering SYSTEM message'
 
 ## 8. Loop bound
 
-A re-invoked manager may dispatch one corrected replacement root, but the
-budget belongs to the persisted causal lineage, not to each turn. The
-replacement root is marked by
-`thread_task_followup_replacement_dispatched`; its descendants, revisit/retry
-family, chain/fanout legs, and terminal followups are permanently ineligible.
-Manager supersession independently rejects thread-originated roots and cannot
-produce a successor of this replacement; it is outside THR-225. Replays and concurrent attempts reject
-with `task_followup_dispatch_already_used` without residue. Thus recursion
-depth is structurally bounded at one replacement.
+THR-352 allows N corrected replacement roots on the SAME authoritative pending
+TASK_FOLLOWUP token. Every root has its own dispatch binding, task_dispatched
+message and thread_dispatch/replacement audit. Same-token identical requests
+replay the original task with `replayed: true` and no duplicate task, message,
+audit or supersession. Replay restores an absent queue notification for a
+still-pending successor without duplicating queued work. Dispatch-with-resolves
+and escalation resolution also recover committed predecessor/family parent
+wakes and superseded-root followups, even after an enqueue fault. Each such
+followup atomically stores one SYSTEM message, invocation and audit set; replay
+reuses its pending token through idempotent thread publication, and does not
+remint a consumed token. There is no
+replacement count cap or rate limit.
+
+The cross-invocation spent rule is retained: any prior replacement of the causal
+root belonging to ANOTHER token refuses with
+`task_followup_dispatch_already_used`. A replacement's descendants, revisit/retry
+family, chain/fanout legs and terminal followups cannot reset that lineage rule.
+Manager supersession remains separate and rejects thread-originated roots.
+Follow-up dispatch still forbids `resolves`. Managers may resolve N other in-lineage
+escalations through resolve-escalation during this turn. Successor creation,
+predecessor/family supersession and the resolution replay audit commit in one
+transaction; parent wakes and thread followups run after commit. Resolution replay is
+pinned to the persisted invocation ID/task audit; dispatch and resolution both
+keep the token pending. Reply or decline consumes it as usual.
 
 ## 9. Web UI
 
@@ -262,7 +277,7 @@ OpenAPI snapshot: no new routes (purely internal). `tests/contract/test_openapi_
 None blocking. Two flagged for future:
 
 - **Followup dispatch policy** (§6.4): THR-225 resolved this question by
-  allowing one persisted manager replacement per causal lineage.
+  allowing persisted manager replacements, extended by THR-352 to N on the SAME token.
 - **Founder cancellation surface** (§4): firing on cancelled may produce a thread entry the founder doesn't want to read. Easy to flip to "suppress cancelled" later by adding `if original.cancelled_at: skip` to the predicate.
 
 ## 14. Implementation order
@@ -270,7 +285,7 @@ None blocking. Two flagged for future:
 1. Enum: `ThreadInvocationPurpose.TASK_FOLLOWUP` added to `src/models.py`.
 2. Promote `_pending_reply_load` → `Database.count_pending_turn_obligations(thread_id)` and switch the three existing call sites in `src/daemon/routes/threads.py`. Include `TASK_FOLLOWUP` in the counted set.
 3. Add `TASK_FOLLOWUP` to reply/decline and to dispatch under the transactional
-   one-replacement lineage gate (§6.4).
+   same-token replacement lineage gate (§6.4).
 4. `_purpose_note` branch + prompt parameter wiring in `src/daemon/thread_runner.py`.
 5. New system-message renderers (`task_completed`, `task_failed`) in `src/infrastructure/thread_store.py` and `src/daemon/thread_forward.py`.
 6. `db.bump_thread_turn_cap(thread_id, delta)` method + `audit.log_thread_*` methods.

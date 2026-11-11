@@ -2840,8 +2840,8 @@ When a task dispatched from a thread reaches true terminal state, `_maybe_post_t
 Only a team manager may use the bounded self-targeted, same-team replacement path
 from an ordinary followup. If the source task failed from infrastructure (launch
 refusal, session crash or timeout), the goal remains unfinished and authorized,
-history and effects have been reconciled, and existing one-replacement eligibility
-holds, dispatch that one replacement in this turn, then report what was done. If
+history and effects have been reconciled, and existing lineage eligibility
+holds, dispatch the authorized replacements in this turn, then report what was done. If
 effects or authority remain uncertain, reconcile them or name the actual blocker.
 Failure type alone is not safe-retry proof. This direction does not apply after
 accepted successful completion; other unfinished goals retain only the existing
@@ -2850,8 +2850,8 @@ payload without `resolves`.
 Admission validates the pending open-thread invocation, terminal event/source status
 agreement, lineage and original dispatch provenance. The DB terminal source set is
 `completed`/`failed`/`cancelled`/`superseded`/`escalated`; mechanical eligibility does
-not authorize continuation. At most one persisted replacement is allowed per causal
-root; a new token or replacement task cannot replenish it. Workers gain no manager
+not authorize continuation. Multiple replacements may share the SAME follow-up token for a causal
+root. Another token or replacement task cannot reset the cross-invocation spent rule. Workers gain no manager
 rights, and dispatch still requires a final reply or decline.
 
 Before replacing, inspect the original task details/history and existing artifacts,
@@ -3070,16 +3070,25 @@ Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole co
 
 ## Retired autonomous thread continuation
 
-Successful thread-side escalation supersession consumes its invocation. For a
-conversational REPLY, it atomically acknowledges the claimed range and clears
-the reply-delivery slot, then enqueues any follow-on and exchange catch-up
-tokens after commit. BOOTSTRAP and legacy REPLY tokens without delivery-state
-ownership retain plain consumption. Resolution still precedes invocation
-settlement; a rejected resolution does not consume the invocation. An already
-terminal token is rejected before resolution. If another terminal path wins
-during resolution, the applied success result is returned without settling the
-invocation again. This operation does not append a reply message or set
-`reply_message_seq`.
+THR-352 thread-side escalation supersession is nonterminal during REPLY,
+BOOTSTRAP and TASK_FOLLOWUP turns. Managers may resolve N in-lineage tasks;
+same-token/task replay returns `replayed: true` using the persisted invocation ID
+in the resolution audit. A terminal token is still rejected before resolution.
+The final reply or decline consumes the invocation and acknowledges its claimed
+conversational delivery range, releasing the slot and enqueueing follow-on and
+exchange catch-up tokens as usual. Resolution itself appends no reply message
+and does not set `reply_message_seq`. Thread dispatch likewise permits N distinct
+requests with per-task bindings, messages and audits; byte-identical effective
+requests on the same token replay one task. Successor, predecessor/family
+supersession and replay proof commit atomically; eligibility is rechecked
+inside that writer transaction. Replay restores a missing pending-successor
+queue notification without duplicating queued work. Parent wakes and thread
+followups run after commit even if successor enqueue fails. Replay restores
+both effects for the predecessor and every family member identified by the
+committed supersession audits. Superseded-root followup message, invocation and
+audits commit together; replay republishes the same pending token without
+another row or queued delivery, and never remints a consumed token.
+Self-only and same-team authority remain. See [threads contracts](contracts/threads-and-naming.md).
 
 Both served resolution contracts — `POST /tasks/{task_id}/resolve-escalation`
 and `POST /threads/{thread_id}/resolve-escalation` — return the stable `410`

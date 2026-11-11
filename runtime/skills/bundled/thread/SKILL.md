@@ -160,7 +160,7 @@ The "You have been invoked because" line tells you which case applies:
 ## Reply, decline, or dispatch
 
 Pick exactly one terminal outcome (reply OR decline). You MAY additionally
-dispatch a task before the terminal callback; dispatch alone does not end the
+dispatch multiple tasks and resolve multiple escalations before the terminal callback; dispatch alone does not end the
 turn.
 
 
@@ -283,7 +283,27 @@ Write `/tmp/thread-dispatch-<thread_id>.json`:
 Then:
 happyranch threads dispatch --org <slug> --thread-id <id> --from-file /tmp/thread-dispatch-<id>.json
 
-Each dispatch posts a system message into the thread for transparency.
+Each distinct dispatch posts its own system message into the thread. There is no
+per-turn dispatch count limit. The daemon hashes the stripped brief, effective team,
+effective self target, `resolves` (or empty string), and invocation purpose. Repeating
+that same request on the same pending token returns the original task with
+`replayed: true` and creates no task, message, audit or supersession. If the
+successor is still pending, replay restores a missing queue notification; an
+already queued successor is not duplicated. Dispatch with `resolves` commits
+its successor, predecessor/family supersession and replay binding together.
+Parent wakes and thread followups run after commit even when successor enqueue
+fails; replay restores those publications for the predecessor and closed family.
+Superseded-root followup messages, invocations and audits are atomic and reused;
+pending followup tokens are published idempotently and consumed tokens stay consumed.
+Two identical requests in one turn therefore mean one dispatch.
+
+Managers may also resolve multiple in-lineage escalations using
+`happyranch threads resolve-escalation` during REPLY, BOOTSTRAP or TASK_FOLLOWUP.
+A successful resolution keeps the token pending; repeating a resolution for the
+same task on that token returns `replayed: true`. The successor, supersession
+and invocation-ID replay audit commit together; replay restores a missing
+notification for a still-pending successor and the committed parent/followup
+tail without duplicating rows or queued work. Reply or decline afterwards.
 
 Dispatching does NOT end the turn — you MUST still issue a reply or decline
 afterwards to release the invocation token. If you exit without either, the
@@ -349,16 +369,16 @@ these escalation restrictions or an unresolved founder decision.
 same-team replacement path from an ordinary task-followup turn. If the source task
 failed from infrastructure (launch refusal, session crash or timeout), the goal
 remains unfinished and authorized, history and effects have been reconciled, and
-existing one-replacement eligibility holds, dispatch that one replacement in this
+existing lineage eligibility holds, dispatch the authorized replacements in this
 turn, then report what you did. If effects or authority remain uncertain, reconcile
 them or name the actual blocker. Failure type alone is not safe-retry proof. This
 direction does not apply after accepted successful completion; other unfinished
 goals retain only the existing bounded permission to replace under current authority.
 Workers gain no manager rights. Use the ordinary dispatch payload, omitting `resolves`.
 The runtime validates the terminal event/source status agreement, lineage and original
-dispatch provenance, and permits
-at most one persisted replacement per causal root; neither a new token nor a
-replacement task resets that limit. Mechanical terminal eligibility is not authority
+dispatch provenance. Multiple replacements are permitted on the SAME follow-up
+token. Another follow-up token for that causal root remains spent; replacement
+tasks and their descendants cannot reset that lineage restriction. Mechanical terminal eligibility is not authority
 to continue cancelled or held work.
 
 Before replacing, inspect the original task details/history and existing artifacts,
@@ -481,8 +501,8 @@ to append to a thread remains **post-as-agent** (attributed to you) or
   job is a side effect too: the `invocation_token` is not a task
   session id, so submit it from a dispatched task, not from the thread turn.
 - Do NOT issue multiple terminal callbacks (reply AND decline) in one
-  invocation. One terminal outcome per turn. Dispatch is the only non-terminal
-  extra.
+  invocation. One terminal outcome per turn. Dispatch and manager escalation resolution are nonterminal
+  actions; both may be repeated for distinct work before reply or decline.
 - Do NOT treat `@text` in message bodies as a routing *instruction to yourself*
   beyond the server's decision: the daemon routes every message at write time
   (mention routing, THR-198; unconditional per TASK-6027) — a body that

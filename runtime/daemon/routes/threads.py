@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json as _json
 import mimetypes
 from datetime import datetime, timezone
@@ -1721,7 +1722,17 @@ class DispatchBody(BaseModel):
     resolves: str | None = None
 
 
-@router.post("/threads/{thread_id}/dispatch")
+class ThreadDispatchResponse(BaseModel):
+    task_id: str
+    team: str
+    assigned_agent: str
+    dispatched_from_thread_id: str
+    system_message_seq: int
+    superseded_task_id: str | None = None
+    replayed: bool = False
+
+
+@router.post("/threads/{thread_id}/dispatch", response_model=ThreadDispatchResponse)
 async def dispatch_from_thread_endpoint(
     slug: str, thread_id: str, body: DispatchBody, org: OrgDep, request: Request,
 ) -> dict:
@@ -1751,14 +1762,6 @@ async def dispatch_from_thread_endpoint(
                 ThreadInvocationPurpose.TASK_FOLLOWUP,
             ],
         )
-        if inv.dispatched_task_id is not None:
-            code = (
-                "task_followup_dispatch_already_used"
-                if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP
-                else "dispatch_already_used"
-            )
-            raise HTTPException(status_code=409, detail={"code": code})
-
         if not org.db.is_thread_participant(thread_id, body.dispatcher):
             raise HTTPException(status_code=403, detail={"code": "not_participant"})
         if org.teams is None:
@@ -1811,8 +1814,8 @@ async def dispatch_from_thread_endpoint(
         # Validated before the task is created so an ineligible/unauthorized supersede
         # rejects cleanly without orphaning a new root.
         resolves = body.resolves.strip() if body.resolves else None
-        predecessor = None
-        pred_block_kind = None
+        if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP and resolves:
+            raise HTTPException(status_code=400, detail={"code": "task_followup_dispatch_resolves_forbidden"})
         if resolves:
             if not is_manager:
                 raise HTTPException(
@@ -1820,30 +1823,29 @@ async def dispatch_from_thread_endpoint(
                     detail={"code": "thread_supersede_not_authorized",
                             "dispatcher": dispatcher, "resolves": resolves},
                 )
-            from runtime.daemon.routes.tasks import _eligible_supersede_block_kind
-            predecessor = org.db.get_task(resolves)
-            if predecessor is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail={"code": "predecessor_not_found", "resolves": resolves},
-                )
+            if not _task_in_thread_lineage(org, resolves, thread_id):
+                raise HTTPException(status_code=409, detail={"code": "task_not_in_thread_lineage"})
             from runtime.orchestrator.task_pause import assert_origin_unheld
             assert_origin_unheld(org, resolves)
-            pred_block_kind = _eligible_supersede_block_kind(org, predecessor)
-            if pred_block_kind is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail={"code": "predecessor_not_supersedable",
-                            "resolves": resolves,
-                            "predecessor_status": predecessor.status.value},
-                )
+        request_digest = hashlib.sha256(_json.dumps(
+            [brief, effective_team, effective_target, resolves or "", inv.purpose.value],
+            ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        async with org.db_lock:
+            if org.db.get_pending_invocation(body.invocation_token) is None:
+                raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+            if org.db.get_thread(thread_id).status is not ThreadStatus.OPEN:
+                raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+            replay = org.db.get_thread_dispatch(body.invocation_token, request_digest)
+            if replay is not None:
+                from runtime.daemon.routes.tasks import _enqueue_pending_thread_successor
+                _enqueue_pending_thread_successor(org, state, replay["task_id"])
+                return {**replay, "dispatched_from_thread_id": thread_id,
+                        "superseded_task_id": resolves or None, "replayed": True}
 
+        predecessor = None
+        pred_block_kind = None
         if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP:
-            if resolves:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"code": "task_followup_dispatch_resolves_forbidden"},
-                )
             async with org.teams_lock:
                 if not org.teams.is_team_manager(dispatcher):
                     raise HTTPException(
@@ -1861,68 +1863,94 @@ async def dispatch_from_thread_endpoint(
                             assigned_agent=effective_target,
                             dispatched_from_thread_id=thread_id,
                         ),
-                        team=effective_team,
+                        team=effective_team, request_digest=request_digest,
                     )
             if not result["ok"]:
                 raise HTTPException(status_code=409, detail={"code": result["code"]})
+            if result["replayed"]:
+                from runtime.daemon.routes.tasks import _enqueue_pending_thread_successor
+                _enqueue_pending_thread_successor(org, state, result["task_id"])
+                return {key: result[key] for key in (
+                    "task_id", "team", "assigned_agent", "system_message_seq",
+                )} | {"dispatched_from_thread_id": thread_id, "replayed": True}
             sys_seq = result["system_message_seq"]
-            family_closed = []
+            task_id = result["task_id"]
         else:
             async with org.db_lock:
                 from runtime.orchestrator.task_pause import origin_guard
-                with origin_guard(org, resolves):
-                    with org.db._lock:
-                        move = getattr(org.db, "_team_move_coordinator", None)
-                        if move is not None:
-                            move.threads.callback_uncommitted(body.invocation_token)
-                    cur_inv = org.db.get_pending_invocation(body.invocation_token)
-                    if cur_inv is None or cur_inv.dispatched_task_id is not None:
-                        raise HTTPException(status_code=409, detail={"code": "dispatch_already_used"})
-                    task_id = org.db.next_task_id()
-                    org.db.insert_task(TaskRecord(
-                        id=task_id, brief=brief, team=effective_team,
-                        assigned_agent=effective_target,
-                        dispatched_from_thread_id=thread_id,
-                    ))
-                    sys_seq = org.db.append_thread_message(
-                        thread_id=thread_id, speaker=dispatcher,
-                        kind=ThreadMessageKind.SYSTEM,
-                        system_payload={
-                            "kind_tag": "task_dispatched",
-                            "task_id": task_id,
-                            "dispatcher": dispatcher,
-                            "target_agent": effective_target,
-                            "team": effective_team,
-                            "brief_preview": brief[:160],
-                        },
-                    )
-                    org.db.record_dispatch_on_invocation(body.invocation_token, task_id=task_id)
-                    audit = AuditLogger(org.db)
-                    audit.log_thread_dispatch(
-                        thread_id, task_id=task_id, dispatcher=dispatcher,
-                        target_agent=effective_target, team=effective_team,
-                    )
-                    # Canonical supersede tail shared with resolve_escalation_in_process
-                    # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
-                    # and emits thread followups.
-                    family_closed: list[str] = []
-                    if resolves and predecessor is not None:
-                        from runtime.daemon.routes.tasks import (
-                            _close_predecessor_family_and_run_tail,
-                        )
-                        family_closed = _close_predecessor_family_and_run_tail(
-                            org, audit,
-                            predecessor=predecessor,
-                            successor_root=task_id,
-                            pred_block_kind=pred_block_kind,
-                            actor="thread-dispatch",
-                            note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
-                            thread_id=thread_id,
-                            close_revisit_family=True,
-                                            root_transitions=root_transitions,
-                        )
+                with origin_guard(org, resolves), org.db.thread_continuation_transaction():
+                    if org.db.get_pending_invocation(body.invocation_token) is None:
+                        raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+                    replay = org.db.get_thread_dispatch(body.invocation_token, request_digest)
+                    if replay is not None:
+                        result = {"ok": True, "replayed": True, **replay}
+                    else:
+                        if resolves:
+                            from runtime.daemon.routes.tasks import _eligible_supersede_block_kind
+                            predecessor = org.db.get_task(resolves)
+                            if predecessor is None:
+                                raise HTTPException(
+                                    status_code=404,
+                                    detail={"code": "predecessor_not_found", "resolves": resolves},
+                                )
+                            from runtime.orchestrator.task_pause import assert_origin_unheld
+                            assert_origin_unheld(org, resolves)
+                            pred_block_kind = _eligible_supersede_block_kind(org, predecessor)
+                            if pred_block_kind is None:
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail={"code": "predecessor_not_supersedable",
+                                            "resolves": resolves,
+                                            "predecessor_status": predecessor.status.value},
+                                )
 
-        enqueue_task(state, slug, task_id)
+                        task_id = org.db.next_task_id()
+                        result = org.db._dispatch_thread_task_uncommitted(
+                            token=body.invocation_token, thread_id=thread_id, dispatcher=dispatcher,
+                            task=TaskRecord(
+                                id=task_id, brief=brief, team=effective_team,
+                                assigned_agent=effective_target, dispatched_from_thread_id=thread_id,
+                            ),
+                            request_digest=request_digest,
+                        )
+                        if not result["ok"]:
+                            raise HTTPException(status_code=409, detail={"code": result["code"]})
+                        sys_seq = result["system_message_seq"]
+                        audit = AuditLogger(org.db)
+                        # Canonical supersede tail shared with resolve_escalation_in_process
+                        # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
+                        # and emits thread followups.
+                        if resolves and predecessor is not None:
+                            from runtime.daemon.routes.tasks import (
+                                _close_predecessor_family_and_run_tail,
+                            )
+                            _close_predecessor_family_and_run_tail(
+                                org, audit,
+                                predecessor=predecessor,
+                                successor_root=task_id,
+                                pred_block_kind=pred_block_kind,
+                                actor="thread-dispatch",
+                                note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
+                                thread_id=thread_id,
+                                close_revisit_family=True,
+                                root_transitions=root_transitions, uncommitted=True,
+                            )
+
+            if result["replayed"]:
+                from runtime.daemon.routes.tasks import _enqueue_pending_thread_successor
+                _enqueue_pending_thread_successor(org, state, result["task_id"])
+                return {key: result[key] for key in (
+                    "task_id", "team", "assigned_agent", "system_message_seq",
+                )} | {"dispatched_from_thread_id": thread_id,
+                     "superseded_task_id": resolves or None, "replayed": True}
+
+        try:
+            state.queue.enqueue_if_absent(
+                slug, task_id, publisher=lambda: enqueue_task(state, slug, task_id),
+            )
+        finally:
+            from runtime.daemon.routes.tasks import _run_superseded_task_tail
+            _run_superseded_task_tail(org, org.db.superseded_tasks_for_successor(task_id))
 
         await _publish_thread_event(
             org, slug,
@@ -1937,6 +1965,7 @@ async def dispatch_from_thread_endpoint(
             "dispatched_from_thread_id": thread_id,
             "system_message_seq": sys_seq,
             "superseded_task_id": resolves if (resolves and predecessor is not None) else None,
+            "replayed": False,
         }
     except BaseException:
         root_tail_failed = True
@@ -1983,8 +2012,18 @@ def _reject_retired_th166_envelope(body: BaseModel) -> None:
         raise HTTPException(status_code=410, detail={"code": "retired_autonomous_continuation"})
 
 
+class ThreadResolveEscalationResponse(BaseModel):
+    ok: bool
+    task_id: str
+    new_status: str
+    replayed: bool = False
+
+
 @router.post(
     "/threads/{thread_id}/resolve-escalation",
+    response_model=ThreadResolveEscalationResponse,
+    description="Resolve escalations during REPLY, BOOTSTRAP or TASK_FOLLOWUP; "
+                "the invocation remains pending until reply or decline.",
     responses={410: {"description": (
         "Retired autonomous continuation (`retired_autonomous_continuation`): "
         "any presence of policy_id, policy_version, policy_provenance, "
@@ -2012,6 +2051,9 @@ async def resolve_escalation_from_thread(
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "thread_not_found"})
 
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+
     _reject_retired_th166_envelope(body)
     if body.decision == "continue":
         raise HTTPException(
@@ -2029,12 +2071,13 @@ async def resolve_escalation_from_thread(
             status_code=422,
             detail={"code": "missing_invocation_token"},
         )
-    invocation = _validate_invocation_token(
+    _validate_invocation_token(
         org,
         token=body.invocation_token,
         expected_agent=body.dispatcher,
         expected_thread_id=thread_id,
-        require_purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+        require_purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP,
+                          ThreadInvocationPurpose.TASK_FOLLOWUP],
     )
     if not org.db.is_thread_participant(thread_id, body.dispatcher):
         raise HTTPException(
@@ -2082,7 +2125,7 @@ async def resolve_escalation_from_thread(
             },
         )
 
-    new_status = await resolve_escalation_in_process(
+    result = await resolve_escalation_in_process(
         org, state,
         task_id=body.task_id,
         decision=body.decision,
@@ -2091,35 +2134,12 @@ async def resolve_escalation_from_thread(
         actor=actor,
         thread_id=thread_id,
         resolution_path="thread_manual_supersede",
+        thread_invocation_token=body.invocation_token,
     )
-    # Resolve first so a rejected resolution does not consume the invocation.
-    # Then acknowledge the REPLY's claimed coverage and release its slot in
-    # the same transaction that consumes the invocation.
-    tokens_to_enqueue: list[str] = []
-    async with org.db_lock:
-        # Another terminal path may win while resolution awaits its tail.
-        # Preserve that settlement and the already-applied resolution result.
-        if org.db.get_pending_invocation(body.invocation_token) is not None:
-            if invocation.purpose is ThreadInvocationPurpose.REPLY:
-                settlement, catch_up = org.db.settle_conversational_reply_with_exchange(
-                    token=body.invocation_token,
-                    outcome="reply",
-                )
-                if settlement is None:
-                    # Legacy/stale pending REPLY not owned by delivery state.
-                    org.db.consume_invocation(body.invocation_token)
-                else:
-                    if settlement.follow_on_token is not None:
-                        tokens_to_enqueue.append(settlement.follow_on_token)
-                    tokens_to_enqueue.extend(
-                        a.invocation_token for a in catch_up
-                        if a.invocation_token is not None
-                    )
-            else:
-                org.db.consume_invocation(body.invocation_token)
-    for token in tokens_to_enqueue:
-        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
-    return {"ok": True, "task_id": body.task_id, "new_status": new_status}
+    # Nonterminal action: reply/decline owns delivery acknowledgement and settlement.
+    return {"ok": True, "task_id": body.task_id, **result}
+
+
 def _task_in_thread_lineage(org, task_id: str, thread_id: str) -> bool:
     """True if task_id is dispatched from thread_id, or has an ancestor
     that was dispatched from thread_id."""

@@ -2656,6 +2656,7 @@ class Database(
         agent_name: str,
         triggering_seq: int,
         purpose: ThreadInvocationPurpose,
+        uncommitted: bool = False,
     ) -> ThreadInvocation:
         import uuid as _uuid
         token = _uuid.uuid4().hex
@@ -2666,7 +2667,8 @@ class Database(
             "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
             (thread_id, agent_name, token, triggering_seq, purpose.value, now),
         )
-        self._conn.commit()
+        if not uncommitted:
+            self._conn.commit()
         return ThreadInvocation(
             id=cursor.lastrowid,
             thread_id=thread_id,
@@ -2994,7 +2996,7 @@ class Database(
 
     @_synchronized
     def consume_escalation_notification(
-        self, feishu_message_id: str, consumed_by: str,
+        self, feishu_message_id: str, consumed_by: str, *, uncommitted: bool = False,
     ) -> bool:
         """Atomically mark a notification consumed. Returns True on first
         consume, False if already consumed or missing."""
@@ -3004,7 +3006,8 @@ class Database(
                WHERE feishu_message_id = ? AND consumed_at IS NULL""",
             (datetime.now(timezone.utc).isoformat(), consumed_by, feishu_message_id),
         )
-        self._conn.commit()
+        if not uncommitted:
+            self._conn.commit()
         return cur.rowcount == 1
 
     # --- Processed Event Dedup ---
