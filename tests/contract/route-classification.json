@@ -187,7 +187,9 @@
     "GET /api/v1/orgs/{slug}/workflows/sequential/settings",
     "GET /api/v1/orgs/{slug}/workflows/sequential/runs",
     "GET /api/v1/orgs/{slug}/workflows/sequential/runs/{run_id}",
-    "GET /api/v1/orgs/{slug}/tasks/{task_id}/sequential-workflow"
+    "GET /api/v1/orgs/{slug}/tasks/{task_id}/sequential-workflow",
+    "PUT /api/v1/orgs/{slug}/workflows/sequential/settings",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/settings/operations"
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",

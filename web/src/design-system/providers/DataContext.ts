@@ -729,7 +729,18 @@ export interface WorkflowQuery<T> extends QueryLike<T> {
   isFetching: boolean;
   refetch: () => Promise<unknown>;
 }
+export interface SequentialSettingsFence {
+  command: Sequential.SequentialSettingsCommand;
+  phase: 'sending' | 'uncertain';
+}
+export interface SequentialSettingsActions {
+  save: (command: Sequential.SequentialSettingsCommand) => Promise<Sequential.SequentialSettingsReceipt>;
+  readOperation: (key: string) => Promise<Sequential.SequentialSettingsReceipt>;
+}
+
 export interface WorkflowsApi {
+  useSequentialSettingsActions: () => SequentialSettingsActions;
+  useSequentialSettingsFence: () => SequentialSettingsFence | null;
   useSequentialDefinitions: () => WorkflowQuery<Sequential.SequentialDefinitions>;
   useSequentialDefinition: (id: string) => WorkflowQuery<Sequential.SequentialDefinition>;
   useSequentialSettings: (identity: string) => WorkflowQuery<Sequential.SequentialSettings>;

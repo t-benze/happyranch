@@ -1,6 +1,6 @@
 # Sequential Coding U7: common transport and agent initiation
 
-> Status: current design; U7a read projections delivered, U7b–U7d implementation remains.
+> Status: current design; U7a reads and U7b settings CAS/lookup delivered in source; U7c–U7d remain.
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
 
 THR-336 / ROOT TASK-15165; TASK-15465, linked retry of pre-edit failed TASK-15462.
@@ -70,15 +70,84 @@ implementations expose only reads. Org/selection keys, abort signals, zero retry
 no persisted cache, selection-exit eviction and hiding data during refresh/error
 prevent stale cached content from supplying current access. U8 still owns UI.
 
-## Required remaining implementation, in order
+## U7 implementation units, in order
 
-**U7b — repo-free settings PUT CAS and original-operation lookup.** Define the
+**U7b — repo-free settings PUT CAS and original-operation lookup (source delivered).** Define the
 closed command/receipt compatible with existing storage readers. Freeze one
 original operation key/body through uncertain transport, and read its original
 receipt separately from a newer current generation. Save preserves admission
 and allocates zero work. Allow/disable future admission is a separate supported
 setup action; saving cannot enable it. No repository/format/base/scope selector
 in setup. Preserve old repo-bearing settings/key recovery with its old reader.
+
+### U7b source (TASK-15482)
+
+No schema/table/column/index/migration or dependency change. New closed canonical
+UTF8 `workflow-sequential-settings-put@1` has exactly format, operation_key,
+expected_generation (strict integer 0..9223372036854775806), definition (complete
+immutable pin), bindings (1..16 ordered role/principal pairs) and limits. Maximum
+16384 bytes; duplicate/extra keys, noncanonical JSON, unsafe types and repository,
+object-format/base/scope, admission or supplied principal/task/session selectors refuse.
+The existing bearer authenticates server-fixed principal `founder`; this is no
+new credential, grant or agent transport.
+
+- `PUT /workflows/sequential/settings` accepts only that body, no query. It
+  appends one generation with CAS on the latest generation for this org/definition
+  identity. First save requires expected_generation=0 and defaults Disabled.
+  Later saves copy current admission exactly, including Allowed. No save enables
+  or disables admission. Bindings must be complete, independent, currently active
+  executable eligible principals in the registered manager's team; limits cannot
+  exceed the selected stored definition. There is no repository/access observer.
+- `GET /workflows/sequential/settings/operations?operation_key=…` returns only
+  the original operation's `workflow-sequential-settings-receipt@1`: org_slug,
+  operation_key, original reconstructed command, literal storage receipt and
+  original SettingsView. It does not select or label a newer generation current.
+  The existing U7a settings GET separately reads current. Original lookup keys
+  retain the existing Token grammar, including slash/colon, through query encoding.
+
+The command is losslessly reconstructed from unchanged immutable snapshot and
+storage-operation@1 bytes; no new storage family is written. Preserve binding
+order and the exact expected generation. Same key/body returns the original
+receipt even after later saves; different body refuses before another generation.
+The key is scoped to org/server-fixed founder. Existing operator and repo-bearing
+Coding histories/readers remain unchanged, without adoption or rewriting.
+
+`sequential_settings` owns this service; the existing router adds two routes and
+leaves all U7a GET implementations unchanged. Read-only original lookup and exact
+replay use the existing profile/publisher/DB fences, BEGIN/rollback and SELECTs,
+with no durable write lease. Absent operation404 precedes existing ownership409;
+invalid/foreign bearer has no access. Fresh saves then register the unchanged
+native org_settings writer and enter the supported admission writer, rechecking
+key/body/CAS/current authority and complete history. Complete target validation,
+closing authority and serving-org identity precede COMMIT; COMMIT/lease/native
+settlement failures retain uncertainty and never return a fabricated receipt.
+One original five-second deadline covers the operation. Each mandatory complete
+read retains its OWN unchanged D2 allowances; projection/copy/write work shares
+one finite original allowance, without retry/reset. Save allocates zero runs,
+tasks, sessions or jobs and changes no admitted run pins.
+
+TS has one mirror per route and uses the existing explicit ordinary-token option
+for one PUT even on401. Its deep-frozen canonical command precedes awaits. The
+provider's QueryClient-local org fence survives pane unmount and A→B→A, with no
+persistence or locale input. Pending/uncertain operations reject another send;
+404/error/mismatched original lookup retains custody. Only a matching original
+receipt resolves uncertainty. A receipt never populates the current-settings
+cache; an independent invalidated U7a read reacquires current. Known pre-write
+validation/CAS conflicts may release the send fence; history/persistence failures
+remain uncertain. U8 still owns rendered setup/draft states and bilingual UI.
+
+Both routes are browser-included in classification with OpenAPI/TS/provider
+parity. Existing managed-connector policy denies them; native agent-only audiences
+and agent sessions gain no entitlement. Existing auth boundary is unchanged.
+Retired Vitest/openapi-coverage remains retired. No admission-changing setup action
+is required by this Save unit or exposed here; a separately authorized supported
+action remains separate source work, and live admission stays Founder-reserved.
+No fresh start, task-session preflight/Final mount or Final-success admission.
+
+Diagnostics are disposable OUT-OF-REPO SYNTHETIC route/writer/reader observations
+with explicit authority/native scaffolding, not genuine persistence/operator,
+native/V3/V5/M4/access/merge or activation acceptance. Required cases/evidence and
+NOT RUN limits are recorded in TASK-15482 handoff. No repository tests added.
 
 **U7c — selected task-session preflight and Final transport.** Subject-only
 repository/base/scope/SHA1 preflight; no four-role duty fields or access observer.
