@@ -31,6 +31,7 @@ an exact uv-managed CPython 3.12.10, `uv sync --frozen --no-dev
 --no-default-groups` with binary-only runtime dependencies, then installs the
 HappyRanch wheel as real `.py` files. It builds production `web/dist` with
 `npm ci && npm run build` and the native Go sidecar with `CGO_ENABLED=0`.
+Its private Go module cache uses `-modcacherw` so build cleanup can remove it.
 Existing version/architecture outputs are refused; use a fresh destination.
 
 The extracted payload contains `python/`, `web/dist/`, `licenses/`,
