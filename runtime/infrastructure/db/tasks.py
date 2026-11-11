@@ -962,7 +962,6 @@ class TasksMixin:
         including when the caller already opened a transaction. Workflow
         admission owns the lock, writer reservation and entire graph commit.
         """
-        self._check_team_move_task_uncommitted(task)
         self._insert_task_row_uncommitted(task, ownership=ownership)
 
     def _insert_task_row_uncommitted(self, task: TaskRecord, *, ownership: tuple[str, str] | None = None) -> None:
@@ -1780,7 +1779,6 @@ class TasksMixin:
         _check(self._conn.in_transaction and before['id'] == task_id and before['status'] == 'pending'
                and before['block_kind'] is None and before['cancelled_at'] is None
                and before['current_session_id'] is None and before['orchestration_step_count'] == 0)
-        self._check_team_move_task_uncommitted(task_id)
         _check(self._conn.execute("SELECT 1 FROM authority_policy_v2_root_dispatch WHERE root_task_id=? AND state='pending'", (task_id,)).fetchone() is None)
         where = ' AND '.join('"' + name + '" IS ?' for name in _TASK_COLUMNS)
         changed = self._conn.execute('UPDATE tasks SET status=?,orchestration_step_count=? WHERE ' + where,
@@ -2209,9 +2207,6 @@ class TasksMixin:
     def _retry_spawn_check(self, parent_id: str, children: list, claim: RetryClaim,
                            revision_delta: int = 0, revision_cap: int = 0,
                            *, ordinary: bool = False) -> InvalidLineage | LostClaim | None:
-        self._check_team_move_task_uncommitted(parent_id)
-        for child in children:
-            self._check_team_move_task_uncommitted(child)
         if parent_id != claim.task_id or not self._retry_claim_matches(claim):
             return LostClaim()
         for child in children:
@@ -2556,9 +2551,6 @@ class TasksMixin:
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            for carrier in carrier_chains or ():
-                self._check_team_move_task_uncommitted(children[carrier["child_index"]],
-                    declared_chain=carrier["active_chain_json"])
             refusal = self._retry_spawn_check(
                 parent_id, children, expected_claim,
 
@@ -2681,7 +2673,6 @@ class TasksMixin:
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            self._check_team_move_task_uncommitted(parent_id, declared_chain=active_chain_json)
             refusal = self._retry_spawn_check(
                 parent_id, [child], expected_claim,
                 revision_delta, revision_cap, ordinary=True,
@@ -2807,7 +2798,6 @@ class TasksMixin:
         if not self._conn.in_transaction:
             raise RuntimeError("task admission requires a writer transaction")
         self._guard_coding_task_mutation_uncommitted(task_id)
-        self._check_team_move_task_uncommitted(task_id)
         now = datetime.now(timezone.utc).isoformat()
         pending_generation = self._conn.execute(
             """SELECT 1 FROM authority_policy_v2_root_dispatch
@@ -2969,7 +2959,6 @@ class TasksMixin:
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            self._check_team_move_task_uncommitted(task_id)
             row = self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
             if row is None or (
                 row["status"] != TaskStatus.IN_PROGRESS.value
@@ -3184,8 +3173,6 @@ class TasksMixin:
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            self._check_team_move_task_uncommitted(parent_id, declared_chain=active_chain_json)
-            self._check_team_move_task_uncommitted(next_child)
             cursor = self._conn.execute(
                 """UPDATE tasks SET active_chain = ?
                    WHERE id = ? AND status = ? AND block_kind = ?
@@ -3349,7 +3336,6 @@ class TasksMixin:
         claimed_at: str, expires_at: str,
     ) -> bool:
         """Reuse original checks in a caller-owned admission transaction."""
-        self._check_team_move_task_uncommitted(task_id)
         task = self._conn.execute(
             "SELECT status, cancelled_at, assigned_agent, current_session_id "
             "FROM tasks WHERE id = ?", (task_id,)
@@ -4628,7 +4614,6 @@ class TasksMixin:
         now = _now().isoformat()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            self._check_team_move_task_uncommitted(task)
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
@@ -4923,8 +4908,6 @@ class TasksMixin:
                 task.orchestration_step_count, task.session_timeout_seconds,
                 task.task_type, task.active_fanout, task.current_session_id, None,
             )
-            self._check_team_move_task_uncommitted(original_id)
-            self._check_team_move_task_uncommitted(task)
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,

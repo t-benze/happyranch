@@ -909,18 +909,7 @@ class Orchestrator:
         from runtime.orchestrator.team_move import DeferredTeamMove
         invocation = current_invocation()
         with self._db._lock:
-            if invocation is None:
-                # Legacy direct callers have already assembled a prompt without
-                # preparation ownership. Never adopt it for an installed move
-                # layout; absent-layout ordinary operation remains supported.
-                from runtime.infrastructure.team_move_store import TeamMoveError, validate_team_move_schema
-                try:
-                    installed = validate_team_move_schema(self._db._conn, org_slug=self._slug)
-                except TeamMoveError as exc:
-                    raise DeferredTeamMove(exc.code) from exc
-                if installed:
-                    raise DeferredTeamMove("team_move_unowned_task_producer")
-            elif (invocation.task.id != task_id or invocation.agent != agent
+            if invocation is not None and (invocation.task.id != task_id or invocation.agent != agent
                   or invocation.move_reservation is None
                   or invocation.move_reservation.session_id != invocation.session_id):
                 raise DeferredTeamMove("team_move_task_identity_unavailable")

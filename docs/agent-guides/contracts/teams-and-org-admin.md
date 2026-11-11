@@ -84,16 +84,16 @@ original failure attribution or measured speed improvement.
 
 ## Founder-managed teams (THR296)
 
-Retained launch-admission hooks remain pending the later cleanup slice. C1
-binds task allocation/claim, preparation and final Pause/host exclusion, including
+Task allocation/claim and final launch no longer consult the move hold. Shared C1
+preparation and final Pause/host exclusion remain, including
 causal task/workflow ownership and permanent-ID retry metadata. Preparation lives
 through callback consumption and actual cleanup tails; unknown quiescence or
-failed callback cleanup remains reserved. Binding/root Pause -> move gate -> DB
-transaction -> terminal leaf; existing nested graph writers check durable hold
-under DB without acquiring move gate beneath it. Terminal settlement uses DB only.
-Move admission deferral propagates through the inner launch handler to the existing
+failed callback cleanup remains reserved. Binding/root Pause -> historical serialization gate -> DB
+transaction -> terminal leaf; nested graph writers retain their native transactions without a move-hold check.
+Terminal settlement uses DB only.
+Shared preparation refusals propagate through the inner launch handler to the existing
 pending-work owner without task failure, parent wake, followup or callback consumption.
-Malformed installed state retains its actionable admission error. Direct 429 and
+Frozen schema validation remains separate from task admission. Direct 429 and
 supervised passthrough retries preserve each returned uncertain attempt as a separate
 Pause journal/reservation blocker; the next actual attempt keeps the original retry
 budget, session and enqueue age and rechecks durable admission before FIFO/commit.

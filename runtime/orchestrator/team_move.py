@@ -111,6 +111,8 @@ class TaskPreparation:
 class TeamMoveCoordinator:
     """One org-owned task gate, composed with the existing Pause writer.
 
+    The class name is historical; shared Pause/preparation ownership remains.
+
     Task producer serialization: producer ownership/binding lease ->
     producer's root/Pause gate where applicable -> this synchronous gate -> DB
     RLock -> SQLite claim/intent transaction. The host terminal leaf mutex
@@ -436,7 +438,6 @@ class TeamMoveCoordinator:
                 raise DeferredTeamMove("team_move_task_held", row["operation_id"])
 
     def reserve_task_uncommitted(self, invocation: Any) -> TaskPreparation:
-        self.check_task_uncommitted(invocation.task)
         if self._task_execution_agent_uncommitted(invocation.task) != invocation.agent:
             raise DeferredTeamMove("team_move_task_identity_unavailable")
         prior = self._reservations.get(invocation.identity)
@@ -461,7 +462,6 @@ class TeamMoveCoordinator:
             raise DeferredTeamMove("team_move_task_owner_unavailable")
         if self._task_execution_agent_uncommitted(task) != reservation.identity.agent_id:
             raise DeferredTeamMove("team_move_task_identity_unavailable")
-        self.check_task_uncommitted(task)
 
     def retry_uncommitted(self, invocation: Any, unknown_owner: str) -> None:
         """After journal COMMIT, keep the returned attempt as a separate blocker.

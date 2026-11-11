@@ -49,8 +49,6 @@ class Dispatcher:
             org.orchestrator._team_moves.defer_task(task_id, metadata)
 
     def task_admission_allowed(self, slug: str, task_id: str, metadata: dict | None = None, *, attachment: OrgState | None = None) -> bool:
-        from runtime.orchestrator.team_move import DeferredTeamMove
-        from runtime.infrastructure.team_move_store import TeamMoveError
         try:
             org = attachment if attachment is not None else self._state.get_org(slug)
         except KeyError:
@@ -63,13 +61,6 @@ class Dispatcher:
             return org.workflow_sequential_dispatch.queue_admission_allowed(task_id)
         if (ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind.startswith('coding_')
                 or ownership.kind == 'reconciliation_required'):
-            return False
-        move = org.orchestrator._team_moves
-        try:
-            with move.gate, org.db._lock:
-                org.db._check_team_move_task_uncommitted(task_id)
-        except (DeferredTeamMove, TeamMoveError):
-            move.defer_task(task_id, metadata)
             return False
         return True
 
