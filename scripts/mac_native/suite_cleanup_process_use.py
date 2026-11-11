@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import ast
 import ctypes as ct
+import ctypes.util
 import errno
 import hashlib
 import importlib.util
@@ -161,7 +162,7 @@ def portable(rows: list, scratch: Path, deadline: float) -> None:
     except census.ProcessObservationUnavailable:
         checked = True
     check(rows, 'shared_checked_denial', True, checked, 'simulated ctypes EACCES')
-    with patch.object(ct, 'CDLL', side_effect=OSError('simulated unavailable')):
+    with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes.util, 'find_library', return_value='fixture-libproc'), patch.object(ct, 'CDLL', side_effect=OSError('simulated unavailable')):
         try:
             native._LibProc()
             unavailable = False
@@ -432,7 +433,8 @@ def run(report: dict) -> None:
             detail[kind] = {'state': value['state'], 'exit': code,
                 'hits': value['hits'][:4], 'reasons': value['reasons'][:4],
                 'lanes': value['coverage'].get('lanes'), 'stderr': stderr[:512]}
-            denied = [reason for reason in value['reasons'] if ':errno=1' in reason or ':errno=13' in reason]
+            denied = [reason for reason in value['reasons'] if ':errno=' in reason
+                      and reason.rsplit(':errno=', 1)[-1] in ('1', '13')]
             if denied:
                 detail['real_eperm'] = {'state': value['state'], 'causes': denied[:4], 'provenance': 'native kernel errno'}
             if kind != 'idle':
