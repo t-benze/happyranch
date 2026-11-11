@@ -2,7 +2,9 @@ package sidecar
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -15,6 +17,15 @@ type TSNetEngine struct{ server *tsnet.Server }
 
 func NewTSNetEngine() *TSNetEngine { return &TSNetEngine{} }
 func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []byte) (RedemptionReceipt, error) {
+	// Pinned tsnet falls back to ambient auth keys when AuthKey is empty.
+	// Refuse before constructing/starting it, in enrollment and restart alike.
+	// Also exclude forced login and the system-policy environment spelling;
+	// never mutate process-wide inputs or include their values in errors.
+	for _, name := range []string{"TS_AUTHKEY", "TS_AUTH_KEY", "TSNET_FORCE_LOGIN", "TS_DEBUGSYSPOLICY_AUTH_KEY"} {
+		if _, set := os.LookupEnv(name); set {
+			return RedemptionReceipt{}, fmt.Errorf("sidecar: unset %s; ambient tsnet authentication is forbidden", name)
+		}
+	}
 	e.server = &tsnet.Server{Dir: c.StateDir, Hostname: c.RoleIdentity, ControlURL: c.ControlURL, AuthKey: string(credential), Ephemeral: false}
 	if err := e.server.Start(); err != nil {
 		return RedemptionReceipt{}, ErrEngine
