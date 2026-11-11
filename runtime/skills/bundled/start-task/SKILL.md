@@ -1166,3 +1166,14 @@ U6/U7 remain required and Final success stays Held. Saved local records never
 authorize replay; failed/lost commands keep their original uncertainty after a
 separate MERGED read. Keep the sole original-task fence, ACCESS-1/shared-user/gh
 limits and original genuine FINAL callback/native settlement.
+
+
+Sequential Coding U6a supplies only inert complete/selected mixed-history reads.
+Exact historical task values and original INTEGER callback identities confer no
+current authority, settlement, retry, cancellation or effect-clearance grant.
+U6b still owns mixed cancellation/native-tail attachment; U5b2b2 callback
+validation/mount and U7 transport remain. Existing mixed cancellation refusal,
+original budgets/uncertainty/Pause generation and genuine FINAL callback contract
+are unchanged. Do not invent a command or treat launcher TERM/INT, ended SID,
+missing PID/control or successful Stop request as product cancellation/cleanup.
+See docs/superpowers/specs/2026-11-11-sequential-coding-u6.md.

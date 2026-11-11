@@ -933,3 +933,16 @@ zero new proof serializations, matching B. No reset/refund or protected fragment
 change follows; NEW uncharged work beyond F-U3f-AUTH/ENTRY/MOVE requires STOP.
 See [the current contract](reusable-workflows.md#u3f--u5a-document-witnesses-and-addressed-delivery)
 and [U3f source record](../../superpowers/specs/2026-11-09-sequential-document-witness-u3f.md).
+
+
+## U6a history inventory and native ownership
+
+The inert mixed-history reader may observe native task rows and original INTEGER
+callback identities through terminal dependency paths; it never clears Pause,
+prepared/running/unknown execution, effect receipts or original budgets. No
+root-tail or Stop producer consumes it yet. Existing direct selected cancellation
+keeps audit/CAS COMMIT before opaque controls outside locks; mixed ancestor
+cancellation still refuses. U6b must compose native root-tail consumers before
+attachment. Ended SID, missing PID, launcher TERM/INT and successful Stop request
+remain insufficient settlement/cancellation proof. See the
+[U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).

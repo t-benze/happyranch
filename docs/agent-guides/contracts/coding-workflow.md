@@ -2402,3 +2402,16 @@ reselection and independent remote records. U5b2b2 callback/history/Held/cancell
 validation and mount, U6 mixed history and U7 transport remain implementation.
 Sequential Final success stays Held. This supplies no daemon PR I/O or new
 credential, permission, live operation or native settlement authority.
+
+
+### Sequential U6a history reader boundary
+
+U6a adds only explicit complete/selected mixed native/ownership history reads,
+including terminal dependency paths and exact INTEGER callback identities under
+original D2 work/deadline limits. Historical Coding cancellation/return and
+document readers are unchanged. No current roster/access or callback/native
+settlement entitlement follows. U6b mixed cancellation/native-tail producers,
+U5b2b2 original callback-observation validation/mount and U7 transport remain
+implementation remainder; sequential Final success stays Held. Pause generation
+and original receipt-recording uncertainty remain unchanged.
+[U6 specification](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
