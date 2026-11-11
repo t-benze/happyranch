@@ -6,6 +6,7 @@ from pathlib import Path
 
 from runtime.config import Settings
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.agent_def import validate_repo_key
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
@@ -86,6 +87,7 @@ class ContextBuilder:
 
     def clone_repo(self, workspace: Path, name: str, url: str) -> bool:
         """Clone a repo into workspace/repos/<name>/. Returns True on success."""
+        validate_repo_key(name)
         repo_dir = workspace / "repos" / name
         if repo_dir.exists() and (repo_dir / ".git").exists():
             logger.info("Repo already cloned at %s, pulling latest", repo_dir)

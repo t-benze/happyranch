@@ -98,11 +98,18 @@ def _artifact_key(slug: str, content: str) -> str:
 
 def _write_artifact(org, key: str, content: str) -> None:
     """Persist the content artifact. On failure, remove any partial residue."""
-    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifactName
     from runtime.orchestrator._paths import OrgPaths
     store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
     try:
         store.put(key, content.encode())
+    except InvalidArtifactName as exc:
+        # Validation/collision refusal wrote no artifact. In particular, never
+        # compensate by deleting the pre-existing differently-spelled alias.
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_artifact_name", "name": key, "message": str(exc)},
+        ) from exc
     except Exception:
         _remove_artifact_from_store(store, key)
         raise
