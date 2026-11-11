@@ -48,10 +48,14 @@ The next run does not sweep previous scratch. Jenkins retains 20 builds/30 days.
 reader writes only that many bytes and checks one extra byte: exceeding the
 cap fails the build nonzero and closes the pipe. This also bounds checkout
 command output without imposing a file-size limit on Git's fetched packfiles.
-The Python probe additionally inherits `ulimit -f 4096`, limiting each regular
-file it writes, including `probe.json`, to at most 4 MiB (2 MiB on shells using
-512-byte blocks; 4 MiB with 1024-byte blocks). A file-size-limit signal or write
-error fails the build nonzero; the probe cannot expand a log past the pipe cap.
+The dependency bootstrap and Python probe share `ulimit -f 32768`: each regular
+file, including `probe.json`, is limited to 32 MiB (33,554,432 bytes). This job
+runs `#!/bin/bash -p`, not POSIX mode, so `-f` uses 1024-byte units. Apple's
+[Bash 3.2 implementation](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/ulimit.def)
+sets the file-size block factor to 1024; a local Bash 5.3.9 `ulimit -f 1`
+probe reported `RLIMIT_FSIZE=(1024,1024)`. Native confirmation remains separate.
+A file-size-limit signal or write error fails nonzero. The 4 MiB log pipe caps
+remain independent of this per-file allowance.
 
 `identity.txt` is capped at 64 KiB (65,536 bytes), including cleanup. Its producer
 uses the same pipe reader with a 65,514-byte cap, reserving 22 bytes for the
@@ -76,6 +80,48 @@ console copy, marker write or console-reader failure turns an otherwise
 successful run into a failure without replacing an existing nonzero exit code.
 Catchable interruption retains the existing INT=130 and TERM/HUP=143 statuses.
 
+## Private dependency bootstrap
+
+After immutable checkout and identity capture, every suite uses a private venv
+created with `python3 -I -B -m venv --without-pip`. The job requires regular
+CPython 3.14 on macOS arm64; it refuses other interpreters and free-threaded
+builds. A stdlib-only installer reads the **checked-out** `uv.lock`. Its finite
+package set is the 18-package import closure measured for `cleanup-helpers`:
+annotated-doc, annotated-types, anyio, click, fastapi, pydantic, pydantic-core,
+pydantic-settings, python-dateutil, python-dotenv, python-multipart, pyyaml, six,
+sse-starlette, starlette, typing-extensions, typing-inspection, uvicorn. This is
+an import set, not a resolved runtime environment: it supplies no optional
+extras, command entry points or unimported metadata dependencies. A future suite
+with new imports needs a reviewed set update. The pinned dispatcher still owns
+suite validation; the bootstrap does not add suites.
+
+Versions, artifact URLs, SHA256 hashes and exact byte sizes come solely from
+that checkout's lock. Exactly one locked package per name is required. Selection
+admits `cp314-cp314`, compatible older `cp3*-abi3` macOS arm64/universal2 wheels
+whose deployment target fits the host, or `py3-none-any` wheels. No sdist, index
+lookup, dependency resolution, pip, uv or ensurepip is used. Direct HTTPS to
+`files.pythonhosted.org` is required; ambient proxies and redirects are refused.
+Every download must match the locked size and SHA256 before ZIP contents are used.
+
+Limits are 16 MiB per wheel, 64 MiB total downloads, 128 MiB total extracted
+payload, 32 MiB per extracted file and 20,000 ZIP members total. A 300-second
+alarm/deadline covers selection, venv creation, download, validation and
+extraction inside the unchanged 30-minute job timeout; network reads also have
+at most 20 seconds each. Missing/incompatible artifacts, network errors, hash,
+size or cap violations, unsafe ZIP names (absolute/`..`/ambiguous paths), links,
+special files, duplicate destinations and unsupported wheel data schemes fail
+closed with a diagnostic and nonzero exit. Only ordinary files/directories are
+accepted; `.data/purelib` and `.data/platlib` relocate into the private site.
+
+All venv/wheel/temp files live under the existing build scratch. `HOME`,
+`XDG_CACHE_HOME`, `TMPDIR`, `PYTHONUSERBASE` and pip cache paths point there;
+`PYTHONNOUSERSITE=1`, bytecode writes are disabled and inherited `PYTHONPATH` /
+`PYTHONHOME` are unset. No host, Homebrew, user-site or original `~/.cache`
+installation occurs. Verified archives are removed after extraction. Bootstrap
+output uses the existing capped probe/build/console streams; the existing EXIT
+trap removes scratch, including partial bootstrap files, and records its receipt.
+The live job must be updated only after independent review, QA and merge.
+
 ## Probe contract
 
 From a checkout, using an existing Python 3.12–3.14 interpreter:
@@ -90,7 +136,8 @@ JSON goes to stdout and the optional output path;
 human observations go to stderr. Linux prints `darwin-only`, emits skipped
 JSON and exits 0. Darwin findings, including a broken repo decoder or unavailable
 mount API, are data. Internal exceptions, incomplete process-tree cleanup and
-output errors exit nonzero. There are no third-party Python dependencies.
+output errors exit nonzero. The original suites import stdlib only; the job
+now supplies the private dependency set above for later authorized suites.
 
 The probe imports the pinned checkout's `_LibProc._ProcBsdinfo` when possible;
 otherwise it explicitly labels a byte-identical copy of the S0 base decoder
