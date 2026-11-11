@@ -166,9 +166,16 @@ copyright file points there and to the system Apache-2.0 common license.
 Debian version mapping is deliberately explicit: dotted numeric releases stay
 unchanged, `aN`/`bN`/`rcN` become `~aN`/`~bN`/`~rcN`, `.postN` becomes
 `+postN`, and `.devN` becomes `~devN` (after any preceding suffix). The packaging
-revision is `-1`. Thus `0.1.0` → `0.1.0-1`, `1.2.3rc1` → `1.2.3~rc1-1`,
+revision defaults to `-1`. Thus `0.1.0` → `0.1.0-1`, `1.2.3rc1` → `1.2.3~rc1-1`,
 `1.2.3.dev2` → `1.2.3~dev2-1`, and `1.2.3.post1` → `1.2.3+post1-1`.
 Other version forms require an explicit mapping review and are refused.
+For a packaging-only update of the same payload, pass `--debian-revision 2`
+(a positive integer without leading zeros). This produces `0.1.0-2` alongside
+`0.1.0-1`, updates control/changelog/filename consistently, and leaves the
+payload's upstream version/build-info unchanged. Never reuse an already published
+version/architecture for different bytes. The manual workflow uses revision 1;
+download its intermediate payload and use this option locally for a packaging
+revision. No workflow trigger or signing automation is added.
 
 ### Installed layout and connector separation
 
@@ -235,9 +242,158 @@ sudo apt remove happyranch
 sudo apt install ./happyranch_0.1.0-1_amd64.deb
 ```
 
-For arm64 use `happyranch_<debversion>_arm64.deb`. These local .deb commands
-precede the later founder-signed apt repository/signing work; no key handling
-or repository publication is part of this builder.
+For arm64 use `happyranch_<debversion>_arm64.deb`. Local .deb installation needs
+no HappyRanch apt source or archive key. The package deliberately ships neither
+a sources entry nor an archive keyring, and has no maintainer scripts to manage
+them. Source enrollment is an explicit user action below; removal/purge leaves
+that separately managed enrollment alone.
+
+## Prepare, externally sign and publish the apt archive
+
+The founder alone holds the real GPG signing key and publishes the Pages tree.
+Agents/build hosts must never receive it. `build-apt-repo.py` uses system Python
+3.10+ stdlib, `dpkg-deb`, `dpkg-scanpackages` (Debian/Ubuntu `dpkg-dev`) and `gpgv`.
+It invokes no `gpg`, imports no key, consults no user GPG home and has no signing
+or key-generation mode. `dpkg-scanpackages --multiversion` supplies real Debian
+metadata/checksums while retaining earlier package versions; it avoids requiring
+`apt-utils` merely for index generation. `gzip` output is deterministic.
+
+Run these stages on an unpublished local staging tree, with no concurrent
+prepare/finalize or writers. Never prepare directly in the served tree. A failed
+prepare/finalize is not publishable; resolve the error and repeat the applicable
+stage. Preserve the prior published snapshot until the founder replaces it with
+the complete successfully finalized directory.
+
+1. Dispatch the existing approved workflow **once on reviewed main**, then
+   record its run ID, full source SHA and both matrix conclusions. Download each
+   successful row's artifact; record the `.deb` SHA256 and verify the intermediate
+   payload's supplied checksum. The commands below use placeholders for that
+   actual run ID and artifact names; they do not add a workflow or trigger.
+
+   ```sh
+   gh workflow run build-linux-app.yml --ref main
+   gh run view RUN_ID --json headSha,status,conclusion,jobs
+   gh run download RUN_ID --name happyranch-linux-x86_64-RUN_ID-1 --dir /absolute/artifacts/amd64
+   gh run download RUN_ID --name happyranch-linux-aarch64-RUN_ID-1 --dir /absolute/artifacts/arm64
+   sha256sum /absolute/artifacts/amd64/*.deb /absolute/artifacts/arm64/*.deb
+   ```
+
+2. Prepare with one or more `.deb` files. Keep the existing tree for subsequent
+   versions; the pool is retained and all indexes regenerated. A repeated input
+   is idempotent, including Release Date when indexes are unchanged. Replacing
+   an existing version/architecture with different bytes is refused.
+
+   ```sh
+   /usr/bin/python3 -B packaging/linux/build-apt-repo.py prepare --repo-dir /absolute/apt-repo /absolute/artifacts/amd64/happyranch_0.1.0-1_amd64.deb /absolute/artifacts/arm64/happyranch_0.1.0-1_arm64.deb
+   ```
+
+   The tree contains `pool/main/h/happyranch/*.deb`,
+   `dists/stable/main/binary-{amd64,arm64}/Packages` and `Packages.gz`, and
+   `dists/stable/Release` with Origin/Label HappyRanch, Suite/Codename stable,
+   Architectures amd64/arm64, Components main, UTC Date and MD5Sum/SHA256 for
+   all four indexes. An empty architecture index is valid until its package is
+   added. **Valid-Until is omitted:** this manually published static archive
+   remains installable between releases, at the cost of no expiry-based replay
+   protection. The founder must distribute fresh versions and communicate key
+   changes through a trusted channel. Every prepare removes stale InRelease and
+   Release.gpg, even for unchanged inputs; sign again before publishing.
+
+3. Transfer the unsigned Release to the founder's own signing environment.
+   The tool prints the exact Release path, SHA256 and the following two commands.
+   The founder verifies those bytes, sets `SIGNING_KEY` to their signing-key
+   fingerprint and runs the commands themselves. If signing on another machine,
+   use the corresponding transferred Release path, and return only signatures
+   and the public export to the build host. Do not modify Release after signing.
+
+   ```sh
+   gpg --local-user "$SIGNING_KEY" --output /absolute/apt-repo/dists/stable/InRelease --clearsign /absolute/apt-repo/dists/stable/Release
+   gpg --local-user "$SIGNING_KEY" --output /absolute/apt-repo/dists/stable/Release.gpg -abs /absolute/apt-repo/dists/stable/Release
+   # Public certificate only; never export-secret-keys:
+   gpg --export "$SIGNING_KEY" > /absolute/founder-public.gpg
+   ```
+
+4. Finalize with both external signatures and the founder-supplied public
+   export (binary or ASCII PUBLIC KEY BLOCK). The tool dearmors public armor
+   without importing it, rejects non-public certificate packet types, and uses
+   `gpgv` with an isolated temporary public keyring. Both signatures must verify;
+   InRelease's extracted bytes must equal Release exactly. The current indexes
+   must equal a fresh scan of the pool and Release must cover their checksums.
+   Missing/bad signatures, a changed Release, index or package fail closed.
+
+   ```sh
+   /usr/bin/python3 -B packaging/linux/build-apt-repo.py finalize --repo-dir /absolute/apt-repo --inrelease /absolute/apt-repo/dists/stable/InRelease --release-gpg /absolute/apt-repo/dists/stable/Release.gpg --public-key /absolute/founder-public.gpg
+   ```
+
+   Success copies the verified signatures and publishes the dearmored **public**
+   `happyranch-archive-keyring.gpg` inside the local tree. It does not upload or
+   push anything. The supplied public key's identity/fingerprint must be checked
+   with the founder separately; mathematical verification alone does not identify
+   the founder. The builder does not discover keys or choose a signing identity.
+
+5. **Founder only:** fill the clearly marked Pages URL in the generated
+   `README.txt`, inspect it and `index.html`, then publish the entire finalized
+   tree to the founder's GitHub Pages static site. `.nojekyll` is included.
+   This runbook/tool creates no Pages site, branch, release, publishing workflow,
+   job or required check. Pages setup and the real public URL remain founder work.
+   Keep the pool's old versions when adding N+1, and repeat prepare → external
+   sign → finalize → founder publication. Publish a complete snapshot so clients
+   do not fetch indexes from a different release.
+
+Focused tests use real dpkg/GPG tools and a throwaway key generated **inside the
+test only** under a temporary GNUPGHOME; no real key is used:
+
+```sh
+/usr/bin/python3 -B packaging/linux/test_build_apt_repo.py -v
+/usr/bin/python3 -B packaging/linux/test_build_deb.py -v
+```
+
+### User installation and updates from Pages
+
+**Placeholder:** the founder must replace
+`https://FOUNDER-SET-OWNER.github.io/FOUNDER-SET-REPOSITORY` with the actual
+published archive URL. Do not run these placeholder commands unchanged.
+Obtain the public certificate and its fingerprint from the founder through a
+trusted channel. Compare the fingerprint before enrolling the key:
+
+```sh
+curl -fsSLo happyranch-archive-keyring.gpg https://FOUNDER-SET-OWNER.github.io/FOUNDER-SET-REPOSITORY/happyranch-archive-keyring.gpg
+gpg --show-keys --with-fingerprint happyranch-archive-keyring.gpg
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo install -m 0644 happyranch-archive-keyring.gpg /etc/apt/keyrings/happyranch-archive-keyring.gpg
+```
+
+Create `/etc/apt/sources.list.d/happyranch.sources` with:
+
+```text
+Types: deb
+URIs: https://FOUNDER-SET-OWNER.github.io/FOUNDER-SET-REPOSITORY
+Suites: stable
+Components: main
+Architectures: amd64 arm64
+Signed-By: /etc/apt/keyrings/happyranch-archive-keyring.gpg
+```
+
+`Signed-By` limits this key to the HappyRanch source. Do not use `apt-key`,
+`trusted=yes` or insecure-repository overrides. `/usr/share/keyrings` is also
+supported, but this runbook uses `/etc/apt/keyrings` for manual enrollment.
+
+```sh
+sudo apt update
+sudo apt install happyranch
+happyranch-app
+# Or select HappyRanch from the applications menu.
+# Quit the app first, then update it along with the system:
+sudo apt update
+sudo apt upgrade
+# Quit before removal; user data remains even on purge:
+sudo apt remove happyranch
+# Optional: remove package configuration too:
+sudo apt purge happyranch
+# Unenroll the separately managed source/key when no longer wanted:
+sudo rm /etc/apt/sources.list.d/happyranch.sources
+sudo rm /etc/apt/keyrings/happyranch-archive-keyring.gpg
+sudo apt update
+```
 
 ### Lintian review
 

@@ -22,7 +22,10 @@ import tempfile
 parser = argparse.ArgumentParser(description='Build a desktop .deb from a Linux payload tarball.')
 parser.add_argument('payload', type=Path)
 parser.add_argument('--dist-dir', type=Path, help='literal absolute output directory (default: beside payload)')
+parser.add_argument('--debian-revision', default='1', help='positive integer packaging revision (default: 1)')
 args = parser.parse_args()
+if re.fullmatch(r'[1-9][0-9]*', args.debian_revision) is None:
+    parser.error('--debian-revision must be a positive integer without leading zeros')
 if not shutil.which('dpkg-deb'):
     parser.error('dpkg-deb is required')
 dist = args.dist_dir if args.dist_dir is not None else args.payload.absolute().parent
@@ -73,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
             parser.error('unsupported version; review Debian mapping before release')
         release, pre, pre_number, post, dev = match.groups()
         debversion = release + (f'~{pre}{pre_number}' if pre else '')
-        debversion += (f'+post{post}' if post else '') + (f'~dev{dev}' if dev else '') + '-1'
+        debversion += (f'+post{post}' if post else '') + (f'~dev{dev}' if dev else '') + '-' + args.debian_revision
         if root != f'happyranch-{version}-linux-{info["arch"]}':
             parser.error('payload directory disagrees with build-info')
         subprocess.run(['dpkg', '--validate-version', debversion], check=True)
