@@ -93,12 +93,43 @@ Suite time is240s with10s reserved for owned-child release/TERM/KILL/reap/absenc
 and fixture disposal,64KiB command stream and32KiB report limits. Missing tools,
 imports, native observations or cleanup remain visible. Exactly18 locked wheels
 in an isolated --without-pip venv are a pre-submit closure gate; no new dependency,
-job or bootstrap change follows. No native build is submitted by the maker; PR1
-uses execution1, PR2 execution2, execution3 stays reserved, budget0/3 until actual
-manager submission. Review, scoped QA, exact-head lint and guarded merge remain.
+job or bootstrap change follows. PR1 used1/3 (build14); PR2 is execution2 and
+execution3 remains held for a diagnosed failure. This source change submits no
+build. Review, scoped QA, exact-head lint and guarded merge remain.
 Python units are retired; general integration is SKIPPED THR-243 seq42. No ad hoc
 Product E2E. Static/source/simulated evidence never becomes native/frozen proof.
 
-S4c will extend this same suite with scratch evidence/coverage/report and existing
-root consumer routing, preserving all-PID scope and existing budgets. Neither
-cleanup_diagnostics nor nightly disk-sweeper process policy changes here.
+## S4c scratch and existing consumers
+
+The same suite now includes scratch evidence, coverage and report observations.
+The shared leaf's explicit `all_pids=True` mode is used only by scratch; its
+same-user worktree default and receipt shape remain unchanged. Every PID's
+strict native identity/reference reads use the caller's remaining five-second
+budget, with 10,000 PID/fd limits and no nested deadline refill. Kernel
+`kern.bootsessionuuid` brackets collection; final PID/start comparisons use the
+same shared reader. EPERM/EACCES and incomplete lanes produce null counts and
+retain. Public negative region coverage remains unestablished, so even a readable
+idle host cannot currently establish global scratch clearance. Known cwd/fd use
+is retained in reasons despite incomplete measurement. No UID filter, exemption,
+privilege or new loader is introduced.
+
+Coverage supports Darwin boot identity and the existing workspace partition,
+keeping every no-follow/device/manifest/read/byte/entry/deadline/coherence gate.
+Default `/proc` arguments select the native host route on Darwin; explicit
+nondefault procfs fixtures retain Linux behavior and API/output shapes. The
+coordinator therefore needs no new platform route or report schema. Daemon
+compatibility aliases retain module/type identity. Unsupported platforms refuse
+the reclamation consumer before collectors. Its former dormant/test-only prose
+is corrected: run_step's pre-agent caller is real, conditional and disabled by
+default; ordinal/owner/claim and stack-local ledger binding are unchanged.
+
+Native `scratch_cwd_retain`, `scratch_fd_retain`, `scratch_idle_or_denied` and
+`native_root_unknown_retains` extend all PR1 rows. Synthetic all-PID/different-UID,
+EPERM, boot-mismatch, coverage-change, final identity/deadline and Linux fixture
+rows run through the real collectors/report/audit APIs on disposable state.
+The root row supplies actual shared scanner UNKNOWN to the real root consumer,
+isolating prior owner/Git facts at a recorded command boundary with a removal
+sentinel. It never runs a candidate runner or enables reclamation. Real kernel
+EPERM evidence is separate from simulated errno and may be NOT OBSERVED.
+Frozen-app acceptance remains NOT RUN. Neither cleanup_diagnostics nor nightly
+disk-sweeper process policy changes here.

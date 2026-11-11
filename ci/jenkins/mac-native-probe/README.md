@@ -450,8 +450,9 @@ and Product E2E require their separately owned evidence.
 ## S4 cleanup-process-use suite
 
 `scripts/mac_native/suite_cleanup_process_use.py` owns the one extensible S4
-suite, registered as `cleanup-process-use`. PR2 adds scratch routing to this same
-module. It needs only stdlib in addition to the unchanged locked 18-wheel job
+suite, registered as `cleanup-process-use`. PR2 extends this same module with
+scratch/report and existing root consumers. It needs only stdlib in addition to
+the unchanged locked 18-wheel job
 bootstrap; no job parameters, dependencies, host tools or timeout change.
 
 | Rows | Boundary and required outcome |
@@ -463,6 +464,9 @@ bootstrap; no job parameters, dependencies, host tools or timeout change.
 | Simulated EPERM / short / cap / churn / reuse / renamed inode (including unavailable path) / deadline | Test-side libproc/sysctl buffer/errno fixtures exercise shipping reader/scanner decisions. Known dev/inode inventory hits must still BLOCK when vn_getpath supplies an empty path; unresolved negatives retain UNKNOWN. These are not native permission proof. |
 | Real EPERM | Actual kernel errno/PID evidence if observed; otherwise explicitly NOT OBSERVED. No host exemption or elevation. |
 | Darwin receipt schema | Complete schema accepts, wrong platform/missing or incomplete lane/Boolean counters refuse; schema fixtures are not authenticated-job proof. |
+| Scratch cwd/fd and idle | Shipping producer/database APIs seed disposable manifested scratch. Owned native children hold cwd/fd; reports must retain known references with zero actual reclamation. Idle requires complete global evidence for measured zero; denied/incomplete lanes retain with null counts. |
+| Scratch simulated all-PID / boot / coverage / aliases / deadline / Linux fixtures | Different-UID syscall buffers prove scratch never adopts the worktree UID filter. Denial yields null counts and no consumer execution; mismatched boot and changing coverage refuse. Explicit procfs fixtures retain Linux results on Darwin; aliases preserve module/type identity. Simulated rows are not native evidence. |
+| Root UNKNOWN | Actual shared scanner output reaches the real root consumer through recorded commands with a removal sentinel; prior owner/Git gates are isolated. UNKNOWN must reach the process gate and issue no remove command. |
 | Observer / protected mounts / snapshot / preserved | Shipping read-only commands and metadata API, no findmnt/procfs fabrication. Offline preservation refuses at its remote-history gate. The observer with stripped binding fields must refuse with exactly `scope_or_marker_unset` after host collection, without a binding or owner receipt; this is missing-binding coverage, not owner-check acceptance. Snapshot/protected host evidence is checked separately. |
 
 The approved preview proves individual observation gates only. Idle `eligible`
@@ -470,7 +474,9 @@ at the candidate-runner boundary is **not proven**. Never invoke candidate
 cleanup or `observe ... run` as a dry-run. Source-native acceptance and real
 EPERM observation are separate from simulated evidence. Frozen-app acceptance
 is **NOT RUN/out of S4**; external PATH python3 remains the installed skill's
-existing prerequisite. Scratch all-PID collectors are PR2, with EPERM retaining.
+existing prerequisite. Scratch remains all-PID, with EPERM and incomplete public
+region evidence retaining. The source suite does not enable reclamation or
+create tasks/jobs in a live org.
 
 From an existing checkout/interpreter, portable fixtures (including synthetic
 native syscall buffers) can run in under one minute without pytest:
@@ -487,5 +493,5 @@ reserved 10s owned-child cleanup window; command streams retain at most64KiB,
 report at most32KiB. Children are released, TERM/KILL if needed, reaped and group
 absence verified before fixture disposal; cleanup uncertainty exits nonzero.
 Admitted kernel I/O is not hard-preemptible. Native execution is a separate
-manager-owned leg: S4 budget starts 0/3, PR1 execution1, PR2 execution2, one
-reserved correction; source changes never replenish or submit that budget.
+manager-owned leg: PR1 used1/3 (build14), PR2 receives execution2, one
+held diagnosed correction; source changes never replenish or submit that budget.

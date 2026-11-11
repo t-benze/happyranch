@@ -4,9 +4,11 @@ from __future__ import annotations
 import os
 import json
 import re
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 from runtime.models import JobStatus, TaskStatus
@@ -32,7 +34,7 @@ class TaskScratchEvidence:
 
 @dataclass(frozen=True)
 class _EvidenceObservation:
-    """Private typed companion for the dormant consumer.
+    """Private typed companion for the conditional, default-disabled consumer.
 
     This deliberately retains the collector's existing durable snapshot rather
     than promoting it into the report/API shape.
@@ -49,6 +51,33 @@ def _under(value: str, root: Path) -> bool:
 
 
 def _expired(deadline: int) -> bool: return time.monotonic_ns() > deadline
+
+
+def _darwin(proc: Path) -> bool:
+    # Explicit procfs fixture roots retain the existing Linux contract.
+    return sys.platform == "darwin" and proc == Path("/proc")
+
+
+def _native() -> ModuleType:
+    # Reuse the census's fixed shared leaf/module identity; never load libproc
+    # independently or inherit the sampling reader's permissive shortcuts.
+    from runtime.platform.process_census import _native as native
+    return native
+
+
+def _admit_native(deadline: int) -> None:
+    if _expired(deadline):
+        raise RuntimeError("process_scan_timeout")
+
+
+def _darwin_identities(deadline: int) -> tuple[tuple[str, str], ...]:
+    try:
+        native = _native()
+        reader = native.DarwinReader(lambda: _admit_native(deadline))
+        return tuple(sorted((str(pid), reader.identity(pid)[1])
+                            for pid in reader.population(MAX_PROCESSES)))
+    except Exception as exc:
+        raise RuntimeError("process_identity_unavailable") from exc
 
 
 def _pid_start(entry: Path) -> str:
@@ -82,6 +111,32 @@ def _population(proc: Path, deadline: int) -> list[Path] | None:
 
 
 def _scan(proc: Path, root: Path, deadline: int) -> tuple[int | None, int | None, int | None, set[str], tuple[tuple[str, str], ...] | None]:
+    if _darwin(proc):
+        from types import SimpleNamespace
+        reasons: set[str] = set()
+        try:
+            _admit_native(deadline)
+            native = _native()
+            info = root.lstat()
+            started = time.monotonic()
+            bounds = SimpleNamespace(max_pids=MAX_PROCESSES, max_fds=MAX_FDS_PER_PROCESS,
+                max_threads=256, max_maps_lines=10_000, max_maps_bytes=4 * 1024 * 1024,
+                max_enum_passes=6, deadline_seconds=deadline / 1e9 - started)
+            observed = native.scan_paths({str(root): (info.st_dev, info.st_ino)}, bounds,
+                agent_uid=os.getuid(), started=started, all_pids=True)
+            names = {"root": "process_root_reference", "cwd": "process_cwd_reference",
+                     "fd": "open_fd_reference"}
+            reasons.update(names.get(hit["kind"], "process_reference") for hit in observed["hits"])
+            counts = observed["reference_counts"]
+            if counts is None:
+                reasons.add("process_scan_unavailable")
+                reasons.update(observed["reasons"][:8])
+                return None, None, None, reasons, None
+            _admit_native(deadline)
+            return counts["root"], counts["cwd"], counts["fd"], reasons, observed["process_identities"]
+        except Exception:
+            reasons.add("process_scan_unavailable")
+            return None, None, None, reasons, None
     entries = _population(proc, deadline)
     if entries is None: return None, None, None, {"process_scan_unavailable"}, None
     roots = cwds = fds = 0; reasons: set[str] = set(); identities: list[tuple[str, str]] = []
@@ -182,7 +237,7 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
             try:
                 result = db.get_latest_task_result(task.id, task.assigned_agent, task.current_session_id)
                 # The report deliberately keeps no result payload.  The
-                # dormant consumer needs this existing typed read, however:
+                # conditional consumer needs this existing typed read, however:
                 # ``None`` must not be silently promoted into a private
                 # consumption permit.
                 out.append(("result", task.id, repr(result), result))
@@ -246,6 +301,11 @@ def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, tas
     deadline = time.monotonic_ns() + SCAN_NS
     def boot() -> str | None:
         if _expired(deadline): reasons.add("observation_timeout"); return None
+        if _darwin(proc_root):
+            try:
+                return _native().boot_uuid(lambda: _admit_native(deadline))
+            except Exception:
+                reasons.add("boot_id_unavailable"); return None
         try:
             value = (proc_root / "sys/kernel/random/boot_id").read_text().strip()
             if not _BOOT_UUID.fullmatch(value):
@@ -263,12 +323,12 @@ def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, tas
     if before != after: reasons.add("durable_state_changed_during_collection")
     if _expired(deadline): reasons.add("observation_timeout")
     elif sessions_before != tuple(sorted(sessions.iter_active())): reasons.add("sessions_changed_during_collection")
-    population = _population(proc_root, deadline)
+    population = [] if _darwin(proc_root) else _population(proc_root, deadline)
     final_identities: list[tuple[str, str]] | None = None
     if identities is None or population is None: reasons.add("process_population_unavailable")
     else:
         try:
-            final_identities = []
+            final_identities = list(_darwin_identities(deadline)) if _darwin(proc_root) else []
             for entry in population:
                 if _expired(deadline): raise RuntimeError("process_scan_timeout")
                 final_identities.append((entry.name, _pid_start(entry)))
@@ -325,8 +385,8 @@ def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, tas
 def _collect_private_evidence(**kwargs: object) -> _EvidenceObservation:
     """Return a fresh private binding without changing the public result.
 
-    The extra snapshot is bounded by the same collector limits and is used only
-    by the production-unreferenced synchronous test consumer.
+    The private snapshot is bounded by the same collector limits and is used only
+    by the conditional, default-disabled pre-agent consumer.
     """
     value = collect_task_scratch_evidence(**kwargs, _private=True)  # type: ignore[arg-type]
     assert isinstance(value, _EvidenceObservation)

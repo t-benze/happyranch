@@ -623,8 +623,9 @@ def parse_mount_table(text: str) -> list[dict]:
 
 
 def scan_paths(roots: dict[str, tuple[int, int]], bounds: Any, *, agent_uid: int,
-               clock: Callable[[], float] = time.monotonic, started: float | None = None) -> dict:
-    """Bounded same-user observation; known use dominates every uncertainty.
+               clock: Callable[[], float] = time.monotonic, started: float | None = None,
+               all_pids: bool = False) -> dict:
+    """Bounded observation; scratch explicitly requires the entire PID population.
 
     Null public region vnodes cannot distinguish anonymous memory from lost
     backing-vnode acquisition. Such negatives deliberately remain UNKNOWN.
@@ -639,6 +640,7 @@ def scan_paths(roots: dict[str, tuple[int, int]], bounds: Any, *, agent_uid: int
                 'total_pids': 0, 'same_user': 0, 'root': 0, 'other_user': 0,
                 'scanned': 0, 'enum_passes': 0, 'lanes': lanes}
     identities = {}
+    references_seen = {key: set() for key in ('root', 'cwd', 'fd')}
     inventory = dict((identity, root) for root, identity in roots.items())
     mounts = set()
     snapshots = {}
@@ -684,7 +686,8 @@ def scan_paths(roots: dict[str, tuple[int, int]], bounds: Any, *, agent_uid: int
                                 raise ProcessObservationUnavailable('candidate_inventory_cap')
                             stack.append(entry.path)
 
-    def match(pid: int, kind: str, node: VnodePath, *, optional: bool = False) -> tuple | None:
+    def match(pid: int, kind: str, node: VnodePath, *, optional: bool = False,
+              reference: int | None = None) -> tuple | None:
         admit()
         identity = decode_vnode(node, optional=optional)
         if identity is None:
@@ -708,6 +711,8 @@ def scan_paths(roots: dict[str, tuple[int, int]], bounds: Any, *, agent_uid: int
         except OSError:
             agrees = False
         if matched or (agrees and (lexical or beneath)):
+            if kind in references_seen:
+                references_seen[kind].add((pid, reference))
             if len(hits) < 64:
                 hits.append({'pid': str(pid), 'kind': kind, 'path': path,
                              'dev_ino': list(identity), 'candidate_path': matched})
@@ -734,11 +739,11 @@ def scan_paths(roots: dict[str, tuple[int, int]], bounds: Any, *, agent_uid: int
                     for fd, kind in before:
                         admit()
                         if kind == 1:
-                            observed.append((fd, match(pid, 'fd', reader.fd_path(pid, fd).vnode)))
+                            observed.append((fd, match(pid, 'fd', reader.fd_path(pid, fd).vnode, reference=fd)))
                     if before != frontier():
                         raise ProcessObservationUnavailable('fd_churn')
                     for fd, identity in observed:
-                        if identity != match(pid, 'fd', reader.fd_path(pid, fd).vnode):
+                        if identity != match(pid, 'fd', reader.fd_path(pid, fd).vnode, reference=fd):
                             raise ProcessObservationUnavailable('fd_reuse')
                 elif lane == 'text':
                     path = reader.executable(pid)
@@ -792,11 +797,12 @@ def scan_paths(roots: dict[str, tuple[int, int]], bounds: Any, *, agent_uid: int
 
     try:
         admit()
-        if (agent_uid == 0 or any(type(v) is not int or v <= 0 for v in (
+        if ((agent_uid == 0 and not all_pids) or any(type(v) is not int or v <= 0 for v in (
                 bounds.max_pids, bounds.max_threads, bounds.max_fds, bounds.max_maps_lines,
                 bounds.max_maps_bytes, bounds.max_enum_passes))):
             raise ProcessObservationUnavailable('invalid scope or bounds')
-        if (bounds.max_pids > 4096 or bounds.max_threads > 256 or bounds.max_fds > 4096
+        pid_fd_cap = 10000 if all_pids else 4096
+        if (bounds.max_pids > pid_fd_cap or bounds.max_threads > 256 or bounds.max_fds > pid_fd_cap
                 or bounds.max_maps_lines > 20000 or bounds.max_maps_bytes > 4 * 1024 * 1024
                 or bounds.max_enum_passes > 6 or not 0 < bounds.deadline_seconds <= 30):
             raise ProcessObservationUnavailable('cleanup bounds exceed policy caps')
@@ -839,7 +845,16 @@ def scan_paths(roots: dict[str, tuple[int, int]], bounds: Any, *, agent_uid: int
                         continue
                     identities[pid] = identity
                     uids = identity[2:5]
-                    if len(set(uids)) != 1:
+                    if all_pids:
+                        # No UID/credential exemption for scratch. Denials in
+                        # any PID's lanes latch uncertainty, while later PIDs
+                        # can still supply positive use evidence.
+                        coverage['same_user' if uids == (agent_uid,) * 3 else
+                                 'root' if uids == (0, 0, 0) else 'other_user'] += 1
+                        coverage['scanned'] += 1
+                        references(reader, pid, ("cwd", "root", "fd", "text"))
+                        pending.append(pid)
+                    elif len(set(uids)) != 1:
                         gap(f'pid={pid}:mixed_credentials')
                     elif uids == (agent_uid,) * 3:
                         coverage['same_user'] += 1
@@ -908,9 +923,16 @@ def scan_paths(roots: dict[str, tuple[int, int]], bounds: Any, *, agent_uid: int
     for lane in lanes:
         lanes[lane] = (lane not in lane_failed and coverage['scanned'] > 0
                        and len(lane_seen[lane]) == coverage['scanned'])
-    return {'hits': hits, 'reasons': reasons, 'coverage': coverage, 'cycles': cycles,
+    result = {'hits': hits, 'reasons': reasons, 'coverage': coverage, 'cycles': cycles,
             'state': 'blocked' if hits else 'unknown' if reasons or not all(lanes.values())
             or not coverage['population_complete'] else 'clear_observation'}
+    if all_pids:
+        complete = not reasons and all(lanes.values()) and coverage['population_complete']
+        result['reference_counts'] = ({key: len(value) for key, value in references_seen.items()}
+                                      if complete else None)
+        result['process_identities'] = (tuple(sorted((str(pid), row[1]) for pid, row in identities.items()))
+                                        if complete else None)
+    return result
 
 
 def validate_clear_scan(scan: dict, candidate: str, containing: str) -> None:

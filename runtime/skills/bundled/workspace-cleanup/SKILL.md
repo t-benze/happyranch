@@ -379,8 +379,11 @@ manufactures idle clearance. Its JSON has `coverage.platform=darwin`, native
 boot/ABI/population and explicit lane evidence. The authenticated shell consumer
 validates a separate closed Darwin schema; Linux receipt bytes/contracts remain.
 The observation retains the caller's existing deadline and finite aggregate caps.
-S4 PR1 does not route task-scratch collectors: their all-PID scope and EPERM
-retention stay unchanged, and nightly disk sweeping keeps its separate policy.
+Task-scratch reports use the same native leaf with their unchanged all-PID
+scope. EPERM/EACCES and incomplete region/thread evidence retain with null
+counts. Darwin global scratch clearance remains unestablished; reports reclaim
+nothing and the separate pre-agent engine remains default-disabled. Nightly
+disk sweeping keeps its separate policy.
 
 The existing read-only scanner, observer `observe --phase before`, and safety
 `preserved`/`snapshot` commands can preview their individual gates. They do not
@@ -867,7 +870,7 @@ loader code (`code-sha256:`), with no loose-source requirement or fabricated
 fallback; unavailable code prevents worker launch. This grants agents no new
 cleanup authority. The root owner still retains unavailable scanner evidence;
 Darwin process-use observations and strict BSD mount parsing are described above;
-S4 scratch routing and frozen-app acceptance remain separate.
+Scratch report routing is described above; frozen-app acceptance remains separate.
 
 ## Separate future root-terminal owner
 

@@ -1,4 +1,4 @@
-"""S4 shared native cleanup observations; PR2 extends this same suite.
+"""S4 shared native cleanup observations, including scratch/report consumers.
 
 Only stdlib imports at module scope. --fixtures runs portable shipping-code
 fixtures; normal dispatch is Darwin-only. No live org or cleanup runner action.
@@ -174,6 +174,7 @@ def portable(rows: list, scratch: Path, deadline: float) -> None:
                                   scanner.Bounds(deadline_seconds=.1), agent_uid=os.getuid(), clock=lambda: 1., started=0.)
     check(rows, 'deadline', ['unknown', True], [exhausted['state'], any('deadline' in reason for reason in exhausted['reasons'])])
     simulated_scans(rows, scratch)
+    scratch_fixtures(rows, scratch, deadline)
     value = scratch.stat()
     coverage = {'platform': 'darwin', 'agent_uid': 12345, 'self_pid': str(os.getpid()),
         'boot_uuid': '11111111-2222-3333-4444-555555555555', 'abi_validated': True,
@@ -290,6 +291,224 @@ class SimulatedKernel:
         return 0
 
 
+class ScratchKernel(SimulatedKernel):
+    """All-PID syscall fixtures, including a different UID and negative reads."""
+
+    def __init__(self, native, path: Path, mode: str):
+        super().__init__(native, path, mode)
+        self.boot_reads = 0
+        self.cwd_reads = 0
+
+    def pidinfo(self, pid, flavor, arg, pointer, size):
+        count = super().pidinfo(pid, flavor, arg, pointer, size)
+        value = pointer._obj
+        if flavor == 3:
+            # Every fixture process is outside the worktree same-user scope.
+            value.pbi_uid = value.pbi_ruid = value.pbi_svuid = 12346
+        if flavor == 9:
+            self.cwd_reads += 1
+            if self.cwd_reads > 1:
+                if self.mode == 'scratch_denied':
+                    ct.set_errno(errno.EPERM)
+                    return 0
+                if self.mode == 'scratch_cwd':
+                    self.vnode(value.cwd, self.path.parent)
+        if flavor == 1 and self.mode == 'scratch_fd':
+            value[0].fd, value[0].kind = 99999, 1
+            return ct.sizeof(self.native.FdInfo)
+        if flavor == 8 and not arg:
+            # Supply a readable unrelated vnode. The production scanner still
+            # latches public negative region uncertainty, including in fixtures.
+            self.vnode(value.vnode, Path.cwd())
+        return count
+
+    def boot(self, name, pointer, size, new, newsize):
+        self.boot_reads += 1
+        text = (b'123e4567-e89b-42d3-a456-426614174000\0'
+                if self.mode != 'boot_mismatch' or self.boot_reads <= 5
+                else b'123e4567-e89b-42d3-a456-426614174001\0')
+        ct.memmove(pointer, text, len(text))
+        size._obj.value = len(text)
+        return 0
+
+
+def scratch_state(scratch: Path):
+    """Use shipping producer/database APIs on disposable state only."""
+    from datetime import datetime, timezone
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord, TaskStatus
+    from runtime.orchestrator.task_scratch import prepare_task_scratch
+    workspace = scratch / 'scratch-workspace'
+    workspace.mkdir()
+    db = Database(scratch / 'scratch-state.db')
+    candidates = {}
+    for index, kind in enumerate(('cwd', 'fd', 'idle'), 61):
+        task_id = f'TASK-{index}'
+        db.insert_task(TaskRecord(id=task_id, brief='disposable S4 probe',
+            assigned_agent='probe', current_session_id='fixture', status=TaskStatus.COMPLETED,
+            completed_at=datetime.now(timezone.utc)))
+        db.insert_task_result(task_id, 'probe', 'fixture', 'disposable S4 probe', 100)
+        candidate = prepare_task_scratch(workspace=workspace, task_id=task_id,
+            producer_kind='probe', producer_id='fixture').root
+        (candidate / 'held.bin').write_bytes(b'x' * (1024 * 1024))
+        # Canonical scratch must dominate entries as well as allocated bytes.
+        for number in range(30):
+            (candidate / f'entry-{number}').touch()
+        candidates[kind] = (task_id, candidate)
+    return db, workspace, candidates
+
+
+def scratch_fixtures(rows: list, scratch: Path, deadline: float) -> None:
+    from runtime.orchestrator import task_scratch_evidence as evidence
+    from runtime.orchestrator import task_scratch_coverage as coverage
+    from runtime.orchestrator.task_scratch_report import report_task_scratch
+    from runtime.daemon import task_scratch_reclamation as reclamation
+    import runtime.daemon.task_scratch_evidence as evidence_alias
+    import runtime.daemon.task_scratch_coverage as coverage_alias
+    import runtime.daemon.task_scratch_report as report_alias
+    import runtime.orchestrator.task_scratch_report as report_module
+    check(rows, 'scratch_alias_identity', True, evidence is evidence_alias
+          and coverage is coverage_alias and report_module is report_alias
+          and evidence.TaskScratchEvidence is evidence_alias.TaskScratchEvidence)
+    db, workspace, candidates = scratch_state(scratch)
+    task_id, candidate = candidates['idle']
+    native = load('darwin_process', SCRIPTS / 'darwin_process.py')
+    sessions = SimpleNamespace(iter_active=lambda: ())
+    try:
+        kernel = ScratchKernel(native, candidate / 'held.bin', 'scratch_idle')
+        with patch.object(sys, 'platform', 'darwin'), patch.object(ct, 'CDLL', return_value=kernel), patch.object(ctypes.util, 'find_library', return_value='fixture-libproc'), patch.object(subprocess, 'run', side_effect=lambda *a, **k: simulated_mount(k)):
+            identities = evidence._darwin_identities(time.monotonic_ns()+evidence.SCAN_NS)
+            check(rows, 'scratch_final_identities', ((str(os.getpid()), '123.0'),), identities,
+                  'simulated ctypes; shipping final all-PID start identity reader')
+            before_reads = kernel.identity_reads
+            expired = evidence._scan(Path('/proc'), candidate, time.monotonic_ns()-1)
+            check(rows, 'scratch_original_deadline', [None, None, None, True, True],
+                  [*expired[:3], 'process_scan_unavailable' in expired[3], kernel.identity_reads == before_reads])
+        with patch.object(sys, 'platform', 'win32'), patch.object(reclamation, '_collect_private_evidence') as collect:
+            refused = reclamation.collect_revalidate_seal_consume_disposable(db=db,
+                sessions=sessions, workspace=workspace, task_id=task_id, agent_name='probe')
+        check(rows, 'scratch_unsupported_refuses_before_collect', [None, False], [refused, collect.called])
+        # A separate UID must still be scanned. Patching syscall buffers only
+        # exercises the real leaf, collectors, coverage and audit coordinator.
+        for mode, expected in (('scratch_cwd', ['retain', True, None, None]),
+                               ('scratch_fd', ['retain', True, None, None]),
+                               ('scratch_idle', ['retain', True, None, None]),
+                               ('scratch_denied', ['retain', True, None, None]),
+                               ('boot_mismatch', ['unavailable', True, None, None])):
+            kernel = ScratchKernel(native, candidate / 'held.bin', mode)
+            with patch.object(sys, 'platform', 'darwin'), patch.object(ct, 'CDLL', return_value=kernel), patch.object(ctypes.util, 'find_library', return_value='fixture-libproc'), patch.object(subprocess, 'run', side_effect=lambda *a, **k: simulated_mount(k)):
+                report = report_task_scratch(db=db, sessions=sessions, task_id=task_id,
+                    agent='probe', workspace=workspace, source='teardown', observation_id='fixture',
+                    daemon_started_monotonic=time.monotonic()-60)
+                if mode in ('scratch_cwd', 'scratch_fd'):
+                    check(rows, mode + '_all_pid_positive', True,
+                          ('process_cwd_reference' if mode == 'scratch_cwd' else 'open_fd_reference') in report.reasons,
+                          'different-UID syscall buffers; actual all-PID scanner/report')
+                if mode == 'scratch_denied':
+                    kernel.cwd_reads = 0
+                    with patch.object(reclamation, 'execute_ledger', return_value=(None,)) as execute:
+                        result = reclamation.collect_revalidate_seal_consume_disposable(
+                            db=db, sessions=sessions, workspace=workspace, task_id=task_id,
+                            agent_name='probe', daemon_started_monotonic=time.monotonic()-60)
+                    check(rows, 'scratch_unknown_no_execute', [None, False, True],
+                          [result, execute.called, candidate.exists()], 'real consumer + test-side removal sentinel')
+            actual = [report.decision, candidate.exists(), report.payload.get('process_cwds'), report.payload.get('open_fds')]
+            check(rows, 'scratch_report_' + mode, expected, actual, 'simulated libproc/sysctl; actual collectors/report/audit')
+            if mode == 'boot_mismatch':
+                check(rows, 'boot_mismatch', [True, '123e4567-e89b-42d3-a456-426614174000',
+                      '123e4567-e89b-42d3-a456-426614174001'],
+                      ['evidence_coverage_boot_mismatch' in report.reasons,
+                       report.payload.get('boot_id'), report.payload.get('coverage_boot_id')])
+            if mode == 'scratch_denied':
+                check(rows, 'scratch_denied_null', [None, True],
+                      [report.payload.get('process_roots'), 'process_scan_unavailable' in report.reasons])
+        original = coverage._snapshot
+        calls = 0
+        def changed(*args):
+            nonlocal calls
+            value = original(*args)
+            calls += 1
+            if calls == 1:
+                with (candidate / 'held.bin').open('ab') as handle:
+                    handle.write(b'changed')
+            return value
+        kernel = ScratchKernel(native, candidate / 'held.bin', 'scratch_idle')
+        with patch.object(sys, 'platform', 'darwin'), patch.object(ct, 'CDLL', return_value=kernel), patch.object(ctypes.util, 'find_library', return_value='fixture-libproc'), patch.object(subprocess, 'run', side_effect=lambda *a, **k: simulated_mount(k)), patch.object(coverage, '_snapshot', side_effect=changed):
+            report = report_task_scratch(db=db, sessions=sessions, task_id=task_id,
+                agent='probe', workspace=workspace, source='teardown', observation_id='fixture',
+                daemon_started_monotonic=time.monotonic()-60)
+        check(rows, 'coverage_changed', ['unavailable', False, True],
+              [report.decision, report.payload['coverage_complete'],
+               'metadata_changed_during_collection' in report.reasons], 'real metadata change between shipping snapshots')
+        # Linux fixture routing remains available even on Darwin.
+        proc = scratch / 'proc'
+        (proc / 'sys/kernel/random').mkdir(parents=True)
+        (proc / 'sys/kernel/random/boot_id').write_text('123e4567-e89b-42d3-a456-426614174000')
+        item = proc / '42'
+        (item / 'fd').mkdir(parents=True)
+        (item / 'stat').write_text('42 (fixture) S ' + ' '.join(['0'] * 18 + ['9', '0']))
+        (item / 'root').symlink_to('/')
+        (item / 'cwd').symlink_to('/')
+        values = []
+        for platform in ('linux', 'darwin'):
+            with patch.object(sys, 'platform', platform):
+                value = evidence.collect_task_scratch_evidence(db=db, sessions=sessions,
+                    task_id=task_id, root=candidate, proc_root=proc,
+                    daemon_started_monotonic=time.monotonic()-60)
+                values.append((value.eligible, value.reasons, value.boot_id,
+                               value.process_roots, value.process_cwds, value.open_fds))
+        check(rows, 'linux_proc_fixture_parity', [(True, (), '123e4567-e89b-42d3-a456-426614174000', 0, 0, 0)]*2, values)
+        root_unknown_retains(rows, scratch, deadline)
+    finally:
+        db.close()
+
+
+def root_unknown_retains(rows: list, scratch: Path, deadline: float, *, native_scan: bool = False) -> None:
+    from runtime.orchestrator import run_step as step
+    from runtime.daemon.cleanup_helpers import helper_argv
+    primary = scratch / 'root-org/workspaces/probe/repos/happyranch'
+    candidate = primary / '.claude/worktrees/TASK-91'
+    candidate.mkdir(parents=True)
+    native = load('darwin_process', SCRIPTS / 'darwin_process.py')
+    scanner = step._load_terminal_worktree_scanner()
+    if native_scan:
+        scanned = scanner.scan(candidate, bounds=scanner.Bounds(deadline_seconds=5))
+    else:
+        kernel = SimulatedKernel(native, candidate, 'denied_kept')
+        with patch.object(sys, 'platform', 'darwin'), patch.object(ct, 'CDLL', return_value=kernel), patch.object(ctypes.util, 'find_library', return_value='fixture-libproc'), patch.object(subprocess, 'run', side_effect=lambda *a, **k: simulated_mount(k)):
+            scanned = scanner.scan(candidate, bounds=scanner.Bounds(deadline_seconds=5))
+    # Isolate prior Git/owner gates as in the existing cleanup-helpers row.
+    # Feed actual shared scanner output into the shipping root boundary.
+    commands = []
+    def command_boundary(argv, cwd, until):
+        commands.append(argv)
+        if argv[:3] == ['git', 'worktree', 'remove']:
+            raise AssertionError('removal sentinel')
+        output, code = '', 0
+        if argv[:3] == ['git', 'rev-parse', '--show-toplevel']:
+            output = str(primary)
+        elif argv[:3] == ['git', 'rev-parse', '--git-common-dir']:
+            output = str(primary / '.git')
+        elif argv[:2] == helper_argv('worktree-safety'):
+            output = json.dumps({'head': 'a'*40})
+        elif argv[:2] == helper_argv('check-path-use'):
+            output, code = json.dumps({'state': scanned.state, 'reasons': scanned.reasons}), 2
+        return SimpleNamespace(returncode=code, stdout=output)
+    members = {'TASK-91': {'assigned_agent': 'probe'}}
+    orch = SimpleNamespace(_paths=SimpleNamespace(workspaces_dir=scratch / 'root-org/workspaces'),
+                           teams=SimpleNamespace(all_agents=lambda: ['probe']))
+    budget = SimpleNamespace(deadline=deadline, remaining=lambda: None, command=command_boundary,
+                             halted=False, processes=[], attempts=0)
+    with patch.object(step, '_root_worktree_membership', return_value=(members, [], 1, True, None)), patch.object(step, '_root_worktree_protection', return_value=({}, {})), patch.object(step, '_root_worktree_revalidate_membership'), patch.object(step, '_root_worktree_registration', return_value={'registered': True}):
+        receipt = step._root_worktree_reconcile(orch, SimpleNamespace(after={'created_at': 'fixture'}), 1, budget)
+    check(rows, 'native_root_unknown_retains' if native_scan else 'root_unknown_retains', ['unknown', True, True, False, True],
+          [scanned.state, any(argv[:2] == helper_argv('check-path-use') for argv in commands),
+           receipt['outcomes'][0]['reason'] == 'process_use_blocked_or_unknown',
+           any(argv[:3] == ['git', 'worktree', 'remove'] for argv in commands), candidate.exists()],
+          ('native scanner' if native_scan else 'actual scanner with simulated denied syscall')
+          + '; real root consumer; prior owner/Git gates isolated; recorded command/removal sentinel')
+
+
 def simulated_mount(arguments):
     arguments['stdout'].write(b'/dev/fixture on / (apfs, local)\n')
     return SimpleNamespace(returncode=0)
@@ -373,6 +592,67 @@ def ready(process, deadline: float) -> dict:
     return value
 
 
+def native_scratch(rows: list, scratch: Path, deadline: float, children: list, detail: dict) -> None:
+    from runtime.orchestrator.task_scratch_report import report_task_scratch
+    fixture = scratch / 'native-scratch'
+    fixture.mkdir()
+    db, workspace, candidates = scratch_state(fixture)
+    native = load('darwin_process', SCRIPTS / 'darwin_process.py')
+    reader = native.DarwinReader(lambda: None)
+    grounds = {}
+    detail['scratch_real_eperm'] = 'NOT OBSERVED'
+    try:
+        for kind in ('cwd', 'fd'):
+            task_id, candidate = candidates[kind]
+            process = subprocess.Popen([sys.executable, '-I', '-B', '-c', CHILD, kind, str(candidate)],
+                cwd=scratch, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                start_new_session=True)
+            children.append(process)
+            ground = ready(process, deadline)
+            ground['start_identity'] = reader.identity(process.pid)[1]
+            expected = str(candidate) if kind == 'cwd' else [
+                (candidate / 'held.bin').stat().st_dev, (candidate / 'held.bin').stat().st_ino]
+            check(rows, 'scratch_' + kind + '_ground_truth', expected,
+                  ground['cwd'] if kind == 'cwd' else ground['dev_ino'], 'owned child cwd/fstat before report')
+            grounds[kind] = ground
+        observed = {}
+        for kind, (task_id, candidate) in candidates.items():
+            report = report_task_scratch(db=db, sessions=SimpleNamespace(iter_active=lambda: ()),
+                task_id=task_id, agent='probe', workspace=workspace, source='teardown',
+                observation_id='native-fixture', daemon_started_monotonic=time.monotonic()-60)
+            observed[kind] = {'decision': report.decision, 'reasons': report.reasons[:12],
+                'counts': [report.payload.get(key) for key in ('process_roots', 'process_cwds', 'open_fds')],
+                'coverage_complete': report.payload.get('coverage_complete'), 'boot_id': report.payload.get('boot_id')}
+            denied = [reason for reason in report.reasons if ':errno=' in reason
+                      and reason.rsplit(':errno=', 1)[-1] in ('1', '13')]
+            if denied:
+                detail['scratch_real_eperm'] = {'causes': denied[:4], 'provenance': 'native kernel errno; all-PID scratch'}
+            reason = 'process_cwd_reference' if kind == 'cwd' else 'open_fd_reference'
+            if kind != 'idle':
+                check(rows, 'scratch_' + kind + '_retain', [True, True, True],
+                      [report.decision in ('retain', 'unavailable'), reason in report.reasons, candidate.exists()],
+                      'native owned child + shipping all-PID collector/report')
+            else:
+                counts = observed[kind]['counts']
+                clear = report.decision == 'would_reclaim' and counts == [0, 0, 0]
+                unavailable = (report.decision in ('retain', 'unavailable') and counts == [None]*3
+                               and 'process_scan_unavailable' in report.reasons)
+                check(rows, 'scratch_idle_or_denied', [True, True, True],
+                      [clear or unavailable, report.payload.get('coverage_complete'), candidate.exists()],
+                      'native all-PID observation; global denial retains with null counts')
+            check(rows, 'scratch_' + kind + '_report_only', [True, 0, 0, True],
+                  [report.payload['report_only'], report.payload['actual_reclaimed_bytes'],
+                   report.payload['actual_reclaimed_inodes'],
+                   (candidate / 'held.bin').read_bytes() == b'x'*(1024*1024)])
+        detail['scratch_routing'] = {'ground_truth': grounds, 'reports': observed,
+            'scope': 'all PIDs; unprivileged global clearance may be unavailable'}
+        root_fixture = scratch / 'native-root'
+        root_fixture.mkdir()
+        root_unknown_retains(rows, root_fixture, deadline, native_scan=True)
+    finally:
+        db.close()
+
+
 def run(report: dict) -> None:
     if sys.platform != 'darwin':
         raise RuntimeError('use probe dispatcher for Linux skip')
@@ -383,7 +663,7 @@ def run(report: dict) -> None:
     checks, children = [], []
     report['cleanup_process_use'] = {'checks': checks, 'frozen_app': 'NOT RUN',
         'runner_idle_eligible': 'NOT PROVEN; read-only gates only',
-        'scratch_routing': 'PR2; NOT RUN', 'real_eperm': 'NOT OBSERVED'}
+        'scratch_routing': 'NOT RUN', 'real_eperm': 'NOT OBSERVED'}
     detail = report['cleanup_process_use']
     source_code, source_sha, _ = command(['git', 'rev-parse', 'HEAD'], ROOT, deadline)
     if source_code or len(source_sha.strip()) != 40:
@@ -391,6 +671,10 @@ def run(report: dict) -> None:
     detail['source_sha'] = source_sha.strip()
     detail['source_sha256'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                for p in SCRIPTS.iterdir() if p.suffix in ('.py', '.sh')}
+    detail['source_sha256'].update({str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in [*(ROOT / 'runtime/orchestrator').glob('task_scratch*.py'),
+                  ROOT / 'runtime/daemon/task_scratch_reclamation.py',
+                  ROOT / 'runtime/orchestrator/run_step.py']})
     old_handler = signal.getsignal(signal.SIGALRM)
     def expired(signum, frame):
         raise TimeoutError('cleanup-process-use original suite deadline')
@@ -515,6 +799,7 @@ def run(report: dict) -> None:
                protected.get('mount_evidence') == observed['context']['mounts']],
               'shipping protected metadata; no authenticated-owner claim')
         detail['protected_errors'] = protected['errors'][:4]
+        native_scratch(checks, scratch, deadline, children, detail)
 
     finally:
         # Cleanup retains its reserved 10s, even after the observation alarm.
