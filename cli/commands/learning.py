@@ -56,6 +56,14 @@ def _learning_client() -> OpcClient:
 
 
 
+def _print_inherited(entry: dict) -> None:
+    if entry.get('provenance') == 'inherited':
+        import json
+        print('  provenance: inherited')
+        print('  inherited_from: ' + json.dumps(entry.get('inherited_from'), ensure_ascii=False))
+        print('  imported_at: ' + json.dumps(entry.get('imported_at')) + ' (source dates null = unknown)')
+
+
 def cmd_learning_list(args: argparse.Namespace) -> None:
     client = _learning_client()
     org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
@@ -83,6 +91,7 @@ def cmd_learning_list(args: argparse.Namespace) -> None:
         tags = ", ".join(e.get("tags", []))
         promo = f" ↗ {e['promoted_to']}" if e.get("promoted_to") else ""
         print(f"  {e['id']}  [{e['topic']}] {e['title']}  ({tags}){promo}")
+        _print_inherited(e)
 
 
 
@@ -112,6 +121,7 @@ def cmd_learning_get(args: argparse.Namespace) -> None:
         print(f"tags: {', '.join(entry['tags'])}")
     if entry.get("promoted_to"):
         print(f"promoted_to: {entry['promoted_to']}")
+    _print_inherited(entry)
     # THR-091: surface entry age at recall
     age_days = entry.get("age_days")
     if age_days is not None:
@@ -174,6 +184,7 @@ def cmd_learning_search(args: argparse.Namespace) -> None:
         lc_label = f" ({lifecycle})" if lifecycle and lifecycle != "valid" else ""
         print(f"  {h['id']}  score={h['score']}  {h['title']}{src_label}{lc_label}")
         print(f"      {h['snippet']}")
+        _print_inherited(h)
     if warnings:
         for w in warnings:
             print(f"warning: {w}")

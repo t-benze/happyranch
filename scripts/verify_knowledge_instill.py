@@ -1,8 +1,9 @@
 """S3a real SQLite/MemoryStore exercise, outside retired test suites.
 
 Run: uv run --frozen python scripts/verify_knowledge_instill.py [CASE]
-Uses isolated synthetic orgs only. No daemon, provider, native session, HTTP,
-CLI import endpoint or live org runs. Archive curation output is synthetic;
+Uses isolated synthetic orgs only. http_* cases drive registered authenticated
+HTTP and unmodified CLI over loopback without daemon lifespan. No provider,
+native recipient session or live org runs. Archive curation output is synthetic;
 publication, import, allocation, read-back, reconciliation and files are real.
 """
 from __future__ import annotations
@@ -704,7 +705,290 @@ def concurrent_admission() -> None:
         require(not snapshot(f), 'start winner still wrote recipient memory')
 
 
+@contextmanager
+def http_fixture() -> Iterator[SimpleNamespace]:
+    """Actual registered app/auth, no lifespan, isolated org and loopback port."""
+    import os
+    import socket
+    import time
+    import httpx
+    import uvicorn
+    from runtime.config import Settings
+    from runtime.daemon.app import create_app
+    from runtime.daemon.routes._org_dep import resolve_org
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.daemon.state import DaemonState
+
+    with fixture() as f:
+        home = f.org.root / 'daemon'
+        home.mkdir()
+        token = 'synthetic-instill-bearer'
+        (home / 'daemon.token').write_text(token)
+        f.org.sessions = SessionTracker()
+        state = DaemonState.idle(Settings())
+        state.orgs['synthetic'] = f.org
+        app = create_app(state)
+        app.dependency_overrides[resolve_org] = lambda: f.org
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        sock.listen(128)
+        port = sock.getsockname()[1]
+        (home / 'daemon.port').write_text(str(port))
+        server = uvicorn.Server(uvicorn.Config(app, log_level='critical', lifespan='off'))
+        thread = threading.Thread(target=lambda: server.run(sockets=[sock]))
+        env = dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(home))
+
+        def cli(*args: str, local: bool = False) -> subprocess.CompletedProcess:
+            child_env = dict(env)
+            child_env.pop('HAPPYRANCH_RUNTIME_SESSION_ID', None)
+            if local:
+                child_env['HAPPYRANCH_DAEMON_HOME'] = str(f.org.root / 'no-daemon')
+            return subprocess.run([sys.executable, '-m', 'cli.main', *args], env=child_env,
+                                  capture_output=True, text=True, timeout=15)
+
+        with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+            thread.start()
+            try:
+                for _ in range(100):
+                    if server.started:
+                        break
+                    time.sleep(0.02)
+                require(server.started, 'synthetic listener unavailable')
+                with httpx.Client(base_url=f'http://127.0.0.1:{port}',
+                                  headers={'Authorization': 'Bearer ' + token}, timeout=15) as client:
+                    f.client, f.cli = client, cli
+                    f.base = '/api/v1/orgs/synthetic'
+                    f.url = f.base + '/agents/recipient/knowledge/imports'
+                    yield f
+            finally:
+                server.should_exit = True
+                thread.join(timeout=10)
+                sock.close()
+                require(not thread.is_alive(), 'synthetic listener did not stop')
+
+
+def http_memory_provenance() -> None:
+    with http_fixture() as f:
+        operation = submit(f)
+        expected = f.memory.read_entry(operation.results[1].memory_id)
+        require(expected.inherited_from['source_dates'][0]['authored_at'] is None, 'unknown-date fixture missing')
+        memory = f.base + '/agents/recipient/memory/entries/'
+        reads = [f.client.get(memory + expected.id).json(),
+                 next(e for e in f.client.get(memory).json()['entries'] if e['id'] == expected.id),
+                 next(e for e in f.client.post(memory + 'search', json={'query': expected.title}).json()['hits'] if e['id'] == expected.id)]
+        for entry in reads:
+            require(entry.get('provenance') == 'inherited', 'HTTP read lost inherited provenance')
+            require(entry.get('inherited_from') == expected.inherited_from, 'HTTP read lost source metadata')
+            require(entry.get('imported_at') == expected.imported_at, 'HTTP read lost import date')
+        for verb, arg in [('get', expected.id), ('list', None), ('search', expected.title)]:
+            args = ['memory', verb, '--org', 'synthetic', '--agent', 'recipient']
+            if arg is not None:
+                args.append(arg)
+            result = f.cli(*args, '--json')
+            require(result.returncode == 0 and 'inherited_from' in result.stdout
+                    and expected.imported_at in result.stdout, 'CLI JSON lost inherited metadata: ' + verb)
+            text = f.cli(*args)
+            require(text.returncode == 0 and 'provenance: inherited' in text.stdout
+                    and 'inherited_from:' in text.stdout and 'null' in text.stdout
+                    and expected.imported_at in text.stdout, 'CLI text lost inherited metadata: ' + verb)
+
+
+def http_import_surfaces() -> None:
+    with http_fixture() as f:
+        body = confirmation(f).model_dump()
+        before = snapshot(f)
+        for method, url in [('POST', f.url), ('GET', f.url),
+                            ('GET', f.url + '/eligibility/' + f.archive['archive_id']),
+                            ('GET', f.base + '/knowledge/imports/unknown'),
+                            ('POST', f.base + '/knowledge/imports/unknown/retry')]:
+            response = f.client.request(method, url, json=body if method == 'POST' else None,
+                                        headers={'Authorization': ''})
+            require(response.status_code == 401, 'registered surface lost bearer auth: ' + method + url)
+        preview_url = f.url + '/eligibility/' + f.archive['archive_id']
+        changes = f.db._conn.total_changes
+        preview = f.client.get(preview_url)
+        require(preview.status_code == 200, 'eligibility GET expected200 got' + str(preview.status_code))
+        require(f.client.get(f.url).json() == {'operations': []}, 'history not empty')
+        require([i['default_selected'] for i in preview.json()['items']] == [True, True, True, False]
+                and preview.json()['items'][3]['reason'] == 'knowledge_import_item_ineligible',
+                'picker defaults or ineligible reason changed')
+        require(snapshot(f) == before and f.db._conn.total_changes == changes, 'preview/history mutated')
+        first = f.client.post(f.url, json=body)
+        require(first.status_code == 200, 'confirmation route missing or refused')
+        operation = first.json()
+        require(operation['imported'] == 2 and operation['state'] == 'Succeeded', 'confirmation effects missing')
+        operation_url = f.base + '/knowledge/imports/' + operation['operation_id']
+        retained = snapshot(f)
+        require(f.client.post(f.url, json=body).json() == operation, 'same-key replay changed receipt')
+        conflict = f.client.post(f.url, json={**body, 'item_ids': ['item-0']})
+        require(conflict.status_code == 409 and conflict.json()['detail']['code'] ==
+                'knowledge_import_confirmation_conflict', 'changed selection was not refused')
+        repeated = f.client.post(f.url, json={**body, 'submission_id': 'repeat'}).json()
+        require(repeated['skipped'] == 2 and [r['memory_id'] for r in repeated['results']] ==
+                [r['memory_id'] for r in operation['results']], 'repeat did not return mappings')
+        changes = f.db._conn.total_changes
+        require(f.client.get(operation_url).json() == operation, 'receipt reopen differs')
+        history = f.client.get(f.url)
+        require(len(history.json()['operations']) == 2, 'learned-source history missing')
+        preview = f.client.get(preview_url)
+        require(preview.json()['items'][0]['mapping']['memory_id'] == operation['results'][0]['memory_id'],
+                'preview missing completed mapping')
+        require(snapshot(f) == retained and f.db._conn.total_changes == changes, 'GET or repeat rewrote state')
+        for response in [first, history, preview, f.client.get(operation_url)]:
+            require(not any(key in response.text for key in ('capture_json', 'confirmation_json', 'expected_content')),
+                    'public projection leaked internals')
+            require('Historical source material' not in response.text, 'operation/preview exposed note body')
+        path = f.org.root / 'confirm.json'
+        path.write_text(json.dumps(body))
+        for args in [('instill', 'recipient', '--from-file', str(path)), ('imports', 'list', 'recipient'),
+                     ('imports', 'show', operation['operation_id']), ('imports', 'retry', operation['operation_id'])]:
+            result = f.cli('knowledge', *args, '--org', 'synthetic')
+            require(result.returncode == 0 and operation['operation_id'] in result.stdout, 'CLI surface failed: ' + str(args))
+        no_auth = f.client.get(operation_url, headers={'Authorization': ''})
+        require(no_auth.status_code == 401, 'missing bearer accepted')
+        for method, url, kwargs in [('GET', f.base + '/knowledge/imports/unknown', {}),
+                                    ('POST', f.base + '/knowledge/imports/unknown/retry', {}),
+                                    ('GET', f.url + '/eligibility/unknown', {}),
+                                    ('GET', f.base + '/agents/unknown/knowledge/imports', {}),
+                                    ('GET', f.base + '/agents/unknown/knowledge/imports/eligibility/' + f.archive['archive_id'], {}),
+                                    ('POST', f.url, {'json': {**body, 'submission_id': 'unknown', 'archive_id': 'unknown'}})]:
+            require(f.client.request(method, url, **kwargs).status_code == 404, 'unknown ID not404: ' + url)
+
+
+def http_partial_retry() -> None:
+    with http_fixture() as f:
+        validate = MemoryStore._validate_entry_structure
+        def validation(memory: MemoryStore, entry: MemoryItem) -> None:
+            if entry.inherited_from and entry.inherited_from['archive_item_id'] == 'item-1':
+                raise InvalidLearningEntry('synthetic_prewrite_failure', 'synthetic')
+            validate(memory, entry)
+        with patch.object(MemoryStore, '_validate_entry_structure', validation):
+            response = f.client.post(f.url, json=confirmation(f).model_dump())
+        require(response.status_code == 200, 'partial confirm route missing')
+        first = response.json()
+        require(first['state'] == 'Partially failed' and first['imported'] == 1 and first['failed'] == 1
+                and first['results'][1]['retryable'], 'partial failure not observable')
+        retained = snapshot(f)
+        total = f.db._conn.total_changes
+        preview = f.client.get(f.url + '/eligibility/' + f.archive['archive_id']).json()
+        require(preview['items'][0]['mapping']['state'] == 'completed'
+                and preview['items'][1]['mapping']['state'] == 'unwritten'
+                and not preview['items'][0]['default_selected'] and not preview['items'][1]['default_selected']
+                and preview['items'][2]['default_selected'], 'partial preview lost original-operation mappings')
+        require(snapshot(f) == retained and f.db._conn.total_changes == total, 'partial preview mutated')
+        writes: list[str] = []
+        write = MemoryStore.write_inherited_entry
+        def writing(memory: MemoryStore, entry: MemoryItem, expected: str) -> MemoryItem:
+            writes.append(entry.id)
+            return write(memory, entry, expected)
+        with patch.object(MemoryStore, 'write_inherited_entry', writing):
+            result = f.cli('knowledge', 'imports', 'retry', first['operation_id'], '--org', 'synthetic')
+        require(result.returncode == 0, 'CLI partial retry failed')
+        final = json.loads(result.stdout)
+        require(final['operation_id'] == first['operation_id'] and final['item_ids'] == first['item_ids']
+                and final['imported'] == 2 and writes == [final['results'][1]['memory_id']], 'retry wrote more than missing selection')
+        require(all(snapshot(f)[name] == value for name, value in retained.items() if name != '_index.md'),
+                'retry changed retained notes')
+
+
+def http_busy_all_six() -> None:
+    for kind in ('task', 'thread_invocation', 'schedule', 'work_hour', 'dream', 'job'):
+        with http_fixture() as f:
+            identifier = seed_blocker(f, kind)
+            before = snapshot(f)
+            total = f.db._conn.total_changes
+            response = f.client.post(f.url, json=confirmation(f).model_dump())
+            require(response.status_code == 409, 'Busy HTTP not409: ' + kind)
+            detail = response.json()['detail']
+            require(detail['code'] == 'knowledge_import_busy_finish_wait_then_retry'
+                    and {'kind': kind, 'id': identifier} in detail['blockers']
+                    and detail['message'] == 'finish/wait, then retry', 'Busy lost actual reference: ' + kind)
+            preview = f.client.get(f.url + '/eligibility/' + f.archive['archive_id']).json()
+            require(not preview['recipient_eligible'] and {'kind': kind, 'id': identifier} in preview['blockers'],
+                    'advisory preview lost Busy reference')
+            require(snapshot(f) == before and f.db._conn.total_changes == total, 'Busy/preview mutated')
+        print('  http_busy_' + kind + ': PASS')
+
+
+def http_refusals() -> None:
+    with http_fixture() as f:
+        body = confirmation(f).model_dump()
+        def refusal(code: str, *, recipient: str = 'recipient', status: int = 409, **changes: object) -> dict:
+            before = snapshot(f)
+            total = f.db._conn.total_changes
+            response = f.client.post(f.base + '/agents/' + recipient + '/knowledge/imports', json={**body, **changes})
+            require(response.status_code == status and response.json()['detail']['code'] == code,
+                    f'refusal mismatch expected {code}, got {response.status_code} {response.text}')
+            require(snapshot(f) == before and total == f.db._conn.total_changes, 'refusal wrote state')
+            return response.json()['detail']
+        task = TaskRecord(id='TASK-900001', brief='Synthetic busy', assigned_agent='recipient')
+        f.db.insert_task(task)
+        detail = refusal('knowledge_import_busy_finish_wait_then_retry')
+        require({'kind': 'task', 'id': task.id} in detail['blockers'] and 'finish/wait, then retry' in detail['message'],
+                'Busy lost actual blocker or guidance')
+        f.db.update_task(task.id, status='completed')
+        refusal('knowledge_import_source_equals_recipient', recipient='source')
+        refusal('knowledge_import_item_ineligible', item_ids=['item-3'])
+        refusal('knowledge_import_unknown_item', status=404, item_ids=['unknown'])
+        refusal('knowledge_import_archive_version_mismatch', archive_version=99)
+        refusal('knowledge_import_zero_selection', status=422, item_ids=[])
+        refusal('knowledge_import_invalid_confirmation', status=422, confirmed=False)
+        refusal('knowledge_import_invalid_confirmation', status=422, item_ids=['item-0', 'item-0'])
+        foreign = KnowledgeArchiveStore(f.db._conn, f.db._lock, 'foreign')
+        source, result = capture()
+        attempt = foreign.submit('foreign', source, {'confirmed': True})
+        foreign.start(attempt['operation_id'], processor_id='curator')
+        archive = foreign.publish(attempt['operation_id'], json.dumps(result))
+        refusal('knowledge_import_ready_same_org_archive_required', status=404, archive_id=archive['archive_id'])
+        for state in ('Queued', 'Processing', 'Failed'):
+            source, result = capture('notready_' + state.lower())
+            attempt = f.archives.submit(state, source, {'confirmed': True})
+            if state == 'Processing':
+                f.archives.start(attempt['operation_id'], processor_id='curator')
+            elif state == 'Failed':
+                f.archives.fail(attempt['operation_id'], 'synthetic')
+            refusal('knowledge_import_ready_same_org_archive_required', status=404, archive_id=attempt['operation_id'])
+        definition = f.org.root / 'org/agents/recipient.md'
+        original = definition.read_bytes()
+        for location in ('_pending', '_terminated'):
+            definition.unlink()
+            parent = definition.parent / location
+            parent.mkdir(exist_ok=True)
+            parked = parent / definition.name
+            parked.write_bytes(original)
+            refusal('knowledge_import_recipient_not_active_authorized', status=404)
+            parked.unlink()
+            definition.write_bytes(original)
+
+
+def cli_import_validation() -> None:
+    import os
+    with fixture() as f:
+        path = f.org.root / 'confirmation.json'
+        env = dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(f.org.root / 'no-daemon'))
+        def invalid(*args: str) -> None:
+            result = subprocess.run([sys.executable, '-m', 'cli.main', 'knowledge', *args], env=env,
+                                    capture_output=True, text=True, timeout=15)
+            require(result.returncode == 2 and 'invalid_knowledge_request' in result.stdout,
+                    'invalid local args contacted daemon or bypassed validation: ' + str(args))
+        for args in [('instill', '../bad', '--from-file', '/missing'),
+                     ('instill', 'recipient', '--from-file', 'relative.json'),
+                     ('imports', 'show', 'bad'), ('imports', 'retry', 'bad'), ('imports', 'list', '../bad'),
+                     ('imports', 'list', 'recipient', '--org', 'invalid_org')]:
+            invalid(*args)
+        valid = confirmation(f).model_dump()
+        for body in ({**valid, 'confirmed': False}, {**valid, 'item_ids': []},
+                     {**valid, 'archive_version': True}, {**valid, 'archive_id': '../bad'},
+                     {**valid, 'item_ids': ['item-0', 'item-0']}, {**valid, 'extra': 'forbidden'}):
+            path.write_text(json.dumps(body))
+            invalid('instill', 'recipient', '--from-file', str(path))
+        for raw in ('{', '[]', '{"confirmed":true,"confirmed":true}', 'x' * 16385):
+            path.write_text(raw)
+            invalid('instill', 'recipient', '--from-file', str(path))
+
+
 CASES = {f.__name__: f for f in (
+    http_import_surfaces, http_memory_provenance, http_partial_retry, http_refusals, http_busy_all_six, cli_import_validation,
     legacy, happy_repeat_overlap, partial_retry, unwritten_overlap_single, unwritten_overlap_mixed, completed_receipt_recovery,
     held_reconciliation, preservation_provenance,
     busy_all_six, history_caps, incomplete_census, confirmation_refusals, lost_eligibility, concurrent_admission)}
@@ -715,4 +999,4 @@ if __name__ == '__main__':
     for name in selected:
         CASES[name]()
         print(name + ': PASS', flush=True)
-    print(json.dumps({'cases': selected, 'passed': len(selected), 'boundary': 'synthetic real SQL/files; no HTTP/provider/session'}))
+    print(json.dumps({'cases': selected, 'passed': len(selected), 'boundary': 'synthetic real SQL/files; registered HTTP/CLI in http_* cases; no provider/native session'}))

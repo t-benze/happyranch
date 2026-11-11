@@ -620,8 +620,35 @@ export interface AgentEnrollment extends IdentityNameMetadata {
   created_at: string | null;
 }
 
+/** Unknown source dates remain explicit nulls; imported_at is a separate date. */
+export interface InheritedMemorySource {
+  archive_id: string;
+  archive_version: number;
+  archive_item_id: string;
+  source_id: string;
+  source_dates: { reference_id: string; authored_at: string | null; observed_at: string | null }[];
+}
+
+export interface MemoryProvenance {
+  provenance: 'experiential' | 'reflective' | 'directive' | 'inherited';
+  inherited_from: InheritedMemorySource | null;
+  imported_at: string | null;
+}
+
+export interface MemorySearchHit extends MemoryProvenance {
+  id: string;
+  slug: string;
+  title: string;
+  snippet: string;
+  score: number;
+  source: string;
+  lifecycle: string;
+  salience: number;
+  updated_at: string | null;
+}
+
 /** Summary shape returned by the memory list endpoint. */
-export interface MemoryEntrySummary {
+export interface MemoryEntrySummary extends MemoryProvenance {
   id: string;
   slug: string;
   title: string;

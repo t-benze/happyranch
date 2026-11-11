@@ -2614,7 +2614,14 @@ ID and per-reference source dates (null explicitly unknown); readable content
 retains original attribution and warnings. The dedicated inherited writer adds
 new local MEM IDs without supersession, replacement or import-triggered compaction,
 including retries at/above the configured threshold. Ordinary compaction remains
-unchanged. Instill public HTTP/CLI projections are S3b work. Once inherited notes
+unchanged. S3b adds authenticated exact confirmation, history, operation/retry and one
+read-only recipient/archive eligibility route (see the web-and-cli guide).
+Memory get/list/search HTTP and CLI JSON/text return `provenance: inherited`,
+`inherited_from` (archive/version/item/source plus per-reference authored/observed
+dates, with explicit null = unknown) and separate `imported_at`. The recipient's
+local writer attribution never claims personal experience or current authority.
+Preview cannot import; a fresh recipient session retrieves through normal memory
+interfaces, while existing conversations are unchanged. Once inherited notes
 exist, use compatible daemon/CLI/UI readers and writers; preserve notes/receipts
 on rollback and stop incompatible writers rather than stripping provenance.
 Editing an evicted or superseded entry keeps that state; restoration uses the

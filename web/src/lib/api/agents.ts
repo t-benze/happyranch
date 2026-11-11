@@ -18,6 +18,7 @@ import type {
   CleanupActivity,
   MemoryEntry,
   MemoryEntrySummary,
+  MemorySearchHit,
   SystemPromptBody,
   SystemPromptReceipt,
 } from './types';
@@ -29,6 +30,7 @@ export type {
   AgentSummary,
   MemoryEntry,
   MemoryEntrySummary,
+  MemorySearchHit,
 } from './types';
 
 export const listAgents = (
@@ -117,7 +119,7 @@ export const searchMemory = (
   agentName: string,
   body: { query: string; limit?: number; include_promoted?: boolean },
   sessionId?: string,
-): Promise<{ hits: { id: string; slug: string; title: string; snippet: string; score: number }[] }> =>
+): Promise<{ hits: MemorySearchHit[]; warnings?: string[] }> =>
   request(`/orgs/${slug}/agents/${agentName}/memory/entries/search`, {
     method: 'POST',
     body,

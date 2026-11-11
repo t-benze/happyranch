@@ -203,7 +203,7 @@ configured ordinary compaction policy; ordinary future writes can still compact.
 per-reference authored/observed dates (null explicitly unknown); `imported_at`
 is separate. Readable content retains original attribution, warnings and current
 authority qualifications. Store reads/search/list/index and later supported
-updates preserve source metadata; HTTP/CLI presentation parity remains S3b.
+updates preserve source metadata; S3b exposes the same metadata through memory HTTP list/get/search and CLI JSON/text reads, with typed TS memory mirrors.
 
 **Compatible-release prerequisite:** before S3b enables confirmation, daemon,
 CLI and UI writers/readers must all support inherited provenance and its metadata
@@ -257,14 +257,14 @@ Imports affect future retrieval through normal memory interfaces in a **fresh re
 
 ## Routes, CLI, schemas and mirrors by slice
 
-S1 is implemented by TASK-15282 and S2 by TASK-15315/TASK-15354, subject to their independent delivery gates. Later rows remain proposed contracts, not installed endpoints or commands. All IDs are same-org and server-resolved. Preserve existing auth/native/remote policy; adding a route is not a permission or remote-reachability grant. Classify each route explicitly through the existing contract owner before shipping.
+S1 is implemented by TASK-15282 and S2 by TASK-15315/TASK-15354, subject to their independent delivery gates. S3b (TASK-15436) adds the S3 public surfaces below; S4–S6 remain later work. All IDs are same-org and server-resolved. Preserve existing auth/native/remote policy; adding a route is not a permission or remote-reachability grant. Classify each route explicitly through the existing contract owner before shipping.
 
 | Slice | Proposed HTTP surfaces under `/api/v1/orgs/{slug}` | CLI parity / client surfaces |
 | --- | --- | --- |
 | S0 | None. | None; docs only. |
 | S1 | `GET /knowledge/retired-agents/{source_id}` (retained detail + coverage); `GET /knowledge/retired-agents/{source_id}/sources/{reference_id}` (validated bounded source record/unavailable reason). Use existing terminated enrollments for roster navigation. | `happyranch knowledge retired show SOURCE`; `knowledge retired source SOURCE REFERENCE`. Matching typed functions in `web/src/lib/api/knowledge.ts`. |
 | S2 (source implemented) | `POST /knowledge/distill` (fixed source confirmation, original submission identity); `GET /knowledge/distill/{operation_id}`; `GET /knowledge/archives` (Ready selection); `GET /knowledge/archives/{archive_id}` (manifest + immutable version/items, with safe source references). | `knowledge distill --from-file ABS`; `knowledge distill-show OP`; `knowledge archives list/show`. TS functions and typed lifecycle/coverage/archive records. JSON confirmation is `{submission_id, source_id, confirmed:true, processor_id?}`. A confirmed Failed retry uses a new submission; uncertain submission reuses its original key or GET. |
-| S3 | `POST /agents/{recipient_id}/knowledge/imports` (exact confirmed archive/version/item IDs); `GET /agents/{recipient_id}/knowledge/imports`; `GET /knowledge/imports/{operation_id}`; `POST /knowledge/imports/{operation_id}/retry` (same selection, missing items only). Existing memory reads also return inherited provenance. | `knowledge instill RECIPIENT --from-file ABS`; `knowledge imports list/show/retry`. TS functions for confirm, learned sources, receipts and safe partial retry; no mutation on preview. |
+| S3 (source implemented) | `POST /agents/{recipient_id}/knowledge/imports` (exact confirmed archive/version/item IDs); `GET /agents/{recipient_id}/knowledge/imports`; `GET /knowledge/imports/{operation_id}`; `POST /knowledge/imports/{operation_id}/retry` (same selection, missing items only). `GET /agents/{recipient_id}/knowledge/imports/eligibility/{archive_id}` is the one read-only S5 picker projection: current advisory recipient eligibility/blockers and exact per-item prior mappings (including held intents), default selection and ineligibility codes. Archive contents/warnings remain on the S2 archive read. Existing memory reads also return inherited provenance. | `knowledge instill RECIPIENT --from-file ABS`; `knowledge imports list/show/retry`. TS functions for confirm, learned sources, receipts and safe partial retry; no mutation on preview. |
 | S4 | Uses S1/S2 reads and confirmed Distill POST; no parallel FE-only API. | Retired detail, coverage, operation and archive components/hooks; route navigation and read-only source links. |
 | S5 | Uses S2 archive reads, S3 confirmation/retry/receipt and normal recipient memory read. | Active detail Instill drawer, selection, single-drawer confirmation, receipt and learned-source list. |
 | S6 | No acceptance-only product route or bypass. | Actual CLI/daemon/UI and fresh-session memory retrieval. |

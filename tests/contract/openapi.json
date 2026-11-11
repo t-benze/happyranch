@@ -1064,6 +1064,83 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{recipient_id}/knowledge/imports": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "recipient_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "404",
+          "409",
+          "422"
+        ]
+      },
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "recipient_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/agents/{recipient_id}/knowledge/imports/eligibility/{archive_id}": {
+      "GET": {
+        "params": [
+          [
+            "archive_id",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "recipient_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/artifacts": {
       "GET": {
         "params": [
@@ -2383,6 +2460,56 @@
         ],
         "responses": [
           "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/knowledge/imports/{operation_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "operation_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/knowledge/imports/{operation_id}/retry": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "operation_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "404",
+          "409",
           "422"
         ]
       }

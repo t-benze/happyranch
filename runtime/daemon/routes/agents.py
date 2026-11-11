@@ -3056,6 +3056,8 @@ def _entry_to_dict(entry: MemoryItem) -> dict:
         "updated_at": entry.updated_at,
         "lifecycle": entry.lifecycle,
         "provenance": entry.provenance,
+        "inherited_from": entry.inherited_from,
+        "imported_at": entry.imported_at,
         "salience": entry.salience,
         "last_verified": entry.last_verified,
     }
@@ -3088,6 +3090,9 @@ async def list_learnings(
                 "tags": s.tags,
                 "promoted_to": s.promoted_to,
                 "updated_at": s.updated_at,
+                "provenance": s.provenance,
+                "inherited_from": s.inherited_from,
+                "imported_at": s.imported_at,
             }
             for s in summaries
         ],
@@ -3226,6 +3231,8 @@ async def search_learnings(
                 "source": h.source,
                 "lifecycle": h.lifecycle,
                 "provenance": h.provenance,
+                "inherited_from": h.inherited_from,
+                "imported_at": h.imported_at,
                 "salience": h.salience,
                 "updated_at": h.updated_at,
             }

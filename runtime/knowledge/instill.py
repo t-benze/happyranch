@@ -1,4 +1,6 @@
-"""S3a synchronous Instill owner; HTTP/CLI/caller authentication belong to S3b.
+"""Synchronous Instill owner and read-only S3b eligibility projection.
+
+Public transport and caller authentication belong to the knowledge router.
 
 No new task, provider, executor or permission is created. Existing roster/team
 admission revalidates the recipient. Both async locks plus the DB RLock span a
@@ -19,7 +21,9 @@ from runtime.knowledge.admission import collect_import_blockers
 from runtime.knowledge.archives import ArchiveError, KnowledgeArchiveStore, _json, _now
 from runtime.knowledge.curation import CuratedItem
 from runtime.knowledge.imports import ImportError, KnowledgeImportStore
-from runtime.knowledge.lifecycle_models import ImportItemResult, ImportOperation, InstillConfirmation
+from runtime.knowledge.lifecycle_models import (
+    ImportEligibility, ImportEligibilityItem, ImportItemResult, ImportMapping, ImportOperation, InstillConfirmation,
+)
 from runtime.knowledge.sources import SOURCE_ID
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
@@ -77,6 +81,26 @@ class InstillLifecycle:
             raise ImportError('knowledge_import_busy_finish_wait_then_retry', blockers)
         return memory
 
+    @staticmethod
+    def _item_eligible(item: CuratedItem) -> bool:
+        return bool(item.instill_eligible and item.content and item.content.strip()
+                    and not set(item.flags) & {'superseded', 'evicted', 'stale', 'promoted'})
+
+    def _history_recipient(self, recipient_id: str) -> None:
+        """Resolve a read target without imposing current write eligibility on history."""
+        if SOURCE_ID.fullmatch(recipient_id) is None:
+            raise ImportError('knowledge_import_recipient_not_found')
+        paths = OrgPaths(root=self.org.root)
+        try:
+            known = any(a.name == recipient_id for a in (
+                *prompt_loader.list_agents(paths), *prompt_loader.list_pending(paths),
+                *prompt_loader.list_terminated(paths),
+            ))
+        except Exception:
+            raise ImportError('knowledge_import_recipient_unavailable') from None
+        if not known and not self.store.list(recipient_id):
+            raise ImportError('knowledge_import_recipient_not_found')
+
     def _selection(self, recipient_id: str, body: InstillConfirmation) -> dict[str, CuratedItem]:
         try:
             archive = self.archives.get_archive(body.archive_id)
@@ -91,8 +115,7 @@ class InstillLifecycle:
             if identifier not in items:
                 raise ImportError('knowledge_import_unknown_item')
             item = items[identifier]
-            if (not item.instill_eligible or not item.content or not item.content.strip()
-                    or set(item.flags) & {'superseded', 'evicted', 'stale', 'promoted'}):
+            if not self._item_eligible(item):
                 raise ImportError('knowledge_import_item_ineligible')
         return {identifier: items[identifier] for identifier in body.item_ids}
 
@@ -131,7 +154,47 @@ class InstillLifecycle:
 
     async def list(self, recipient_id: str) -> list[ImportOperation]:
         async with self.org.db_lock:
+            self._history_recipient(recipient_id)
             return [self.store.projection(o['operation_id']) for o in self.store.list(recipient_id)]
+
+    async def eligibility(self, recipient_id: str, archive_id: str) -> ImportEligibility:
+        """Advisory only: no reservation, confirmation, reconciliation or writes.
+
+        Exact mappings include incomplete intents so the picker cannot advertise
+        them as new/missing. Submit/retry still revalidate S3a admission.
+        """
+        async with self.org.teams_lock:
+            async with self.org.db_lock:
+                with self.org.db._lock:
+                    self._history_recipient(recipient_id)
+                    try:
+                        archive = self.archives.get_archive(archive_id)
+                    except ArchiveError:
+                        raise ImportError('knowledge_import_ready_same_org_archive_required') from None
+                    reason, blockers = None, []
+                    try:
+                        if archive['source_id'] == recipient_id:
+                            raise ImportError('knowledge_import_source_equals_recipient')
+                        self._admit(recipient_id)
+                    except ImportError as error:
+                        reason, blockers = error.code, error.blockers
+                    identity = {'archive_id': archive_id, 'archive_version': archive['version'],
+                                'recipient_id': recipient_id}
+                    items = []
+                    for raw in archive['items']:
+                        item = CuratedItem.model_validate(raw)
+                        item_reason = ('knowledge_import_item_ineligible' if
+                                       not self._item_eligible(item) else None)
+                        row = self.store.item(identity, item.item_id)
+                        mapping = (ImportMapping(operation_id=row['operation_id'], memory_id=row['memory_id'],
+                                                 state=row['state'], reason=row['reason'], completed_at=row['completed_at'])
+                                   if row else None)
+                        items.append(ImportEligibilityItem(item_id=item.item_id, eligible=item_reason is None,
+                                                           reason=item_reason, mapping=mapping,
+                                                           default_selected=reason is None and item_reason is None and row is None))
+                    return ImportEligibility(recipient_id=recipient_id, archive_id=archive_id,
+                                             archive_version=archive['version'], source_id=archive['source_id'],
+                                             recipient_eligible=reason is None, reason=reason, blockers=blockers, items=items)
 
     def _entry(self, operation: dict, item: CuratedItem, identifier: str) -> MemoryItem:
         now = _now()
