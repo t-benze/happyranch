@@ -4,69 +4,22 @@ description: Enroll, update, or terminate an agent. Write a JSON file and call h
 ---
 
 
-## Integrated team-move F candidate handoff (THR296seq135)
+## Retained preparation and admission
 
-Founder-controlled `teams move capability/preview/apply/show/recover` now has
-public service/CLI source. F proposes APPLY_AVAILABLE=True with actual native
-apply AND recovery readiness gates; whole-feature independent acceptance and
-manager guarded merge remain required. Skills/agents gain no execution or
-ambient-bearer self-admission authority. Manage-agent retains team/role; transfers use the
-separate admitted founder operation. Preview uses only the pure native planner,
-not materializers/resets/reservations. Exact normalized client bytes/key are
-privately fsynced before POST, including exact saved-file reuse/apply reads;
-a complete prior failed-save file requires fresh descriptor/byte validation,
-file fsync/close and containing-directory fsync/close. Partial/changed bytes
-refuse without overwrite/new key; same-UID limitations remain. Preserve key on
-transport loss and use same-key
-show, never automatic second apply. HTTP202/CLI3 is in-flight, saved COMPLETE
-readback/release alone permits apply200/CLI0; refusal/repair is1, parser2.
-Show is read-only; recover explicitly binds SAME ID/revision and native prior
-owner/process proof/CAS. Durable daemon tasks survive client disconnect; shutdown
-reaps them before DB close without clearing holds. Diagnostic-org read/recovery
-uses strict native owners, closes before positive normal attachment and clears
-only after successful native map insertion. Native dedup redelivery follows.
-Show/recover diagnostics distinguish strict saved bounded code/owner IDs and
-original/latest recovery/publisher identities from current native census and
-publisher owner observations. Diagnostic-only reads require no ordinary attachment
-or preview; unavailable ownership stays unknown. Async failure/secondary close
-or attachment facts are safe process-local observations, never durable evidence.
-Resolve named dependencies before explicit SAME operation/target/revision recovery;
-no automatic retry or TTL takeover. Both show GET forms declare202/CLI3 in-flight.
-D staging/history/leases, C1-C3 uncertainty/EMPTY budgets and actual callbacks
-remain. Earlier unavailable-E statements below describe historical checkpoints.
-Current contract: docs/superpowers/specs/2026-10-14-online-team-move.md and
-engineering-owned docs/runbooks/online-team-move.md. F candidate source,
-independent acceptance/merge, separately authorized release loading and exact
-Founder live operation are distinct. Shared bearer does not prove human presence. Behavior
-UNEXECUTED, integration INCLUDING callback SKIPPED24342, units RETIRED; no new
-cases/campaign, live operation, deployment or cleanup authority follows.
+`OrgState.load` retains the org-owned `team_move_operations` compatibility table.
+`install_team_move_schema` validates the existing layout/history and org identity,
+creates only the frozen literal table when absent, and validates before COMMIT.
+The active-row startup refusal is removed with the online operation/recovery
+surface. The release schema digest is unchanged. The accepted
+`--reader-guarded-start` launcher flag is now inert. Launch-admission and native
+writer hooks remain for the later cleanup slice; their holds and uncertainty
+rules still apply. No live state, audit history or stored move row is rewritten.
 
-
-F native release preparation runs through `OrgState.load`: strict read-only move
-discovery precedes naming preflight, generic compatibility writes, roster
-validation, publication and producer admission. After complete native workflow
-validation, the DB-owned `install_team_move_schema` transaction validates exact
-existing layout/history/org identity, refuses held/unknown state, installs only
-the literal ONE table if absent, and validates before COMMIT. Repeated compatible
-attachment is idempotent. Generic Database/runtime-audit, capability/preview/show
-and restricted diagnostic recovery never install or repair it. Source delivery
-does not call it on production: separately authorized compatible release loading
-through the supported launcher performs native preparation; Founder assembles
-no files, SQL or offline manifest. Missing schema/owners are engineering release
-dependencies. Even an empty installed table requires reader@3. An absent optional
-layout remains compatible with generic/older readers; source rollback cannot
-undo durable state or grant a downgrade.
-
-F also freezes C2 thread retry initialization explicitly, including EMPTY
+C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a
 frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
 their original history interpretation but refuse ambiguous new retry/reentry
 with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
-Updated shell/Mac launchers require `online-team-move@3` (reads old @1/@2), so
-earlier supported parsers refuse before startup. Already-running old daemons,
-obsolete launchers and unchecked old interpreters remain outside that guard.
-All behavioral/installation/recovery/launcher observations remain UNEXECUTED.
-
 
 Historical task attribution is separate from current launch eligibility. The
 complete parent/child/revisit/chain/fanout/workflow closure retains task team keys,
@@ -108,55 +61,6 @@ retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
 INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
-## D private operation and startup holds (THR296seq135)
-
-The corrected reader is online-team-move@3 (also reads old @1/@2 records); supported
-launchers pass --reader-guarded-start=online-team-move@3 and reject earlier D
-readers. Per-org open/identity/SQLite errors remain diagnostic-only and survive
-startup/switch readback. Restricted recovery preserves the original error on
-close failure; standalone close failures retain native classification and holds.
-Recovery reconciles only pre-recorded operation staging
-intent/acquired identity/terminal disposition in existing audits. Unknown acquired
-identity or cleanup stays held even after owner-finished; no glob deletion or
-legacy evidence adoption is allowed. Native discovery and publication capture
-run outside durable profile/publication mutation leases, with revision/epoch/CAS
-revalidation before mutation and at final release. This grants no skill execution,
-cleanup, activation, live operation or behavioral-proof authority.
-
-Global/rebind/claim/retry/synchronization profile writers retain diagnostic roots
-and refuse without diagnostic filesystem/DB acquisition while leased, even with
-EMPTY dependencies.
-Adapter removal reports the retained EMPTY-dependency diagnostic refusal as
-HTTP409 with `detail.code`; its bounded `ProfileCoordinatorError` translation
-preserves unrelated exceptions and native removal/audit/compensation.
-Native startup/attachment performs positive inspection
-outside leases. Matching attachment revalidates its actual already-open DB owner
-in the short segment; only successful attachment clears its diagnostic. Other
-roots, failed attachment, current holds and malformed history stay held. D's
-own-operation/native-identity exception also checks EMPTY dependencies. Public
-recovery/reattachment is source-wired by E and gated on actual native owners by F; no skill authority is granted.
-
-
-D supplies private canonical/context/reset/profile/publication/recovery source.
-E supplies public API/CLI source; F proposes reviewed source enablement with
-separate actual apply/recovery readiness gates;
-no skill or agent may invoke the private owner or use ambient bearer credentials
-to self-admit a move. Manage-agent still cannot transfer teams. New startup
-schema-owner discovery precedes compatibility writers and partial membership;
-unknown/unresolved state keeps that org diagnostic-only and its durable holds.
-Only admitted bounded same-operation recovery can reconcile exact owned images
-and native owner evidence; no timeout, missing tracker or source rollback releases
-it. Updated launchers require the guarded reader protocol; old running daemons
-and arbitrary direct old interpreters remain outside that protection. Source
-and static checks do not prove behavior. No activation/restart/live move, new
-tests/campaign, callback fabrication or cleanup authority follows. Earlier C3
-checkpoint text below records that slice only; current D disposition is in
-`docs/superpowers/specs/2026-10-14-online-team-move.md`. SAME13 observations stay;
-behavior/recovery UNEXECUTED, integration INCLUDING callback SKIPPED24342,
-Python units RETIRED. Native permission/execution enforcement is unchanged.
-
-
-
 ## Current names and permanent automation IDs
 
 Fresh prompts may show current Name · ID for this turn. Use the permanent ID
@@ -182,11 +86,9 @@ validation/rollback/temporary-cleanup evidence can settle a refused writer.
 No history deletion, automatic recovery, apply or execution authority follows.
 
 Team transfers and manager demotion remain outside manage-agent. Update retains
-the existing team/role. Founder THR296seq135 approved a separate coordinated
-online consultant move under TASK11345. C1 supplies task/host holds and preserves
-real callback/retry/cleanup ownership; it changes no permission generator or
-manage-agent admission. D recovery/old-reader closure is still required. No move command/route or apply/COMPLETE writer is available and no live
-move is authorized. Later complete source requires founder admission.
+the existing team/role. Retained C1 task/host holds preserve real callback/retry/
+cleanup ownership and change no permission generator or manage-agent admission.
+The online operator surface and D operation/recovery are removed.
 Admission refusal preserves pending work. Retry handoff retains each uncertain
 attempt separately; provider return is not containment proof. Pause attribution
 settles only after workflow reconciliation and an explicit safe outer-cleanup
@@ -208,10 +110,9 @@ admits new work. Queue dedup spans queued/in-flight work, typed deferrals releas
 notification ownership, and complete durable runnable discovery/redelivery keeps
 pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
 and raw reapers preserve held/C2-owned history. Participant/session writes
-cooperate during future forward reset; messages remain admissible. The bounded
-thread census/drain and post-release seams are available to D, whose complete
-startup/containment/operation/old-reader closure remains absent. No public apply
-or COMPLETE writer; APPLY_AVAILABLE stays false. Behavior remains UNEXECUTED,
+retain their admission guards; messages remain admissible. The bounded
+thread census/drain and post-release seams remain in the launch-admission layer.
+Behavior remains UNEXECUTED,
 integration SKIPPED24342; no new product tests/fixtures or activation authority.
 Native archive admission precedes delivery discard, BOOTSTRAP reaping, status,
 participant resets, their audits and the archive system message in one DB-owned
@@ -226,8 +127,7 @@ unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SI
 These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
 
 Do not substitute termination/re-enrollment, direct roster writes or ambient
-agent credentials. See docs/superpowers/specs/2026-10-14-online-team-move.md in
-the release source; this prose grants no execution/permission change.
+agent credentials. This prose grants no execution/permission change.
 
 For an `update`, first obtain the target's current `revision` from the active
 agent roster and include that exact value as `expected_revision` in the
@@ -265,9 +165,8 @@ roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
 source/target membership, keeping their original synchronization and journals.
 Strict bounded version1 producer/writer audits append in existing audit_log;
 earlier uncertainty survives later clean outcomes. No extra table, permission
-or auth change, remote engine, move/reset/publication service or COMPLETE writer.
-D composes the canonical capture/coherent publication reader and complete early
-startup/recovery/old-reader guard; D/E/F remain outstanding. APPLY_AVAILABLE=False.
+or auth change. The online move/reset/publication service is removed;
+C3 admission and native writer ownership remain.
 All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
 Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
 
@@ -435,5 +334,5 @@ cannot erase it. The common1800-second window includes reservation admission.
 Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
 remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
-Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
-source and independent gates are described above. No live capability follows.
+Python units RETIRED. Retained C3 admission/native-writer hooks grant no
+live move or cleanup authority.

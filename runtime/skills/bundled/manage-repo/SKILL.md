@@ -79,7 +79,7 @@ offload inside their actual preparation-effects scope before cancellation and
 settlement; prior unknowns stay sticky. The enclosing runner retains its org
 lifetime through native finish, including failure. Unload refuses active runners
 and fences late starts on detached instances. Runtime registration (including
-the same root) and /runtime/use preflight all old orgs for task/runner/team-move
+the same root) and /runtime/use preflight all old orgs for task/runner
 holds before any close or registration/activation effect, returning409 if busy.
 Shutdown refuses replacement before construction. Idle replacement closes and
 fences all retired instances before publishing the new org map; a busy later org

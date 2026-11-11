@@ -25,23 +25,17 @@ def _assert_can_swap(state: DaemonState) -> None:
         raise HTTPException(status_code=409, detail={"code": "daemon_shutting_down"})
     if state._attachment_swap_failed or state._startup_held_orgs:
         raise HTTPException(status_code=409, detail={"code": "attachment_retiring"})
-    state.team_move_service.assert_no_owner()
     try:
         state._assert_attachment_loads_idle()
         state._assert_attachment_readers_idle(tuple(state._all_orgs_snapshot().values()))
     except _OrgBusyError as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
-    from runtime.orchestrator.team_move_startup import refuse_runtime_detach
-    refuse_runtime_detach(state.runtime, diagnostics=state.broken_orgs)
     for org in state._all_orgs_snapshot().values():
         try:
             org._assert_runners_idle()
         except _OrgBusyError as exc:
             raise HTTPException(status_code=409, detail={"code": exc.code, "org": org.slug}) from exc
     for org in state._all_orgs_snapshot().values():
-        if org.db._team_move_coordinator.store.read() is not None:
-            from runtime.infrastructure.team_move_store import TeamMoveError
-            raise TeamMoveError("team_move_runtime_detach_held")
         try:
             in_flight = org.db.get_nonterminal_task_ids()
             if in_flight:
@@ -53,7 +47,7 @@ def _assert_can_swap(state: DaemonState) -> None:
             raise HTTPException(status_code=409, detail=detail) from exc
 
 
-def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> None:
+def _swap(state: DaemonState, runtime: RuntimeDir) -> None:
     """Replace the runtime synchronously; route callers hold orgs_lock."""
     # Same-root registration also reconstructs OrgStates. Consult the OLD
     # instances before construction, then fence stale references via close.
@@ -69,9 +63,6 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
             org._assert_cleanup_diagnostics_idle()
         except _OrgBusyError as exc:
             raise HTTPException(status_code=409, detail={"code": exc.code, "org": org.slug}) from exc
-    from runtime.orchestrator.team_move_startup import require_runtime_reader
-    diagnostics = dict(move_diagnostics or {})
-    diagnostics.update(require_runtime_reader(runtime))
     old_orgs = tuple(state._all_orgs_snapshot().values())
     owner = {"runtime": runtime, "old_orgs": old_orgs, "candidate": None}
     token = object()
@@ -87,7 +78,7 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
             state.orgs.clear()
             state._startup_held_orgs.clear()
         state._close_attachments(old_orgs)
-        new_state = DaemonState.from_runtime(runtime, state.settings, move_diagnostics=diagnostics,
+        new_state = DaemonState.from_runtime(runtime, state.settings,
                                              construction_owner=owner)
     except BaseException as primary:
         owner.setdefault("primary", primary)
@@ -110,10 +101,6 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     if state.profile_coordinator is not None:
         state.profile_coordinator._attachment_capture = state._capture_profile_orgs
         state.profile_coordinator._hold_startup = state._hold_startup_orgs
-    # No live owner can cross the switch (checked above). Keep diagnostic
-    # trackers/errors scoped to this runtime rather than the reused org slug.
-    from runtime.daemon.team_move_service import TeamMoveService
-    state.team_move_service = TeamMoveService(state)
     # Close the old metrics store and adopt the new runtime's store so
     # persisted snapshots always target the ACTIVE runtime's metrics.db.
     if state.metrics_store is not None:
@@ -185,8 +172,8 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
             if not path.exists():
                 path.mkdir(parents=True, exist_ok=True)
             runtime = RuntimeDir.init(path)
-            diagnostics = reg.register(path)
-            _swap(daemon, runtime, move_diagnostics=diagnostics)
+            reg.register(path)
+            _swap(daemon, runtime)
         finally:
             daemon._finish_attachment_swap()
     ensure_workers_started(daemon)
@@ -203,11 +190,9 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
     async with daemon.orgs_lock:
         _renew_swap_preflight(daemon, captured)
         try:
-            from runtime.orchestrator.team_move_startup import require_runtime_reader
             runtime = RuntimeDir.load(path)
-            diagnostics = require_runtime_reader(runtime)
-            diagnostics.update(reg.activate(path))
-            _swap(daemon, runtime, move_diagnostics=diagnostics)
+            reg.activate(path)
+            _swap(daemon, runtime)
         finally:
             daemon._finish_attachment_swap()
     ensure_workers_started(daemon)

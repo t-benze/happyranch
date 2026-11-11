@@ -139,9 +139,6 @@
     "runtime.daemon.task_scratch_reclamation": {
       "path": "runtime/daemon/task_scratch_reclamation.py"
     },
-    "runtime.daemon.team_move_service": {
-      "path": "runtime/daemon/team_move_service.py"
-    },
     "runtime.daemon.thread_delivery_release_service": {
       "path": "runtime/daemon/thread_delivery_release_service.py"
     },
@@ -423,24 +420,6 @@
     },
     "runtime.orchestrator.team_move": {
       "path": "runtime/orchestrator/team_move.py"
-    },
-    "runtime.orchestrator.team_move_canonical": {
-      "path": "runtime/orchestrator/team_move_canonical.py"
-    },
-    "runtime.orchestrator.team_move_context": {
-      "path": "runtime/orchestrator/team_move_context.py"
-    },
-    "runtime.orchestrator.team_move_operation": {
-      "path": "runtime/orchestrator/team_move_operation.py"
-    },
-    "runtime.orchestrator.team_move_public": {
-      "path": "runtime/orchestrator/team_move_public.py"
-    },
-    "runtime.orchestrator.team_move_recovery": {
-      "path": "runtime/orchestrator/team_move_recovery.py"
-    },
-    "runtime.orchestrator.team_move_startup": {
-      "path": "runtime/orchestrator/team_move_startup.py"
     },
     "runtime.orchestrator.teams": {
       "path": "runtime/orchestrator/teams.py"

@@ -693,7 +693,7 @@ THR307 seq62, never PASS. They are excluded from correction verification; do not
 execute them through cases3/6, the full driver or isolation flags on this waiver.
 
 
-## C3 online-move composition (TASK11345 / Founder296seq135)
+## Retained C3 native-writer composition (TASK11345 / Founder296seq135)
 
 The scheduled daemon disk worker reserves a global native writer per admitted
 org before spawn, through supervision/reap/report. Held/unowned orgs defer with
@@ -708,7 +708,12 @@ THR307seq134 scheduled deletion covers every admitted org; metadata/jobs/age/
 containment safeguards and explicit manual dry-run remain. This C3 source
 checkpoint grants no live cleanup authority. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
-Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.
+Python units RETIRED. Founder THR296 seq316 retired team moves; PR-2 removes
+the online operator surface and D operation/recovery/startup guards. The earlier
+APPLY_AVAILABLE and D/E/F readiness statements are historical. The C3 native-writer
+admission, optional-layout/hold and uncertainty gates above remain live pending
+the separate PR-3 removal. The org-owned compatibility table and frozen release
+schema digest remain; this cleanup grants no live operation or residue repair.
 
 
 ## Agent lifecycle awareness under seq117

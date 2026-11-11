@@ -16,7 +16,7 @@ OpenAPI snapshot still own runtime rules.
 | [authority-policy.md](authority-policy.md) | THR-181 escalation policy/hook, THR-229 v2 dual-text policy checkpoints, THR-277/279 refusal routing and display, THR-299/291 continuation receipts |
 | [task-orchestration.md](task-orchestration.md) | Creation-time task ownership, attachment claims and correction budget, verified retry transactions, delegated retry failures, root Pause/Resume, human-team failed recovery, root retry thread association |
 | [runtime-lifecycle.md](runtime-lifecycle.md) | Native launch refusals, task/thread preparation ownership, repository refresh and Git leases, preparation recovery, async runner/org lifetimes, cleanup diagnostics, startup refusal safety, audit indexes, parent-wake admission, graceful shutdown |
-| [teams-and-org-admin.md](teams-and-org-admin.md) | Online team move (B–F), founder-managed teams, empty Default team, org portability preflight |
+| [teams-and-org-admin.md](teams-and-org-admin.md) | Retained launch-admission hooks, founder-managed teams, empty Default team, org portability preflight |
 | [threads-and-naming.md](threads-and-naming.md) | Thread delivery release, reply routing/exchange, rename/pin/paging, provider session resume, reply breaker, task-followup replacement, naming core/API/CLI/UI, literal text and recipient intentions |
 | [jobs-and-cleanup.md](jobs-and-cleanup.md) | Automatic job admission/Stop, nightly disk sweeper, task-scratch evidence, workspace cleanup scheduler and safety, current-use scanner, root-terminal worktree reconciliation |
 | [executors-and-platform.md](executors-and-platform.md) | Reasoning effort, canonical skill store and workspace links, task capacity, host-resource concurrency, bounded Codex completion recovery |

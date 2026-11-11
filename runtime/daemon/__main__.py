@@ -677,7 +677,6 @@ def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:
 @_startup_span("build_state")
 def _build_state(settings: Settings) -> DaemonState:
     reg = runtimes.load()
-    move_diagnostics = {}
     if reg.active is None:
         # Auto-provision a default runtime on first launch so the daemon
         # never starts idle unless the provisioning itself fails.
@@ -687,12 +686,12 @@ def _build_state(settings: Settings) -> DaemonState:
         if reg.registered:
             target = reg.registered[0]
             logger.info("no active runtime — activating existing registered runtime: %s", target)
-            move_diagnostics.update(runtimes.activate(target))
+            runtimes.activate(target)
         else:
             default_path = paths.daemon_home() / "runtime"
             logger.info("no active runtime — auto-provisioning default runtime at %s", default_path)
             RuntimeDir.init(default_path)
-            move_diagnostics.update(runtimes.register(default_path))
+            runtimes.register(default_path)
         reg = runtimes.load()
         if reg.active is None:
             # Defensive: if provisioning still yields no active runtime,
@@ -703,7 +702,7 @@ def _build_state(settings: Settings) -> DaemonState:
     runtime = RuntimeDir.load(reg.active)
     owner = {"runtime": runtime, "candidate": None}
     try:
-        state = DaemonState.from_runtime(runtime, settings, move_diagnostics=move_diagnostics,
+        state = DaemonState.from_runtime(runtime, settings,
                                          construction_owner=owner)
     except BaseException as primary:
         # The original exception carries its original candidate/close owner
@@ -939,7 +938,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--reader-guarded-start", nargs="?", const="online-team-move@1",
         choices=("online-team-move@1", "online-team-move@2", "online-team-move@3"),
-        help="Supported launcher reader-capability protocol; incompatible older parsers refuse before startup.")
+        help="Accepted for launcher compatibility; no effect.")
     return parser
 
 

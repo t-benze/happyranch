@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from runtime.daemon.team_move_service import TeamMoveService
     from runtime.daemon.cleanup_diagnostics import _CleanupDiagnostics
     from runtime.daemon.thread_delivery_release_service import _ThreadDeliveryReleaseService
 
@@ -69,7 +68,6 @@ class DaemonState:
     # constructed only for runtime-backed states after every initial OrgState
     # has loaded, then reconciled before the DaemonState is returned.
     profile_coordinator: ProfileCoordinator | None = None
-    team_move_service: TeamMoveService = field(init=False, repr=False)
     _runner_shutdown: bool = field(init=False, default=False, repr=False)
     _shutdown_complete: bool = field(init=False, default=False, repr=False)
 
@@ -326,10 +324,8 @@ class DaemonState:
         """Construct metrics_store for runtime-backed state.
 
         Called by from_runtime after the dataclass constructor.
-        Idle states still own the inert move service; metrics_store is set by idle().
+        Idle states have metrics_store set by idle().
         """
-        from runtime.daemon.team_move_service import TeamMoveService
-        self.team_move_service = TeamMoveService(self)
         if self.runtime is not None and self.metrics_store is None:
             self.metrics_store = MetricsStore(
                 str(self.runtime.root / "metrics.db")
@@ -341,17 +337,11 @@ class DaemonState:
             )
 
     @classmethod
-    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, move_diagnostics=None, construction_owner: dict | None = None) -> "DaemonState":
-        from runtime.orchestrator.team_move_startup import require_runtime_reader
-        diagnostics = dict(move_diagnostics or {})
-        diagnostics.update(require_runtime_reader(runtime))
+    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, construction_owner: dict | None = None) -> "DaemonState":
         state = cls(runtime=runtime, settings=settings)
         construction = construction_owner if construction_owner is not None else {}
         construction["candidate"] = state
         try:
-            state.broken_orgs.update(diagnostics)
-            from runtime.orchestrator.team_move_startup import diagnostic_move_orgs
-            state.broken_orgs.update(diagnostic_move_orgs(runtime))
             # __post_init__ constructs metrics_store at runtime.root/metrics.db
 
             # THR-207 task-producer wiring: construct the daemon-wide supervisor
@@ -465,13 +455,6 @@ class DaemonState:
                 # writers reach their daemon-owned machine coordinator through
                 # the already-injected OrgState.
                 org._profile_coordinator = state.profile_coordinator
-            # Diagnostic move orgs remain outside runnable orgs. Global profile
-            # writers must not omit their held dependency closure merely because
-            # ordinary attachment correctly refused the partial roster.
-            state.profile_coordinator._move_diagnostic_orgs = {
-                slug: runtime.orgs_dir / slug for slug, reason in state.broken_orgs.items()
-                if "team_move_" in reason
-            }
             if state.broken_orgs:
                 # An unloaded root cannot certify its absent profile membership.
                 state.profile_coordinator._startup_unknown = True
@@ -612,17 +595,9 @@ class DaemonState:
                 await self._attachment_native(owner, lambda: org.orchestrator._rediscover_returned(queue=queue))
                 await queue.join_puts()
                 self.broken_orgs.pop(slug, None)
-                if owner["profiles"] is not None:
-                    getattr(owner["profiles"], "_move_diagnostic_orgs", {}).pop(slug, None)
             except BaseException as exc:
                 primary = exc
                 owner["primary"] = exc
-                if isinstance(exc, ValueError) and "team_move_" in str(exc):
-                    self.broken_orgs[slug] = str(exc)
-                    if owner["profiles"] is not None:
-                        diagnostics = getattr(owner["profiles"], "_move_diagnostic_orgs", {})
-                        diagnostics[slug] = owner["root"]
-                        owner["profiles"]._move_diagnostic_orgs = diagnostics
                 raise
             finally:
                 # A successful Future is insufficient if native retirement is
@@ -660,9 +635,6 @@ class DaemonState:
 
     def _load_attachment(self, owner: dict) -> None:
         slug, root = owner["slug"], owner["root"]
-        if "team_move_" in self.broken_orgs.get(slug, ""):
-            from runtime.infrastructure.team_move_store import inspect_team_move_org
-            inspect_team_move_org(root, org_slug=slug, require_database=True)
         org = OrgState.load(slug=slug, root=root, settings=self.settings, attachment_owner=owner)
         owner["org"] = org  # strong handle before selector validation can fail
         if org._startup_publication_held:
@@ -710,15 +682,11 @@ class DaemonState:
     def _assert_can_remove_org(self, slug: str) -> OrgState | None:
         if self._runner_shutdown:
             raise _OrgBusyError("daemon_shutting_down")
-        self.team_move_service.assert_no_owner(slug)
         if slug in self._startup_held_orgs or self._attachment_swap_failed:
             raise _OrgBusyError("attachment_retiring")
         current = self.orgs_snapshot().get(slug)
         if current is not None:
             current._assert_runners_idle()
-            if current.db._team_move_coordinator.store.read() is not None:
-                from runtime.infrastructure.team_move_store import TeamMoveError
-                raise TeamMoveError("team_move_runtime_detach_held")
             in_flight = current.db.get_nonterminal_task_ids()
             if in_flight:
                 raise _OrgBusyError("active_tasks_in_flight", task_ids=in_flight)
@@ -727,10 +695,9 @@ class DaemonState:
     async def remove_org(self, slug: str) -> None:
         async with self.orgs_lock:
             # Local checks only: C may own the DB through a stalled COMMIT.
-            # Reach finite revoke before any DB-backed task/move preflight.
+            # Reach finite revoke before any DB-backed task preflight.
             if self._runner_shutdown:
                 raise _OrgBusyError("daemon_shutting_down")
-            self.team_move_service.assert_no_owner(slug)
             current = self.orgs_snapshot().get(slug)
             if current is not None:
                 current._assert_runners_idle(thread_releases=False)
@@ -779,7 +746,6 @@ class DaemonState:
         self.queue.assert_native_idle()
         for org in self._all_orgs_snapshot().values():
             org._assert_runners_idle()
-        await self.team_move_service.close()
         async with self.orgs_lock:
             self._assert_attachments_unchanged(captured)
             # Fail before any close if an unexpected caller still owns an org.

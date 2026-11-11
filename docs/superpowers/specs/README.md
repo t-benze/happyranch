@@ -9,7 +9,6 @@ This directory is append-only design history. Specs capture intent, alternatives
 Historical startup audit-scan supplement (superseded by THR-308 seq403 removal): [`2026-11-08-coding-audit-prefilter.md`](2026-11-08-coding-audit-prefilter.md)
 (THR308seq353/354); current behavior is in the coding workflow contract.
 
-- **current, approved implementation / inert B**: [Online consultant team move](2026-10-14-online-team-move.md) — Founder THR296seq135 / new TASK11345; C1-D closure and real downgrade guard precede available apply.
 - **current**: [Human-managed Default roster](2026-10-09-human-default-team-roster.md) — THR296 accepted contract; execution/readiness gates remain.
 
 ## Source Of Truth

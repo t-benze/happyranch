@@ -35,7 +35,6 @@ from runtime.daemon.routes import (
     skills,
     tasks,
     teams,
-    team_moves,
     threads,
     tokens,
     usage,
@@ -263,20 +262,6 @@ async def _lifespan(app: FastAPI):
                     trigger="startup_recovery", triggering_job_id=None,
                 )
 
-        # A durable D receipt can precede notification delivery when a daemon dies.
-        # Reuse real deduplicating producers after wiring; no reset/republication or
-        # synthesized callback. Diagnostic/held orgs never enter this runnable set.
-        from runtime.infrastructure.team_move_store import validate_team_move_schema
-        from runtime.orchestrator.team_move_operation import TeamMoveOperation
-        for org in state.orgs_snapshot().values():
-            with org.db._lock:
-                installed = validate_team_move_schema(org.db._conn, org_slug=org.slug)
-                completed_move = installed and org.db._conn.execute(
-                    "SELECT 1 FROM team_move_operations WHERE phase='complete' LIMIT 1"
-                ).fetchone() is not None
-            if completed_move and state.profile_coordinator is not None:
-                await TeamMoveOperation(org, state.profile_coordinator).redeliver()
-
         from runtime.orchestrator.task_pause import discover_pause_work
         for org in state.orgs_snapshot().values():
             await discover_pause_work(org, state.queue)
@@ -403,9 +388,6 @@ async def _lifespan(app: FastAPI):
         # shutdown. Revoke or drain failure forbids every close fallthrough.
         await state._drain_thread_releases()
         state._revoke_cleanup_diagnostics()
-        # HTTP disconnect never owns these tasks. Reap the bounded operation
-        # owners before host shutdown or any org DB can close; retain holds.
-        await state.team_move_service.close()
         # ── Host-session drain (THR-207 Slice A real-caller wiring) ──
         # Stop admission, cancel queued, and finish every owned attempt with a
         # durable SHUTDOWN winner BEFORE the producer workers are cancelled, so
@@ -531,7 +513,6 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(identities.router, prefix="/api/v1/orgs/{slug}", tags=["identities"])
     app.include_router(authority_policy.router, prefix="/api/v1/orgs/{slug}", tags=["authority-policy"])
     app.include_router(teams.router, prefix="/api/v1/orgs/{slug}")
-    app.include_router(team_moves.router, prefix="/api/v1/orgs/{slug}", tags=["team-moves"])
     app.include_router(audit.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(tokens.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(usage.router, prefix="/api/v1/orgs/{slug}", tags=["usage"])

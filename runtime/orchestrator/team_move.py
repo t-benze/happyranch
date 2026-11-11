@@ -1,7 +1,7 @@
 """Org-owned preparation and launch exclusion for the integrated move source.
 
-Private decision, release and recovery live in team_move_operation. The daemon
-service checks actual native prerequisites before advertising or executing work.
+The online operator service and D operation have been retired. Launch-admission
+hooks remain until the later cleanup slice.
 No optional schema is installed here; absent-layout ordinary tasks remain valid.
 """
 from __future__ import annotations
@@ -579,7 +579,7 @@ class TeamMoveCoordinator:
         )
 
     def startup_contract(self) -> dict:
-        """Diagnostic projection; actual early guards live in team_move_startup."""
+        """Legacy diagnostic projection; early startup move guards are retired."""
         row = self.store.read()
         with self.store.db.coherent_read_view() as conn:
             installed = validate_team_move_schema(conn, org_slug=self.store.org_slug)

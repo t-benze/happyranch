@@ -431,8 +431,6 @@ class OrgState:
     def load(cls, *, slug: str, root: Path, settings: Settings, attachment_owner: dict | None = None) -> "OrgState":
         from runtime.daemon.__main__ import _startup_span
         paths = OrgPaths(root=root)
-        from runtime.orchestrator.team_move_startup import before_org_attachment
-        before_org_attachment(root, slug)
         from runtime.identities.schema import preflight
         naming_preflight = preflight(paths.db_path, org_slug=slug)
         if attachment_owner is not None:
@@ -447,10 +445,9 @@ class OrgState:
                     install_or_recover(db, expected_org_slug=slug)
                     with db._lock:
                         layout = read_workflow_schema_for_org_load(db._conn, expected_org_slug=slug)[0]
-                # Native org release preparation, after strict early move discovery
-                # and complete workflow validation, before any roster/publication or
-                # producer attachment. Generic Database and diagnostic recovery never
-                # install this extension. An existing hold/unknown layout refuses.
+                # Retain the frozen org-owned compatibility layout after complete
+                # workflow validation, before roster/publication or producer attachment.
+                # Generic Database never installs this extension.
                 from runtime.infrastructure.team_move_store import install_team_move_schema
                 install_team_move_schema(db, org_slug=slug)
                 if layout == "F":
