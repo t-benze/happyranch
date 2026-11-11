@@ -425,12 +425,19 @@ class _LibProc:
         n = self._lib.proc_pidinfo(
             pid, self.PROC_PIDTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info)
         )
+        native_errno = ctypes.get_errno()
         if getattr(_checked_read, "deadline", None) is not None and n != ctypes.sizeof(info):
             import errno
 
-            if n <= 0 and ctypes.get_errno() == errno.ESRCH:
+            if n <= 0 and native_errno == errno.ESRCH:
                 return None
-            raise ProcessObservationUnavailable("libproc identity observation unavailable")
+            # Numeric native evidence only; an opaque row is still unknown,
+            # including EPERM. UID alone cannot exclude a descendant.
+            raise ProcessObservationUnavailable(
+                f"libproc identity observation unavailable: pid={pid} returned={n} "
+                f"expected={ctypes.sizeof(info)} errno={native_errno} "
+                f"errno_name={errno.errorcode.get(native_errno, 'UNKNOWN')}"
+            )
         if n <= 0:
             return None
         return {

@@ -656,3 +656,29 @@ checks import and passthrough selection with libproc unavailable. Linux reports
 skipped JSON; static checks establish no native behavior. Native evidence for
 S1 remains pending until the one authorized Jenkins job is observed at its exact
 source SHA. No frozen-app build, deployment or restart follows from this suite.
+
+### THR-346 S1 checked-read diagnosis (2026-11-11)
+
+`sample` reaches `_snapshot_members` → `read_all_checked` → `MacProcReader.read_all`
+→ `_LibProc.bsd_info` for every enumerated PID. Launch already uses this checked
+snapshot and retains any failure as sticky uncertainty. The S1 layout/self-check
+correction did not introduce these calls. The permissive selection probe can
+succeed before a later checked scan refuses a native read.
+
+Checked identity exceptions now retain PID, returned/expected bytes and errno/name.
+No unreadable row is excluded: a foreign UID alone cannot disprove lineage or
+escaped group membership. In particular EPERM, unknown short reads and opaque
+same-owner processes remain fail-closed; later readability cannot erase prior
+uncertainty or fabricate a clean/quiescent receipt. Native errno evidence is
+required to establish the earlier build's cause; this is not a claim of a
+permission/race repair.
+
+The existing teardown suite records at most eight failed reads and later numeric
+OS PID/PPID/PGID/UID/RUID context for at most four distinct PIDs, explicitly
+separating known probe workers from unknown descendant status. It compares the
+full product BSD decode for self and all workers to independent OS identities,
+and exercises missing/zero task counters on real census rows through both
+samplers with a probe-only wrapper that is restored afterward. Sample failure
+still attempts product finish and records refusal/no receipt distinctly from
+probe rescue. Native and frozen-app acceptance remain separate outstanding
+evidence; no new job, trigger, deploy or restart is introduced. `truth` is unchanged.

@@ -106,7 +106,26 @@ independent signal-delivery proof). Every spawned PID must independently return
 ESRCH to `os.kill(pid, 0)` after product finish and before probe cleanup. JSON
 checks carry individual PASS/FAIL; failed assertions exit nonzero. A separate
 interpreter forces libproc loading to fail and verifies successful factory import
-and passthrough selection. Probe-owned TERM/KILL disposal and final PID absence
+and passthrough selection using the product `PassthroughBackend` class and
+`CapabilityReport.backend` returned by `probe()` (the fallback has no `name`).
+The same teardown run compares the product's full BSD PID/PPID/PGID decode for
+self and all three workers to their independently published `os.getpid()`,
+`os.getppid()` and `os.getpgid()` values. It also masks only task counters on
+real product observations to check P07 missing counters versus observed zero
+through both the backend and descendant sampler, restoring the reader afterward.
+
+Checked identity failures retain PID, returned/expected byte counts and numeric
+errno/name in the product exception. A probe-only wrapper retains the first
+eight failures, tagged launch/sample/finish; at most four distinct PIDs get a
+later `/bin/ps` numeric PID/PPID/PGID/UID/RUID observation plus bounded
+`getpwuid` name. Known worker membership is recorded separately; other rows
+remain unknown descendants. These later diagnostics do not authorize skipping
+any row. EPERM and unexplained short reads still fail closed, including for our
+own processes. The earlier build's cause remains unproven until native evidence
+identifies the actual failing PID/count/errno. Sample failure still attempts
+normal product finish, recording its refusal and absence of a receipt honestly.
+
+Probe-owned TERM/KILL disposal and final PID absence
 are recorded separately; a cleanup rescue never changes a product FAIL to PASS.
 Linux emits the same skipped JSON shape as `truth` and exits 0.
 

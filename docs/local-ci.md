@@ -1560,7 +1560,15 @@ PID/PPID decode; total size alone does not establish correct UID, parent or
 process-group offsets. Hosted native
 receipts must match the actual selected SDK definition. Inaccessible living
 processes still refuse the census; do not omit an opaque same-owner process or
-claim quiescence from an incomplete native table. The only privilege exception
+claim quiescence from an incomplete native table. Checked libproc identity
+failures include bounded PID, returned/expected byte counts and errno/name;
+EPERM is not proof that a row is outside a session. The existing Jenkins
+`teardown` suite records up to eight such failures, later numeric OS ownership
+context for at most four PIDs, full self/worker PID/PPID/PGID decode, P07
+missing-versus-zero counter cases, and product finish even after sample failure.
+These diagnostics neither bypass checked reads nor prove frozen-app behavior.
+`truth` retains its original observations; no extra job or CI trigger is added.
+The only privilege exception
 is the explicitly admitted TASK-10245/THR-294 ephemeral read-only native observer
 on disposable GitHub-hosted Ubuntu and native macOS15 runners. Their existing
 [passwordless sudo](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)

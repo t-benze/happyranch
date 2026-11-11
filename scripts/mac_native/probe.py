@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import resource
 import selectors
 import signal
@@ -499,7 +500,9 @@ import ctypes
 import ctypes.util
 import json
 import sys
+import logging
 sys.path.insert(0, sys.argv[1])
+logging.disable(logging.CRITICAL)
 original = ctypes.CDLL
 attempts = []
 def fail_proc(name, *args, **kwargs):
@@ -511,8 +514,11 @@ ctypes.CDLL = fail_proc
 from runtime.platform.backend_factory import select_session_backend
 import_attempts = list(attempts)
 backend = select_session_backend()
+from runtime.platform.passthrough_backend import PassthroughBackend
 print(json.dumps({"import_succeeded": True, "import_load_attempts": import_attempts,
-                  "libproc_load_attempts": attempts, "selected_backend": backend.name}))
+                  "libproc_load_attempts": attempts,
+                  "selected_backend": backend.probe().backend,
+                  "is_passthrough": isinstance(backend, PassthroughBackend)}))
 '''
     result = subprocess.run(
         [sys.executable, "-c", script, str(ROOT)], cwd=ROOT,
@@ -525,6 +531,87 @@ print(json.dumps({"import_succeeded": True, "import_load_attempts": import_attem
     if result.returncode == 0:
         observation.update(json.loads(result.stdout))
     return observation
+
+
+def teardown_decode(libproc: Any, tree: dict[str, Any], check: Any) -> list[dict[str, Any]]:
+    """Compare the actual product layout to independently published OS identities."""
+    rows = []
+    for role, ground in {"self": identity(), **tree}.items():
+        decoded = observe_proc(libproc._lib, libproc._ProcBsdinfo, ground["pid"])
+        matches = {key: decoded.get(key) == ground[key] for key in ("pid", "ppid", "pgid")}
+        row = {"role": role, "ground_truth": ground, "repo": decoded,
+               "matches_ground_truth": matches}
+        rows.append(row)
+        check(f"P05_{role}_decode", all(matches.values()) and "error" not in decoded, row)
+    return rows
+
+
+def libproc_failure_context(failures: list[dict[str, Any]], tree: dict[str, Any]) -> None:
+    """Enrich at most four failed PID reads outside the product's scan deadline.
+
+    ps emits only one row of numeric identity fields, never arguments/names.
+    A later row is diagnostic evidence, not a product ownership/absence proof.
+    """
+    import pwd
+
+    known = {value["pid"] for value in tree.values()}
+    contexts: dict[int, dict[str, Any]] = {}
+    for failure in failures:
+        pid = failure["pid"]
+        failure["in_probe_tree"] = pid in known
+        failure["descendant_status"] = "known_probe_member" if pid in known else "unknown"
+        if pid not in contexts and len(contexts) < 4:
+            context: dict[str, Any] = {"observation": "after_failed_scan", "our_uid": os.getuid()}
+            result = subprocess.run(
+                ["/bin/ps", "-p", str(pid), "-o", "pid=,ppid=,pgid=,uid=,ruid="],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+            context["ps_exit_code"] = result.returncode
+            fields = result.stdout.split()
+            if len(fields) == 5 and all(value.isdecimal() for value in fields):
+                context.update(zip(("pid", "ppid", "pgid", "uid", "ruid"), map(int, fields)))
+                context["same_uid"] = context["uid"] == os.getuid()
+                try:
+                    context["uid_name"] = pwd.getpwuid(context["uid"]).pw_name[:64]
+                except KeyError:
+                    context["uid_name"] = None
+            else:
+                context["identity_available"] = False
+            contexts[pid] = context
+        failure["os_context"] = contexts.get(pid, {"unavailable": "four-PID diagnostic cap"})
+
+
+def teardown_counter_cases(backend: Any, running: Any, check: Any) -> dict[str, Any]:
+    """Mask counters on real rows, leaving product identity/ownership reads intact."""
+    from runtime.platform.process_census import DescendantSampler
+
+    libproc = backend._census.reader()._libproc
+    original = libproc.task_info
+    observations = {}
+    try:
+        for case, counters in (("missing", None), ("zero", {"rss_bytes": 0, "cpu_seconds": 0.0})):
+            libproc.task_info = lambda pid: counters
+            for name, sampler in (("backend", backend),
+                                  ("descendants", DescendantSampler(census=backend._census))):
+                key = f"P07_{name}_{case}"
+                try:
+                    sample = sampler.sample(running)
+                except Exception as exc:
+                    observations[key] = {"error": f"{type(exc).__name__}: {exc}"[:1024]}
+                    check(key, False, observations[key])
+                    continue
+                observations[key] = {
+                    "memory": sample.memory_peak_bytes, "cpu": sample.cpu_total_seconds,
+                    "process_count": sample.process_count, "provenance": sample.provenance,
+                }
+                expected = None if case == "missing" else 0
+                check(key, sample.memory_peak_bytes == expected
+                      and sample.cpu_total_seconds == expected and sample.process_count == 3
+                      and sample.provenance == ("unavailable" if case == "missing" else "sampled"),
+                      observations[key])
+    finally:
+        libproc.task_info = original
+    return observations
 
 
 def teardown(report: dict[str, Any]) -> None:
@@ -551,20 +638,42 @@ def teardown(report: dict[str, Any]) -> None:
           and forced.get("import_load_attempts") == [], forced)
     check("P03_factory_fallback", forced.get("exit_code") == 0
           and bool(forced.get("libproc_load_attempts"))
-          and forced.get("selected_backend") == "passthrough", forced)
+          and forced.get("selected_backend") == "passthrough"
+          and forced.get("is_passthrough") is True, forced)
     backend = select_session_backend()
-    section["selected_backend"] = backend.name
+    section["selected_backend"] = (backend.name if isinstance(backend, MacOSProcessGroupBackend)
+                                   else backend.probe().backend)
     check("product_macos_backend_selected", isinstance(backend, MacOSProcessGroupBackend),
-          backend.name)
+          section["selected_backend"])
     if not isinstance(backend, MacOSProcessGroupBackend):
         raise RuntimeError("product selection did not yield the macOS backend")
 
+    libproc = backend._census.reader()._libproc
+    failures: list[dict[str, Any]] = []
+    section["libproc_failures"] = failures
+    section["diagnostic_limits"] = {"failure_records": 8, "os_context_pids": 4}
+    original_bsd_info = libproc.bsd_info
+    stage = "launch"
+
+    def observed_bsd_info(pid: int) -> dict | None:
+        try:
+            return original_bsd_info(pid)
+        except Exception as exc:
+            if len(failures) < 8:
+                row: dict[str, Any] = {"pid": pid, "stage": stage, "error": str(exc)[:512]}
+                for key, value in re.findall(r"(returned|expected|errno|errno_name)=(-?\w+)", str(exc)):
+                    row[key] = value if key == "errno_name" else int(value)
+                failures.append(row)
+            raise  # Diagnostics never replace or swallow the checked refusal.
+
+    libproc.bsd_info = observed_bsd_info
     # Every role publishes its identity before spawning, even if readiness fails.
     with tempfile.TemporaryDirectory(prefix="happyranch-mac-teardown-") as folder:
         registry = Path(folder)
         running = None
         pending = None
         pids: list[int] = []
+        tree: dict[str, Any] = {}
         try:
             request = AdmissionRequest(
                 org="native-probe", invocation_kind="task",
@@ -590,13 +699,37 @@ def teardown(report: dict[str, Any]) -> None:
                 and all(os.getpgid(pid) == running.root_pid for pid in pids)
             )
             check("three_generation_session_group", group_ok, tree)
-            sample = backend.sample(running)
-            section["sample"] = asdict(sample)
-            check("tree_sample", sample.process_count == 3
-                  and sample.memory_peak_bytes is not None and sample.memory_peak_bytes > 0
-                  and sample.cpu_total_seconds is not None and sample.cpu_total_seconds >= 0
-                  and sample.provenance == "sampled", section["sample"])
-            receipt = backend.finish(running, "cancelled", 5.0, samples=(sample,))
+            section["P05_decode"] = teardown_decode(libproc, tree, check)
+            stage = "sample"
+            sample = None
+            try:
+                sample = backend.sample(running)
+            except Exception as exc:
+                section["sample_error"] = f"{type(exc).__name__}: {exc}"[:1024]
+                check("tree_sample", False, section["sample_error"])
+            # Both P07 cases still execute if the real checked sample failed;
+            # they must not conceal a product census failure with synthetic rows.
+            try:
+                section["counter_cases"] = teardown_counter_cases(backend, running, check)
+            except Exception as exc:
+                section["counter_cases_error"] = f"{type(exc).__name__}: {exc}"[:1024]
+                check("P07_counter_cases_completed", False, section["counter_cases_error"])
+            stage = "finish"
+            try:
+                receipt = backend.finish(running, "cancelled", 5.0,
+                                         samples=() if sample is None else (sample,))
+            except Exception as exc:
+                section["finish_error"] = f"{type(exc).__name__}: {exc}"[:1024]
+                section["receipt"] = None
+                check("product_finish", False, section["finish_error"])
+                check("receipt_honesty", False, "finish refused; no quiescent receipt")
+                raise
+            if sample is not None:
+                section["sample"] = asdict(sample)
+                check("tree_sample", sample.process_count == 3
+                      and sample.memory_peak_bytes is not None and sample.memory_peak_bytes > 0
+                      and sample.cpu_total_seconds is not None and sample.cpu_total_seconds >= 0
+                      and sample.provenance == "sampled", section["sample"])
             section["receipt"] = asdict(receipt)
             section["clean"] = (receipt.quiescent and not receipt.survivors
                                 and receipt.cleanup_status != "incomplete")
@@ -615,6 +748,11 @@ def teardown(report: dict[str, Any]) -> None:
             check("receipt_honesty", receipt.quiescent and section["clean"]
                   and all(gone.values()) and bool(section["signal_sent"]), section["receipt"])
         finally:
+            libproc.bsd_info = original_bsd_info
+            try:
+                libproc_failure_context(failures, tree)
+            except Exception as exc:
+                section["diagnostic_context_error"] = f"{type(exc).__name__}: {exc}"[:512]
             # This disposal is separate from the product result and cannot turn
             # a failed teardown check into PASS. Registry covers partial readiness.
             cleanup: dict[str, Any] = {"sigterm_pids": [], "sigkill_pids": []}
