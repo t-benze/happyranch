@@ -130,7 +130,8 @@ class TeamMoveCoordinator:
     claims, revalidate at final launch, and retain that ownership through
     retries/fallback/terminal host cleanup. A durable hold is not a mutex lease:
     no TTL, timeout or missing PID releases it. Held agents stay outside host
-    FIFO; unaffected traffic keeps normal admission. Captured running thread
+    FIFO on the retained thread path; non-thread launches no longer check the
+    move hold. Captured running thread
     drain is C2-owned and gives no new claim entitlement. Remaining producer/writer claims are C3-owned;
     whole-operation recovery remains D-owned.
     """

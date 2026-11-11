@@ -214,7 +214,6 @@ def admit_uncommitted(conn: sqlite3.Connection, db: Database, *, org_slug: str,
     for task in (carrier_task, visit_task):
         _require(not _native_rows(conn, 'tasks', ('id',), (('text',),), task.id, admission.budget),
                  'native_identity_conflict')
-    # Preserve native move checks before entering a half-built cyclic graph.
     admission.budget.check()
     conn.execute('PRAGMA defer_foreign_keys=ON')
     ids = admission.ids
