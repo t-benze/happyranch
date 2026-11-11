@@ -11,6 +11,17 @@ The post-terminal journal writer records ended producers without clearing unknow
 See [the lifecycle contract](contracts/runtime-lifecycle.md#ordinary-pause-unknown-crash-recovery-thr-350).
 This source change grants no restart, deploy or historical-row repair.
 
+## Frozen cleanup helpers (THR-346 S3)
+
+The daemon's hidden `--cleanup-helper` entry dispatches only `disk-sweep`,
+`worktree-safety` and `check-path-use`, before daemon-home initialization or
+serving. `happyranch-daemon --cleanup-helper disk-sweep --help` reaches the sweep
+parser; manual preview is `--cleanup-helper disk-sweep --dry-run --runtime-root
+ABSOLUTE_RUNTIME`. This does not start a daemon. Source/uv helper subprocess argv
+is unchanged. Loader code supplies the `code-sha256:` revision; unavailable code
+still prevents launch. See [cleanup contracts](contracts/jobs-and-cleanup.md)
+for the identity, packaging and unchanged fail-closed scanner limits.
+
 ## Authority terminal recovery and connection custody (THR-328)
 
 Startup's existing refusal owner may classify a fully consumed authenticated

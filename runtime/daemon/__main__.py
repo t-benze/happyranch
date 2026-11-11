@@ -939,6 +939,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reader-guarded-start", nargs="?", const="online-team-move@1",
         choices=("online-team-move@1", "online-team-move@2", "online-team-move@3"),
         help="Accepted for launcher compatibility; no effect.")
+    parser.add_argument('--cleanup-helper', nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     return parser
 
 
@@ -1012,6 +1013,12 @@ def main(argv: list[str] | None = None) -> int:
     # throw: a hostile/malformed daemon home must never leak an uncaught
     # traceback out of an otherwise-controlled invocation.
     args = _build_parser().parse_args(argv)
+
+    if args.cleanup_helper is not None:
+        from runtime.daemon.cleanup_helpers import HELPERS, dispatch
+        if args.maintenance or not args.cleanup_helper or args.cleanup_helper[0] not in HELPERS:
+            _build_parser().error('cleanup helper requires one known helper and cannot use maintenance')
+        return dispatch(args.cleanup_helper)
 
     # Offline maintenance is the ENTIRE process: it must run before any
     # HTTP listener binds, before the FastAPI lifespan, and before any

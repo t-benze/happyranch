@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth", "teardown", "disk-sweep")
+SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers")
 PROC_PIDTBSDINFO = 3
 
 
@@ -1212,10 +1212,197 @@ def disk_sweep(report: dict[str, Any]) -> None:
         raise RuntimeError("native disk-sweep checks failed")
 
 
+def cleanup_helpers(report: dict[str, Any], frozen_daemon: Path | None = None) -> None:
+    """S3 source/simulated dispatch, or an explicitly supplied existing bundle.
+
+    Never builds, installs tools or raises the job's file-size limit. The default
+    is NOT frozen proof. All fixtures are private; only explicit dry-run reaches the sweep worker.
+    """
+    import asyncio
+    import importlib.util
+    import sqlite3
+    from contextlib import closing
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(ROOT))
+    from runtime.daemon import disk_sweeper as sweeper
+    from runtime.daemon.cleanup_helpers import HELPERS, helper_argv
+    from runtime.orchestrator import run_step as step
+
+    checks: list[dict[str, Any]] = []
+    section: dict[str, Any] = {"checks": checks, "bundle_executable_supplied": frozen_daemon is not None, "bundle_parent_revision_proof": False}
+    report["cleanup_helpers"] = section
+    deadline = time.monotonic() + 55
+
+    def check(name: str, passed: bool, observed: Any) -> None:
+        checks.append(dict(name=name, status="PASS" if passed else "FAIL", observed=observed))
+
+    def write(path: Path, data: bytes) -> None:
+        if len(data) > 4096:
+            raise RuntimeError("cleanup-helper fixture exceeds 4096 bytes")
+        path.write_bytes(data)
+
+    def command(argv: list[str]) -> tuple[int, bytes]:
+        # Drain pipes incrementally, never capture unbounded child output. Every
+        # helper here is synchronous; the sweep has its own owned supervision.
+        data = bytearray()
+        with subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              start_new_session=True) as child:
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(child.stdout, selectors.EVENT_READ)
+                    while selector.get_map():
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("cleanup-helper probe deadline")
+                        for key, _ in selector.select(min(.1, deadline - time.monotonic())):
+                            block = os.read(key.fileobj.fileno(), 4096)
+                            if not block:
+                                selector.unregister(key.fileobj)
+                            elif len(data) + len(block) > 65536:
+                                raise RuntimeError("cleanup-helper output exceeds 64KiB")
+                            else:
+                                data.extend(block)
+                return child.wait(timeout=max(.001, min(2, deadline-time.monotonic()))), bytes(data)
+            finally:
+                if child.poll() is None:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait(timeout=2)
+
+    with tempfile.TemporaryDirectory(prefix="cleanup-helpers-") as folder:
+        scratch = Path(folder).resolve(strict=True)
+        if frozen_daemon is None:
+            # Test-side executable adapter: the product still selects frozen
+            # argv, and its real parser/dispatcher executes in another process.
+            binary = scratch / "daemon-adapter"
+            write(binary, (f"#!{sys.executable}\nimport sys,time\nsys.path.insert(0, {str(ROOT)!r})\ntime.time = lambda: {time.time()+7200!r}\n"
+                           "from runtime.daemon.__main__ import main\nraise SystemExit(main())\n").encode())
+            binary.chmod(0o700)
+            section["venue"] = "source with simulated sys.frozen; NOT frozen proof"
+        else:
+            binary = frozen_daemon.resolve(strict=True)
+            if not binary.is_file() or not os.access(binary, os.X_OK):
+                raise RuntimeError("frozen daemon must be an existing executable")
+            section["venue"] = "explicit existing frozen daemon; build provenance supplied by operator"
+
+        source = {name: helper_argv(name) for name in HELPERS}
+        check("source_argv", source["disk-sweep"] == [sys.executable, "-m", "runtime.daemon.disk_sweeper"]
+              and source["worktree-safety"] == [sys.executable, str(ROOT / "runtime/skills/bundled/workspace-cleanup/scripts/worktree_safety.py")]
+              and source["check-path-use"] == [sys.executable, str(ROOT / "runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py")], source)
+        for name in HELPERS:
+            with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(binary)):
+                argv = helper_argv(name)
+            code, output = command([*argv, "--help"])
+            check("entry_help_" + name, code == 0 and {"disk-sweep": b"--dry-run", "worktree-safety": b"preserved", "check-path-use": b"--target"}[name] in output
+                  and argv == [str(binary), "--cleanup-helper", name], {"exit": code, "bytes": len(output)})
+        code, output = command([str(binary), "--cleanup-helper", "unknown"])
+        check("unknown_helper_refused", code == 2 and b"cleanup helper requires one known helper" in output, {"exit": code, "bytes": len(output)})
+
+        revision = sweeper._revision()
+        with patch.object(sweeper, "__file__", str(scratch / "no-loose-source.py")):
+            check("revision_without_loose_files", sweeper._revision() == revision, {"revision": revision})
+        names = ("runtime.daemon.disk_sweeper", "runtime.daemon._disk_sweep_fs",
+                 "runtime.daemon.app", "runtime.orchestrator.org_config")
+        codes = {name: importlib.util.find_spec(name).loader.get_code(name) for name in names}
+        def code_spec(name: str) -> Any:
+            return SimpleNamespace(loader=SimpleNamespace(get_code=lambda _: codes[name]))
+        with patch.object(importlib.util, "find_spec", side_effect=code_spec):
+            check("revision_code_only_loader", sweeper._revision() == revision, revision)
+            codes[names[0]] = codes[names[0]].replace(co_consts=(*codes[names[0]].co_consts, b"probe regression"))
+            check("revision_tracks_code", sweeper._revision() != revision, True)
+        unavailable = scratch / "unavailable.json"
+        with patch.object(importlib.util, "find_spec", return_value=None), patch.object(asyncio, "create_subprocess_exec") as spawn:
+            refused = False
+            try:
+                asyncio.run(sweeper.run_worker([], unavailable, dry_run=True, budget=1))
+            except RuntimeError:
+                refused = True
+            check("revision_unavailable_no_worker", refused and not spawn.called and not unavailable.exists(),
+                  {"refused": refused, "spawned": spawn.called, "report_exists": unavailable.exists()})
+
+        org = scratch / "org"
+        workspace = org / "workspaces/probe"
+        candidate = workspace / ".happyranch/task-tmp/TASK-1"
+        candidate.mkdir(parents=True)
+        write(candidate / "payload", b"recent private fixture\n")
+        manifests = workspace / ".happyranch/task-scratch-manifests"
+        manifests.mkdir()
+        manifest = dict(version=1, task_id="TASK-1", required_root=str(candidate), observed_root=str(candidate),
+                        root_classification="regenerable_scratch", manifest_classification="durable_recovery_artifact",
+                        lock_classification="durable_recovery_artifact", producers=[])
+        write(manifests / "TASK-1.json", json.dumps(manifest).encode())
+        with closing(sqlite3.connect(org / "happyranch.db")) as conn, conn:
+            conn.execute("PRAGMA page_size=4096")
+            conn.execute("PRAGMA max_page_count=16")
+            conn.execute("PRAGMA journal_mode=OFF")
+            conn.execute("CREATE TABLE tasks(id TEXT,parent_task_id TEXT,status TEXT,assigned_agent TEXT)")
+            conn.execute("CREATE TABLE audit_log(task_id TEXT,action TEXT,payload TEXT)")
+            conn.execute("CREATE TABLE jobs(task_id TEXT,status TEXT)")
+            conn.execute("INSERT INTO tasks VALUES('TASK-1',NULL,'completed','probe')")
+            conn.execute("INSERT INTO audit_log VALUES(?,?,?)", ("TASK-1", "session_start", json.dumps({"workspace": str(workspace)})))
+        def fixture_identity(path: Path) -> tuple:
+            data = path.read_bytes()
+            info = path.stat()
+            return (data, info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                    info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        before = {p: fixture_identity(p) for p in (candidate / "payload", manifests / "TASK-1.json", org / "happyranch.db")}
+        with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(binary)):
+            preview = asyncio.run(sweeper.run_worker([str(org)], scratch / "preview.json", dry_run=True,
+                                                   budget=min(10, deadline-time.monotonic())))
+        states = [(row["state"], row.get("reason")) for item in preview["orgs"] for row in item.get("candidates", [])]
+        check("supervised_dry_run", preview.get("worker_returncode") == 0 and preview["outcome"] == "complete"
+              and preview["revision"] == revision
+              and states == ([("eligible", None)] if frozen_daemon is None else [("retained", "changed_within_hour")]),
+              {"exit": preview.get("worker_returncode"), "outcome": preview["outcome"], "states": states})
+        check("dry_run_nonmutating", all(p.exists() and fixture_identity(p) == value for p, value in before.items()), True)
+
+        # Observe the REAL run_step command boundary with test-side Git/owner
+        # evidence. Unknown scanner output must retain before snapshot/removal.
+        primary = workspace / "repos/happyranch"
+        worktree = primary / ".claude/worktrees/TASK-1"
+        worktree.mkdir(parents=True)
+        emitted: list[list[str]] = []
+        def root_command(argv: list[str], cwd: Path, until: float) -> Any:
+            emitted.append(argv)
+            output = ""
+            if argv[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                output = str(primary)
+            elif argv[:3] == ["git", "rev-parse", "--git-common-dir"]:
+                output = str(primary / ".git")
+            elif argv[:3] == [str(binary), "--cleanup-helper", "worktree-safety"]:
+                output = json.dumps({"head": "a" * 40})
+            elif argv[:3] == [str(binary), "--cleanup-helper", "check-path-use"]:
+                output = json.dumps({"state": "unknown"})
+            return SimpleNamespace(returncode=0, stdout=output)
+        members = {"TASK-1": {"assigned_agent": "probe"}}
+        orch = SimpleNamespace(_paths=SimpleNamespace(workspaces_dir=org / "workspaces"),
+                               teams=SimpleNamespace(all_agents=lambda: ["probe"]))
+        budget = SimpleNamespace(deadline=deadline, remaining=lambda: None, command=root_command, halted=False, processes=[], attempts=0)
+        transition = SimpleNamespace(after={"created_at": "synthetic"})
+        with (patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(binary)),
+              patch.object(step, "_root_worktree_membership", return_value=(members, [], 1, True, None)),
+              patch.object(step, "_root_worktree_protection", return_value=({}, {})),
+              patch.object(step, "_root_worktree_revalidate_membership"),
+              patch.object(step, "_root_worktree_registration", return_value={"registered": True})):
+            receipt = step._root_worktree_reconcile(orch, transition, 1, budget)
+        helper_calls = [argv[:3] for argv in emitted if argv[0] == str(binary)]
+        check("run_step_frozen_dispatch_retains_unknown", helper_calls == [
+            [str(binary), "--cleanup-helper", "worktree-safety"], [str(binary), "--cleanup-helper", "check-path-use"]]
+            and receipt["outcomes"][0]["reason"] == "process_use_blocked_or_unknown"
+            and worktree.exists() and not any(argv[:3] == ["git", "worktree", "remove"] for argv in emitted),
+            {"helpers": helper_calls, "outcomes": receipt["outcomes"]})
+    check("private_scratch_removed", not scratch.exists(), not scratch.exists())
+    if any(row["status"] != "PASS" for row in checks):
+        raise RuntimeError("cleanup-helper checks failed")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=SUITES, default="truth")
     parser.add_argument("--output", type=Path, help="also save JSON at this path")
+    parser.add_argument('--frozen-daemon', type=Path,
+                        help='cleanup-helpers only: existing built daemon; never builds or installs')
     parser.add_argument(
         "--tree-worker", choices=("child", "grandchild"), help=argparse.SUPPRESS
     )
@@ -1225,6 +1412,8 @@ def main() -> int:
     )
     parser.add_argument("--registry", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.frozen_daemon is not None and args.suite != 'cleanup-helpers':
+        parser.error('--frozen-daemon requires --suite cleanup-helpers')
     if args.teardown_worker:
         if args.registry is None:
             parser.error("--teardown-worker requires --registry")
@@ -1242,7 +1431,10 @@ def main() -> int:
         signal.signal(signal.SIGTERM, interrupt)
         signal.signal(signal.SIGINT, interrupt)
         try:
-            {"truth": truth, "teardown": teardown, "disk-sweep": disk_sweep}[args.suite](report)
+            if args.suite == 'cleanup-helpers':
+                cleanup_helpers(report, args.frozen_daemon)
+            else:
+                {"truth": truth, "teardown": teardown, "disk-sweep": disk_sweep}[args.suite](report)
             report["completed"] = True
         except Exception as exc:  # noqa: BLE001 -- emit partial JSON for any internal probe error
             report.update(

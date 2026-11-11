@@ -116,6 +116,28 @@ getmntinfo/statfs table against pinned public XNU xnu-11417.101.15 LP64 size/lay
 and root evidence. Missing, unreadable or malformed Darwin evidence retains
 `unknown_mount_evidence`; unsupported platforms retain. Other cleanup owners
 retain their own process gates.
+
+S3 frozen cleanup dispatch uses the hidden daemon entry
+`happyranch-daemon --cleanup-helper disk-sweep ...`; root worktree helpers use
+`--cleanup-helper worktree-safety ...` and `--cleanup-helper check-path-use ...`.
+Only these fixed names are accepted, before daemon-home initialization, listener
+binding or lifespan startup. Source/uv installs keep Python `-m` for the sweep
+worker and Python script paths for the worktree helpers. The two worktree scripts
+are release data in the existing bundled-skill inventory; the dispatcher and
+sweeper are explicit PyInstaller hidden imports. This fixes invocation only:
+unavailable process-use evidence still retains candidates; Darwin scanner parity
+and the manual mount-parser repair remain S4 work.
+
+The sweeper revision is `code-sha256:` over loader-provided code for
+`disk_sweeper`, `_disk_sweep_fs`, daemon `app` and `orchestrator.org_config`, with
+module names framed and nested code filenames normalized. It uses source/wheel
+and PyInstaller PYZ loaders without requiring loose `.py` files or Git. The code
+identity is Python-bytecode-version-specific, not a source-tree/release SHA.
+Missing/unsupported loaders, absent code or read errors still refuse before
+worker launch; no placeholder revision authorizes a sweep. Reports/audits retain
+the existing revision field. All deletion, stop, ownership and timeout gates stay
+in force.
+
 Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
 directories, Unix sockets and FIFOs inside admitted task scratch are disposable
 after both task and structural root end. Socket/FIFO handling uses no-follow

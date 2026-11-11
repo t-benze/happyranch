@@ -286,3 +286,61 @@ writes. Existing job per-file/log/timeout limits still apply. Linux emits skippe
 JSON and exits0. This source probe does not establish frozen helper dispatch
 (S3), workspace-cleanup scanning (S4), native parity until executed, or physical
 space reclamation. Python units remain retired, integration skipped THR243seq42.
+
+## S3 cleanup-helper probe
+
+`python3 scripts/mac_native/probe.py --suite cleanup-helpers --output /owned/probe.json`
+selects the reviewed S3 suite through the existing job's `SUITE=cleanup-helpers`
+parameter. No job configuration or trigger changes are needed. Default execution
+uses source modules and a private executable adapter with simulated `sys.frozen`:
+**it is NOT frozen-app proof**. It checks all three helper parsers, closed-name
+refusal, unchanged source argv, loader-only revision identity/change/unavailability,
+a real supervised nonmutating dry-run worker over a private synthetic org, and
+the real run-step command boundary retaining unknown scanner output. Git/owner
+facts at that last boundary are test-side stubs; no actual worktree removal or
+Darwin process-use clearance is claimed. Thirteen named checks share a 55-second
+cooperative budget; child stdout is drained with a 64KiB cap per command,
+fixtures are <=4096 bytes, SQLite is <=16 pages of 4096 bytes, and scratch is removed.
+The default adapter advances only its test-side wall clock by two hours so the
+private candidate is eligible; the unmodified product must still preview it
+without removal. A supplied binary sees a recent fixture and must retain it.
+The existing job still imposes the absolute 30-minute and file/log limits.
+
+For a separately built, provenance-verified bundle, the same suite accepts
+`--frozen-daemon /owned/happyranch-daemon/happyranch-daemon`. It then executes that
+binary's helper parsers and supervised worker. The parent revision checks still
+run in source Python; this is **not** proof of the frozen parent's own revision
+or a complete frozen manual-preview invocation. Those require separately owned
+bundle build/run evidence. Source runtime dependencies must already be available
+to the job's Python; missing dependencies are an environment failure, never PASS.
+The suite never builds a bundle or installs tools.
+
+The existing Jenkins job cannot build the frozen bundle inside its probe-only
+`ulimit -f4096`: each regular file is capped at 2-4MiB, below fresh CPython native
+libraries/stdlib archives and PyInstaller bundle outputs. The documented freeze
+requires a fresh managed CPython 3.12.10 on Darwin arm64; uv/toolchain availability
+on the mini is unverified. Full packaging additionally requires Xcode 16, Node 24,
+Swift/Go and allows 45 minutes for build in a 95-minute workflow, versus this job's
+30-minute absolute timeout. These are blockers, not permission to change the
+job, add another job/trigger or launch the packaging workflow. Founder owns any
+job-config/venue decision; the manager owns all S3 native runs (0 of 3 spent by
+this maker). Native Mac and frozen Mac bundle evidence remain NOT RUN here.
+
+On Linux, the normal dispatcher emits skipped JSON. For the explicitly allowed
+source/simulated-frozen substitute, call the existing suite function directly:
+
+```bash
+python - <<'PYPROBE'
+import importlib.util
+spec = importlib.util.spec_from_file_location('mac_probe', 'scripts/mac_native/probe.py')
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+report = {}
+probe.cleanup_helpers(report)
+print(report)
+PYPROBE
+```
+
+Run that command under an external <=60-second timeout and output/file caps;
+record it as Linux source/simulated-frozen logic only. Do not use Linux results
+as native or frozen proof. Python units remain retired; integration stays skipped.

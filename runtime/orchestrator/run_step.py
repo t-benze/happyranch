@@ -589,6 +589,7 @@ def _root_worktree_registration(run, primary, candidate, task_id):
 
 
 def _root_worktree_reconcile(orch, transition, event_id, budget, *, teardown_incomplete=False, receipt_allowance=262144):
+    from runtime.daemon.cleanup_helpers import helper_argv
     root = transition.after
     receipt = dict(event_id=event_id, root_created_at=root['created_at'],
                    membership_complete=False, protection_complete=False, complete=False,
@@ -685,7 +686,7 @@ def _root_worktree_reconcile(orch, transition, event_id, budget, *, teardown_inc
                         clean = run(['git', 'status', '--porcelain=v1', '--untracked-files=all'], candidate)
                         if clean.returncode or clean.stdout:
                             raise ValueError('dirty_or_status_unknown')
-                        preserved = run([sys.executable, str(_TERMINAL_WORKTREE_SCANNER_PATH.with_name('worktree_safety.py')),
+                        preserved = run([*helper_argv('worktree-safety'),
                                          '--timeout', str(max(0.001, candidate_deadline-time.monotonic())),
                                          'preserved', str(candidate), str(primary), tid], primary)
                         if preserved.returncode:
@@ -694,12 +695,12 @@ def _root_worktree_reconcile(orch, transition, event_id, budget, *, teardown_inc
                         if head is not None and value['head'] != head:
                             raise ValueError('head_changed')
                         head = value['head']; outcome['head'] = head
-                        scanned = run([sys.executable, str(_TERMINAL_WORKTREE_SCANNER_PATH), '--target', str(candidate),
+                        scanned = run([*helper_argv('check-path-use'), '--target', str(candidate),
                                        '--containing-worktree', str(candidate), '--json', '--deadline-seconds',
                                        str(max(0.001, candidate_deadline-time.monotonic()))], primary)
                         if scanned.returncode or json.loads(scanned.stdout).get('state') != 'clear_observation':
                             raise ValueError('process_use_blocked_or_unknown')
-                        safe = run([sys.executable, str(_TERMINAL_WORKTREE_SCANNER_PATH.with_name('worktree_safety.py')),
+                        safe = run([*helper_argv('worktree-safety'),
                                     '--timeout', str(max(0.001, candidate_deadline-time.monotonic())), 'snapshot',
                                     str(candidate), str(candidate), str(primary), item['workspace'], snapshot], primary)
                         if safe.returncode:
@@ -715,7 +716,7 @@ def _root_worktree_reconcile(orch, transition, event_id, budget, *, teardown_inc
                     removed = run(['git', 'worktree', 'remove', str(candidate)], primary)
                     if removed.returncode:
                         raise ValueError('remove_nonzero')
-                    post = run([sys.executable, str(_TERMINAL_WORKTREE_SCANNER_PATH.with_name('worktree_safety.py')),
+                    post = run([*helper_argv('worktree-safety'),
                                 'post-action', str(candidate), snapshot, '', ''], primary)
                     branch = run(['git', 'rev-parse', '--verify', 'refs/heads/task/'+tid], primary)
                     if (post.returncode or _root_worktree_registration(run, primary, candidate, tid) is not None

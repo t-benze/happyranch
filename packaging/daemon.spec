@@ -62,6 +62,10 @@ _common_analysis_kwargs = dict(
         'starlette',
         'anyio',
         # ---- Our own lazy imports (belt-and-suspenders beyond the hook) ----
+        # Fixed cleanup entry; worktree scripts already travel in _runtime_data
+        # via the wheel's runtime/skills/bundled force-include inventory.
+        'runtime.daemon.cleanup_helpers',
+        'runtime.daemon.disk_sweeper',
         'runtime.orchestrator.run_step',
         'runtime.orchestrator.fanout',
         'runtime.orchestrator.chain',

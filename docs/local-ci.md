@@ -2760,3 +2760,18 @@ with only exact own-unlink nlink/ctime allowances. It never opens a leaf and los
 Linux's post-unlink pinned-inode observation. The accepted non-atomic
 stat-to-unlink window remains within the existing same-UID threat model; static
 CI and a Linux logic demonstration cannot establish native/frozen parity.
+
+## THR-346 S3 frozen cleanup dispatch
+
+The existing native probe now accepts `--suite cleanup-helpers`. It is manual
+only, adds no trigger and makes no Jenkins request itself. Default checks are
+source/simulated-frozen logic, with a real bounded dry-run worker and an argv-only
+root-tail retention check; they are NOT frozen proof. Optional `--frozen-daemon`
+executes an already built binary's helpers, but source-parent revision checks do
+not prove frozen-parent revision derivation. See the [probe README](../ci/jenkins/mac-native-probe/README.md#s3-cleanup-helper-probe)
+for exact invocation, output bounds and the existing job's bundle-build blocker.
+The documented `packaging/build_daemon.sh` requires fresh Darwin arm64/Python3.12.10;
+the Linux maker had no PyInstaller installed and used the permitted simulated
+substitute. Native Mac/frozen Mac build/run are NOT RUN, not a lint-derived pass.
+The job's <=4MiB regular-file limit cannot accommodate a fresh freeze; no limit,
+job configuration, toolchain or CI-trigger change follows from this slice.

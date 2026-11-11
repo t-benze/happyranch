@@ -16,21 +16,25 @@ import argparse
 import asyncio
 import errno
 import hashlib
+import importlib.util
 import json
 import logging
+import marshal
 import os
 import re
 import signal
 import sqlite3
 import stat
 import subprocess
-import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, closing, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import CodeType
+
+from runtime.daemon.cleanup_helpers import helper_argv
 
 from runtime.daemon._disk_sweep_fs import (
     Expired, Retain, allocated, check, directory, identity, mutate, names,
@@ -1083,7 +1087,7 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     started_monotonic = time.monotonic()
     deadline = started_monotonic + budget
     revision = await asyncio.to_thread(_revision)
-    argv = [sys.executable, '-m', 'runtime.daemon.disk_sweeper', '--worker', '--summary', str(summary), '--deadline', str(deadline), '--started-monotonic', str(started_monotonic), '--revision', revision]
+    argv = [*helper_argv('disk-sweep'), '--worker', '--summary', str(summary), '--deadline', str(deadline), '--started-monotonic', str(started_monotonic), '--revision', revision]
     for root in roots:
         argv += ['--org-root', root]
     for root, writer_id in sorted((native_writers or {}).items()):
@@ -1303,12 +1307,25 @@ def _org_effects_known(report: dict, slug: str) -> bool:
 
 
 def _revision() -> str:
-    # Build/source identity without running Git on the event loop. Hash the
-    # actual executing modules, works in installed wheels too (no .git needed).
+    # Both SourceFileLoader and PyInstaller's PYZ loader expose executing code.
+    # No loose sources, Git checkout, version placeholder or fallback identity.
+    # Canonical filenames avoid install/build-directory-dependent revisions.
+    def canonical(code: CodeType) -> CodeType:
+        return code.replace(co_filename='<module>', co_consts=tuple(
+            canonical(value) if isinstance(value, CodeType) else value for value in code.co_consts))
+
     digest = hashlib.sha256()
-    for path in (Path(__file__), Path(__file__).with_name('_disk_sweep_fs.py'), Path(__file__).with_name('app.py'), Path(__file__).parents[1] / 'orchestrator/org_config.py'):
-        digest.update(path.read_bytes())
-    return 'source-sha256:' + digest.hexdigest()
+    for name in ('runtime.daemon.disk_sweeper', 'runtime.daemon._disk_sweep_fs',
+                 'runtime.daemon.app', 'runtime.orchestrator.org_config'):
+        spec = importlib.util.find_spec(name)
+        loader = spec.loader if spec is not None else None
+        get_code = getattr(loader, 'get_code', None)
+        code = get_code(name) if get_code is not None else None
+        if not isinstance(code, CodeType):
+            raise RuntimeError('disk sweep revision unavailable')
+        digest.update(name.encode('ascii') + b'\0')
+        digest.update(marshal.dumps(canonical(code)))
+    return 'code-sha256:' + digest.hexdigest()
 
 
 def next_night(now: datetime) -> datetime:
