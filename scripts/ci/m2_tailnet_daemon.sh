@@ -379,6 +379,8 @@ teardown() {
   sudo update-ca-certificates
   return "$rc"
 }
+# M3 sources the same fixture/lifecycle helpers. Direct M2 commands are unchanged.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 case ${1:-} in
   config) config ;; # Rootless config generation for local inspection.
   run)
@@ -396,3 +398,4 @@ case ${1:-} in
   teardown) teardown ;;
   *) fail 'expected config, run, logs or teardown' ;;
 esac
+fi
