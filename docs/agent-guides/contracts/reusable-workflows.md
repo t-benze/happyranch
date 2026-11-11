@@ -1402,3 +1402,25 @@ unavailable-output Held; the daemon performs no GitHub/network I/O. No schema,
 historical Coding ABI, authority/permission owner or native settlement changes.
 ACCESS-1/shared OS-user and gh credential limits remain. See the
 [U5 split and caller inventory](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).
+
+
+### U5b2b1 unmounted local action adapter (TASK-15264)
+
+The historical Final CLI now consumes `workflow_final_local` for its unchanged
+raw lint readers and one guarded command/receipt/separate-read sequence. Its
+historical commands, selections and output families retain their interpretation.
+The unregistered `workflow_sequential_finalize` adapter consumes the concrete
+U5b2a live selection service and one original-task journal fence, raw selected-H
+check/run/status snapshots and compatible local record readers. It persists
+intent before action and reselects current authority/native ownership plus local
+immutable repository identity immediately before the expected-head non-admin
+guarded merge. Failed/lost commands remain uncertain after a separate MERGED
+read; exact remote SHA1/aware time is separate from native settlement. No caller
+Boolean CI pass, new credential, access observer or daemon PR I/O is supplied.
+
+This is U5b2b1 source only. U5b2b2 still owes genuine callback-observation
+validation through both history readers and existing business-Held/cancellation
+owners before mounting any producer/command. U6 mixed history and U7 task-session
+transport remain. Final success stays unavailable-output Held; local diagnostic
+`merged` grants no output/witness/advance. Existing Pause/Resume original admission
+generation, cancellation, schema and ACCESS-1/shared-user/gh limits are unchanged.
