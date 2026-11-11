@@ -354,3 +354,14 @@ document + ordinary/sequential fixture through mounted COMMIT, one fence/CAS per
 fresh graph, unchanged exact callback drain and original document terminal drain.
 These are synthetic storage/route observations only; native/V3 acceptance and
 Option B's ordinary/document UNSETTLED limitation remain unchanged.
+
+## U5b2b2 / U7 boundary clarification (R-M3-3, TASK-15433)
+
+U5b2b2 now supplies an unmounted closed Final observation parser and a SELECT-only
+callback validator composing these complete/selected mixed readers. It changes
+no U6 cancellation, callback drain, original-owner tail or Option B UNSETTLED
+semantics. Earlier “U5b2b2 validation/mount” references divide as follows: U5
+owns the unmounted validator; **U7** owns task-session-only selected Final
+transport, genuine live manager-local U5b2b1 adapter mount, acceptance wiring and
+the decision to admit guarded-repository-merge@1 success. Final success remains
+Held. See the [current U5 boundary](2026-11-11-sequential-coding-u5.md#u5b2b2-closed-callback-reader-task-15433-r-m3-3).

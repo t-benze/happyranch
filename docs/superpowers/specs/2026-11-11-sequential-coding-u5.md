@@ -475,3 +475,86 @@ are added. Diagnostics use explicitly synthetic native/authority/settlement
 scaffolding and controlled fake Git/gh effects; no native/V3/real-merge claim.
 Required exact-H lint/static job, diff/AST/caller inventory, hosted snapshot and
 remaining independent review/QA/manager gates are recorded in the task handoff.
+
+## U5b2b2 closed callback reader (TASK-15433, R-M3-3)
+
+Binding EM ruling R-M3-3 (ROOT TASK-15165) adopts TASK-15430 Option 1:
+**reader first, unmounted**. This section supersedes earlier U5b2b2 mounting
+assignments above. Plan rev3 §U7 owns selected preflight/finalize transport;
+R-M2-1 leaves that division unchanged. PRD v1.0.4 / Founder THR-336 msg131
+ACCESS-1 and all preserved decisions above remain controlling.
+
+`workflow-sequential-coding-final-observation@1` is closed canonical UTF8 JSON,
+**at most 49152 bytes total**, with exactly `format`, `change`,
+`selection_digest`, `intent`, `command`, `remote`. `change` is the entire selected
+code-change declaration. `intent` is the full existing U5b2a saved intent,
+including selection and both complete lint-observation records (identities,
+head, status/conclusion and aware timestamps, not Boolean CI labels). Raw
+paginated provider snapshots remain in the original local journal. Every nested
+record retains its closed grammar; selection/intent/command digests and subject,
+PR/head and time links must agree. `command.succeeded` is true (exit0);
+`remote` is the separate read with MERGED, full actual merge SHA1 and aware time.
+`sequential_coding_final_observation.read_final_callback_content` is its pure
+bounded parser. This is a declaration of observations, not a remote observer,
+capability, signed receipt or evidence of independent per-agent access.
+
+Only success-shaped `merged` carries those bytes as `content_base64` inside the
+**unchanged** `workflow-sequential-callback@1` carrier, with empty claims.
+Failed/uncertain command, missing receipt, or TASK-15275 recording-failure
+`command=None` cannot form this bundle: the genuine manager reports causal
+BLOCK with empty content/claims and keeps its original local records. No command
+is reissued; a later MERGED observation never rewrites the original disposition.
+
+`sequential_coding_final_callback.read_final_callback_uncommitted` requires the
+original authority/teams/DB locks, fresh capture and coherent transaction. It
+first composes U6's complete/selected mixed oracle, then re-reads the selected
+run/visit and original positive INTEGER callback (never caller content/newest
+result), closed carrier, successful original host and positive outer proof.
+It binds original invocation/request/opaque handle/backend to the saved native
+selection, original root/workspace to the authority owner, and the complete
+subject/epoch/head/PR plus definition/start/CAS/event/input pins to current
+history. The saved original Pause generation remains unchanged; it is not
+reselected from today's generation or used to clear native ownership.
+
+Current authority rechecks active fixed principals/role eligibility and unchanged
+repository/origin/base/scope. Full reducer-prefix selections supply the three
+settled upstream results; mandatory independent review APPROVE and QA PASS and
+all retained contributors remain U5a policy. Bundle result pins must match their
+original callback/host/outer digests. No cached proof, graph omission or remote
+claim substitutes. Current cancellation and Pause on selected native ancestry
+(including distinct linked roots) refuse; unrelated stopped siblings do not
+cancel this visit. Held, cancelled, foreign/replayed/changed/stale/malformed,
+authority denied versus unverified, and finite read exhaustion return refusal
+without a validated value or writes. Repeated reads confer no replay permission.
+
+R-M3-2: one original deadline spans the mandatory complete read's OWN unchanged
+D2 A/B/C/L allowances and the one finite selected projection/validation allowance.
+No constants increase, refusal retry, allowance renewal or incremental oracle.
+The reader issues only SELECTs against the owned candidate connection and does
+not create/commit/rollback a transaction, persist a hold, accept a result, invoke
+Git/gh or return executable authority.
+
+| New owner | Callers / preserved boundary |
+| --- | --- |
+| `sequential_coding_final_observation`: `CodingFinalObservation`, `read_final_callback_content` | Parser consumed only by the new unmounted reader; generic carrier unchanged. |
+| `sequential_coding_final_callback`: finite cause/exception, `ValidatedFinalObservation`, `_unheld`, `_read`, `read_final_callback_uncommitted` | **No production caller**. Reuses original mixed, proof, policy, subject, Pause and authority readers; no new writer or registration. |
+| `workflow_sequential_finalize.execute_selected_final` | **Still no production caller**, byte-identical; no action mount. |
+| `SequentialDispatcher._advance` / successful Final refusal / business-Held | **Byte-identical**; reader is not wired here. Final success still rolls back then business-Held with `sequential_output_access_unavailable`. |
+
+**U7 owns the remaining implementation:** task-session-only selected Final
+transport and its route/client/native-policy review; mounting the U5b2b1 local
+adapter in the genuine live Final-manager session; wiring this reader into
+acceptance; and deciding whether guarded-repository-merge@1 success can be
+admitted. U6 being merged does not remove U7. There is no new endpoint/public
+CLI, daemon action/network I/O, second CLI OrgState, historical-family reuse,
+credential, observer or permission change in this slice. Shared OS-user/gh
+custody limits remain explicit. Final success stays Held.
+
+Assumptions before edits: no schema/table/column/index/migration or dependency;
+reader-only radius, with historical finalize, original Pause generation,
+receipt uncertainty, U6b2a, mounted mixed cancellation and Option B ordinary/
+document UNSETTLED owners untouched. Out-of-repo fake-effect diagnostics are
+SYNTHETIC; no native/V3/V5/M4, real access/merge, effect recovery, installation,
+live configuration/admission/roles or deployment acceptance follows. Exact B/H,
+changed-file/AST/caller inventory, proof limits, job receipt and hosted snapshot
+are recorded in `dev_agent/output/TASK-15433/handoff.md`. No repository tests.

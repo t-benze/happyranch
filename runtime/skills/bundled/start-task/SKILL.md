@@ -1254,3 +1254,20 @@ transaction. Scope reset and complete target validation precede COMMIT; standalo
 validators and original event/settlement predicates remain unchanged. Captured
 ordinary/document owners still remain UNSETTLED under Option B. This composition is no
 callback, cleanup or live-operation entitlement.
+
+Sequential Coding U5b2b2 / R-M3-3 supplies only the unmounted closed Final
+observation declaration and read-only callback validator. Canonical JSON
+workflow-sequential-coding-final-observation@1 has exactly format, change,
+selection_digest, intent (full selection and both lint observations), command
+(succeeded=true/exit0), remote (separate MERGED/full actual commit/aware time),
+total <=49152 bytes. Only merged carries it in the unchanged generic callback.
+Failed/uncertain/missing command, including TASK-15275 recording-failure
+command=None, reports causal BLOCK with empty content/claims; keep the local
+journal and never reissue. This syntax grants no callable adapter or acceptance.
+R-M3-3 supersedes earlier U5b2b2 mount wording: U7 owns task-session-only selected
+Final transport, genuine live manager-local adapter mount, validator acceptance
+wiring and success-admission decision. execute_selected_final and the callback
+reader remain unmounted; _advance still holds Final success. Preserve ACCESS-1,
+original Pause generation, mixed cancellation/exact committed callback drain,
+Option B UNSETTLED and shared OS-user/gh limits. No daemon/job/recovery effect,
+second CLI OrgState, historical family reuse, new command/credential/observer.

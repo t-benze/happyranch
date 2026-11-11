@@ -1526,3 +1526,34 @@ connection. Legacy consumers preserve sequential rows; the complete changed targ
 authenticated after scope reset. Default standalone validation remains unchanged. This
 composition repairs mounted cancellation without changing captured ordinary/document
 UNSETTLED qualification or granting native/V3 acceptance.
+
+### U5b2b2 Final observation declaration / unmounted reader (R-M3-3)
+
+`workflow-sequential-coding-final-observation@1` is closed canonical JSON, total
+<=49152 bytes, exactly format/change/selection_digest/intent/command/remote.
+It retains the full selected change and saved intent including both complete
+lint-observation records, a succeeded=true/exit0 command, and separate remote
+MERGED/full actual commit/aware-time observation, with all original digest links.
+Only `merged` uses these bytes in the unchanged generic callback carrier.
+Failed/uncertain/missing command or recording failure (`command=None`, TASK-15275)
+uses causal BLOCK, empty content/claims, unchanged local records and no reissue.
+Provider page dumps remain local; syntax is neither an access observer nor proof
+of per-agent credential isolation.
+
+The unmounted `read_final_callback_uncommitted` composes complete/selected U6
+mixed history, re-reads original INTEGER callback/host/positive outer proofs,
+current ACCESS-1 authority/unchanged subject, selected pins and three mandatory
+settled independent upstream results. It refuses malformed/stale/foreign/
+replayed/changed, denied versus unverified, cancellation/Pause/Held and exhausted
+reads with zero candidate writes. R-M3-2 retains per-complete-read D2 allowances
+on one original deadline. No production caller, hold/acceptance writer or local
+action mount is added. Existing successful Final rollback-then-Held and callback
+drain/cancellation/Pause/receipt uncertainty remain unchanged.
+
+R-M3-3 assigns **U7** selected task-session-only Final transport, local adapter
+mount in the genuine live Final-manager session, validation acceptance wiring,
+and the decision to admit guarded-repository-merge@1 success. U5b2b2 does not
+mount execute_selected_final or wire _advance. Final success stays Held; there
+is no daemon GitHub/network I/O, second CLI OrgState, historical family reuse,
+new endpoint/public command, credential/permission/access observer or deployment.
+See [U5](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).
