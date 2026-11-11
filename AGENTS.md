@@ -25,6 +25,7 @@ current in `docs/superpowers/specs/README.md`.
 | Orchestrator decisions, task state, agent files, teams, chains, failure-recovery, task/subtask terminology | `docs/agent-guides/orchestrator-contracts.md` |
 | Web app, OpenAPI pinning, CLI behavior, agent callbacks | `docs/agent-guides/web-and-cli.md` |
 | KB, learnings, artifacts, revisit, threads, jobs | `docs/agent-guides/features-and-invariants.md` |
+| Task output folder: what to write, size, citing, retention | `docs/agent-guides/task-output-practice.md` |
 | Detailed feature contracts (coding workflow, document workflows, authority policy, team move, threads/naming, cleanup, memory census, remote access, CI) | `docs/agent-guides/contracts/README.md` |
 
 ## Architecture essentials
