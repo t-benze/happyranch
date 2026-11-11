@@ -1424,3 +1424,23 @@ owners before mounting any producer/command. U6 mixed history and U7 task-sessio
 transport remain. Final success stays unavailable-output Held; local diagnostic
 `merged` grants no output/witness/advance. Existing Pause/Resume original admission
 generation, cancellation, schema and ACCESS-1/shared-user/gh limits are unchanged.
+
+
+## U6a inert mixed-history interface (THR-336 / TASK-15287)
+
+An explicit `read_sequential_history(..., task_id=...)` returns an immutable
+mixed native task/result-identity/owner closure after the unchanged complete
+sequential/document/old-Coding oracle validates. Default callers keep the
+original result/path. The unmounted selected wrapper uses that same complete
+oracle and caller snapshot. Parent/child and workflow-member fixed-point reads
+include terminal paths, retain exact native values and positive INTEGER callback
+quartets, reject missing/cyclic/foreign/dual ownership and charge original D2 C
+work/deadline after retained L. At most512 distinct tasks; exhaustion refuses
+without partial output or new allowance. Result identity lookup does not parse
+callback text or prove successful host/outer settlement or effective access.
+
+U6a adds no producer. U6b still owes mixed Founder cancellation/cascade and native
+root-tail composition; existing mixed refusal/direct selected cancellation stay.
+U5b2b2 callback validation/mount and U7 transport remain required; Final success
+stays Held. No graph/task/result/effect/budget/Pause history is rewritten. See
+[U6 specification and remainder](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).

@@ -711,3 +711,15 @@ Document behavior and 1 MiB document / 49152-byte JSON limits are preserved.
 See the [U4b3 declaration and evidence contract](reusable-workflows.md#u4b3-coding-composition-and-access-1-thr-336-msg131).
 Disposable synthetic diagnostics are not genuine native/provider/V3 acceptance.
 No public start, U7 transport, live install/configuration or action is enabled.
+
+
+## U6a mixed task history, without cancellation attachment
+
+The explicit complete/selected mixed-history interfaces close native parent/child
+and workflow-member dependencies through terminal tasks under the original D2
+allowance. They retain exact task values and INTEGER result identities, without
+interpreting callback content, native ownership or current authority. They are
+inert history readers; their inventory is not a cancellation write set. The
+existing ordinary-ancestor mixed refusal and direct selected-run cancellation
+remain unchanged. U6b owns mixed cascade/audit/CAS/native-tail integration, and
+U5b2b2/U7 remain separate. [U6 source contract](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).

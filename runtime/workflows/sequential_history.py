@@ -758,7 +758,8 @@ def _legacy_history(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget
 
 def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                             retained_budget: _Budget | None = None,
-                            deadline: float | None = None) -> SequentialHistory:
+                            deadline: float | None = None,
+                            task_id: str | None = None) -> SequentialHistory:
     """Validate all sequential rows and complete combined schema in one snapshot.
 
     Empty/absent storage is explicitly unavailable. A readable inventory is not
@@ -766,8 +767,13 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     Original complete document/Coding readers validate retained data on both
     legacy-only and combined layouts. Their recursive structure checks select
     complete combined references only inside the explicit new-reader scope.
+    An explicit task_id adds the inert U6a native/ownership closure after that
+    oracle, under the same snapshot, original data allowance and deadline.
+    Default callers retain the original result type and validation path.
     """
     _require(type(expected_org_slug) is str and bool(expected_org_slug), 'org_required')
+    _require(task_id is None or (type(task_id) is str and bool(task_id) and '\x00' not in task_id),
+             'mixed_task_identity_invalid')
     observed = _ReadBudget() if deadline is None else _ReadBudget(deadline=deadline)
     reference = _ReadBudget(deadline=observed.deadline)
     budget = _ReadBudget(deadline=observed.deadline)
@@ -775,6 +781,7 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     with _schema_snapshot(conn):
         layout, metadata = _read_layout(conn, observed, reference, budget)
         if not layout.sequential:
+            _require(task_id is None, 'mixed_history_unavailable')
             retained = None
             if layout.document is not None:
                 with _sql_budget(conn, legacy):
@@ -849,5 +856,15 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
         ready = bool(definitions and settings and layout.ownership == 2)
         result = SequentialHistory(layout, 'storage readable' if ready else 'new-engine unavailable',
                                    tuple(sorted(definitions)), tuple(sorted(runs)), retained)
+        if task_id is not None:
+            from runtime.workflows.sequential_mixed_history import (
+                MixedSequentialHistory, close_mixed_history_uncommitted,
+            )
+            _require(layout.ownership == 2, 'companion_ownership_required')
+            with _sql_budget(conn, budget):
+                closure = close_mixed_history_uncommitted(conn, org_slug=expected_org_slug,
+                                                          task_id=task_id, budget=budget)
+            result = MixedSequentialHistory(result.layout, result.status, result.definition_ids,
+                                            result.run_ids, result.retained, closure)
     budget.check()
     return result
