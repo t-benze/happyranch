@@ -5,6 +5,9 @@ exec /usr/bin/python3 -I - "$@" <<'PY'
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+from email.utils import format_datetime
+import gzip
 import hashlib
 import json
 import os
@@ -110,6 +113,14 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
     prefix = stage / 'opt/happyranch-desktop'
     prefix.parent.mkdir(parents=True)
     shutil.move(payload, prefix)
+    # Regenerable build-time bytecode is not part of the installed application.
+    for cache in prefix.rglob('__pycache__'):
+        if cache.is_dir() and not cache.is_symlink():
+            shutil.rmtree(cache)
+    for library in (prefix / 'python/lib').rglob('*'):
+        if library.is_file() and not library.is_symlink() and (
+                library.name.endswith('.so') or '.so.' in library.name):
+            library.chmod(0o644)
     bindir = stage / 'usr/bin'
     bindir.mkdir(parents=True)
     for launcher in ('happyranch', 'happyranch-app'):
@@ -135,8 +146,25 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
     doc = stage / 'usr/share/doc/happyranch'
     doc.mkdir(parents=True)
     shutil.copytree(prefix / 'licenses', doc / 'licenses', symlinks=True)
-    shutil.copyfile(prefix / 'licenses/HappyRanch-LICENSE', doc / 'copyright')
+    (doc / 'copyright').write_text(
+        'HappyRanch\nSource: https://github.com/t-benze/happyranch\n\n'
+        'Copyright: see the original upstream and dependency notices in licenses/.\n'
+        'License: Apache-2.0\n'
+        ' HappyRanch is distributed under the Apache License, Version 2.0.\n'
+        ' On Debian systems the full text is in /usr/share/common-licenses/Apache-2.0.\n'
+        ' The original upstream license is also preserved in licenses/HappyRanch-LICENSE.\n\n'
+        'Bundled dependencies retain their respective copyrights and licenses;\n'
+        'see licenses/ for the unchanged PR1 notices and inventories.\n'
+    )
+    changelog = (f'happyranch ({debversion}) unstable; urgency=medium\n\n'
+                 '  * Package the relocatable Linux desktop payload.\n\n'
+                 ' -- HappyRanch maintainers <noreply@github.com>  '
+                 + format_datetime(datetime.now(timezone.utc)) + '\n')
+    (doc / 'changelog.Debian.gz').write_bytes(gzip.compress(changelog.encode(), mtime=0))
     shutil.copyfile(prefix / 'build-info.json', doc / 'build-info.json')
+    for path in doc.rglob('*'):
+        if path.is_file() and not path.is_symlink():
+            path.chmod(0o644)
     control = stage / 'DEBIAN'
     control.mkdir()
     # GNU du reports allocated KiB, as required for Installed-Size, before the
@@ -150,7 +178,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
         f'Installed-Size: {installed_size}\n'
         'Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1, '
         'git, ca-certificates, libc6 (>= 2.35), libgcc-s1\n'
-        'Description: HappyRanch desktop and command-line workspace\n'
+        'Description: desktop and command-line workspace\n'
         ' Native GTK and WebKit window for the local HappyRanch web interface,\n'
         ' with a private Python runtime and an application-owned local daemon.\n'
     )

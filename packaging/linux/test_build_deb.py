@@ -1,6 +1,7 @@
 """Focused native packaging checks through the real dpkg-deb boundary."""
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import os
@@ -27,6 +28,9 @@ class DebPackageTests(unittest.TestCase):
                                           'dependencies': [['happyranch', version]]}),
             'web/dist/index.html': '<html>fixture</html>',
             'python/bin/python3.12': 'fixture interpreter',
+            'python/lib/libpython3.12.so.1.0': 'fixture shared library',
+            'python/lib/module.py': '# fixture source',
+            'python/lib/__pycache__/module.cpython-312.pyc': 'generated cache',
             'share/happyranch/desktop/happyranch_window.py': '# fixture',
             'licenses/HappyRanch-LICENSE': 'original license fixture',
             'licenses/nested/NOTICE': 'original dependency notice',
@@ -42,7 +46,8 @@ class DebPackageTests(unittest.TestCase):
             path = payload / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
-            path.chmod(0o755 if name.startswith('bin/') else 0o644)
+            path.chmod(0o755 if name.startswith('bin/') or name in (
+                'python/lib/libpython3.12.so.1.0', 'licenses/nested/NOTICE') else 0o644)
         (payload / 'python/bin/python3').symlink_to('python3.12')
         archive = self.work / (root + '.tar.gz')
         with tarfile.open(archive, 'w:gz') as stream:
@@ -89,12 +94,20 @@ class DebPackageTests(unittest.TestCase):
                 self.assertIn('TryExec=/usr/bin/happyranch-app\n', desktop)
                 self.assertIn('Icon=happyranch\n', desktop)
                 self.assertNotIn('@APP_EXEC@', desktop)
-                self.assertEqual((installed / 'usr/share/doc/happyranch/copyright').read_text(),
-                                 'original license fixture')
+                doc = installed / 'usr/share/doc/happyranch'
+                self.assertIn('/usr/share/common-licenses/Apache-2.0', (doc / 'copyright').read_text())
+                self.assertEqual((doc / 'licenses/HappyRanch-LICENSE').read_text(), 'original license fixture')
                 self.assertEqual((installed / 'usr/share/doc/happyranch/licenses/nested/NOTICE').read_text(),
                                  'original dependency notice')
+                self.assertTrue(all(path.stat().st_mode & 0o777 == 0o644
+                                    for path in doc.rglob('*') if path.is_file() and not path.is_symlink()))
+                self.assertIn('happyranch (0.1.0-1)', gzip.decompress((doc / 'changelog.Debian.gz').read_bytes()).decode())
                 self.assertEqual(len(list((installed / 'usr/share/icons/hicolor').rglob('happyranch.*'))), 8)
                 prefix = installed / 'opt/happyranch-desktop'
+                self.assertFalse(list(prefix.rglob('__pycache__')))
+                self.assertTrue((prefix / 'python/lib/module.py').is_file())
+                self.assertEqual((prefix / 'python/lib/libpython3.12.so.1.0').stat().st_mode & 0o777, 0o644)
+                self.assertIn('Description: desktop and command-line workspace', fields)
                 self.assertEqual(os.readlink(prefix / 'python/bin/python3'), 'python3.12')
                 for path in installed.rglob('*'):
                     if not path.is_symlink():
