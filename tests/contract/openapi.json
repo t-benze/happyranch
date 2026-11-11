@@ -5291,6 +5291,52 @@
           "409",
           "422"
         ]
+      },
+      "PUT": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/settings/operations": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "operation_key",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
       }
     },
     "/api/v1/orgs/{slug}/workflows/submissions/handoffs": {

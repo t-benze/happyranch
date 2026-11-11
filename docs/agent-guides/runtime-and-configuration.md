@@ -4076,3 +4076,14 @@ Unsupported-stop audit failure is retained without interrupting the original
 executor wait; the once-only dispatch and final native settlement report it.
 The stop limitation is captured for the original running generation before
 dispatch, and an ended attempt is not relabeled running during retry backoff.
+
+
+## Sequential settings Save (U7b)
+
+Existing Founder-bearer PUT `/workflows/sequential/settings` saves repo-free
+role defaults and limits with latest-generation CAS. First save is Disabled;
+later saves preserve current admission. Saving never enables admission or
+allocates work. Stable original-operation lookup returns the original receipt,
+separately from current settings. No schema installation/migration or live
+config is performed by source delivery. See the current
+[U7 specification](../superpowers/specs/2026-11-11-sequential-coding-u7.md).

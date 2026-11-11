@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
 import { useParams } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { workflowActivations, workflowSubmissions, workflowReviews, workflowRevisions, workflowSequential } from '@/lib/api';
 import { clearSelectionCommands, ReviewIntegrityError, validateDetail, type ReviewDetail } from '@/lib/workflowReviewSelection';
-import type { WorkflowsApi } from './DataContext';
+import type { WorkflowsApi, SequentialSettingsFence } from './DataContext';
 
 /** No locale input, no persistent cache, no stale cached admission on remount. */
 function useActivations() {
@@ -126,4 +126,66 @@ const sequentialReads = {
   useSequentialRun: (id: string) => useSequentialRead('run', id, (slug, signal) => workflowSequential.getSequentialRun(slug, id, signal)),
   useTaskSequentialWorkflow: (id: string) => useSequentialRead('task', id, (slug, signal) => workflowSequential.getTaskSequentialWorkflow(slug, id, signal)),
 };
-export const realWorkflowsApi: WorkflowsApi = { ...sequentialReads, useActivations, useReviewDetail, useHumanResponse, useOwnerReturn };
+export const realWorkflowsApi: WorkflowsApi = { useSequentialSettingsActions, useSequentialSettingsFence, ...sequentialReads, useActivations, useReviewDetail, useHumanResponse, useOwnerReturn };
+
+
+interface SequentialSendStore {
+  fences: Map<string, SequentialSettingsFence>;
+  listeners: Set<() => void>;
+}
+const sequentialSends = new WeakMap<QueryClient, SequentialSendStore>();
+function sendStore(qc: QueryClient): SequentialSendStore {
+  let value = sequentialSends.get(qc);
+  if (!value) { value = { fences: new Map(), listeners: new Set() }; sequentialSends.set(qc, value); }
+  return value;
+}
+function setFence(store: SequentialSendStore, slug: string, value: SequentialSettingsFence | null) {
+  if (value) store.fences.set(slug, value); else store.fences.delete(slug);
+  store.listeners.forEach(listener => listener());
+}
+function useSequentialSettingsFence(): SequentialSettingsFence | null {
+  const { slug = '' } = useParams();
+  const store = sendStore(useQueryClient());
+  return useSyncExternalStore(listener => { store.listeners.add(listener); return () => { store.listeners.delete(listener); }; },
+    () => store.fences.get(slug) ?? null);
+}
+function useSequentialSettingsActions(): ReturnType<WorkflowsApi['useSequentialSettingsActions']> {
+  const { slug = '' } = useParams();
+  const qc = useQueryClient();
+  return useMemo(() => {
+    const store = sendStore(qc);
+    return {
+      save: async (draft: workflowSequential.SequentialSettingsCommand) => {
+        if (!slug || store.fences.has(slug)) throw new Error('sequential_settings_send_in_progress');
+        const command = workflowSequential.freezeSequentialSettingsCommand(draft);
+        setFence(store, slug, { command, phase: 'sending' });
+        try {
+          const saved = await workflowSequential.putSequentialSettings(slug, command);
+          // A receipt is original history, never current settings cache data.
+          setFence(store, slug, null);
+          void qc.invalidateQueries({ queryKey: ['workflow-sequential', slug, 'settings'] });
+          return saved;
+        } catch (error) {
+          const code = (error as { code?: string } | null)?.code;
+          const definite = ['sequential_settings_request_invalid', 'sequential_settings_generation_stale',
+            'sequential_settings_operation_conflict', 'sequential_definition_not_found',
+            'sequential_definition_conflict', 'sequential_settings_defaults_invalid', 'sequential_authority_denied'];
+          setFence(store, slug, code && definite.includes(code) ? null : { command, phase: 'uncertain' });
+          throw error;
+        }
+      },
+      readOperation: async (key: string) => {
+        const value = await workflowSequential.getSequentialSettingsOperation(slug, key);
+        const fence = store.fences.get(slug);
+        // 404/error/foreign/mismatched receipts keep original custody. Reading
+        // while PUT is pending cannot release its synchronous send ownership.
+        if (fence?.phase === 'uncertain' && fence.command.operation_key === key
+          && JSON.stringify(workflowSequential.freezeSequentialSettingsCommand(value.command)) === JSON.stringify(fence.command)) {
+          setFence(store, slug, null);
+          void qc.invalidateQueries({ queryKey: ['workflow-sequential', slug, 'settings'] });
+        }
+        return value;
+      },
+    };
+  }, [qc, slug]);
+}

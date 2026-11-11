@@ -1278,8 +1278,12 @@ second CLI OrgState, historical family reuse, new command/credential/observer.
 U7a adds existing-Founder-bearer browser projections only, with SELECT-only
 complete history/current-authority reads and no work allocation. It supplies
 no agent-session command or new credential/permission: continue using only
-original addressed inputs. U7b settings writes, U7c selected preflight/Final
-transport and U7d completion consumption remain. Final success stays Held;
+original addressed inputs. U7b adds only Founder-bearer repo-free settings CAS
+and original-operation lookup; it grants agents no setup command. Saving preserves
+admission (initial Disabled), allocates zero work and cannot enable runs. Preserve
+the original key/body on transport loss; original receipt and current generation
+are separate reads. Historical repo-bearing settings/key recovery is unchanged.
+U7c selected preflight/Final transport and U7d completion consumption remain. Final success stays Held;
 public fresh start remains OFF until U9's atomic old-start fence. No browser
 start, daemon repository I/O or Final job/recovery executor follows. See the
 current docs/superpowers/specs/2026-11-11-sequential-coding-u7.md.

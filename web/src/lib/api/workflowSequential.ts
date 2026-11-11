@@ -1,5 +1,6 @@
-/** U7a mirror of workflow_sequential.py. Existing bearer, read-only; no start. */
+/** Sequential Founder reads/settings mirror; existing bearer, no start. */
 import { request } from './client';
+import { getToken } from '../auth';
 
 export interface DefinitionPin {
   identity: string; version: number; definition_digest: string; source_digest: string;
@@ -56,3 +57,58 @@ export const getSequentialRun = (slug: string, id: string, signal?: AbortSignal)
   request(`/orgs/${slug}/workflows/sequential/runs/${encodeURIComponent(id)}`, { signal });
 export const getTaskSequentialWorkflow = (slug: string, id: string, signal?: AbortSignal): Promise<SequentialTaskWorkflow> =>
   request(`/orgs/${slug}/tasks/${encodeURIComponent(id)}/sequential-workflow`, { signal });
+
+export interface SequentialSettingsCommand {
+  format: 'workflow-sequential-settings-put@1'; operation_key: string; expected_generation: number;
+  definition: DefinitionPin; bindings: SequentialBinding[]; limits: SequentialLimits;
+}
+export interface SequentialSettingsReceipt {
+  format: 'workflow-sequential-settings-receipt@1'; org_slug: string; operation_key: string;
+  command: SequentialSettingsCommand;
+  receipt: { format: 'workflow-sequential-settings-receipt-storage@1'; operation_id: string;
+    settings_id: string; generation: number; snapshot_digest: string };
+  original: SequentialSettings;
+}
+
+/** Closed commands have ASCII keys and integer numbers. Freeze exact original
+ * bytes before awaiting token/transport; never normalize an uncertain resend. */
+function canonical(value: unknown): unknown {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError('sequential_settings_integer');
+    return value;
+  }
+  if (typeof value === 'string') {
+    if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value)) throw new TypeError('sequential_settings_unicode');
+    return value;
+  }
+  if (value === null || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return Object.freeze(value.map(canonical));
+  if (typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError('sequential_settings_json');
+  return Object.freeze(Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical((value as Record<string, unknown>)[key])])));
+}
+export function freezeSequentialSettingsCommand(command: SequentialSettingsCommand): SequentialSettingsCommand {
+  const copy = canonical(command) as SequentialSettingsCommand;
+  if (new TextEncoder().encode(JSON.stringify(copy)).length > 16384) throw new TypeError('sequential_settings_size');
+  return copy;
+}
+function receipt(value: SequentialSettingsReceipt, slug: string, key: string): SequentialSettingsReceipt {
+  canonical(value);
+  if (value.format !== 'workflow-sequential-settings-receipt@1' || value.org_slug !== slug
+    || value.operation_key !== key || value.command.operation_key !== key
+    || value.receipt.settings_id !== value.original.id || value.receipt.generation !== value.original.generation
+    || value.receipt.snapshot_digest !== value.original.snapshot_digest) throw new TypeError('sequential_settings_receipt');
+  return value;
+}
+/** One PUT, including on 401. Uses the existing Founder token custody. */
+export const putSequentialSettings = async (slug: string, command: SequentialSettingsCommand): Promise<SequentialSettingsReceipt> => {
+  const body = freezeSequentialSettingsCommand(command);
+  const saved = await request<SequentialSettingsReceipt>(`/orgs/${slug}/workflows/sequential/settings`, {
+    method: 'PUT', body, auth: { token: await getToken() },
+  });
+  const value = receipt(saved, slug, body.operation_key);
+  if (JSON.stringify(canonical(value.command)) !== JSON.stringify(body)) throw new TypeError('sequential_settings_original_command');
+  return value;
+};
+/** Original receipt only. Never substitutes the latest current-generation GET. */
+export const getSequentialSettingsOperation = async (slug: string, key: string): Promise<SequentialSettingsReceipt> =>
+  receipt(await request(`/orgs/${slug}/workflows/sequential/settings/operations`, { params: { operation_key: key } }), slug, key);

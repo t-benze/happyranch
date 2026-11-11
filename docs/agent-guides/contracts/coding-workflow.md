@@ -2496,7 +2496,25 @@ reads return no workflow content or link. Existing Founder task-result visibilit
 supplies authored-content access; agent sessions retain their addressed readers.
 No managed-connector allowlist or credential/permission changes. TS mirrors,
 classification and OpenAPI ship together; retired Vitest is not restored.
-Settings writes, selected task-session preflight/Final transport and agent completion
-consumer remain implementation. Final success stays Held, public fresh start OFF
+U7b settings CAS and original lookup are implemented in source below. Selected
+task-session preflight/Final transport and agent completion consumption remain implementation. Final success stays Held, public fresh start OFF
 until atomic U9; no human/browser start. ACCESS-1/shared-OS-user/gh limitations,
 original Pause/receipt uncertainty/cancellation and historical families remain.
+
+
+## U7b repo-free settings and original save (TASK-15482)
+
+The existing Founder bearer now supports PUT `/workflows/sequential/settings`
+with closed canonical settings-put@1 (definition pin, bindings, limits, expected
+generation and stable key), and separate GET `/workflows/sequential/settings/operations`
+with operation_key query. Save appends only compatible immutable settings/operation
+rows, preserving current admission (initial Disabled) and allocating zero work.
+Same-key/body replay and lookup return the original receipt/snapshot, separately
+from U7a's latest settings GET; a changed body refuses. No schema or historical
+Coding settings/key-reader change. Exact routes, closed shapes, limits, native
+writer rechecks, client custody and evidence limits are in the current U7 spec.
+The browser provider retains a frozen org-local pending/uncertain operation with
+one PUT, matching-original-only reconciliation and no locale-triggered work.
+No new rendered UI, bearer fallback, agent/native audience entitlement, remote
+allowlist, repository setup selector, admission action, fresh start or Final mount.
+Final success stays Held; U7c/U7d, U8/U9 and native/V3 acceptance remain separate.
