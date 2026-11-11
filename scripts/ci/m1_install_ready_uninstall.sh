@@ -163,6 +163,18 @@ ready() {
     [[ $(systemctl show "$unit" -p Type --value) == notify && $(systemctl show "$unit" -p SubState --value) == running ]] || fail "$unit did not reach notify READY"
   done
   installer check-drift
+  runtime_directories
+}
+runtime_directories() {
+  local unit path
+  date -u '+M1 runtime directories %Y-%m-%dT%H:%M:%S.%NZ'
+  for unit in "${services[@]}"; do
+    systemctl show "$unit" -p User,Group,ActiveState,SubState,RuntimeDirectory,RuntimeDirectoryPreserve || true
+  done
+  for path in /run/happyranch-{connector,tsnet-sidecar}; do
+    sudo stat -c '%n owner=%U:%G mode=%a inode=%i type=%F' "$path" || true
+    sudo ls -ld "$path" "$path"/* 2>/dev/null || true
+  done
 }
 request() {
   sudo -u happyranch "$python" - <<'PY'
@@ -183,6 +195,7 @@ PY
 }
 residue() {
   local path unit
+  runtime_directories
   for unit in "${services[@]}" "$target"; do
     absent "/etc/systemd/system/$unit"
     [[ $(systemctl show "$unit" -p LoadState --value) == not-found ]] || fail "still loaded: $unit"
@@ -199,6 +212,12 @@ residue() {
 }
 logs() {
   mkdir -p "$M1_LOGS"
+  runtime_directories 2>&1 | tee "$M1_LOGS/runtime-directories.txt"
+  # Manager reloads are not included in the individual unit journals.
+  # shellcheck disable=SC2024
+  sudo journalctl -b --no-pager -o short-precise _PID=1 --grep='Reloading|Reloaded|happyranch' \
+    > "$M1_LOGS/systemd-manager.journal.txt" 2>&1 || true
+  cat "$M1_LOGS/systemd-manager.journal.txt"
   local unit
   for unit in "${services[@]}" "$target" "${fixtures[@]}"; do
     # These redirects intentionally create runner-owned artifact logs.
