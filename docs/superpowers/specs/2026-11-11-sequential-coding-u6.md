@@ -1,8 +1,8 @@
 # Sequential Coding U6: cancellation and mixed-history closure
 
-> Status: current design; U6a inert reader interface implemented
+> Status: current design; U6a/U6b1 and U6b2a inert interfaces implemented
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
-> Notes: U6b cancellation/native-tail producers and attachment remain required.
+> Notes: U6b2b cross-family writers, owner aggregation and attachment remain required.
 
 THR-336 / ROOT TASK-15165; maker TASK-15287. Fetched base B is
 `dc35c34ca907d6094cc79654f6f7b5be7476fe82`. Plan rev3 TASK-14461 §U6
@@ -176,3 +176,63 @@ populated old-Coding lifecycle acceptance, native Stop/root-tail integration,
 real concurrency/host/outer/effect proof, U5b2b2/U7, V3/V5/M4 and all live operations
 remain NOT RUN/implementation as applicable. No repository tests are added.
 PRD v1.0.4/msg131 ACCESS-1 and every preserved boundary above remain controlling.
+
+
+## U6b2a split declared before edits (TASK-15325)
+
+Fetched B=`448d606158f0871300b9240a0c575d8036f58da3`. This session delivers
+**U6b2a, an UNMOUNTED original-owner native-tail disposition interface**;
+U6b2 is not complete. Existing old Coding cancellation owns its immediate
+transaction/COMMIT and freezes ancestor overlays in its original command/event
+families; U6b1 owns an admission transaction. Calling those writers inside one
+another cannot compose live families while preserving those readers. The split
+was declared before edits; no partial mixed path is mounted.
+
+`sequential_cancellation_tail.cancelled_owner_disposition_uncommitted` qualifies
+ONE original sequential source/visit in a caller-owned DB lock/snapshot. Its
+complete U6a oracle precedes selection; saved run/task/principal/SID, original
+TaskInvocation, native entry/fingerprint/root, terminal request, host receipt and
+same-owner close/release must agree. Only actual native close/removal, reservation
+release and safe host/outer observations qualify. Missing observations, prepared/
+unknown ownership, sticky execution uncertainty, survivors, absent original host,
+failed outer cleanup, remaining native journal or live tracker/control/PID return
+unsettled. Malformed history/identity or drift refuses. Native generation is the
+original admission generation, which may precede current Pause generation.
+The reader clears no tracker/journal/reservation, calls no Stop and writes no SQL.
+Native reason remains unchanged (including cancellation/failure); qualification
+is neither successful business completion nor remote-effect clearance.
+
+Caller must supply its original read/retained allowances and deadline; this
+interface creates none and owns no transaction/progress hook across external
+work. Complete D2 A/B/C/L caps remain unchanged; supplied native observations
+share the existing 16 KiB metadata ceiling and original caller copy/traversal
+budget. Exhaustion refuses, never partial settlement. The frozen result is an
+ephemeral same-call observation, not a durable or reusable receipt. A positive
+result qualifies ONE original owner only: never use it to clear an aggregate
+teardown-incomplete flag, bypass root protection or infer other owners settled.
+
+| New owner / callers | Boundary |
+| --- | --- |
+| `CancelledOwnerDisposition` | Immutable one-owner identity/settled observation; no clearance/capability/receipt. |
+| `_selected` | Complete combined mixed history and exact original source/visit binding. |
+| `cancelled_owner_disposition_uncommitted` | No production caller. Future native settle-live composition must supply actual original observations and aggregate every captured owner. |
+| Existing U4/U5/U6a/U6b1, old Coding/document, Pause, engine/dispatcher/business-Held, Final receipt uncertainty, Founder/root-tail consumers | Byte/AST-identical. No moved code, schema, route, transport or configuration change. |
+
+**U6b2b remains IMPLEMENTATION:** live retained old-Coding/document writer and
+cross-family ordinary-overlay composition without double-fencing, original-owner
+aggregation/durable history composition (including unsettled owners without
+handles), and complete Founder cancel/cascade/native-root-tail attachment.
+The existing route still calls `cancel_selected` directly or refuses mixed
+ordinary ancestry before the old Coding/ordinary path; document cancellation
+retains its original owner. U6b1 still has no production importer. Thus the
+requested mounted mixed cancellation diagnostic is NOT RUN, not a source or
+native acceptance claim. The one-owner interface does not discharge it.
+
+Out-of-repo actual-code diagnostics are SYNTHETIC: native host/authority/settlement
+scaffolding, zero-write/refusal/positive-owner observations and existing mounted
+selected cancellation evidence are recorded in the handoff/PR, with exact B/H,
+protected bytes/AST, callers/global closure and authenticated exact-H local-CI job.
+No repository tests. U5b2b2 callback validation/mount, U7 transport, U8/U9 and
+Final success Held remain unchanged; V3/native/mixed writer acceptance, V5/M4,
+real access/merge/effect recovery and all reserved live operations remain NOT RUN.
+All earlier preserved failures, allowances, V3 end and ACCESS-1 limits above apply.

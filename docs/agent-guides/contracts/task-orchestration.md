@@ -735,3 +735,17 @@ ancestors. It neither replaces nor changes the existing task-cancel route.
 U6b2 still owns live retained-family writer composition, cross-family overlay
 closure, Founder route attachment and native-tail consumption. See the
 [precise U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## U6b2a one-owner interface; mixed route remains unavailable
+
+The unmounted original-owner native-tail disposition reader validates complete
+mixed history and actual native observations for ONE original source/visit.
+It allocates no task/result/event/control and clears no ownership. A qualified
+owner cannot establish whole-root clearance. The existing Founder route still
+uses direct `cancel_selected`, `guard_ordinary_ancestor` and the original old
+Coding/ordinary/document owners; nobody newly reaches U6b1 `cancel_mixed`.
+U6b2b must compose live retained-family writers/cross-family overlays, aggregate
+all original owners and attach the complete route/native tail. Hidden live work
+and coding-dependent ordinary point stops still refuse. See the
+[U6 remainder](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).

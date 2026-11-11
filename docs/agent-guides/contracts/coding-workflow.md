@@ -2429,3 +2429,17 @@ route/native-tail consumer. This is implementation remainder, not missing proof.
 U5b2b2/U7 still own callback validation/mount and transport; Final success remains
 Held. No merge retry, reservation release, cleanup or live authority follows.
 [U6 specification](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+
+
+## Sequential U6b2a native disposition boundary
+
+The new one-owner cancellation-tail interface is unmounted. Complete mixed
+history plus positive SAME original native host/close/release observations can
+qualify one original owner only. Prepared/unknown/missing/uncertain observations
+stay unsettled; conflicting original identities refuse. No tracker/journal,
+Final intent/action/receipt, result, allowance or returned/cancelled graph is
+rewritten. It supplies no root clearance, effect clearance or retry entitlement.
+Historical Coding cancellation/return readers and document paths remain exact.
+U6b2b still owes live retained-family writers, cross-family ordinary overlays,
+original-owner aggregation/history and Founder/native-tail attachment; U5b2b2/U7
+and Final success Held remain. See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
