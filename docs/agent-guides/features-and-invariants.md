@@ -2261,8 +2261,56 @@ blocked and only same-key recovery or a GET re-read is offered. A
 `capture_available=false` explanation is derived from the actual coverage and
 recorded errors (runtime, declared Claude corpus, inconsistent input) and shows
 the recorded cause codes. Attempts started in another browser are not listed until
-Ready. There is no cancellation, processor choice or recipient action. Instill
-(S5) remains a later slice. It never claims complete knowledge capture.
+Ready. There is no cancellation, processor choice or recipient action. It
+never claims complete knowledge capture.
+
+S5 (TASK-15508) adds the active-agent Instill UI. On an active agent's detail,
+Learnings gains an **Instill knowledge** entry and an `Inherited · <source>`
+marker on notes whose memory read returns `provenance: inherited`; a
+**Knowledge imports** card lists the recipient's operations from
+`listKnowledgeImports` (learned sources, archive versions, counts and receipt
+links). One right-hand drawer steps through archive picker (all same-org Ready
+archives/versions with prior-import counts from that history; loading, empty,
+error), preview (the S3b eligibility projection: default selection = eligible
+items with no mapping; already-imported, held, incomplete-intent and ineligible
+items show their reason and are not selectable), confirmation, import receipt,
+read-only source record and recipient memory note. Coverage is an expandable
+disclosure in preview and confirmation. Eligibility is advisory: Busy shows the
+actual blocker kinds/IDs and never cancels work or offers an override; confirm
+handles every server refusal with its closed code. Only the explicit Instill
+and Retry buttons POST, exactly once per click (synchronous latch, and the
+Instill/retry calls opt out of the shared client's 401 re-send with
+`replayOnUnauthorized: false`: a 401 still clears and re-acquires the master
+bearer but is thrown, never re-sent, so the next explicit click uses the fresh
+bearer; other callers keep the default re-send); back/forward,
+reference return and locale switches keep recipient, archive and selection and
+send nothing. Each confirmation mints a submission ID recorded with its exact
+body in a per-org/per-recipient localStorage ledger before the POST (same
+storage rules as Distill: only an absent value is empty; malformed, `''` or
+unwritable storage refuses with zero POSTs). An unknown outcome is settled only
+by a returned operation: a same-key re-send of the recorded body, or the
+recipient history listing that submission ID. While a confirmation is unknown,
+the confirmation view (title, question, archive/version facts, items and footer
+count) describes that recorded body, not the current default selection. A
+first-send 401 forgets its fresh key like the other pre-creation refusals. A
+refused re-send (including a 401) keeps the key,
+and new confirmations stay blocked while any key is unresolved or the history
+read is loading/errored. A fresh confirmation also needs a current (successful,
+not re-fetching) eligibility read with `recipient_eligible: true`; otherwise the
+confirmation shows the actual Busy/ineligible blocker kinds/IDs and a read-only
+**Check again** (refetch only). Explicit same-key recovery of a recorded unknown
+confirmation is not gated by eligibility. Retry calls only `retryKnowledgeImport`
+on the original operation, only when the server marks items `retryable`, the
+operation read is current, the recipient history read is current (loading,
+errored or re-fetching history is unknown, never "no other operation"), no
+unknown confirmation is recorded and no different operation is in flight. The
+buttons and the action callbacks apply the same gates (the callbacks re-read the
+live query cache and ledger at click time); held items show as held for checking and are never offered for
+rewrite; an incomplete-intent refusal links the reserving original operation
+(from the eligibility mapping). Copy states that imported notes reach the
+recipient's next fresh session and nothing is pushed into a running session.
+The S4 drawer exports its shell, loading/error blocks, item body and
+reference-record body for reuse without changing S4 behavior.
 See [Web/CLI contracts](web-and-cli.md#retired-knowledge-read-api-s1) and the
 [current specification](../superpowers/specs/2026-11-11-knowledge-distill-instill-v1.md).
 

@@ -19,11 +19,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { MessageCircle, Plus, X, AlertCircle } from 'lucide-react';
 import { TaskCard } from '@/design-system/patterns/TaskCard';
-import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Button } from '@/design-system/primitives/Button';
-import { ApiError } from '@/lib/api';
 import {
-  useAgentLearnings,
   useAgentsList,
   useAgentTasks,
   useCleanupActivity,
@@ -39,6 +36,7 @@ import { isEligiblePolicyManager } from '@/hooks/authorityPolicy';
 import { AgentAvatar } from './AgentAvatar';
 import { useExecutorOptions } from './useExecutorOptions';
 import { TeamEscalationPolicyEntryCard } from './TeamEscalationPolicyCard';
+import { AgentKnowledge } from './instill/AgentKnowledge';
 import { useTranslation } from '@/hooks/i18n';
 import { formatDateShapeFor } from '@/lib/i18n/format';
 import { classifyAgentError, renderAgentError, type AgentErrorView, type Translate } from './strings';
@@ -106,7 +104,6 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const teamsQuery = useTeamsList();
   const { density } = useDensity();
   const taskRoutes = useTasksRoutes();
-  const learningsQuery = useAgentLearnings(agentName);
   const jobsQuery = useJobsList({ agent: agentName, status: 'all', limit: 10 });
   const { done, total, tasksQuery } = useAccountabilityMetrics(agentName);
   const cleanupQuery = useCleanupActivity(agentName);
@@ -377,10 +374,6 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
     return () => window.removeEventListener('keydown', handler);
   }, [isDirty, onSave]);
 
-  const learningsError =
-    learningsQuery.isError && learningsQuery.error instanceof ApiError
-      ? learningsQuery.error
-      : null;
 
   return (
     <section className="flex h-full flex-col">
@@ -734,44 +727,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             })}</ul> : <p className="text-text-muted text-xs">{t('agents.detail.noCleanup')}</p>}
         </section>
 
-        {/* Learnings */}
-        <section>
-          <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
-            {t('agents.detail.learnings')}
-          </h3>
-          {learningsQuery.isLoading ? (
-            <p className="text-text-muted text-xs">{t('agents.detail.learningsLoading')}</p>
-          ) : learningsError?.status === 412 ? (
-            <p className="text-text-muted text-xs">
-              {render('agents.detail.learningsNotMigrated', { command: <code>happyranch memory reindex</code> })}
-            </p>
-          ) : learningsError ? (
-            <p className="text-tier-red text-xs">
-              {renderAgentError(classifyAgentError(learningsError, 'agents.detail.learningsError'), t)}
-            </p>
-          ) : learningsQuery.data && learningsQuery.data.entries.length > 0 ? (
-            <ul className="space-y-2">
-              {learningsQuery.data.entries.map((e) => (
-                <li
-                  key={e.id}
-                  className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-3"
-                >
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="text-text-muted font-mono tabular-nums">{e.id}</span>
-                    <span className="text-text-muted">·</span>
-                    <span className="text-text-muted">{e.topic}</span>
-                  </div>
-                  <p className="text-text-primary mt-1 text-sm font-medium">{e.title}</p>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState
-              title={t('agents.detail.noLearningsTitle')}
-              body={t('agents.detail.noLearningsBody')}
-            />
-          )}
-        </section>
+        <AgentKnowledge agentName={agentName} displayName={identityPresentation.name(agentName)} />
 
         {/* Recent jobs — object-ID click-through */}
         {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (

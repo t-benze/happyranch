@@ -1,6 +1,6 @@
 # Knowledge Distill & Instill v1
 
-> Status: current design for approved Option A; implementation and acceptance pending.
+> Status: current design for approved Option A. S0–S4 merged; S5 active-agent Instill UI delivered by TASK-15508 (pending independent review/QA/merge); S6 acceptance pending.
 > Product contract: [Knowledge Distill and Instill PRD](../../product/prds/2026-11-08-knowledge-distill-and-instill.md), copied unchanged from `e711015fcfe1e56c7d11b7521ecfe3eefae3ac87`.
 > Authority: THR-296 seq315/317 (design), seq322 (v1 defaults), seq325/326 (curation correction), Founder seq332/336 (Option A); delivery root TASK-15170, S0 TASK-15171.
 > Source inspection: origin/main `b5b0aa16ffd705f42cd7763614daf2ff733fb60b`; line references below refer to that immutable baseline, not installed behavior.
@@ -257,7 +257,7 @@ Imports affect future retrieval through normal memory interfaces in a **fresh re
 
 ## Routes, CLI, schemas and mirrors by slice
 
-S1 is implemented by TASK-15282 and S2 by TASK-15315/TASK-15354, subject to their independent delivery gates. S3b (TASK-15436) adds the S3 public surfaces below; S4 (TASK-15460) adds the retired-agent Web UI over existing S1/S2 reads and the Distill POST; S5–S6 remain later work. All IDs are same-org and server-resolved. Preserve existing auth/native/remote policy; adding a route is not a permission or remote-reachability grant. Classify each route explicitly through the existing contract owner before shipping.
+S1 is implemented by TASK-15282 and S2 by TASK-15315/TASK-15354, subject to their independent delivery gates. S3b (TASK-15436) adds the S3 public surfaces below; S4 (TASK-15460) adds the retired-agent Web UI over existing S1/S2 reads and the Distill POST; S5 (TASK-15508) adds the active-agent Instill UI over the existing S2 archive, S3 import/eligibility/retry and memory reads; S6 remains later work. All IDs are same-org and server-resolved. Preserve existing auth/native/remote policy; adding a route is not a permission or remote-reachability grant. Classify each route explicitly through the existing contract owner before shipping.
 
 | Slice | Proposed HTTP surfaces under `/api/v1/orgs/{slug}` | CLI parity / client surfaces |
 | --- | --- | --- |

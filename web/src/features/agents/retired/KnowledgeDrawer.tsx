@@ -81,7 +81,7 @@ interface ShellProps {
   children: ReactNode;
 }
 
-function Shell({ sourceName, title, top, breadcrumb, onClose, footer, children }: ShellProps): JSX.Element {
+export function Shell({ sourceName, title, top, breadcrumb, onClose, footer, children }: ShellProps): JSX.Element {
   const { t } = useTranslation();
   const heading = useRef<HTMLHeadingElement>(null);
   const opened = useRef(false);
@@ -121,7 +121,10 @@ function ViewBody(props: DrawerProps & { view: KnowledgeView; depth: number; top
   return <ReferenceView {...props} referenceId={view.referenceId} label={view.label} />;
 }
 
-function sourceLine(source: RetiredKnowledgeSource, t: ReturnType<typeof useTranslation>['t']): ReactNode {
+/** The display fields a source line needs (a retired source or an archive's source). */
+export type KnowledgeSourceLabel = Pick<RetiredKnowledgeSource, 'name' | 'source_id'>;
+
+function sourceLine(source: KnowledgeSourceLabel, t: ReturnType<typeof useTranslation>['t']): ReactNode {
   return (
     <>
       {source.name} <span className="text-text-muted font-mono text-xs">({source.source_id})</span> · {t('knowledge.retired.badge')}
@@ -227,7 +230,7 @@ export function RetiredBadge(): JSX.Element {
   );
 }
 
-function LoadingBlock(): JSX.Element {
+export function LoadingBlock(): JSX.Element {
   const { t } = useTranslation();
   return (
     <div role="status" aria-label={t('knowledge.common.loading')} className="animate-pulse space-y-3">
@@ -238,7 +241,7 @@ function LoadingBlock(): JSX.Element {
   );
 }
 
-function ErrorBlock({ error, onRetry }: { error: unknown; onRetry: () => void }): JSX.Element {
+export function ErrorBlock({ error, onRetry }: { error: unknown; onRetry: () => void }): JSX.Element {
   const { t } = useTranslation();
   const code = error instanceof ApiError ? (error.code ?? `http_${error.status}`) : null;
   return (
@@ -340,30 +343,19 @@ function OperationView({ source, operationId, onClose, onPush, onReplace, readyA
   );
 }
 
-function referenceLabel(archive: KnowledgeArchive, referenceId: string): string {
+export function referenceLabel(archive: KnowledgeArchive, referenceId: string): string {
   const entry = archive.manifest.inventory.find((r) => r.reference_id === referenceId);
   const id = entry?.metadata && typeof entry.metadata.id === 'string' ? entry.metadata.id : null;
   return id ?? entry?.relative_path ?? `${referenceId.slice(0, 18)}…`;
 }
 
-function ItemCard({ item, archive, source, onOpen }: { item: CuratedKnowledgeItem; archive: KnowledgeArchive; source: RetiredKnowledgeSource; onOpen: (referenceId: string, label: string) => void }): JSX.Element {
+/** Item text, source references, attribution, warnings and open-work facts (shared with S5 preview). */
+export function ItemBody({ item, archive, source, onOpen }: { item: CuratedKnowledgeItem; archive: KnowledgeArchive; source: KnowledgeSourceLabel; onOpen: (referenceId: string, label: string) => void }): JSX.Element {
   const { t } = useTranslation();
   const utc = useUtc();
   const references = Array.from(new Set([...item.references, ...item.attribution.map((a) => a.reference_id)]));
   return (
-    <li className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-text-primary font-mono text-xs font-semibold">{item.item_id}</span>
-        <span className="text-text-secondary text-xs">{ITEM_CATEGORY[item.category] ? t(ITEM_CATEGORY[item.category]) : item.category}</span>
-        {item.instill_eligible
-          ? <Pill tone="positive" icon={<Check size={12} aria-hidden="true" />}>{t('knowledge.item.eligible')}</Pill>
-          : <Pill tone="neutral">{t('knowledge.item.referenceOnly')}</Pill>}
-        {item.flags.map((flag) => (
-          <Pill key={flag} tone={flag === 'uncertain' || flag === 'conflict' || flag === 'attribution_unverified' ? 'attention' : 'neutral'}>
-            {ITEM_FLAG[flag] ? t(ITEM_FLAG[flag]) : flag}
-          </Pill>
-        ))}
-      </div>
+    <>
       <h4 className="font-display text-text-primary mt-2 text-base font-medium">{item.title}</h4>
       {item.content
         ? <p className="text-text-primary mt-1 text-sm leading-relaxed whitespace-pre-wrap">{item.content}</p>
@@ -412,6 +404,27 @@ function ItemCard({ item, archive, source, onOpen }: { item: CuratedKnowledgeIte
           {item.open_work.holds ? <p>{t('knowledge.item.holds', { text: item.open_work.holds })}</p> : null}
         </div>
       ) : null}
+    </>
+  );
+}
+
+function ItemCard({ item, archive, source, onOpen }: { item: CuratedKnowledgeItem; archive: KnowledgeArchive; source: RetiredKnowledgeSource; onOpen: (referenceId: string, label: string) => void }): JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <li className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-text-primary font-mono text-xs font-semibold">{item.item_id}</span>
+        <span className="text-text-secondary text-xs">{ITEM_CATEGORY[item.category] ? t(ITEM_CATEGORY[item.category]) : item.category}</span>
+        {item.instill_eligible
+          ? <Pill tone="positive" icon={<Check size={12} aria-hidden="true" />}>{t('knowledge.item.eligible')}</Pill>
+          : <Pill tone="neutral">{t('knowledge.item.referenceOnly')}</Pill>}
+        {item.flags.map((flag) => (
+          <Pill key={flag} tone={flag === 'uncertain' || flag === 'conflict' || flag === 'attribution_unverified' ? 'attention' : 'neutral'}>
+            {ITEM_FLAG[flag] ? t(ITEM_FLAG[flag]) : flag}
+          </Pill>
+        ))}
+      </div>
+      <ItemBody item={item} archive={archive} source={source} onOpen={onOpen} />
     </li>
   );
 }
@@ -505,14 +518,9 @@ function ArchiveView({ source, archiveId, onClose, onPush, top }: DrawerProps & 
 
 function ReferenceView({ source, referenceId, label, stack, depth, onPop, onClose, top }: DrawerProps & { referenceId: string; label: string; depth: number; top: boolean }): JSX.Element {
   const { t } = useTranslation();
-  const utc = useUtc();
-  const query = useRetiredKnowledgeReference(source.source_id, referenceId);
   const previous = depth > 0 ? stack[depth - 1] : null;
   const backLabel = previous?.kind === 'archive' ? t('knowledge.archive.title', { id: previous.archiveId })
     : previous?.kind === 'operation' ? t('knowledge.operation.title') : null;
-  const record = query.data?.record;
-  const meta = record?.metadata ?? {};
-  const metaText = (key: string) => (typeof meta[key] === 'string' ? (meta[key] as string) : null);
   return (
     <Shell
       sourceName={source.name}
@@ -538,6 +546,21 @@ function ReferenceView({ source, referenceId, label, stack, depth, onPop, onClos
         </>
       )}
     >
+      <ReferenceRecord source={source} referenceId={referenceId} label={label} />
+    </Shell>
+  );
+}
+
+/** Read-only source record (or its explicit unavailable state); shared with the S5 Instill drawer. */
+export function ReferenceRecord({ source, referenceId, label }: { source: KnowledgeSourceLabel; referenceId: string; label: string }): JSX.Element {
+  const { t } = useTranslation();
+  const utc = useUtc();
+  const query = useRetiredKnowledgeReference(source.source_id, referenceId);
+  const record = query.data?.record;
+  const meta = record?.metadata ?? {};
+  const metaText = (key: string) => (typeof meta[key] === 'string' ? (meta[key] as string) : null);
+  return (
+    <>
       {query.isLoading ? <LoadingBlock /> : query.isError ? <ErrorBlock error={query.error} onRetry={() => void query.refetch()} /> : query.data ? (
         query.data.available && record ? (
           <>
@@ -575,6 +598,6 @@ function ReferenceView({ source, referenceId, label, stack, depth, onPop, onClos
           </>
         )
       ) : null}
-    </Shell>
+    </>
   );
 }

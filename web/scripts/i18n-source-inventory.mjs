@@ -99,7 +99,7 @@ export const COPY_EXCEPTIONS = [
   raw('design-system/patterns/MessageBubble.tsx', 'MessageBubble', 'children-expression', 'Declined:', 'Standalone prop fallback; mounted owner supplies labels.declined'),
   raw('design-system/patterns/InboxRow.tsx', 'InboxRow', 'children-expression', 'last', 'Standalone prop fallback; mounted owner supplies labels.last'),
   raw('design-system/patterns/InboxRow.tsx', 'InboxRow', 'aria-label', 'needs you', 'Standalone prop fallback; mounted owner supplies labels.needsYou'),
-  raw('features/agents/AgentDetailPane.tsx', 'AgentDetailPane', 'children', 'happyranch memory reindex', 'Literal CLI command'),
+  raw('features/agents/instill/AgentKnowledge.tsx', 'AgentKnowledge', 'children', 'happyranch memory reindex', 'Literal CLI command'),
   raw('features/agents/AgentDetailPane.tsx', 'AgentDetailPane', 'children', '⌘S', 'Keyboard shortcut'),
   raw('features/agents/TeamEscalationPolicyCard.tsx', 'V2HistorySection', 'children', 'v', 'Version prefix'),
   raw('features/artifacts/ArtifactsPage.tsx', 'ArtifactsPage', 'placeholder', 'dev_agent-2026-06-10-report.pdf', 'Filename example'),
