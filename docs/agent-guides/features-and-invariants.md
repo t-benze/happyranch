@@ -3306,8 +3306,11 @@ conversational delivery range, releasing the slot and enqueueing follow-on and
 exchange catch-up tokens as usual. Resolution itself appends no reply message
 and does not set `reply_message_seq`. Thread dispatch likewise permits N distinct
 requests with per-task bindings, messages and audits; byte-identical effective
-requests on the same token replay one task. Self-only and same-team authority
-remain. See [threads contracts](contracts/threads-and-naming.md).
+requests on the same token replay one task. Successor, predecessor/family
+supersession and replay proof commit atomically; eligibility is rechecked
+inside that writer transaction. Replay restores a missing pending-successor
+queue notification without duplicating queued work. Parent wakes and thread
+followups run after commit. Self-only and same-team authority remain. See [threads contracts](contracts/threads-and-naming.md).
 
 Both served resolution contracts — `POST /tasks/{task_id}/resolve-escalation`
 and `POST /threads/{thread_id}/resolve-escalation` — return the stable `410`

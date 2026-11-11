@@ -1674,6 +1674,15 @@ def _reject_retired_th166_task_envelope(body: ResolveEscalationBody) -> None:
         raise HTTPException(status_code=410, detail={"code": "retired_autonomous_continuation"})
 
 
+def _enqueue_pending_thread_successor(org, state, task_id: str | None) -> None:
+    """Recover a post-commit publication without duplicating queued work."""
+    task = org.db.get_task(task_id) if task_id else None
+    if task is not None and task.status == TaskStatus.PENDING and state.queue is not None:
+        state.queue.enqueue_if_absent(
+            org.slug, task_id, publisher=lambda: enqueue_task(state, org.slug, task_id),
+        )
+
+
 async def resolve_escalation_in_process(
     org,
     state,
@@ -1722,6 +1731,8 @@ async def resolve_escalation_in_process(
                 if thread_invocation is None:
                     raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
                 if org.db.thread_invocation_resolved_task(thread_invocation.id, task_id):
+                    successor_id = org.db.thread_resolution_successor(thread_invocation.id, task_id)
+                    _enqueue_pending_thread_successor(org, state, successor_id)
                     return {"new_status": TaskStatus.SUPERSEDED.value, "replayed": True}
         # Path B: an escalated task is status=ESCALATED.
         is_escalated = task.status == TaskStatus.ESCALATED
@@ -1752,62 +1763,74 @@ async def resolve_escalation_in_process(
                         "status": task.status.value,
                     },
                 )
+            replayed = False
             async with org.db_lock:
-                with origin_guard(org, task_id):
+                with origin_guard(org, task_id), org.db.thread_continuation_transaction():
                     if thread_invocation is not None:
                         if org.db.get_pending_invocation(thread_invocation_token) is None:
                             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
                         if org.db.thread_invocation_resolved_task(thread_invocation.id, task_id):
-                            return {"new_status": TaskStatus.SUPERSEDED.value, "replayed": True}
-                        current = org.db.get_task(task_id)
-                        if current is None or current.status != TaskStatus.ESCALATED:
+                            successor_id = org.db.thread_resolution_successor(thread_invocation.id, task_id)
+                            replayed = True
+                    if not replayed:
+                        task = org.db.get_task(task_id)
+                        if task is None or task.status != TaskStatus.ESCALATED:
                             raise HTTPException(status_code=409, detail={"code": "task_not_escalated"})
-                    audit = AuditLogger(org.db)
-                    successor_id = org.db.next_task_id()
-                    org.db.insert_task(TaskRecord(
-                        id=successor_id,
-                        brief=successor_brief,
-                        team=task.team,
-                        assigned_agent=task.assigned_agent,
-                        parent_task_id=task.parent_task_id,
-                        dispatched_from_thread_id=thread_id or task.dispatched_from_thread_id,
-                    ))
-                    note_suffix = f"resolved by {actor}" + (f" via thread {thread_id}" if thread_id else "")
-                    if trimmed:
-                        note_suffix += f" — {trimmed}"
-                    # Canonical supersede tail: closes predecessor + revisit family,
-                    # wakes parents, emits thread followups (THR-080 #4).
-                    # Replaces the old manual _supersede_predecessor_locked + tail.
-                    _close_predecessor_family_and_run_tail(
-                        org, audit,
-                        predecessor=task,
-                        successor_root=successor_id,
-                        pred_block_kind=pred_block_kind,
-                        actor=actor,
-                        note_suffix=note_suffix,
-                        thread_id=thread_id,
-                        close_revisit_family=True,
-                        root_transitions=root_transitions,
-                    )
-                    # Also log escalation_resolved for the audit trail.
-                    audit.log_escalation_resolved(
-                        task_id=task_id,
-                        decision=decision,
-                        rationale=rationale,
-                        actor=actor,
-                        thread_id=thread_id, resolution_path=resolution_path,
-                        thread_invocation_id=thread_invocation.id if thread_invocation is not None else None,
-                    )
-                    # Best-effort: consume any open notification rows not already
-                    # consumed by _supersede_predecessor_locked inside the helper.
-                    for nrow in org.db.list_open_notifications_for_task(task_id):
-                        org.db.consume_escalation_notification(
-                            nrow["feishu_message_id"], consumed_by="superseded",
+                        pred_block_kind = _eligible_supersede_block_kind(org, task)
+                        if pred_block_kind is None:
+                            raise HTTPException(status_code=409, detail={"code": "task_not_supersedable"})
+                        audit = AuditLogger(org.db)
+                        successor_id = org.db.next_task_id()
+                        org.db._insert_task_uncommitted(TaskRecord(
+                            id=successor_id,
+                            brief=successor_brief,
+                            team=task.team,
+                            assigned_agent=task.assigned_agent,
+                            parent_task_id=task.parent_task_id,
+                            dispatched_from_thread_id=thread_id or task.dispatched_from_thread_id,
+                        ))
+                        note_suffix = f"resolved by {actor}" + (f" via thread {thread_id}" if thread_id else "")
+                        if trimmed:
+                            note_suffix += f" — {trimmed}"
+                        # Canonical supersede tail: closes predecessor + revisit family,
+                        # wakes parents, emits thread followups (THR-080 #4).
+                        # Replaces the old manual _supersede_predecessor_locked + tail.
+                        family_closed = _close_predecessor_family_and_run_tail(
+                            org, audit,
+                            predecessor=task,
+                            successor_root=successor_id,
+                            pred_block_kind=pred_block_kind,
+                            actor=actor,
+                            note_suffix=note_suffix,
+                            thread_id=thread_id,
+                            close_revisit_family=True,
+                            root_transitions=root_transitions, uncommitted=True,
                         )
-            # Post-tail specifics: kill jobs and enqueue the successor.
-            _kill_jobs_for_terminating_task(org.orchestrator, task_id)
+                        # Also log escalation_resolved for the audit trail.
+                        audit.log_escalation_resolved(
+                            task_id=task_id,
+                            decision=decision,
+                            rationale=rationale,
+                            actor=actor,
+                            thread_id=thread_id, resolution_path=resolution_path,
+                            thread_invocation_id=thread_invocation.id if thread_invocation is not None else None,
+                            uncommitted=True,
+                        )
+                        # Best-effort: consume any open notification rows not already
+                        # consumed by _supersede_predecessor_locked inside the helper.
+                        for nrow in org.db.list_open_notifications_for_task(task_id):
+                            org.db.consume_escalation_notification(
+                                nrow["feishu_message_id"], consumed_by="superseded", uncommitted=True,
+                            )
+            if replayed:
+                _enqueue_pending_thread_successor(org, state, successor_id)
+                return {"new_status": TaskStatus.SUPERSEDED.value, "replayed": True}
+            # Publish the successor first: a failing followup must not strand it.
             if state.queue is not None:
                 enqueue_task(state, org.slug, successor_id)
+            _run_superseded_task_tail(org, [task_id, *family_closed])
+            # Post-tail specifics: kill jobs.
+            _kill_jobs_for_terminating_task(org.orchestrator, task_id)
             if thread_invocation is not None:
                 return {"new_status": TaskStatus.SUPERSEDED.value, "replayed": False}
             return TaskStatus.SUPERSEDED.value
@@ -2026,6 +2049,7 @@ def _supersede_predecessor_locked(
     note_suffix: str | None = None,
     thread_id: str | None = None,
     root_transitions: list | None = None,
+    uncommitted: bool = False,
 ) -> None:
     """Transition an escalated or in_progress(delegated) predecessor to the terminal
     SUPERSEDED status — block_kind cleared, audit citing the concrete
@@ -2043,7 +2067,8 @@ def _supersede_predecessor_locked(
     if note_suffix:
         note += f" — {note_suffix}"
     with _capture_root_worktree_transition(org.orchestrator, predecessor_id, '_supersede_predecessor_locked', root_transitions if root_transitions is not None else []):
-        org.db.update_task(
+        update = org.db.update_task_uncommitted if uncommitted else org.db.update_task
+        update(
             predecessor_id,
             status=TaskStatus.SUPERSEDED,
             block_kind=None,
@@ -2056,13 +2081,13 @@ def _supersede_predecessor_locked(
         prior_block_kind=prior_block_kind,
         actor=actor,
         founder_note=note_suffix,
-        thread_id=thread_id,
+        thread_id=thread_id, uncommitted=uncommitted,
     )
     # An escalated/delegated predecessor may carry an open notification;
     # the continuation resolves it, so consume any open rows.
     for nrow in org.db.list_open_notifications_for_task(predecessor_id):
         org.db.consume_escalation_notification(
-            nrow["feishu_message_id"], consumed_by="superseded",
+            nrow["feishu_message_id"], consumed_by="superseded", uncommitted=uncommitted,
         )
 
 
@@ -2078,6 +2103,7 @@ def _close_predecessor_family_and_run_tail(
     thread_id: str | None = None,
     close_revisit_family: bool = True,
     root_transitions: list | None = None,
+    uncommitted: bool = False,
 ) -> list[str]:
     """Close predecessor (+ optionally revisit family), wake parents, emit
     thread followups.
@@ -2089,13 +2115,10 @@ def _close_predecessor_family_and_run_tail(
     (``_enqueue_parent_if_waiting``, ``_maybe_post_thread_followup``) are
     safe under or outside the lock.
 
-    Returns the list of revisit-family task ids that were also closed.
+    With ``uncommitted=True``, only join the caller-owned transaction; the
+    caller runs ``_run_superseded_task_tail`` after commit. Returns the closed
+    revisit-family task ids.
     """
-    from runtime.orchestrator.run_step import (
-        _enqueue_parent_if_waiting,
-        _maybe_post_thread_followup,
-    )
-
     # Close predecessor.
     _supersede_predecessor_locked(
         org, audit,
@@ -2105,7 +2128,7 @@ def _close_predecessor_family_and_run_tail(
         actor=actor,
         note_suffix=note_suffix,
         thread_id=thread_id,
-        root_transitions=root_transitions,
+        root_transitions=root_transitions, uncommitted=uncommitted,
     )
 
     # Optionally close the revisit family.
@@ -2125,25 +2148,31 @@ def _close_predecessor_family_and_run_tail(
                 actor=actor,
                 note_suffix=note_suffix,
                 thread_id=thread_id,
-                root_transitions=root_transitions,
+                root_transitions=root_transitions, uncommitted=uncommitted,
             )
             family_closed.append(family_task.id)
 
+    if uncommitted:
+        return family_closed
+
+    _run_superseded_task_tail(org, [predecessor.id, *family_closed])
+    return family_closed
+
+
+def _run_superseded_task_tail(org, task_ids: list[str]) -> None:
+    """Publish parent wakes and followups only after the mutation commits."""
+    from runtime.orchestrator.run_step import (
+        _enqueue_parent_if_waiting, _maybe_post_thread_followup,
+    )
+
     # Tail: wake parents and emit thread followups for thread-originated
     # predecessors (the missing followup in THR-080 #3).
-    _enqueue_parent_if_waiting(org.orchestrator, predecessor.id)
-    _maybe_post_thread_followup(
-        org.orchestrator, predecessor.id,
-        status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
-    )
-    for family_task_id in family_closed:
-        _enqueue_parent_if_waiting(org.orchestrator, family_task_id)
+    for task_id in task_ids:
+        _enqueue_parent_if_waiting(org.orchestrator, task_id)
         _maybe_post_thread_followup(
-            org.orchestrator, family_task_id,
+            org.orchestrator, task_id,
             status=TaskStatus.SUPERSEDED, auto_revisit_spawned=False,
         )
-
-    return family_closed
 
 
 def _collect_eligible_revisit_family(

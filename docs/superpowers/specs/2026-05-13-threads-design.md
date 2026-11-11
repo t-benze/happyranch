@@ -438,7 +438,11 @@ purposes remain ineligible. Self-only dispatch and same-team authority apply.
 
 Idempotency: SHA-256 over compact UTF-8 JSON array (stripped brief, effective_team,
 effective_target, resolves-or-empty, purpose). The same pending token and digest
-return the original task ID and `replayed: true` with no new effects. Two identical
+return the original task ID and `replayed: true` without another task, message,
+audit or supersession. Replay republishes a still-pending successor only when
+it is absent from the task queue, recovering post-commit enqueue failure.
+With `resolves`, predecessor/delegated-child eligibility is revalidated in the
+same transaction as successor creation, family supersession and replay binding. Two identical
 dispatches in one turn are one dispatch. No count cap or rate limit is introduced.
 
 After token validation, role/team validation mirrors `POST /talks/{id}/dispatch` (see §7).

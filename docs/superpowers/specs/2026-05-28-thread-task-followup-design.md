@@ -200,7 +200,9 @@ The actual `TASK-NNN` and `<status>` are read off the triggering SYSTEM message'
 THR-352 allows N corrected replacement roots on the SAME authoritative pending
 TASK_FOLLOWUP token. Every root has its own dispatch binding, task_dispatched
 message and thread_dispatch/replacement audit. Same-token identical requests
-replay the original task with `replayed: true` and no new effects. There is no
+replay the original task with `replayed: true` and no duplicate task, message,
+audit or supersession. Replay restores an absent queue notification for a
+still-pending successor without duplicating queued work. There is no
 replacement count cap or rate limit.
 
 The cross-invocation spent rule is retained: any prior replacement of the causal
@@ -209,7 +211,9 @@ root belonging to ANOTHER token refuses with
 family, chain/fanout legs and terminal followups cannot reset that lineage rule.
 Manager supersession remains separate and rejects thread-originated roots.
 Follow-up dispatch still forbids `resolves`. Managers may resolve N other in-lineage
-escalations through resolve-escalation during this turn. Resolution replay is
+escalations through resolve-escalation during this turn. Successor creation,
+predecessor/family supersession and the resolution replay audit commit in one
+transaction; parent wakes and thread followups run after commit. Resolution replay is
 pinned to the persisted invocation ID/task audit; dispatch and resolution both
 keep the token pending. Reply or decline consumes it as usual.
 

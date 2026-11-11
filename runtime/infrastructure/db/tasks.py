@@ -1801,6 +1801,21 @@ class TasksMixin:
 
     @_synchronized
     def update_task(self, task_id: str, **fields: object) -> None:
+        began = not self._conn.in_transaction
+        if began:
+            self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.update_task_uncommitted(task_id, **fields)
+            self._conn.commit()
+        except BaseException:
+            if began:
+                self._conn.rollback()
+            raise
+
+    def update_task_uncommitted(self, task_id: str, **fields: object) -> None:
+        """Retain task-owner checks inside a caller-owned synchronized writer."""
+        if not self._conn.in_transaction:
+            raise RuntimeError("task update requires an owned transaction")
         with self._task_owner_mutation(task_id):
             allowed = {
                 "status", "assigned_agent", "revision_count", "completed_at",
@@ -1824,7 +1839,6 @@ class TasksMixin:
             set_clause = ", ".join(f"{k} = ?" for k in updates)
             values = list(updates.values()) + [task_id]
             self._conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
-            self._conn.commit()
 
     @_synchronized
     def update_task_active_chain(self, task_id: str, active_chain: str | None) -> None:
@@ -4693,52 +4707,76 @@ class TasksMixin:
             self._conn.rollback()
             raise
 
-    @_task_move_admission
-    @_synchronized
+    @contextmanager
+    def thread_continuation_transaction(self) -> Iterator[None]:
+        """Own successor, supersession and replay proof under one writer lock.
+
+        Only uncommitted primitives belong here; wakes/followups run after commit.
+        Preserve move-gate-before-DB ordering for attached task producers.
+        """
+        from contextlib import nullcontext
+        move = getattr(self, "_team_move_coordinator", None)
+        with move.gate if move is not None else nullcontext():
+            with self._lock:
+                if self._conn.in_transaction:
+                    raise RuntimeError("thread continuation requires its own transaction")
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    yield
+                    self._conn.commit()
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+
     def dispatch_thread_task(
         self, *, token: str, thread_id: str, dispatcher: str,
         task: TaskRecord, request_digest: str,
     ) -> dict:
         """Commit the root, message, audit and invocation binding together."""
-        try:
-            self._conn.execute("BEGIN IMMEDIATE")
-            move = getattr(self, "_team_move_coordinator", None)
-            if move is not None:
-                move.threads.callback_uncommitted(token)
-            inv = self.get_pending_invocation(token)
-            thread = self.get_thread(thread_id)
-            if (inv is None or inv.thread_id != thread_id or inv.agent_name != dispatcher
-                    or inv.purpose not in (ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP)
-                    or thread is None or thread.status.value != "open"):
-                self._conn.rollback()
-                return {"ok": False, "code": "invocation_token_consumed"}
-            replay = self.get_thread_dispatch(token, request_digest)
-            if replay is not None:
-                self._conn.rollback()
-                return {"ok": True, "replayed": True, **replay}
-            self._insert_task_uncommitted(task)
-            seq = self._append_thread_message_uncommitted(
-                thread_id=thread_id, speaker=dispatcher, kind=ThreadMessageKind.SYSTEM,
-                system_payload={
-                    "kind_tag": "task_dispatched", "task_id": task.id,
-                    "dispatcher": dispatcher, "target_agent": task.assigned_agent,
-                    "team": task.team, "brief_preview": task.brief[:160],
-                },
+        with self.thread_continuation_transaction():
+            return self._dispatch_thread_task_uncommitted(
+                token=token, thread_id=thread_id, dispatcher=dispatcher,
+                task=task, request_digest=request_digest,
             )
-            self._record_dispatch_on_invocation_uncommitted(
-                token, task_id=task.id, request_digest=request_digest,
-            )
-            self.insert_audit_log_uncommitted(
-                task_id=thread_id, agent=dispatcher, action="thread_dispatch",
-                payload={"task_id": task.id, "dispatcher": dispatcher,
-                         "target_agent": task.assigned_agent, "team": task.team},
-            )
-            self._conn.commit()
-            return {"ok": True, "replayed": False, "task_id": task.id,
-                    "system_message_seq": seq}
-        except BaseException:
-            self._conn.rollback()
-            raise
+
+    def _dispatch_thread_task_uncommitted(
+        self, *, token: str, thread_id: str, dispatcher: str,
+        task: TaskRecord, request_digest: str,
+    ) -> dict:
+        """Join the continuation owner's transaction, including supersession."""
+        if not self._conn.in_transaction:
+            raise RuntimeError("thread dispatch requires an owned transaction")
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.callback_uncommitted(token)
+        inv = self.get_pending_invocation(token)
+        thread = self.get_thread(thread_id)
+        if (inv is None or inv.thread_id != thread_id or inv.agent_name != dispatcher
+                or inv.purpose not in (ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP)
+                or thread is None or thread.status.value != "open"):
+            return {"ok": False, "code": "invocation_token_consumed"}
+        replay = self.get_thread_dispatch(token, request_digest)
+        if replay is not None:
+            return {"ok": True, "replayed": True, **replay}
+        self._insert_task_uncommitted(task)
+        seq = self._append_thread_message_uncommitted(
+            thread_id=thread_id, speaker=dispatcher, kind=ThreadMessageKind.SYSTEM,
+            system_payload={
+                "kind_tag": "task_dispatched", "task_id": task.id,
+                "dispatcher": dispatcher, "target_agent": task.assigned_agent,
+                "team": task.team, "brief_preview": task.brief[:160],
+            },
+        )
+        self._record_dispatch_on_invocation_uncommitted(
+            token, task_id=task.id, request_digest=request_digest,
+        )
+        self.insert_audit_log_uncommitted(
+            task_id=thread_id, agent=dispatcher, action="thread_dispatch",
+            payload={"task_id": task.id, "dispatcher": dispatcher,
+                     "target_agent": task.assigned_agent, "team": task.team},
+        )
+        return {"ok": True, "replayed": False, "task_id": task.id,
+                "system_message_seq": seq}
 
     @_task_move_admission
     @_synchronized

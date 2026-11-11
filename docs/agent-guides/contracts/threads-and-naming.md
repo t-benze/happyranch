@@ -252,9 +252,16 @@ See the [current naming contract](../../superpowers/specs/2026-10-09-identity-na
   legacy readers; upgrades idempotently backfill old bindings.
   Same token + SHA-256 of canonical (stripped brief, effective team, effective
   self target, resolves-or-empty, purpose) replays the original dispatch with
-  `replayed: true` and no new effects. Identical requests in one turn are one
-  dispatch. Managers may resolve N in-lineage escalations in all three purposes;
+  `replayed: true` and no duplicate task, message, audit or supersession.
+  A pending successor is republished only if absent from the task queue, so a
+  post-commit enqueue failure is recoverable. Identical requests in one turn
+  are one dispatch. `resolves` eligibility (including delegated children) is
+  re-read inside the same writer transaction as successor creation,
+  predecessor/family supersession and dispatch binding. Managers may resolve N
+  in-lineage escalations in all three purposes;
   same-token/task replay uses the persisted escalation_resolved invocation ID.
+  Resolution commits successor, predecessor/family supersession and that audit
+  atomically. Parent wakes and thread followups run after commit.
   Dispatch and resolution leave the invocation pending; terminal reply/decline
   alone consumes it and settles conversational delivery. Follow-up dispatch
   still forbids `resolves`. Self-only authority, team, participant, manager,

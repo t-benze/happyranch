@@ -848,6 +848,22 @@ class ThreadsMixin:
         ).fetchone() is not None
 
     @_synchronized
+    def thread_resolution_successor(self, invocation_id: int, task_id: str) -> str | None:
+        """Recover the successor from the committed resolution/supersession pair."""
+        row = self._conn.execute(
+            """SELECT json_extract(s.payload, '$.successor_root') AS successor
+                 FROM audit_log r JOIN audit_log s ON s.task_id = r.task_id AND s.id < r.id
+                WHERE r.task_id = ? AND r.action = 'escalation_resolved'
+                  AND json_extract(r.payload, '$.thread_invocation_id') = ?
+                  AND json_extract(r.payload, '$.resolution_path') = 'thread_manual_supersede'
+                  AND json_extract(r.payload, '$.decision') = 'supersede'
+                  AND s.action = 'escalation_superseded'
+                ORDER BY r.id DESC, s.id DESC LIMIT 1""",
+            (task_id, invocation_id),
+        ).fetchone()
+        return row["successor"] if row is not None else None
+
+    @_synchronized
     def list_thread_invocations(
         self,
         thread_id: str,

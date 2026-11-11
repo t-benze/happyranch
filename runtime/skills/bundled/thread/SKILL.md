@@ -287,13 +287,19 @@ Each distinct dispatch posts its own system message into the thread. There is no
 per-turn dispatch count limit. The daemon hashes the stripped brief, effective team,
 effective self target, `resolves` (or empty string), and invocation purpose. Repeating
 that same request on the same pending token returns the original task with
-`replayed: true` and creates no task, message, audit, supersession or enqueue.
+`replayed: true` and creates no task, message, audit or supersession. If the
+successor is still pending, replay restores a missing queue notification; an
+already queued successor is not duplicated. Dispatch with `resolves` commits
+its successor, predecessor/family supersession and replay binding together.
 Two identical requests in one turn therefore mean one dispatch.
 
 Managers may also resolve multiple in-lineage escalations using
 `happyranch threads resolve-escalation` during REPLY, BOOTSTRAP or TASK_FOLLOWUP.
 A successful resolution keeps the token pending; repeating a resolution for the
-same task on that token returns `replayed: true`. Reply or decline afterwards.
+same task on that token returns `replayed: true`. The successor, supersession
+and invocation-ID replay audit commit together; replay restores a missing
+notification for a still-pending successor without duplicating queued work.
+Reply or decline afterwards.
 
 Dispatching does NOT end the turn — you MUST still issue a reply or decline
 afterwards to release the invocation token. If you exit without either, the

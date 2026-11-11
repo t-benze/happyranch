@@ -3055,7 +3055,7 @@ class Database(
 
     @_synchronized
     def consume_escalation_notification(
-        self, feishu_message_id: str, consumed_by: str,
+        self, feishu_message_id: str, consumed_by: str, *, uncommitted: bool = False,
     ) -> bool:
         """Atomically mark a notification consumed. Returns True on first
         consume, False if already consumed or missing."""
@@ -3065,7 +3065,8 @@ class Database(
                WHERE feishu_message_id = ? AND consumed_at IS NULL""",
             (datetime.now(timezone.utc).isoformat(), consumed_by, feishu_message_id),
         )
-        self._conn.commit()
+        if not uncommitted:
+            self._conn.commit()
         return cur.rowcount == 1
 
     # --- Processed Event Dedup ---

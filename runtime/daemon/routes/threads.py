@@ -1838,30 +1838,14 @@ async def dispatch_from_thread_endpoint(
                 raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
             replay = org.db.get_thread_dispatch(body.invocation_token, request_digest)
             if replay is not None:
+                from runtime.daemon.routes.tasks import _enqueue_pending_thread_successor
+                _enqueue_pending_thread_successor(org, state, replay["task_id"])
                 return {**replay, "dispatched_from_thread_id": thread_id,
                         "superseded_task_id": resolves or None, "replayed": True}
 
         predecessor = None
         pred_block_kind = None
-        if resolves:
-            from runtime.daemon.routes.tasks import _eligible_supersede_block_kind
-            predecessor = org.db.get_task(resolves)
-            if predecessor is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail={"code": "predecessor_not_found", "resolves": resolves},
-                )
-            from runtime.orchestrator.task_pause import assert_origin_unheld
-            assert_origin_unheld(org, resolves)
-            pred_block_kind = _eligible_supersede_block_kind(org, predecessor)
-            if pred_block_kind is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail={"code": "predecessor_not_supersedable",
-                            "resolves": resolves,
-                            "predecessor_status": predecessor.status.value},
-                )
-
+        family_closed: list[str] = []
         if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP:
             async with org.teams_lock:
                 if not org.teams.is_team_manager(dispatcher):
@@ -1885,6 +1869,8 @@ async def dispatch_from_thread_endpoint(
             if not result["ok"]:
                 raise HTTPException(status_code=409, detail={"code": result["code"]})
             if result["replayed"]:
+                from runtime.daemon.routes.tasks import _enqueue_pending_thread_successor
+                _enqueue_pending_thread_successor(org, state, result["task_id"])
                 return {key: result[key] for key in (
                     "task_id", "team", "assigned_agent", "system_message_seq",
                 )} | {"dispatched_from_thread_id": thread_id, "replayed": True}
@@ -1893,47 +1879,76 @@ async def dispatch_from_thread_endpoint(
         else:
             async with org.db_lock:
                 from runtime.orchestrator.task_pause import origin_guard
-                with origin_guard(org, resolves):
+                with origin_guard(org, resolves), org.db.thread_continuation_transaction():
                     if org.db.get_pending_invocation(body.invocation_token) is None:
                         raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-                    task_id = org.db.next_task_id()
-                    result = org.db.dispatch_thread_task(
-                        token=body.invocation_token, thread_id=thread_id, dispatcher=dispatcher,
-                        task=TaskRecord(
-                            id=task_id, brief=brief, team=effective_team,
-                            assigned_agent=effective_target, dispatched_from_thread_id=thread_id,
-                        ),
-                        request_digest=request_digest,
-                    )
-                    if not result["ok"]:
-                        raise HTTPException(status_code=409, detail={"code": result["code"]})
-                    if result["replayed"]:
-                        return {key: result[key] for key in (
-                            "task_id", "team", "assigned_agent", "system_message_seq",
-                        )} | {"dispatched_from_thread_id": thread_id,
-                             "superseded_task_id": resolves or None, "replayed": True}
-                    sys_seq = result["system_message_seq"]
-                    audit = AuditLogger(org.db)
-                    # Canonical supersede tail shared with resolve_escalation_in_process
-                    # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
-                    # and emits thread followups.
-                    if resolves and predecessor is not None:
-                        from runtime.daemon.routes.tasks import (
-                            _close_predecessor_family_and_run_tail,
+                    replay = org.db.get_thread_dispatch(body.invocation_token, request_digest)
+                    if replay is not None:
+                        result = {"ok": True, "replayed": True, **replay}
+                    else:
+                        if resolves:
+                            from runtime.daemon.routes.tasks import _eligible_supersede_block_kind
+                            predecessor = org.db.get_task(resolves)
+                            if predecessor is None:
+                                raise HTTPException(
+                                    status_code=404,
+                                    detail={"code": "predecessor_not_found", "resolves": resolves},
+                                )
+                            from runtime.orchestrator.task_pause import assert_origin_unheld
+                            assert_origin_unheld(org, resolves)
+                            pred_block_kind = _eligible_supersede_block_kind(org, predecessor)
+                            if pred_block_kind is None:
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail={"code": "predecessor_not_supersedable",
+                                            "resolves": resolves,
+                                            "predecessor_status": predecessor.status.value},
+                                )
+
+                        task_id = org.db.next_task_id()
+                        result = org.db._dispatch_thread_task_uncommitted(
+                            token=body.invocation_token, thread_id=thread_id, dispatcher=dispatcher,
+                            task=TaskRecord(
+                                id=task_id, brief=brief, team=effective_team,
+                                assigned_agent=effective_target, dispatched_from_thread_id=thread_id,
+                            ),
+                            request_digest=request_digest,
                         )
-                        _close_predecessor_family_and_run_tail(
-                            org, audit,
-                            predecessor=predecessor,
-                            successor_root=task_id,
-                            pred_block_kind=pred_block_kind,
-                            actor="thread-dispatch",
-                            note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
-                            thread_id=thread_id,
-                            close_revisit_family=True,
-                            root_transitions=root_transitions,
-                        )
+                        if not result["ok"]:
+                            raise HTTPException(status_code=409, detail={"code": result["code"]})
+                        sys_seq = result["system_message_seq"]
+                        audit = AuditLogger(org.db)
+                        # Canonical supersede tail shared with resolve_escalation_in_process
+                        # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
+                        # and emits thread followups.
+                        if resolves and predecessor is not None:
+                            from runtime.daemon.routes.tasks import (
+                                _close_predecessor_family_and_run_tail,
+                            )
+                            family_closed = _close_predecessor_family_and_run_tail(
+                                org, audit,
+                                predecessor=predecessor,
+                                successor_root=task_id,
+                                pred_block_kind=pred_block_kind,
+                                actor="thread-dispatch",
+                                note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
+                                thread_id=thread_id,
+                                close_revisit_family=True,
+                                root_transitions=root_transitions, uncommitted=True,
+                            )
+
+            if result["replayed"]:
+                from runtime.daemon.routes.tasks import _enqueue_pending_thread_successor
+                _enqueue_pending_thread_successor(org, state, result["task_id"])
+                return {key: result[key] for key in (
+                    "task_id", "team", "assigned_agent", "system_message_seq",
+                )} | {"dispatched_from_thread_id": thread_id,
+                     "superseded_task_id": resolves or None, "replayed": True}
 
         enqueue_task(state, slug, task_id)
+        if resolves and predecessor is not None:
+            from runtime.daemon.routes.tasks import _run_superseded_task_tail
+            _run_superseded_task_tail(org, [predecessor.id, *family_closed])
 
         await _publish_thread_event(
             org, slug,
