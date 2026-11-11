@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.learnings_store import InvalidLearningEntry, MemoryCompactionResult, MemoryItem, MemoryStore
 from runtime.knowledge.archives import KnowledgeArchiveStore
-from runtime.knowledge.curation import capture_digest
+from runtime.knowledge.curation import ATTRIBUTION_UNVERIFIED, CurationError, build_curation_input, capture_digest
 from runtime.knowledge.imports import ImportError, install_import_schema
 from runtime.knowledge.instill import InstillLifecycle
 from runtime.knowledge.lifecycle_models import ImportOperation, InstillConfirmation
@@ -111,6 +111,112 @@ def fixture() -> Iterator[SimpleNamespace]:
             yield SimpleNamespace(org=org, db=db, owner=owner, archives=store, archive=archive, memory=memory)
         finally:
             org.db.close()
+
+
+def curation_rejected(f: SimpleNamespace, source: RetiredSource, result: dict, key: str, code: str) -> None:
+    prior = f.db._conn.execute('SELECT archive_id,manifest_json,items_json FROM knowledge_archives ORDER BY archive_id').fetchall()
+    prior = [tuple(row) for row in prior]
+    operation = f.archives.submit(key, source, {'confirmed': True})
+    identifier = operation['operation_id']
+    f.archives.start(identifier, processor_id='curator')
+    try:
+        f.archives.publish(identifier, json.dumps(result))
+    except CurationError as error:
+        require(error.code == code, f'{key}: expected {code}, got {error.code}')
+    else:
+        raise AssertionError(key + ': inconsistent curation published Ready')
+    # Reopen the actual database: a raised error alone is not durable Failed.
+    path = f.db.db_path
+    f.db.close()
+    f.db = f.org.db = Database(path)
+    f.archives = KnowledgeArchiveStore(f.db._conn, f.db._lock, 'synthetic')
+    f.owner = InstillLifecycle(f.org)
+    failed = f.archives.get_operation(identifier)
+    require(failed['state'] == 'Failed' and failed['failure_json'] == json.dumps({'code': code}, separators=(',', ':'), sort_keys=True),
+            key + ': durable Failed/code missing')
+    actual = [tuple(row) for row in f.db._conn.execute(
+        'SELECT archive_id,manifest_json,items_json FROM knowledge_archives ORDER BY archive_id')]
+    require(actual == prior, key + ': prior Ready bytes changed or partial archive published')
+    require({a['archive_id'] for a in f.archives.list_ready()} == {row[0] for row in prior},
+            key + ': prior Ready selection changed')
+    print(key + ': durable Failed/' + code + '; prior Ready bytes/selection preserved', flush=True)
+
+
+def curation_dates() -> None:
+    with fixture() as f:
+        source, result = capture()
+        result['items'][0]['attribution'][0]['observed_at'] = '2026-10-28'
+        curation_rejected(f, source, result, 'historical_observation', 'curation_observation_cutoff_mismatch')
+        brief = build_curation_input(source)
+        require('\nCAPTURE_CUTOFF=' + source.cutoff + '\n' in brief, 'literal capture cutoff missing from built brief')
+        for rule in ('every attribution.observed_at MUST be exactly the CAPTURE_CUTOFF string',
+                     'every attribution.authored_at MUST exactly equal its captured metadata.authored_at',
+                     'every attribution.original_author MUST exactly equal its captured metadata.authored_by',
+                     'use null when that metadata value is absent',
+                     'Historical observation dates mentioned in source text belong in item content, never in observed_at'):
+            require(rule in brief, 'built brief missing date contract: ' + rule)
+
+
+def curation_qualified_eligibility(category: str) -> None:
+    with fixture() as f:
+        source, result = capture()
+        item = result['items'][0]
+        item['category'] = category
+        if category == 'founder_decision_preference':
+            item['flags'] = ['uncertain', 'attribution_unverified']
+            item['warnings'].append(ATTRIBUTION_UNVERIFIED)
+            item['content'] = 'Source reports a Founder preference for a one-page memo; unverified, no present directive.'
+        else:
+            item['flags'] = ['historical']
+            item['warnings'] = ['Historical reference only; verify current owner/status; not an assignment.']
+            item['open_work'] = {'owner': 'curator', 'status': 'awaiting review', 'as_of': '2026-10-30',
+                                 'next_action': 'verify consent checklist', 'holds': 'do not contact participants pending approval'}
+        operation = f.archives.submit(category, source, {'confirmed': True})
+        f.archives.start(operation['operation_id'], processor_id='curator')
+        ready = f.archives.publish(operation['operation_id'], json.dumps(result))
+        require(f.archives.get_operation(operation['operation_id'])['state'] == 'Ready', category + ': not Ready')
+        require(ready['items'][0] == item, category + ': qualifications/attribution rewritten')
+        preview = asyncio.run(f.owner.eligibility('recipient', ready['archive_id']))
+        selectable = next(i for i in preview.items if i.item_id == item['item_id'])
+        require(preview.recipient_eligible and selectable.eligible and selectable.default_selected,
+                category + ': qualified reference not selectable')
+        print(category + ': eligible=true Ready/selectable with exact qualifications', flush=True)
+        item['instill_eligible'] = False
+        curation_rejected(f, source, result, category + '_false', 'curation_eligibility_mismatch')
+        brief = build_curation_input(source)
+        for rule in ('Every non-reference_only item with non-empty content MUST have instill_eligible=true',
+                     'Uncertain, conflicting or unverified knowledge remains eligible with its required flags/warnings',
+                     'founder_decision_preference items (cited or attribution_unverified with the exact warning)',
+                     'open_work_reference items with owner/status/as_of/next_action/holds qualifications',
+                     'Instill-eligible references, never directives or assignments'):
+            require(rule in brief, 'built brief missing eligibility contract: ' + rule)
+
+
+def curation_founder_eligibility() -> None:
+    curation_qualified_eligibility('founder_decision_preference')
+
+
+def curation_open_work_eligibility() -> None:
+    curation_qualified_eligibility('open_work_reference')
+
+
+def curation_reference_only() -> None:
+    with fixture() as f:
+        for flag in ('superseded', 'stale', 'evicted', 'promoted'):
+            source, result = capture()
+            source.records[3].metadata['lifecycle'] = flag
+            result['capture_digest'] = capture_digest(source)
+            item = result['items'][3]
+            item['flags'] = [flag]
+            operation = f.archives.submit(flag, source, {'confirmed': True})
+            f.archives.start(operation['operation_id'], processor_id='curator')
+            ready = f.archives.publish(operation['operation_id'], json.dumps(result))
+            preview = asyncio.run(f.owner.eligibility('recipient', ready['archive_id']))
+            restricted = next(i for i in preview.items if i.item_id == item['item_id'])
+            require(not restricted.eligible and not restricted.default_selected
+                    and restricted.reason == 'knowledge_import_item_ineligible', flag + ': reference_only selectable')
+            item['instill_eligible'] = True
+            curation_rejected(f, source, result, flag + '_true', 'curation_reference_only_eligible_or_body')
 
 
 def confirmation(f: SimpleNamespace, key: str = 'one', items: list[str] | None = None, **changes: object) -> InstillConfirmation:
@@ -988,6 +1094,7 @@ def cli_import_validation() -> None:
 
 
 CASES = {f.__name__: f for f in (
+    curation_dates, curation_founder_eligibility, curation_open_work_eligibility, curation_reference_only,
     http_import_surfaces, http_memory_provenance, http_partial_retry, http_refusals, http_busy_all_six, cli_import_validation,
     legacy, happy_repeat_overlap, partial_retry, unwritten_overlap_single, unwritten_overlap_mixed, completed_receipt_recovery,
     held_reconciliation, preservation_provenance,
