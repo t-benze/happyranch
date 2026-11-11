@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import sqlite3
 from typing import Any
 from collections.abc import Iterator
@@ -14,7 +13,6 @@ from datetime import datetime, timezone
 
 from runtime.infrastructure.producer_admission import historical_disk_sweep
 from runtime.orchestrator.producer_move import native_writer, owner_for
-from runtime.orchestrator.team_move import DeferredTeamMove
 from runtime.workflows._coding_registered_release import (
     RegisteredCodingRelease, read_registered_release, registration_rows,
 )
@@ -251,25 +249,6 @@ class CodingBuiltinStore:
                 *, own: str | None = None) -> None:
         if owner_for(self.db) is not admission or admission.move.store.org_slug != self.org.slug:
             raise _Deferred('native_owner_unavailable')
-        try:
-            admission.check_uncommitted(global_write=True)
-        except DeferredTeamMove as primary:
-            # The direct producer raise follows complete move validation and
-            # decode, and alone supplies the canonical operation identity.
-            # active_uncommitted also wraps schema/history/SQL failures in this
-            # class, with a cause and no operation_id: preserve those originals.
-            code, operation_id = getattr(primary, 'code', None), getattr(primary, 'operation_id', None)
-            if (type(primary) is not DeferredTeamMove
-                    or type(code) is not str or code != 'team_move_native_held'
-                    or type(operation_id) is not str
-                    or re.fullmatch(r'team_move_[0-9a-f]{64}', operation_id) is None
-                    or primary.__cause__ is not None or primary.__context__ is not None
-                    or primary.__suppress_context__ or getattr(primary, '__notes__', None) is not None
-                    or getattr(getattr(self.db, '_team_move_coordinator', None), 'producers', None) is not admission
-                    or admission.move.store.db is not self.db
-                    or admission.move.store.org_slug != self.org.slug):
-                raise
-            raise _Deferred('native_held') from primary
         def competing_builtin(key: str) -> bool:
             # A second actual live reservation under THIS mounted native owner
             # can serialize on the same publisher/SQL lock and retain its winner.

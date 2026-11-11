@@ -122,9 +122,6 @@ class ScheduleStore:
 
     def insert(self, record: ScheduleRecord) -> None:
         with self._lock:
-            admission = native_owner_uncommitted(self._db)
-            if admission is not None:
-                admission.check_uncommitted(agents=(record.agent_name,))
             self._conn.execute(
                 """INSERT INTO schedules (
                     id, agent_name, team, kind, fire_at, recurrence, timezone,
@@ -261,12 +258,6 @@ class ScheduleStore:
         """
         updated_at = self._utc(now if now is not None else _now()).isoformat()
         with self._lock:
-            admission = native_owner_uncommitted(self._db)
-            if admission is not None:
-                row = self._conn.execute('SELECT agent_name FROM schedules WHERE id=?', (schedule_id,)).fetchone()
-                if row is None:
-                    return False
-                admission.check_uncommitted(agents=(row['agent_name'],))
             cursor = self._conn.execute(
                 "UPDATE schedules SET status = ?, updated_at = ? "
                 "WHERE id = ? AND status = ?",
@@ -306,11 +297,6 @@ class ScheduleStore:
             values.append(value)
         values.append(schedule_id)
         with self._lock:
-            admission = native_owner_uncommitted(self._db)
-            if admission is not None and set(fields).intersection(('fire_at', 'recurrence', 'timezone', 'expires_at', 'indefinite')):
-                row = self._conn.execute('SELECT agent_name,status FROM schedules WHERE id=?', (schedule_id,)).fetchone()
-                if row is not None and row['status'] != 'firing':
-                    admission.check_uncommitted(agents=(row['agent_name'],))
             self._conn.execute(
                 f"UPDATE schedules SET {', '.join(assignments)} WHERE id = ?",
                 values,
@@ -353,11 +339,6 @@ class ScheduleStore:
             predicates.append(f"{key} = ?")
             values.append(serialize(key, value))
         with self._lock:
-            admission = native_owner_uncommitted(self._db)
-            if admission is not None and set(fields).intersection(('fire_at', 'recurrence', 'timezone', 'expires_at', 'indefinite')):
-                row = self._conn.execute('SELECT agent_name,status FROM schedules WHERE id=?', (schedule_id,)).fetchone()
-                if row is not None and row['status'] != 'firing':
-                    admission.check_uncommitted(agents=(row['agent_name'],))
             cursor = self._conn.execute(
                 f"UPDATE schedules SET {assignments} WHERE {' AND '.join(predicates)}",
                 values,

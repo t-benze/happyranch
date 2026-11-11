@@ -47,7 +47,7 @@ RETIRED, integration SKIPPED THR211seq270/271 + THR243seq42; static evidence onl
 ## Built-in coding availability — ROOT13509 / THR320seq304
 
 The fixed coding v1 definition is registered automatically by the normal org
-recovery owner after move/Pause/cutover/naming/authority safety, outside early
+recovery owner after Pause/cutover/naming/authority safety, outside early
 serving. Exactly four existing template rows carry closed system provenance
 `workflow-coding-builtin-registration@1`; there is no human import operation,
 admission or receipt. Package capture precedes locks. Native reservation,
@@ -55,10 +55,9 @@ publisher/DB ownership, full source/target closure and positive COMMIT
 remain mandatory. Complete native history/suffixes/state/live/fixed safety work
 share ONE 8192-row/16MiB/2097152-visit census, with 16384-byte native cells; separate
 release/source/target allowance remains 8192/16MiB/16384 without phase resets.
-Only local pure refusal or direct healthy `team_move_native_held` may defer;
-the latter requires canonical producer operation identity, no cause/context/notes
-and the unchanged mounted owner. Wrapped move schema/history/bounds/SQL failures
-and uncertain origins propagate unchanged. Deferral requires successful cursor
+Only registrar-owned pure refusals can defer optional registration. Registration
+no longer checks a team-move hold. Native identity, complete history, scan bounds,
+SQL failures and cleanup uncertainty retain their existing handling. Deferral requires successful cursor
 close, original rollback, both outer exits and identical usable connection/no notes.
 After reservation, exact validation marking follows cleanup inside the native interval;
 warning follows actual settlement/exit. SQL/full-history, entry, cleanup, COMMIT
@@ -813,9 +812,12 @@ SAME sole ROOT10693. No setup-only merge or complete K2b acceptance is claimed.
 creates only the frozen literal table when absent, and validates before COMMIT.
 The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. Launch-admission and native
-writer hooks remain for the later cleanup slice; their holds and uncertainty
-rules still apply. No live state, audit history or stored move row is rewritten.
+`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
+task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
+Pause, identity, retry and native cleanup ownership remain. Thread admission,
+delivery release and coordinator/store active-row readers await PR-3b; the nightly
+disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
+audit history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a

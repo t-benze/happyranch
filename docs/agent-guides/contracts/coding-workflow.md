@@ -22,7 +22,7 @@ this source change authorizes no live migration, enablement or workflow start.
 
 Normally admitted orgs receive the unchanged packaged coding v1 definition
 without a human import. Normal org recovery constructs the private immutable
-resource observation outside locks and registers only after the actual move,
+resource observation outside locks and registers only after the actual
 Pause, cutover, naming and authority safety tail. With serving-before-recovery,
 registration belongs to the deferred recovery owner, never early serving.
 Generic Database, schema/reference constructors and SELECT readers never register.
@@ -49,12 +49,9 @@ Strict storage/UTF8/duplicate/org/task/agent/first-active/immutable/transition
 checks and live/durable exclusions remain. Native reservation/settlement replay
 is separate work; these caps guarantee no SQL-engine, RSS or wall-time bound.
 
-Only registrar-owned pure refusals and the direct healthy `team_move_native_held`
-refusal can defer optional registration. The latter requires the producer's
-canonical operation identity, no cause/context/notes and the unchanged mounted
-owner; the exception class or message alone is insufficient. Wrapped move schema,
-complete history, scan-bound/deadline and SQL failures propagate unchanged, as do
-uncertain origins and opaque shared allowance errors. Each native cursor owns
+Only registrar-owned pure refusals can defer optional registration. Registration
+no longer checks a team-move hold. Native identity, complete history, scan bounds,
+SQL failures and cleanup uncertainty retain their existing handling. Each native cursor owns
 its consumer loop and explicit close. Safe preflight requires the exact body
 refusal, positive original rollback, BOTH successful publisher/DB exits, identical usable connection,
 no transaction and no secondary notes. Native entry is outside that interval.

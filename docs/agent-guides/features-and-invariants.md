@@ -14,10 +14,9 @@ never early serving, constructors or reads. Genuine native writer ownership,
 complete source/target validation and positive COMMIT apply. ONE local
 native census (all suffixes/state/live/fixed probes) shares 8192 rows/16MiB/2097152
 visits, separate from original source/release/target 8192/16MiB/16384; cells stay 16384.
-Only local pure refusal or direct healthy `team_move_native_held` may defer;
-the latter needs canonical producer operation identity, no cause/context/notes
-and the unchanged mounted owner. Wrapped move schema/history/bounds/SQL failures
-and uncertain origins propagate unchanged. Optional refusal requires explicit
+Only registrar-owned pure refusals can defer optional registration. Registration
+no longer checks a team-move hold. Native identity, complete history, scan bounds,
+SQL failures and cleanup uncertainty retain their existing handling. Optional refusal requires explicit
 cursor close, original rollback, both outer exits and unchanged usable connection
 without notes. After reservation, exact native validation marking follows that
 cleanup; warning follows actual
@@ -758,9 +757,12 @@ SAME sole ROOT10693. No setup-only merge or complete K2b acceptance is claimed.
 creates only the frozen literal table when absent, and validates before COMMIT.
 The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. Launch-admission and native
-writer hooks remain for the later cleanup slice; their holds and uncertainty
-rules still apply. No live state, audit history or stored move row is rewritten.
+`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
+task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
+Pause, identity, retry and native cleanup ownership remain. Thread admission,
+delivery release and coordinator/store active-row readers await PR-3b; the nightly
+disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
+audit history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a

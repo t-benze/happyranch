@@ -25,11 +25,9 @@ recovery and outside early serving. Real native writer/publisher/DB/transaction
 ownership, complete target validation and positive COMMIT apply.
 ONE native census allowance 8192 rows/16MiB/2097152 visits spans all suffixes,
 state/live loops and probes; release/source/target retain separate original
-8192/16MiB/16384, with native cells capped 16384. Only local pure refusal or direct
-healthy `team_move_native_held` can defer. The latter requires canonical producer
-operation identity, no cause/context/notes and the unchanged mounted owner;
-wrapped move schema/history/bounds/SQL failures and uncertain origins propagate
-unchanged. Deferral requires explicit cursor close, original rollback and both
+8192/16MiB/16384, with native cells capped 16384. Only registrar-owned pure refusals can defer optional registration. Registration
+no longer checks a team-move hold. Native identity, complete history, scan bounds,
+SQL failures and cleanup uncertainty retain their existing handling. Deferral requires explicit cursor close, original rollback and both
 outer exits on the same usable connection/no notes. Post-reservation validation
 marking occurs inside native_writer after cleanup; warning requires actual
 settlement and exit.
@@ -695,9 +693,12 @@ SAME sole ROOT10693. No setup-only merge or complete K2b acceptance is claimed.
 creates only the frozen literal table when absent, and validates before COMMIT.
 The active-row startup refusal is removed with the online operation/recovery
 surface. The release schema digest is unchanged. The accepted
-`--reader-guarded-start` launcher flag is now inert. Launch-admission and native
-writer hooks remain for the later cleanup slice; their holds and uncertainty
-rules still apply. No live state, audit history or stored move row is rewritten.
+`--reader-guarded-start` launcher flag is now inert. PR-3a removes non-thread
+task/job/dream/wake/schedule/workflow and profile-writer move-hold checks. Shared
+Pause, identity, retry and native cleanup ownership remain. Thread admission,
+delivery release and coordinator/store active-row readers await PR-3b; the nightly
+disk sweeper retains its native writer/layout/hold/uncertainty gates. No live state,
+audit history or stored move row is rewritten.
 
 C2 freezes thread retry initialization explicitly, including EMPTY
 budgets. New initial/fallback/nudge phase initialization is distinct from a
