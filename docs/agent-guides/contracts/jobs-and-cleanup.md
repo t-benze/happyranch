@@ -106,13 +106,25 @@ and skips recognized finished jobs before owner-lineage lookup. Founder seq117
 removes OS-process eligibility for this nightly sweeper, including namespace,
 cwd/root/exe/fd/environment inspection and the former four-name/zombie policy.
 JSON and org audit `process_scope` say usage is not checked; `process_exemptions`
-is an unused empty compatibility field. Filesystem `/proc/self/mountinfo`
-containment remains. Other cleanup owners retain their own process gates.
+is an unused empty compatibility field. Filesystem containment remains:
+Linux reads `/proc/self/mountinfo` unchanged; Darwin validates a bounded native
+getmntinfo/statfs table against pinned public XNU xnu-11417.101.15 LP64 size/layout
+and root evidence. Missing, unreadable or malformed Darwin evidence retains
+`unknown_mount_evidence`; unsupported platforms retain. Other cleanup owners
+retain their own process gates.
 Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
 directories, Unix sockets and FIFOs inside admitted task scratch are disposable
 after both task and structural root end. Socket/FIFO handling uses no-follow
-stat/allocation and contained unlink with metadata-only O_PATH descriptors,
-never endpoint/content I/O. Devices/unknown special types retain. Worktrees and
+stat/allocation and contained unlink, never endpoint/content I/O. Linux uses
+metadata-only O_PATH descriptors and observes the pinned inode after unlink.
+Darwin never opens any leaf: a final no-follow stat through the verified parent
+must match the full signature before unlink. After its own successful unlink of
+an inode with nlink>1, only that identity's exact expected nlink decrement and
+ctime change may be accepted for later sibling links; other drift/errors retain.
+Darwin loses post-unlink observation. Its non-atomic stat-to-unlink window (and
+Linux's fstat-to-unlink-by-name window) remains an accepted same-UID threat-model
+limit, never an atomic identity guarantee. Devices/unknown special types retain.
+Worktrees and
 Git metadata keep strict special-object checks; all ownership/jobs/age/link/
 mount gates and durable manifest/lock/output exclusions remain.
 Any different linked registration strictly beneath a worktree candidate retains

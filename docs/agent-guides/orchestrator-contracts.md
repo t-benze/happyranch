@@ -1822,8 +1822,12 @@ cwd/root/exe/fd/environment and the former four-name/zombie policy. Top-level
 JSON and org/audit `process_scope` state that process usage is not checked;
 `process_exemptions` remains an unused empty compatibility field. This claims
 neither process absence nor executable authentication. Filesystem mount boundaries
-still retain via `/proc/self/mountinfo`; other owners' legacy/root-terminal process
-gates are unchanged. Ended tasks/root status does not prove OS-process quiescence.
+still retain via `/proc/self/mountinfo` on Linux and validated native
+getmntinfo/statfs evidence on Darwin; unavailable or malformed mount evidence
+retains. See the [maintained disk-sweeper contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+for Darwin's no-leaf-open signature checks and accepted observation/race limits.
+Other owners' legacy/root-terminal process gates are unchanged. Ended tasks/root
+status does not prove OS-process quiescence.
 
 
 See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)

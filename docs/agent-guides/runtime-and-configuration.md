@@ -1976,8 +1976,16 @@ Unknown job status/active lineage retains.
 Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
 directories, Unix sockets and FIFOs inside admitted task scratch are disposable
 after both task and structural root end. Socket/FIFO handling uses no-follow
-stat/allocation and contained unlink with metadata-only O_PATH descriptors,
-never endpoint/content I/O. Devices/unknown special types retain. Worktrees and
+stat/allocation and contained unlink, never endpoint/content I/O. Linux uses
+metadata-only O_PATH descriptors, including post-unlink inode observation.
+Darwin never opens any leaf: immediately before unlink it checks the full
+no-follow signature through the verified parent fd, with only the documented
+own-unlink hardlink adjustment. Darwin requires validated native getmntinfo/statfs
+mount evidence; unavailable or malformed evidence retains. It loses post-unlink
+observation and accepts the non-atomic stat-to-unlink window within the existing
+same-UID threat model, without an atomic identity guarantee. See the
+[maintained disk-sweeper contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+for the exact platform and hardlink contract. Devices/unknown special types retain. Worktrees and
 Git metadata keep strict special-object checks; all ownership/jobs/age/link/
 mount gates and durable manifest/lock/output exclusions remain.
 Recursive mtime+ctime age of at least one hour and no-follow/same-filesystem containment
@@ -2023,8 +2031,12 @@ cwd/root/exe/fd/environment and the former four-name/zombie policy. Top-level
 JSON and org/audit `process_scope` state that process usage is not checked;
 `process_exemptions` remains an unused empty compatibility field. This claims
 neither process absence nor executable authentication. Filesystem mount boundaries
-still retain via `/proc/self/mountinfo`; other owners' legacy/root-terminal process
-gates are unchanged. Ended tasks/root status does not prove OS-process quiescence.
+still retain via `/proc/self/mountinfo` on Linux and validated native
+getmntinfo/statfs evidence on Darwin; unavailable or malformed mount evidence
+retains. See the [maintained disk-sweeper contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+for Darwin's no-leaf-open signature checks and accepted observation/race limits.
+Other owners' legacy/root-terminal process gates are unchanged. Ended tasks/root
+status does not prove OS-process quiescence.
 
 
 See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
@@ -2033,7 +2045,7 @@ operational acceptance. The bounded `--corrections-only` lane now runs C1–C7 p
 with finding-specific selection through `--correction-cases`; C4–C7 cover all-org
 deletion, every legacy preview, fresh admission/retry and partial/native reporting.
 C3 retains its no-process-inspection assertions at Python
-syscall boundaries while allowing real self mountinfo reads. Task/job/clock inputs
+syscall boundaries while allowing real Linux self mountinfo reads. Task/job/clock inputs
 are synthetic; filesystem/Git/config/JSON/audit projection are real. Historical case9/10
 terminal-lineage expectations are superseded; active/unknown refusals remain.
 The mount/process-root isolation fixtures remain SKIPPED/UNEXECUTED under seq62.
