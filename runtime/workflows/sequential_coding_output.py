@@ -19,7 +19,7 @@ from runtime.workflows.sequential_contracts import Closed, Epoch, Node, OutputRe
 from runtime.workflows.sequential_definition import CompiledDefinition, _json
 from runtime.workflows.sequential_document_access import document_binding_context, document_recipients
 from runtime.workflows.sequential_engine import SequentialRefusal, check_evidence_size
-from runtime.workflows.sequential_history import _ReadBudget, _bytes
+from runtime.workflows.sequential_history import _ReadBudget, _bytes, _decoded
 from runtime.workflows.sequential_repository_records import RepositoryChangeSubject
 from runtime.workflows.sequential_repository_subject import read_repository_subject
 
@@ -101,6 +101,8 @@ def _declaration(conn: sqlite3.Connection, *, run: dict, compiled: CompiledDefin
         declaration = CodeChangeDeclaration.model_validate_json(content, strict=True)
     except (ValueError, TypeError, UnicodeError):
         raise SequentialRefusal('sequential_code_change_invalid') from None
+    # Charge the decoded walk outside the malformed-output handler so exhaustion stays a reader refusal.
+    _decoded(declaration.model_dump(mode='json'), budget)
     receipt = read_repository_subject(conn, run, compiled, budget)
     _require(receipt is not None, 'sequential_repository_subject_unverified')
     _require(declaration.subject == receipt.subject and declaration.epoch == epoch,
