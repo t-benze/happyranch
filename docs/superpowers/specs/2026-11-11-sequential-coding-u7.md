@@ -256,6 +256,12 @@ and before classifying its refusal. Original deadline exhaustion propagates as
 `workflow_seq_read_deadline_exhausted`; the callback reader's own read-exhausted
 refusal also propagates unchanged. Neither path records a business-Held overlay
 or commits DML. Validated selected success still rolls back to business-Held.
+At the mounted callback reader's refusal catch, negative remaining bytes on its
+SAME original projection allowance identify genuine byte exhaustion even when
+the metadata allocator reports a generic history error. It propagates as
+`sequential_final_observation_read_exhausted`, without a business-Held overlay.
+Standalone calls without an enclosing deadline and non-limit malformed-history
+classification retain their original behavior; the shared allocator is unchanged.
 
 **Final success remains Held; U7c2 is implementation remainder.** Transport and
 validated observation do not implement a Final capability witness, recipients,

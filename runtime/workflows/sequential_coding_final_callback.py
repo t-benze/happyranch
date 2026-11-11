@@ -242,6 +242,10 @@ def read_final_callback_uncommitted(conn: sqlite3.Connection, *, org_slug: str, 
     except FinalObservationRefusal:
         raise
     except (CodingEvidenceRefusal, SequentialRefusal, ValueError) as exc:
+        # The mounted reader's metadata allocator can report a generic history
+        # error after exhausting this same byte allowance. Preserve its refusal.
+        if deadline is not None and budget.remaining_bytes < 0:
+            raise FinalObservationRefusal(FinalObservationCause.LIMIT) from None
         code = exc.code if isinstance(exc, SequentialRefusal) else str(exc)
         cause = (FinalObservationCause.LIMIT if code.startswith(('workflow_seq_read_', 'coding_read_'))
                  or 'exhausted' in code or 'limit_exceeded' in code else
