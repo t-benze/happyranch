@@ -3283,11 +3283,9 @@ record actual daemon/browser outcomes separately from MSW/component evidence. Th
 current case record, mutations and unselected historical branches are in
 `docs/superpowers/specs/2026-10-09-identity-names-core.md` under Current finite
 naming verification source. Standalone OpenAPI --check and a genuine served
-schema comparison are both retained in the hosted receipts. Clean hooked
-publication precedes each authorized disposable GitHub naming operation. The
-naming-only workflow and `scripts/identity_names_hosted.sh` are published on the
-open naming PR; each corrected source requires its own attributed verification. The
-runner preserves source/evidence sentinels through init/prepare/work/export with
+schema comparison are both retained in the historical hosted receipts.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
+The retained runner preserves source/evidence sentinels through init/prepare/work/export with
 a bounded offline mount holder, refuses output truncation, and reserves cleanup
 under one job-start deadline. Python unit retirement and
 general integration exception retain their exact scope; no behavioral acceptance,

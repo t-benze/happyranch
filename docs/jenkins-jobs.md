@@ -343,11 +343,7 @@ seq40. Their historical evidence is not current compatibility coverage. The
 integration parent, guest collector and two-org observer remain unchanged;
 THR297 owns existing integration defects and execution. See
 [coverage gaps](python-test-reset.md). No Jenkins allocation is renewed here.
-Clean committed-head `scripts/local_ci.sh all` runs in the existing manually
-dispatched `.github/workflows/nightly-integration.yml` Python 3.14/Node 24 lane.
-Use finite durable task-owned observation and authenticate the workflow head,
-job, command exit and artifacts; required PR CI remains independent. The nightly
-integration lane's natural failure or skips are separate adverse evidence.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
 Historical first-PR capability observation: IPv4/full-suite results at old pin
 `ebaf6139ef14e67efae841ab2048b91f69b20096` were NOT RUN pending the

@@ -214,10 +214,8 @@ CLI callback and their isolation fences retain their sources. See the
 [repository verification status](../AGENTS.md#verification-status) for retired suites.
 Docs Manual build and the real tenant-isolation harness retain manual-only
 workflows, outside PR/main. Manual/tag macOS packaging is a separate release
-activity and invokes no fresh E2E. Legacy nightly integration remains separate
-at 07:00 UTC, with its historical failures and fixtures unchanged; its manual
-`all_only` input runs the same lint/static all selection. No legacy repair or
-run is authorized by this cadence change.
+activity and invokes no fresh E2E.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
 See [coverage gaps](python-test-reset.md) and [the case record](../e2e/README.md).
 
@@ -518,146 +516,16 @@ even through a job. The Linux canonical callback remains the explicit
 `tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback`
 selection through `tests/helpers/integration_parent.py`.
 
-## PR1047 opt-in disposable THR299 scoped QA
+## Retired PR1047 disposable THR299 scoped QA
 
-`nightly-integration.yml` also supplies a separately selected manual QA venue for
-SAME TASK10725 / PR1047, under Founder THR299seq4/11. Ordinary manual dispatch
-still runs lint/static `all`, including the legacy `all_only` input. Only
-`thr299_scoped_qa=true` skips that manual lint job and selects the new
-`THR299 disposable scoped QA (Python 3.14)` job. It admits only
-`t-benze/happyranch`, literal `refs/heads/task/TASK-10816`, and
-`workflow_dispatch` on disposable GitHub-hosted Ubuntu24.04. Scheduled integration
-and its reporting retain their original predicates. The lane has no PR/push/tag,
-main, automatic retry, extra schedule, notification or merge-check path.
-
-After independent FULL review of the support at the actual pushed head, parent
-TASK10725 separately assigns the qualified QA retry of TASK10836. QA first
-statically inspects the selected imports/conftests at that exact source; no
-retired unit import or collection is permitted. Dispatch the existing registered
-workflow with both explicit inputs (replace the placeholder with the reviewed
-immutable commit SHA; this example is guidance, not an execution receipt):
-
-```bash
-gh workflow run nightly-integration.yml --repo t-benze/happyranch \
-  --ref task/TASK-10816 -f thr299_scoped_qa=true \
-  -f expected_source_sha=REVIEWED_40_HEX_SHA
-```
-
-The SHA is an assertion, never an alternate checkout target. Checkout pins
-`github.sha` with persisted credentials disabled. Before dependency/product setup,
-a missing/malformed expected SHA, event/checkout mismatch or non-hosted runner
-fails nonzero. Inputs reach the gate through environment variables, never shell
-commands. Setup uses pinned actions, frozen dependencies and verified Python3.14;
-no production runtime, DB, token or provider credentials are supplied. The
-unmodified `tests/helpers/integration_parent.py` runs before pytest/runtime
-imports, with its closed HOME/config/data/PATH, exact source/interpreter/CLI and
-registered deterministic-stub fences. Natural synthetic IDs and the unmodified
-real public fixture retain their existing assertions. No patched queue/claim
-launcher or exact synthetic producer grant is selected.
-
-Runner-dependent paths and identity values are bound in each consuming step's
-`env`, where GitHub permits the `runner` context; job-level `env` holds only the
-expected input SHA. The always-run evidence/cleanup step binds its own evidence
-and scratch paths, and upload resolves the same evidence path in step `with`.
-These bindings remain available after an early checkout, admission or setup
-failure without depending on a successful initializer step. Missing command or
-case results still report incomplete evidence.
-
-Only these five nodes in
-`tests/integration/test_verified_supersession_retry_shipping.py` run, with
-`-m integration`, verbose case output and JUnit:
-
-- `test_thr299_isolated_session_history_refuses_before_sid_filter`
-- `test_thr299_isolated_nonselected_purpose_and_metadata_compatible`
-- `test_thr299_isolated_selected_purpose_retains_specific_refusal`
-- `test_thr299_public_read_and_scope_refusal`
-- `test_thr299_isolated_old_validator_bound_and_local_failure`
-
-They are the existing 27 parameterized cases: 25 isolated session-validator cases
-and two public read/refusal/old-validator cases. There is no caller-selected node,
-command or URL. The whole job is capped at 20 minutes, dependency sync at 4 minutes,
-and the selected command at 300 seconds with INT then 20 seconds to KILL. The
-existing output limiter retains at most 1 MiB of merged output; its truncation
-marker is incomplete evidence, never a complete case log. The original command
-status is preserved in `command-exit.txt`, including 124/137 timeout outcomes.
-JUnit is bounded to 1 MiB with oversize/malformed/missing evidence reported; verbose
-logs and `cases.json` retain expanded names and outcomes. Failure/error/skipped
-cases are not PASS. Evidence completeness requires all 27 outcomes and no log
-truncation, alongside the actual command result.
-
-`source.json` records event/ref/run/attempt, runner image/name, exact commit/tree,
-source path and selected import/fence hashes; `interpreter.json` and the parent log
-record actual interpreter identity. `cleanup.json` reports remaining scratch,
-actual process identities, stage/error-class/errno diagnostics, truncation and
-command result. The parent owns its child group and temporary-directory cleanup.
-Its closed TMPDIR is below this invocation's outer scratch; the daemon fixture
-preserves that binding. Directory ownership in `/proc` alone is insufficient to
-identify a process's credentials. The admitted hosted lane uses its
-[existing passwordless sudo capability](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)
-only for `scripts/observe_thr299_processes.py`, a stdlib read-only process reader.
-It reads actual UID tuples and start-time identity before and after bounded
-complete environments, and binds a pidfd before classification. It emits no
-process environment values or command lines, changes no permissions or privilege
-configuration, signals no process and writes/removes no scratch. The source gate
-and matching event/HEAD are rechecked before invoking it. Unavailable sudo or a
-reader failure remains unknown; no visibility fallback drops inaccessible PIDs.
-
-An unrelated process requires complete credentials and, for the runner UID,
-a complete environment with no exact TMPDIR scratch/descendant binding. A read
-failure may count as disappearance only after observed identity/pidfd binding,
-terminal pidfd readiness and absence of the numeric process path. Permission
-failure alone, missing paths without bound identity, live unreadable processes,
-PID reuse/identity changes, incomplete reads and capped observation remain unknown.
-The reader caps each read at1MiB, scans at4096 process entries/10 seconds, retains
-at most128 diagnostic rows per category and has an outer15-second timeout;
-truncation fails completion. These are bounded snapshots, not a general
-quiescence, adoption, cancellation/restart or crash guarantee.
-
-The ordinary runner user validates the canonical fixed runner.temp scratch path,
-private mode/UID and dev/inode identity, and removes only that empty directory
-after complete no-bound-process evidence. Residue, changed/wrong scratch, removal
-failure or unknown observations fail completion and remain in the uploaded
-receipt. A missing scratch before command start is explicitly not_started, never
-successful cleanup. Early checkout/admission/setup failures preserve missing
-results and independent always-run evidence/upload paths; no root observer is
-run on an unadmitted source. Uncatchable termination can prevent receipts/upload;
-runner disposal, empty lists and27 passing cases never substitute for removal.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
 Historical QA10851 run38184484716 at621044c4 passed27 selected cases but its evidence
 step failed with UNKNOWN cleanup and unreadable PIDs980/1069. Their errno, stage
 and identity were not retained; no specific cause or cleanup success is inferred.
-This source correction requires renewed independent FULL review and separately
-authorized corrected-source hosted QA; its hosted success remains pending.
-
-Find the actual run and bind its event/head/attempt before interpreting artifacts:
-
-```bash
-gh run list --repo t-benze/happyranch --workflow nightly-integration.yml \
-  --branch task/TASK-10816 --event workflow_dispatch --limit 5
-gh run view RUN_ID --repo t-benze/happyranch \
-  --json headSha,event,attempt,status,conclusion,jobs,url
-gh run download RUN_ID --repo t-benze/happyranch \
-  --name thr299-scoped-qa-RUN_ID-ATTEMPT --dir /absolute/owned/evidence
-```
-
-Never attribute the newest run by position alone: match reviewed SHA, explicit
-selector, run ID and attempt. Upload is `always()` on success/failure with 7-day
-retention, but whole-job/runner termination may prevent it. For an external run
-still in flight, record its URL/status immediately and use the existing durable
-job/task handoff for a bounded wait (at most20 minutes plus a small artifact
-settlement allowance); no cross-run polling service, automatic retry or maker
-launch. Missing artifacts, results or cleanup remain missing evidence.
-
-This finite QA venue is separate from lint/static merge CI, general integration
-(**SKIPPED THR243seq42**) and Product E2E's daily 19:00 UTC schedule plus main-only
-`workflow_dispatch` entry. Founder THR291seq247 allocates ONE manual full run to
-sole root TASK-11897; local E2E remains refused. The earlier maker
-27-case exit0 is historical evidence without adequate venue qualification; it is
-not independent hosted proof. Exact synthetic producer-positive and dependent
-race/replay/crash/causal/repetition proof remain **UNPROVEN THR299seq11**. Native
-Swift execution remains **UNEXECUTED** without an authorized compatible venue.
-Parent10725 owns later qualified QA, guarded merge/install/serving verification,
-real reconciliation/replay and both original retry reads before naming use.
+The earlier maker27-case exit0 is not independent hosted proof. Exact synthetic
+producer-positive and dependent race/replay/crash/causal/repetition proof remain
+**UNPROVEN THR299seq11**; native Swift execution remains **UNEXECUTED**.
 
 ## Source Boundary Lint
 
@@ -1335,8 +1203,8 @@ separate required evidence, never inferred from a baseline. No M selection,
 compatible restore, systemd service/mask operation, reboot, live migration,
 new-package-positive closure or after-M browser proof is released here.
 
-The ordinary nightly selection remains `tests/ -m integration`; the launcher
-`uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
+Retained integration selections use the launcher
+`uv run python tests/helpers/integration_parent.py -- pytest ...`, which establishes a
 fresh temporary HOME/config/cache/daemon registry before pytest or runtime imports.
 Nested `uv` commands use the parent interpreter through `UV_PYTHON`. If that
 interpreter belongs to a venv, its own `pyvenv.cfg` path supplies the exact
@@ -1474,10 +1342,7 @@ boundary lint and Web static analysis, not behavioral coverage. Failed,
 skipped or other-target outcomes belong in ordinary verification evidence. Record actual runtime path/version, source SHA, timing,
 command, exit and complete logs. Durable jobs are required for long checks and
 pushes with long hooks; authenticate the terminal receipt before publication.
-Manual hosted all still uses Python 3.14/Node 24 to run its stdlib receipt driver;
-that interpreter version is not a Python-suite result. Its `all_only` input cannot
-reactivate unit proofs. Scheduled integration remains separately owned and its
-failed/skipped outcomes are separate from fresh daily health.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
 ## System Assistant retirement artifact verification (THR-294)
 
@@ -1758,26 +1623,14 @@ test expectation repair, native admission or artifact provisioning does not
 establish complete retirement or behavioral QA acceptance.
 
 
-## Finite naming verification lane
+## Retired finite naming verification lane
 
-The existing nightly workflow exposes a default-false `naming_only` input.
-It requires `all_only=false`, an exact published `naming_source_sha`, and
-`naming_image=node@sha256:<amd64-digest>`. The SHA must equal the workflow ref.
-It suppresses the manual Web lane and runs the twenty explicit function selectors
-(23 parameterized cases), retaining the original seventeen selectors for the twelve
-naming scenarios on a disposable Ubuntu 24.04 runner.
-`scripts/identity_names_hosted.sh` retains the source/image pins, resource bounds,
-shared deadline, cleanup reserve and bounded evidence export. The selection is
-`tests/helpers/identity_names/run.sh`; it does not collect retired Python units
-or run general integration. Scheduled/default behavior and retained PR/main
-checks are unchanged. Historical attempts remain evidence and do not renew
-allocations. A corrected candidate needs attributed behavioral results and
-independent review/QA; merely publishing or dispatching it is not a pass.
+The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
 A10 uses numeric `TASK-10010` and provider-distinct hexadecimal runtime sessions
 (`sess-a10c`, `sess-a10d`, `sess-a10e` for Claude, Codex, OpenCode) throughout the
 real executor/CLI/HTTP callback fixture, matching the unchanged registered stub
-binding grammar. The naming upload includes hidden files from only the existing
+binding grammar. The retired naming lane's upload included hidden files from only the existing
 bounded `naming-evidence/` directory, including synthetic `.playwright/cli.config.json`
 browser configuration already covered by the export manifest. Runner-side export
 authentication and cleanup do not prove delivered-archive completeness: run
