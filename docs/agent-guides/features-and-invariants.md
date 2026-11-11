@@ -2606,6 +2606,17 @@ and operational H-v1 duties remain separately gated.
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
 Content updates, including slug changes, preserve the edited entry's lifecycle,
 salience, provenance, scope and `last_verified` from storage under the write lock.
+The S3a Instill owner also preserves `inherited_from` and the separate
+`imported_at` through MemoryStore reads, search/list/index and supported updates.
+`inherited` records source knowledge, never recipient experience or current
+Founder authority. Its source block binds archive/version/item, source permanent
+ID and per-reference source dates (null explicitly unknown); readable content
+retains original attribution and warnings. The dedicated inherited writer adds
+new local MEM IDs without supersession, replacement or import-triggered compaction,
+including retries at/above the configured threshold. Ordinary compaction remains
+unchanged. Instill public HTTP/CLI projections are S3b work. Once inherited notes
+exist, use compatible daemon/CLI/UI readers and writers; preserve notes/receipts
+on rollback and stop incompatible writers rather than stripping provenance.
 Editing an evicted or superseded entry keeps that state; restoration uses the
 explicit lifecycle route. Promoted entries remain locked against content edits
 (HTTP 409). A supplied `supersedes` still marks its target through the existing

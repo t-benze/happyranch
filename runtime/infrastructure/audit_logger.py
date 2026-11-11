@@ -8,11 +8,25 @@ from runtime.models import CompletionReport, TokenUsage
 
 if TYPE_CHECKING:
     from runtime.orchestrator.thread_move import ThreadPreparation
+    from runtime.knowledge.lifecycle_models import ImportOperation
 
 
 class AuditLogger:
     def __init__(self, db: Database) -> None:
         self._db = db
+
+    def log_knowledge_import(self, operation: ImportOperation) -> None:
+        """Body-free observation; durable operation/item rows establish effects.
+
+        Reuse the existing recipient AGENT envelope, without a synthetic task
+        or actor. Never copy expected note content or archive text into audits.
+        """
+        payload = {key: getattr(operation, key) for key in (
+            'operation_id', 'archive_id', 'archive_version', 'source_id', 'recipient_id',
+            'phase', 'state', 'selected', 'imported', 'skipped', 'failed', 'pending')}
+        payload['items'] = [r.model_dump() for r in operation.results]
+        self._db.insert_audit_log(task_id='AGENT-' + operation.recipient_id, agent=operation.recipient_id,
+                                  action='knowledge_import', payload=payload)
 
     def log_knowledge_distill(self, operation: dict, archive: dict | None = None) -> None:
         """Idempotent lifecycle observation, excluding captures and result bodies.
