@@ -815,7 +815,7 @@ def report_fixtures(rows: list) -> None:
         facts = {key: before[key] for key in ('ground_truth', 'abi', 'boot_uuid', 'child_cleanup', 'fixture_removed', 'source_sha', 'source_sha256')}
         scratch_facts = {key: {field: value for field, value in observation.items() if field != 'reasons'}
                          for key, observation in before['scratch_routing']['reports'].items()}
-        def observe(value):
+        def observe(value: dict) -> None:
             value.update(report)
             if name == 'report_early_failure':
                 raise RuntimeError('synthetic native failure:' + 'e'*512)
