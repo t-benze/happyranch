@@ -425,6 +425,11 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    - The soft cap is 50 MB stored per task output directory. Before completion,
      run `du -sh output/<task_id>/`; exceeding the cap needs a stated reason
      in the completion summary.
+   - Create output files and directories owner-writable (no read-only modes),
+     so later own-output cleanup is not denied by their permissions.
+   - Cite exact small record files (handoff, summary, verdict, receipt),
+     not bare TASK folders or raw large dumps.
+   - Examples: [task output practice guide](../../../../docs/agent-guides/task-output-practice.md).
    - For your **own terminal tasks only**, after 14 days remove regenerable
      leftovers. Delete log, JSON and stdout/stderr files over 1 MB (including
      `.gz` variants) once the whole task tree that wrote them has been terminal
