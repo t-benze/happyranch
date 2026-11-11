@@ -33,3 +33,4 @@ export * as workflowSubmissions from './workflowSubmissions';
 export * as workflowReviews from './workflowReviews';
 
 export * as workflowRevisions from './workflowRevisions';
+export * as workflowSequential from './workflowSequential';

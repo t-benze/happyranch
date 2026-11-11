@@ -4787,3 +4787,22 @@ rewritten. S5 UI remains separate work.
 the OpenAPI snapshot. Classification grants no remote reachability. The retired
 Web OpenAPI-coverage test remains retired. Focused exercise:
 `uv run --frozen python scripts/verify_knowledge_instill.py [CASE]`.
+
+
+## U7a common read projections (TASK-15465, R-M3-4)
+
+Six existing-Founder-bearer GETs expose stored sequential definition versions,
+repo-free settings, runs/detail and source/carrier/visit task links, under
+`/workflows/sequential` and `/tasks/{task_id}/sequential-workflow`. Exact paths,
+closed records, audience/privacy and remaining U7b–U7d work are in the current
+[U7 specification](../superpowers/specs/2026-11-11-sequential-coding-u7.md).
+SELECT-only snapshots authenticate complete history and fresh current authority;
+GET allocates/writes nothing. Absent-task404 precedes ownership409. Denied/foreign
+reads return no workflow content or link. Existing Founder task-result visibility
+supplies authored-content access; agent sessions retain their addressed readers.
+No managed-connector allowlist or credential/permission changes. TS mirrors,
+classification and OpenAPI ship together; retired Vitest is not restored.
+Settings writes, selected task-session preflight/Final transport and agent completion
+consumer remain implementation. Final success stays Held, public fresh start OFF
+until atomic U9; no human/browser start. ACCESS-1/shared-OS-user/gh limitations,
+original Pause/receipt uncertainty/cancellation and historical families remain.

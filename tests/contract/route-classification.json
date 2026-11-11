@@ -181,7 +181,13 @@
     "GET /api/v1/orgs/{slug}/agents/{recipient_id}/knowledge/imports",
     "GET /api/v1/orgs/{slug}/agents/{recipient_id}/knowledge/imports/eligibility/{archive_id}",
     "GET /api/v1/orgs/{slug}/knowledge/imports/{operation_id}",
-    "POST /api/v1/orgs/{slug}/knowledge/imports/{operation_id}/retry"
+    "POST /api/v1/orgs/{slug}/knowledge/imports/{operation_id}/retry",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/definitions",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/definitions/{definition_id}",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/settings",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/runs",
+    "GET /api/v1/orgs/{slug}/workflows/sequential/runs/{run_id}",
+    "GET /api/v1/orgs/{slug}/tasks/{task_id}/sequential-workflow"
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",

@@ -3,3 +3,9 @@ export const useWorkflowActivations: ReturnType<typeof useData>['workflows']['us
 export const useWorkflowReviewDetail: ReturnType<typeof useData>['workflows']['useReviewDetail'] = (id, history) => useData().workflows.useReviewDetail(id, history);
 export const useHumanReviewResponse: ReturnType<typeof useData>['workflows']['useHumanResponse'] = () => useData().workflows.useHumanResponse();
 export const useOwnerReviewReturn: ReturnType<typeof useData>['workflows']['useOwnerReturn'] = () => useData().workflows.useOwnerReturn();
+export const useSequentialDefinitions: ReturnType<typeof useData>['workflows']['useSequentialDefinitions'] = () => useData().workflows.useSequentialDefinitions();
+export const useSequentialDefinition: ReturnType<typeof useData>['workflows']['useSequentialDefinition'] = (id) => useData().workflows.useSequentialDefinition(id);
+export const useSequentialSettings: ReturnType<typeof useData>['workflows']['useSequentialSettings'] = (id) => useData().workflows.useSequentialSettings(id);
+export const useSequentialRuns: ReturnType<typeof useData>['workflows']['useSequentialRuns'] = () => useData().workflows.useSequentialRuns();
+export const useSequentialRun: ReturnType<typeof useData>['workflows']['useSequentialRun'] = (id) => useData().workflows.useSequentialRun(id);
+export const useTaskSequentialWorkflow: ReturnType<typeof useData>['workflows']['useTaskSequentialWorkflow'] = (id) => useData().workflows.useTaskSequentialWorkflow(id);
