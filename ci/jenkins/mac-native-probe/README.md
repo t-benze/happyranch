@@ -53,14 +53,27 @@ file it writes, including `probe.json`, to at most 4 MiB (2 MiB on shells using
 512-byte blocks; 4 MiB with 1024-byte blocks). A file-size-limit signal or write
 error fails the build nonzero; the probe cannot expand a log past the pipe cap.
 
+`identity.txt` is capped at 64 KiB (65,536 bytes), including cleanup. Its producer
+uses the same pipe reader with a 65,514-byte cap, reserving 22 bytes for the
+longest `scratch_removed` receipt. Identity overflow or a write error fails
+nonzero. The receipt append is checked; a failed append cannot claim success.
+
 The parent shell owns scratch and runs cleanup after the capture pipeline ends.
 It saves the original stdout/stderr before capture and copies only the first
 1 MiB (1,048,576 bytes) of `build.log` to the saved console descriptor, followed
-by a truncation marker when needed. Cleanup never writes the log back into
-itself. Ordinary probe failures retain their actual exit status; log overflow
-fails nonzero. Cleanup records `scratch_removed=true` or `false`, including for
-an early platform/parameter failure, and a removal/copy failure turns an
-otherwise successful run into a failure without replacing an existing failure.
+by a truncation marker when needed. All console output, including cleanup and
+saved-descriptor diagnostics, passes through one additional 1 MiB cap plus a
+fixed truncation marker. Excess console input is drained without retaining it,
+so overflow cannot interrupt cleanup with SIGPIPE. The parent waits for this
+reader and checks its status. Cleanup never writes the log back into itself.
+The reader is an ordinary child connected through `mkfifo`'s private
+`evidence/.console-pipe`, compatible with Bash 3.2; cleanup checks its unlink.
+Bootstrap errors before this reader starts suppress diagnostics and exit nonzero.
+Log, identity or console overflow fails nonzero. Cleanup attempts to append
+`scratch_removed=true` or `false`, including for an early platform/parameter
+failure; a failed receipt may be absent. Removal, receipt append, size read,
+console copy, marker write or console-reader failure turns an otherwise
+successful run into a failure without replacing an existing nonzero exit code.
 Catchable interruption retains the existing INT=130 and TERM/HUP=143 statuses.
 
 ## Probe contract
