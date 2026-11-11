@@ -15,7 +15,7 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.task_pause import current_invocation
 from runtime.workflows.authority import AuthorityAdmissionCapture, WorkflowAuthorityError
-from runtime.workflows.coding_authority_history import _bounded_rows
+from runtime.workflows.coding_authority_history import _bounded_rows, _decoded
 from runtime.workflows.sequential_contracts import Closed, Limits, StartCommand
 from runtime.workflows.sequential_definition import CompiledDefinition, parse_start, validate_start
 from runtime.workflows.sequential_engine import (
@@ -86,6 +86,42 @@ def precheck_start(org: Any, workflow: dict, *, source_task_id: str) -> None:
     with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
         _selection(conn, org_slug=org.slug, command=command, budget=budget)
         _ordinary_source(conn, org, source_task_id, budget)
+
+
+def precheck_completion(org: Any, workflow: dict, *, task_id: str, principal: str,
+                        session_id: str, status: str, waiting_on_job_ids: list[str] | None) -> None:
+    """Check the original ordinary callback binding before persisting its result.
+
+    The caller holds the existing session binding lease. Request identities are
+    comparisons only; the tracker supplies the source used by the start reader.
+    The committed-result consumer still owns INTEGER/native admission proof.
+    """
+    context = org.sessions.get_context_by_session(session_id)
+    _check(context == (org.slug, task_id, principal)
+           and org.sessions.get_active(task_id, principal) == session_id
+           and not org.sessions.is_recovery_session(task_id, principal, session_id)
+           and status == 'completed' and not waiting_on_job_ids)
+    _, source_task_id, _ = context
+    precheck_start(org, workflow, source_task_id=source_task_id)
+
+
+def is_start_result(prior: dict) -> bool:
+    """Recognize the saved native decision, never a supplied replay selector.
+
+    Native decision_json is not the canonical command encoding. The literal
+    prefilter only avoids decoding unrelated decisions; the parsed discriminator
+    determines whether the original sequential completion owns exact replay.
+    """
+    raw = prior.get('decision_json')
+    if type(raw) is not str or 'workflow-sequential-start@1' not in raw:
+        return False
+    budget = _ReadBudget()
+    budget.reserve(48 * len(raw) + 512)
+    value = _decoded(json.loads(raw), budget)
+    budget.check()
+    return (type(value) is dict and value.get('action') == 'workflow_start'
+            and type(value.get('workflow')) is dict
+            and value['workflow'].get('format') == 'workflow-sequential-start@1')
 
 
 def _callback(conn: sqlite3.Connection, org: Any, claim: RetryClaim, decision: NextStep,

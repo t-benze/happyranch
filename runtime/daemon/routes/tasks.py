@@ -1191,7 +1191,7 @@ async def task_events(task_id: str, org: OrgStreamDep, request: Request):
 
 
 @router.post("/tasks/{task_id}/completion")
-async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> dict:
+async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, request: Request = None) -> dict:
     if org.db.get_task(task_id) is None:
         raise HTTPException(
             status_code=404,
@@ -1218,11 +1218,17 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         # authority and is discarded here.
         decision_payload.pop("_manager_self_evaluation", None)
         decision_payload.pop("_authority_v2_admission", None)
+    sequential_start = False
     if decision_payload is not None and decision_payload.get('action') == 'workflow_start':
         from runtime.workflows.coding_start_records import CodingStartDecision
         workflow = decision_payload.get('workflow')
         sequential_start = isinstance(workflow, dict) and workflow.get('format') == 'workflow-sequential-start@1'
         if sequential_start:
+            # A source label grants no authority. The original tracker binding,
+            # native callback and committed INTEGER result remain mandatory.
+            if (request is None or 'origin' in request.headers
+                    or request.headers.get('x-happyranch-surface') != 'cli'):
+                raise HTTPException(status_code=403, detail={'code': 'sequential_start_source_required'})
             from runtime.workflows.sequential_start import SequentialStartDecision
         validator = SequentialStartDecision if sequential_start else CodingStartDecision
         prefix = 'sequential' if sequential_start else 'coding'
@@ -1298,6 +1304,24 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         # unknown / fabricated) session remains unknown_session.
         prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id)
         if prior is not None:
+            if ownership.kind == 'legacy':
+                from runtime.workflows.sequential_start import is_start_result
+                try:
+                    saved_sequential_start = is_start_result(prior)
+                except (ValueError, TypeError, RecursionError):
+                    raise HTTPException(status_code=409, detail={'code': 'sequential_start_operation_conflict'}) from None
+                if sequential_start or saved_sequential_start:
+                    if (request is None or 'origin' in request.headers
+                            or request.headers.get('x-happyranch-surface') != 'cli'):
+                        raise HTTPException(status_code=403, detail={'code': 'sequential_start_source_required'})
+                    from runtime.infrastructure.database import completion_result_payload_matches
+                    if (not saved_sequential_start or not completion_result_payload_matches(prior,
+                            output_summary=body.output_summary, confidence_score=body.confidence,
+                            status=body.status, risks_flagged=body.risks_flagged, output_dir=body.output_dir,
+                            decision_json=_json.dumps(decision_payload) if decision_payload is not None else None,
+                            waiting_on_job_ids=body.waiting_on_job_ids or None, verdict=body.verdict,
+                            local_ci_json=_json.dumps(body.local_ci) if body.local_ci is not None else None)):
+                        raise HTTPException(status_code=409, detail={'code': 'sequential_start_operation_conflict'})
             if workflow_draft:
                 retry_wait_ids = (sorted(set(body.waiting_on_job_ids)) or None
                                   if "waiting_on_job_ids" in body.model_fields_set else body.waiting_on_job_ids or None)
@@ -1554,9 +1578,11 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                             and decision_payload.get('action') == 'workflow_start'):
                         workflow = decision_payload['workflow']
                         if workflow.get('format') == 'workflow-sequential-start@1':
-                            from runtime.workflows.sequential_start import precheck_start
+                            from runtime.workflows.sequential_start import precheck_completion
                             try:
-                                precheck_start(org, workflow, source_task_id=task_id)
+                                precheck_completion(org, workflow, task_id=task_id,
+                                    principal=body.agent, session_id=current, status=body.status,
+                                    waiting_on_job_ids=body.waiting_on_job_ids)
                             except (ValueError, OSError, sqlite3.Error):
                                 raise HTTPException(status_code=409, detail={'code': 'sequential_start_unavailable'}) from None
                         else:
