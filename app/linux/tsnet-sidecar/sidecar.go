@@ -154,10 +154,10 @@ func (s *Sidecar) Start(ctx context.Context) error {
 }
 
 func consumeInput(c Config) ([]byte, error) {
-	if err := noSymlinkPath(c.StateDir); err != nil {
+	if err := noSymlinkPath(c.StateDir, false); err != nil {
 		return nil, err
 	}
-	if err := noSymlinkPath(c.CredentialFile); err != nil {
+	if err := noSymlinkPath(c.CredentialFile, systemdInput(c)); err != nil {
 		return nil, err
 	}
 	if err := requireOwnerDir(c.StateDir); err != nil {
@@ -249,19 +249,20 @@ func ownedByCurrentUser(st os.FileInfo) bool {
 	return ok && sys.Uid == uint32(os.Geteuid())
 }
 
-func noSymlinkPath(path string) error {
+func noSymlinkPath(path string, allowMissingParent bool) error {
 	clean := filepath.Clean(path)
 	for current := clean; current != string(filepath.Separator); current = filepath.Dir(current) {
 		st, err := os.Lstat(current)
-		// Restart has no credential file. Only that final entry may be absent;
-		// still inspect every parent, including parents of a missing entry.
-		if current == clean && errors.Is(err, syscall.ENOENT) {
+		// systemd can remove an empty per-unit credential directory. Only the
+		// exact managed input may also lack that immediate parent; every higher
+		// ancestor must still exist as a directory without symlinks.
+		if errors.Is(err, syscall.ENOENT) && (current == clean || (allowMissingParent && current == filepath.Dir(clean))) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		if st.Mode()&os.ModeSymlink != 0 {
+		if st.Mode()&os.ModeSymlink != 0 || (current != clean && !st.IsDir()) {
 			return ErrConfiguration
 		}
 	}
