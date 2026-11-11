@@ -903,44 +903,6 @@ class TasksMixin:
         return dict(successors=related, jobs=[dict(row) for row in jobs],
                     recoveries=[dict(row) for row in recoveries], intents=intents)
 
-    def _check_team_move_task_uncommitted(self, task: TaskRecord | str, *, declared_chain: str | None = None) -> None:
-        """Server-owned task allocation/claim exclusion, inside DB ownership.
-
-        Already-owned graph transactions never acquire a move mutex beneath DB.
-        The durable operation writer is serialized by the same DB owner. No
-        schema install, caller name, prompt read or result consumption occurs.
-        """
-        move = getattr(self, "_team_move_coordinator", None)
-        if move is None:
-            if self._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='team_move_operations'").fetchone():
-                from runtime.orchestrator.team_move import DeferredTeamMove
-                raise DeferredTeamMove("team_move_org_owner_unavailable")
-            return
-        if isinstance(task, str):
-            task = self.get_task(task)
-            if task is None:
-                from runtime.orchestrator.team_move import DeferredTeamMove
-                raise DeferredTeamMove("team_move_task_owner_unavailable")
-        if declared_chain is not None:
-            task = task.model_copy(update={"active_chain": declared_chain})
-        move.check_task_uncommitted(task)
-
-    def _check_team_move_workflow_uncommitted(self, instance_id: str | None = None, *, binding_bytes: bytes | None = None) -> None:
-        move = getattr(self, "_team_move_coordinator", None)
-        if move is None:
-            if self._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='team_move_operations'").fetchone():
-                from runtime.orchestrator.team_move import DeferredTeamMove
-                raise DeferredTeamMove("team_move_org_owner_unavailable")
-            return
-        if binding_bytes is None:
-            row = self._conn.execute("SELECT b.binding_bytes FROM workflow_instances i "
-                "JOIN workflow_binding_snapshots b ON b.id=i.binding_snapshot_id WHERE i.id=?", (instance_id,)).fetchone()
-            if row is None:
-                from runtime.orchestrator.team_move import DeferredTeamMove
-                raise DeferredTeamMove("team_move_workflow_owner_unavailable")
-            binding_bytes = row[0]
-        move.check_bindings_uncommitted(binding_bytes)
-
     @_task_move_admission
     @_synchronized
     def insert_task(self, task: TaskRecord) -> None:

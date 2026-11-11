@@ -456,9 +456,6 @@ class ReplyDeliveryMixin:
         lease_id: str, now: datetime | None = None,
     ) -> ThreadReplyBreakerEpisode | None:
         """Acquire the single durable half-open lease when its cooldown is due."""
-        move = getattr(self, "_team_move_coordinator", None)
-        if move is not None and move.threads.held_uncommitted(agent_name) is not None:
-            return None
         at_s = (now or _now()).astimezone(timezone.utc).isoformat()
         cursor = self._conn.execute(
             "UPDATE thread_reply_breaker_episodes SET state='probe',"
@@ -514,7 +511,6 @@ class ReplyDeliveryMixin:
                     invocation_token=queued["queued_invocation_token"],
                     kind="breaker_probe",
                 ))
-            move = getattr(self, "_team_move_coordinator", None)
             cutoff_s = (at - timedelta(seconds=cooldown_seconds)).isoformat()
             for candidate in self._conn.execute(
                 "SELECT d.thread_id,d.agent_name,d.updated_at FROM "
@@ -529,8 +525,6 @@ class ReplyDeliveryMixin:
                 "ORDER BY d.updated_at,d.thread_id,d.agent_name",
                 (cutoff_s,),
             ).fetchall():
-                if move is not None and move.threads.held_uncommitted(candidate["agent_name"]) is not None:
-                    continue
                 pair = (candidate["thread_id"], candidate["agent_name"])
                 if not self._thread_release_pair_permitted_uncommitted(*pair):
                     continue
@@ -571,8 +565,6 @@ class ReplyDeliveryMixin:
             ).fetchall()
             for row in rows:
                 if not self._thread_release_pair_permitted_uncommitted(row["thread_id"], row["agent_name"]):
-                    continue
-                if move is not None and move.threads.held_uncommitted(row["agent_name"]) is not None:
                     continue
                 if (row["queued_invocation_token"] is not None
                         or row["running_invocation_token"] is not None
@@ -2287,9 +2279,6 @@ class ReplyDeliveryMixin:
                 self._conn.execute("BEGIN IMMEDIATE")
             move = getattr(self, "_team_move_coordinator", None)
             if move is not None:
-                inv_owner = self.get_invocation_any_status(token)
-                if inv_owner is not None:
-                    move.threads.check_agent_uncommitted(inv_owner.agent_name)
                 if (_move_owner is None or _move_owner.admission is not move.threads
                         or move.threads.live.get(_move_owner.inv.id) is not _move_owner
                         or _move_owner.inv.invocation_token != token):

@@ -279,7 +279,7 @@ class TaskQueue:
     async def _enqueue_if_absent_native(
         self, slug: str, task_id: str, *, publisher: Callable[[], Awaitable[str]],
     ) -> bool:
-        """Same bounded reservation for the joined team-move publisher only."""
+        """Same bounded reservation for the joined native deferred-work publisher."""
         if not self._reserve_bounded_enqueue(slug, task_id, track_put=True):
             return False
         key = slug, task_id

@@ -5386,7 +5386,7 @@ async def _enqueue_task_generation_aware_native(
     orch: Any, queue: Any, slug: str, task_id: str, *, native: Callable,
     metadata: dict | None = None,
 ) -> str:
-    """Team-move path only; native classification/claim and real loop put."""
+    """Native deferred-work redelivery; classification/claim and real loop put."""
     if queue is None:
         return ENQUEUE_DISPATCH_NO_QUEUE
     classification = await native(lambda: _classify_generation_enqueue(orch, task_id))

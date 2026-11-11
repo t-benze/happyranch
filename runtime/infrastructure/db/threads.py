@@ -505,9 +505,6 @@ class ThreadsMixin:
         self, thread_id: str, agent_name: str
     ) -> bool:
         """Hard-delete a participant row. Returns True if a row was deleted."""
-        move = getattr(self, "_team_move_coordinator", None)
-        if move is not None:
-            move.threads.participant_write_uncommitted(agent_name)
         cursor = self._conn.execute(
             "DELETE FROM thread_participants WHERE thread_id = ? AND agent_name = ?",
             (thread_id, agent_name),
@@ -555,18 +552,6 @@ class ThreadsMixin:
             ):
                 self._conn.commit()
                 return None
-            move = getattr(self, "_team_move_coordinator", None)
-            if move is not None:
-                # Include durable owners touched by discard even if a legacy
-                # obligation no longer has a current participant row.
-                owners = self._conn.execute(
-                    "SELECT agent_name FROM thread_participants WHERE thread_id=:thread_id "
-                    "UNION SELECT agent_name FROM (" + _THREAD_ARCHIVE_OWNERS_SQL + ") "
-                    "WHERE source!='invocation' OR purpose IN ('reply','bootstrap')",
-                    {"thread_id": thread_id},
-                ).fetchall()
-                for owner in owners:
-                    move.threads.participant_write_uncommitted(owner["agent_name"])
             self._discard_reply_delivery_uncommitted(
                 thread_id, decline_reason="archive_started",
             )
