@@ -43,8 +43,12 @@ Crash-consistency / rollback contract
 
 Each of the two files (snapshot, anchor) is written atomically (temp file,
 fsync, rename, directory fsync); the PAIR is updated snapshot-first then
-anchor. A crash between the two writes leaves a mismatched pair that load()
-rejects — never a silently-accepted stale state. Recovery is an explicit
+anchor under LOCK_EX. load() takes LOCK_SH on the same stable owner-only
+lock file, opened without following symlinks and validated as a regular,
+single-link, owner-only inode distinct from both pair files. Lock acquisition
+never changes pair-file metadata. Readers cannot sample an in-progress
+publication. A crash between the two writes leaves a mismatched pair that
+load() rejects — never a silently-accepted stale state. Recovery is an explicit
 operator action: restore a consistent (snapshot + anchor) pair from backup,
 or delete BOTH files to factory-reset to the first-run deny-all default
 (partial deletion of one file fails closed). Generation is strictly
@@ -67,6 +71,7 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -369,6 +374,7 @@ class AtomicFileTrustStateStore:
         )
         self._default_state = default_state
         self._lock_timeout = lock_timeout
+        self._lock_owner = threading.local()
 
     # ── the one serialized mutation boundary (TASK-6045) ──────────────────
 
@@ -388,8 +394,11 @@ class AtomicFileTrustStateStore:
         generation check, and both write N+1: the load, the generation
         computation, the snapshot publication, and the anchor publication
         are ONE serialized boundary (the TASK-6044 reviewer [HIGH] finding-1
-        check-then-save race is closed). Reads stay lock-free and fail
-        closed on a torn pair exactly as before.
+        check-then-save race is closed). Reads take a shared lock on the
+        same stable inode so they cannot sample an in-progress publication.
+        A load by this transaction's owning thread reuses its exclusive
+        lock; other threads and processes acquire their own shared lock.
+        Stable torn pairs still fail closed exactly as before.
 
         The working copy handed to the transaction body is a DEEP COPY of
         the loaded state (mirroring ``InMemoryTrustStateStore``), so an
@@ -411,11 +420,11 @@ class AtomicFileTrustStateStore:
                 tx.commit()
 
     @contextlib.contextmanager
-    def _lock_file(self) -> Iterator[None]:
+    def _lock_file(self, *, shared: bool = False) -> Iterator[None]:
         """Owner-only INTER-PROCESS lock (``fcntl.flock``) over the state
         pair. The lock file lives beside the snapshot (``<state>.lock``),
-        owner-only (0600; the parent directory is tightened to 0700 exactly
-        like the snapshot writes), and is a STABLE inode that is NEVER
+        owner-only (created 0600; the parent directory is tightened to 0700
+        exactly like the snapshot writes), and is a STABLE inode that is NEVER
         unlinked: flock is bound to the open file description, so unlinking
         a held lock file would let a second inode be locked concurrently
         (the classic lock-file unlink race). There is no stale-lock
@@ -424,6 +433,12 @@ class AtomicFileTrustStateStore:
         dies (crash/outage fail open to the next legitimate writer). A
         bounded non-blocking acquire fails closed with ``StateStoreError``
         when the lock stays contended past ``lock_timeout``.
+        Writers acquire LOCK_EX; readers acquire LOCK_SH. The exclusive
+        owner is recorded per store and thread only for nested load() calls.
+        Symlink, hardlink, special, foreign-owner and loose lock inodes
+        refuse, as does a lock identical to either pair inode. Existing
+        lock metadata is never repaired; acquiring a lock must not chmod
+        an aliased snapshot or anchor into an acceptable state.
         """
         lock_path = Path(str(self._path) + ".lock")
         parent = lock_path.parent
@@ -431,18 +446,37 @@ class AtomicFileTrustStateStore:
         try:
             parent.mkdir(parents=True, exist_ok=True)
             os.chmod(parent, _STATE_DIR_MODE)
-            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, _STATE_FILE_MODE)
-            # Tighten unconditionally: a pre-existing lock file with loose
-            # permissions holds no data — tightening is always safe and the
-            # file must never be group/world readable.
-            os.fchmod(fd, _STATE_FILE_MODE)
+            fd = os.open(
+                lock_path,
+                os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+                _STATE_FILE_MODE,
+            )
+            lock_stat = os.fstat(fd)
+            if (
+                not stat.S_ISREG(lock_stat.st_mode)
+                or lock_stat.st_nlink != 1
+                or lock_stat.st_uid != os.geteuid()
+                or stat.S_IMODE(lock_stat.st_mode) & 0o077
+            ):
+                raise OSError("unsafe trust state lock inode")
+            for pair_path in (self._path, self._anchor_path):
+                try:
+                    pair_stat = pair_path.lstat()
+                except FileNotFoundError:
+                    continue
+                if (lock_stat.st_dev, lock_stat.st_ino) == (
+                    pair_stat.st_dev, pair_stat.st_ino
+                ):
+                    raise OSError("trust state lock aliases pair inode")
             deadline = time.monotonic() + self._lock_timeout
             while True:
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+                    fcntl.flock(fd, mode | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
+                        os.close(fd)
                         raise StateStoreError(
                             "trust state lock contended; retry the ceremony operation"
                         )
@@ -451,15 +485,36 @@ class AtomicFileTrustStateStore:
             if fd is not None:
                 os.close(fd)
             raise StateStoreError("trust state lock unavailable") from exc
+        if not shared:
+            self._lock_owner.exclusive = True
         try:
             yield
         finally:
+            if not shared:
+                self._lock_owner.exclusive = False
             # Closing the descriptor releases the flock (also on crash).
             os.close(fd)
 
     # ── TrustStateStore protocol ──────────────────────────────────────────
 
     def load(self) -> TrustState:
+        """Validate a stable snapshot+anchor pair under the shared lock.
+
+        An in-progress writer must finish before any pair is sampled;
+        contention times out with StateStoreError, never a default state.
+        The same store's exclusive owner thread already holds the lock and
+        reads directly to avoid self-deadlock inside transaction()/save().
+        Lock acquisition never changes snapshot/anchor metadata; unsafe
+        lock aliases refuse before reading. Every stable-pair validation
+        remains, including refusal of loose snapshot/anchor permissions.
+        """
+        if getattr(self._lock_owner, "exclusive", False):
+            return self._load_locked()
+        with self._lock_file(shared=True):
+            return self._load_locked()
+
+    def _load_locked(self) -> TrustState:
+        """Read and validate the pair while this thread holds SH or EX."""
         path = self._path
         anchor_path = self._anchor_path
         # Symlinks are rejected BEFORE existence is consulted: a dangling
