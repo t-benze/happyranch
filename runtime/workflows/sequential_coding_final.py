@@ -82,7 +82,7 @@ def _live_owner(org: Any, dispatcher: Any, conn: sqlite3.Connection, task_id: st
     _require(native['owner'] == 'sequential' and native['org'] == org.slug
              and native['root_task_id'] == root_id
              and (native['task_id'], native['agent'], native['session_id']) == (task_id, principal, session_id)
-             and native['phase'] == 'running' and native['generation'] == pause['generation']
+             and native['phase'] == 'running'
              and not native['context'].get('execution_unknown')
              and not native['context'].get('producer_settled'))
     request, running = getattr(owner, 'coding_request', None), getattr(owner, 'coding_running', None)
@@ -97,7 +97,9 @@ def _live_owner(org: Any, dispatcher: Any, conn: sqlite3.Connection, task_id: st
     org.db._check_team_move_task_uncommitted(task_id)
     pin = FinalNativePin(root_task_id=root_id, invocation_id=owner.identity,
         request_id=request.logical_id, handle_id=running.token, backend=running.backend,
-        pause_generation=pause['generation'], org_root=str(paths.root),
+        # Pause/Resume advances control generation; the running invocation
+        # retains its original admission generation in the validated journal.
+        pause_generation=native['generation'], org_root=str(paths.root),
         workspace_root=str(paths.workspaces_dir / principal))
     _decoded(pin.model_dump(mode='json'), budget)
     return owner, pin

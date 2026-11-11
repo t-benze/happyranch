@@ -293,7 +293,8 @@ changes. U5b2b below remains required implementation, not a verification-only ta
 then takes the existing authority/teams/DB locks, original session binding lease
 and admission writer. It proves one original sequential TaskInvocation in the
 native live store; admitted/committed/unsettled/launch-observed facts; original
-running Pause journal entry and root/generation; matching original host request
+running Pause journal entry and original admission generation; independently
+unheld current root control; matching original host request
 and supported opaque running handle; active non-recovery task/principal/SID;
 no terminal, callback, cancellation or team-move refusal. Original OrgPaths
 supplies the fixed manager workspace. Bounded ancestor-pointer and journal-byte
@@ -301,6 +302,11 @@ preflight precede the unchanged native Pause reader; no full task briefs are rea
 by that live-owner preflight. No OS scan, process poll, repository access
 observer, file read, Git or network operation is performed in this boundary.
 These are current native owner facts, not an OS-level future-liveness lease.
+The selection's `pause_generation` retains that invocation's original journal
+generation. Pause/Resume may advance the root control generation without changing
+the original owner/session/handle or requiring those two generations to equal.
+Held roots still refuse selection. Existing or partial reservations stay fenced;
+Resume never rewrites the journal, allocates a SID or permits reservation replay.
 
 Inside that SAME boundary, U5a's `_read`/`derive_coding_admissibility` fully
 replay the selected history and require original settled independent review/QA,
