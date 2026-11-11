@@ -290,6 +290,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // waiting for a restart's termination handler shouldn't leave a
         // stale flag).
         pendingRestart = false
+        guard currentHandle?.isRunning != true else {
+            stateText = "Cannot start: the previous managed daemon is still running"
+            return
+        }
         do {
             try supervisor.start()
             refreshDerivedState()
@@ -447,7 +451,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 environment: childEnv,
                 terminationHandler: { @Sendable [weak self] exitedHandle in
                     let exitCode = exitedHandle.terminationStatus
-                    let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
+                    let signal = exitedHandle.terminationReason == .uncaughtSignal ? exitCode : nil as Int32?
                     let stderr = exitedHandle.capturedStandardError
                     let stdout = exitedHandle.capturedStandardOutput
                     Task { @MainActor [weak self] in
@@ -508,7 +512,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 ),
                 terminationHandler: { @Sendable [weak self] exitedHandle in
                     let exitCode = exitedHandle.terminationStatus
-                    let signal = exitedHandle.terminationReason == .uncaughtSignal ? 1 : nil as Int32?
+                    let signal = exitedHandle.terminationReason == .uncaughtSignal ? exitCode : nil as Int32?
                     let stderr = exitedHandle.capturedStandardError
                     let stdout = exitedHandle.capturedStandardOutput
                     Task { @MainActor [weak self] in
@@ -559,29 +563,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
-    /// Send SIGTERM to the managed daemon and wait for exit.
-    /// Escalates (forces state to crashed) if the process doesn't exit within a bounded wait.
+    /// Stop only our current child; a timeout never fabricates an exit.
     func terminateManagedProcess() {
-        guard let handle = currentHandle, handle.isRunning else {
-            return
-        }
+        guard supervisor.isManagedBySelf, let handle = currentHandle else { return }
 
         try? supervisor.stop()
         refreshDerivedState()
-
-        handle.terminate() // SIGTERM
-
-        // Bounded wait for the process to exit
-        let deadline = Date().addingTimeInterval(5.0)
-        while handle.isRunning && Date() < deadline {
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+        let outcome = ManagedProcessStop.stop(handle)
+        switch outcome {
+        case .exited(let status, let signal):
+            diagnostics.recordLaunchLog("Managed Stop: exited, status=\(status), signal=\(signal.map(String.init) ?? "none")")
+        case .stillRunning(let error):
+            diagnostics.recordLaunchLog("Managed Stop: still running, SIGKILL errno=\(error.map(String.init) ?? "none")")
         }
-
-        if handle.isRunning {
-            // Escalate: process didn't respond to SIGTERM
-            diagnostics.recordExit(exitCode: -1, signal: 9)
-            supervisor.forceState(.crashed)
+        if case .stillRunning(let killError) = outcome,
+           let current = currentHandle, current === handle {
+            // Keep .stopping and Start disabled. The real exit callback alone
+            // records termination status and performs any pending restart.
             refreshDerivedState()
+            stateText = "Stop incomplete: daemon still running; SIGKILL errno: \(killError.map(String.init) ?? "none")"
         }
     }
 
@@ -600,11 +600,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         let portFile = URL(fileURLWithPath: "\(home)/daemon.port")
         let reader = PortReader()
 
-        // Poll for port file and health check
-        for _ in 0..<30 { // 30 attempts, ~15 seconds total
-            guard supervisor.state == .starting || supervisor.state == .unhealthy else {
-                break
-            }
+        var polling = ManagedHealthPolling()
+        while !Task.isCancelled, let delay = polling.nextDelay(state: supervisor.state) {
+            guard let handle = currentHandle, handle.processIdentifier == pid, handle.isRunning else { return }
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch { return }
+            guard currentHandle === handle, handle.isRunning,
+                  [.starting, .running, .unhealthy].contains(supervisor.state) else { return }
 
             // Try to read the port
             if let port = try? reader.readPort(from: portFile) {
@@ -613,6 +616,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 let (success, latencyMs, errorMessage) = await probe.check()
 
                 await MainActor.run {
+                    // A Stop or new launch may have happened during HTTP I/O.
+                    guard currentHandle === handle, handle.isRunning,
+                          [.starting, .running, .unhealthy].contains(supervisor.state) else { return }
                     if success {
                         let wasRecovering = (supervisor.state != .running)
                         supervisor.onHealthCheckPassed(pid: pid, port: port)
@@ -629,14 +635,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         refreshDerivedState()
                     }
                 }
+            } else {
+                supervisor.onHealthCheckFailed()
+                diagnostics.recordHealthProbe(success: false, latencyMs: 0, errorMessage: "Daemon port unavailable")
+                refreshDerivedState()
             }
-
-            // Only continue if still in a state that warrants probing
-            guard supervisor.state == .starting || supervisor.state == .unhealthy else {
-                break
-            }
-
-            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
         }
     }
 
@@ -955,6 +958,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         stateText = supervisor.state.description
         let s = supervisor.state
         canStart = (s == .stopped || s == .crashed || s == .stalePid || s == .failed)
+            && currentHandle?.isRunning != true
         canStop = s.canStop
         canRestart = canStop && supervisor.isManagedBySelf
     }

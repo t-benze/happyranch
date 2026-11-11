@@ -131,6 +131,14 @@ python3 scripts/mac_native/probe.py --suite truth --output /absolute/probe.json
 ```
 
 Suites: `truth` (S0), `teardown` (S1 lifecycle), and `disk-sweep` (S2 cleanup).
+`cleanup-helpers` covers S3. `supervisor` covers S6: four read-only toolchain
+discovery rows precede scratch-contained focused Swift tests and a scripted
+Stop escalation against a disposable child. It requires the job's existing
+scratch TMPDIR; unavailable Swift >=6/developer directory/macOS SDK exits
+nonzero without building. Commands share a 1200-second suite deadline, retain
+at most 1 MiB of command output in memory and report only 4 KiB tails, within
+the existing log/report/file caps. It installs no tools and changes no job
+configuration. See [the app behavior and test scope](../../../app/mac/README.md#managed-daemon-stop-and-health).
 The existing job accepts these suites without configuration changes.
 JSON goes to stdout and the optional output path;
 human observations go to stderr. Linux prints `darwin-only`, emits skipped

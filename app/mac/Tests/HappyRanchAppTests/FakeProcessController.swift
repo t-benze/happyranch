@@ -60,6 +60,12 @@ final class FakeProcessHandle: ProcessHandle, @unchecked Sendable {
         onTerminate?()
     }
 
+    func forceKill() -> Int32? {
+        simulateCrash(exitCode: 9)
+        onTerminate?()
+        return nil
+    }
+
     /// Mark this handle as exited with a crash status.
     func simulateCrash(exitCode: Int32) {
         _isRunning = false
