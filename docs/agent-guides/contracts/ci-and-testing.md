@@ -112,6 +112,11 @@ Default/`all` and `web` run only source boundary lint (all), Node24 colour scan,
 ESLint and TypeScript `--noEmit` analysis, with locked `npm ci` setup.
 Behavioral tests and builds are outside all/pre-push/required merge checks.
 Normal hooks stay enabled; never bypass hooks or the guarded worktree.
+The `all` target's temporary-filesystem inode advisory reads GNU inode columns
+on Linux and BSD `iused`/`ifree`/`%iused` columns on macOS (total = used + free).
+It warns at 90%, remains fail-open on unavailable or malformed measurements,
+and never cleans files. See `docs/local-ci.md` for the focused fixture command
+and `ci/jenkins/mac-native-probe/README.md` for the separate S9 native suite.
 Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.

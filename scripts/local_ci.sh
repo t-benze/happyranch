@@ -157,7 +157,19 @@ run_pytest_suite() {
 # never blocks CI when df is unavailable or its output cannot be parsed.
 observe_tmp_inodes() {
   local inode_path="${TMPDIR:-/tmp}" output total used free percent
-  output="$(df -Pi "$inode_path" 2>/dev/null | awk 'NR==2 {print $2, $3, $4, $5}' || true)"
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin)
+      # BSD df keeps block columns first; its inode total is iused + ifree.
+      output="$(df -Pi "$inode_path" 2>/dev/null | awk '
+        NR==2 && $6 ~ /^[0-9]+$/ && $7 ~ /^[0-9]+$/ {
+          printf "%.0f %s %s %s\n", $6 + $7, $6, $7, $8
+        }' || true)"
+      ;;
+    Linux)
+      output="$(df -Pi "$inode_path" 2>/dev/null | awk 'NR==2 {print $2, $3, $4, $5}' || true)"
+      ;;
+    *) output="" ;;
+  esac
   read -r total used free percent <<<"$output"
   percent="${percent%%%}"
   if [[ "$total" =~ ^[0-9]+$ ]] && [[ "$used" =~ ^[0-9]+$ ]] \
