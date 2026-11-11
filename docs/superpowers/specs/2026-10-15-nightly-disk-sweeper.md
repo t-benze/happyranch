@@ -613,7 +613,7 @@ owner/root refusals. C3 exercises ended owner/root eligibility in BOTH shipping
 dry-run phases through the actual top-level wrapper, config loading, full
 serialized JSON and `_audit_payload`. Python syscall sentinels record and assert
 zero attempted process enumeration/reference reads, including swallowed failures,
-while allowing and observing real `/proc/self/mountinfo` containment. The SAME
+while allowing and observing real Linux `/proc/self/mountinfo` containment. The SAME
 case pairs terminal positives with dirty-worktree and recent-write refusals;
 positive measured allocation and zero removed bytes are asserted. Candidate
 files/modes, registrations/branches and excluded output/manifest/lock siblings
