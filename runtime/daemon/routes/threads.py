@@ -7,7 +7,7 @@ import json as _json
 import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -1739,6 +1739,8 @@ async def decline_thread_endpoint(
 
 
 class DispatchBody(BaseModel):
+    model: str | None = None
+    reasoning_effort: str | None = None
     thread_id: str
     invocation_token: str
     dispatcher: str
@@ -1759,6 +1761,13 @@ class ThreadDispatchResponse(BaseModel):
     system_message_seq: int
     superseded_task_id: str | None = None
     replayed: bool = False
+    model_override: str | None = None
+    reasoning_effort_override: str | None = None
+    override_source: Literal["founder", "manager"] | None = None
+    effective_model: str | None = None
+    effective_reasoning_effort: str | None = None
+    model_source: Literal["founder", "manager", "agent_default"] = "agent_default"
+    reasoning_effort_source: Literal["founder", "manager", "agent_default"] = "agent_default"
 
 
 @router.post("/threads/{thread_id}/dispatch", response_model=ThreadDispatchResponse)
@@ -1856,8 +1865,19 @@ async def dispatch_from_thread_endpoint(
                 raise HTTPException(status_code=409, detail={"code": "task_not_in_thread_lineage"})
             from runtime.orchestrator.task_pause import assert_origin_unheld
             assert_origin_unheld(org, resolves)
+        from runtime.daemon.routes.tasks import _validated_task_overrides, _task_selection_view
+
+        def dispatch_selection() -> tuple[dict, dict]:
+            selection = _validated_task_overrides(org, effective_target, body.model, body.reasoning_effort, "manager")
+            selected = TaskRecord(id="pending", brief=brief, assigned_agent=effective_target, **selection)
+            applied = _task_selection_view(selected, org) if body.model is not None or body.reasoning_effort is not None else {}
+            return selection, applied
+
+        digest_parts = [brief, effective_team, effective_target, resolves or "", inv.purpose.value]
+        if body.model is not None or body.reasoning_effort is not None:
+            digest_parts.append([body.model, body.reasoning_effort])
         request_digest = hashlib.sha256(_json.dumps(
-            [brief, effective_team, effective_target, resolves or "", inv.purpose.value],
+            digest_parts,
             ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
         async with org.db_lock:
@@ -1869,7 +1889,7 @@ async def dispatch_from_thread_endpoint(
             if replay is not None:
                 from runtime.daemon.routes.tasks import _enqueue_pending_thread_successor
                 _enqueue_pending_thread_successor(org, state, replay["task_id"])
-                return {**replay, "dispatched_from_thread_id": thread_id,
+                return {**replay, **_task_selection_view(org.db.get_task(replay["task_id"]), org), "dispatched_from_thread_id": thread_id,
                         "superseded_task_id": resolves or None, "replayed": True}
 
         predecessor = None
@@ -1882,6 +1902,7 @@ async def dispatch_from_thread_endpoint(
                         detail={"code": "task_followup_dispatch_manager_required"},
                     )
                 async with org.db_lock:
+                    selection, applied = dispatch_selection()
                     task_id = org.db.next_task_id()
                     result = org.db.dispatch_task_followup_replacement(
                         token=body.invocation_token,
@@ -1890,9 +1911,9 @@ async def dispatch_from_thread_endpoint(
                         task=TaskRecord(
                             id=task_id, brief=brief, team=effective_team,
                             assigned_agent=effective_target,
-                            dispatched_from_thread_id=thread_id,
+                            dispatched_from_thread_id=thread_id, **selection,
                         ),
-                        team=effective_team, request_digest=request_digest,
+                        team=effective_team, request_digest=request_digest, applied_settings=applied,
                     )
             if not result["ok"]:
                 raise HTTPException(status_code=409, detail={"code": result["code"]})
@@ -1901,7 +1922,7 @@ async def dispatch_from_thread_endpoint(
                 _enqueue_pending_thread_successor(org, state, result["task_id"])
                 return {key: result[key] for key in (
                     "task_id", "team", "assigned_agent", "system_message_seq",
-                )} | {"dispatched_from_thread_id": thread_id, "replayed": True}
+                )} | {**_task_selection_view(org.db.get_task(result["task_id"]), org), "dispatched_from_thread_id": thread_id, "replayed": True}
             sys_seq = result["system_message_seq"]
             task_id = result["task_id"]
         else:
@@ -1933,14 +1954,15 @@ async def dispatch_from_thread_endpoint(
                                             "predecessor_status": predecessor.status.value},
                                 )
 
+                        selection, applied = dispatch_selection()
                         task_id = org.db.next_task_id()
                         result = org.db._dispatch_thread_task_uncommitted(
                             token=body.invocation_token, thread_id=thread_id, dispatcher=dispatcher,
                             task=TaskRecord(
                                 id=task_id, brief=brief, team=effective_team,
-                                assigned_agent=effective_target, dispatched_from_thread_id=thread_id,
+                                assigned_agent=effective_target, dispatched_from_thread_id=thread_id, **selection,
                             ),
-                            request_digest=request_digest,
+                            request_digest=request_digest, applied_settings=applied,
                         )
                         if not result["ok"]:
                             raise HTTPException(status_code=409, detail={"code": result["code"]})
@@ -1970,7 +1992,7 @@ async def dispatch_from_thread_endpoint(
                 _enqueue_pending_thread_successor(org, state, result["task_id"])
                 return {key: result[key] for key in (
                     "task_id", "team", "assigned_agent", "system_message_seq",
-                )} | {"dispatched_from_thread_id": thread_id,
+                )} | {**_task_selection_view(org.db.get_task(result["task_id"]), org), "dispatched_from_thread_id": thread_id,
                      "superseded_task_id": resolves or None, "replayed": True}
 
         try:
@@ -1995,6 +2017,7 @@ async def dispatch_from_thread_endpoint(
             "system_message_seq": sys_seq,
             "superseded_task_id": resolves if (resolves and predecessor is not None) else None,
             "replayed": False,
+            **_task_selection_view(org.db.get_task(task_id), org),
         }
     except BaseException:
         root_tail_failed = True

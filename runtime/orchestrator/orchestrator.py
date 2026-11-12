@@ -926,6 +926,21 @@ class Orchestrator:
         provider = selection_def.executor
         model_name = selection_def.model
         reasoning_effort = selection_def.reasoning_effort
+        if task is not None and (task.model_override is not None or task.reasoning_effort_override is not None):
+            from runtime.orchestrator.task_selection import TaskSelectionError, resolve_task_selection
+            try:
+                model_name, reasoning_effort = resolve_task_selection(
+                    selection_def, task.model_override, task.reasoning_effort_override,
+                )
+            except TaskSelectionError as exc:
+                # Deterministic selection refusal is a normal failed return, not
+                # a native launch exception eligible for the three-attempt loop.
+                return ExecutorResult(
+                    success=False, duration_seconds=0,
+                    session_id=runtime_session_id or (invocation.session_id if invocation is not None else self._build_session_id()),
+                    error=f"saved model no longer valid for this agent: {exc}",
+                    failure_category="pre_launch",
+                ), None
         executor = self._build_executor(provider)
 
         # ── D7B: CustomAdapterExecutor invocation context ──────────────
@@ -1534,6 +1549,12 @@ class Orchestrator:
         report = self._read_completion_from_db(task_id, agent_name, session_id)
         return result, report
 
+    def _custom_task_override(self, task_id: str, provider: str) -> bool:
+        task = self._db.get_task(task_id)
+        profile = get_registry().get_profile(provider)
+        return bool(task is not None and profile is not None and profile.kind == "custom"
+                    and (task.model_override is not None or task.reasoning_effort_override is not None))
+
     def _launch_agent_with_scratch(
         self, *, task_id: str, agent_name: str, workspace: Path, provider: str,
         model_name: str | None, reasoning_effort: str | None, executor, session_id: str, full_prompt: str,
@@ -1597,10 +1618,10 @@ class Orchestrator:
                     org_slug=self._slug,
                     resume_session_id=resume_session_id,
                     # A server-authorized recovery is a single provider
-                    # opportunity.  Its no-supervisor fallback must not inherit
-                    # configured executor 429 retries.  Resume identity alone is
-                    # not sufficient: ordinary resumes retain their policy.
-                    throttle_backoff_seconds=() if recovery else None,
+                    # opportunity. Custom task overrides likewise use one
+                    # launch so a rejected selection never retries on defaults.
+                    # Ordinary resumes retain their configured retry policy.
+                    throttle_backoff_seconds=() if recovery or self._custom_task_override(task_id, provider) else None,
                     # This is a recovery-only Codex contract extension.  The
                     # other concrete executors deliberately retain their
                     # ordinary run signatures.
@@ -1620,6 +1641,13 @@ class Orchestrator:
                     self._sessions.clear_if_active_session(
                         task_id, agent_name, session_id
                     )
+        if (self._custom_task_override(task_id, provider) and result.provider_launched
+                and result.returncode not in (None, 0)
+                and self._read_completion_from_db(task_id, agent_name, session_id) is None):
+            # AdapterOutput has no selection-specific rejection signal. The
+            # approved fallback is an actual nonzero return before callback.
+            result.terminal_error = f"custom executor {provider} rejected the model/effort setting"
+            result.rate_limited = False
         return result
 
     def _run_agent_launch_contained(
@@ -1879,9 +1907,9 @@ class Orchestrator:
             ),
             on_terminal=_on_terminal,
             # The one-shot Codex completion recovery is one provider
-            # opportunity: a 429 remains its honest terminal result rather
-            # than consuming the ordinary supervisor backoff/re-admission.
-            allow_retries=not recovery and drafts is None,
+            # opportunity. Custom override tasks also disable re-admission:
+            # nonzero-before-callback is their bounded selection-failure signal.
+            allow_retries=not recovery and drafts is None and not self._custom_task_override(task_id, provider),
         )
         launch = outcome.payload
         if launch is None:

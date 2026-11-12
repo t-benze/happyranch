@@ -1,5 +1,7 @@
 # Optional agent reasoning effort
 
+Per-task selection is specified in [THR-356 overrides](2026-11-13-task-model-reasoning-overrides.md); its explicit-task effort membership gate does not change the agent-default grammar below.
+
 > Status: current
 > Authority: Founder THR298 seq15 and seq46 plain-input correction; accepted TASK11053 composed design/TASK11065 amendment/TASK11070 DESIGN PASS.
 > Current sources: `runtime/adapters/__init__.py`, `runtime/orchestrator/adapter_contract.py`, the four maintained agent guides, and bundled `manage-agent`.

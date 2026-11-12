@@ -2396,6 +2396,9 @@ class SchemaMixin:
             # via `happyranch revisit --session-timeout-seconds`; inherited from
             # parent on delegate and from predecessor root on revisit.
             "ALTER TABLE tasks ADD COLUMN session_timeout_seconds INTEGER",
+            "ALTER TABLE tasks ADD COLUMN model_override TEXT",
+            "ALTER TABLE tasks ADD COLUMN reasoning_effort_override TEXT",
+            "ALTER TABLE tasks ADD COLUMN override_source TEXT",
             # Job-blocking link: spec §3.1. JSON array of JOB-NNN IDs that must
             # complete before this task can proceed. NULL means unblocked.
             "ALTER TABLE tasks ADD COLUMN blocked_on_job_ids TEXT",

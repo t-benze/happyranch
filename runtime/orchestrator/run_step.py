@@ -3832,6 +3832,11 @@ def _consume_completion_report_body(
                 step_audit_id=_step_audit_id,
             )
             chain_json = chain.serialize()
+        try:
+            _carry_retry_selection(orch, child)
+        except ValueError as exc:
+            _reject_retry_link_decision(orch, task_id, agent, next_count, str(exc), expected_claim=expected_claim)
+            return
         outcome = db.try_delegate(
             task_id, child,
             parent_note=f"Delegated to {decision.agent} (child={child_id})",
@@ -6301,6 +6306,21 @@ def _session_failed_note(result, report) -> str:
 # --- Fan-out spawn + join context helpers ---
 
 
+def _carry_retry_selection(orch: "Orchestrator", child: TaskRecord) -> None:
+    """Carry only the explicitly linked predecessor, never the manager's pair."""
+    if child.revisit_of_task_id is None or child.assigned_agent is None:
+        return
+    predecessor = orch._db.get_task(child.revisit_of_task_id)
+    if predecessor is None or predecessor.assigned_agent != child.assigned_agent:
+        return  # The existing transactional lineage validator owns this refusal.
+    from runtime.orchestrator.task_selection import resolve_task_selection
+    resolve_task_selection(orch._resolve_agent_def(child.assigned_agent),
+                           predecessor.model_override, predecessor.reasoning_effort_override)
+    child.model_override = predecessor.model_override
+    child.reasoning_effort_override = predecessor.reasoning_effort_override
+    child.override_source = predecessor.override_source
+
+
 def _spawn_fanout_children(
     orch: "Orchestrator",
     parent: "TaskRecord",
@@ -6365,6 +6385,12 @@ def _spawn_fanout_children(
             task_type=child_task_type,
             revisit_of_task_id=child_info.get("revisit_of_task_id"),
         ))
+
+    try:
+        for child in child_records:
+            _carry_retry_selection(orch, child)
+    except ValueError as exc:
+        return InvalidLineage(str(exc))
 
     # THR-109: validate attachment refs per-child (count limit, per-child
     # duplicates) and globally (cross-sibling duplicate keys, existence,
@@ -6533,6 +6559,9 @@ def _spawn_fanout_children(
             "assigned_agent": child_info["agent"],
             "status": TaskStatus.PENDING,
             "session_timeout_seconds": parent.session_timeout_seconds,
+            "model_override": child_records[i].model_override,
+            "reasoning_effort_override": child_records[i].reasoning_effort_override,
+            "override_source": child_records[i].override_source,
             "task_type": "subtask",
             "revision_count": 0,
             "orchestration_step_count": 0,

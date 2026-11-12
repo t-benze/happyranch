@@ -156,6 +156,11 @@ class TaskRecord(BaseModel):
     # `happyranch revisit --session-timeout-seconds`; inherited from parent on
     # delegate, and from predecessor root on revisit.
     session_timeout_seconds: int | None = None
+    # Task-local selections; NULL follows the current agent-page default.
+    # Retries carry these fields; ordinary delegation never inherits them.
+    model_override: str | None = None
+    reasoning_effort_override: str | None = None
+    override_source: Literal["founder", "manager"] | None = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
     completed_at: datetime | None = None

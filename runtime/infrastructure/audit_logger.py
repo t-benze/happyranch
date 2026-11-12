@@ -481,6 +481,7 @@ class AuditLogger:
         prior_status: str,
         founder_note: str | None,
         actor: str = "cli",
+        overrides: dict | None = None,
     ) -> None:
         """Record on the NEW root that it is a revisit of `predecessor_root`.
 
@@ -493,6 +494,10 @@ class AuditLogger:
         (HTTP route / happyranch revisit command) or "feishu-reply" (Feishu listener).
         Defaults to "cli" for backward compatibility with existing callers.
         """
+        selected = {key: value for key, value in (overrides or {}).items()
+                    if key in {"model_override", "reasoning_effort_override"} and value is not None}
+        if selected and (overrides or {}).get("override_source") is not None:
+            selected["override_source"] = overrides["override_source"]
         self._db.insert_audit_log(
             task_id=task_id,
             agent="founder",
@@ -504,6 +509,7 @@ class AuditLogger:
                 "prior_status": prior_status,
                 "founder_note": founder_note,
                 "actor": actor,
+                **selected,
             },
         )
 
