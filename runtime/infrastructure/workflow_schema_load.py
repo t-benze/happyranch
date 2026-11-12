@@ -145,6 +145,22 @@ def org_load_validation(database: Any, *, org_slug: str) -> Iterator[None]:
                     org_slug, owner.full_runs, owner.hits, owner.full_seconds)
 
 
+def sequential_storage_present(conn: sqlite3.Connection, *, budget: Any) -> bool:
+    """Select sequential objects in the caller's coherent schema snapshot."""
+    from runtime.infrastructure.workflow_schema import _structure_cells
+    from runtime.workflows.sequential_history import _sql_budget
+
+    present = False
+    with _sql_budget(conn, budget):
+        for schema in ('main', 'temp'):
+            rows = _structure_cells(conn, f'SELECT rowid,name,tbl_name FROM {schema}.sqlite_schema',
+                                    ('name', 'tbl_name'), ('rowid',), budget)
+            if any(type(value) is str and value.casefold().startswith('workflow_seq_')
+                   for row in rows for value in row):
+                present = True
+    return present
+
+
 def read_org_layout(
     conn: sqlite3.Connection, *, expected_org_slug: str | None,
     legacy: Callable[[], Any], budget: Any = None,
@@ -156,19 +172,12 @@ def read_org_layout(
     writer target always calls anew after mutation. Absence leaves the original
     reader's transaction ownership, errors and source-reuse contract intact.
     """
-    from runtime.infrastructure.workflow_schema import _schema_snapshot, _structure_cells
-    from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, read_sequential_history
+    from runtime.infrastructure.workflow_schema import _schema_snapshot
+    from runtime.workflows.sequential_history import _ReadBudget, read_sequential_history
 
     selector = _ReadBudget()
     with _schema_snapshot(conn):
-        present = False
-        with _sql_budget(conn, selector):
-            for schema in ('main', 'temp'):
-                rows = _structure_cells(conn, f'SELECT rowid,name,tbl_name FROM {schema}.sqlite_schema',
-                                        ('name', 'tbl_name'), ('rowid',), selector)
-                if any(type(value) is str and value.casefold().startswith('workflow_seq_')
-                       for row in rows for value in row):
-                    present = True
+        present = sequential_storage_present(conn, budget=selector)
         if present:
             history = read_sequential_history(conn, expected_org_slug=expected_org_slug,
                 retained_budget=budget, deadline=selector.deadline)

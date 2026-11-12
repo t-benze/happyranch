@@ -42,6 +42,49 @@ stream = io.StringIO()
 handler = logging.StreamHandler(stream)
 entry.logger.addHandler(handler)
 entry.logger.setLevel(logging.INFO)
+
+from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.workflows import recovery
+
+for org_slug in ('alpha', 'beta'):
+    for failure in (None, 'coding', 'sequential'):
+        stream.seek(0)
+        stream.truncate()
+        coding = SimpleNamespace()
+        sequential = SimpleNamespace(org=SimpleNamespace(slug=org_slug))
+        owner = SimpleNamespace(_slug=org_slug, _workflow_coding_dispatch=coding,
+                                _workflow_sequential_dispatch=sequential)
+        queue = object()
+        calls = []
+
+        def rediscover(dispatcher, *, queue, sequential=False):
+            kind = 'sequential' if sequential else 'coding'
+            calls.append((dispatcher, queue, sequential))
+            if kind == failure:
+                raise ValueError('synthetic reader refusal')
+
+        totals = {phase: 0.0 for phase in entry._STARTUP_PHASES}
+        totals.update(active=True, available=True)
+        token = entry._STARTUP_PARTITION.set(totals)
+        try:
+            with patch.object(recovery, 'rediscover_returned', side_effect=rediscover), \
+                    patch('runtime.orchestrator.orchestrator.logger'):
+                Orchestrator._rediscover_returned(owner, queue=queue)
+        finally:
+            entry._STARTUP_PARTITION.reset(token)
+        assert calls == [(coding, queue, False), (sequential, queue, True)], calls
+        lines = stream.getvalue().splitlines()
+        for kind in ('coding', 'sequential'):
+            outcome = 'incomplete' if kind == failure else 'complete'
+            prefix = f'startup_timing phase=org_rediscover_{kind} outcome={outcome} seconds='
+            matching = [line for line in lines if line.startswith(prefix)]
+            assert len(matching) == 1, (org_slug, failure, lines)
+            seconds, suffix = matching[0][len(prefix):].split(' ', 1)
+            assert float(seconds) >= 0 and suffix == f'org={org_slug}', matching
+        assert len(lines) == 2, lines
+        assert all(totals[phase] == 0.0 for phase in entry._STARTUP_PHASES), totals
+        print('PASS: per-org rediscovery timing, original queue/order/error handling:', org_slug, failure)
+
 app = SimpleNamespace(state=SimpleNamespace(daemon=SimpleNamespace(
     _cleanup_diagnostics=None, _thread_release_service=None,
 )))

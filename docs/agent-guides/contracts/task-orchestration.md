@@ -408,6 +408,13 @@ rediscovery; this gives no durable acknowledgement of caller execution. Thread
 follow-up, SYSTEM messages and invocation minting are excluded. No new command
 or bundled start-task instruction is required at this source checkpoint.
 
+`returned_run_ids` first uses the org-layout selector's bounded main/TEMP schema
+inspection in the same coherent view. With no `workflow_seq_` object name or
+table association it returns `()` without the complete sequential/retained
+reader: no sequential returned obligations can exist. Any presence, including
+partial or TEMP storage, retains the complete reader and its fail-closed
+refusals before selection. `notify_returned` retains its complete validation.
+
 
 ## U3e-1a selected-run cancellation
 

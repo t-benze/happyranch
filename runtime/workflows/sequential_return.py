@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from runtime.infrastructure.workflow_schema_load import sequential_storage_present
 from runtime.workflows.sequential_engine import _engine_rows
 from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, read_sequential_history
 
@@ -45,6 +46,8 @@ def returned_source(db: Any, org_slug: str, run_id: str, task_id: str) -> bool:
 def returned_run_ids(dispatcher: Any) -> tuple[str, ...]:
     """Rediscover actual returned obligations, including terminal sources."""
     with dispatcher.org.db.coherent_read_view() as conn:
+        if not sequential_storage_present(conn, budget=_ReadBudget()):
+            return ()
         history = read_sequential_history(conn, expected_org_slug=dispatcher.org.slug)
         budget = _ReadBudget()
         with _sql_budget(conn, budget):
