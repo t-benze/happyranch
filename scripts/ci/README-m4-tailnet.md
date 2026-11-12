@@ -4,8 +4,10 @@ This is a **source-only, unexecuted** procedure until an exact-head full-pass
 `summary.json` says PASS and the separate shipped clean-state exits 0. A successful
 Headscale health request or native archive build proves neither daemon access nor
 the refusal cases. TASK-15661's initial feasibility acquired a publicly trusted
-TLS-ALPN-01 certificate on443 and built the unchanged app archive on Linux; that
-is the current executed boundary.
+TLS-ALPN-01 certificate on443 and built the unchanged app archive on Linux.
+Its full maker JOB-6610 exited1 at outside join; the private-error normalizer
+withheld the cause. Allowed/refusal/DERP/exposure acceptance was NOT RUN.
+TASK-15668 adds bounded diagnosis and repair; it does not erase that failure.
 
 Use only the founder-authorized disposable Ubuntu24.04 VM
 `i-j6c1pwjqygzrccal4mzh` in `cn-hongkong`, public `47.238.219.200`. The driver pins
@@ -29,12 +31,25 @@ Run from a clean published task worktree on this **outside Linux host**, through
 the existing persistent jobs path (`review_required:false`, `persistent:true`):
 
 ```bash
+python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_PUSHED_SHA --output /absolute/task-output/diagnostic --scratch /absolute/task-tmp/fresh-diagnostic --diagnose-only
 python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_PUSHED_SHA --output /absolute/task-output/m4 --scratch /absolute/task-tmp/fresh-m4
 python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_PUSHED_SHA --output /absolute/task-output/final-clean --clean-state-only
 ```
 
-The first command is one complete maker pass; the second is a separate read-only
-clean-state observation. Submit, block on the actual job ID, then inspect its
+The diagnostic command prepares, checks verified HTTPS health/key status and
+timing, attempts one90s join, and tears down to clean-state. It never installs
+the product or claims acceptance. Its fixed native-log projection exports only
+allowlisted stage/error classes, counts, port80/443 attempt counts and numeric
+durations. Native text, URLs and keys stay private and are removed. A failed join
+always remains FAIL.
+
+TASK-15668 permits exactly ONE diagnostic run, then ONE full maker pass only
+if the cause is a repairable harness option/deadline/probe/fixture issue. Proxy
+path failure or a product defect must return to the manager without a full pass.
+Tailscale1.78.0 normally starts HTTP80 and falls back to HTTPS443; private
+TS_DEBUG_NOISE_DIAL diagnostics distinguish those attempts. No port80/SG change
+is allowed. The full-pass command is one complete maker attempt; clean-state-only
+is a separate read-only observation. Submit, block on the actual job ID, then inspect its
 terminal receipt and command/runtime/exit evidence on resume. Do not wait in a
 session or use shell backgrounding. Required local verification is
 `bash scripts/local_ci.sh all` in a persistent job, shellcheck via
@@ -58,9 +73,9 @@ removed at the end; the archive digest and effective Go version are recorded.
 | revoked-refused | Second device GET200; shipping CLI revokes it; same GET/credential ->403 `identity_denied` within30s after reconciliation. The unaffected device stays200. Persistent success is a product defect, never a harness workaround. |
 | forbidden-route-refused | Six M2 forbidden method/path cases ->403 with exact `method_denied`/`route_denied`. Paired allowed GETs bracket each case and the synthetic org remains present. A forbidden route is never made allowed as a positive control. |
 | DERP-path | `TS_DEBUG_ALWAYS_USE_DERP=true` disables client UDP. Private region999 is the **only** published region (`urls/paths=[]`, auto-update false). The unchanged client's backend logs must actually show UDP disabled and `derp-999 connected`; another/missing region fails. |
-| exposure | Trusted direct TLS to the literal public IP with hostname SNI returns health200 and daemon route404. Outside sockets to public daemon/connector ports18765/18443/8765 must refuse/time out while443 is healthy. A missing positive control, network-unreachable error or proxy policy denial is not exposure proof. |
-| logs | Per-run directory reset before prepare; guest microsecond boundary before provisioning; every journal has `--since` and short-unix timestamps; shipped attribution rejects old/unrecognized entries and requires actual product/control journals. Status snapshots suppress their second journal tail. |
-| purge/teardown/clean-state | Product uninstall--purge residue assertions; remove synthetic cell including ACME account/cert/key, Headscale DB/noise/DERP state and recipient public key; remove payload/config/logs/account and synthetic CA source; `update-ca-certificates --fresh`; reject dangling synthetic CA chains and all test sockets443/3478/18765/18443/8765. No DNS/hosts edits are made; hashes must remain unchanged. PASS is gated on clean-state and outside final TCP probes. |
+| exposure | Trusted direct TLS to the literal public IP with hostname SNI returns health200 and daemon route404. Application-level probes of public ports18765/18443/8765 must obtain no TLS/HTTP response within their bounds while verified443 health200 succeeds before AND after. Expected-certificate TLS or HTTP response bytes mean reachable; wrong-certificate/other TLS response conservatively fails. The guest ss crosscheck must show no forbidden public/wildcard listener (product loopback sockets are expected). Raw TCP-connect success or failure means nothing through this host's mihomo TUN proxy, which accepts arbitrary ports locally. No response is a bounded observation, not a universal reachability guarantee; pair it with the healthy control and guest evidence. |
+| logs | Per-run directory reset before prepare; guest microsecond boundary before provisioning; every journal has `--since` and short-unix timestamps; shipped attribution rejects old/unrecognized entries and requires actual product/control journals. Status snapshots suppress their second journal tail. If install was never attempted, assert every product unit/state is absent and explicitly record `not applicable: product not installed`; retain fixture journal attribution. Once install is attempted, even partially, the original product journal assertions remain mandatory. |
+| purge/teardown/clean-state | Product uninstall--purge plus unchanged M2 residue assertions when install was attempted; otherwise assert absent units/state and record `not applicable: product not installed`. Remove synthetic cell including Headscale DB/noise/DERP state and recipient public key; retain only the root-only ACME cache described below; remove payload/config/logs/account and synthetic CA source; `update-ca-certificates --fresh`; reject dangling synthetic CA chains and all test sockets443/3478/18765/18443/8765. No DNS/hosts edits are made; hashes must remain unchanged. PASS is gated on clean-state and final application-level probes. Final443 is intentionally down, so the final observation is paired with the same run's earlier healthy443 control and guest clean-state; it does not invent a live post-teardown control. |
 
 The cell ACL is explicit: `m4client` may reach `m4home:443/tcp` only, rather than
 Headscale's allow-all default. No routes/exit nodes/tags are advertised. This
@@ -70,8 +85,30 @@ acceptance and fleet admission/economics remain outside this slice.
 The VM already has sshd22 and DHCP68 sockets; SSH remains unreachable through
 its unchanged security group. These pre-existing host services are not test
 listeners and are not stopped. The two publicly admitted ports443/3478 must have
-no listener after teardown. Reusable public source/build caches and bounded
-plain logs may remain. The owned-sha marker is removed only after teardown; an
+no listener after teardown. The shipped clean-state allowlist permits reusable public source/build caches,
+bounded plain logs, and **only** `/var/lib/happyranch-m4/acme-cache` as private
+certificate residue: root-owned0700 directory, root-owned0600 regular single-link
+files, no symlinks/subdirectories. This contains the disposable ACME account,
+certificate/private key and numeric issuance ledger, never Headscale DB, noise
+or DERP keys, product state or CA links. It is reused between maker and independent
+QA passes to avoid burning Let’s Encrypt's5-per-exact-hostname/7days quota.
+
+The count entering TASK-15668 is2. The cache ledger reserves at most ONE new
+issuance for this task BEFORE Headscale starts; a missing/expired cache after
+that reservation refuses another prepare. A reused valid cache needs no issuance.
+Record the observed count (3 after one new certificate), not just a successful
+health check. ACME refusal, inability to establish the count, or cap exhaustion
+stops the attempt; never wipe state or silently retry issuance. This VM/cache
+is pinned to this one host and is not a general ACME provisioner.
+
+Final decommission is a separate explicit operation, never part of a pass:
+
+```bash
+python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_PUSHED_SHA --output /absolute/task-output/decommission --remove-cert-cache
+```
+
+It requires clean-state first and removes the validated cache only. TASK-15668
+leaves the VM running and keeps this cache for independent QA. The owned-sha marker is removed only after teardown; an
 unknown/partial owner or failed purge must be reconciled rather than bypassed.
 
 Memory evidence includes1s guest `/proc/meminfo` sampling starting before the
@@ -93,7 +130,7 @@ are destroyed with the cell/process; they are never redefined by this harness.
 
 The client's existing upstream `TS_DEBUG_LOGTAIL_FLUSHDELAY=24h` knob keeps
 backend diagnostics local during the bounded pass. Only a strict projection
-(`udp_disabled`, selected region IDs) is exported from native filch logs.
+(`udp_disabled`, selected region IDs, closed join stage/error labels/counts/timings) is exported from native filch logs.
 The worker is killed/reaped before graceful log-upload shutdown, and its entire
 private state/log directory is removed. Raw native logs, node state, private RSA
 key and decrypted credentials never enter output. VM collection archives only

@@ -56,10 +56,19 @@ daemon, and the unchanged Mac app Go C archive driven from an outside Linux host
 It brackets exact allowed200, unpaired/revoked403 and forbidden-route403 assertions
 with paired controls, requires actual client private-region/UDP-disable evidence
 and outside public-IP exposure probes, attributes journals to the run, and gates
-PASS on purge/teardown/clean-state including ACME/state/CA/socket removal.
+PASS on purge/teardown/clean-state including transient state/CA/socket removal.
+The root-only0700/0600 ACME certificate cache is explicit allowed residue between
+passes, with a separate final-decommission option and a one-new-issuance cap
+for TASK-15668 (prior count2). Application-level outside probes require healthy
+verified443 controls plus guest socket evidence; raw TCP acceptance through
+the local proxy is not exposure evidence. Closed join diagnostics and explicit
+asserted not-installed logs/purge states do not weaken installed-product checks.
 
 **Execution status:** public trusted Headscale health and unchanged Linux archive
-build were feasibility checks only. The new full M4 driver is **UNEXECUTED** until
+build were feasibility checks only. JOB-6610 failed at outside join with its
+cause withheld by the private-error normalizer; acceptance cases were NOT RUN.
+TASK-15668 is bounded diagnosis plus conditional repair, not a prior PASS.
+Full M4 acceptance remains **UNEXECUTED** until
 an exact-published-head persistent-job receipt and a separate shipped clean-state0
 are recorded. The selected outside Linux C-ABI client is not native Swift or a
 signed Mac.app. The macOS hosted option remains unexecuted; the founder GUI

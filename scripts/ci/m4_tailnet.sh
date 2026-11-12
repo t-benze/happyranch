@@ -5,6 +5,7 @@ base=/var/lib/happyranch-m4
 M2_BUILD=$base/build
 M2_WORK=$base/cell
 M2_LOGS=$base/logs
+cert_cache=$base/acme-cache
 MANAGED_DOWNLOADS=/var/lib/happyranch-m3/downloads
 # shellcheck source=scripts/ci/m2_tailnet_daemon.sh
 source "$(dirname "${BASH_SOURCE[0]}")/m2_tailnet_daemon.sh"
@@ -17,6 +18,43 @@ start_fixture() {
   systemd-run --unit="$unit" --property=MemoryAccounting=yes --property=MemoryMax=600M "$@"
 }
 hs() { "$M2_WORK/headscale" --config "$M2_WORK/config.yaml" "$@"; }
+certificate_cache() {
+  /usr/bin/python3 - "$cert_cache" "$1" <<'PY_CACHE'
+import json, os, stat, subprocess, sys
+from pathlib import Path
+root, action = Path(sys.argv[1]), sys.argv[2]
+if not root.exists() and not root.is_symlink():
+    if action == 'check':
+        print('ACME cache absent; prior issuance count=2')
+        raise SystemExit(0)
+    root.mkdir(mode=0o700)
+for p in [root, *root.iterdir()]:
+    st = p.lstat()
+    assert st.st_uid == 0 and not p.is_symlink(), 'unsafe certificate cache owner/type'
+    assert (p == root and stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o700) or (p != root and stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and stat.S_IMODE(st.st_mode) == 0o600 and st.st_size <= 131072), 'unsafe certificate cache mode/type'
+ledger = root / 'issuance.json'
+state = json.loads(ledger.read_text()) if ledger.exists() else {'prior_issuances': 2, 'reserved_new_issuances': 0}
+assert set(state) == {'prior_issuances', 'reserved_new_issuances'} and type(state['prior_issuances']) is int and state['prior_issuances'] == 2 and type(state['reserved_new_issuances']) is int and state['reserved_new_issuances'] in (0, 1), 'invalid issuance ledger'
+certificate = root / '47-238-219-200.sslip.io'
+usable = False
+if certificate.exists():
+    usable = subprocess.run(['openssl', 'x509', '-checkend', '86400', '-noout'], input=certificate.read_bytes(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+if action == 'prepare' and not usable:
+    assert not state['reserved_new_issuances'], 'certificate cap reached; no second acquisition allowed'
+    state['reserved_new_issuances'] = 1
+    with ledger.open('x') as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(json.dumps(state)+'\n')
+if action == 'remove':
+    for p in root.iterdir():
+        p.unlink()
+    root.rmdir()
+    print('Explicit final decommission: certificate cache removed')
+else:
+    print(json.dumps(dict(cache='root-only ACME allowed residue', **state, usable_certificate=usable,
+                          issuance_count=2 + int(usable and state['reserved_new_issuances'] == 1))))
+PY_CACHE
+}
 prepare() {
   clean_state
   git rev-parse HEAD > "$base/owned-sha"
@@ -39,6 +77,7 @@ while True:
     time.sleep(1)
 PY_MEMORY
   start_fixture "${fixtures[1]}" /usr/bin/python3 "$M2_BUILD/memory.py" "$M2_LOGS/memory.json"
+  certificate_cache prepare
   provision_payload
   install -m 0644 "$M2_BUILD/fixture_daemon_probe.py" "$M2_WORK/fixture_daemon_probe.py"
   echo "d2cda0a5d748587f77c920a76cd1bf1ab429e5299ba5bc6b3dda90712721b45b  $MANAGED_DOWNLOADS/headscale" | sha256sum --check
@@ -69,7 +108,7 @@ database:
     path: $M2_WORK/db.sqlite
 tls_letsencrypt_hostname: 47-238-219-200.sslip.io
 tls_letsencrypt_challenge_type: TLS-ALPN-01
-tls_letsencrypt_cache_dir: $M2_WORK/acme
+tls_letsencrypt_cache_dir: $cert_cache
 acme_url: https://acme-v02.api.letsencrypt.org/directory
 dns:
   magic_dns: false
@@ -99,6 +138,7 @@ EOF
   start_fixture "${fixtures[0]}" "$M2_WORK/headscale" serve --config "$M2_WORK/config.yaml"
   # One certificate acquisition attempt; health polling never restarts Headscale.
   wait_for curl -q --silent --fail --connect-timeout 2 --max-time 4 --output /dev/null https://47-238-219-200.sslip.io/health
+  certificate_cache check
   hs users create m4home
   hs users create m4client
   bash -euo pipefail -c 'umask 077; "$1/headscale" --config "$1/config.yaml" preauthkeys create --user m4home --reusable=false --expiration 10m | tr -d "\r\n" > "$1/enrollment.key"' _ "$M2_WORK"
@@ -106,6 +146,7 @@ EOF
   echo 'Prepared public TLS/DERP and real loopback daemon; outside peer must join before install'
 }
 install_product() {
+  touch "$M2_WORK/product-install-attempted"
   installer install --enrollment-key-file "$M2_WORK/enrollment.key"
   ready
   absent /etc/happyranch/enrollment.key
@@ -143,7 +184,7 @@ for r in rows:
 print(json.dumps(safe))'
 }
 journal_attribution() {
-  /usr/bin/python3 - "$M2_LOGS" <<'PY_ATTR' > "$M2_LOGS/journal-attribution.json"
+  /usr/bin/python3 - "$M2_LOGS" "$M2_WORK/product-install-attempted" <<'PY_ATTR' > "$M2_LOGS/journal-attribution.json"
 import json, re, sys
 from decimal import Decimal
 from pathlib import Path
@@ -165,20 +206,49 @@ for p in files:
         else:
             raise AssertionError(f'unrecognized journal: {p.name}:{number}')
     report['journals'].append(dict(file=p.name, entries=len(stamps)))
-assert all(any(r['file'] == unit+'.journal.txt' and r['entries'] for r in report['journals']) for unit in ('happyranch-tsnet-sidecar.service', 'happyranch-connector.service', 'happyranch-m4-headscale.service'))
+required = ['happyranch-m4-headscale.service']
+if Path(sys.argv[2]).exists():
+    required += ['happyranch-tsnet-sidecar.service', 'happyranch-connector.service']
+assert all(any(r['file'] == unit+'.journal.txt' and r['entries'] for r in report['journals']) for unit in required)
 print(json.dumps(report, indent=2))
 PY_ATTR
 }
 collect_logs() {
   M2_JOURNAL_SINCE=@$(cat "$M2_LOGS/journal-since.epoch")
-  logs
+  if [[ -f $M2_WORK/product-install-attempted ]]; then
+    logs
+  else
+    assert_product_not_installed
+    local unit
+    for unit in "${fixtures[@]}"; do
+      journalctl --no-pager --since "$M2_JOURNAL_SINCE" --output short-unix -u "$unit" > "$M2_LOGS/$unit.journal.txt"
+    done
+    echo 'not applicable: product not installed' | tee "$M2_LOGS/product-logs-state.txt"
+  fi
   journal_attribution
   sha256sum --check "$M2_BUILD/dns-before.sha256"
   systemctl show "${services[@]}" "${fixtures[@]}" -p Id,MemoryPeak,MemorySwapPeak > "$M2_LOGS/service-memory.txt"
 }
+assert_product_not_installed() {
+  local unit path
+  absent "$M2_WORK/product-install-attempted"
+  for unit in "${services[@]}" "$target"; do
+    absent "/etc/systemd/system/$unit"
+    absent "/etc/systemd/system/multi-user.target.wants/$unit"
+    [[ $(systemctl show "$unit" -p LoadState --value) == not-found ]] || fail "product was loaded: $unit"
+    ! systemctl is-active --quiet "$unit" || fail "product was active: $unit"
+  done
+  for path in /var/lib/happyranch-{connector,tsnet-sidecar} /run/happyranch-{connector,tsnet-sidecar} \
+    /etc/credstore/happyranch-tsnet-enrollment; do absent "$path"; done
+}
 purge() {
-  installer uninstall --purge
-  residue
+  if [[ -f $M2_WORK/product-install-attempted ]]; then
+    installer uninstall --purge
+    residue
+  else
+    assert_product_not_installed
+    echo 'not applicable: product not installed' | tee "$M2_LOGS/product-purge-state.txt"
+  fi
 }
 teardown_vm() {
   # Partial prepares can be cleaned, but a surviving installed product refuses.
@@ -229,6 +299,7 @@ assert not any(row.split()[4].rsplit(':', 1)[-1] in {'443', '3478', '18765', '18
 # only443/tcp and3478/udp; neither test endpoint may survive teardown.
 print('No public test listeners, daemon/connector sockets, synthetic CA or dangling CA links')
 PY_CLEAN
+  certificate_cache check
   echo "PASS clean-state boot=$(cat /proc/sys/kernel/random/boot_id)"
 }
 case ${1:-} in
@@ -242,5 +313,6 @@ case ${1:-} in
   purge) purge ;;
   teardown) teardown_vm ;;
   clean-state) clean_state ;;
-  *) fail 'expected prepare|install|enroll|pair-main|pair-revoked|nodes|revoke|logs|attribution|purge|teardown|clean-state' ;;
+  remove-cert-cache) clean_state; certificate_cache remove ;;
+  *) fail 'expected prepare|install|enroll|pair-main|pair-revoked|nodes|revoke|logs|attribution|purge|teardown|clean-state|remove-cert-cache' ;;
 esac

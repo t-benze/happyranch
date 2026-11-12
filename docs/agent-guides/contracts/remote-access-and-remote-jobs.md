@@ -65,7 +65,14 @@
   shipping Linux install and loopback daemon, and the unchanged Mac Go C archive
   driven from this outside Linux host without system Tailscale. Exact200/403
   controls, actual private-region evidence, outside public-IP exposure probes,
-  run-attributed journals and complete ACME/CA/state/socket cleanup gate the pass.
+  run-attributed journals and complete transient CA/state/socket cleanup gate the pass.
+  Root-only0700/0600 ACME certificate cache is allowlisted between passes, with
+  explicit final decommission and bounded issuance (TASK-15668 starts at2 and
+  permits at most1 new). Exposure uses application responses, verified443 health
+  controls and guest sockets: proxy-accepted TCP alone proves nothing. Join
+  diagnostics export fixed classes/timings only. Never-installed logs/purge
+  record asserted not-applicable; installed-product assertions remain intact.
+  JOB-6610 failed at outside join; its hidden cause and unrun cases are preserved.
   Full driver acceptance is **UNEXECUTED**; TLS health and archive-build feasibility
   do not establish it. Native macOS runner/Swift/GUI acceptance is NOT RUN; the
   current GUI's development environment-key input is not secure managed enrollment
