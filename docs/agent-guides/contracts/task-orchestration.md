@@ -505,8 +505,13 @@ first visit remains ineligible: `queue_admission_allowed` stays false without th
 positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
 producer and manager skill instructions. Existing U3e-1a cancellation, U3e-2
 caller return, default Disabled admission, repository/mixed U5 successful-output hold,
-Pause backout and stale-settings limits remain controlling. Marker removal
-refuses the next fresh start; it grants no continuation/activation authority.
+Pause backout remains controlling. The stale-settings continuation limit is
+historical and superseded by [U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624):
+admission replay, lifecycle and the cancel fence retain admitted original Allowed
+pins after newer Allowed or Disabled settings; fresh selection and engine
+prepare-admission still require latest Allowed settings. Marker removal refuses
+the next noncatalog fixture fresh start; it grants no continuation/activation
+authority over public Coding.
 Structural fixtures and static lint are not genuine callback/host/launch,
 restart, cancellation, return or two-template acceptance. V3/V3-0b/U5 remainder remain
 UNVERIFIED; no live install/settings/admission/deploy/restart is authorized.

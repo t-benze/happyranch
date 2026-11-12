@@ -785,8 +785,13 @@ but queue insertion is not durable delivery/execution acknowledgement. Outbox
 bytes remain immutable and are never marked consumed. Thread follow-up/SYSTEM/
 invocation minting are not invoked, including for retained partial thread rows.
 No native visit recovery or original host settlement is inferred. Existing
-unknown-owner rules, repository/mixed U5 hold, settings-generation limitation and the rule to
+unknown-owner rules, repository/mixed U5 hold and the rule to
 roll back only with no nonterminal sequential Pause entries remain unchanged.
+The settings-generation limitation at this U3e-2 checkpoint is historical:
+[U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624)
+supersedes the newer-generation continuation veto. Admitted runs validate their
+original Allowed pins; fresh selection and engine prepare-admission require
+latest Allowed settings. Native recovery and settlement uncertainty remain.
 
 
 ## U3e-1a selected-run cancellation
@@ -801,6 +806,10 @@ keeps teardown incomplete; cancellation clears no Pause journal or tracker.
 Existing callback/evidence/advance/queue/launch guards refuse fresh effects after
 the fence; only an already committed exact native callback can drain unchanged.
 
+**Historical U3e-1a settings veto — superseded by U9 Option A.** The following
+paragraph preserves the original venue limitation and evidence, not a current
+newest-generation continuation requirement:
+
 Cancellation does not call check_venue_start or inspect the marker. **Venue
 backout removes the marker; it must not publish Disabled while a run remains
 admitted.** The unchanged selected validator rejects any newer settings
@@ -810,6 +819,18 @@ documented venue limitation grants no settings operation or validator exception.
 The existing rule to roll back only with no nonterminal sequential Pause entries
 still applies. Real host stop, restart and cancellation race acceptance remain
 UNVERIFIED(V3); U3e-1b and native recovery are separate work.
+
+**Current U9 Option A:** authenticated admitted runs keep their original Allowed
+generation/digest/admission snapshot through admission replay, lifecycle and the
+cancel fence after a newer Allowed or Disabled generation. Fresh
+`sequential_start._selection` and engine `_prepare_admission` independently
+require latest Allowed settings; invalid/missing/originally Disabled pins refuse.
+See [U9's mounted boundary and pin compatibility repair](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624).
+Only the historical settings veto is superseded: cancellation still does not
+consult the marker, marker removal creates no settings generation, and the
+no-nonterminal-sequential-Pause rollback rule remains. Original native/receipt
+uncertainty and UNVERIFIED(V3) host-stop/restart/cancellation-race limits remain;
+this source contract grants no settings, backout, native recovery or live action.
 
 
 ## U3e-1b-i sequential start adapter
@@ -870,8 +891,13 @@ first visit remains ineligible: `queue_admission_allowed` stays false without th
 positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
 producer and manager skill instructions. Existing U3e-1a cancellation, U3e-2
 caller return, default Disabled admission, repository/mixed U5 successful-output hold,
-Pause backout and stale-settings limits remain controlling. Marker removal
-refuses the next fresh start; it grants no continuation/activation authority.
+Pause backout remains controlling. The stale-settings continuation limit is
+historical and superseded by [U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624):
+admission replay, lifecycle and the cancel fence retain admitted original Allowed
+pins after newer Allowed or Disabled settings; fresh selection and engine
+prepare-admission still require latest Allowed settings. Marker removal refuses
+the next noncatalog fixture fresh start; it grants no continuation/activation
+authority over public Coding.
 Structural fixtures and static lint are not genuine callback/host/launch,
 restart, cancellation, return or two-template acceptance. V3/V3-0b/U5 remainder remain
 UNVERIFIED; no live install/settings/admission/deploy/restart is authorized.
