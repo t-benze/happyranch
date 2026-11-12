@@ -1,8 +1,3 @@
-import type { MessageKey } from '@/lib/i18n';
-import { ReviewIntegrityError } from '@/lib/workflowReviewSelection';
-export function reviewErrorKey(error: unknown): MessageKey {
-  return error instanceof ReviewIntegrityError ? 'workflows.integrity' : 'workflows.errorBody';
-}
 /** Raw daemon fields are text, never translated, interpreted or rendered as HTML. */
 export function reviewDiagnostic(error: unknown): string {
   const e = error as { code?: unknown; detail?: unknown } | null;

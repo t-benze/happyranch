@@ -1700,20 +1700,6 @@ export interface ReconciliationRefusal {
 }
 
 
-/** Current owner discovery; IDs navigate separately authenticated selected readers. */
-export interface OwnerReviewSelection {
-  format: 'workflow-owner-review-selection@1';
-  activation_id: string;
-  instance_id: string;
-  original: {
-    handoff_id: string;
-    human_request_id: string | null;
-    collection: DocumentRevisionReceipt['current']['collection'];
-  } | null;
-  successor: { revision_operation_id: string; human_request_id: string | null } | null;
-  return: { eligible: boolean; reason: string | null; required_action: string | null };
-}
-
 // Canonical Founder coding configuration. Mapping publications confer no grant.
 export interface CodingAgentBinding { principal: string; team: string }
 export interface CodingRoles {

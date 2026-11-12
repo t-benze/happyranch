@@ -102,15 +102,14 @@ struct SurfaceAllowListDriftGuardTests {
 
     // MARK: - Tests
 
-    @Test("owner review discovery GET retains existing remote classification")
+    @Test("removed owner review discovery is absent from daemon route classification")
     func ownerReviewSelectionClassification() throws {
         let (included, excluded) = try Self.loadClassification()
         let route = "GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection"
-        #expect(included.contains(route))
+        #expect(!included.contains(route))
         #expect(!excluded.contains(route))
-        let raw = "/api/v1/orgs/alpha/workflows/activations/activation-1/review-selection"
-        #expect(SurfaceAllowList.default.isAllowed(method: "GET",
-            path: DaemonPathNormalizer.stripApiPrefix(raw), rawPath: raw))
+        let routes = try Self.loadOpenAPIRoutes()
+        #expect(!routes.contains(route))
     }
 
     @Test("THR299 agent-only writer and advisory reader mirror classification in both forms")

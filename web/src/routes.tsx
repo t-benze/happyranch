@@ -17,7 +17,6 @@ import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
 import { TeamEscalationPolicyPage } from '@/features/agents/TeamEscalationPolicyPage';
 import { ArtifactsPage } from '@/features/artifacts/ArtifactsPage';
-import { WorkflowReviewsPage } from '@/features/workflows/WorkflowReviewsPage';
 import { SequentialWorkflowsPage } from '@/features/workflows/SequentialWorkflowsPage';
 import { JobsPage } from '@/features/jobs/JobsPage';
 import { JobDetailPage } from '@/features/jobs/JobDetailPage';
@@ -131,8 +130,6 @@ export function AppRoutes(): JSX.Element {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="threads" element={<ThreadsPage />} />
           <Route path="threads/:thread_id" element={<ThreadsPage />} />
-          <Route path="reviews" element={<WorkflowReviewsPage />} />
-          <Route path="reviews/:activationId" element={<WorkflowReviewsPage />} />
           <Route path="workflows" element={<SequentialWorkflowsPage view="definitions" />} />
           <Route path="workflows/setup" element={<SequentialWorkflowsPage view="setup" />} />
           <Route path="workflows/runs" element={<SequentialWorkflowsPage view="runs" />} />
