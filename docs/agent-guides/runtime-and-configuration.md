@@ -2603,6 +2603,11 @@ older Bash falls back to second-resolution `date +%s`. See
 for the clock boundaries and partition arithmetic. All GH-709 uv/Python
 preflight diagnostics and exits remain unchanged.
 
+Per-org load callees and Coding/sequential return rediscovery also emit fixed
+`startup_timing` phases with `org=<slug>`; the complete phase-to-call list is in
+the startup observations contract linked above. These nested observations are
+not added to the serving partition.
+
 After genuine successful Server startup, the serving lifespan's private diagnostic
 coordinator schedules one bounded off-loop pass; startup/readiness never waits
 for its acquisition or result. Port/PID files and health probes do not signal it.

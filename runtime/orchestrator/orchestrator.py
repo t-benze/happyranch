@@ -280,20 +280,24 @@ class Orchestrator:
 
     def _rediscover_returned(self, *, queue=None) -> None:
         """Original notification owner; dynamic attachment calls it natively."""
+        from runtime.daemon.__main__ import _startup_span
+
         coding = getattr(self, '_workflow_coding_dispatch', None)
         if coding is not None:
             # A terminal source is outside the ordinary nonterminal startup
             # sweep. Reuse only its independently admitted postcommit return.
             from runtime.workflows.recovery import rediscover_returned
             try:
-                rediscover_returned(coding, queue=queue)
+                with _startup_span('org_rediscover_coding', org=self._slug):
+                    rediscover_returned(coding, queue=queue)
             except (ValueError, TypeError, sqlite3.Error):
                 logger.exception('coding caller notification rediscovery unavailable')
         sequential = getattr(self, '_workflow_sequential_dispatch', None)
         if sequential is not None and sequential.org.slug == self._slug:
             from runtime.workflows.recovery import rediscover_returned
             try:
-                rediscover_returned(sequential, queue=queue, sequential=True)
+                with _startup_span('org_rediscover_sequential', org=self._slug):
+                    rediscover_returned(sequential, queue=queue, sequential=True)
             except (ValueError, TypeError, sqlite3.Error):
                 logger.exception('sequential caller notification rediscovery unavailable')
 

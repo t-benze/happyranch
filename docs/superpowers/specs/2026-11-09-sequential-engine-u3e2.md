@@ -76,3 +76,12 @@ access/capability witnesses, live installation/settings/activation and V5/M4.
 U5 successful-output refusal and original ownership uncertainty remain. No
 schema/format/reader/outbox/auth/permission/host/notification/dependency/hook
 change, U4-U9, PR1252 or D2 reader work is included.
+
+## THR-308 PR-2 rediscovery addendum
+
+`returned_run_ids` now reuses the org-layout selector's bounded main/TEMP
+`workflow_seq_` presence check in its coherent view. Absence returns `()`
+without the complete reader; presence retains the original complete-reader
+path and refusals. `notify_returned` is unchanged. Per-org Coding/sequential
+rediscovery timing uses the existing daemon startup logger. This addendum
+establishes no restart-latency or genuine caller-execution acceptance.

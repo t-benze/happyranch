@@ -552,7 +552,42 @@ missing process clocks similarly make their spans unavailable.
 `org_load` covers preflight through return or
 failed unpublished close. `org_database`, `org_workflow_schema` (install/recover
 plus first locked validation), and `org_workflow_revalidation` are nested load
-children; move/Pause/ownership/roster/coding work stays load residual.
+children. Additional fixed phases append `org=<slug>` to the same daemon INFO
+format, once per reached phase per org:
+
+| Phase | Source call or interval |
+| --- | --- |
+| `org_team_move_schema` | `install_team_move_schema` |
+| `org_cutover_recovery` | `WorkflowCutoverStore.recover_authorized`, including its public `get` |
+| `org_pause_schema` | `install_pause_schema` and `TaskPauseStore` construction |
+| `org_task_ownership` | `install_task_ownership`, including its complete target read |
+| `org_teams_load` | `TeamsRegistry.load` |
+| `org_settings` | settings seed/backfill and their existing exception handling |
+| `org_teams_validation` | `validate_team_membership` |
+| `org_orchestrator` | `Orchestrator` construction |
+| `org_pause_restore` | `restore_pause_preparations` |
+| `org_state` | `OrgState` construction |
+| `org_startup_owner` | native writer history, active journal and native owner inspection, with existing hold handling |
+| `org_naming` | identity-names writer interval and `refresh_names(install=True)`, including source and target admission |
+| `org_workflow_authority` | `recover_or_publish` and its existing exception handling |
+| `org_coding_builtin` | `ensure_registered` |
+| `org_rediscover_coding` | `_rediscover_returned` calling Coding `rediscover_returned` |
+| `org_rediscover_sequential` | `_rediscover_returned` calling sequential `rediscover_returned` |
+
+The gap from workflow schema validation to revalidation includes team-move
+validation, cutover recovery and Pause setup. The gap from revalidation to
+`startup_workflow_validation` includes ownership, roster/settings, construction,
+Pause restore, startup owner inspection, naming, authority publication and
+built-in registration. Cutover's public read, ownership's target read and naming's
+target admission remain complete reads outside the source-reuse guard; their
+time is not included in that guard's `full_seconds`. Naming's writer reservation
+can invalidate reuse even when names are unchanged. These source boundaries do
+not establish how many seconds each call took on a prior boot. Imports between
+spans, migration guidance and small assignments remain load residual. A phase
+is complete if its bracket returns normally, including existing caught failures;
+propagated exceptions record incomplete. Unreached phases emit no line. Dynamic
+attachment uses the same rediscovery observations. No per-row logs are added.
+
 `authority_discovery` includes coherent views/bookends/materialization/fallback;
 `authority_exact` includes chronological current reads/results/parser/refusal,
 tails and skips. `thread_recovery` covers Branch6 delivery validation, all

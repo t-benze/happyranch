@@ -64,12 +64,15 @@ def _startup_clock() -> float | None:
         return None
 
 
-def _startup_log(phase: str, outcome: str, started: float | None) -> float | None:
+def _startup_log(phase: str, outcome: str, started: float | None, *, org: str | None = None) -> float | None:
     """Fixed-label observations must never replace startup/cleanup outcomes."""
     try:
         ended = _startup_clock()
         elapsed = None if started is None or ended is None else max(0.0, ended - started)
-        logger.info("startup_timing phase=%s outcome=%s seconds=%s", phase, outcome, elapsed)
+        if org is None:
+            logger.info("startup_timing phase=%s outcome=%s seconds=%s", phase, outcome, elapsed)
+        else:
+            logger.info("startup_timing phase=%s outcome=%s seconds=%s org=%s", phase, outcome, elapsed, org)
         return elapsed
     except BaseException:
         return None
@@ -99,14 +102,14 @@ def _startup_pre_backend(started: float | None) -> dict[str, float | None]:
 
 
 @contextmanager
-def _startup_span(phase: str) -> Iterator[None]:
+def _startup_span(phase: str, *, org: str | None = None) -> Iterator[None]:
     started = _startup_clock()
     outcome = "incomplete"
     try:
         yield
         outcome = "complete"
     finally:
-        elapsed = _startup_log(phase, outcome, started)
+        elapsed = _startup_log(phase, outcome, started, org=org)
         try:
             from runtime.daemon.__main__ import _STARTUP_PARTITION
             totals = _STARTUP_PARTITION.get()

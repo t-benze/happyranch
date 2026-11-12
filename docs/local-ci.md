@@ -161,6 +161,15 @@ ten-read timing is not a serving-daemon restart or production-size estimate.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
+The same schema-load script covers `returned_run_ids` and sequential
+`recovery.rediscover_returned`: absent native-only/legacy storage skips a raising
+complete-reader stub, while mixed-case table, view and TEMP presence propagates
+that reader's refusal and incomplete layouts also fail through the real reader.
+The timing script additionally observes per-org Coding/sequential rediscovery
+log count, duration/outcome and unchanged queue/order/caught-error handling.
+These disposable in-process checks do not establish restart latency or genuine
+returned-workflow caller execution.
+
 Focused audit-removal observation (THR-308 seq403): run
 `bash scripts/test-coding-audit-removal.sh` locally with frozen Python3.14.
 Disposable SQLite drives production `validate_coding_data`: deep ordinary and

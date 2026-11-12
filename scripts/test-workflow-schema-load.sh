@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 import time
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.workflow_schema import install_or_recover, validate_workflow_schema
@@ -23,6 +24,58 @@ from runtime.orchestrator.task_pause import restore_pause_preparations
 from runtime.orchestrator.producer_move import native_writer
 from runtime.orchestrator.team_move import TeamMoveCoordinator
 from runtime.workflows.cutover import WorkflowCutoverStore
+from runtime.workflows import sequential_return
+from runtime.workflows.recovery import rediscover_returned
+from runtime.workflows.sequential_dispatch import SequentialDispatcher
+
+with tempfile.TemporaryDirectory(prefix='returned-storage-') as scratch:
+    db = Database(Path(scratch) / 'org.db')
+    dispatcher = SequentialDispatcher(SimpleNamespace(db=db, slug='scratch'))
+    try:
+        for installed in (False, True):
+            if installed:
+                install_or_recover(db, expected_org_slug='scratch')
+            with patch.object(sequential_return, 'read_sequential_history',
+                              side_effect=AssertionError('absent storage entered complete reader')) as reader:
+                assert sequential_return.returned_run_ids(dispatcher) == ()
+                rediscover_returned(dispatcher, sequential=True)
+                reader.assert_not_called()
+            print('PASS returned absence skips complete reader:', 'legacy' if installed else 'native-only')
+
+        # Presence includes mixed-case names, table associations and TEMP;
+        # even malformed/partial storage must reach the complete reader.
+        for ddl, cleanup in (
+            ('CREATE TABLE WoRkFlOw_SeQ_probe (id)', 'DROP TABLE WoRkFlOw_SeQ_probe'),
+            ('CREATE VIEW workflow_seq_probe AS SELECT 1', 'DROP VIEW workflow_seq_probe'),
+            ('CREATE TEMP TABLE workflow_seq_probe (id)', 'DROP TABLE temp.workflow_seq_probe'),
+        ):
+            db._conn.execute(ddl)
+            db._conn.commit()
+            try:
+                for consume in (sequential_return.returned_run_ids,
+                                lambda owner: rediscover_returned(owner, sequential=True)):
+                    with patch.object(sequential_return, 'read_sequential_history',
+                                      side_effect=ValueError('complete-reader-refusal')) as reader:
+                        try:
+                            consume(dispatcher)
+                        except ValueError as exc:
+                            assert str(exc) == 'complete-reader-refusal', exc
+                        else:
+                            raise AssertionError('present storage suppressed complete-reader refusal')
+                        reader.assert_called_once_with(db._conn, expected_org_slug='scratch')
+                # The real reader must also refuse these incomplete layouts.
+                try:
+                    sequential_return.returned_run_ids(dispatcher)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError('partial sequential storage accepted')
+                print('PASS returned presence preserves complete-reader refusal:', ddl)
+            finally:
+                db._conn.execute(cleanup)
+                db._conn.commit()
+    finally:
+        db.close()
 
 with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
     paths = OrgPaths(root=Path(scratch))
