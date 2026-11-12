@@ -137,6 +137,37 @@ function isSettingsNotSaved(kind: string, error: unknown): boolean {
   return kind === 'settings' && status(error) === 404
     && (error as { code?: string | null } | null)?.code === 'sequential_settings_not_found';
 }
+/** The original-save lookup's 404 when that exact operation key was never committed (absent, not a refusal). */
+function isOperationAbsent(error: unknown): boolean {
+  return status(error) === 404 && (error as { code?: string | null } | null)?.code === 'sequential_settings_operation_not_found';
+}
+/**
+ * Runs one non-cached sequential read under the org's shared admission policy:
+ * it joins the org generation and abort set; a late result after a sibling
+ * refusal or generation change throws the fixed fence refusal; its own 403/404
+ * (other than the caller's exact positive-absence code) refuses the whole org.
+ */
+async function admittedSequentialRead<T>(qc: QueryClient, slug: string, absent: (error: unknown) => boolean,
+  load: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const store = admissionStore(qc);
+  const generation = store.generation.get(slug) ?? 0;
+  const controller = new AbortController();
+  const inflight = store.inflight.get(slug) ?? new Set<AbortController>();
+  store.inflight.set(slug, inflight.add(controller));
+  const fenced = () => (store.generation.get(slug) ?? 0) !== generation;
+  try {
+    const value = await load(controller.signal);
+    if (fenced()) throw new SequentialAccessFenced();
+    return value;
+  } catch (error) {
+    if (fenced()) throw new SequentialAccessFenced();
+    if (absent(error)) throw error;
+    if (status(error) === 403 || status(error) === 404) refuseSequentialOrg(qc, slug, '');
+    throw error;
+  } finally {
+    inflight.delete(controller);
+  }
+}
 /** PRD F6: only a transport failure (no HTTP status) is a network refresh failure. */
 function isNetworkFailure(error: unknown): boolean {
   return !!error && status(error) === undefined && (error as { name?: string }).name !== 'AbortError';
@@ -256,9 +287,13 @@ function useSequentialSettingsActions(): ReturnType<WorkflowsApi['useSequentialS
         }
       },
       readOperation: async (key: string) => {
-        const value = await workflowSequential.getSequentialSettingsOperation(slug, key);
+        // Same admission policy as the shared sequential reads (AC11): a 403/404
+        // refusal fences the org; a late receipt after a sibling refusal or
+        // generation change throws the fence refusal and never releases custody.
+        const value = await admittedSequentialRead(qc, slug, isOperationAbsent,
+          signal => workflowSequential.getSequentialSettingsOperation(slug, key, signal));
         const fence = store.fences.get(slug);
-        // 404/error/foreign/mismatched receipts keep original custody. Reading
+        // 404/error/refusal/foreign/mismatched receipts keep original custody. Reading
         // while PUT is pending cannot release its synchronous send ownership.
         if (fence?.phase === 'uncertain' && fence.command.operation_key === key
           && JSON.stringify(workflowSequential.freezeSequentialSettingsCommand(value.command)) === JSON.stringify(fence.command)) {

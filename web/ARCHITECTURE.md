@@ -62,7 +62,9 @@ repo-free default agents through the U7b `useSequentialSettingsActions` /
 `useSequentialSettingsFence` provider custody, keeps drafts and lookup outcomes in a
 per-QueryClient per-org memory (never persisted) and has no admission, repository or
 run control. The shared sequential read treats the settings read's 404
-`sequential_settings_not_found` as "nothing saved yet" (no org fence). Settings →
+`sequential_settings_not_found` as "nothing saved yet" (no org fence); the original-save
+lookup runs under the same org admission generation/abort/refusal policy, and the Setup
+editor never rehydrates from a read older than its own committed generation. Settings →
 Coding (`features/settings/sections/CodingSection`) is a pointer to Setup plus a
 read-only original-key lookup for historical saves. See
 `docs/superpowers/specs/2026-11-12-sequential-coding-u8.md`.

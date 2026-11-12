@@ -4856,7 +4856,12 @@ pending locks edits/Save/Discard; stale/conflict keeps the draft and needs expli
 "Continue from current configuration"; other definite refusals keep the draft; an
 uncertain outcome shows "Last confirmed" beside the frozen original and offers only the
 read-only original-save lookup (absent/error stay uncertain and locked; a found receipt
-is shown apart from a newer current read). Drafts/lookup outcomes are per QueryClient
+is shown apart from a newer current read). That lookup shares the sequential reads' org
+admission generation/abort set: a 403/404 other than its exact 404 operation_not_found
+fences the whole org with the original key/body still held, and a late receipt after a
+sibling refusal is dropped without releasing custody. A committed generation is a
+hydration floor: an older current read never replaces the saved editor values or lowers
+expected_generation, and the receipt panel compares generations ordinally. Drafts/lookup outcomes are per QueryClient
 per org (never persisted), so navigation, org A→B→A and locale changes keep them with no
 request. The settings GET's 404 `sequential_settings_not_found` means "nothing saved
 yet" and does not fence the org; every other 403/404 keeps the U8a org-wide fence and F6

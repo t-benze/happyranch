@@ -166,6 +166,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "seqwf.setup.currentGeneration": "当前配置 · 代次 {generation}",
   "seqwf.setup.currentNewer": "此后配置已发生变化；当前版本单独显示，且未被替换。",
   "seqwf.setup.currentSame": "这也是当前配置。",
+  "seqwf.setup.currentOlder": "当前读取的配置仍早于本次保存，未被替换。请刷新以确认已保存的配置。",
   "seqwf.setup.conflict": "配置已在别处更改",
   "seqwf.setup.conflictBody": "未保存。当前配置为代次 {generation}，显示在上方。你的草稿保留在下方；再次保存前，请先基于当前配置继续。",
   "seqwf.setup.adopt": "基于当前配置继续",

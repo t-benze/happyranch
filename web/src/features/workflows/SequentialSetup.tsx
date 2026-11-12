@@ -57,7 +57,13 @@ type Outcome =
   | { kind: 'conflict'; code: string }
   | { kind: 'refused'; status: number; code: string };
 type Lookup = { kind: 'reading' } | { kind: 'absent' } | { kind: 'error'; detail: string };
-interface Memory { draft: Draft | null; outcome: Outcome; lookup: { key: string; state: Lookup } | null }
+/**
+ * The newest generation this form knows was committed (its own save receipt or
+ * confirmed original lookup). It is a hydration floor only: a current read older
+ * than it never replaces the editor, and it is never written into the read cache.
+ */
+interface Committed { identity: string; settings: Settings }
+interface Memory { draft: Draft | null; outcome: Outcome; lookup: { key: string; state: Lookup } | null; committed: Committed | null }
 
 /** Per-QueryClient, per-org setup memory: survives pane unmount and org switches, never persisted. */
 const memories = new WeakMap<QueryClient, Map<string, { value: Memory; listeners: Set<() => void> }>>();
@@ -65,7 +71,7 @@ function memoryCell(qc: QueryClient, slug: string) {
   let byOrg = memories.get(qc);
   if (!byOrg) { byOrg = new Map(); memories.set(qc, byOrg); }
   let cell = byOrg.get(slug);
-  if (!cell) { cell = { value: { draft: null, outcome: { kind: 'none' }, lookup: null }, listeners: new Set() }; byOrg.set(slug, cell); }
+  if (!cell) { cell = { value: { draft: null, outcome: { kind: 'none' }, lookup: null, committed: null }, listeners: new Set() }; byOrg.set(slug, cell); }
   return cell;
 }
 function useSetupMemory(slug: string): [Memory, (change: (m: Memory) => Memory) => void] {
@@ -125,13 +131,16 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
   const current: Settings | null = notSaved ? null : settings.data ?? null;
   const currentKnown = notSaved || settings.data !== undefined;
 
-  // Hydrate (or re-hydrate an untouched draft) from the CURRENT read only.
+  // Hydrate (or re-hydrate an untouched draft) from the CURRENT read only, and
+  // never from a read older than the generation this form knows was committed:
+  // the submitted values and basis stay until a read at >= that generation arrives.
   useEffect(() => {
     if (!currentKnown || fence) return;
     update(m => {
       const fresh = draftFrom(def, pin, current);
       if (!m.draft || m.draft.pin.definition_digest !== pin.definition_digest) return { ...m, draft: fresh };
-      if (!m.draft.dirty && m.outcome.kind !== 'conflict' && m.draft.basis !== fresh.basis) return { ...m, draft: fresh };
+      const floor = m.committed?.identity === pin.identity ? m.committed.settings.generation : 0;
+      if (!m.draft.dirty && m.outcome.kind !== 'conflict' && m.draft.basis !== fresh.basis && fresh.basis >= floor) return { ...m, draft: fresh };
       return m;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by the read's generation
@@ -141,6 +150,9 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
     if (isAccessRefusal(settings.error)) return <ReadState q={settings}>{() => null}</ReadState>;
   }
   const draft = memory.draft;
+  const committed = memory.committed?.identity === pin.identity ? memory.committed.settings : null;
+  // The newest known saved configuration: the current read unless it is older than this form's own commit.
+  const baseline: Settings | null = committed && (!current || current.generation < committed.generation) ? committed : current;
   const locked = fence !== null;
   const sending = fence?.phase === 'sending';
   const uncertain = fence?.phase === 'uncertain';
@@ -168,7 +180,7 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
   };
   const discard = () => {
     if (fence || !currentKnown) return;
-    update(m => ({ ...m, draft: draftFrom(def, pin, current), outcome: { kind: 'none' } }));
+    update(m => ({ ...m, draft: draftFrom(def, pin, baseline), outcome: { kind: 'none' } }));
   };
   const adopt = () => {
     if (fence || !current) return;
@@ -189,7 +201,7 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
     // continuation writes to provider-lifetime memory, so it lands even after unmount.
     try {
       const receipt = await actions.save(command);
-      update(m => ({ ...m, outcome: { kind: 'saved', receipt },
+      update(m => ({ ...m, outcome: { kind: 'saved', receipt }, committed: newer(m.committed, pin.identity, receipt.original),
         draft: m.draft ? { ...m.draft, basis: receipt.original.generation, dirty: false } : m.draft }));
     } catch (error) {
       // The provider refused a second send synchronously: nothing was sent.
@@ -210,7 +222,7 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
     update(m => ({ ...m, lookup: { key, state: { kind: 'reading' } } }));
     try {
       const receipt = await actions.readOperation(key);
-      update(m => ({ ...m, lookup: null, outcome: { kind: 'confirmed', receipt },
+      update(m => ({ ...m, lookup: null, outcome: { kind: 'confirmed', receipt }, committed: newer(m.committed, pin.identity, receipt.original),
         draft: m.draft ? { ...m.draft, basis: receipt.original.generation, dirty: false } : m.draft }));
     } catch (error) {
       const absent = error instanceof ApiError && error.status === 404 && error.code === 'sequential_settings_operation_not_found';
@@ -287,9 +299,11 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
           <BindingList bindings={memory.outcome.receipt.original.snapshot.bindings} />
           <p className="text-text-muted mt-1 text-xs">{t(memory.outcome.receipt.original.snapshot.admission === 'Allowed' ? 'seqwf.setup.admissionAllowed' : 'seqwf.setup.admissionDisabled')}</p></div>
         <div className="min-w-0"><p className="text-text-muted text-xs uppercase">{current ? t('seqwf.setup.currentGeneration', { generation: current.generation }) : t('seqwf.loading')}</p>
-          {current && current.generation !== memory.outcome.receipt.original.generation
+          {current && current.generation > memory.outcome.receipt.original.generation
             ? <><BindingList bindings={current.snapshot.bindings} /><p className="mt-1 text-xs">{t('seqwf.setup.currentNewer')}</p></>
-            : current && <p className="text-xs">{t('seqwf.setup.currentSame')}</p>}</div>
+            : current && current.generation < memory.outcome.receipt.original.generation
+              ? <p className="text-xs">{t('seqwf.setup.currentOlder')}</p>
+              : current && <p className="text-xs">{t('seqwf.setup.currentSame')}</p>}</div>
       </div>
       <p className="text-text-muted mt-2 font-mono text-xs break-all">{memory.outcome.receipt.operation_key}</p>
     </section>}
@@ -325,7 +339,7 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
       <ul>{def.roles.map(role => {
         const id = `seqwf-role-${role.name}`;
         const value = (locked ? fence.command.bindings.find(b => b.role === role.name)?.principal : draft.bindings[role.name]) ?? '';
-        const savedValue = current?.snapshot.bindings.find(b => b.role === role.name)?.principal ?? '';
+        const savedValue = baseline?.snapshot.bindings.find(b => b.role === role.name)?.principal ?? '';
         const clashes = locked ? [] : independenceClash(role.name);
         return <li key={role.name} className="border-border-default grid grid-cols-1 gap-3 border-b px-4 py-3 text-sm last:border-b-0 md:grid-cols-3">
           <div className="min-w-0 wrap-anywhere md:col-span-2">
@@ -360,6 +374,11 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
       <p className="mt-1">{t('seqwf.setup.admissionBody')}</p>
     </section>
   </div>;
+}
+
+/** Keeps the highest committed generation known for this definition identity. */
+function newer(prev: Committed | null, identity: string, settings: Settings): Committed {
+  return prev?.identity === identity && prev.settings.generation >= settings.generation ? prev : { identity, settings };
 }
 
 /** A definite refusal the provider already released (no fence remains). */

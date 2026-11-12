@@ -167,6 +167,7 @@ export const en = {
   "seqwf.setup.currentGeneration": "Current configuration · generation {generation}",
   "seqwf.setup.currentNewer": "The configuration has changed since; the current version is shown separately and was not replaced.",
   "seqwf.setup.currentSame": "This is also the current configuration.",
+  "seqwf.setup.currentOlder": "The current read is still older than this save; it was not replaced. Refresh to confirm the saved configuration.",
   "seqwf.setup.conflict": "Configuration changed elsewhere",
   "seqwf.setup.conflictBody": "Not saved. The current configuration is generation {generation} and is shown above. Your draft is kept below; continue from the current configuration before saving again.",
   "seqwf.setup.adopt": "Continue from current configuration",

@@ -143,7 +143,17 @@ settings GETs and the U7b settings PUT, original-operation GET and provider cust
   command) and only the read-only "Check original save"; absent (404 operation_not_found)
   or error stays uncertain and locked; a matching receipt releases the fence and is shown
   as the confirmed generation, distinct from a newer current read, which is never
-  overwritten. A direct success shows its receipt the same way. Drafts and lookup outcomes
+  overwritten. A direct success shows its receipt the same way. The lookup runs under the
+  same org admission policy as the shared sequential reads (TASK-15608): it joins the org
+  generation and abort set; any 403/404 other than its exact 404 operation_not_found
+  refuses the whole org (fixed denied state, every sequential cache entry evicted) while the
+  original uncertain key/body stays held; a receipt arriving after a sibling refusal or a
+  generation change is dropped and never releases the fence. Nothing ever authorizes a
+  resend. The committed generation (own receipt or confirmed lookup) is a hydration floor:
+  a current read older than it never replaces the editor or its expected_generation, the
+  submitted values stay until a read at >= that generation arrives, and the receipt panel
+  compares ordinally (older current read = "not yet refreshed", only a higher generation is
+  "changed since"). The receipt is never written into the current-read cache. Drafts and lookup outcomes
   live per QueryClient per org (never persisted), so navigation, org A→B→A and locale
   changes keep draft, lock and original key/body without a request.
 - **View/configure.** U7 exposes no configure-permission projection; the existing Founder
