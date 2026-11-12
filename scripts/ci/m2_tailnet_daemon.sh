@@ -84,29 +84,7 @@ provision() {
 }
 # Shared scaffolding; callers must enforce their own disposable-host admission.
 provision_cell() {
-  [[ $(uname -m) == x86_64 && $(ps -p 1 -o comm=) == systemd ]] || fail 'requires amd64 and systemd PID 1'
-  for path in /opt/happyranch /etc/happyranch "$M2_WORK"; do absent "$path"; done
-  ! getent passwd happyranch >/dev/null || fail 'happyranch account already exists'
-  ! getent group happyranch >/dev/null || fail 'happyranch group already exists'
-  mkdir -p "$M2_BUILD" "$M2_LOGS"
-  config
-  (cd app/linux/tsnet-sidecar && CGO_ENABLED=0 go build -trimpath -o "$M2_BUILD/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
-  uv build --wheel --out-dir "$M2_BUILD/dist"
-  local wheels=("$M2_BUILD"/dist/*.whl)
-  [[ ${#wheels[@]} == 1 && -f ${wheels[0]} ]] || fail 'expected one wheel'
-  # Hosted runners can have group-writable /opt; installer requires safe parents.
-  stat -c '/opt owner=%U group=%G mode=%a' /opt
-  sudo chmod 0755 /opt
-  sudo install -d -m 0755 /opt/happyranch/bin /etc/happyranch
-  # Copy the SYSTEM interpreter: ProtectHome blocks uv-managed Python under home.
-  sudo /usr/bin/python3 -m venv --copies /opt/happyranch/venv
-  sudo "$python" -m pip install "${wheels[0]}"
-  sudo install -m 0755 "$M2_BUILD/happyranch-tsnet-sidecar" /opt/happyranch/bin/
-  # Installer validates this exact account; precreate it to own the token input.
-  sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin happyranch
-  for name in connector sidecar policy; do sudo install -m 0644 "$M2_BUILD/$name.json" "/etc/happyranch/$name.json"; done
-  printf '%s\n' synthetic-m2-daemon-token | sudo install -m 0600 -o happyranch -g happyranch /dev/stdin /etc/happyranch/daemon.token
-  sudo install -d -m 0700 "$M2_WORK"
+  provision_payload
   mkdir -p "$MANAGED_DOWNLOADS"
   if [[ ! -f $MANAGED_DOWNLOADS/headscale ]]; then
     curl --fail --location --retry 3 --connect-timeout 20 --max-time 120 \
@@ -175,6 +153,35 @@ EOF
   sudo "$M2_WORK/tailscale" --socket="$M2_WORK/peer.sock" up --login-server=https://127.0.0.1:18080 \
     --auth-key="file:$M2_WORK/peer.key" --hostname=synthetic-peer-ci --accept-dns=false --timeout=60s
   sudo rm "$M2_WORK/peer.key"
+  provision_daemon
+}
+# Shared fixture phases also used by the public M4 cell, without a tailscaled peer.
+provision_payload() {
+  [[ $(uname -m) == x86_64 && $(ps -p 1 -o comm=) == systemd ]] || fail 'requires amd64 and systemd PID 1'
+  for path in /opt/happyranch /etc/happyranch "$M2_WORK"; do absent "$path"; done
+  ! getent passwd happyranch >/dev/null || fail 'happyranch account already exists'
+  ! getent group happyranch >/dev/null || fail 'happyranch group already exists'
+  mkdir -p "$M2_BUILD" "$M2_LOGS"
+  config
+  (cd app/linux/tsnet-sidecar && CGO_ENABLED=0 go build -trimpath -o "$M2_BUILD/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
+  uv build --wheel --out-dir "$M2_BUILD/dist"
+  local wheels=("$M2_BUILD"/dist/*.whl)
+  [[ ${#wheels[@]} == 1 && -f ${wheels[0]} ]] || fail 'expected one wheel'
+  # Hosted runners can have group-writable /opt; installer requires safe parents.
+  stat -c '/opt owner=%U group=%G mode=%a' /opt
+  sudo chmod 0755 /opt
+  sudo install -d -m 0755 /opt/happyranch/bin /etc/happyranch
+  # Copy the SYSTEM interpreter: ProtectHome blocks uv-managed Python under home.
+  sudo /usr/bin/python3 -m venv --copies /opt/happyranch/venv
+  sudo "$python" -m pip install "${wheels[0]}"
+  sudo install -m 0755 "$M2_BUILD/happyranch-tsnet-sidecar" /opt/happyranch/bin/
+  # Installer validates this exact account; precreate it to own the token input.
+  sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin happyranch
+  for name in connector sidecar policy; do sudo install -m 0644 "$M2_BUILD/$name.json" "/etc/happyranch/$name.json"; done
+  printf '%s\n' synthetic-m2-daemon-token | sudo install -m 0600 -o happyranch -g happyranch /dev/stdin /etc/happyranch/daemon.token
+  sudo install -d -m 0700 "$M2_WORK"
+}
+provision_daemon() {
   # The installed product entrypoint auto-provisions its runtime in this test-owned home.
   sudo install -d -m 0700 "$M2_WORK/daemon-home"
   sudo install -m 0600 /etc/happyranch/daemon.token "$M2_WORK/daemon-home/daemon.token"

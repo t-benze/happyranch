@@ -46,6 +46,30 @@ N1 pins `tailscale.com v1.78.0` and the exact 66-module `GOOS=linux`, `GOARCH=am
 
 The future acceptance matrix has five required rows: same-Wi-Fi direct; same-Wi-Fi forced private DERP; separate-network direct when possible; separate-network forced private DERP; and failure/recovery across both topologies. Every row requires no system Tailscale on either endpoint, loopback-only daemon and connector, ciphertext-only control/relay, and no public or LAN fallback. Same Wi-Fi is only an underlay; direct LAN plaintext binding is not an acceptance substitute.
 
+#### M4 public-cell procedure (THR-327 goal C; source-only)
+
+[`scripts/ci/README-m4-tailnet.md`](../../../scripts/ci/README-m4-tailnet.md)
+describes the dedicated Aliyun HK VM procedure: trusted public TLS-ALPN-01 on443,
+embedded private DERP999/STUN3478 with no default map, an explicit client-to-home
+TCP443 cell ACL, the shipping installed Linux sidecar/connector and loopback
+daemon, and the unchanged Mac app Go C archive driven from an outside Linux host.
+It brackets exact allowed200, unpaired/revoked403 and forbidden-route403 assertions
+with paired controls, requires actual client private-region/UDP-disable evidence
+and outside public-IP exposure probes, attributes journals to the run, and gates
+PASS on purge/teardown/clean-state including ACME/state/CA/socket removal.
+
+**Execution status:** public trusted Headscale health and unchanged Linux archive
+build were feasibility checks only. The new full M4 driver is **UNEXECUTED** until
+an exact-published-head persistent-job receipt and a separate shipped clean-state0
+are recorded. The selected outside Linux C-ABI client is not native Swift or a
+signed Mac.app. The macOS hosted option remains unexecuted; the founder GUI
+currently lacks a secure managed enrollment path (development environment-key
+input is not permitted by §7). No product or security-contract change is made.
+Conditional founder steps and that limitation are in the runbook. This procedure
+addresses only separate-network forced private DERP; the other topology rows,
+cross-topology failure/recovery and native Mac acceptance remain open. Goal C's
+shorter wording does not waive the five-row matrix or any fixed invariant.
+
 TASK-6298/TASK-6289 remains truthful **Supported-DIY** for users who voluntarily install Tailscale or use customer-owned Headscale. It is unchanged, non-executable for founder acceptance, and not the managed path. Unit 4B-2 is already delivered and independent, but it neither provisions this network nor supplies acceptance evidence. The original N1 slice supplied the embedded Linux sidecar core and build/license evidence; N2 supplied explicit literal-loopback Python connector ingress. THR-327 seq187 subsequently shipped the managed Linux foreground sidecar, composite systemd supervision, bounded installer/enrollment handoff and manual M1 lifecycle in §19. M1 PASSED at the main head recorded there. Tailnet transport (M2), full-daemon acceptance, restart/reboot recovery, physical acceptance and deployment remain **UNEXECUTED** and outside M1; the broader provisioning/distribution and N3–N6 obligations are not closed by that result.
 
 ## 3. Trust boundaries
