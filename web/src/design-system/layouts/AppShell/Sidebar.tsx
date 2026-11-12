@@ -16,6 +16,7 @@ import {
   Terminal,
   Users,
   Wallet,
+  Workflow,
   Home as HomeIcon,
 } from 'lucide-react';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -222,6 +223,9 @@ export function Sidebar(): JSX.Element {
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('reviews', true)} icon={ListChecks}>
           {t('shell.nav.reviews')}
+        </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('workflows', true)} icon={Workflow}>
+          {t('shell.nav.workflows')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('jobs', true)} icon={Terminal}>
           {t('shell.nav.jobs')}

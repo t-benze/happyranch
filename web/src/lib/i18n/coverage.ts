@@ -83,14 +83,16 @@ export interface NamespaceCoverage {
 
 export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
-    namespace: 'workflows', routeTokens: ['reviews', 'reviews/:activationId'], status: 'translated',
-    qualifiedRouteTokens: ['src/routes.tsx#/orgs/:slug:reviews', 'src/routes.tsx#/orgs/:slug:reviews/:activationId'],
+    namespace: 'workflows', routeTokens: ['reviews', 'reviews/:activationId', 'workflows', 'workflows/runs', 'workflows/definitions/:definitionId', 'workflows/runs/:runId'], status: 'translated',
+    qualifiedRouteTokens: ['src/routes.tsx#/orgs/:slug:reviews', 'src/routes.tsx#/orgs/:slug:reviews/:activationId',
+      'src/routes.tsx#/orgs/:slug:workflows', 'src/routes.tsx#/orgs/:slug:workflows/runs',
+      'src/routes.tsx#/orgs/:slug:workflows/definitions/:definitionId', 'src/routes.tsx#/orgs/:slug:workflows/runs/:runId'],
     qualifiedSurfaces: [
       'src/features/workflows/WorkflowReviewPanel.tsx#WorkflowReviewPanel->src/features/workflows/ReviewResponseDialog.tsx#ReviewResponseDialog:component',
       'src/features/workflows/WorkflowReviewPanel.tsx#WorkflowReviewPanel->src/features/workflows/OwnerReturnDialog.tsx#OwnerReturnDialog:component',
     ],
-    surfaces: ['WorkflowReviewsPage', 'ReviewResponseDialog', 'OwnerReturnDialog'],
-    surfaceOwners: { WorkflowReviewsPage: 'src/features/workflows/WorkflowReviewsPage.tsx', ReviewResponseDialog: 'src/features/workflows/ReviewResponseDialog.tsx', OwnerReturnDialog: 'src/features/workflows/OwnerReturnDialog.tsx' },
+    surfaces: ['WorkflowReviewsPage', 'ReviewResponseDialog', 'OwnerReturnDialog', 'SequentialWorkflowsPage'],
+    surfaceOwners: { WorkflowReviewsPage: 'src/features/workflows/WorkflowReviewsPage.tsx', SequentialWorkflowsPage: 'src/features/workflows/SequentialWorkflowsPage.tsx', ReviewResponseDialog: 'src/features/workflows/ReviewResponseDialog.tsx', OwnerReturnDialog: 'src/features/workflows/OwnerReturnDialog.tsx' },
   },
   {
     namespace: 'root-shell',

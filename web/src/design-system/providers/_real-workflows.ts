@@ -108,7 +108,16 @@ function useSequentialRead<T>(kind: string, id: string, load: (slug: string, sig
   const { slug = '' } = useParams();
   const qc = useQueryClient();
   const key = ['workflow-sequential', slug, kind, id];
-  const query = useQuery({ queryKey: key, queryFn: ({ signal }) => load(slug, signal),
+  const query = useQuery({ queryKey: key, queryFn: async ({ signal }) => {
+    try { return await load(slug, signal); } catch (error) {
+      // U8a: a refused read keeps no earlier run/evidence bytes in this cache entry.
+      if (status(error) === 403 || status(error) === 404) {
+        const owned = qc.getQueryCache().find<T>({ queryKey: key, exact: true });
+        owned?.setState({ ...owned.state, data: undefined, dataUpdatedAt: 0 });
+      }
+      throw error;
+    }
+  },
     enabled: !!slug && !!id, staleTime: 0, gcTime: 0, retry: false,
     refetchOnMount: 'always', refetchOnWindowFocus: 'always', placeholderData: undefined });
   useEffect(() => () => {
