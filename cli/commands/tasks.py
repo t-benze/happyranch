@@ -141,12 +141,46 @@ def cmd_verify_retry_link(args: argparse.Namespace) -> None:
         raise SystemExit(1) from None
 
 
+def task_selection_arguments(parser: argparse.ArgumentParser, *, clear: bool = False) -> None:
+    for field in ("model", "reasoning-effort"):
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument("--" + field, default=None, help="Task override; omit for the agent default (revisit: carry)")
+        if clear:
+            group.add_argument("--clear-" + field + "-override", action="store_true", help="Clear the saved task override")
+
+
+def task_selection_payload(args: argparse.Namespace, body: dict | None = None) -> dict:
+    """Validate local syntax before connecting; executor choices are server-owned."""
+    from runtime.adapters import validate_builtin_reasoning_effort
+    payload = dict(body or {})
+    for field in ("model", "reasoning_effort"):
+        value = getattr(args, field, None)
+        clear = getattr(args, "clear_" + field + "_override", False)
+        if clear and value is not None:
+            raise SystemExit(f"--{field.replace('_', '-')} and its clear flag are mutually exclusive")
+        if clear:
+            payload[field] = None
+        elif value is not None:
+            payload[field] = value
+        selected = payload.get(field)
+        if selected is not None:
+            if not isinstance(selected, str) or not selected.strip():
+                raise SystemExit(f"{field} must be a non-empty string or null")
+            if field == "reasoning_effort":
+                try:
+                    validate_builtin_reasoning_effort(selected)
+                except ValueError as exc:
+                    raise SystemExit(str(exc)) from exc
+    return payload
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Submit a task and return immediately.
 
     The CLI does not stream events. Use `happyranch tail <task_id>` to attach to
     a running task, or `happyranch details <task_id>` for a snapshot.
     """
+    selection = task_selection_payload(args)
     identities.validate_address(args.owner)
     if args.brief_file:
         try:
@@ -168,7 +202,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
-    payload: dict = {"brief": brief}
+    payload: dict = {"brief": brief, **selection}
     if args.team:
         payload["team"] = args.team
     if args.owner:
@@ -1230,6 +1264,9 @@ def cmd_revisit(args: argparse.Namespace) -> None:
     """Founder action: spawn a NEW root task that inherits a terminal
     predecessor's brief, with the team manager gated on an audit-log-backed
     context header. TTY-gated — no --yes bypass."""
+    selection = task_selection_payload(args)
+    if args.session_timeout_seconds is not None and args.session_timeout_seconds <= 0:
+        raise SystemExit("--session-timeout-seconds must be a positive integer")
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("happyranch revisit requires an interactive terminal (no --yes bypass).")
         sys.exit(1)
@@ -1267,14 +1304,10 @@ def cmd_revisit(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
 
-    if args.session_timeout_seconds is not None and args.session_timeout_seconds <= 0:
-        print("Error: --session-timeout-seconds must be a positive integer")
-        sys.exit(1)
-
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
-    payload: dict = {"founder_note": note}
+    payload: dict = {"founder_note": note, **selection}
     if args.session_timeout_seconds is not None:
         payload["session_timeout_seconds"] = args.session_timeout_seconds
     r = client.post(
@@ -1372,6 +1405,7 @@ def register(sub) -> None:
         ),
         dest="attachments",
     )
+    task_selection_arguments(p_run)
     p_run.set_defaults(func=cmd_run)
 
     p_details = sub.add_parser("details", help="Show task details")
@@ -1594,6 +1628,7 @@ def register(sub) -> None:
             "the predecessor (which itself falls through to org/Settings)."
         ),
     )
+    task_selection_arguments(p_revisit, clear=True)
     p_revisit.set_defaults(func=cmd_revisit)
 
     # ── Task attachment commands (THR-109) ─────────────────────────────────

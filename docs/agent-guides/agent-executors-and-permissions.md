@@ -1709,3 +1709,13 @@ Unsupported-stop audit failure is retained without interrupting the original
 executor wait; the once-only dispatch and final native settlement report it.
 The stop limitation is captured for the original running generation before
 dispatch, and an ended attempt is not relabeled running during retry backoff.
+
+## Task-local model and effort (THR-356)
+
+Tasks may override each agent default independently. Only explicit task effort
+must belong to the executor's existing values; default grammar remains unchanged.
+Creation and task spawn use existing combination/custom declaration validators.
+Saved-invalid settings fail before executor construction without entering native
+three-attempt refusal accounting. Custom override nonzero-before-callback fails
+with a plain rejection reason and no throttle/supervisor retry. Non-task runners
+keep their default selection. See [the task contract](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).

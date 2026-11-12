@@ -3056,6 +3056,16 @@ Traps:
 - Startup catch-up runs at most today's missed dream; it does not replay every missed day.
 - Failed or timed-out dreams do not advance the next input window.
 
+## Task selections and thread confirmation (THR-356)
+
+Thread self-dispatch accepts `model` / `reasoning_effort` in JSON or matching
+CLI flags. Validate against the dispatcher's current executor before allocation;
+response and selected `task_dispatched` messages carry effective settings and
+source. Include them in the founder confirmation. Invalid choices are refused
+with reason and valid effort options. Revisit carries task selections, explicit
+null clears each field, and linked retries carry their predecessor rather than
+the manager's own selection. See [the full design](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+
 ## Thread Dispatch Self-Only Rule
 
 `/threads/{id}/dispatch` rejects calls where `effective_target != dispatcher`. Spec: `docs/superpowers/specs/2026-05-28-thread-talk-self-dispatch-only-design.md`.
