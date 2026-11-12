@@ -147,7 +147,13 @@ def build_capabilities_prompt(
         ' ]}',
         "```",
         "",
-        "Each leg in `then` has `agent`, `prompt`, and optional `expect_verdict`.",
+        "Each leg in `then` has `agent`, `prompt`, and optional `expect_verdict`, `model`, `reasoning_effort`.",
+        "`delegate` and each fanout/parallel child (including nested then legs) also accept",
+        "optional `model` / `reasoning_effort`, validated for the TARGET agent's current CLI.",
+        "Unset uses the target's defaults; your task override is never inherited.",
+        "Invalid choices anywhere reject the whole decision before any child and return",
+        "feedback naming the leg, reason and valid options. Correct it next session.",
+        "Linked retries carry omitted fields; explicit null clears each field independently.",
         "The orchestrator auto-advances on verdict match; mismatches, blocked subtasks,",
         "or final-leg matches wake you. Full shape: the **start-task** skill.\n",
         "### Reviewer legs (HARD REJECT)\n",
@@ -211,7 +217,8 @@ def build_capabilities_prompt(
         "after join, never a fan-out child.\n"
         "- Integration model (a): each mutating child opens its own PR; "
         "the parent join summarizes outcomes.\n"
-        "- Each child may optionally carry `then` / `expect_verdict` (pipeline carrier).\n"
+        "- Each child may optionally carry `then` / `expect_verdict` (pipeline carrier), "
+        "and `model` / `reasoning_effort` for its first leg; nested legs choose independently.\n"
         "- Apply the fresh-work default above; choose linked continuation only "
         "for partial work or a possibly running attempt. Installed retry-link "
         "checks (THR-078) remain: a FAILED same-agent child under "

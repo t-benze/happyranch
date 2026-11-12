@@ -288,3 +288,14 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 ## Open questions
 
 None. Brainstorm settled all five fork-questions (Q1 verdict-aware happy path; Q2 free-string verdicts; Q3 auto-append prior leg context; Q4 final-leg wakes manager; storage on parent task as `active_chain` JSON column).
+
+
+## THR-356 additive handoff selections
+
+The current [task selection contract](2026-11-13-task-model-reasoning-overrides.md)
+extends the leg/decision field lists above with optional `model` and
+`reasoning_effort`, also on fanout/parallel children and carrier nested legs.
+Earlier unset examples and legacy state remain valid without new keys. Whole
+decision validation uses target executors before child allocation and the
+existing authoring-error feedback path. Saved selections persist to later legs
+and PR1 rechecks them at start. The manager's task override is never inherited.

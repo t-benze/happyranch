@@ -4036,6 +4036,22 @@ complete and the dual-text feature remains unaccepted.
 
 ## Inline Delegation Chains
 
+Ordinary manager handoffs accept optional `model` and `reasoning_effort` on
+`delegate`, each `then` leg, and each `fanout`/`parallel` child, including
+pipeline-carrier nested legs. PR1's resolver validates the whole decision
+against each target's current executor before creating children. An invalid
+choice returns the existing authoring feedback result/step, naming the child/leg, reason and
+valid effort options; the owner becomes PENDING and is re-enqueued once.
+Selected rows have source `manager`; unset handoffs use target defaults, never
+the manager's task overrides. Linked retries carry omitted fields and source;
+explicit values replace, explicit null clears independently, and any explicit
+edit adopts manager provenance for the remaining tuple (both clear => NULL).
+Then settings persist as optional additive JSON keys; omitted keys, legacy
+state and unset audits stay unchanged. Auto-advance stores the saved setting;
+the unchanged PR1 pre-launch check refuses invalidated choices with
+`saved model no longer valid for this agent` before executor construction.
+See [THR-356](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+
 A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `tests/test_thr211_completion_status_lag.py` for the session-bound regression cases.
 
 Next-leg admission atomically requires the parent to remain `in_progress`

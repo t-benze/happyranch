@@ -3040,6 +3040,22 @@ Traps:
 
 ## Task selections and thread confirmation (THR-356)
 
+Ordinary manager handoffs accept optional `model` and `reasoning_effort` on
+`delegate`, each `then` leg, and each `fanout`/`parallel` child, including
+pipeline-carrier nested legs. PR1's resolver validates the whole decision
+against each target's current executor before creating children. An invalid
+choice returns the existing authoring feedback result/step, naming the child/leg, reason and
+valid effort options; the owner becomes PENDING and is re-enqueued once.
+Selected rows have source `manager`; unset handoffs use target defaults, never
+the manager's task overrides. Linked retries carry omitted fields and source;
+explicit values replace, explicit null clears independently, and any explicit
+edit adopts manager provenance for the remaining tuple (both clear => NULL).
+Then settings persist as optional additive JSON keys; omitted keys, legacy
+state and unset audits stay unchanged. Auto-advance stores the saved setting;
+the unchanged PR1 pre-launch check refuses invalidated choices with
+`saved model no longer valid for this agent` before executor construction.
+See [THR-356](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+
 Thread self-dispatch accepts `model` / `reasoning_effort` in JSON or matching
 CLI flags. Validate against the dispatcher's current executor before allocation;
 response and selected `task_dispatched` messages carry effective settings and
