@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run two M3 reboot passes through Cloud Assistant; no inbound control port.
+"""Run M3 reboot passes (two by default) through Cloud Assistant; no inbound control port.
 
 Run as an authorized persistent HappyRanch job, from a clean published checkout:
   python3 scripts/ci/m3_reboot_aliyun.py --instance ID --sha FULL_SHA --output DIR
@@ -82,6 +82,7 @@ def main() -> None:
     parser.add_argument("--instance", required=True)
     parser.add_argument("--region", default="cn-hongkong")
     parser.add_argument("--sha", required=True)
+    parser.add_argument("--passes", type=int, choices=(1, 2), default=2)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.sha):
@@ -174,7 +175,7 @@ echo 'Public checkout verified at {args.sha}'
     if rc:
         raise RuntimeError("VM bootstrap failed; inspect /var/lib/happyranch-m3/bootstrap.log")
     try:
-        for number in (1, 2):
+        for number in range(1, args.passes + 1):
             record: dict = {"pass": number, "verdict": "INCOMPLETE", "reboots": []}
             summary["passes"].append(record)
             try:
@@ -195,6 +196,7 @@ echo 'Public checkout verified at {args.sha}'
                 phase(number, "logs")
                 phase(number, "purge")
                 phase(number, "teardown")
+                phase(number, "clean-state")
                 record["verdict"] = "PASS"
             except Exception as error:
                 record["verdict"] = "FAIL"

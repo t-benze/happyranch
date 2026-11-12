@@ -187,11 +187,42 @@ teardown_vm() {
   for unit in "${fixtures[@]}"; do rm "/etc/systemd/system/$unit"; done
   systemctl daemon-reload
   rm /usr/local/share/ca-certificates/happyranch-m2.crt
-  update-ca-certificates
+  # Rebuild generated links: an incremental refresh misses this removed CA.
+  # Unrelated CA sources and their configured trust remain unchanged.
+  update-ca-certificates --fresh
   rm -rf "$M2_WORK" /opt/happyranch /etc/happyranch /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar
   userdel happyranch
   if getent group happyranch >/dev/null; then groupdel happyranch; fi
   echo 'Purged product; removed only this test cell, payload/config/account and fixture units'
+}
+clean_state() {
+  local path unit
+  for unit in "${services[@]}" "$target" "${fixtures[@]}"; do
+    absent "/etc/systemd/system/$unit"
+    absent "/etc/systemd/system/multi-user.target.wants/$unit"
+    [[ $(property "$unit" LoadState) == not-found ]] || fail "still loaded: $unit"
+    ! systemctl is-active --quiet "$unit" || fail "still active: $unit"
+  done
+  for path in "$M2_WORK" /opt/happyranch /etc/happyranch \
+    /var/lib/happyranch-{connector,tsnet-sidecar} /run/happyranch-{connector,tsnet-sidecar} \
+    /etc/credstore/happyranch-tsnet-enrollment /run/credentials/happyranch-{tsnet-sidecar,connector}.service \
+    /usr/local/share/ca-certificates/happyranch-m2.crt /var/log/happyranch-{connector,tsnet-sidecar}; do
+    absent "$path"
+  done
+  if getent passwd happyranch >/dev/null || getent group happyranch >/dev/null; then
+    fail 'test account/group remains'
+  fi
+  /usr/bin/python3 - <<'PY_CA'
+import os
+from pathlib import Path
+for entry in Path('/etc/ssl/certs').iterdir():
+    references = [str(entry)]
+    if entry.is_symlink():
+        references.extend([os.readlink(entry), str(entry.resolve(strict=False))])
+    assert not any('happyranch-m2' in value for value in references), f'test CA residue: {entry}'
+print('No test CA entries or links, including dangling test-cert chains')
+PY_CA
+  echo "PASS clean VM at boot_id $(boot_id)"
 }
 case ${1:-} in
   prepare) prepare ;;
@@ -227,5 +258,6 @@ case ${1:-} in
   purge) installer uninstall --purge; residue; echo 'PASS purge residue' ;;
   logs) logs ;;
   teardown) teardown_vm ;;
-  *) fail 'expected prepare|pre-reboot|post-reboot|stop-pre-reboot|stop-post-reboot|negative-stop|purge|logs|teardown' ;;
+  clean-state) clean_state ;;
+  *) fail 'expected prepare|pre-reboot|post-reboot|stop-pre-reboot|stop-post-reboot|negative-stop|purge|logs|teardown|clean-state' ;;
 esac

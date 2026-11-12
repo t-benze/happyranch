@@ -25,6 +25,7 @@ passes**, rebooting twice per pass through a delayed test-scoped
 (no `ecs:RebootInstance` RAM permission required). A changed
 `/proc/sys/kernel/random/boot_id` and a successful Cloud Assistant observation
 prove return from each reboot; reachability polling never reissues the reboot.
+Use `--passes 1` when commissioning one complete pass; the default remains two.
 The VM driver can also be invoked phase by phase from the checked-out repo:
 
 ```bash
@@ -32,8 +33,8 @@ M3_AUTHORIZED_VM=yes M3_PASS=1 bash scripts/ci/m3_reboot.sh prepare
 ```
 
 Phases are `prepare`, `pre-reboot`, `post-reboot`, `stop-pre-reboot`,
-`stop-post-reboot`, `negative-stop`, `purge`, `logs`, and `teardown`. Their order
-is owned by the host runner. `negative-stop` is expected to exit 1 on the enabled
+`stop-post-reboot`, `negative-stop`, `purge`, `logs`, `teardown`, and
+`clean-state`. Their order is owned by the host runner. `negative-stop` is expected to exit 1 on the enabled
 installed target; it performs no mutation. The restored stopped-state check
 must pass after the second reboot. A phase failure fails the pass, collects
 logs and attempts purge/teardown; the runner does not retry acceptance, alter
@@ -67,7 +68,14 @@ IDs; `nodes-before.json` and `nodes-*.json` record both node identities.
 `uninstall --purge` is verified with M2's residue assertions **before** fixture
 cleanup. Documented product residue is payload/config/logs/account. Teardown
 then removes that test-owned residue and disables/removes only the three M3
-fixture units, deletes the private cell and its test CA, and retains reusable
+fixture units, deletes the private cell and its test CA, and runs
+`update-ca-certificates --fresh` to rebuild generated links from the remaining
+CA sources without changing unrelated CA sources or configured trust. The final
+`clean-state` phase checks product/fixture units, state, enrollment, payload,
+config, logs and account absence, and rejects any `/etc/ssl/certs` entry whose
+name, link target or resolved target references `happyranch-m2`, including
+dangling links and indirect hash-link chains. A pass is recorded only after
+this check exits 0. Teardown retains reusable
 build/download/source caches and plain evidence. The VM stays running. A failed
 cleanup is reported, not treated as a clean VM. No workflow or required-check
 change accompanies this test.
