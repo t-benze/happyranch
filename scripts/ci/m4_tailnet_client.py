@@ -21,6 +21,7 @@ import ssl
 import stat
 import subprocess
 import sys
+import sysconfig
 import time
 
 
@@ -35,21 +36,27 @@ EXPECTED = {"teams": [{"name": "default", "manager": None, "workers": [],
 
 HOSTNAME = '47-238-219-200.sslip.io'
 JOIN_SECONDS = 90
+NATIVE_HOST = 'm4-tsnet-host'
 JOIN_PHASES = ('join-call', 'native-start', 'join-wait')
 DIAGNOSTIC_LABELS = ('dns', 'tcp-connect', 'tls-verify', 'tls-reset', 'control-upgrade/noise',
                      'auth-key-rejected', 'register', 'netmap-wait', 'derp-connect', 'timeout')
 BRIDGE_ERROR_CLASSES = {'state-dir', 'log-dir', 'executable', 'control-url', 'already-started', 'not-initialised', 'unknown'}
 
 
-def bridge_error_class(lib: ctypes.CDLL) -> str:
-    """Read/free the shipped ABI's error allocation; export a fixed label only."""
+def bridge_error_text(lib: ctypes.CDLL) -> str:
+    """Private native text only; every ABI allocation is freed."""
     pointer = lib.tsnet_last_error()
     if not pointer:
-        return 'unknown'
+        return ''
     try:
-        text = ctypes.string_at(pointer).decode(errors='replace').lower()
+        return ctypes.string_at(pointer).decode(errors='replace').lower()
     finally:
         lib.tsnet_free_string(pointer)
+
+
+def bridge_error_class(lib: ctypes.CDLL) -> str:
+    """Read/free the shipped ABI's error allocation; export a fixed label only."""
+    text = bridge_error_text(lib)
     if text == 'tsnet already initialised':
         return 'already-started'
     if text in {'tsnet not initialised — call tsnet_init first', 'tsnet context is nil'}:
@@ -176,7 +183,9 @@ def application_probe(port: int) -> dict:
 
 def worker(library: Path, state: Path) -> None:
     """Private pipe protocol. Never echo input, credentials, or native errors."""
-    lib = ctypes.CDLL(str(library))
+    # The native main executable already contains and initialized the archive.
+    # Never dlopen a Go archive repackaged as a dylib in a foreign Python host.
+    lib = ctypes.CDLL(None)
     lib.tsnet_init.argtypes = [ctypes.c_char_p] * 3
     lib.tsnet_conn_dial.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
     lib.tsnet_conn_read.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
@@ -213,7 +222,22 @@ def worker(library: Path, state: Path) -> None:
         try:
             message = json.loads(line)
             action = message["action"]
-            if action == "join":
+            if action == 'precondition':
+                # An exclusively owned malformed config must stop Start before
+                # NewLogger/netmon/engine. No enrollment key or join is used.
+                code = lib.tsnet_init(b'synthetic-offline-only', b'https://example.invalid', b'synthetic-offline')
+                if code:
+                    print(json.dumps(dict(bridge_error_class=bridge_error_class(lib))), flush=True)
+                assert code == 0
+                code = lib.tsnet_start()
+                label = bridge_error_class(lib)
+                print(json.dumps(dict(bridge_error_class=label)), flush=True)
+                text = bridge_error_text(lib)
+                assert code == -2 and label == 'log-dir'
+                assert text.startswith('tsnet.start failed: tsnet: logpolicy.loadconfig ')
+                assert text.endswith(': unexpected end of json input')
+                result = {'precondition': True}
+            elif action == "join":
                 print('{"join_phase":"join-call"}', flush=True)
                 code = lib.tsnet_init(message["key"].encode(), CONTROL.encode(), b"synthetic-m4-outside")
                 if code:
@@ -298,6 +322,7 @@ class Bridge:
         info = self.state.lstat()
         assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700, 'private client state required'
         environment = dict(os.environ, XDG_CONFIG_HOME=str(self.state),
+                           PYTHONHOME=sys.base_prefix,
                            TS_DEBUG_ALWAYS_USE_DERP="true", TS_DEBUG_LOGTAIL_FLUSHDELAY="24h",
                            TS_DEBUG_NOISE_DIAL="true")
         for key in ("TS_AUTHKEY", "TS_AUTH_KEY", "TSNET_FORCE_LOGIN", "TS_DEBUGSYSPOLICY_AUTH_KEY"):
@@ -313,7 +338,7 @@ class Bridge:
         self.bridge_error_class: str | None = None
         self.response_buffer = b''
         self.process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--worker", str(library), "--worker-state", str(self.state)],
+            [str(library), str(Path(__file__).resolve()), "--worker", str(library), "--worker-state", str(self.state)],
             env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, text=True,
         )
 
@@ -355,7 +380,7 @@ class Bridge:
                 self.join_error = 'worker-response-unavailable'
                 raise RuntimeError('client response unavailable') from None
             if 'bridge_error_class' in result:
-                assert action == 'join' and set(result) == {'bridge_error_class'}
+                assert action in {'join', 'precondition'} and set(result) == {'bridge_error_class'}
                 label = result['bridge_error_class']
                 self.bridge_error_class = label if isinstance(label, str) and label in BRIDGE_ERROR_CLASSES else 'unknown'
                 continue
@@ -399,13 +424,21 @@ def build_archive(root: Path, scratch: Path) -> Path:
     architecture = {'arm64': 'arm64', 'aarch64': 'arm64', 'x86_64': 'amd64'}[platform.machine()]
     env = dict(os.environ, GOTOOLCHAIN="go1.23.12", CGO_ENABLED="1", GOOS=system, GOARCH=architecture,
                GOMAXPROCS="2", GOFLAGS="-p=2")
-    archive = native / "libtsnet.a"
-    library = native / ('libtsnet.dylib' if system == 'darwin' else 'libtsnet.so')
-    link = (["cc", "-dynamiclib", "-Xlinker", "-force_load", "-Xlinker", str(archive),
+    library = native / NATIVE_HOST
+    # Preserve build_archive's paired-host/archive path contract for both the
+    # native runner and the unchanged Linux diagnostic coordinator.
+    archive = library.with_suffix('.a')
+    framework = sysconfig.get_config_var('PYTHONFRAMEWORK')
+    python_library = (Path(sys.base_prefix) / framework if framework else
+                      Path(sysconfig.get_config_var('LIBDIR')) / sysconfig.get_config_var('INSTSONAME'))
+    assert python_library.is_file(), 'existing shared Python runtime required'
+    host = [str(root / 'scripts/ci/m4_tsnet_host.c'), '-I', str(root / 'app/mac/tsnet-bridge'),
+            '-DM4_PYTHON_LIBRARY=' + json.dumps(str(python_library)), '-Wall', '-Wextra', '-Werror']
+    link = (["cc", *host, "-Wl,-export_dynamic", "-Xlinker", "-force_load", "-Xlinker", str(archive),
              "-framework", "CoreFoundation", "-framework", "Security", "-framework", "SystemConfiguration",
              "-framework", "IOKit",
              "-lresolv", "-o", str(library)] if system == 'darwin' else
-            ["cc", "-shared", "-o", str(library), "-Wl,--whole-archive", str(archive),
+            ["cc", *host, "-Wl,--export-dynamic", "-o", str(library), "-Wl,--whole-archive", str(archive),
              "-Wl,--no-whole-archive", "-pthread", "-ldl", "-lm"])
     commands = [["go", "version"],
                 ["go", "build", "-mod=readonly", "-buildmode=c-archive", "-o", str(archive), "."], link]

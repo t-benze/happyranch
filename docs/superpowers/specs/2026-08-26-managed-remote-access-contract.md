@@ -103,6 +103,27 @@ patterns/labels map to `unknown`; raw native text, paths, keys and URLs remain
 private. Log config/filch files share the pinned tsnet state root. This is
 classification evidence, not native acceptance or authorization for another run.
 
+M4 host correction after attempt5 (TASK-15766/run43320896544/JOB-6663): the
+failed/spent init0/start-2 `executable` observation means Go1.23.12 Darwin's
+captured executable path was empty. The exact failed-run vector mutation remains
+inferred; static product linkage has no demonstrated equivalent app failure,
+and Darwin/Swift execution and app immunity remain PROOF NOT RUN. Pinned tsnet
+calls os.Executable before checking Dir, so explicit Dir alone is insufficient.
+The harness now statically links the unchanged archive into `m4-tsnet-host`,
+waits for Go initialization through an existing C export, then loads the
+driver's existing shared Python runtime for the same private JSON protocol.
+ABI lookup resolves from the main executable; no Go dylib/foreign Python host.
+Darwin state/legacy links use tsnet-m4-tsnet-host/tslib-m4-tsnet-host with the
+same exclusive0700 target, foreign-state refusal and exact-owned removal.
+Before recipient generation/publication, that same host must reach a deliberate
+malformed-log-config JSON error (init0/start-2, closed log-dir) with synthetic
+input. It stops before NewLogger/netmon/engine without a join, then reaps and
+removes the exact target/link before acceptance uses fresh state. Failure
+publishes only native-precondition plus the existing class/null, never a request
+or raw error. This proves executable/state/log access, not later logger/engine
+success. Product code/C ABI/Go/dependencies/workflow and acceptance assertions/
+deadlines are unchanged; no new native attempt or certificate is authorized.
+
 **Execution boundary:** JOB-6610 and JOB-6615 both failed at Linux outside join;
 JOB-6615 classified tcp-connect without endpoint attribution. JOB-6618, the ONE
 report-only syscall diagnostic, also exited1 and yielded no attributable parsed

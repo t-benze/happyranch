@@ -112,7 +112,8 @@ private pipes into the unchanged C ABI. Decryption uses a private-key pipe;
 no plaintext output file, argv, env, workflow input, log, PR body or artifact.
 Darwin ignores XDG_CONFIG_HOME: on the disposable runner a checked, absent
 Application Support tsnet path is linked into private scratch, using the actual
-interpreter executable identity. The runner exclusively creates the0700 state
+native main executable name `m4-tsnet-host` (`tsnet-m4-tsnet-host`, with the
+corresponding `tslib-m4-tsnet-host` legacy refusal). The runner exclusively creates the0700 state
 target inside private0700 scratch before installing the link; Bridge checks the
 target's literal directory type, owner and0700 mode before worker start.
 Existing/foreign state (including dangling links and legacy tslib state) refuses;
@@ -183,9 +184,15 @@ cleanup and inspect its actual terminal receipt.
 ## Assertions and retained diagnostics
 
 The runner builds the **unchanged** `app/mac/tsnet-bridge` with Go1.23.12,
-readonly graph, `-buildmode=c-archive`, then the native C compiler links a dylib.
+readonly graph, `-buildmode=c-archive`, then the native C compiler statically
+links that archive into `m4-tsnet-host`, as the Swift app links it into its main
+executable. A C export query waits for Go initialization before the host loads
+the driver's existing shared Python runtime and runs the same private JSON pipe
+worker. The worker resolves the eleven existing ABI exports from the main
+executable (`CDLL(None)`), without repackaging/dlopen of the Go archive. Python
+home selects the driver's existing installation; no dependency is installed.
 The workflow selects the runner image's existing OpenSSL3; it installs no dependency.
-The shared Python worker calls its existing eleven-export C ABI headlessly.
+The existing Python protocol/HTTP parser calls the C ABI headlessly.
 No product export/flag, stub transport, dependency change, Swift/GUI path or
 system Tailscale is involved. Native toolchain and archive hash are recorded.
 
@@ -232,6 +239,31 @@ observed), never the accessor's raw text, paths, keys or URLs. These are pattern
 classifications; an unrecognized hostname/auth/backend error remains `unknown`.
 Pinned tsnet v1.78.0 puts its log config/filch files in the same state root;
 there is no separate harness log-directory setting.
+
+Before generating or publishing the recipient request, `prepare` executes that
+same host with an exclusively owned malformed log config and a synthetic key.
+The only successful precondition outcome is init0/start-2, `log-dir`, with the
+private error matching the deliberate JSON decode failure. Pinned tsnet reaches
+this branch before NewLogger/netmon/engine, so no join/enrollment/network call
+is needed. The worker is reaped and the exact state link/target removed before
+key generation; acceptance then creates fresh state at the same name/target.
+A failure publishes only `native-precondition` and the existing closed error
+class (or null), never raw error text, and no recipient request is published.
+This checks executable lookup, state directory access and log-file access;
+successful later logger/engine creation is not proved by the deliberate stop.
+
+Attempt5 (TASK-15766/run43320896544/JOB-6663) remains failed/spent: init0,
+start-2, `executable`. In Go1.23.12 Darwin `os/executable_darwin.go:17-20`, that
+exact text means the runtime's captured executable path is empty.
+`runtime/os_darwin.go:459-470` reads it by scanning beyond argv/environment;
+the archive initializer captures argv before entering Go on a new thread.
+Loading after Python startup can observe a modified vector; changing the
+loading/initialization order addresses that harness risk. The failed runner's
+actual vector mutation is inferred, not reconstructed. Static app linkage has
+no demonstrated corresponding failure in the inspected app sources; app
+immunity and Darwin execution remain PROOF NOT RUN. Pinned tsnet calls
+`os.Executable()` unconditionally before checking `Dir`, so adding `Dir` alone
+would not bypass this error. No app/Go/C ABI/dependency/workflow change is made.
 
 The host `summary.json` always includes the `control_waits` list. VM-only
 premerge and Linux diagnose-only runs record `[]`: no hosted control wait

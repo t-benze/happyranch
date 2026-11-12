@@ -82,6 +82,21 @@
   before its state link; Bridge verifies directory type, owner and0700 mode
   before worker start. Existing/foreign/legacy state refuses; exact-link removal
   and scratch deletion remove the transient state.
+  The unchanged archive is statically linked into the harness's native main
+  executable `m4-tsnet-host`. An existing C export waits for Go initialization
+  before loading the driver's existing Python runtime for the private pipe
+  protocol; ABI lookup uses the main executable, never a Go dylib in Python.
+  Darwin state/legacy names are `tsnet-m4-tsnet-host`/`tslib-m4-tsnet-host`.
+  Before recipient generation/publication, a zero-network precondition uses a
+  synthetic key and deliberately malformed log config: init0/start-2 and the
+  exact private JSON-decode error must project to `log-dir`. This stops before
+  logger/network construction, then reaps the worker/removes the exact state
+  link/target. Failure exports only the existing closed class/null and publishes
+  no recipient. Later logger/engine success and Darwin execution are NOT RUN
+  premerge. Attempt5 (TASK-15766/run43320896544/JOB-6663) remains failed/spent
+  with `executable`; the captured Darwin path was empty, while the specific
+  runner vector mutation remains inferred. No corresponding shipped-app failure
+  is demonstrated; product/Swift execution and immunity are PROOF NOT RUN.
   Host wait entries retain safe labels, counts and elapsed time. `control_waits`
   is always a list: `[]` when no hosted
   wait occurred (VM-only premerge or Linux diagnose-only), otherwise genuine
