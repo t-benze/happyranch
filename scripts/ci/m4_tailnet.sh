@@ -23,11 +23,7 @@ certificate_cache() {
 import json, os, stat, subprocess, sys
 from pathlib import Path
 root, action = Path(sys.argv[1]), sys.argv[2]
-if not root.exists() and not root.is_symlink():
-    if action == 'check':
-        print('ACME cache absent; prior issuance count=2')
-        raise SystemExit(0)
-    root.mkdir(mode=0o700)
+assert root.is_dir() and not root.is_symlink(), 'retained cache required; new issuance forbidden'
 for p in [root, *root.iterdir()]:
     st = p.lstat()
     assert st.st_uid == 0 and not p.is_symlink(), 'unsafe certificate cache owner/type'
@@ -39,12 +35,8 @@ certificate = root / '47-238-219-200.sslip.io'
 usable = False
 if certificate.exists():
     usable = subprocess.run(['openssl', 'x509', '-checkend', '86400', '-noout'], input=certificate.read_bytes(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-if action == 'prepare' and not usable:
-    assert not state['reserved_new_issuances'], 'certificate cap reached; no second acquisition allowed'
-    state['reserved_new_issuances'] = 1
-    with ledger.open('x') as stream:
-        os.fchmod(stream.fileno(), 0o600)
-        stream.write(json.dumps(state)+'\n')
+assert state == {'prior_issuances': 2, 'reserved_new_issuances': 1}, 'expected issuance ledger 3; no new issuance'
+assert usable, 'cached certificate unusable; STOP without issuance'
 if action == 'remove':
     for p in root.iterdir():
         p.unlink()
@@ -106,10 +98,9 @@ database:
   type: sqlite
   sqlite:
     path: $M2_WORK/db.sqlite
-tls_letsencrypt_hostname: 47-238-219-200.sslip.io
-tls_letsencrypt_challenge_type: TLS-ALPN-01
-tls_letsencrypt_cache_dir: $cert_cache
-acme_url: https://acme-v02.api.letsencrypt.org/directory
+tls_letsencrypt_hostname: ""
+tls_cert_path: $cert_cache/47-238-219-200.sslip.io
+tls_key_path: $cert_cache/47-238-219-200.sslip.io
 dns:
   magic_dns: false
   base_domain: ci.invalid
@@ -136,7 +127,7 @@ EOF
   # Explicit direction and one TCP port; no allow-all default or client tags.
   printf '%s\n' '{"acls":[{"action":"accept","proto":"tcp","src":["m4client"],"dst":["m4home:443"]}]}' > "$M2_WORK/acl.json"
   start_fixture "${fixtures[0]}" "$M2_WORK/headscale" serve --config "$M2_WORK/config.yaml"
-  # One certificate acquisition attempt; health polling never restarts Headscale.
+  # Static cached combined PEM certificate/key: no ACME manager or issuance.
   wait_for curl -q --silent --fail --connect-timeout 2 --max-time 4 --output /dev/null https://47-238-219-200.sslip.io/health
   certificate_cache check
   hs users create m4home
@@ -162,7 +153,7 @@ kind, root, python = sys.argv[1:]
 if kind == 'enroll':
     command = [root+'/headscale', '--config', root+'/config.yaml', 'preauthkeys', 'create', '--user', 'm4client', '--reusable=false', '--expiration', '10m']
 else:
-    assert kind in ('pair-main', 'pair-revoked')
+    assert kind in ('pair-main', 'pair-revoked', 'pair-ready')
     command = ['sudo', '-u', 'happyranch', python, '-m', 'runtime.remote_access.cli', 'pair', '--config', '/etc/happyranch/connector.json', '--device', kind]
 p = subprocess.run(command, capture_output=True, check=False)
 if p.returncode:
@@ -174,6 +165,54 @@ if result.returncode:
 print(base64.b64encode(result.stdout).decode())
 PY_HANDOFF
 }
+handoff_check() {
+  /usr/bin/python3 - "$M2_WORK" "$python" <<'PY_HANDOFF_CHECK'
+import base64, json, subprocess, sys
+from datetime import datetime, timezone
+from pathlib import Path
+root, python = Path(sys.argv[1]), sys.argv[2]
+config = json.loads(Path('/etc/happyranch/connector.json').read_text())
+proof = root / 'handoff-check'
+proof.mkdir(mode=0o700)
+config['state_path'] = str(proof / 'trust.json')
+(proof / 'config.json').write_text(json.dumps(config))
+commands = {
+    'enroll': [str(root/'headscale'), '--config', str(root/'config.yaml'), 'preauthkeys', 'create', '--user', 'm4client', '--reusable=false', '--expiration', '10m'],
+    'pair-test': [python, '-m', 'runtime.remote_access.cli', 'pair', '--config', str(proof/'config.json'), '--device', 'vm-handoff-test'],
+}
+result = {}
+for name, command in commands.items():
+    generated = subprocess.run(command, capture_output=True, check=False)
+    if generated.returncode:
+        raise SystemExit('VM handoff-check ceremony failed')
+    if name == 'enroll':
+        plaintext = generated.stdout.strip()
+    else:
+        lines = generated.stdout.splitlines()
+        plaintext = lines[0].split(b': ', 1)[1]
+        expiry = datetime.fromisoformat(lines[1].split(b': ', 1)[1].decode())
+        assert 0 < (expiry-datetime.now(timezone.utc)).total_seconds() <= 300
+    encrypted = subprocess.run(['openssl', 'pkeyutl', '-encrypt', '-pubin', '-inkey', str(root/'recipient.pem'), '-pkeyopt', 'rsa_padding_mode:oaep', '-pkeyopt', 'rsa_oaep_md:sha256'], input=plaintext, capture_output=True, check=False)
+    if encrypted.returncode:
+        raise SystemExit('VM handoff-check encryption failed')
+    result[name] = base64.b64encode(encrypted.stdout).decode()
+print(json.dumps(result))
+PY_HANDOFF_CHECK
+}
+exposure_sockets() {
+  /usr/bin/python3 - <<'PY_SOCKETS'
+import json, subprocess
+checked = []
+for row in subprocess.check_output(['ss', '-H', '-lnt'], text=True).splitlines():
+    address, port = row.split()[3].rsplit(':', 1)
+    if port in {'18765', '18443', '8765'}:
+        assert address in {'127.0.0.1', '[::1]'}, 'public forbidden listener'
+        checked.append(int(port))
+assert {18765, 18443} <= set(checked), 'missing real daemon/connector loopback controls'
+print(json.dumps(dict(public_forbidden_listeners=0, loopback_ports=sorted(checked))))
+PY_SOCKETS
+}
+
 nodes() {
   hs nodes list --output json | /usr/bin/python3 -c '
 import ipaddress, json, sys
@@ -305,7 +344,10 @@ PY_CLEAN
 case ${1:-} in
   prepare) prepare ;;
   install) install_product ;;
-  enroll|pair-main|pair-revoked) handoff "$1" ;;
+  enroll|pair-main|pair-revoked|pair-ready) handoff "$1" ;;
+  handoff-check) handoff_check ;;
+  exposure-sockets) exposure_sockets ;;
+  devices) sudo -u happyranch "$python" -m runtime.remote_access.cli list-devices --config /etc/happyranch/connector.json ;;
   nodes) nodes ;;
   revoke) sudo -u happyranch "$python" -m runtime.remote_access.cli revoke --config /etc/happyranch/connector.json --device pair-revoked ;;
   logs) collect_logs ;;
@@ -314,5 +356,5 @@ case ${1:-} in
   teardown) teardown_vm ;;
   clean-state) clean_state ;;
   remove-cert-cache) clean_state; certificate_cache remove ;;
-  *) fail 'expected prepare|install|enroll|pair-main|pair-revoked|nodes|revoke|logs|attribution|purge|teardown|clean-state|remove-cert-cache' ;;
+  *) fail 'expected prepare|install|enroll|pair-main|pair-revoked|pair-ready|handoff-check|exposure-sockets|devices|nodes|revoke|logs|attribution|purge|teardown|clean-state|remove-cert-cache' ;;
 esac

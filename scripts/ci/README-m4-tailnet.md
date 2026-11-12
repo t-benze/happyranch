@@ -1,178 +1,187 @@
-# M4 public cell and outside embedded client
+# M4 native macOS outside client and public VM cell
 
-This is a **source-only, unexecuted** procedure until an exact-head full-pass
-`summary.json` says PASS and the separate shipped clean-state exits 0. A successful
-Headscale health request or native archive build proves neither daemon access nor
-the refusal cases. TASK-15661's initial feasibility acquired a publicly trusted
-TLS-ALPN-01 certificate on443 and built the unchanged app archive on Linux.
-Its full maker JOB-6610 exited1 at outside join; the private-error normalizer
-withheld the cause. Allowed/refusal/DERP/exposure acceptance was NOT RUN.
-TASK-15668 adds bounded diagnosis and repair; it does not erase that failure.
+THR-327 goal C now uses a **GitHub-hosted macOS runner**, after merge. The
+main-only `managed-m4.yml` workflow has `workflow_dispatch` only, `contents:read`,
+pinned existing actions, synthetic state, always-cleanup and plain-log artifacts.
+It is not a required check. PR triggers, required lints and daily Product E2E
+are unchanged. Static verification and the VM-only premerge phases do not prove
+native transport acceptance.
 
-Use only the founder-authorized disposable Ubuntu24.04 VM
-`i-j6c1pwjqygzrccal4mzh` in `cn-hongkong`, public `47.238.219.200`. The driver pins
-that identity and checks the existing security group's ingress:443/tcp and
-3478/udp only. It never opens80/22, changes a cloud setting, creates a resource,
-stops/reboots/resizes the VM, transfers the host Aliyun profile, or uses real org
-data. Cloud Assistant uses the same single-issue mutations and bounded read-only
-poll retries as [M3](README-m3-reboot.md). A lost RunCommand response is not
-permission to replay it. Inspect effects through Cloud Assistant before another
-authorized run.
+## Execution status and preserved failures
 
-The VM's source/build/download caches from M3 are prerequisites: the existing
-`/var/lib/happyranch-m3/tools/bin/uv`, Go, system Python/venv/pip, and checksum-pinned
-Headscale0.25.1 download. New public source is checked out at the exact published
-SHA in `/var/lib/happyranch-m4/repo`. Caches/build products belong outside task
-output; the disposable cell lives in `/var/lib/happyranch-m4/cell`.
+- JOB-6610 exited1 at outside-client join; the normalizer withheld its cause.
+  Its proxy-egress TLS reset and original logs/purge failures remain in PR1449.
+- JOB-6615 exited1, `tcp-connect` at90.18s, while trusted health/key returned200.
+  Its aggregate classifier did not attribute endpoints or prove a root cause.
+- TASK-15670's ONE report-only strace diagnostic, JOB-6618, exited1. Client
+  syscalls were observed, but no parsed connect endpoints or client DNS replies
+  were attributable. Host resolver comparison was198.18.0.47. **TUN-bypass
+  hypothesis still unproven**, neither confirmed nor refuted. No raw trace was
+  retained, no host fix was made, and that diagnostic allowance is spent.
+  Logs/purge/teardown/clean-state each exited0, retained cache ledger3. This is
+  not evidence of a product defect on a real Mac behind a TUN proxy.
+- Native macOS C-ABI joining, route/refusal/DERP/exposure assertions and real
+  GitHub encrypted-handoff coordination are **NOT RUN premerge**. VM-half
+  `--premerge-vm` receipts must be reported separately at the pushed head.
+- Signed Mac.app, Swift ClientBridge and GUI on founder hardware are separate,
+  founder-assisted acceptance and are **NOT RUN**. The current GUI is BYO;
+  managed enrollment currently reads a development environment key, which
+  conflicts with the normative credential contract. A separately authorized
+  secure managed-enrollment product change is needed before prescribing that
+  GUI path. Do not put a key in its environment or substitute system Tailscale.
 
-## Run and evidence
+## Fixed cell and prerequisites
 
-Run from a clean published task worktree on this **outside Linux host**, through
-the existing persistent jobs path (`review_required:false`, `persistent:true`):
+Only disposable Ubuntu24.04 VM `i-j6c1pwjqygzrccal4mzh`, cn-hongkong,
+47.238.219.200 is admitted. The host checks the dedicated security group has
+only443/tcp and3478/udp ingress. No80/22, SG/SSH change, restart, resize, new cost,
+cloud setting or real org data is permitted. The VM stays Running. Pre-existing
+sshd22/DHCP68 are left alone and are not test listeners.
+
+Reuse the M3 VM tools under `/var/lib/happyranch-m3` (uv, Go, system Python/venv,
+pip and checksum-pinned Headscale0.25.1). Public exact-SHA source/build caches
+live under `/var/lib/happyranch-m4`; fresh test state lives in `cell`, never in
+task output. Cloud Assistant mutations are single-issue, with bounded read-only
+invocation-result polling; an uncertain RunCommand is never automatically replayed.
+No Aliyun profile or cloud credential leaves this host.
+
+**Certificate ledger is3 of5 this week. No new issuance is allowed.** Every
+prepare requires the existing root-owned0700 cache and root-owned0600 regular
+single-link files, ledger prior2+reserved1, and cached certificate valid for
+more than24h. Missing/unsafe/unusable cache stops before Headscale starts. Headscale loads
+the cached combined PEM through tls_cert_path/tls_key_path with ACME disabled;
+normal certificate/hostname verification stays enabled and no renewal is possible.
+Only this ACME account/certificate/key/ledger cache is private allowed residue;
+Headscale DB/noise/DERP state, pairing state and product material are removed.
+`--remove-cert-cache` remains a separate explicitly authorized final decommission,
+never part of an acceptance/premerge pass. Do not run it for this task.
+
+## Handoff transport and residual risks
+
+Transport is existing **GitHub HTTPS**: the runner publishes an immutable v4
+artifact containing only its ephemeral RSA3072 public key and public run metadata.
+The authenticated host validates exact run ID, attempt1, workflow path,
+workflow_dispatch, main branch, exact SHA, artifact digest and public-key digest.
+It transfers only that public key through Cloud Assistant. The VM encrypts each
+one-use enrollment key (<=10min) and pairing code (<=5min) with RSA-OAEP/SHA256
+before returning ciphertext. The host publishes only ciphertext/public fields
+on the existing PR1449 issue-comment channel, once per phase. No new GitHub
+secret, variable, setting, permission scope or inbound port is used.
+
+The runner reads public comments without authentication; the contents:read token
+is not used for messaging. It accepts only immutable operator ID4394426,
+unedited single matching comments bound to run/attempt/SHA/key digest/phase and
+expiry. Duplicate/stale/future/edited/mismatched envelopes refuse. All waits,
+response sizes and public API reads are bounded (48 reads across the run).
+Public API exhaustion/outage fails closed; this host's unauthenticated read
+was rate-limited during authoring. Runner-side availability is NOT RUN premerge.
+GitHub's [public-comment API](https://docs.github.com/en/rest/issues/comments)
+and [immutable artifact API](https://docs.github.com/en/rest/actions/artifacts)
+are the existing channels, not a new control service.
+
+The transient RSA private key is0600 runner scratch between workflow steps; the
+foreground runner loads it into memory and unlinks it before any credential
+handoff. Enrollment/pairing plaintext exists only in runner process memory and
+private pipes into the unchanged C ABI. Decryption uses a private-key pipe;
+no plaintext output file, argv, env, workflow input, log, PR body or artifact.
+Darwin ignores XDG_CONFIG_HOME: on the disposable runner a checked, absent
+Application Support tsnet path is linked into private scratch, using the actual
+interpreter executable identity. Existing/foreign state refuses; cleanup removes
+only that exact link. Existing native node state remains private scratch and is removed. The runner
+receives no Headscale admin key, daemon bearer, cloud credential or real data.
+
+The host observes the client's Headscale membership before install. After
+paired-positive controls, the client redeems a third disposable `pair-ready`
+code; existing redacted `list-devices` is the host's acknowledgement to revoke
+`pair-revoked`. This adds no product endpoint/seam and grants no runner write
+scope. Host publishes a public revocation acknowledgement; the client then
+asserts refusal and unaffected paired200. A fresh dispatch/key is required after
+a failed attempt; automatic reruns cannot reuse an enrollment/ceremony.
+
+Residual risks are GitHub availability/rate limits, public timing/run/IP/key
+metadata, and compromise of the authorized operator/repository account or runner.
+Binding and TTL checks constrain substitution/replay; they do not remove trust
+in those accounts or GitHub. Timeouts fail and trigger cleanup. An uncertain
+comment POST must be inspected rather than replayed.
+
+## Commands and ownership
+
+Premerge, from the clean **published** exact head, submit a persistent job
+(`review_required:false`, `persistent:true`) for the single VM-half pass:
 
 ```bash
-python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_PUSHED_SHA --output /absolute/task-output/diagnostic --scratch /absolute/task-tmp/fresh-diagnostic --diagnose-only
-python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_PUSHED_SHA --output /absolute/task-output/m4 --scratch /absolute/task-tmp/fresh-m4
-python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_PUSHED_SHA --output /absolute/task-output/final-clean --clean-state-only
+python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_PUSHED_SHA --output /absolute/task-output/vm-premerge --scratch /absolute/task-tmp/fresh-vm-premerge --premerge-vm
 ```
 
-The diagnostic command prepares, checks verified HTTPS health/key status and
-timing, attempts one90s join, and tears down to clean-state. It never installs
-the product or claims acceptance. Its fixed native-log projection exports only
-allowlisted stage/error classes, counts, port80/443 attempt counts and numeric
-durations. Native text, URLs and keys stay private and are removed. A failed join
-always remains FAIL.
+This prepares real Headscale/daemon, transfers a locally generated test public
+key, decrypts VM-generated enrollment and test pairing ciphertext only in memory,
+then runs logs/purge/teardown/clean-state. Test pairing uses the shipped CLI with
+a fixture config pointing to state inside the disposable cell; it installs no
+product services, joins/redempts no client, and claims no native/route acceptance.
+The summary is `VM_PREMERGE_PASS`, never a full M4 PASS.
 
-TASK-15668 permits exactly ONE diagnostic run, then ONE full maker pass only
-if the cause is a repairable harness option/deadline/probe/fixture issue. Proxy
-path failure or a product defect must return to the manager without a full pass.
-Tailscale1.78.0 normally starts HTTP80 and falls back to HTTPS443; private
-TS_DEBUG_NOISE_DIAL diagnostics distinguish those attempts. No port80/SG change
-is allowed. The full-pass command is one complete maker attempt; clean-state-only
-is a separate read-only observation. Submit, block on the actual job ID, then inspect its
-terminal receipt and command/runtime/exit evidence on resume. Do not wait in a
-session or use shell backgrounding. Required local verification is
-`bash scripts/local_ci.sh all` in a persistent job, shellcheck via
-`uvx --from shellcheck-py shellcheck -x` on each affected shell script, a **separate**
-`bash -n SCRIPT` per script, Python compile and runner `--help`. Normal hooks and
-exact-head Source Boundary Lint / Web Lint (Node24) still apply; E2E is unchanged.
+After independent review/QA and manager merge, engineering_manager dispatches
+**Managed M4 macOS tailnet**, workflow `managed-m4.yml`, main, **no inputs**:
 
-The driver builds `app/mac/tsnet-bridge/bridge.go` unchanged with Go1.23.12,
-`-mod=readonly -buildmode=c-archive`, then links the archive with the host C
-compiler into a shared object. Its private worker calls the actual eleven-export
-C ABI through ctypes. No stub, copied transport, system Tailscale, Swift/GUI, or
-production test seam is involved. The archive's readonly module graph is
-unchanged. Build logs and private native state stay in task scratch and are
-removed at the end; the archive digest and effective Go version are recorded.
+```bash
+gh workflow run managed-m4.yml --repo t-benze/happyranch --ref main
+gh run list --repo t-benze/happyranch --workflow managed-m4.yml --event workflow_dispatch --branch main --limit 5 --json databaseId,headSha,status,url
+```
 
-| Check/phase | Observable result |
+Select the newly dispatched run and its exact main SHA; do not infer identity
+from the latest run alone. From a clean checkout of that same main SHA, promptly
+start the host coordinator as an authorized persistent job:
+
+```bash
+python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_DISPATCHED_MAIN_SHA --runner-run RUN_ID --output /absolute/task-output/m4-native --scratch /absolute/task-tmp/fresh-m4-native
+```
+
+It waits for the public-key artifact (max10min), prepares the VM, publishes
+enrollment ciphertext, observes join, installs the real product, publishes pair
+ciphertexts, observes the positive-control marker, revokes, and reads native
+completion/artifacts. It always attempts owned logs/purge/teardown/clean-state,
+checks SG and provider Running, and removes private host scratch. On failure it
+requests cancellation only for that exact dispatched run. Cleanup uncertainty
+remains FAIL, never PASS. VM cleanup requires the host coordinator even when the
+workflow ends; the runner has no VM credential. Keep the host job alive through
+cleanup and inspect its actual terminal receipt.
+
+## Assertions and retained diagnostics
+
+The runner builds the **unchanged** `app/mac/tsnet-bridge` with Go1.23.12,
+readonly graph, `-buildmode=c-archive`, then the native C compiler links a dylib.
+The workflow selects the runner image's existing OpenSSL3; it installs no dependency.
+The shared Python worker calls its existing eleven-export C ABI headlessly.
+No product export/flag, stub transport, dependency change, Swift/GUI path or
+system Tailscale is involved. Native toolchain and archive hash are recorded.
+
+| Check | Required observation/control |
 | --- | --- |
-| prepare/install | Real Headscale HTTPS443 with trusted TLS-ALPN-01 certificate; STUN3478; real shipping installer, notify-READY connector/sidecar; real loopback daemon and synthetic org. Outside embedded node joins before installer expected-peer readiness. |
-| allowed-200 | Paired GET teams ->200 and the exact M2 real-daemon synthetic teams body. |
-| unpaired-refused | Same GET/transport, missing credential and never-paired credential ->403 `identity_denied`. Paired controls succeed before/after. |
-| revoked-refused | Second device GET200; shipping CLI revokes it; same GET/credential ->403 `identity_denied` within30s after reconciliation. The unaffected device stays200. Persistent success is a product defect, never a harness workaround. |
-| forbidden-route-refused | Six M2 forbidden method/path cases ->403 with exact `method_denied`/`route_denied`. Paired allowed GETs bracket each case and the synthetic org remains present. A forbidden route is never made allowed as a positive control. |
-| DERP-path | `TS_DEBUG_ALWAYS_USE_DERP=true` disables client UDP. Private region999 is the **only** published region (`urls/paths=[]`, auto-update false). The unchanged client's backend logs must actually show UDP disabled and `derp-999 connected`; another/missing region fails. |
-| exposure | Trusted direct TLS to the literal public IP with hostname SNI returns health200 and daemon route404. Application-level probes of public ports18765/18443/8765 must obtain no TLS/HTTP response within their bounds while verified443 health200 succeeds before AND after. Expected-certificate TLS or HTTP response bytes mean reachable; wrong-certificate/other TLS response conservatively fails. The guest ss crosscheck must show no forbidden public/wildcard listener (product loopback sockets are expected). Raw TCP-connect success or failure means nothing through this host's mihomo TUN proxy, which accepts arbitrary ports locally. No response is a bounded observation, not a universal reachability guarantee; pair it with the healthy control and guest evidence. |
-| logs | Per-run directory reset before prepare; guest microsecond boundary before provisioning; every journal has `--since` and short-unix timestamps; shipped attribution rejects old/unrecognized entries and requires actual product/control journals. Status snapshots suppress their second journal tail. If install was never attempted, assert every product unit/state is absent and explicitly record `not applicable: product not installed`; retain fixture journal attribution. Once install is attempted, even partially, the original product journal assertions remain mandatory. |
-| purge/teardown/clean-state | Product uninstall--purge plus unchanged M2 residue assertions when install was attempted; otherwise assert absent units/state and record `not applicable: product not installed`. Remove synthetic cell including Headscale DB/noise/DERP state and recipient public key; retain only the root-only ACME cache described below; remove payload/config/logs/account and synthetic CA source; `update-ca-certificates --fresh`; reject dangling synthetic CA chains and all test sockets443/3478/18765/18443/8765. No DNS/hosts edits are made; hashes must remain unchanged. PASS is gated on clean-state and final application-level probes. Final443 is intentionally down, so the final observation is paired with the same run's earlier healthy443 control and guest clean-state; it does not invent a live post-teardown control. |
+| allowed-200 | Tailnet GET real daemon's synthetic teams ->200 and exact M2 body. |
+| absent/never-paired | Same transport GET ->403 identity_denied; paired200 before/after each. |
+| revoked | Targeted device200 before revoke; same credential403 within30s, unaffected device200. |
+| forbidden routes | Six retained M2 method/path rows ->exact403 category; paired allowed200 brackets each; synthetic org survives. Forbidden routes are never allowed as controls. |
+| DERP | Existing TS_DEBUG_ALWAYS_USE_DERP disables client UDP; actual native log projection must show disabled UDP and only connected private region999. Config alone is not path proof. Allowed200 follows the projection. |
+| public exposure | Verified443 health200 before/after bounded application-level probes; daemon path on control443 is404; public18765/18443/8765 yield no TLS/HTTP response. Guest crosscheck requires daemon/connector loopback controls and no forbidden public listener. No response is a bounded observation, not universal reachability proof; raw TCP through a proxy is insufficient. |
+| logs/cleanup | Fresh run directory, microsecond journal boundary and shipped attribution. Installed-product purge assertions remain unchanged. Without install, assert absent product state and label not applicable. Remove transient state/CA/links/test sockets; preserve unchanged DNS hashes and only the validated cert cache. |
 
-The cell ACL is explicit: `m4client` may reach `m4home:443/tcp` only, rather than
-Headscale's allow-all default. No routes/exit nodes/tags are advertised. This
-single-customer synthetic cell is destroyed at teardown; cross-tenant hostile
-acceptance and fleet admission/economics remain outside this slice.
+`managed-m4-logs-RUN_ID-1` contains only request.json and client-summary.json.
+Private native filch/stderr/build logs are not uploaded. Existing logtail delay
+keeps native logs local for the bounded run; the client worker is killed/reaped
+before graceful upload and scratch is removed by foreground/finally and workflow
+always-cleanup. VM plain-log collection excludes cell/keys/DB/state, records
+stream byte counts/hashes and <=256KiB excerpts, gzip>1MB and45MB total cap.
+Guest1s memory/swap sampling and per-service peaks remain; builds use2 workers,
+fixture MemoryMax600M. Sampling is not a hard instantaneous whole-host bound.
 
-The VM already has sshd22 and DHCP68 sockets; SSH remains unreachable through
-its unchanged security group. These pre-existing host services are not test
-listeners and are not stopped. The two publicly admitted ports443/3478 must have
-no listener after teardown. The shipped clean-state allowlist permits reusable public source/build caches,
-bounded plain logs, and **only** `/var/lib/happyranch-m4/acme-cache` as private
-certificate residue: root-owned0700 directory, root-owned0600 regular single-link
-files, no symlinks/subdirectories. This contains the disposable ACME account,
-certificate/private key and numeric issuance ledger, never Headscale DB, noise
-or DERP keys, product state or CA links. It is reused between maker and independent
-QA passes to avoid burning Let’s Encrypt's5-per-exact-hostname/7days quota.
+Linux `--diagnose-only` remains solely for separately authorized non-acceptance
+diagnostics because it reuses the same worker; no default/full Linux acceptance
+path exists. **Do not run another diagnostic for TASK-15670.**
 
-The count entering TASK-15668 is2. The cache ledger reserves at most ONE new
-issuance for this task BEFORE Headscale starts; a missing/expired cache after
-that reservation refuses another prepare. A reused valid cache needs no issuance.
-Record the observed count (3 after one new certificate), not just a successful
-health check. ACME refusal, inability to establish the count, or cap exhaustion
-stops the attempt; never wipe state or silently retry issuance. This VM/cache
-is pinned to this one host and is not a general ACME provisioner.
-
-Final decommission is a separate explicit operation, never part of a pass:
-
-```bash
-python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_PUSHED_SHA --output /absolute/task-output/decommission --remove-cert-cache
-```
-
-It requires clean-state first and removes the validated cache only. TASK-15668
-leaves the VM running and keeps this cache for independent QA. The owned-sha marker is removed only after teardown; an
-unknown/partial owner or failed purge must be reconciled rather than bypassed.
-
-Memory evidence includes1s guest `/proc/meminfo` sampling starting before the
-payload build, plus per-service `MemoryPeak`/`MemorySwapPeak` snapshots. Each
-fixture has `MemoryMax=600M`, builds use `GOMAXPROCS=2 GOFLAGS=-p=2`; the existing
-2GiB VM and2GiB swap are unchanged. Report measured sampled peak memory/swap and
-sample count. Sampling is not a hard instantaneous whole-host RSS bound.
-
-## Credential custody
-
-The VM creates a non-reusable <=10minute enrollment key and normal one-use
-<=5minute pairing codes. A fresh host RSA3072 public key goes to the VM over
-Cloud Assistant. Each secret is encrypted with RSA-OAEP/SHA256 **before** command
-output; only ciphertext crosses the Cloud Assistant result. The host decrypts
-into process memory and sends private pipe messages to the actual C ABI worker.
-No plaintext secret enters argv, environment, workflow inputs, logs, PR text or
-artifacts. Pairing credentials retain shipping product lifetime semantics and
-are destroyed with the cell/process; they are never redefined by this harness.
-
-The client's existing upstream `TS_DEBUG_LOGTAIL_FLUSHDELAY=24h` knob keeps
-backend diagnostics local during the bounded pass. Only a strict projection
-(`udp_disabled`, selected region IDs, closed join stage/error labels/counts/timings) is exported from native filch logs.
-The worker is killed/reaped before graceful log-upload shutdown, and its entire
-private state/log directory is removed. Raw native logs, node state, private RSA
-key and decrypted credentials never enter output. VM collection archives only
-the designated plain-log directory, never cell/DB/state/key files.
-
-Every collected stream records full byte count and SHA256, a <=256KiB head/tail
-excerpt, gzip for streams over1MB, and a45MB task-output gate. Failures retain
-their phase/exit/check evidence and cleanup errors; they never become PASS from
-successful cleanup alone. Preserve actual product failures and return them to
-the manager without changing product code, units or security checks.
-
-## Outside-client alternatives and remaining acceptance
-
-The brief's candidate order was evaluated before building:
-
-1. **macOS GitHub runner:** headless use of the real archive is source-feasible.
-   Existing M1–M3 workflows dispatch on main only. A new M4 workflow cannot
-   supply this task's pre-merge exact-head maker pass under that precedent;
-   secure automatic runner handoff is also unimplemented. NOT RUN. No workflow,
-   secret, variable, trigger or setting is added.
-2. **This outside Linux host:** selected C-ABI procedure above; it egresses via
-   a proxy. This is actual packaged Go transport coverage, not native Swift
-   ClientBridge or signed Mac.app acceptance. Until an actual job receipt exists,
-   join, proxy compatibility,200/refusals/DERP/exposure remain NOT RUN.
-3. **Founder Mac.app:** NOT RUN. The current UI is BYO-Tailscale; managed key
-   input in Swift is a development environment variable, conflicting with the
-   normative ban on enrollment-in-env. There is no current secure managed GUI
-   enrollment procedure to prescribe. A separately authorized product change is
-   needed before founder GUI acceptance; do not simulate it or use a key in env.
-
-After that separately approved secure enrollment path exists, founder steps are:
-use the signed app on an outside network without system Tailscale; securely
-enroll at the temporary control URL; enter the pass's home tailnet address,
-connector port443 and fresh one-use pairing code in Connect to Remote Runtime;
-connect and report the synthetic teams result and redacted region999 diagnostic;
-repeat operator-controlled unpaired/revoked/forbidden observations; disconnect
-and remove disposable enrollment. These are conditional steps, not a claim that
-the present GUI supports managed enrollment.
-
-Neither maintained document previously named M4. The normative contract is
-stricter than goal C: five rows covering same-Wi-Fi direct/private relay,
-separate-network direct/private relay, and failure/recovery. This procedure is
-only the **separate-network forced-private-DERP** slice. Same-Wi-Fi, direct path,
-failure/recovery across both topologies and native Mac acceptance remain open.
-Source delivery, lint and an eventual Linux pass do not close those obligations.
+Verification: `scripts/local_ci.sh all` as a durable job; shellcheck-x for changed
+shell drivers, separate bash-n per driver, Python compile/help, actionlint when
+available (otherwise report unavailable), worktree guard and full diff check.
+Required hosted lints must be green at the exact pushed PR head. Native macOS
+execution is NOT RUN premerge. Signed GUI/founder acceptance and the other four
+normative topology/failure rows remain separate obligations; this workflow
+covers only separate-network forced private DERP.

@@ -59,24 +59,28 @@
 
 - **VM reboot acceptance (THR-327 goal B).** The authorized VM-only driver `scripts/ci/m3_reboot.sh` and host runner `scripts/ci/m3_reboot_aliyun.py` extend M2/M3 with two clean passes and two reboots per pass. Persistent test units/state, saved pairing and Headscale identity/enrollment checks, automatic notify-READY, disabled-target inactivity for 30 seconds, explicit re-enable and purge residue are described in [the runbook](../../../scripts/ci/README-m3-reboot.md). Source delivery alone is not VM acceptance; exact-head phase/boot/identity receipts are required. No product unit or GitHub trigger changes.
 
-- **M4 public-cell/outside-client procedure (THR-327 goal C; source-only).**
-  [The M4 runbook](../../../scripts/ci/README-m4-tailnet.md) describes public
-  Headscale TLS-ALPN-01 on443/private DERP999/STUN3478 on the authorized HK VM,
-  shipping Linux install and loopback daemon, and the unchanged Mac Go C archive
-  driven from this outside Linux host without system Tailscale. Exact200/403
-  controls, actual private-region evidence, outside public-IP exposure probes,
-  run-attributed journals and complete transient CA/state/socket cleanup gate the pass.
-  Root-only0700/0600 ACME certificate cache is allowlisted between passes, with
-  explicit final decommission and bounded issuance (TASK-15668 starts at2 and
-  permits at most1 new). Exposure uses application responses, verified443 health
-  controls and guest sockets: proxy-accepted TCP alone proves nothing. Join
-  diagnostics export fixed classes/timings only. Never-installed logs/purge
-  record asserted not-applicable; installed-product assertions remain intact.
-  JOB-6610 failed at outside join; its hidden cause and unrun cases are preserved.
-  Full driver acceptance is **UNEXECUTED**; TLS health and archive-build feasibility
-  do not establish it. Native macOS runner/Swift/GUI acceptance is NOT RUN; the
-  current GUI's development environment-key input is not secure managed enrollment
-  under the normative credential contract. Conditional founder steps and that
-  limitation are recorded rather than simulated. This is the separate-network
-  forced-private-DERP slice; all five normative topology/failure rows remain
-  required. No workflow, product unit, product code or security check changes.
+- **M4 native macOS outside-client procedure (THR-327 goal C).**
+  [The M4 runbook](../../../scripts/ci/README-m4-tailnet.md) owns the main-only
+  manual `managed-m4.yml` workflow and host Cloud Assistant coordinator. The
+  GitHub-hosted Mac builds the unchanged shipped Go C archive and uses its C ABI
+  headlessly against trusted443/private DERP999/STUN3478 on the pinned HK VM.
+  Existing exact200/403 paired controls, revocation/unaffected controls, forbidden
+  routes, actual DERP evidence and application-level exposure checks remain.
+  Public-key artifacts and run/actor/key/phase/expiry-bound OAEP ciphertext on
+  PR1449 comments need no new secret/setting/scope/port; the runner gets no cloud,
+  Headscale admin or daemon bearer. Plaintext enrollment/pairing stays in runner
+  memory/private pipes. Public API quotas/account trust remain explicit limits.
+  The host observes the existing pairing marker before revoke and always runs
+  VM logs/purge/teardown/clean-state. Root-only cache ledger3 of5 is retained,
+  >24h-valid cache is required, static TLS disables ACME renewal, and zero new
+  certificate issuance is permitted.
+  VM stays Running. Workflow is nonrequired; daily E2E/PR triggers are unchanged.
+  JOB-6610/6615 Linux join failures and JOB-6618 report-only trace failure remain
+  recorded; the TUN-bypass hypothesis is still unproven. Linux client mode is
+  diagnostic only, with no further TASK-15670 diagnostic allowance. Native Mac
+  transport/GitHub handoff/route acceptance is **NOT RUN premerge**; static and
+  VM-half encryption/cleanup receipts are separate evidence. Signed Mac.app,
+  Swift and GUI on founder hardware remain a separate founder-assisted step;
+  secure managed GUI enrollment needs a separately scoped product change, never
+  an environment key. This is only the separate-network forced-private-DERP
+  slice; all five normative topology/failure rows remain required.

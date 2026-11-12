@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Authorized M4 separate-network acceptance through the unchanged app C archive.
+"""M4 host-side Cloud Assistant orchestration; Linux client is diagnostic only.
 
 Run only as a persistent job, at a clean published head. See README-m4-tailnet.md.
 The host Aliyun profile never leaves this host. No system Tailscale is used.
@@ -8,298 +8,27 @@ from __future__ import annotations
 
 import argparse
 import base64
-import ctypes
 import gzip
 import hashlib
-import http.client
 import io
 import json
-import os
 from pathlib import Path
 import re
-import select
 import shlex
 import shutil
-import socket
-import ssl
 import subprocess
 import sys
 import tarfile
-import time
 
 from m3_reboot_aliyun import CloudAssistant
+
+from m4_tailnet_client import Bridge, DiagnosticComplete, build_archive, control_get, worker
+from m4_tailnet_control import HostedRun
+from m4_tailnet_runner import decrypt
 
 BASE = "/var/lib/happyranch-m4"
 INSTANCE = "i-j6c1pwjqygzrccal4mzh"
 PUBLIC_IP = "47.238.219.200"
-CONTROL = "https://47-238-219-200.sslip.io"
-ROUTE = "/api/v1/orgs/m2-synthetic/teams"
-EXPECTED = {"teams": [{"name": "default", "manager": None, "workers": [],
-                       "manager_kind": "human", "human_manager": "founder", "is_default": True}]}
-
-
-HOSTNAME = '47-238-219-200.sslip.io'
-JOIN_SECONDS = 90
-
-
-class DiagnosticComplete(Exception):
-    pass
-
-
-def join_diagnostic(state: Path, stderr: Path, elapsed: float) -> dict:
-    """Read private native text; export only fixed labels, counts and clocks."""
-    paths = [stderr, *sorted(state.rglob('tailscaled.log*.txt'))]
-    observations: dict[str, int] = {}
-    patterns = {
-        'dns': r'no such host|temporary failure in name resolution',
-        'tcp-connect': r'connect: connection refused|network is unreachable|i/o timeout',
-        'tls-verify': r'x509:|certificate verify failed|certificate signed by unknown authority',
-        'tls-reset': r'(?:https://|tls).*(?:connection reset by peer|unexpected EOF|: EOF)',
-        'control-upgrade/noise': r'(?:noise dial|controlhttp|ts2021|Noise handshake).*(?:failed|error|EOF|reset|timeout|unexpected HTTP response)',
-        'auth-key-rejected': r'invalid authkey|auth key.*(?:invalid|expired|rejected)|authkey.*(?:invalid|expired|rejected)',
-        'register': r'RegisterReq|register request|register response',
-        'netmap-wait': r'netmap|map response',
-        'derp-connect': r'derp-[0-9]+ connected;',
-    }
-    texts = []
-    for path in paths:
-        if not path.exists():
-            continue
-        assert path.stat().st_size <= 8_000_000, 'private diagnostic log budget'
-        texts.append(path.read_text(errors='replace'))
-    private = '\n'.join(texts)
-    for label, pattern in patterns.items():
-        observations[label] = len(re.findall(pattern, private, re.IGNORECASE))
-    error_class = next((label for label in ('auth-key-rejected', 'tls-verify', 'control-upgrade/noise', 'tls-reset', 'dns', 'tcp-connect') if observations[label]), 'timeout')
-    return dict(stage=error_class, error_class=error_class, elapsed_seconds=round(elapsed, 3),
-                deadline_seconds=JOIN_SECONDS, observations=observations,
-                port80_attempts=len(re.findall(r'trying noise dial \(http://', private)),
-                port443_attempts=len(re.findall(r'trying noise dial \(https://', private)),
-                native_text_exported=False)
-
-
-def control_get(path: str) -> dict:
-    """Pin IP and expected SNI; normal trust verification. Status/time only."""
-    started = time.monotonic()
-    connection = http.client.HTTPConnection(HOSTNAME, timeout=10)
-    try:
-        raw = socket.create_connection((PUBLIC_IP, 443), timeout=10)
-        try:
-            connection.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=HOSTNAME)
-        except Exception:
-            raw.close()
-            raise
-        connection.request('GET', path)
-        response = connection.getresponse()
-        assert len(response.read(8193)) <= 8192, 'public response budget'
-        return dict(status=response.status, elapsed_seconds=round(time.monotonic() - started, 3))
-    finally:
-        connection.close()
-
-
-def application_probe(port: int) -> dict:
-    """A proxy-accepted TCP socket alone has no reachability meaning."""
-    started = time.monotonic()
-    try:
-        with socket.create_connection((PUBLIC_IP, port), timeout=3) as raw:
-            with ssl.create_default_context().wrap_socket(raw, server_hostname=HOSTNAME):
-                return dict(port=port, reachable=True, evidence='verified-TLS', elapsed_seconds=round(time.monotonic()-started, 3))
-    except ssl.SSLCertVerificationError:
-        # A server replied with a wrong certificate: never turn this into absence.
-        return dict(port=port, reachable=True, evidence='untrusted-TLS-response', elapsed_seconds=round(time.monotonic()-started, 3))
-    except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
-        pass
-    except ssl.SSLError:
-        return dict(port=port, reachable=True, evidence='unverified-TLS-response', elapsed_seconds=round(time.monotonic()-started, 3))
-    except (OSError, TimeoutError):
-        pass
-    try:
-        with socket.create_connection((PUBLIC_IP, port), timeout=3) as raw:
-            raw.sendall(f'GET /health HTTP/1.1\r\nHost: {HOSTNAME}\r\nConnection: close\r\n\r\n'.encode())
-            received = raw.recv(4096)
-            if received:
-                return dict(port=port, reachable=True, evidence='response-bytes', response_bytes=len(received), elapsed_seconds=round(time.monotonic()-started, 3))
-    except (OSError, TimeoutError):
-        pass
-    return dict(port=port, reachable=False, evidence='no-TLS-or-HTTP-response-within-bound', elapsed_seconds=round(time.monotonic()-started, 3))
-
-
-def worker(library: Path, state: Path) -> None:
-    """Private pipe protocol. Never echo input, credentials, or native errors."""
-    lib = ctypes.CDLL(str(library))
-    lib.tsnet_init.argtypes = [ctypes.c_char_p] * 3
-    lib.tsnet_conn_dial.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
-    lib.tsnet_conn_read.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
-    lib.tsnet_conn_write.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
-    lib.tsnet_conn_close.argtypes = [ctypes.c_int]
-    lib.tsnet_local_addr.restype = ctypes.c_void_p
-    lib.tsnet_free_string.argtypes = [ctypes.c_void_p]
-
-    class Stream(io.RawIOBase):
-        def __init__(self, handle: int) -> None:
-            super().__init__()
-            self.handle = handle
-
-        def readable(self) -> bool:
-            return True
-
-        def readinto(self, buffer: bytearray) -> int:
-            native = ctypes.create_string_buffer(len(buffer))
-            size = lib.tsnet_conn_read(self.handle, native, len(buffer))
-            if size < 0:
-                raise RuntimeError("transport read failed")
-            buffer[:size] = native.raw[:size]
-            return size
-
-    class Connection:
-        def __init__(self, handle: int) -> None:
-            self.handle = handle
-
-        def makefile(self, mode: str) -> io.BufferedReader:
-            return io.BufferedReader(Stream(self.handle))
-
-    for line in sys.stdin:
-        try:
-            message = json.loads(line)
-            action = message["action"]
-            if action == "join":
-                assert lib.tsnet_init(message["key"].encode(), CONTROL.encode(), b"synthetic-m4-outside") == 0
-                assert lib.tsnet_start() == 0
-                deadline = time.monotonic() + JOIN_SECONDS
-                while time.monotonic() < deadline:
-                    pointer = lib.tsnet_local_addr()
-                    if pointer:
-                        address = ctypes.string_at(pointer).decode()
-                        lib.tsnet_free_string(pointer)
-                        break
-                    time.sleep(0.2)
-                else:
-                    raise RuntimeError("join deadline")
-                result = {"joined": True, "address": address}
-            elif action == "request":
-                handle = lib.tsnet_conn_dial(b"tcp", (message["address"] + ":443").encode(), 15000)
-                if handle < 0:
-                    raise RuntimeError("dial refused")
-                try:
-                    data = message.get("data", "").encode()
-                    headers = [f'{message["method"]} {message["path"]} HTTP/1.1',
-                               'Host: home', 'Connection: close', f'Content-Length: {len(data)}']
-                    if message.get("credential") is not None:
-                        headers.append("X-HappyRanch-Device-Credential: " + message["credential"])
-                    request = ("\r\n".join(headers) + "\r\n\r\n").encode() + data
-                    while request:
-                        size = lib.tsnet_conn_write(handle, request, len(request))
-                        if size <= 0:
-                            raise RuntimeError("write failed")
-                        request = request[size:]
-                    response = http.client.HTTPResponse(Connection(handle))
-                    response.begin()
-                    raw = response.read(1_000_001)
-                    assert len(raw) <= 1_000_000
-                    result = {"status": response.status, "body": json.loads(raw)}
-                    response.close()
-                finally:
-                    lib.tsnet_conn_close(handle)
-            elif action == "derp-proof":
-                # The existing upstream diagnostic knob delays log upload. Read
-                # only backend log files, and export a strict non-secret subset.
-                regions: set[int] = set()
-                disabled = False
-                for p in state.rglob('tailscaled.log*.txt'):
-                    assert p.stat().st_size <= 8_000_000, 'native log budget'
-                    for entry in p.read_text(errors='replace').splitlines():
-                        try:
-                            text = json.loads(entry).get('text', '')
-                        except (ValueError, AttributeError):
-                            continue
-                        for region in re.findall(r'magicsock: derp-([0-9]+) connected;', text):
-                            regions.add(int(region))
-                        if re.search(r'disabled udp[46]? per TS_DEBUG_ALWAYS_USE_DERP', text):
-                            disabled = True
-                assert regions == {999}, 'missing/wrong selected DERP region'
-                assert disabled, 'missing client UDP-disable evidence'
-                result = {"selected_regions": sorted(regions), "udp_disabled": disabled,
-                          "source": "unchanged tsnet backend filch logs; strict projection"}
-            else:
-                raise RuntimeError("unknown worker operation")
-            print(json.dumps(result), flush=True)
-        except Exception:
-            # Even JSON/native exceptions may contain response credential bytes.
-            print('{"worker_error":"operation_failed"}', flush=True)
-
-
-class Bridge:
-    def __init__(self, library: Path, scratch: Path) -> None:
-        self.state = scratch / "client-state"
-        self.state.mkdir(mode=0o700)
-        environment = dict(os.environ, XDG_CONFIG_HOME=str(self.state),
-                           TS_DEBUG_ALWAYS_USE_DERP="true", TS_DEBUG_LOGTAIL_FLUSHDELAY="24h",
-                           TS_DEBUG_NOISE_DIAL="true")
-        for key in ("TS_AUTHKEY", "TS_AUTH_KEY", "TSNET_FORCE_LOGIN", "TS_DEBUGSYSPOLICY_AUTH_KEY"):
-            if key in environment:
-                raise RuntimeError("unset ambient tsnet auth variables before M4")
-        self.stderr_path = scratch / "client-private.stderr"
-        self.stderr = self.stderr_path.open("wb")
-        self.join_diagnostics: dict = {}
-        self.process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--worker", str(library), "--worker-state", str(self.state)],
-            env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, text=True,
-        )
-
-    def call(self, action: str, **fields: object) -> dict:
-        started = time.monotonic()
-        try:
-            return self._call(action, **fields)
-        finally:
-            if action == 'join':
-                self.join_diagnostics = join_diagnostic(self.state, self.stderr_path, time.monotonic()-started)
-
-    def _call(self, action: str, **fields: object) -> dict:
-        assert self.process.stdin is not None and self.process.stdout is not None
-        self.process.stdin.write(json.dumps(dict(action=action, **fields)) + "\n")
-        self.process.stdin.flush()
-        if not select.select([self.process.stdout], [], [], JOIN_SECONDS + 10 if action == "join" else 35)[0]:
-            raise RuntimeError(f"client {action} deadline exceeded")
-        line = self.process.stdout.readline()
-        try:
-            result = json.loads(line)
-        except ValueError:
-            raise RuntimeError(f"client {action} response unavailable") from None
-        if "worker_error" in result:
-            raise RuntimeError(f"client {action} failed (private native detail not exported)")
-        return result
-
-    def close(self) -> None:
-        # Do not flush upstream diagnostic logs on graceful Go shutdown. These
-        # are disposable nodes; reap the entire embedded engine with its worker.
-        self.process.kill()
-        self.process.wait(timeout=15)
-        self.stderr.close()
-        shutil.rmtree(self.state)
-
-
-def build_archive(root: Path, scratch: Path) -> Path:
-    native = scratch / "native"
-    native.mkdir()
-    env = dict(os.environ, GOTOOLCHAIN="go1.23.12", CGO_ENABLED="1", GOOS="linux", GOARCH="amd64",
-               GOMAXPROCS="2", GOFLAGS="-p=2")
-    archive = native / "libtsnet.a"
-    commands = [
-        ["go", "version"],
-        ["go", "build", "-mod=readonly", "-buildmode=c-archive", "-o", str(archive), "."],
-        ["cc", "-shared", "-o", str(native / "libtsnet.so"), "-Wl,--whole-archive", str(archive),
-         "-Wl,--no-whole-archive", "-pthread", "-ldl", "-lm"],
-    ]
-    for number, command in enumerate(commands):
-        with (native / f"build-{number}.log").open('wb') as stream:
-            result = subprocess.run(command, cwd=root / "app/mac/tsnet-bridge", env=env,
-                                    stdout=stream, stderr=subprocess.STDOUT, timeout=900, check=False)
-        if result.returncode:
-            raise RuntimeError(f"unchanged archive build step {number} failed, exit={result.returncode}")
-    version = (native / 'build-0.log').read_text().strip()
-    if not version.endswith('go1.23.12 linux/amd64'):
-        raise RuntimeError('incorrect effective Go toolchain')
-    return native / "libtsnet.so"
 
 
 def main() -> None:
@@ -310,6 +39,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--scratch", type=Path)
     parser.add_argument("--clean-state-only", action="store_true")
+    parser.add_argument("--runner-run", type=int, help="Coordinate this exact main-only macOS workflow run")
+    parser.add_argument("--premerge-vm", action="store_true", help="VM prepare/encrypted test-key handoff/cleanup only; no outside client")
     parser.add_argument("--diagnose-only", action="store_true", help="One prepare/prejoin/join/cleanup run; no product acceptance")
     parser.add_argument("--remove-cert-cache", action="store_true", help="Explicit final decommission after clean-state; never part of a pass")
     parser.add_argument("--worker", type=Path, help=argparse.SUPPRESS)
@@ -320,6 +51,9 @@ def main() -> None:
         return
     if not __debug__:
         parser.error('Python optimization disables acceptance assertions; unset PYTHONOPTIMIZE')
+    modes = sum(bool(value) for value in (args.runner_run, args.premerge_vm, args.diagnose_only, args.clean_state_only, args.remove_cert_cache))
+    if modes != 1:
+        parser.error('choose exactly one explicit mode; Linux acceptance has been retired')
     if not args.sha or not re.fullmatch(r"[0-9a-f]{40}", args.sha) or not args.output:
         parser.error('full --sha and --output are required')
     root = Path(__file__).resolve().parents[2]
@@ -330,7 +64,7 @@ def main() -> None:
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
     ca = CloudAssistant(args.instance, args.region)
-    record: dict = {"sha": args.sha, "instance": args.instance, "outside_client": "ii: Linux unchanged app Go C archive",
+    record: dict = {"sha": args.sha, "instance": args.instance, "outside_client": "native macOS workflow" if args.runner_run else "none: VM-only premerge" if args.premerge_vm else "Linux diagnostic only",
                     "verdict": "INCOMPLETE", "phases": [], "checks": [], "streams": []}
 
     def security_group() -> list[dict]:
@@ -405,18 +139,25 @@ def main() -> None:
         (args.output / 'clean-state-receipt.json').write_text(json.dumps(record, indent=2) + '\n')
         return
     if not args.scratch:
-        parser.error('--scratch is required for a full pass')
+        parser.error('--scratch is required for this operation')
     scratch = args.scratch.resolve()
     if scratch.exists() or args.output == scratch or args.output in scratch.parents or scratch in args.output.parents:
         parser.error('use a fresh scratch directory separate from output')
     scratch.mkdir(parents=True, mode=0o700)
     bridge: Bridge | None = None
     prepared = False
+    hosted: HostedRun | None = None
     try:
         record['security_group_before'] = security_group()
-        library = build_archive(root, scratch)
-        record['native'] = dict(go_version=(library.parent / 'build-0.log').read_text().strip(),
-                                archive_sha256=hashlib.sha256(library.with_suffix('.a').read_bytes()).hexdigest())
+        if args.runner_run:
+            hosted = HostedRun(args.runner_run, args.sha)
+            request = hosted.public_request()
+            public_bytes = request['public_key'].encode('ascii')
+            record['public_request'] = request
+        elif args.diagnose_only:
+            library = build_archive(root, scratch)
+            record['native'] = dict(go_version=(library.parent / 'build-0.log').read_text().strip(),
+                                    archive_sha256=hashlib.sha256(library.with_suffix('.a').read_bytes()).hexdigest())
         # Reuse only public source/build caches; no profile/credential transfer.
         command = f'''set -euo pipefail
 mkdir -p {BASE}
@@ -437,14 +178,16 @@ echo exact-source={args.sha}
             raise RuntimeError('public exact-head bootstrap failed')
         phase('prepare')
         prepared = True
-        private_key = scratch / 'recipient.key'
-        public_key = scratch / 'recipient.pem'
-        subprocess.run(['openssl', 'genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:3072', '-out', str(private_key)],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        private_key.chmod(0o600)
-        subprocess.run(['openssl', 'pkey', '-in', str(private_key), '-pubout', '-out', str(public_key)],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        public = base64.b64encode(public_key.read_bytes()).decode()
+        if not hosted:
+            private_key = scratch / 'recipient.key'
+            public_key = scratch / 'recipient.pem'
+            subprocess.run(['openssl', 'genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:3072', '-out', str(private_key)],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            private_key.chmod(0o600)
+            subprocess.run(['openssl', 'pkey', '-in', str(private_key), '-pubout', '-out', str(public_key)],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            public_bytes = public_key.read_bytes()
+        public = base64.b64encode(public_bytes).decode()
         rc, _ = ca.run(f'umask 077; printf %s {shlex.quote(public)} | base64 -d > {BASE}/cell/recipient.pem')
         if rc:
             raise RuntimeError('recipient public-key transfer failed')
@@ -458,111 +201,35 @@ echo exact-source={args.sha}
                 raise RuntimeError('encrypted credential handoff failed')
             return result.stdout.decode().strip()
 
-        for endpoint, path in [('health', '/health'), ('key', '/key?v=106')]:
-            started = time.monotonic()
-            try:
+        if args.premerge_vm:
+            payload = json.loads(phase('handoff-check', private=True))
+            assert set(payload) == {'enroll', 'pair-test'}
+            private = private_key.read_bytes()
+            # Test-only recipient; observe decryption/shape without exporting a
+            # plaintext key/code or attempting any client join/redemption.
+            enrollment = decrypt(private, payload['enroll'])
+            pairing = decrypt(private, payload['pair-test'])
+            assert enrollment and len(enrollment) <= 128 and not any(c.isspace() for c in enrollment), 'enrollment shape'
+            assert re.fullmatch(r'[A-Z0-9]{8}', pairing), 'pairing shape'
+            record['checks'].append(dict(name='VM-OAEP-test-public-key', enrollment_decrypted=True,
+                                         pairing_decrypted=True, plaintext_exported=False,
+                                         enrollment_ttl_requested_seconds=600, enrollment_reusable_requested=False, pairing_ttl_observed_max_seconds=300))
+            del enrollment, pairing, private
+        elif hosted:
+            hosted.coordinate(phase, record)
+        else:
+            for endpoint, path in [('health', '/health'), ('key', '/key?v=106')]:
                 check = dict(name='prejoin-' + endpoint, **control_get(path))
-            except Exception as error:
-                label = ('tls-verify' if isinstance(error, ssl.SSLCertVerificationError) else
-                         'dns' if isinstance(error, socket.gaierror) else
-                         'timeout' if isinstance(error, TimeoutError) else 'tls-reset')
-                record['checks'].append(dict(name='prejoin-' + endpoint, error_class=label,
-                                              elapsed_seconds=round(time.monotonic()-started, 3)))
-                raise RuntimeError('prejoin-' + label) from None
-            record['checks'].append(check)
-            assert check['status'] == 200, 'prejoin status mismatch'
-        bridge = Bridge(library, scratch)
-        try:
-            joined = bridge.call('join', key=secret('enroll'))
-        finally:
-            record['join_diagnostics'] = bridge.join_diagnostics
-
-        record['checks'].append(dict(name='outside-joined', **joined))
-        if args.diagnose_only:
+                record['checks'].append(check)
+                assert check['status'] == 200
+            bridge = Bridge(library, scratch)
+            try:
+                joined = bridge.call('join', key=secret('enroll'))
+            finally:
+                record['join_diagnostics'] = bridge.join_diagnostics
+            record['checks'].append(dict(name='diagnostic-joined', **joined))
             record['verdict'] = 'DIAGNOSTIC_JOINED'
             raise DiagnosticComplete
-        phase('install')
-        rows = json.loads(phase('nodes', private=True))
-        home = [row for row in rows if row['name'] == 'home-sidecar-ci']
-        assert len(rows) == 2 and len(home) == 1 and len(home[0]['ips']) == 1, 'wrong synthetic node membership'
-        address = home[0]['ips'][0]
-
-        def request(method: str, path: str, credential: str | None = None, data: str = '') -> dict:
-            assert bridge is not None
-            return bridge.call('request', address=address, method=method, path=path, credential=credential, data=data)
-
-        def allowed(credential: str) -> None:
-            result = request('GET', ROUTE, credential)
-            assert result == {'status': 200, 'body': EXPECTED}, 'allowed real-daemon status/body mismatch'
-
-        def pair(kind: str) -> str:
-            result = request('POST', '/pair', data=secret(kind))
-            assert result['status'] == 200, 'pair redemption failed'
-            return result['body']['credential']
-
-        paired = pair('pair-main')
-        allowed(paired)
-        record['checks'].append(dict(name='allowed-200', status=200, body=EXPECTED))
-        for label, credential in [('absent', None), ('never-paired', 'hrpair_' + '0' * 32)]:
-            allowed(paired)
-            result = request('GET', ROUTE, credential)
-            assert result == {'status': 403, 'body': {'error': 'identity_denied'}}, 'unpaired exact refusal mismatch'
-            record['checks'].append(dict(name='unpaired-' + label, **result))
-            allowed(paired)
-        revoked = pair('pair-revoked')
-        allowed(revoked)
-        phase('revoke')
-        deadline = time.monotonic() + 30
-        time.sleep(0.5)
-        while True:
-            result = request('GET', ROUTE, revoked)
-            if result == {'status': 403, 'body': {'error': 'identity_denied'}}:
-                break
-            assert result == {'status': 200, 'body': EXPECTED}, 'unexpected revocation response'
-            if time.monotonic() >= deadline:
-                raise RuntimeError('product defect: revoked credential still succeeds after reconciliation deadline')
-            time.sleep(0.2)
-        record['checks'].append(dict(name='revoked-refused', **result))
-        allowed(paired)
-        for method, path, category in [
-            ('POST', '/api/v1/executor-binaries/register', 'method_denied'),
-            ('POST', '/api/v1/runtime/custom-cli/m4-operation/commit', 'route_denied'),
-            ('POST', '/api/v1/runtime/use', 'route_denied'),
-            ('DELETE', '/api/v1/runtime/adapters/m4-adapter', 'method_denied'),
-            ('DELETE', '/api/v1/orgs/m2-synthetic', 'route_denied'),
-            ('GET', '/api/v1/auth/bootstrap', 'route_denied'),
-        ]:
-            allowed(paired)
-            result = request(method, path, paired)
-            assert result == {'status': 403, 'body': {'error': category}}, 'forbidden exact refusal mismatch'
-            record['checks'].append(dict(name='forbidden-route', method=method, path=path, **result))
-            allowed(paired)
-        result = request('GET', '/api/v1/orgs', paired)
-        assert result['status'] == 200 and [org['slug'] for org in result['body']['orgs']] == ['m2-synthetic']
-        record['checks'].append(dict(name='DERP-path', **bridge.call('derp-proof')))
-        control = control_get('/health')
-        assert control['status'] == 200, 'missing healthy443 exposure control'
-        assert control_get(ROUTE)['status'] == 404, 'daemon content on control endpoint'
-        probes = [application_probe(port) for port in (18765, 18443, 8765)]
-        control_after = control_get('/health')
-        assert control_after['status'] == 200, 'lost healthy443 exposure control'
-        # Cross-check the real guest sockets: loopback product sockets are fine;
-        # no forbidden port may listen on a public or wildcard address.
-        rc, sockets = ca.run("""/usr/bin/python3 - <<'PY_SOCKETS'
-import json, subprocess
-rows = subprocess.check_output(['ss', '-H', '-lnt'], text=True).splitlines()
-checked = []
-for row in rows:
-    address, port = row.split()[3].rsplit(':', 1)
-    if port in {'18765', '18443', '8765'}:
-        assert address in {'127.0.0.1', '[::1]'}, 'public forbidden listener'
-        checked.append(int(port))
-print(json.dumps(dict(public_forbidden_listeners=0, loopback_ports=sorted(checked))))
-PY_SOCKETS""")
-        assert rc == 0, 'guest exposure socket crosscheck failed'
-        record['checks'].append(dict(name='application-level-public-exposure', control=control,
-                                     control_after=control_after, probes=probes, guest=json.loads(sockets)))
-        assert all(not probe['reachable'] for probe in probes), 'forbidden public application response'
         record['verdict'] = 'CHECKS_PASSED_CLEANUP_PENDING'
     except DiagnosticComplete:
         pass
@@ -571,8 +238,7 @@ PY_SOCKETS""")
         # raw command diagnostics and response bodies are never exported here.
         record['verdict'] = 'FAIL'
         record['failure_type'] = type(error).__name__
-        if isinstance(error, (RuntimeError, AssertionError)):
-            record['failure'] = str(error)
+        record['failure'] = 'operation failed; private exception withheld'
         raise
     finally:
         cleanup_errors = []
@@ -595,21 +261,28 @@ PY_SOCKETS""")
                     cleanup_errors.append(name)
             try:
                 record['security_group_after'] = security_group()
-                probes = [application_probe(port) for port in (443, 18765, 18443, 8765)]
-                record['checks'].append(dict(name='outside-after-teardown', probes=probes,
-                                             limit='no live443 control after teardown; paired with prejoin control and guest clean-state'))
-                assert all(not probe['reachable'] for probe in probes), 'application response after teardown'
             except Exception:
-                cleanup_errors.append('outside-final-exposure-or-SG')
+                cleanup_errors.append('final-SG')
             try:
                 collect()
             except Exception:
                 cleanup_errors.append('plain-log-collection')
+        try:
+            states = ca.api('DescribeInstanceStatus', '--InstanceId.1', INSTANCE)['InstanceStatuses']['InstanceStatus']
+            assert len(states) == 1 and states[0]['Status'] == 'Running'
+            record['vm_status'] = 'Running'
+        except Exception:
+            cleanup_errors.append('VM-Running-observation')
+        if hosted and record['verdict'] != 'CHECKS_PASSED_CLEANUP_PENDING':
+            try:
+                hosted.cancel_if_running()
+            except Exception:
+                cleanup_errors.append('native-run-cancel-uncertain')
         if cleanup_errors:
             record['cleanup_errors'] = cleanup_errors
             record['verdict'] = 'FAIL'
         elif record['verdict'] == 'CHECKS_PASSED_CLEANUP_PENDING':
-            record['verdict'] = 'PASS'
+            record['verdict'] = 'VM_PREMERGE_PASS' if args.premerge_vm else 'PASS'
         # Erase every task-generated private key/native-state/raw log before the
         # persistent job returns. Only bounded public records remain in output.
         try:
@@ -623,9 +296,9 @@ PY_SOCKETS""")
     if args.diagnose_only and record['verdict'] == 'DIAGNOSTIC_JOINED':
         print('Diagnostic join completed; product acceptance NOT RUN', flush=True)
         return
-    if record['verdict'] != 'PASS':
+    if record['verdict'] not in ('PASS', 'VM_PREMERGE_PASS'):
         raise RuntimeError('M4 failed; see controlled summary and cleanup receipts')
-    print('M4 separate-network pass and shipped clean-state: PASS', flush=True)
+    print(record['verdict'] + '; see native/VM scope in summary', flush=True)
 
 
 if __name__ == '__main__':

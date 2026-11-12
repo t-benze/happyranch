@@ -46,38 +46,47 @@ N1 pins `tailscale.com v1.78.0` and the exact 66-module `GOOS=linux`, `GOARCH=am
 
 The future acceptance matrix has five required rows: same-Wi-Fi direct; same-Wi-Fi forced private DERP; separate-network direct when possible; separate-network forced private DERP; and failure/recovery across both topologies. Every row requires no system Tailscale on either endpoint, loopback-only daemon and connector, ciphertext-only control/relay, and no public or LAN fallback. Same Wi-Fi is only an underlay; direct LAN plaintext binding is not an acceptance substitute.
 
-#### M4 public-cell procedure (THR-327 goal C; source-only)
+#### M4 public-cell procedure (THR-327 goal C; native post-merge dispatch)
 
 [`scripts/ci/README-m4-tailnet.md`](../../../scripts/ci/README-m4-tailnet.md)
-describes the dedicated Aliyun HK VM procedure: trusted public TLS-ALPN-01 on443,
-embedded private DERP999/STUN3478 with no default map, an explicit client-to-home
-TCP443 cell ACL, the shipping installed Linux sidecar/connector and loopback
-daemon, and the unchanged Mac app Go C archive driven from an outside Linux host.
-It brackets exact allowed200, unpaired/revoked403 and forbidden-route403 assertions
-with paired controls, requires actual client private-region/UDP-disable evidence
-and outside public-IP exposure probes, attributes journals to the run, and gates
-PASS on purge/teardown/clean-state including transient state/CA/socket removal.
-The root-only0700/0600 ACME certificate cache is explicit allowed residue between
-passes, with a separate final-decommission option and a one-new-issuance cap
-for TASK-15668 (prior count2). Application-level outside probes require healthy
-verified443 controls plus guest socket evidence; raw TCP acceptance through
-the local proxy is not exposure evidence. Closed join diagnostics and explicit
-asserted not-installed logs/purge states do not weaken installed-product checks.
+owns the procedure. Main-only `managed-m4.yml` uses a GitHub-hosted macOS runner,
+workflow_dispatch only, contents:read, pinned actions and always-cleanup. It
+builds the unchanged shipped Go C archive natively and drives the existing C ABI
+headlessly against the dedicated HK VM's trusted443 Headscale/private DERP999
+and3478 STUN, shipping Linux sidecar/connector and real loopback daemon. It
+asserts paired200, absent/never-paired403, revoked403 with unaffected200, six
+forbidden-route403 cases, actual private DERP evidence and controlled public
+exposure. It is not a required check and does not change daily E2E or PR triggers.
 
-**Execution status:** public trusted Headscale health and unchanged Linux archive
-build were feasibility checks only. JOB-6610 failed at outside join with its
-cause withheld by the private-error normalizer; acceptance cases were NOT RUN.
-TASK-15668 is bounded diagnosis plus conditional repair, not a prior PASS.
-Full M4 acceptance remains **UNEXECUTED** until
-an exact-published-head persistent-job receipt and a separate shipped clean-state0
-are recorded. The selected outside Linux C-ABI client is not native Swift or a
-signed Mac.app. The macOS hosted option remains unexecuted; the founder GUI
-currently lacks a secure managed enrollment path (development environment-key
-input is not permitted by §7). No product or security-contract change is made.
-Conditional founder steps and that limitation are in the runbook. This procedure
-addresses only separate-network forced private DERP; the other topology rows,
-cross-topology failure/recovery and native Mac acceptance remain open. Goal C's
-shorter wording does not waive the five-row matrix or any fixed invariant.
+The host coordinates VM prepare/teardown through existing Cloud Assistant.
+Run-scoped immutable public-key artifacts and RSA-OAEP/SHA256 ciphertext on
+PR1449 comments carry the handoff, bound to operator ID/run/attempt/SHA/key/phase
+and expiry. One-use enrollment<=10min and pairing<=5min plaintext stays in runner
+memory/private pipes. No runner cloud/admin/daemon credential, new GitHub
+secret/setting/scope, inbound port or product seam. Public API rate limits and
+account compromise remain explicit risks. Existing redacted node/device commands
+coordinate join and the positive-control pairing marker before targeted revoke.
+
+**Execution boundary:** JOB-6610 and JOB-6615 both failed at Linux outside join;
+JOB-6615 classified tcp-connect without endpoint attribution. JOB-6618, the ONE
+report-only syscall diagnostic, also exited1 and yielded no attributable parsed
+connect endpoints/client DNS answers. The TUN-bypass hypothesis remains unproven;
+no host fix or further host acceptance is allowed. Historical failures remain
+in the PR. Linux mode is diagnostic only. Native macOS transport, real GitHub
+handoff and route/DERP acceptance are **NOT RUN premerge**. Premerge static checks
+and the single VM prepare/test-public-key encryption/logs/purge/teardown/clean-state
+pass have separate scoped receipts; they do not close native acceptance.
+
+The retained root-only0700/0600 ACME cache must be usable with ledger3 of5 and
+>24h certificate validity before prepare; **zero new issuance** is allowed.
+The fixture loads the cached PEM as static TLS with ACME disabled.
+Transient cell/product/CA/socket state is removed and the VM stays Running.
+An exact native workflow success plus host cleanup/clean-state receipt is required
+for M4 PASS. Signed Mac.app/Swift/GUI on founder hardware remains a separate
+founder-assisted step; today's development environment-key enrollment conflicts
+with §7 and requires a separately authorized secure product path. Do not simulate
+it. The other normative topology/failure rows remain open; goal C does not waive
+the five-row matrix or any fixed invariant.
 
 TASK-6298/TASK-6289 remains truthful **Supported-DIY** for users who voluntarily install Tailscale or use customer-owned Headscale. It is unchanged, non-executable for founder acceptance, and not the managed path. Unit 4B-2 is already delivered and independent, but it neither provisions this network nor supplies acceptance evidence. The original N1 slice supplied the embedded Linux sidecar core and build/license evidence; N2 supplied explicit literal-loopback Python connector ingress. THR-327 seq187 subsequently shipped the managed Linux foreground sidecar, composite systemd supervision, bounded installer/enrollment handoff and manual M1 lifecycle in §19. M1 PASSED at the main head recorded there. Tailnet transport (M2), full-daemon acceptance, restart/reboot recovery, physical acceptance and deployment remain **UNEXECUTED** and outside M1; the broader provisioning/distribution and N3–N6 obligations are not closed by that result.
 
