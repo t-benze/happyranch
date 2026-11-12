@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -174,6 +175,11 @@ def native_state_link(scratch: Path, remove: bool = False) -> None:
             assert not alias.exists(), 'unowned native state refused'
     else:
         assert not alias.exists() and not alias.is_symlink(), 'pre-existing native state refused'
+        info = scratch.lstat()
+        assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700, 'private scratch required'
+        # Create exclusively before exposing the alias; Bridge verifies it again
+        # before spawning the worker. Never adopt a pre-existing target.
+        target.mkdir(mode=0o700)
         config.mkdir(parents=True, exist_ok=True)
         alias.symlink_to(target, target_is_directory=True)
 
@@ -205,7 +211,8 @@ def run(scratch: Path, output: Path) -> None:
     (scratch / 'recipient.key').unlink()
     inbox = Inbox(request)
     record: dict = dict(sha=request['sha'], run_id=request['run_id'], attempt=1, native=request['native'],
-                        outside_client='native macOS unchanged shipped C archive', status='FAIL', checks=[], phases=[])
+                        outside_client='native macOS unchanged shipped C archive', status='FAIL', checks=[], phases=[],
+                        bridge_error_class=None)
     bridge: Bridge | None = None
     phase_started = time.monotonic()
 
@@ -232,6 +239,7 @@ def run(scratch: Path, output: Path) -> None:
         finally:
             # Retain only the closed projection BEFORE worker/state removal.
             record['join_diagnostics'] = safe_join_diagnostics(bridge.join_diagnostics)
+            record['bridge_error_class'] = bridge.bridge_error_class
             record['phases'][-1:] = bridge.join_phases
             record['phase'] = bridge.join_phase
             phase_started = time.monotonic() - bridge.join_phases[-1]['elapsed_seconds']
@@ -342,7 +350,7 @@ def run(scratch: Path, output: Path) -> None:
         record['runner_return_code'] = 1 if record['status'] == 'FAIL' else 0
         (output / 'client-summary.json').write_text(json.dumps(record, indent=2) + '\n')
         print('M4 public client evidence ' + json.dumps({key: record[key] for key in
-              ('phase', 'phases', 'failure', 'join_diagnostics', 'runner_return_code',
+              ('phase', 'phases', 'failure', 'join_diagnostics', 'bridge_error_class', 'runner_return_code',
                'worker_return_code_before_cleanup', 'worker_return_code') if key in record}), flush=True)
     assert not cleanup_errors, 'native client cleanup failed'
     print('Native client checks complete; host VM cleanup receipt still required', flush=True)
