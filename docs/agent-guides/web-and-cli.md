@@ -95,21 +95,25 @@ acceptance. Source/static checks prove no workflow behavior. Python units are
 RETIRED; integration including callback/lifespan/SessionTracker is SKIPPED24342;
 no ad-hoc Product E2E or new test/build merge gate follows.
 
-## Current explicit coding execution and caller return — ROOT13015
+## Historical Explicit coding execution and admitted return — ROOT13015
 
-Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
-coding integration. This current contract supersedes unconditional-disabled
-instructions in the historical K3/R2/revision/source checkpoints below; their
-original observations, failures, approvals and immutable encodings remain history.
+Founder THR320 seq194/196/225 and manager TASK-13015 authorized the original
+settings-pinned coding integration. Its fresh-start composition is superseded
+by U9; this section now describes admitted-run replay/continuation only. Original
+observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
-current canonical settings with Admission Explicit and matching settings/release/
-mapping pins, and the existing current-authority/native admission predicates.
-Missing, malformed or Disabled settings refuse before callback persistence, spend
-or allocation. Disabled remains the default; ordinary routing remains legacy.
-Literal start@1 stays readable but is not a fresh-start path. Admitted start@2
-work retains its original pins across later disable/default changes and still
-requires current selected-role/repository authority, Pause and native proof.
+Fresh old `workflow-coding-start@1`/`@2` starts now refuse with
+`coding_fresh_start_retired`, including with healthy old Explicit settings.
+Fresh Coding uses the reviewed sequential v2 definition/common engine, latest
+Allowed NEW settings, compatible storage, mounted native runtime and current
+authority/eligible roles. Fresh selection and engine prepare-admission both
+check the latest Allowed generation; old Explicit settings cannot substitute.
+Disabled remains the default; ordinary routing remains legacy. See
+`docs/superpowers/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
+
+Authenticated admitted old @1/@2 replay/continuation retains its original pins
+across later disable/default changes and still requires current selected-role/
+repository authority, Pause and native proof. No admitted history is converted.
 
 Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
 this is neither per-org admission nor installed/loaded/operational acceptance.
@@ -4350,7 +4354,11 @@ observed object format is inferred. Copy is en/zh-CN.
 See [the page section](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#founder-coding-settings-page--root12568--task12632).
 
 
-## Settings-pinned coding start syntax
+## Historical settings-pinned coding start syntax
+
+This literal parser/printing contract remains readable for admitted old-family
+replay. U9 supersedes fresh composition: old @1/@2 refuse with
+`coding_fresh_start_retired`; fresh Coding uses reviewed v2/latest Allowed NEW settings.
 
 `happyranch workflows coding run-start --from-file ABS --emit-decision` accepts
 closed start@2 with settings:{generation,snapshot_digest} plus the existing
@@ -4821,9 +4829,12 @@ reads return no workflow content or link. Existing Founder task-result visibilit
 supplies authored-content access; agent sessions retain their addressed readers.
 No managed-connector allowlist or credential/permission changes. TS mirrors,
 classification and OpenAPI ship together; retired Vitest is not restored.
-U7b settings CAS and original lookup are implemented in source below. Selected
-task-session preflight/Final transport and agent completion consumption remain implementation. Final success stays Held, public fresh start OFF
-until atomic U9; no human/browser start. ACCESS-1/shared-OS-user/gh limitations,
+U7b settings CAS and original lookup are implemented in source below. The
+original U7a checkpoint left selected task-session transport/Final and completion
+consumption unmounted, with public fresh start OFF. U7c/U7d and atomic U9 now
+supersede those exclusions in source: fresh Coding uses reviewed v2/latest Allowed
+NEW settings and old fresh @1/@2 refuse. No human/browser start is added.
+ACCESS-1/shared-OS-user/gh limitations,
 original Pause/receipt uncertainty/cancellation and historical families remain.
 
 

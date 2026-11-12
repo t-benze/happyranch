@@ -251,7 +251,7 @@ U4a observes only literal no-follow ordinary clone/object metadata, refusing com
 
 For a genuine executable team manager's OWN source callback, sequential start uses decision action `workflow_start` with the unchanged `workflow-sequential-start@1` StartCommand. Preserve the exact definition/settings pins, one stable operation key and actual remaining limits; syntax and lower limits create no new allowance. An unavailable venue refuses the start and grants no setup authority. Only positive original source host/outer settlement can release the first visit to the queue. Source and carrier create no fake result or SID. Use only the actual task/agent/session binding; genuine `report-completion` remains the FINAL action.
 
-## Explicit settings-pinned coding composition (ROOT13015)
+## Historical Explicit settings-pinned coding composition (ROOT13015)
 
 THR-308 seq403 removes generic audit_log coding scanning and its watermark.
 Complete coding validation no longer detects arbitrary unrecognised coding audit
@@ -259,17 +259,19 @@ rows or ordinary audit decoding/depth/size/digit failures through that scan.
 Direct audit-backed history readers, non-audit coding checks and structural/FK/
 integrity checks remain; budget limits are unchanged and scan charges disappear.
 
-Only the configured current executable agent manager composes start@2 for its
-OWN genuine callback. `workflows coding run-start --from-file ABS --emit-decision`
-validates and prints only; keep the original file/key. New callbacks/start actions
-require current canonical Explicit settings and matching release/mapping/settings
-pins, complete coding/shared storage and registered release, and actual mounted native
-queue/host/authority. Normal org startup initializes inert coding storage without upgrading document
-layouts or changing settings; this is separate from loaded/admitted acceptance.
-Missing, malformed and Disabled settings refuse before writes/spend/allocation. Default
-Admission stays Disabled and ordinary routing stays legacy. Literal start@1 is
-historical/readable, not a fresh-start route. Later disable/default edits do not
-replace admitted pins or strand genuine callbacks/settlement.
+The ROOT13015 start@2/Explicit fresh-start composition is historical and
+superseded by U9; retain it only for authenticated admitted-run replay and
+continuation under the original command/key/pins. The old `run-start
+--emit-decision` syntax validates and prints only; it grants no fresh route.
+Fresh old `workflow-coding-start@1`/`@2` starts now refuse with
+`coding_fresh_start_retired`, even with healthy old Explicit settings.
+Fresh Coding uses reviewed sequential v2 with latest Allowed NEW settings,
+compatible storage, mounted native runtime and current authority/eligible roles.
+Fresh selection and engine prepare-admission both retain latest-Allowed checks.
+Admission stays Disabled by default and ordinary routing stays legacy. Later
+Allowed/Disabled generations or default edits do not replace admitted original
+pins or strand genuine callbacks/settlement. Normal inert old-storage startup
+is separate from sequential installation and loaded/admitted acceptance.
 
 Follow only the actual consumed stage supplement, exact selected repository/B/H/
 PR and genuine task/agent/SID/INTEGER result. Four distinct actual eligible org
@@ -288,7 +290,8 @@ No host/config/DB/import/activation work is authorized by source delivery; human
 operator setup and Founder settings remain separate. First genuine four-role
 scratch through merge precedes ordinary use. Deferred native recovery remains
 unavailable. Historical disabled checkpoints later in this skill retain their
-original-head evidence; this paragraph governs current settings-pinned execution.
+original-head evidence; U9 governs fresh starts and this section governs only
+admitted original-pin execution.
 Your genuine current-session report-completion remains the FINAL action.
 
 ## Steps
@@ -1017,11 +1020,13 @@ The final-manager GET remains own-current-original CLI-only, browser-excluded an
 native-remote-denied. Source/static evidence supplies no runtime or authoring PASS.
 
 
-For a settings-pinned coding start, use the actual bound start@2 command with its
+For historical admitted settings-pinned replay only, preserve the bound start@2 command with its
 settings generation/snapshot_digest and mapping Pin. `run-start --emit-decision`
 validates syntax and prints only the closed decision for the selected executable
 manager's own genuine callback; no allocation or authority follows. Historical
-start@1 retains its reader. Coding readiness remains unconditionally disabled.
+start@1 retains its reader. This superseded disabled-source checkpoint grants no
+fresh start: old @1/@2 refuse with coding_fresh_start_retired; fresh Coding uses
+U9 reviewed v2 and latest Allowed NEW settings.
 New-family stage supplements carry the original settings pin and authenticated
 scope; later defaults or disable publications do not replace that assignment.
 Each selected principal uses its own actual team and authorized tools. Preserve

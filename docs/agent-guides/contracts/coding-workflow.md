@@ -184,21 +184,25 @@ acceptance. Source/static checks prove no workflow behavior. Python units are
 RETIRED; integration including callback/lifespan/SessionTracker is SKIPPED24342;
 no ad-hoc Product E2E or new test/build merge gate follows.
 
-## Current explicit coding execution and caller return — ROOT13015
+## Historical Explicit coding execution and admitted return — ROOT13015
 
-Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
-coding integration. This current contract supersedes unconditional-disabled
-instructions in the historical K3/R2/revision/source checkpoints below; their
-original observations, failures, approvals and immutable encodings remain history.
+Founder THR320 seq194/196/225 and manager TASK-13015 authorized the original
+settings-pinned coding integration. Its fresh-start composition is superseded
+by U9; this section now describes admitted-run replay/continuation only. Original
+observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
-current canonical settings with Admission Explicit and matching settings/release/
-mapping pins, and the existing current-authority/native admission predicates.
-Missing, malformed or Disabled settings refuse before callback persistence, spend
-or allocation. Disabled remains the default; ordinary routing remains legacy.
-Literal start@1 stays readable but is not a fresh-start path. Admitted start@2
-work retains its original pins across later disable/default changes and still
-requires current selected-role/repository authority, Pause and native proof.
+Fresh old `workflow-coding-start@1`/`@2` starts now refuse with
+`coding_fresh_start_retired`, including with healthy old Explicit settings.
+Fresh Coding uses the reviewed sequential v2 definition/common engine, latest
+Allowed NEW settings, compatible storage, mounted native runtime and current
+authority/eligible roles. Fresh selection and engine prepare-admission both
+check the latest Allowed generation; old Explicit settings cannot substitute.
+Disabled remains the default; ordinary routing remains legacy. See
+`docs/superpowers/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
+
+Authenticated admitted old @1/@2 replay/continuation retains its original pins
+across later disable/default changes and still requires current selected-role/
+repository authority, Pause and native proof. No admitted history is converted.
 
 Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
 this is neither per-org admission nor installed/loaded/operational acceptance.
@@ -1907,6 +1911,10 @@ are in the ordered-coding-workflow spec's canonical Founder settings section.
 
 ## Disabled settings-pinned coding composition — ROOT12568
 
+> Historical old-family checkpoint, retained for admitted-run replay only.
+> U9 supersedes its fresh-start instructions: old @1/@2 refuse with
+> coding_fresh_start_retired; fresh Coding uses reviewed v2/latest Allowed NEW settings.
+
 Current source adds literal start@2, authorization/binding/context@3, development
 scope@3 and native-admission@2. Fresh starts require the exact current explicit
 human settings publication and mapping/release pins; historical start@1 families
@@ -2646,11 +2654,13 @@ Exact full replay keeps original bytes/IDs; changed body/key reuse refuses and
 transport loss never authorizes reissue. Cancellation, original limits and positive original host/outer
 settlement before first-visit release remain with their unchanged owners.
 
-Public live fresh start remains OFF: both intake and consumer still require the
-unchanged disposable-venue guard, which refuses the live daemon home/aliases and
-absent/invalid/nonmatching runtime/org/DB-inode marker. U9 owns atomic new public
-attachment/release selection plus old-fresh-start fencing; no flag shortcut or
-historical engine fallback is added. Historical start@1/@2, original return and
+At the historical U7d checkpoint, public live fresh start was OFF behind the
+disposable-venue guard. U9 now mounts reviewed-v2 public Coding selection and
+old fresh @1/@2 refusal atomically. Fresh Coding requires latest Allowed NEW
+settings, compatible storage, mounted native runtime and current authority;
+`check_venue_start` remains only for noncatalog V3 fixtures. A missing marker
+supplies no authority and a marker cannot bypass Coding selection. There is no
+flag shortcut or historical engine fallback. Admitted old @1/@2, original return and
 source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncertainty
 are unchanged; thread sources still refuse, notifications remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.

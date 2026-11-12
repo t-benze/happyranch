@@ -1,6 +1,6 @@
 # Sequential Coding U8: common Workflows journey and task integration
 
-> Status: current design; U8a (read/journey half) delivered in source by TASK-15582 and corrected by TASK-15587 (TASK-15583 findings: access fencing, single-snapshot banner, R-M3-7 exhaustion, PRD F6 freshness) and by TASK-15595 (TASK-15588 finding: nested admitted-definition read states). U8b (Setup editing/Save custody UI and the Settings → Coding redirect with original-save recovery) delivered in source by TASK-15605, unsplit. U9a supplies unmounted selector/fence interfaces and the host Setup pointer repair; atomic public cutover remains U9b. Public fresh start stays OFF.
+> Status: current design; U8a (read/journey half) delivered in source by TASK-15582 and corrected by TASK-15587 (TASK-15583 findings: access fencing, single-snapshot banner, R-M3-7 exhaustion, PRD F6 freshness) and by TASK-15595 (TASK-15588 finding: nested admitted-definition read states). U8b (Setup editing/Save custody UI and the Settings → Coding redirect with original-save recovery) delivered in source by TASK-15605, unsplit. U9 delivers the host Setup pointer repair and atomic reviewed-v2 public fresh-start cutover/old fresh @1/@2 refusal in source (TASK-15624; see the [U9 spec](2026-11-12-sequential-coding-u9.md)). Deployment and execution acceptance remain separate.
 > Current Source: docs/agent-guides/web-and-cli.md § U8a and § U8b; web/ARCHITECTURE.md § Sequential Workflows (U8a/U8b)
 
 THR-336 / ROOT TASK-15165. Plan rev3 TASK-14461 §U8 as re-scoped by R-M2-1

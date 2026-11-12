@@ -1,5 +1,13 @@
 # U3s venue-only sequential start enablement — SB-1 (a)
 
+> Historical U3s checkpoint. U9 supersedes public Coding venue-only admission
+> and the later noted U3c newest-generation continuation veto: fresh Coding uses
+> reviewed v2/latest Allowed NEW settings; admitted original-pin continuation
+> survives later Allowed/Disabled generations. Fresh selection and engine
+> prepare-admission still check latest Allowed. The disposable fence remains
+> for noncatalog V3 fixtures only. Original evidence and spent allowances below
+> remain unchanged; see [U9](2026-11-12-sequential-coding-u9.md).
+
 Append-only source record, 2026-11-08, TASK-14698 continued by TASK-14700
 under ROOT TASK-14640.
 Founder THR-336 msg85 approved U1–U9 source and bounded V3; msg102 accepted

@@ -576,14 +576,19 @@ DB inode must match. Refusals are `sequential_venue_marker_absent`,
 publish via an exclusive pending inode and descriptor-relative rename/unlink.
 This is a fresh filesystem observation, not a racing-rename or same-UID fence.
 
-U3e alone will attach the fence outside writers at the completion pre-check and
-again before capture/admission. No callback or continuation consults the fence.
-Marker removal disables the next fresh start; a newer Disabled generation makes
-older settings fail `settings_generation_stale`. The latter may also hold U3c
-continuations because its selected reader checks newest-generation pins; use
-marker removal alone for the V3 mid-run scenario. V3, V3-0b and U3e attachment
-remain UNVERIFIED. See the [U3s record](../../superpowers/specs/2026-11-08-sequential-venue-start.md)
-for the finite matrix, future attachment and teardown contracts, and I1–I4.
+U3e attached this fence outside writers at completion pre-check and before
+capture/admission. Since U9 it applies only to noncatalog V3 fixture fresh
+starts; public Coding uses reviewed-v2 selection instead. No callback or
+continuation consults the marker. Marker removal refuses the next fixture fresh
+start and grants no authority over public Coding.
+Under U9 Option A, authenticated admitted runs retain their original Allowed
+generation/digest/admission snapshot after a newer Allowed or Disabled generation;
+replay and lifecycle validate those original pins and all existing authority/native
+proofs. The old U3c newest-generation continuation veto is superseded. Fresh
+selection and engine prepare-admission retain latest-Allowed checks; older fresh
+pins still fail `settings_generation_stale`. V3/V3-0b execution remains UNVERIFIED.
+See the [historical U3s record](../../superpowers/specs/2026-11-08-sequential-venue-start.md)
+for its original finite matrix, teardown contracts and I1–I4.
 
 ## U3a ownership union and holding attachment
 
@@ -1705,11 +1710,13 @@ Exact full replay keeps original bytes/IDs; changed body/key reuse refuses and
 transport loss never authorizes reissue. Cancellation, original limits and positive original host/outer
 settlement before first-visit release remain with their unchanged owners.
 
-Public live fresh start remains OFF: both intake and consumer still require the
-unchanged disposable-venue guard, which refuses the live daemon home/aliases and
-absent/invalid/nonmatching runtime/org/DB-inode marker. U9 owns atomic new public
-attachment/release selection plus old-fresh-start fencing; no flag shortcut or
-historical engine fallback is added. Historical start@1/@2, original return and
+At the historical U7d checkpoint, public live fresh start was OFF behind the
+disposable-venue guard. U9 now mounts reviewed-v2 public Coding selection and
+old fresh @1/@2 refusal atomically. Fresh Coding requires latest Allowed NEW
+settings, compatible storage, mounted native runtime and current authority;
+`check_venue_start` remains only for noncatalog V3 fixtures. A missing marker
+supplies no authority and a marker cannot bypass Coding selection. There is no
+flag shortcut or historical engine fallback. Admitted old @1/@2, original return and
 source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncertainty
 are unchanged; thread sources still refuse, notifications remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.
