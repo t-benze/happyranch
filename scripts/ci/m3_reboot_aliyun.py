@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import time
 import tarfile
 
@@ -28,14 +29,33 @@ class CloudAssistant:
         self.instance = instance
         self.region = region
 
-    def api(self, operation: str, *args: str) -> dict:
-        result = subprocess.run(
-            ["aliyun", "ecs", operation, "--RegionId", self.region, *args],
-            capture_output=True, text=True, timeout=45, check=False,
-        )
+    def api(self, operation: str, *args: str, timeout: float = 45) -> dict:
+        try:
+            result = subprocess.run(
+                ["aliyun", "ecs", operation, "--RegionId", self.region, *args],
+                capture_output=True, text=True, timeout=timeout, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            # TimeoutExpired includes argv (and potentially command content).
+            raise RuntimeError(f"Aliyun {operation} failed, code=Timeout") from None
         if result.returncode:
-            # Do not echo CLI stderr/profile/request data into acceptance logs.
-            raise RuntimeError(f"Aliyun {operation} failed, exit {result.returncode}")
+            # CLI SDK.ServerError uses standalone ErrorCode lines. Emit only
+            # known classifications, never arbitrary CLI/profile/request data.
+            diagnostic = result.stderr + "\n" + result.stdout
+            code = re.search(
+                r"(?m)^[ \t]*ErrorCode:[ \t]*(Throttling(?:\.User|\.Api)?|"
+                r"ServiceUnavailable|InternalError|InvalidInvokeId\.NotFound|Forbidden\.RAM)[ \t]*$",
+                diagnostic,
+            )
+            status = re.search(
+                r"(?m)^[ \t]*(?:HttpStatusCode|HTTPStatusCode|StatusCode):[ \t]*([1-5][0-9]{2})[ \t]*$",
+                diagnostic,
+            )
+            raise RuntimeError(
+                f"Aliyun {operation} failed, exit {result.returncode}, "
+                f"code={code.group(1) if code else 'Unknown'}, "
+                f"http={status.group(1) if status else 'Unknown'}"
+            )
         return json.loads(result.stdout)
 
     def run(self, command: str, timeout: int = 120) -> tuple[int, str]:
@@ -44,8 +64,18 @@ class CloudAssistant:
             "--CommandContent", "exec /bin/bash -c " + shlex.quote(command), "--ContentEncoding", "PlainText", "--Timeout", str(timeout),
         )["InvokeId"]
         deadline = time.monotonic() + timeout + 90
-        while time.monotonic() < deadline:
-            response = self.api("DescribeInvocationResults", "--InvokeId", invocation)
+        failures = 0
+        while (remaining := deadline - time.monotonic()) > 0:
+            try:
+                response = self.api("DescribeInvocationResults", "--InvokeId", invocation, timeout=min(45, remaining))
+            except RuntimeError as error:
+                failures += 1
+                print(f"Cloud Assistant poll failure {failures}/5: {error}", file=sys.stderr, flush=True)
+                if failures >= 5 or time.monotonic() >= deadline:
+                    raise RuntimeError(f"Cloud Assistant poll failed after {failures} consecutive failures: {error}") from None
+                time.sleep(min(failures, max(0, deadline - time.monotonic())))
+                continue
+            failures = 0
             rows = response.get("Invocation", {}).get("InvocationResults", {}).get("InvocationResult", [])
             if rows:
                 row = rows[0]
@@ -54,7 +84,7 @@ class CloudAssistant:
                     if row.get("InvocationStatus") != "Success":
                         return int(row.get("ExitCode") or 1), output
                     return int(row.get("ExitCode", 0)), output
-            time.sleep(1)
+            time.sleep(min(1, max(0, deadline - time.monotonic())))
         raise RuntimeError(f"Cloud Assistant invocation {invocation} did not settle")
 
     def reboot(self, before: str) -> str:
@@ -176,6 +206,11 @@ echo 'Public checkout verified at {args.sha}'
         raise RuntimeError("VM bootstrap failed; inspect /var/lib/happyranch-m3/bootstrap.log")
     try:
         for number in range(1, args.passes + 1):
+            # Do not attribute an earlier run's post-reboot logs to this pass.
+            # Refuse before entering collection/cleanup if the reset fails.
+            rc, _ = ca.run(f"rm -rf -- {BASE}/logs/{number} && mkdir -p -- {BASE}/logs/{number}")
+            if rc:
+                raise RuntimeError(f"pass {number} log reset failed")
             record: dict = {"pass": number, "verdict": "INCOMPLETE", "reboots": []}
             summary["passes"].append(record)
             try:

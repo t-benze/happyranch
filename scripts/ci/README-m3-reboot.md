@@ -26,6 +26,28 @@ passes**, rebooting twice per pass through a delayed test-scoped
 `/proc/sys/kernel/random/boot_id` and a successful Cloud Assistant observation
 prove return from each reboot; reachability polling never reissues the reboot.
 Use `--passes 1` when commissioning one complete pass; the default remains two.
+Only the read-only `DescribeInvocationResults` poll retries API failures and
+CLI subprocess timeouts: at most five consecutive failed polls, with 1/2/3/4
+second backoff, reset by a successful poll (including a pending result). Poll
+subprocess timeouts and sleeps are capped by the existing invocation deadline;
+retries never extend it. All failure classifications share this finite budget,
+including non-transient errors. `RunCommand` is issued once and is never retried,
+so a failed observation cannot duplicate a guest command or reboot scheduling.
+The existing reboot reachability loop is unchanged.
+
+Failure diagnostics contain only CLI exit status, an allowlisted error code and
+HTTP status when available. Parsing assumes a standalone `ErrorCode: CODE`
+line, as in [Aliyun's documented CLI error output](https://help.aliyun.com/en/openapi/support/how-to-get-requestid).
+Allowed codes are `Throttling`, `Throttling.User`, `Throttling.Api`,
+`ServiceUnavailable`, `InternalError`, `InvalidInvokeId.NotFound`, and
+`Forbidden.RAM`; anything else is `Unknown`. Optional standalone
+`HttpStatusCode: NNN`, `HTTPStatusCode: NNN` or `StatusCode: NNN` lines accept
+only numeric HTTP statuses 100–599; missing/unrecognized status is `Unknown`
+(the SDK error formatter may omit it). Each failed poll logs its attempt and
+safe classification; timeouts use `code=Timeout` without exception argv.
+Raw CLI output, request parameters, AccessKey IDs, signatures, profile names
+and command content are never copied into these diagnostics.
+
 The VM driver can also be invoked phase by phase from the checked-out repo:
 
 ```bash
@@ -57,7 +79,11 @@ Headscale projections contain only public node
 key hashes, IDs/IPs/names and consumed preauthkey IDs/usage, never key values.
 
 All state/build/cache/source/logs live under `/var/lib/happyranch-m3`; only logs
-are copied to task output. Journald persistent auto-storage is enabled by its
+are copied to task output. At each pass start the host runner clears and
+recreates only `/var/lib/happyranch-m3/logs/<pass>` before `prepare`, so files
+collected from that directory belong to the current run. A failed reset aborts
+before pass execution or collection. Previously collected task artifacts remain
+historical evidence. Journald persistent auto-storage is enabled by its
 standard `/var/log/journal` directory and flushed before reboot. Both product
 unit journals from `-b -1` and `-b 0`, unit properties and per-phase logs are
 retained. The runner transfers logs in bounded base64 chunks, checks complete
