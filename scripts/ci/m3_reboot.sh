@@ -159,7 +159,11 @@ boot_journals() {
   for boot in -1 0; do
     journalctl -b "$boot" --no-pager -o short-precise -u "${services[0]}" -u "${services[1]}" \
       > "$M2_LOGS/$label-boot$boot.journal.txt"
-    grep -Fq happyranch "$M2_LOGS/$label-boot$boot.journal.txt" || fail 'missing product boot journal'
+    if [[ $label == stopped && $boot == 0 ]]; then
+      grep -Fxq -- '-- No entries --' "$M2_LOGS/$label-boot$boot.journal.txt" || fail 'unexpected product journal during disabled boot'
+    else
+      grep -Fq happyranch "$M2_LOGS/$label-boot$boot.journal.txt" || fail 'missing product boot journal'
+    fi
   done
 }
 prepare() {
