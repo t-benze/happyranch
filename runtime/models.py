@@ -209,10 +209,20 @@ class ChainLeg(BaseModel):
     agent: str
     prompt: str
     expect_verdict: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
     # THR-109: per-leg task attachments. Only referenced when this leg is
     # auto-advanced and the orchestrator spawns the next child task.
     # Keys must have been pre-uploaded via `happyranch tasks attach-upload`.
     attachments: list[TaskAttachmentRef] | None = None
+
+    @model_serializer(mode="wrap")
+    def _handoff_wire(self, handler: Any) -> dict:
+        result = handler(self)
+        for key in ("model", "reasoning_effort"):
+            if key not in self.model_fields_set:
+                result.pop(key, None)
+        return result
 
 
 class FanoutChild(BaseModel):
@@ -225,6 +235,8 @@ class FanoutChild(BaseModel):
     # Phase 1 rejects these fields — they exist only for Phase 2+ forward compat.
     then: list[ChainLeg] = Field(default_factory=list)
     expect_verdict: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
     # THR-109: per-child task attachments. A pipeline carrier owns its
     # declared refs; its spawned first leg receives them only through
     # normal ancestor inheritance, never a duplicate link/claim.
@@ -232,6 +244,14 @@ class FanoutChild(BaseModel):
     # THR-078: mandatory lineage link when this fan-out child retries a
     # FAILED sibling assigned to the same agent.
     revisit_of_task_id: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _handoff_wire(self, handler: Any) -> dict:
+        result = handler(self)
+        for key in ("model", "reasoning_effort"):
+            if key not in self.model_fields_set:
+                result.pop(key, None)
+        return result
 
 
 class ManagerSupersessionAttestation(BaseModel):
@@ -274,6 +294,8 @@ class NextStep(BaseModel):
     agent: str | None = None
     prompt: str | None = None
     expect_verdict: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
     then: list[ChainLeg] = Field(default_factory=list)
     children: list[FanoutChild] = Field(default_factory=list)
     width_cap_ack: int | None = None
@@ -307,6 +329,9 @@ class NextStep(BaseModel):
             return {"action": self.action, "workflow": self.workflow}
         result = handler(self)
         result.pop("workflow", None)
+        for key in ("model", "reasoning_effort"):
+            if key not in self.model_fields_set:
+                result.pop(key, None)
         return result
 
     @field_validator('action')

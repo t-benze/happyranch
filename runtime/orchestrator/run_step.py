@@ -3594,10 +3594,17 @@ def _consume_completion_report_body(
                 return
 
         # Spawn children immediately — no review gate (founder ruling THR-012 msg 129/131).
+        from runtime.orchestrator.task_selection import TaskSelectionError
+        try:
+            selections = _validate_handoff_selections(orch, decision)
+        except TaskSelectionError as exc:
+            _feedback_and_reenqueue(orch, expected_claim, str(exc))
+            return
         width = len(decision.children)
         children_payload = []
         for c in decision.children:
             cd = {"agent": c.agent, "prompt": c.prompt}
+            cd.update(c.model_dump(include={"model", "reasoning_effort"}, exclude_unset=True))
             if c.revisit_of_task_id is not None:
                 cd["revisit_of_task_id"] = c.revisit_of_task_id
             if c.expect_verdict is not None:
@@ -3609,7 +3616,8 @@ def _consume_completion_report_body(
                     {"agent": l.agent, "prompt": l.prompt,
                      "expect_verdict": l.expect_verdict,
                      **({"attachments": [ref.model_dump(exclude_none=True) for ref in l.attachments]}
-                        if l.attachments else {})}
+                        if l.attachments else {}),
+                     **l.model_dump(include={"model", "reasoning_effort"}, exclude_unset=True)}
                     for l in c.then
                 ]
             children_payload.append(cd)
@@ -3622,6 +3630,7 @@ def _consume_completion_report_body(
                 join_summary=decision.join_summary,
                 step_audit_id=_step_audit_id,
                 expected_claim=expected_claim,
+                selections=selections,
             )
         except _PreChildDecisionAttachmentError as exc:
             _attachment_feedback_and_reenqueue(
@@ -3700,6 +3709,13 @@ def _consume_completion_report_body(
             )
             return
 
+        from runtime.orchestrator.task_selection import TaskSelectionError
+        try:
+            selections = _validate_handoff_selections(orch, decision)
+        except TaskSelectionError as exc:
+            _feedback_and_reenqueue(orch, expected_claim, str(exc))
+            return
+
         from runtime.models import TaskRecord
         # Revision tracking: bump the delegating task's revision_count only
         # when the manager re-delegates to the *worker-of-record* — i.e. the
@@ -3776,6 +3792,7 @@ def _consume_completion_report_body(
             # so the fan-out barrier can derive per-slice retry count
             # from existing DB lineage (no schema migration).
             revisit_of_task_id=decision.revisit_of_task_id,
+            **selections[0],
         )
 
         # THR-109: validate and prepare decision attachments.
@@ -3832,11 +3849,6 @@ def _consume_completion_report_body(
                 step_audit_id=_step_audit_id,
             )
             chain_json = chain.serialize()
-        try:
-            _carry_retry_selection(orch, child)
-        except ValueError as exc:
-            _reject_retry_link_decision(orch, task_id, agent, next_count, str(exc), expected_claim=expected_claim)
-            return
         outcome = db.try_delegate(
             task_id, child,
             parent_note=f"Delegated to {decision.agent} (child={child_id})",
@@ -5320,6 +5332,12 @@ def _advance_chain_for_completed_child(
         status=TaskStatus.PENDING,
         session_timeout_seconds=parent.session_timeout_seconds,
         task_type="subtask",
+        model_override=action.next_leg.model,
+        reasoning_effort_override=action.next_leg.reasoning_effort,
+        # Admission validated the saved selection. PR1 rechecks it against
+        # CURRENT options immediately before executor construction at start.
+        override_source=("manager" if action.next_leg.model is not None
+                         or action.next_leg.reasoning_effort is not None else None),
     )
     advanced = orch._db.try_advance_chain(
         parent_id=parent_task_id,
@@ -6306,19 +6324,50 @@ def _session_failed_note(result, report) -> str:
 # --- Fan-out spawn + join context helpers ---
 
 
-def _carry_retry_selection(orch: "Orchestrator", child: TaskRecord) -> None:
-    """Carry only the explicitly linked predecessor, never the manager's pair."""
-    if child.revisit_of_task_id is None or child.assigned_agent is None:
-        return
-    predecessor = orch._db.get_task(child.revisit_of_task_id)
-    if predecessor is None or predecessor.assigned_agent != child.assigned_agent:
-        return  # The existing transactional lineage validator owns this refusal.
-    from runtime.orchestrator.task_selection import resolve_task_selection
-    resolve_task_selection(orch._resolve_agent_def(child.assigned_agent),
-                           predecessor.model_override, predecessor.reasoning_effort_override)
-    child.model_override = predecessor.model_override
-    child.reasoning_effort_override = predecessor.reasoning_effort_override
-    child.override_source = predecessor.override_source
+def _validate_handoff_selections(orch: "Orchestrator", decision) -> list[dict]:
+    """Validate the whole decision before allocation; return direct-child pairs.
+
+    Saved then legs retain request fields and are rechecked at task start by
+    PR1. Retry-link admission/transaction checks still own lineage validation.
+    """
+    from runtime.orchestrator.task_selection import TaskSelectionError, resolve_handoff_selection
+
+    children = decision.children if decision.action == "fanout" else [decision]
+    selections = []
+    for i, child in enumerate(children):
+        where = f"fanout child {i + 1}" if decision.action == "fanout" else "delegate first leg"
+        predecessor_id = child.revisit_of_task_id
+        predecessor = orch._db.get_task(predecessor_id) if predecessor_id else None
+        if predecessor is not None and predecessor.assigned_agent != child.agent:
+            predecessor = None
+        for location, handoff, prior in [
+            (where, child, predecessor),
+            *((f"{where} then leg {j + 1}", leg, None) for j, leg in enumerate(child.then)),
+        ]:
+            changes = handoff.model_dump(include={"model", "reasoning_effort"}, exclude_unset=True)
+            if not changes and prior is None:
+                # Unset ordinary handoffs keep their existing admission
+                # ordering, including deferred agent-definition checks.
+                if handoff is child:
+                    selections.append({"model_override": None, "reasoning_effort_override": None,
+                                       "override_source": None})
+                continue
+            try:
+                selection = resolve_handoff_selection(
+                    orch._resolve_agent_def(handoff.agent), changes, prior,
+                )
+            except TaskSelectionError as exc:
+                detail = exc.detail
+                reason = (
+                    f"Invalid model/effort on {location} ({handoff.agent}): {exc}. "
+                    f"Valid reasoning_effort options for executor {detail['executor']}: "
+                    f"{', '.join(detail['valid_options']) or '(none)'}. "
+                    "Correct the selection or clear it with null."
+                )
+                raise TaskSelectionError(detail["executor"], reason, tuple(detail["valid_options"])) from exc
+            if handoff is child:
+                selections.append(selection)
+    return selections
 
 
 def _spawn_fanout_children(
@@ -6333,6 +6382,7 @@ def _spawn_fanout_children(
     manager_agent: str,
     join_summary: str | None = None,
     step_audit_id: int | None = None,
+    selections: list[dict],
 ) -> SpawnOutcome:
     """Allocate child IDs, build TaskRecords, atomically insert all N children
     and park the parent in in_progress(delegated) with active_fanout set.
@@ -6384,13 +6434,8 @@ def _spawn_fanout_children(
             session_timeout_seconds=parent.session_timeout_seconds,
             task_type=child_task_type,
             revisit_of_task_id=child_info.get("revisit_of_task_id"),
+            **selections[i],
         ))
-
-    try:
-        for child in child_records:
-            _carry_retry_selection(orch, child)
-    except ValueError as exc:
-        return InvalidLineage(str(exc))
 
     # THR-109: validate attachment refs per-child (count limit, per-child
     # duplicates) and globally (cross-sibling duplicate keys, existence,
@@ -6541,6 +6586,7 @@ def _spawn_fanout_children(
                     storage_key=a["storage_key"],
                     display_name=a.get("display_name"),
                 ) for a in leg.get("attachments", []) or []],
+                **{key: leg[key] for key in ("model", "reasoning_effort") if key in leg},
             )
             for leg in child_info.get("then", []) or []
         ]

@@ -14,7 +14,7 @@ override. No default is copied into storage. Unset preserves argv and existing
 audit payload bytes. No keys are added to strict `session_start`.
 
 Source is `founder` for founder-authenticated submission/revisit, `manager` for
-agent-authored thread self-dispatch and planned handoffs. Founder revisit adopts
+agent-authored thread self-dispatch and handoffs. Founder revisit adopts
 the resulting tuple with founder provenance; runtime linked retry carries its
 predecessor's tuple and provenance. Source becomes NULL when both fields clear.
 Ordinary children never inherit their manager's tuple. An explicit linked retry
@@ -110,12 +110,41 @@ and `reasoning_effort_source`. Per-field source is founder, manager or
 agent_default. Effective fields resolve CURRENT defaults; existing session_start
 is evidence of what actually ran historically. No history is backfilled.
 
-## Planned PR2 and PR3
+## Manager handoffs (PR2 shipped)
 
-PR2 (planned): per-target model/effort fields on delegate, then and fanout.
-Validate against the TARGET agent's current executor before allocation, record
-manager provenance, and carry explicit settings through chain/fanout and retries.
-Never inherit the manager's own task override. PR1 adds no handoff request fields.
+Ordinary `delegate`, every `then` leg, and every `fanout`/`parallel` child
+(including a carrier's first executable leg and nested `then` legs) accept
+optional `model` and `reasoning_effort`, using the PR1 request names.
+Each target's CURRENT executor validates through `resolve_task_selection`
+before any child/task row is allocated. Unsupported custom fields and invalid
+combinations anywhere refuse the WHOLE decision. The existing
+`_feedback_and_reenqueue` authoring-error path writes a feedback task result and
+feedback orchestration step, returns the owner to PENDING and enqueues it once.
+The manager sees the offending child/leg, target executor, plain reason and
+valid effort options, and can correct the decision. No silent fallback.
+
+Selected rows use source `manager`; ordinary unset handoffs use their target's
+own current agent defaults and never inherit the manager's override. Linked
+`revisit_of_task_id` retries carry their predecessor's tuple/source when both
+fields are omitted. A supplied value replaces that field; explicit JSON null
+clears it to the current default. Any explicit edit adopts manager provenance
+for the resulting tuple; both cleared fields leave source NULL. Existing
+lineage validation and retry ceilings remain authoritative.
+
+Then settings persist as additive optional request keys in chain JSON and in
+fanout carrier details. Omitted new keys stay absent, so legacy state loads and
+unset child rows, state JSON, audit payloads and spawn argv retain their shapes
+and bytes. Explicit null survives state round trips. Later auto-advance copies
+the saved choice to the new task row; PR1's unchanged start-time recheck runs
+before executor construction. If executor/options changed, the leg fails with
+`saved model no longer valid for this agent`, then follows ordinary failure,
+parent wake and thread followup ordering without starting an unchosen model.
+Existing task-created selection audits remain conditional on a selected field.
+
+Workflow-owned/sequential coding decisions and non-task launchers are outside
+this contract. No new schema, adapter contract or session_start key is added.
+
+## Planned PR3
 
 PR3 (planned): Web New task and Revisit model/effort inputs; revisit carry,
 change and per-field clear; task detail renders effective selections, overrides,

@@ -68,6 +68,25 @@ def override_fields(task: TaskRecord) -> dict:
     return fields
 
 
+def resolve_handoff_selection(
+    agent: AgentDef, changes: dict, predecessor: TaskRecord | None = None,
+) -> dict:
+    """Compose only a linked retry's pair, with per-field null clears.
+
+    Omitted ordinary handoffs keep defaults unstored and unvalidated, as before.
+    An explicit handoff edit adopts manager provenance for the resulting tuple.
+    """
+    model = changes.get("model", predecessor.model_override if predecessor else None)
+    effort = changes.get("reasoning_effort", predecessor.reasoning_effort_override if predecessor else None)
+    source = "manager" if changes else predecessor.override_source if predecessor else None
+    if model is not None or effort is not None or changes or predecessor is not None:
+        resolve_task_selection(agent, model, effort)
+    if model is None and effort is None:
+        source = None
+    return {"model_override": model, "reasoning_effort_override": effort,
+            "override_source": source}
+
+
 def selection_view(task: TaskRecord, agent: AgentDef | None) -> dict:
     """Current effective settings; historical actually-run settings stay in audits."""
     return {

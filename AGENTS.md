@@ -40,7 +40,7 @@ current in `docs/superpowers/specs/README.md`.
 
 ## Task model rules
 
-- Task-local model/effort, retry carry and explicit clear: [THR-356 contract](docs/superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+- Task-local and manager-handoff `model`/`reasoning_effort`, retry carry and explicit clear: [THR-356 contract](docs/superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
 
 - Task owners (`task_type='task'`) produce `decision` blocks; delegated subtask agents (`task_type='subtask'`) produce plain completions. Prose uses "task owner" and "subtask agent" rather than "team manager"/"worker".
 - Only root tasks (`parent_task_id is None`) escalate to the founder; non-root tasks fail and hand back to their parent (bounded recovery carries it up).

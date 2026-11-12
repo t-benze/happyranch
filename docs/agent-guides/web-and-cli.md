@@ -2695,7 +2695,11 @@ Each clear flag excludes its matching value flag. Local syntax errors refuse
 before connection; server HTTP422 includes executor, reason and valid effort
 options. Only explicit task effort uses finite membership; agent-default grammar
 is unchanged. Task GET/list expose override/effective fields and per-field source.
-Web dialogs, detail rendering and TS mirrors are planned PR3. See the
+Manager completion decisions use the same `model` / `reasoning_effort` names
+on delegate, then and fanout/parallel handoffs. Invalid target choices return
+existing decision feedback before any child is created. Linked retry omission
+carries; explicit null clears independently. Handoffs never inherit the manager's
+own override. Web dialogs, detail rendering and TS mirrors are planned PR3. See the
 [full task design](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
 
 ### Per-agent model and reasoning-effort selection

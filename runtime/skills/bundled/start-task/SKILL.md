@@ -604,6 +604,20 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    contract; this skill explains
    the valid actions:
 
+   **Ordinary handoff selections (THR-356).** `delegate`, every `then` leg and
+   every `fanout`/`parallel` child (including a carrier's nested legs) accept
+   optional `model` and `reasoning_effort`. Choose for the TARGET agent's
+   current executor; unset means its own defaults, never the manager's task
+   override. Invalid choices anywhere reject the whole decision before any
+   child, returning the existing feedback result/step with the offending leg,
+   reason and valid options; correct it in the next owner session. A linked
+   retry carries omitted fields/source; a value replaces that field and explicit
+   JSON null clears it. Any explicit edit records manager provenance for the
+   remaining tuple; clearing both removes it. Then choices persist and PR1
+   rechecks them before launch; changed executor/options can fail the leg with
+   `saved model no longer valid for this agent`. These fields do not extend
+   workflow-owned or sequential-coding decision shapes.
+
    - `delegate` — hand the next subtask to a worker; requires `agent` and `prompt`.
      Note the field is `prompt`, **not** `brief` — the orchestrator silently
      drops unknown keys, so writing `"brief"` produces a child task with an
