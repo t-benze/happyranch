@@ -264,6 +264,8 @@ echo exact-source={args.sha}
             return result.stdout.decode().strip()
 
         if args.premerge_vm:
+            assert json.loads(phase('nodes')) == [], 'premerge cell has unexpected membership'
+            record['checks'].append(dict(name='VM-empty-membership', nodes=[]))
             payload = json.loads(phase('handoff-check', private=True))
             assert set(payload) == {'enroll', 'pair-test'}
             private = private_key.read_bytes()

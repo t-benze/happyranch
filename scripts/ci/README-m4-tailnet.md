@@ -23,6 +23,9 @@ native transport acceptance.
 - Native macOS C-ABI joining, route/refusal/DERP/exposure assertions and real
   GitHub encrypted-handoff coordination are **NOT RUN premerge**. VM-half
   `--premerge-vm` receipts must be reported separately at the pushed head.
+- TASK-15684's ONE native attempt (run43270232585, JOB-6633 exit1) failed at
+  the first empty-membership poll: Headscale returned `null`. Join and all
+  installed-product checks remained unproven; the attempt stays a failure.
 - Signed Mac.app, Swift ClientBridge and GUI on founder hardware are separate,
   founder-assisted acceptance and are **NOT RUN**. The current GUI is BYO;
   managed enrollment currently reads a development environment key, which
@@ -102,7 +105,10 @@ interpreter executable identity. Existing/foreign state refuses; cleanup removes
 only that exact link. Existing native node state remains private scratch and is removed. The runner
 receives no Headscale admin key, daemon bearer, cloud credential or real data.
 
-The host observes the client's Headscale membership before install. After
+The host observes the client's Headscale membership before install. Headscale
+`null` and `[]` both project to an empty list and continue the bounded join wait.
+Other JSON types, malformed JSON, missing node fields and command failures
+refuse; unexpected membership still refuses. After
 paired-positive controls, the client redeems a third disposable `pair-ready`
 code; existing redacted `list-devices` is the host's acknowledgement to revoke
 `pair-revoked`. This adds no product endpoint/seam and grants no runner write
@@ -125,7 +131,8 @@ Premerge, from the clean **published** exact head, submit a persistent job
 python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_PUSHED_SHA --output /absolute/task-output/vm-premerge --scratch /absolute/task-tmp/fresh-vm-premerge --premerge-vm
 ```
 
-This prepares real Headscale/daemon, transfers a locally generated test public
+This prepares real Headscale/daemon, asserts empty membership through the shipped
+nodes phase, transfers a locally generated test public
 key, decrypts VM-generated enrollment and test pairing ciphertext only in memory,
 then runs logs/purge/teardown/clean-state. Test pairing uses the shipped CLI with
 a fixture config pointing to state inside the disposable cell; it installs no

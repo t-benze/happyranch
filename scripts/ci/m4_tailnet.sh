@@ -217,6 +217,9 @@ nodes() {
   hs nodes list --output json | /usr/bin/python3 -c '
 import ipaddress, json, sys
 rows = json.load(sys.stdin)
+if rows is None:
+    rows = []
+assert isinstance(rows, list), "expected Headscale node list or null"
 safe = []
 for r in rows:
     safe.append(dict(name=r["given_name"], ips=[ip for ip in r["ip_addresses"] if ipaddress.ip_address(ip).version == 4]))

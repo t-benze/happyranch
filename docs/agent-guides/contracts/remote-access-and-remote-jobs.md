@@ -70,6 +70,9 @@
   PR1449 comments need no new secret/setting/scope/port; the runner gets no cloud,
   Headscale admin or daemon bearer. Plaintext enrollment/pairing stays in runner
   memory/private pipes. Public API quotas/account trust remain explicit limits.
+  Empty Headscale membership (`null` or `[]`) continues the bounded join wait;
+  malformed/schema-invalid responses and unexpected members still refuse.
+  The premerge VM-half asserts empty membership through the shipped nodes phase.
   The host observes the existing pairing marker before revoke. VM ownership
   markers permit logs/purge/teardown/clean-state only after positive terminal
   observation of every prior Cloud Assistant invocation. M4 retains InvokeIds;
