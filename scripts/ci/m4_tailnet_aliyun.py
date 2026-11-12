@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 
 from m3_reboot_aliyun import CloudAssistant
 
@@ -29,6 +30,67 @@ from m4_tailnet_runner import decrypt
 BASE = "/var/lib/happyranch-m4"
 INSTANCE = "i-j6c1pwjqygzrccal4mzh"
 PUBLIC_IP = "47.238.219.200"
+
+
+class M4CloudAssistant(CloudAssistant):
+    """Retain original invocation ownership beyond the shared poller's budget."""
+
+    def __init__(self, instance: str, region: str, output: Path) -> None:
+        super().__init__(instance, region)
+        self.output = output
+        self.invocations: list[dict] = []
+
+    def checkpoint(self) -> None:
+        (self.output / 'invocations.json').write_text(json.dumps(self.invocations, indent=2) + '\n')
+
+    def unsettled(self) -> list[dict]:
+        return [row for row in self.invocations if not row['terminal']]
+
+    def api(self, operation: str, *args: str, timeout: float = 45) -> dict:
+        if operation == 'RunCommand':
+            # Persist uncertainty BEFORE issue; a lost response is never replayed.
+            row = dict(invoke_id=None, terminal=False)
+            self.invocations.append(row)
+            self.checkpoint()
+        response = super().api(operation, *args, timeout=timeout)
+        if operation == 'RunCommand':
+            invocation = response.get('InvokeId')
+            if not isinstance(invocation, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', invocation):
+                raise RuntimeError('Cloud Assistant invocation identity unavailable')
+            row['invoke_id'] = invocation
+            self.checkpoint()
+        elif operation == 'DescribeInvocationResults':
+            invocation = args[args.index('--InvokeId') + 1]
+            rows = response.get('Invocation', {}).get('InvocationResults', {}).get('InvocationResult', [])
+            rows = [item for item in rows if item.get('InstanceId') == self.instance]
+            if len(rows) == 1 and rows[0].get('InvokeRecordStatus') in {'Finished', 'Failed', 'Stopped'}:
+                for row in self.unsettled():
+                    if row['invoke_id'] == invocation:
+                        row.update(terminal=True, terminal_state=rows[0]['InvokeRecordStatus'])
+                        self.checkpoint()
+        return response
+
+    def run(self, command: str, timeout: int = 120) -> tuple[int, str]:
+        if self.unsettled():
+            raise RuntimeError('previous Cloud Assistant invocation is unsettled; no new command issued')
+        return super().run(command, timeout=timeout)
+
+    def settle(self) -> bool:
+        # Observation only: no StopInvocation permission or mutation replay.
+        deadline = time.monotonic() + 60
+        while pending := self.unsettled():
+            if any(row['invoke_id'] is None for row in pending):
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                self.api('DescribeInvocationResults', '--InvokeId', pending[0]['invoke_id'], timeout=min(15, remaining))
+            except Exception:
+                pass  # Controlled uncertainty is recorded; raw cloud text stays private.
+            if self.unsettled():
+                time.sleep(min(1, max(0, deadline - time.monotonic())))
+        return True
 
 
 def main() -> None:
@@ -63,9 +125,9 @@ def main() -> None:
         parser.error('requires clean source')
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
-    ca = CloudAssistant(args.instance, args.region)
+    ca = M4CloudAssistant(args.instance, args.region, args.output)
     record: dict = {"sha": args.sha, "instance": args.instance, "outside_client": "native macOS workflow" if args.runner_run else "none: VM-only premerge" if args.premerge_vm else "Linux diagnostic only",
-                    "verdict": "INCOMPLETE", "phases": [], "checks": [], "streams": []}
+                    "verdict": "INCOMPLETE", "phases": [], "checks": [], "streams": [], "invocations": ca.invocations}
 
     def security_group() -> list[dict]:
         response = ca.api('DescribeSecurityGroupAttribute', '--SecurityGroupId', 'sg-j6c9rilzduc2xjhzmc3q', '--Direction', 'ingress')
@@ -242,19 +304,30 @@ echo exact-source={args.sha}
         raise
     finally:
         cleanup_errors = []
+        remote_uncertain = False
+
+        def settled_for_cleanup() -> bool:
+            nonlocal remote_uncertain
+            if not remote_uncertain and not ca.settle():
+                remote_uncertain = True
+                cleanup_errors.append('remote-invocation-unsettled')
+            return not remote_uncertain
+
         if bridge is not None:
             try:
                 bridge.close()
             except Exception:
                 cleanup_errors.append('outside-client-reap')
-        if not prepared:
+        if settled_for_cleanup() and not prepared:
             try:
                 rc, marker = ca.run(f'test -f {BASE}/owned-sha && cat {BASE}/owned-sha', timeout=15)
                 prepared = rc == 0 and marker.strip() == args.sha
             except Exception:
                 cleanup_errors.append('prepare-ownership-unknown')
-        if prepared:
+        if settled_for_cleanup() and prepared:
             for name in ('logs', 'purge', 'teardown', 'clean-state'):
+                if not settled_for_cleanup():
+                    break
                 try:
                     phase(name)
                 except Exception:
@@ -264,9 +337,11 @@ echo exact-source={args.sha}
             except Exception:
                 cleanup_errors.append('final-SG')
             try:
-                collect()
+                if settled_for_cleanup():
+                    collect()
             except Exception:
                 cleanup_errors.append('plain-log-collection')
+        settled_for_cleanup()
         try:
             states = ca.api('DescribeInstanceStatus', '--InstanceId.1', INSTANCE)['InstanceStatuses']['InstanceStatus']
             assert len(states) == 1 and states[0]['Status'] == 'Running'
@@ -290,6 +365,9 @@ echo exact-source={args.sha}
         except Exception:
             record.setdefault('cleanup_errors', []).append('private-scratch-removal')
             record['verdict'] = 'FAIL'
+        if remote_uncertain:
+            record['verdict'] = 'FAIL/UNCERTAIN'
+            record['clean_state_clearance'] = False
         if args.diagnose_only:
             record['mode'] = 'diagnostic-only; no product acceptance'
         (args.output / 'summary.json').write_text(json.dumps(record, indent=2) + '\n')

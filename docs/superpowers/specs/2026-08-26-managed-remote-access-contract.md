@@ -59,6 +59,11 @@ forbidden-route403 cases, actual private DERP evidence and controlled public
 exposure. It is not a required check and does not change daily E2E or PR triggers.
 
 The host coordinates VM prepare/teardown through existing Cloud Assistant.
+M4 retains each original InvokeId and requires positive terminal observation for
+the instance before ownership probing or subsequent cleanup. Ownership markers
+alone cannot settle a writer. Unproved settlement within60 additional seconds of
+read-only polling yields FAIL/UNCERTAIN with no further remote command or
+clean-state clearance, including when the marker is absent; mutations never replay.
 Run-scoped immutable public-key artifacts and RSA-OAEP/SHA256 ciphertext on
 PR1449 comments carry the handoff, bound to operator ID/run/attempt/SHA/key/phase
 and expiry. One-use enrollment<=10min and pairing<=5min plaintext stays in runner

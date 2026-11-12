@@ -45,6 +45,18 @@ task output. Cloud Assistant mutations are single-issue, with bounded read-only
 invocation-result polling; an uncertain RunCommand is never automatically replayed.
 No Aliyun profile or cloud credential leaves this host.
 
+The M4 host persists each original InvokeId in `invocations.json` before polling.
+Before probing ownership or issuing any cleanup command, it confirms that every
+prior invocation is terminal for this instance (`Finished`, `Failed`, `Stopped`).
+After lost observation it uses at most60 additional seconds of read-only polling;
+it does not require StopInvocation. An owned-sha marker proves ownership only.
+Missing markers, empty results, polling failures and `Stopping` never prove that
+a writer stopped. If settlement is unproved, no further remote command is issued:
+the summary is `FAIL/UNCERTAIN`, records the original InvokeId (or null when the
+issue response was lost), and publishes `clean_state_clearance:false`. Private
+host scratch is still removed. Inspect and settle that original invocation before
+any separately authorized recovery; never replay the original mutating command.
+
 **Certificate ledger is3 of5 this week. No new issuance is allowed.** Every
 prepare requires the existing root-owned0700 cache and root-owned0600 regular
 single-link files, ledger prior2+reserved1, and cached certificate valid for
@@ -139,7 +151,8 @@ python3 scripts/ci/m4_tailnet_aliyun.py --sha FULL_DISPATCHED_MAIN_SHA --runner-
 It waits for the public-key artifact (max10min), prepares the VM, publishes
 enrollment ciphertext, observes join, installs the real product, publishes pair
 ciphertexts, observes the positive-control marker, revokes, and reads native
-completion/artifacts. It always attempts owned logs/purge/teardown/clean-state,
+completion/artifacts. After positive invocation settlement it attempts owned
+logs/purge/teardown/clean-state, fencing each subsequent command the same way,
 checks SG and provider Running, and removes private host scratch. On failure it
 requests cancellation only for that exact dispatched run. Cleanup uncertainty
 remains FAIL, never PASS. VM cleanup requires the host coordinator even when the

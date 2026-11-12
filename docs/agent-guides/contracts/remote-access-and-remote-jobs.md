@@ -70,8 +70,12 @@
   PR1449 comments need no new secret/setting/scope/port; the runner gets no cloud,
   Headscale admin or daemon bearer. Plaintext enrollment/pairing stays in runner
   memory/private pipes. Public API quotas/account trust remain explicit limits.
-  The host observes the existing pairing marker before revoke and always runs
-  VM logs/purge/teardown/clean-state. Root-only cache ledger3 of5 is retained,
+  The host observes the existing pairing marker before revoke. VM ownership
+  markers permit logs/purge/teardown/clean-state only after positive terminal
+  observation of every prior Cloud Assistant invocation. M4 retains InvokeIds;
+  unproved settlement after60s additional read-only polling yields FAIL/UNCERTAIN,
+  no further remote command or clean-state clearance, even with no marker.
+  Root-only cache ledger3 of5 is retained,
   >24h-valid cache is required, static TLS disables ACME renewal, and zero new
   certificate issuance is permitted.
   VM stays Running. Workflow is nonrequired; daily E2E/PR triggers are unchanged.
