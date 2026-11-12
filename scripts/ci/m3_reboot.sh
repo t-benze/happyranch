@@ -154,10 +154,49 @@ stopped_sample() {
   done
   echo 'Both services inactive/dead, PID=0 and NRestarts=0 throughout at least 30s'
 }
+journal_since() {
+  local boundary
+  boundary=$(cat "$M2_LOGS/journal-since.epoch")
+  [[ $boundary =~ ^[0-9]+\.[0-9]{6}$ ]] || fail 'missing/invalid guest journal boundary'
+  printf '@%s\n' "$boundary"
+}
+journal_attribution() {
+  /usr/bin/python3 - "$M2_LOGS" <<'PY_JOURNAL' > "$M2_LOGS/journal-attribution.json"
+import json, re, sys
+from decimal import Decimal
+from pathlib import Path
+root = Path(sys.argv[1])
+boundary = root.joinpath('journal-since.epoch').read_text().strip()
+assert re.fullmatch(r'[0-9]+\.[0-9]{6}', boundary), 'invalid journal boundary'
+files = sorted(root.glob('*.journal.txt'))
+assert files, 'no collected journals to attribute'
+report = {'boundary_epoch': boundary, 'journals': []}
+for path in files:
+    stamps = []
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        match = re.match(r'^([0-9]+\.[0-9]{6}) ', line)
+        if match:
+            stamp = match[1]
+            assert Decimal(stamp) >= Decimal(boundary), f'pre-boundary journal entry: {path.name}:{number}'
+            stamps.append(stamp)
+        elif re.fullmatch(r'-- .* --', line):
+            continue  # Journal separators, including the disabled-boot empty marker.
+        elif line[:1].isspace() and stamps:
+            continue  # Continuation of the preceding timestamped journal entry.
+        else:
+            raise AssertionError(f'unrecognized journal entry: {path.name}:{number}')
+    report['journals'].append(dict(file=path.name, entries=len(stamps),
+                                 earliest=min(stamps, key=Decimal) if stamps else None,
+                                 latest=max(stamps, key=Decimal) if stamps else None))
+print(json.dumps(report, indent=2))
+PY_JOURNAL
+  cat "$M2_LOGS/journal-attribution.json"
+}
 boot_journals() {
-  local label=$1 boot
+  local label=$1 boot since
+  since=$(journal_since)
   for boot in -1 0; do
-    journalctl -b "$boot" --no-pager -o short-precise -u "${services[0]}" -u "${services[1]}" \
+    journalctl -b "$boot" --since "$since" --no-pager -o short-unix -u "${services[0]}" -u "${services[1]}" \
       > "$M2_LOGS/$label-boot$boot.journal.txt"
     if [[ $label == stopped && $boot == 0 ]]; then
       grep -Fxq -- '-- No entries --' "$M2_LOGS/$label-boot$boot.journal.txt" || fail 'unexpected product journal during disabled boot'
@@ -167,6 +206,8 @@ boot_journals() {
   done
 }
 prepare() {
+  # One guest boundary per pass survives both reboots, including the first boot.
+  date -u '+%s.%6N' > "$M2_LOGS/journal-since.epoch"
   [[ $(. /etc/os-release; echo "$ID:$VERSION_ID") == ubuntu:24.04 ]] || fail 'Ubuntu 24.04 required'
   for unit in "${fixtures[@]}"; do absent "/etc/systemd/system/$unit"; done
   # Persistent journald auto-storage retains the previous boot on this test VM.
@@ -256,7 +297,7 @@ case ${1:-} in
   negative-stop) # Expected to fail on the installed, enabled target; no mutation.
     stopped_sample ;;
   purge) installer uninstall --purge; residue; echo 'PASS purge residue' ;;
-  logs) logs ;;
+  logs) M2_JOURNAL_SINCE=$(journal_since); logs; journal_attribution ;;
   teardown) teardown_vm ;;
   clean-state) clean_state ;;
   *) fail 'expected prepare|pre-reboot|post-reboot|stop-pre-reboot|stop-post-reboot|negative-stop|purge|logs|teardown|clean-state' ;;

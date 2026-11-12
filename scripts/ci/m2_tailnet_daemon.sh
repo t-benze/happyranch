@@ -356,18 +356,24 @@ residue() {
 logs() {
   mkdir -p "$M2_LOGS"
   runtime_directories 2>&1 | tee "$M2_LOGS/runtime-directories.txt"
+  # M3 supplies a guest pass boundary; hosted M2 keeps its existing arguments.
+  local journal_args=() status_args=()
+  if [[ -n ${M2_JOURNAL_SINCE:-} ]]; then
+    journal_args=(--since "$M2_JOURNAL_SINCE" --output short-unix)
+    status_args=(--lines=0) # The bounded unit journal already supplies the tail.
+  fi
   # Manager reloads are not included in the individual unit journals.
   # shellcheck disable=SC2024
-  sudo journalctl -b --no-pager -o short-precise _PID=1 --grep='Reloading|Reloaded|happyranch' \
+  sudo journalctl -b --no-pager -o short-precise "${journal_args[@]}" _PID=1 --grep='Reloading|Reloaded|happyranch' \
     > "$M2_LOGS/systemd-manager.journal.txt" 2>&1 || true
   cat "$M2_LOGS/systemd-manager.journal.txt"
   local unit
   for unit in "${services[@]}" "$target" "${fixtures[@]}"; do
     # These redirects intentionally create runner-owned artifact logs.
     # shellcheck disable=SC2024
-    sudo journalctl --no-pager -o short-precise -u "$unit" > "$M2_LOGS/$unit.journal.txt" 2>&1 || true
+    sudo journalctl --no-pager -o short-precise "${journal_args[@]}" -u "$unit" > "$M2_LOGS/$unit.journal.txt" 2>&1 || true
     # shellcheck disable=SC2024
-    sudo systemctl status --no-pager --full "$unit" > "$M2_LOGS/$unit.status.txt" 2>&1 || true
+    sudo systemctl status --no-pager --full "${status_args[@]}" "$unit" > "$M2_LOGS/$unit.status.txt" 2>&1 || true
     # shellcheck disable=SC2024
     sudo systemctl cat "$unit" > "$M2_LOGS/$unit.cat.txt" 2>&1 || true
     cat "$M2_LOGS/$unit."*.txt

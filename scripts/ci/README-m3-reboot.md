@@ -80,10 +80,28 @@ key hashes, IDs/IPs/names and consumed preauthkey IDs/usage, never key values.
 
 All state/build/cache/source/logs live under `/var/lib/happyranch-m3`; only logs
 are copied to task output. At each pass start the host runner clears and
-recreates only `/var/lib/happyranch-m3/logs/<pass>` before `prepare`, so files
-collected from that directory belong to the current run. A failed reset aborts
-before pass execution or collection. Previously collected task artifacts remain
-historical evidence. Journald persistent auto-storage is enabled by its
+recreates only `/var/lib/happyranch-m3/logs/<pass>` before `prepare`. A failed
+reset aborts before pass execution or collection. Previously collected task artifacts remain
+historical evidence. As its first action, guest `prepare` records a per-pass
+epoch timestamp with microsecond precision in `journal-since.epoch`. This
+boundary survives both reboots: it excludes prior runs in an already-used first
+boot while retaining this pass's install and first previous-boot evidence.
+Every collected `*.journal.txt` is queried with `--since @<boundary>` and
+`short-unix` timestamps: current-boot manager diagnostics, unit diagnostics
+across retained boots, and both previous/current product boot captures.
+Inherited M2 diagnostics accept optional `M2_JOURNAL_SINCE`; when unset/empty,
+M2 retains its original unbounded arguments and `short-precise` format. Bounded
+M3 status snapshots omit `systemctl status`'s journal tail (`--lines=0`), since
+the separate unit journal already captures those entries with the boundary.
+The M3 `logs` phase checks every captured journal timestamp against the boundary
+and fails on an older or unrecognized entry, recording per-file counts/ranges
+in `journal-attribution.json` on success. Journal separators and timestamped
+entries' indented continuation lines are accepted. The disabled-boot
+`-- No entries --` and active-boot non-empty assertions remain required.
+The boundary covers journal entries; status/cat snapshots, phase transcripts
+and installer logs are captured during the pass and are not journal queries.
+No system journal is erased, rotated or vacuumed. Journald persistent
+auto-storage is enabled by its
 standard `/var/log/journal` directory and flushed before reboot. Both product
 unit journals from `-b -1` and `-b 0`, unit properties and per-phase logs are
 retained. The runner transfers logs in bounded base64 chunks, checks complete
