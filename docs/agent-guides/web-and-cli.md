@@ -4555,9 +4555,9 @@ grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
 ## Guided coding host command and Settings handoff
 
 The published human-terminal command is
-`python3 scripts/setup_coding.py --org happyranch`, followed by Settings → Coding
-(since U8b that page is a pointer to Workflows → Setup with read-only original-save
-recovery; it no longer edits the historical repo-bearing settings).
+`python3 scripts/setup_coding.py --org happyranch`, followed by Workflows → Setup
+at `/orgs/ORG/workflows/setup`. Settings → Coding is only a pointer with read-only
+original-save recovery; it no longer edits historical repo-bearing settings.
 Use the actual reviewed pinned source update supplied by root; the runtime guide
 specifies bootstrap, strict flags, all-runtime maintenance and private recovery
 material. No agent may run host setup effects. Managed/unknown attribution and
@@ -4596,12 +4596,16 @@ finite identity proves neither startup invocation nor transitive workflow behavi
 Disk HEAD/health200/SPA fallback cannot fill an observation gap. No new verifier
 or attestation endpoint is supplied.
 
-Historical procedure (before U8b; the page no longer offers this editor — see § U8b):
-after verified host/definition observation, open the actual printed
-`/orgs/ORG/settings/coding` URL, select repositories and
-sha1/sha256 formats and four distinct eligible org agents across teams, including
-an eligible final manager. Leave Admission Disabled, save and reopen; an uncertain
-save uses Check original save. The command chooses/saves/enables nothing. Real
+After verified host/historical-definition observation, open the printed Workflows
+Setup URL. Its repo-free defaults apply only to stored sequential definitions;
+first save starts Disabled and every save preserves admission. Missing storage
+or an empty catalog is an explicit unavailable/not-configured state, not evidence
+that this historical host command installed or registered sequential Coding.
+Sequential installation, registration and admission require their own separately
+authorized path; U9a supplies no public publisher or cutover. Historical Explicit
+settings never transfer. Keep uncertain saves under their original key and use
+Check original save. See the [cutover/backout runbook](../runbooks/sequential-coding-cutover.md).
+The command chooses/saves/enables nothing. Real
 workflow/Founder persistence/scratch/rejection/revision/control/cross-team/two-org/
 backup/restore/reopen/rollback acceptance remains NOT RUN/open before ordinary use.
 
@@ -4854,7 +4858,9 @@ repository, start, retry, reassign or merge control; saving never changes admiss
 (first save starts Disabled). One Save freezes one key/body (`useSequentialSettingsFence`);
 pending locks edits/Save/Discard; stale/conflict keeps the draft and needs explicit
 "Continue from current configuration", which is enabled (control and handler) only once a
-current read is newer than the refused expected_generation and not below the known commit
+current read is strictly newer than the refused expected_generation for
+`generation_stale`, or at least that basis for `operation_conflict`, and in both
+cases not below the known commit
 (until then the draft and lock stay, Discard keeps the lock and the copy asks for a newer
 read with Refresh); other definite refusals keep the draft; an
 uncertain outcome shows "Last confirmed" beside the frozen original and offers only the

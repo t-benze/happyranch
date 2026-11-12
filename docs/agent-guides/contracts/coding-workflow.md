@@ -2140,8 +2140,9 @@ grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
 ## Guided human host coding setup — ROOT12877 / THR320seq162
 
 From the reviewed published host checkout, a genuine human terminal may run
-`python3 scripts/setup_coding.py --org happyranch`, then use Settings → Coding (since U8b a
-pointer to Workflows → Setup with read-only original-save recovery, not an editor).
+`python3 scripts/setup_coding.py --org happyranch`, then use the printed
+`/orgs/ORG/workflows/setup` (Workflows → Setup). Settings → Coding is only a
+pointer with historical read-only original-save recovery.
 This explicit coordinator reuses existing lifecycle/build and saved-definition observation
 owners. Normal OrgState.load atomically adds inert coding storage without
 upgrading document layouts; the coordinator invokes no migration chain. Managed markers,
@@ -2177,10 +2178,15 @@ they do not attest the new registrar/resolver or prove startup invocation.
 Missing/malformed/moving coverage and unrelated observation errors still hold;
 health200/disk HEAD/index equality are insufficient.
 
-The command chooses/saves/enables no roles or settings. Select
-repositories/formats and four distinct eligible org agents across teams with an
-eligible final manager; keep Admission Disabled, save/reopen, and use Check
-original save for uncertainty. Source/static delivery is not host acceptance.
+The command chooses/saves/enables no roles or settings. Workflows Setup edits
+repo-free default agents only for stored sequential definitions. First save is
+Disabled; saving preserves admission and starts no work. Missing storage or an
+empty catalog requires separately authorized sequential installation and
+registration; this historical host command supplies neither. Historical Explicit
+settings do not transfer. Use Check original save for uncertainty. Public
+sequential cutover remains pending U9b; see the
+[operator runbook](../../runbooks/sequential-coding-cutover.md).
+Source/static delivery is not host acceptance.
 Real workflow, Founder persistence, scratch/rejection/revision/control,
 cross-team/two-org, backup/restore/reopen/rollback acceptance remain NOT RUN/open
 before ordinary coding use. See the ordered-coding spec and runtime/CLI guides
@@ -2646,3 +2652,23 @@ source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncerta
 are unchanged; thread sources still refuse, notifications remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.
 See the [current U7 source and evidence limits](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
+
+## U9a unmounted release boundary (TASK-15613)
+
+`sequential_release` reads only the fixed reviewed bundled Coding v2 bytes,
+removes exactly their presentation LF, compiles with the common compiler and
+selects the entire definition/source/ABI pin. Missing/changed/oversized package
+data or a mismatching pin refuses; there is no v1/filesystem fallback. Its
+separate old-fresh refusal interface is unconditional. **Neither interface has
+a production caller.** Existing @1/@2 syntax, admission, replay, callbacks,
+settlement, cancellation and LOCAL Final remain unchanged at this checkpoint.
+Public new fresh start remains OFF behind the unchanged disposable venue fence.
+
+U9b must mount new public v2 selection and old fresh-start@2 refusal atomically,
+with complete admitted replay preceding the fresh fence. Its explicit supported
+non-venue registration / separate admission path is still implementation. No
+settings conversion, startup installation, readiness flag or legacy progression
+fallback. Defaults, admission, package/engine availability, loaded identity and
+genuine acceptance are distinct. See the [exact compatibility table and remaining
+work](../../superpowers/specs/2026-11-12-sequential-coding-u9.md) and
+[operator install/backout](../../runbooks/sequential-coding-cutover.md).

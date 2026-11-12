@@ -236,7 +236,8 @@ exclude it, as the reviewed examples specify. A future resource reader must
 explicitly extract canonical content before compilation; the compiler never
 strips or normalizes saved bytes. Coding release v2 is separate
 bundled data at `runtime/workflows/builtin_templates/coding.v2.json`, explicitly
-included in wheel packaging without a catalog reader or selector. The three
+included in wheel packaging. U9a adds an unmounted package reader/selector below;
+there is still no public catalog registration or fresh-start attachment. The three
 other files live only in documentation as **noncatalog** examples.
 
 Historical `templates.py`, `release_templates.py`, `coding.v1.json` and
@@ -1709,3 +1710,34 @@ source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncerta
 are unchanged; thread sources still refuse, notifications remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.
 See the [current U7 source and evidence limits](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
+
+## U9a unmounted release boundary (TASK-15613)
+
+`sequential_release.read_coding_release` reads exactly the reviewed 3795-byte
+Coding v2 package resource (one bounded 3796-byte read), verifies source and
+canonical digests, removes exactly one presentation LF and uses the unchanged
+common compiler. `select_coding_release` compares the complete definition/source/
+ABI pin; package absence/corruption and mismatch have categorical refusals with
+no path disclosure, v1/filesystem fallback, registration or storage write.
+`refuse_legacy_fresh_start` supplies an unconditional fresh-only refusal, intended
+after authenticated admitted replay. **All three are unmounted interfaces.**
+
+Both existing admission paths remain unchanged: new sequential starts still
+require `check_venue_start` for V3; old @1 is historical-only and old @2 retains
+its existing Explicit/native gates. U9b must mount the public v2 selector AND
+old fresh-start@2 fence in ONE merge unit, preserving exact admitted replay,
+settlement, cancellation and LOCAL Final under old pins. It still owes the
+explicit reviewed non-venue registration and separate admission publisher;
+the disposable publisher is not a live shortcut. No new public start, flag,
+startup installation, old-settings conversion or legacy progression fallback
+is introduced by U9a. U7/U8, original budgets/owners and ordinary routing remain.
+
+The historical host setup now points directly to Workflows → Setup, with
+repo-free defaults and explicit missing-catalog/install/admission limits. It
+does not establish new availability. Source/resource and extracted-copy
+diagnostics are out-of-repo SYNTHETIC, not native/V3/genuine merge or operator
+acceptance. Exact compatibility, U9b remainder and operator install/backout are
+in the [U9 spec](../../superpowers/specs/2026-11-12-sequential-coding-u9.md) and
+[runbook](../../runbooks/sequential-coding-cutover.md). Python units/Vitest
+RETIRED, integration SKIPPED24342, E2E untriggered; independent review/scoped QA
+and manager merge remain separate.

@@ -1,6 +1,6 @@
 # Sequential Coding U7: common transport and agent initiation
 
-> Status: current design; U7a/U7b/U7c1/U7c2b delivered in source, including complete Final acceptance and R-M3-6 browser redaction; U7d ordinary completion intake delivered in source; public fresh start remains OFF until U9.
+> Status: current design; U7a/U7b/U7c1/U7c2b delivered in source, including complete Final acceptance and R-M3-6 browser redaction; U7d ordinary completion intake delivered in source; U9a selector/fence interfaces are unmounted, public fresh start remains OFF until atomic U9b (see the U9 spec).
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
 
 THR-336 / ROOT TASK-15165; TASK-15465, linked retry of pre-edit failed TASK-15462.
