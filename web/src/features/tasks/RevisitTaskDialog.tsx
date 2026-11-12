@@ -121,7 +121,7 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
           placeholder={t('tasks.dialog.revisit.timeoutPlaceholder')}
         />
         {rootTask !== null && rootTask.task_id !== taskId && (
-          <p className="text-text-muted text-xs" data-revisit-root={rootTask.task_id}>
+          <p className="text-text-muted text-xs">
             {t('tasks.selection.rootNote', { root: rootTask.task_id })}
           </p>
         )}
@@ -135,7 +135,7 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
             disabled={revisit.isPending}
           />
         ) : (
-          <p className="text-text-muted text-xs" data-revisit-root-state={root.status}>
+          <p className="text-text-muted text-xs">
             {t(root.status === 'unavailable' ? 'tasks.selection.rootUnavailable' : 'tasks.selection.rootLoading')}
           </p>
         )}
