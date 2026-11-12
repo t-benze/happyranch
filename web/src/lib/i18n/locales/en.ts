@@ -172,6 +172,8 @@ export const en = {
   "seqwf.setup.conflictBody": "Not saved. The current configuration is generation {generation} and is shown above. Your draft is kept below; continue from the current configuration before saving again.",
   "seqwf.setup.adopt": "Continue from current configuration",
   "seqwf.setup.adoptHelp": "Your draft stays in the form; the next save is based on the current generation.",
+  "seqwf.setup.conflictWaiting": "Not saved. The saved configuration has moved past generation {generation}, but no newer configuration has been read yet. Your draft is kept below and saving stays locked until a newer read arrives.",
+  "seqwf.setup.adoptWaitingHelp": "Refresh to read the newer configuration; you can continue only from a generation newer than {generation}.",
   "seqwf.setup.refused": "Not saved (HTTP {status}). Your draft is kept; correct it and save again.",
   "seqwf.setup.defaults": "Default agents",
   "seqwf.setup.defaultsHint": "{count} distinct agents",

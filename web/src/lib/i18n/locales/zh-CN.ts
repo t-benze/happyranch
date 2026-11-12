@@ -171,6 +171,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "seqwf.setup.conflictBody": "未保存。当前配置为代次 {generation}，显示在上方。你的草稿保留在下方；再次保存前，请先基于当前配置继续。",
   "seqwf.setup.adopt": "基于当前配置继续",
   "seqwf.setup.adoptHelp": "你的草稿保留在表单中；下一次保存将基于当前代次。",
+  "seqwf.setup.conflictWaiting": "未保存。已保存的配置已超过代次 {generation}，但尚未读取到更新的配置。你的草稿保留在下方；在读取到更新的配置之前，保存保持锁定。",
+  "seqwf.setup.adoptWaitingHelp": "请刷新以读取更新的配置；只能基于比代次 {generation} 更新的配置继续。",
   "seqwf.setup.refused": "未保存（HTTP {status}）。你的草稿已保留；请更正后再次保存。",
   "seqwf.setup.defaults": "默认智能体",
   "seqwf.setup.defaultsHint": "{count} 个互不相同的智能体",

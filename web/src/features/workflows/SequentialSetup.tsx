@@ -54,7 +54,8 @@ type Outcome =
   | { kind: 'none' }
   | { kind: 'saved'; receipt: Receipt }
   | { kind: 'confirmed'; receipt: Receipt }
-  | { kind: 'conflict'; code: string }
+  /** `rejected` is the expected_generation the server refused; adoption needs a read past it. */
+  | { kind: 'conflict'; code: string; rejected: number }
   | { kind: 'refused'; status: number; code: string };
 type Lookup = { kind: 'reading' } | { kind: 'absent' } | { kind: 'error'; detail: string };
 /**
@@ -137,9 +138,11 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
   useEffect(() => {
     if (!currentKnown || fence) return;
     update(m => {
-      const fresh = draftFrom(def, pin, current);
+      const known = m.committed?.identity === pin.identity ? m.committed.settings : null;
+      const floor = known?.generation ?? 0;
+      // A read older than the known commit never becomes the source (or CAS basis) of a draft.
+      const fresh = draftFrom(def, pin, known && (!current || current.generation < floor) ? known : current);
       if (!m.draft || m.draft.pin.definition_digest !== pin.definition_digest) return { ...m, draft: fresh };
-      const floor = m.committed?.identity === pin.identity ? m.committed.settings.generation : 0;
       if (!m.draft.dirty && m.outcome.kind !== 'conflict' && m.draft.basis !== fresh.basis && fresh.basis >= floor) return { ...m, draft: fresh };
       return m;
     });
@@ -170,6 +173,12 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
   const incomplete = !draft || def.roles.some(r => !draft.bindings[r.name]);
   const clash = !!draft && def.roles.some(r => independenceClash(r.name).length > 0);
   const conflictPending = memory.outcome.kind === 'conflict';
+  // Continue only from an independently read generation that cannot lower the CAS
+  // basis: newer than the refused basis for a stale conflict, and never below the
+  // known commit. Until then the draft and the conflict lock stay (handler AND control).
+  const adoptFloor = memory.outcome.kind !== 'conflict' ? Infinity
+    : Math.max(committed?.generation ?? 0, memory.outcome.code === 'sequential_settings_generation_stale' ? memory.outcome.rejected + 1 : memory.outcome.rejected);
+  const adoptable = !locked && !!current && current.generation >= adoptFloor;
   // Unchanged configured defaults have nothing to save; a first save needs a complete draft.
   const saveBlocked = locked || !draft || incomplete || clash || conflictPending || !currentKnown || (!!current && !draft.dirty);
 
@@ -180,11 +189,14 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
   };
   const discard = () => {
     if (fence || !currentKnown) return;
-    update(m => ({ ...m, draft: draftFrom(def, pin, baseline), outcome: { kind: 'none' } }));
+    // Discarding edits does not resolve a conflict that still waits for a newer read.
+    update(m => ({ ...m, draft: draftFrom(def, pin, baseline), outcome: m.outcome.kind === 'conflict' && !adoptable ? m.outcome : { kind: 'none' } }));
   };
   const adopt = () => {
-    if (fence || !current) return;
-    update(m => m.draft ? { ...m, draft: { ...m.draft, basis: current.generation }, outcome: { kind: 'none' } } : m);
+    if (!adoptable || !current) return;
+    // Keep edited values on the newer basis; an unedited draft simply takes the newer read.
+    update(m => m.draft ? { ...m, outcome: { kind: 'none' },
+      draft: m.draft.dirty ? { ...m.draft, basis: current.generation } : draftFrom(def, pin, current) } : m);
   };
   const save = async () => {
     if (saveBlocked || !draft) return;
@@ -197,18 +209,18 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
       limits: draft.limits,
     };
     update(m => ({ ...m, outcome: { kind: 'none' }, lookup: null }));
+    const rejected = command.expected_generation;
     // The provider takes the org fence synchronously before its first await; the
     // continuation writes to provider-lifetime memory, so it lands even after unmount.
     try {
       const receipt = await actions.save(command);
-      update(m => ({ ...m, outcome: { kind: 'saved', receipt }, committed: newer(m.committed, pin.identity, receipt.original),
-        draft: m.draft ? { ...m.draft, basis: receipt.original.generation, dirty: false } : m.draft }));
+      update(m => withCommit(m, pin.identity, { kind: 'saved', receipt }));
     } catch (error) {
       // The provider refused a second send synchronously: nothing was sent.
       if (error instanceof Error && error.message === 'sequential_settings_send_in_progress') return;
       const code = errCode(error) ?? '';
       if (CONFLICT.has(code)) {
-        update(m => ({ ...m, outcome: { kind: 'conflict', code } }));
+        update(m => ({ ...m, outcome: { kind: 'conflict', code, rejected } }));
         void settings.refetch();
       } else if (error instanceof ApiError && actionsReleased(code)) {
         update(m => ({ ...m, outcome: { kind: 'refused', status: error.status, code } }));
@@ -222,8 +234,7 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
     update(m => ({ ...m, lookup: { key, state: { kind: 'reading' } } }));
     try {
       const receipt = await actions.readOperation(key);
-      update(m => ({ ...m, lookup: null, outcome: { kind: 'confirmed', receipt }, committed: newer(m.committed, pin.identity, receipt.original),
-        draft: m.draft ? { ...m.draft, basis: receipt.original.generation, dirty: false } : m.draft }));
+      update(m => ({ ...withCommit(m, pin.identity, { kind: 'confirmed', receipt }), lookup: null }));
     } catch (error) {
       const absent = error instanceof ApiError && error.status === 404 && error.code === 'sequential_settings_operation_not_found';
       update(m => ({ ...m, lookup: { key, state: absent ? { kind: 'absent' } : { kind: 'error', detail: reviewDiagnostic(error) } } }));
@@ -310,11 +321,14 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
 
     {!fence && memory.outcome.kind === 'conflict' && <section role="alert" className="border-attention bg-attention-soft rounded-lg border px-4 py-3 text-sm">
       <h2 className="text-text-primary font-medium">{t('seqwf.setup.conflict')}</h2>
-      <p className="mt-1">{t('seqwf.setup.conflictBody', { generation: current?.generation ?? '—' })}</p>
+      {adoptable && current
+        ? <p className="mt-1">{t('seqwf.setup.conflictBody', { generation: current.generation })}</p>
+        : <p className="mt-1">{t('seqwf.setup.conflictWaiting', { generation: adoptFloor - 1 })}</p>}
       <p className="text-text-muted mt-1 font-mono text-xs">{memory.outcome.code}</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="outline" onClick={adopt} aria-disabled={!current} className="aria-disabled:opacity-50">{t('seqwf.setup.adopt')}</Button>
-        <span className="text-text-muted text-xs">{t('seqwf.setup.adoptHelp')}</span>
+        <Button size="sm" variant="outline" onClick={adopt} aria-disabled={!adoptable} className="aria-disabled:opacity-50">{t('seqwf.setup.adopt')}</Button>
+        {!adoptable && <Button size="sm" variant="outline" onClick={() => void settings.refetch()}>{t('workflows.refresh')}</Button>}
+        <span className="text-text-muted text-xs">{adoptable ? t('seqwf.setup.adoptHelp') : t('seqwf.setup.adoptWaitingHelp', { generation: adoptFloor - 1 })}</span>
       </div>
     </section>}
 
@@ -374,6 +388,16 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
       <p className="mt-1">{t('seqwf.setup.admissionBody')}</p>
     </section>
   </div>;
+}
+
+/**
+ * Records an own committed receipt: keeps the highest known commit, and bases the
+ * draft on it (never lowering an already higher known basis). The read cache is untouched.
+ */
+function withCommit(m: Memory, identity: string, outcome: Extract<Outcome, { kind: 'saved' | 'confirmed' }>): Memory {
+  const committed = newer(m.committed, identity, outcome.receipt.original);
+  return { ...m, outcome, committed,
+    draft: m.draft ? { ...m.draft, basis: Math.max(m.draft.basis, committed.settings.generation), dirty: false } : m.draft };
 }
 
 /** Keeps the highest committed generation known for this definition identity. */
