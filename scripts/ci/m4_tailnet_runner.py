@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import ctypes
 import hashlib
 import ipaddress
 import json
@@ -23,7 +22,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 
-from m4_tailnet_client import (Bridge, EXPECTED, ROUTE, application_probe, build_archive, control_get,
+from m4_tailnet_client import (Bridge, EXPECTED, NATIVE_HOST, ROUTE, application_probe, build_archive, control_get,
                               exception_class, safe_join_diagnostics)
 
 REPOSITORY = 't-benze/happyranch'
@@ -152,16 +151,10 @@ def runner_context() -> tuple[Path, dict]:
 
 def native_state_link(scratch: Path, remove: bool = False) -> None:
     # Pinned tsnet defaults to os.UserConfigDir()/tsnet-<os.Executable name>.
-    # Darwin ignores XDG_CONFIG_HOME. Resolve this interpreter's actual Mach-O
-    # path (the worker uses the same sys.executable), with no HOME override or
-    # product export. Only our exact link may be removed on the disposable Mac.
-    proc = ctypes.CDLL('/usr/lib/libproc.dylib')
-    proc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
-    proc.proc_pidpath.restype = ctypes.c_int
-    buffer = ctypes.create_string_buffer(4096)
-    assert proc.proc_pidpath(os.getpid(), buffer, len(buffer)) > 0, 'native interpreter identity unavailable'
-    program = Path(os.fsdecode(buffer.value)).name.lower().removesuffix('.exe')
-    assert program and '/' not in program
+    # Darwin ignores XDG_CONFIG_HOME. Both preflight and acceptance execute this
+    # fixed native main binary; Python is embedded only AFTER Go initialization.
+    # No HOME override/product export. Remove only our exact disposable link.
+    program = NATIVE_HOST
     config = Path.home() / 'Library/Application Support'
     target = scratch / 'client-state'
     alias = config / ('tsnet-' + program)
@@ -184,12 +177,46 @@ def native_state_link(scratch: Path, remove: bool = False) -> None:
         alias.symlink_to(target, target_is_directory=True)
 
 
+def native_precondition(library: Path, scratch: Path, output: Path) -> None:
+    bridge: Bridge | None = None
+    label = None
+    state_owned = False
+    try:
+        # Reuse the acceptance target/name so always-cleanup has exactly one
+        # possible owned alias even if preparation is interrupted.
+        native_state_link(scratch)
+        state_owned = True
+        (scratch / 'client-state/tailscaled.log.conf').write_bytes(b'{')
+        bridge = Bridge(library, scratch)
+        try:
+            assert bridge.call('precondition') == {'precondition': True}
+        finally:
+            label = bridge.bridge_error_class
+    except Exception:
+        # Same closed label projection as acceptance; no private error text.
+        (output / 'client-summary.json').write_text(json.dumps(dict(
+            status='FAIL', phase='native-precondition', bridge_error_class=label)) + '\n')
+        print('M4 native precondition failed; bridge_error_class=' + str(label), flush=True)
+        raise
+    finally:
+        if bridge is not None:
+            bridge.close()
+        if state_owned:
+            native_state_link(scratch, remove=True)
+            if (scratch / 'client-state').exists():
+                shutil.rmtree(scratch / 'client-state')
+    print('M4 native precondition passed; expected bridge_error_class=log-dir', flush=True)
+
+
 def prepare(scratch: Path, output: Path) -> None:
     root, request = runner_context()
     assert request['attempt'] == 1, 'new dispatch required'
     scratch.mkdir(mode=0o700)
     output.mkdir()
     library = build_archive(root, scratch)
+    # Refuse before generating/publishing the public recipient or consuming an
+    # enrollment handoff. The exact same native binary is used for acceptance.
+    native_precondition(library, scratch, output)
     private = openssl(['genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:3072'])
     public = openssl(['pkey', '-pubout'], private)
     # This is only the transient RSA key, never enrollment/pairing plaintext.
@@ -232,7 +259,7 @@ def run(scratch: Path, output: Path) -> None:
         enrollment = decrypt(private, credentials['enroll'])
         set_phase('native-process-start')
         native_state_link(scratch)
-        bridge = Bridge(scratch / 'native/libtsnet.dylib', scratch)
+        bridge = Bridge(scratch / 'native' / NATIVE_HOST, scratch)
         set_phase('join-call')
         try:
             bridge.call('join', key=enrollment)
