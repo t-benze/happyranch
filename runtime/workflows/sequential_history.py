@@ -784,6 +784,7 @@ def _legacy_history(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget
 def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                             retained_budget: _Budget | None = None,
                             deadline: float | None = None,
+                            ownership_sql_limit: int = 32000000,
                             task_id: str | None = None) -> SequentialHistory:
     """Validate all sequential rows and complete combined schema in one snapshot.
 
@@ -795,14 +796,19 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     An explicit task_id adds the inert U6a native/ownership closure after that
     oracle, under the same snapshot, original data allowance and deadline.
     Default callers retain the original result type and validation path.
+    The explicit offline Coding operator may size the SQL-only ordinary-history
+    guards up to 640M steps. Every predicate and acquired workflow-data allowance
+    remains unchanged; installer/runtime callers retain the original 32M limit.
     """
     _require(type(expected_org_slug) is str and bool(expected_org_slug), 'org_required')
+    _require(type(ownership_sql_limit) is int and 32000000 <= ownership_sql_limit <= 640000000,
+             'ownership_sql_limit_invalid')
     _require(task_id is None or (type(task_id) is str and bool(task_id) and '\x00' not in task_id),
              'mixed_task_identity_invalid')
     observed = _ReadBudget() if deadline is None else _ReadBudget(deadline=deadline)
     reference = _ReadBudget(deadline=observed.deadline)
     budget = _ReadBudget(deadline=observed.deadline)
-    legacy = _ReadBudget(deadline=observed.deadline, sql_limit=32000000)
+    legacy = _ReadBudget(deadline=observed.deadline, sql_limit=ownership_sql_limit)
     with _schema_snapshot(conn):
         layout, metadata = _read_layout(conn, observed, reference, budget)
         if not layout.sequential:

@@ -2659,16 +2659,64 @@ See the [current U7 source and evidence limits](../../superpowers/specs/2026-11-
 removes exactly their presentation LF, compiles with the common compiler and
 selects the entire definition/source/ABI pin. Missing/changed/oversized package
 data or a mismatching pin refuses; there is no v1/filesystem fallback. Its
-separate old-fresh refusal interface is unconditional. **Neither interface has
-a production caller.** Existing @1/@2 syntax, admission, replay, callbacks,
+separate old-fresh refusal interface is unconditional. **The selector/fence have
+no production caller.** The resource reader serves only the explicit offline
+setup owner described below. Existing @1/@2 syntax, admission, replay, callbacks,
 settlement, cancellation and LOCAL Final remain unchanged at this checkpoint.
 Public new fresh start remains OFF behind the unchanged disposable venue fence.
 
 U9b must mount new public v2 selection and old fresh-start@2 refusal atomically,
-with complete admitted replay preceding the fresh fence. Its explicit supported
-non-venue registration / separate admission path is still implementation. No
+with complete admitted replay preceding the fresh fence. TASK-15616 supplies
+the expressly permitted inert first PR: explicit offline
+non-venue registration / separate admission, described below. No
 settings conversion, startup installation, readiness flag or legacy progression
 fallback. Defaults, admission, package/engine availability, loaded identity and
 genuine acceptance are distinct. See the [exact compatibility table and remaining
 work](../../superpowers/specs/2026-11-12-sequential-coding-u9.md) and
 [operator install/backout](../../runbooks/sequential-coding-cutover.md).
+
+## U9b inert operator registration and admission (TASK-15616)
+
+`scripts/setup_sequential_coding.py` is an explicit cooperative offline operator
+entry point. `register` uses only the reviewed bundled Coding v2/full ABI pin and
+appends a missing definition without defaults or admission; an exact existing
+definition is a read-only no-op. Existing Workflows Setup Save creates new repo-free
+defaults initially Disabled and preserves admission on later saves, unchanged.
+
+A separate `admission` operation takes canonical <=16384-byte
+`workflow-sequential-coding-admission@1` with exactly format, operation_key,
+definition, expected_generation and admission (Allowed/Disabled). It requires
+already saved NEW defaults, copies their bindings/limits and advances generation
+under CAS. `operator/sequential-coding` is an offline settings operation namespace,
+separate from Founder Save/lookup, not a new agent, permission or auth rule.
+Exact original replay authenticates command/receipt before current CAS and writes
+nothing; changed bodies conflict. Read-only `admission-show` separates original
+receipt from latest generation/admission. Preserve original command/key on loss.
+
+The existing offline owner requires registered stopped-state and operator-held
+complete native writer/preparation/process/job exclusion. Agent environments
+refuse. Fresh writes need a verified independent checkpointed backup. Complete
+readers, exact scoped preservation of all three writable tables plus complete
+SQL/identity, verified backup and lifecycle rereads enclose one writer/COMMIT.
+TASK-15618 sizes this operator for retained ordinary history with one original
+900-second cooperative deadline, a streamed <=32GiB backup hash in 4MiB chunks,
+and a 640M-step ownership SQL guard; other reader callers keep 32M. The existing
+8192-row/64MiB workflow acquisition limits remain. An INSERT-only SQLite authorizer
+and exact expected append comparison protect all original rows and SQL. Replay/
+readback need no backup hash. See the [sizing and caller inventory](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#retained-history-repair-task-15618).
+The installer/shared whole-database inventory stays byte-identical: its 8192-row/
+64MiB/5s ceiling is a known pre-existing production-blocking defect for follow-on. Exit4 retains
+COMMIT/rollback/close/delivery/post-publication uncertainty, with no automatic retry.
+It installs no schema, creates no marker/run/task or native/remote action, converts
+no old Explicit setting and runs nothing at startup. Installation remains the
+existing explicit offline schema path. See the
+[operator procedure](../../runbooks/sequential-coding-cutover.md).
+
+This source unit is inert: public fresh start STILL requires `check_venue_start`
+and old @2 fresh admission is unchanged. The atomic selector/public attachment
+and old-fresh fence remain required together in one later PR. Existing historical
+replay, settlement, cancellation, LOCAL Final, U7/U8, Pause and original budgets
+are unchanged. The pending-U9 message in `setup_coding.py` remains true and stays.
+No live setup/admission/deploy/restart, genuine scratch, V3 extension or effect
+recovery is authorized. Source/static and synthetic diagnostics do not establish
+operator/native/V3 acceptance; independent review/QA and manager merge remain.
