@@ -53,6 +53,7 @@ import {
 import { TaskPauseControls } from './TaskPauseControls';
 import { CancelTaskDialog } from './CancelTaskDialog';
 import { RevisitTaskDialog } from './RevisitTaskDialog';
+import { TaskSelectionSummary, latestSessionSelection, type LastRunSelection } from './TaskSelectionSummary';
 import { ResolveEscalationDialog } from './ResolveEscalationDialog';
 
 type Translate = (key: MessageKey, params?: MessageParams) => string;
@@ -591,6 +592,9 @@ interface ChainWithBlock {
    *  Null when the task never joined a fan-out. `active_fanout` is cleared
    *  after join, so this audit row is the only backing for the joined band. */
   joinedFanout: JoinedFanout | null;
+  /** DERIVE from the latest `session_start` audit row: what the most recent
+   *  session was launched with (THR-356). Null before any session. */
+  lastRun: LastRunSelection | null;
   /** Revisit lineage from the envelope: `[this, predecessor, …, original]`.
    *  Length 1 (or empty) means the task was never revisited. Backs the
    *  "Revisit & dependency chain" predecessor timeline. */
@@ -665,6 +669,7 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
         superseded_by_task_id:
           typeof sbti === 'string' && sbti ? sbti : null,
         joinedFanout: latestFanoutJoin(r.audit_log),
+        lastRun: latestSessionSelection(r.audit_log),
         revisitChain,
         directRevisits,
         workStatus: parseWorkStatus(rr),
@@ -822,12 +827,14 @@ export function TaskStatusCard({
   jobs,
   workStatus,
   blockedOnJobs = null,
+  lastRun = null,
 }: {
   task: TaskRecord;
   slug: string | undefined;
   jobs: JobRecord[];
   workStatus: WorkStatusResponse | null;
   blockedOnJobs?: BlockedJobEntry[] | null;
+  lastRun?: LastRunSelection | null;
 }): JSX.Element {
   const { locale, t } = useTranslation();
   const threadId = task.originating_thread_id ?? task.dispatched_from_thread_id;
@@ -921,6 +928,7 @@ export function TaskStatusCard({
             <ExecutionStatusDetails status={workStatus} />
           </div>
         )}
+        <TaskSelectionSummary task={task} lastRun={lastRun} />
       </div>
     </aside>
   );
@@ -1309,6 +1317,7 @@ export function TaskDetailPage(): JSX.Element {
                   jobs={jobsQuery.data?.jobs ?? []}
                   workStatus={chainQuery.data?.workStatus ?? null}
                   blockedOnJobs={chainQuery.data?.blockedOnJobs ?? null}
+                  lastRun={chainQuery.data?.lastRun ?? null}
                 />
               </>
             )}

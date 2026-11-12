@@ -176,6 +176,7 @@ export const mockTasksApi: TasksApi = {
   useTaskRecall: () => ok(RECALL_TREE),
   useTaskTailSSE: () => { /* no-op */ },
   useCancelTask: () => noopMutation(),
+  useSubmitTask: () => noopMutation(),
   useRevisitTask: () => noopMutation(),
   useResolveEscalation: () => noopMutation(),
 };

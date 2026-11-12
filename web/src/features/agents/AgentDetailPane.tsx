@@ -34,7 +34,7 @@ import { useDensity } from '@/hooks/density';
 import { useTeamsList } from '@/hooks/teams';
 import { isEligiblePolicyManager } from '@/hooks/authorityPolicy';
 import { AgentAvatar } from './AgentAvatar';
-import { useExecutorOptions } from './useExecutorOptions';
+import { useExecutorOptions } from '@/hooks/executor-options';
 import { TeamEscalationPolicyEntryCard } from './TeamEscalationPolicyCard';
 import { AgentKnowledge } from './instill/AgentKnowledge';
 import { useTranslation } from '@/hooks/i18n';

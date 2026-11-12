@@ -2681,7 +2681,32 @@ Manager completion decisions use the same `model` / `reasoning_effort` names
 on delegate, then and fanout/parallel handoffs. Invalid target choices return
 existing decision feedback before any child is created. Linked retry omission
 carries; explicit null clears independently. Handoffs never inherit the manager's
-own override. Web dialogs, detail rendering and TS mirrors are planned PR3. See the
+own override.
+
+The Web surfaces shipped in PR3. Tasks has a **New task** dialog
+(`features/tasks/NewTaskDialog.tsx`: brief, optional "Run by" agent, model,
+effort) and Revisit gained the same two fields
+(`features/tasks/TaskSelectionFields.tsx`). Unset fields add no selection key
+to POST `/tasks`. Revisit prefills the predecessor's stored override: an
+untouched field is omitted (carry), an edited field sends its value, and an
+emptied or "Clear ... override" field sends explicit null; each field states
+in words which of these will happen. Options come only from the TARGET agent's
+executor through `hooks/task-selection.ts`, which composes the agent page's
+`hooks/executor-options.ts` (`/health/prereqs` effort values and runtime
+profiles) with the existing adapter list's `input_options`; the Web holds no
+model or effort catalog. A custom executor that declares no model and/or
+effort template has that field disabled with a short reason; OpenCode effort
+is disabled until the applicable model is a pinned `provider/model`; with no
+agent chosen (server-picked default manager) both fields stay disabled.
+A blocked field that still holds a value keeps it visible with an explicit
+clear action; nothing is dropped silently. HTTP422 `invalid_task_selection`
+is shown in the dialog with the server's reason, executor and valid effort
+options, and no task is created. Task detail's status rail shows the effective
+model and effort with each field's source (founder, manager or agent default),
+plus the latest `session_start` audit row as "Last start". A null effective
+value reads "CLI default" only while the assigned agent is still in the
+roster; otherwise it reads "Unavailable". All states are in English and
+zh-CN. See the
 [full task design](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
 
 ### Per-agent model and reasoning-effort selection

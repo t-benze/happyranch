@@ -21,6 +21,8 @@ import type {
   TaskListStreams,
   TaskTailSSECallbacks,
   RevisitTaskArgs,
+  SubmitTaskArgs,
+  SubmitTaskResult,
   RevisitTaskResult,
   TasksApi,
   TasksListPage,
@@ -351,6 +353,17 @@ function useCancelTask(taskId: string): MutationLike<CancelTaskArgs, CancelTaskR
   });
 }
 
+function useSubmitTask(): MutationLike<SubmitTaskArgs, SubmitTaskResult> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SubmitTaskArgs) => tasksApi.submitTask(slug, body),
+    onSuccess: () => {
+      invalidateTaskViews(qc, slug);
+    },
+  });
+}
+
 function useRevisitTask(taskId: string): MutationLike<RevisitTaskArgs, RevisitTaskResult> {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
@@ -416,6 +429,7 @@ export const realTasksApi: TasksApi = {
   useTaskRecall: useTaskRecall as TasksApi['useTaskRecall'],
   useTaskTailSSE,
   useCancelTask,
+  useSubmitTask,
   useRevisitTask,
   useResolveEscalation,
 };

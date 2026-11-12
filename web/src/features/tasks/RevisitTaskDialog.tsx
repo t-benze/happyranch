@@ -10,9 +10,13 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { Input } from '@/design-system/primitives/Input';
-import { useRevisitTask, useTasksRoutes } from '@/hooks/tasks';
+import { useRevisitTask, useTask, useTasksRoutes } from '@/hooks/tasks';
+import { useTaskSelectionOptions } from '@/hooks/task-selection';
+import type { InvalidTaskSelectionDetail } from '@/lib/api/types';
 import { useTranslation } from '@/hooks/i18n';
 import { classifyTaskError, renderTaskError, type TaskErrorView } from './strings';
+import { selectionBody, selectionRefusal, type CarriedSelection, type SelectionDraft } from './taskSelection';
+import { TaskSelectionFields, TaskSelectionRefusal } from './TaskSelectionFields';
 
 interface Props {
   taskId: string;
@@ -24,12 +28,23 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
   const [note, setNote] = useState('');
   const [sessionTimeout, setSessionTimeout] = useState('');
   const [error, setError] = useState<TaskErrorView | null>(null);
+  const [refusal, setRefusal] = useState<InvalidTaskSelectionDetail | null>(null);
   const revisit = useRevisitTask(taskId);
+  // The predecessor's stored override is carried unless the founder edits a
+  // field. `edited` is null until then, so the form follows the loaded task.
+  const task = useTask(taskId);
+  const carried: CarriedSelection | null = task.data
+    ? { model: task.data.model_override ?? null, effort: task.data.reasoning_effort_override ?? null }
+    : null;
+  const [edited, setEdited] = useState<SelectionDraft | null>(null);
+  const draft: SelectionDraft = edited ?? { model: carried?.model ?? '', effort: carried?.effort ?? '' };
+  const options = useTaskSelectionOptions(task.data?.assigned_agent ?? null);
   const navigate = useNavigate();
   const routes = useTasksRoutes();
 
   const onSubmit = async () => {
     setError(null);
+    setRefusal(null);
     const sst = sessionTimeout.trim();
     if (sst && !/^\d+$/.test(sst)) {
       setError({ kind: 'message', key: 'tasks.dialog.revisit.invalidTimeout' });
@@ -39,11 +54,15 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
       const out = await revisit.mutateAsync({
         founder_note: note || undefined,
         session_timeout_seconds: sst ? Number(sst) : undefined,
+        // Untouched fields are omitted (carry); a cleared field sends null.
+        ...(carried !== null ? selectionBody(draft, carried) : {}),
       });
       if (out.task_id) navigate(routes.detail(out.task_id));
       else onClose();
     } catch (e: unknown) {
-      setError(classifyTaskError(e, 'tasks.dialog.revisit.failed'));
+      const refused = selectionRefusal(e);
+      if (refused !== null) setRefusal(refused);
+      else setError(classifyTaskError(e, 'tasks.dialog.revisit.failed'));
     }
   };
 
@@ -67,6 +86,21 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
           onChange={(e) => setSessionTimeout(e.target.value)}
           placeholder={t('tasks.dialog.revisit.timeoutPlaceholder')}
         />
+        {carried !== null ? (
+          <TaskSelectionFields
+            idPrefix="revisit-task"
+            options={options}
+            draft={draft}
+            onChange={setEdited}
+            carried={carried}
+            disabled={revisit.isPending}
+          />
+        ) : (
+          <p className="text-text-muted text-xs">
+            {t(task.isError ? 'tasks.selection.carryUnknown' : 'tasks.selection.block.loading')}
+          </p>
+        )}
+        {refusal !== null && <TaskSelectionRefusal refusal={refusal} />}
         {error !== null && <p className="text-danger text-sm">{renderTaskError(error, t)}</p>}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>

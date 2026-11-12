@@ -148,13 +148,28 @@ Existing task-created selection audits remain conditional on a selected field.
 Workflow-owned/sequential coding decisions and non-task launchers are outside
 this contract. No new schema, adapter contract or session_start key is added.
 
-## Planned PR3
+## Web surfaces (PR3 shipped)
 
-PR3 (planned): Web New task and Revisit model/effort inputs; revisit carry,
-change and per-field clear; task detail renders effective selections, overrides,
-who selected each field and actual-run audit evidence. Update TypeScript API
-mirrors in PR3 with English/Chinese states and required layout evidence. PR1 has
-no Web UI changes.
+The Tasks page has a New task dialog and Revisit has model/effort inputs.
+Unset adds no selection key. Revisit prefills the predecessor's override:
+untouched omits the field (carry), an edit sends the value and an emptied or
+explicitly cleared field sends JSON null, per field. Task detail renders the
+effective model and effort, the per-field source (founder, manager or agent
+default) and the latest existing `session_start` audit row as what the most
+recent session was launched with. A null effective value is "CLI default"
+while the assigned agent is in the roster and "Unavailable" otherwise.
+
+Options and disabling come from the target agent's current executor using
+existing reads only: `/health/prereqs` effort values, runtime profiles and the
+adapter list's `input_options`. No daemon route, response field or schema was
+added and the Web holds no model/effort catalog. Custom executors without a
+model and/or effort template disable that field with a reason; OpenCode effort
+needs a pinned provider/model; the server-picked default manager has no
+client-known executor, so both fields stay disabled until an agent is chosen.
+HTTP422 `invalid_task_selection` is shown with reason, executor and valid
+options; nothing falls back or is dropped. TypeScript mirrors live in
+`web/src/lib/api/tasks.ts` and `types.ts`; states ship in English and zh-CN.
+The Web does not offer overrides on thread dispatch or manager handoffs.
 
 ## Verification contract
 

@@ -132,7 +132,31 @@ export interface TaskRecord {
   closed_at: string | null;
   cancelled_at: string | null;
   session_timeout_seconds: number | null;
+  /** THR-356 per-task selection; mirror of task_selection.selection_view.
+   *  Optional because older daemons and stubbed fixtures omit them. */
+  model_override?: string | null;
+  reasoning_effort_override?: string | null;
+  override_source?: TaskOverrideSource | null;
+  /** Resolved against the CURRENT agent default; null when neither an
+   *  override nor a readable agent default exists. */
+  effective_model?: string | null;
+  effective_reasoning_effort?: string | null;
+  model_source?: TaskSelectionSource | null;
+  reasoning_effort_source?: TaskSelectionSource | null;
   [extra: string]: unknown;
+}
+
+/** Who selected a task override (runtime/daemon/routes/tasks.py). */
+export type TaskOverrideSource = 'founder' | 'manager';
+/** Per-field source reported by Task GET/list. */
+export type TaskSelectionSource = TaskOverrideSource | 'agent_default';
+
+/** 422 detail of runtime/orchestrator/task_selection.py::TaskSelectionError. */
+export interface InvalidTaskSelectionDetail {
+  code: 'invalid_task_selection';
+  reason: string;
+  executor: string;
+  valid_options: string[];
 }
 
 export interface CleanupActivity {
