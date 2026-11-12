@@ -73,6 +73,16 @@
   Empty Headscale membership (`null` or `[]`) continues the bounded join wait;
   malformed/schema-invalid responses and unexpected members still refuse.
   The premerge VM-half asserts empty membership through the shipped nodes phase.
+  Public failure evidence separates handoff/decrypt/native-process/C-init/C-start/
+  join-wait timings, allowlisted exception classes, return codes and fixed-label
+  join diagnostics before scratch removal. Host control waits retain safe labels,
+  counts and elapsed time. `control_waits` is always a list: `[]` when no hosted
+  wait occurred (VM-only premerge or Linux diagnose-only), otherwise genuine
+  wait entries with `failure_label` (null on success), `observations` and
+  `elapsed_seconds`. Empty lists carry no fabricated per-wait fields.
+  No private text/argv/credential is exported; see the
+  runbook for the closed projection. Failed native attempts remain spent and the
+  original join cause remains unresolved; evidence repair grants no new run.
   The host observes the existing pairing marker before revoke. VM ownership
   markers permit logs/purge/teardown/clean-state only after positive terminal
   observation of every prior Cloud Assistant invocation. M4 retains InvokeIds;

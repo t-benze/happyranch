@@ -13,10 +13,33 @@ import json
 import subprocess
 import time
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Iterator
 
 from m4_tailnet_runner import COORDINATION_PR, OPERATOR_ID, PREFIX, REPOSITORY, binding
+from m4_tailnet_client import exception_class
+
+
+@contextmanager
+def control_wait(waits: list[dict], phase: str) -> Iterator[dict]:
+    started = time.monotonic()
+    item = dict(phase=phase, observations=0, status='FAIL', failure_label='observation-failed')
+    waits.append(item)
+    try:
+        yield item
+        item.update(status='PASS', failure_label=None)
+    except Exception as error:
+        item['exception_class'] = exception_class(error)
+        raise
+    finally:
+        item['elapsed_seconds'] = round(time.monotonic() - started, 3)
+
+
+def require_wait(item: dict, condition: bool, label: str) -> None:
+    if not condition:
+        item['failure_label'] = label
+    assert condition, label  # Only fixed call-site labels, never external text.
 
 
 def github(path: str, body: dict | None = None) -> bytes:
@@ -43,6 +66,7 @@ class HostedRun:
         assert who['id'] == OPERATOR_ID, 'unexpected operator account; no credential fallback'
         self.request: dict = {}
         self.comments: list[dict] = []
+        self.waits: list[dict] = []
 
     def observe(self) -> dict:
         run = json.loads(github(f'actions/runs/{self.run_id}'))
@@ -74,21 +98,24 @@ class HostedRun:
             return json.loads(bundle.read(entry))
 
     def public_request(self) -> dict:
-        deadline = time.monotonic() + 600
-        while time.monotonic() < deadline:
-            run = self.observe()
-            assert run['status'] != 'completed', 'runner ended before enrollment'
-            request = self.artifact(f'managed-m4-request-{self.run_id}-1', 'request.json')
-            if request:
-                assert request['run_id'] == self.run_id and request['sha'] == self.sha
-                binding(request)
-                result = subprocess.run(['openssl', 'pkey', '-pubin', '-text', '-noout'],
-                                        input=request['public_key'].encode(), capture_output=True, timeout=15)
-                assert result.returncode == 0 and b'(3072 bit)' in result.stdout, 'invalid RSA public key'
-                self.request = request
-                return request
-            time.sleep(15)
-        raise RuntimeError('public-key artifact deadline')
+        with control_wait(self.waits, 'public-key-handoff') as wait:
+            deadline = time.monotonic() + 600
+            while time.monotonic() < deadline:
+                wait['observations'] += 1
+                run = self.observe()
+                require_wait(wait, run['status'] != 'completed', 'runner-completed')
+                request = self.artifact(f'managed-m4-request-{self.run_id}-1', 'request.json')
+                if request:
+                    assert request['run_id'] == self.run_id and request['sha'] == self.sha
+                    binding(request)
+                    result = subprocess.run(['openssl', 'pkey', '-pubin', '-text', '-noout'],
+                                            input=request['public_key'].encode(), capture_output=True, timeout=15)
+                    assert result.returncode == 0 and b'(3072 bit)' in result.stdout, 'invalid RSA public key'
+                    self.request = request
+                    return request
+                time.sleep(15)
+            wait['failure_label'] = 'deadline'
+            raise RuntimeError('public-key artifact deadline')
 
     def publish(self, phase: str, payload: dict) -> None:
         # A successful VM command alone cannot authorize public text. Accept
@@ -114,41 +141,52 @@ class HostedRun:
         self.comments.append(dict(phase=phase, id=response['id'], url=response['html_url']))
 
     def coordinate(self, phase: Callable[..., str], record: dict) -> None:
+        record['control_waits'] = self.waits
         self.publish('enroll', {'enroll': phase('enroll', private=True).strip()})
-        deadline = time.monotonic() + 180
-        while True:
-            rows = json.loads(phase('nodes', private=True))
-            if len(rows) == 1 and rows[0]['name'] == 'synthetic-m4-outside':
-                break
-            assert not rows, 'unexpected synthetic membership before install'
-            assert self.observe()['status'] != 'completed' and time.monotonic() < deadline, 'outside join deadline'
-            time.sleep(5)
+        with control_wait(self.waits, 'outside-join') as wait:
+            deadline = time.monotonic() + 180
+            while True:
+                wait['observations'] += 1
+                rows = json.loads(phase('nodes', private=True))
+                if len(rows) == 1 and rows[0]['name'] == 'synthetic-m4-outside':
+                    break
+                require_wait(wait, not rows, 'unexpected-membership')
+                run = self.observe()
+                require_wait(wait, run['status'] != 'completed', 'runner-completed')
+                require_wait(wait, time.monotonic() < deadline, 'deadline')
+                time.sleep(5)
         phase('install')
         rows = json.loads(phase('nodes', private=True))
         home = [row for row in rows if row['name'] == 'home-sidecar-ci']
         assert len(rows) == 2 and len(home) == 1 and len(home[0]['ips']) == 1
         self.publish('pairs', dict(address=home[0]['ips'][0], **{
             name: phase(name, private=True).strip() for name in ('pair-main', 'pair-revoked', 'pair-ready')}))
-        deadline = time.monotonic() + 180
-        while True:
-            devices = json.loads(phase('devices', private=True))['devices']
-            active = {row['device_id'] for row in devices if row['paired'] and not row['revoked']}
-            if 'pair-ready' in active:
-                assert active == {'pair-main', 'pair-revoked', 'pair-ready'}, 'wrong disposable device membership'
-                break
-            assert self.observe()['status'] != 'completed' and time.monotonic() < deadline, 'positive-control acknowledgement deadline'
-            time.sleep(5)
+        with control_wait(self.waits, 'pair-ready') as wait:
+            deadline = time.monotonic() + 180
+            while True:
+                wait['observations'] += 1
+                devices = json.loads(phase('devices', private=True))['devices']
+                active = {row['device_id'] for row in devices if row['paired'] and not row['revoked']}
+                if 'pair-ready' in active:
+                    require_wait(wait, active == {'pair-main', 'pair-revoked', 'pair-ready'}, 'unexpected-membership')
+                    break
+                run = self.observe()
+                require_wait(wait, run['status'] != 'completed', 'runner-completed')
+                require_wait(wait, time.monotonic() < deadline, 'deadline')
+                time.sleep(5)
         phase('revoke')
         self.publish('revoked', {'revoked': True})
         phase('exposure-sockets')
-        deadline = time.monotonic() + 240
-        while True:
-            run = self.observe()
-            if run['status'] == 'completed':
-                assert run['conclusion'] == 'success', 'native workflow failed'
-                break
-            assert time.monotonic() < deadline, 'native workflow completion deadline'
-            time.sleep(15)
+        with control_wait(self.waits, 'native-completion') as wait:
+            deadline = time.monotonic() + 240
+            while True:
+                wait['observations'] += 1
+                run = self.observe()
+                if run['status'] == 'completed':
+                    require_wait(wait, run['conclusion'] == 'success', 'runner-failed')
+                    break
+                require_wait(wait, time.monotonic() < deadline, 'deadline')
+                time.sleep(15)
         summary = self.artifact(f'managed-m4-logs-{self.run_id}-1', 'client-summary.json')
         assert summary and summary['sha'] == self.sha and summary['run_id'] == self.run_id
         assert summary['status'] == 'CLIENT_CHECKS_PASSED_VM_CLEANUP_PENDING' and summary['private_scratch_absent']

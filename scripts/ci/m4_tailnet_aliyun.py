@@ -23,7 +23,7 @@ import time
 
 from m3_reboot_aliyun import CloudAssistant
 
-from m4_tailnet_client import Bridge, DiagnosticComplete, build_archive, control_get, worker
+from m4_tailnet_client import Bridge, DiagnosticComplete, build_archive, control_get, exception_class, worker
 from m4_tailnet_control import HostedRun
 from m4_tailnet_runner import decrypt
 
@@ -127,7 +127,7 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     ca = M4CloudAssistant(args.instance, args.region, args.output)
     record: dict = {"sha": args.sha, "instance": args.instance, "outside_client": "native macOS workflow" if args.runner_run else "none: VM-only premerge" if args.premerge_vm else "Linux diagnostic only",
-                    "verdict": "INCOMPLETE", "phases": [], "checks": [], "streams": [], "invocations": ca.invocations}
+                    "verdict": "INCOMPLETE", "phases": [], "checks": [], "streams": [], "invocations": ca.invocations, "control_waits": []}
 
     def security_group() -> list[dict]:
         response = ca.api('DescribeSecurityGroupAttribute', '--SecurityGroupId', 'sg-j6c9rilzduc2xjhzmc3q', '--Direction', 'ingress')
@@ -213,6 +213,7 @@ def main() -> None:
         record['security_group_before'] = security_group()
         if args.runner_run:
             hosted = HostedRun(args.runner_run, args.sha)
+            record['control_waits'] = hosted.waits
             request = hosted.public_request()
             public_bytes = request['public_key'].encode('ascii')
             record['public_request'] = request
@@ -301,7 +302,7 @@ echo exact-source={args.sha}
         # All exception text emitted by this driver is controlled. Native/cloud
         # raw command diagnostics and response bodies are never exported here.
         record['verdict'] = 'FAIL'
-        record['failure_type'] = type(error).__name__
+        record['failure_type'] = exception_class(error)
         record['failure'] = 'operation failed; private exception withheld'
         raise
     finally:
