@@ -134,7 +134,11 @@ lineage validation and retry ceilings remain authoritative.
 Then settings persist as additive optional request keys in chain JSON and in
 fanout carrier details. Omitted new keys stay absent, so legacy state loads and
 unset child rows, state JSON, audit payloads and spawn argv retain their shapes
-and bytes. Explicit null survives state round trips. Later auto-advance copies
+and bytes. Explicit null survives state round trips and orchestration decision
+audits, including `exclude_none` serialization, at every nested handoff level.
+This preserves the exact accepted-result/audit binding used by attachment
+correction; omitted selection keys in historical decisions/audits stay absent
+and continue to match without reader normalization. Later auto-advance copies
 the saved choice to the new task row; PR1's unchanged start-time recheck runs
 before executor construction. If executor/options changed, the leg fails with
 `saved model no longer valid for this agent`, then follows ordinary failure,

@@ -18,7 +18,10 @@ the manager's task overrides. Linked retries carry omitted fields and source;
 explicit values replace, explicit null clears independently, and any explicit
 edit adopts manager provenance for the remaining tuple (both clear => NULL).
 Then settings persist as optional additive JSON keys; omitted keys, legacy
-state and unset audits stay unchanged. Auto-advance stores the saved setting;
+state and unset audits stay unchanged. Explicit null selection fields survive
+decision audit serialization, including nested legs/children, so attachment
+correction retains its exact accepted-result/audit binding. Historical omitted
+keys still match without normalization. Auto-advance stores the saved setting;
 the unchanged PR1 pre-launch check refuses invalidated choices with
 `saved model no longer valid for this agent` before executor construction.
 See [THR-356](../../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).

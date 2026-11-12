@@ -222,6 +222,9 @@ class ChainLeg(BaseModel):
         for key in ("model", "reasoning_effort"):
             if key not in self.model_fields_set:
                 result.pop(key, None)
+            elif getattr(self, key) is None:
+                # Explicit clears must also survive exclude_none audit dumps.
+                result[key] = None
         return result
 
 
@@ -251,6 +254,9 @@ class FanoutChild(BaseModel):
         for key in ("model", "reasoning_effort"):
             if key not in self.model_fields_set:
                 result.pop(key, None)
+            elif getattr(self, key) is None:
+                # Explicit clears must also survive exclude_none audit dumps.
+                result[key] = None
         return result
 
 
@@ -332,6 +338,9 @@ class NextStep(BaseModel):
         for key in ("model", "reasoning_effort"):
             if key not in self.model_fields_set:
                 result.pop(key, None)
+            elif getattr(self, key) is None:
+                # Explicit clears must also survive exclude_none audit dumps.
+                result[key] = None
         return result
 
     @field_validator('action')
