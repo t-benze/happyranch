@@ -71,6 +71,9 @@ memory/private pipes. No runner cloud/admin/daemon credential, new GitHub
 secret/setting/scope, inbound port or product seam. Public API rate limits and
 account compromise remain explicit risks. Existing redacted node/device commands
 coordinate join and the positive-control pairing marker before targeted revoke.
+Headscale `null` and `[]` both mean empty membership during the bounded join
+wait; other invalid JSON/schema shapes and unexpected members still refuse.
+The premerge VM-half also asserts empty membership through the shipped nodes phase.
 
 **Execution boundary:** JOB-6610 and JOB-6615 both failed at Linux outside join;
 JOB-6615 classified tcp-connect without endpoint attribution. JOB-6618, the ONE
