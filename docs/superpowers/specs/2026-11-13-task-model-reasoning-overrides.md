@@ -167,7 +167,11 @@ invalidation as the detail read, and on live `progress` and
 Loading and unreadable audit data are shown as such, never as "no session has
 started". A null effective value is "CLI default" only after a successful
 roster read contains the assigned agent and "Unavailable" only after one lacks
-it; a loading or failed roster read says so.
+it; a loading or failed roster read says so. A task with no stored assigned
+agent is never described as a removed agent and does not consult the roster:
+its effective value is shown as returned (the daemon resolves the team
+manager's default), and a null value reads "Not set" with a note that the team
+manager's default, or else the CLI default, applies.
 
 Options and disabling come from the target agent's current executor using
 existing reads only: `/health/prereqs` effort values, runtime profiles and the

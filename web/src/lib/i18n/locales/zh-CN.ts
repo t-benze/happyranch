@@ -1768,6 +1768,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'tasks.selection.source.agentDefault': '智能体默认值',
   'tasks.selection.unavailable': '不可用',
   'tasks.selection.unavailableHelp': '所分配的智能体已不在名册中，无法读取其默认值。',
+  'tasks.selection.unassigned': '未设置',
+  'tasks.selection.unassignedHelp': '此任务未记录所分配的智能体。将采用团队经理的默认值；若团队经理未设置，则采用 CLI 默认值。',
   'tasks.selection.lastRun': '最近启动',
   'tasks.selection.lastRunValue': '{executor} · 模型：{model} · 推理强度：{effort}',
   'tasks.selection.notStarted': '尚未启动任何会话。',

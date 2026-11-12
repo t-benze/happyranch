@@ -1851,6 +1851,8 @@ export const en = {
   'tasks.selection.source.agentDefault': 'Agent default',
   'tasks.selection.unavailable': 'Unavailable',
   'tasks.selection.unavailableHelp': 'The assigned agent is no longer in the roster, so its default cannot be read.',
+  'tasks.selection.unassigned': 'Not set',
+  'tasks.selection.unassignedHelp': 'This task has no assigned agent recorded. The team manager\'s default applies, or the CLI default when that manager sets none.',
   'tasks.selection.lastRun': 'Last start',
   'tasks.selection.lastRunValue': '{executor} · model: {model} · effort: {effort}',
   'tasks.selection.notStarted': 'No session has started yet.',

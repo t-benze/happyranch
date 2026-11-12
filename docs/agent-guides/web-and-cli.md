@@ -2716,7 +2716,11 @@ there is no live `session_start` bus event, so a start shows on the first of
 those. Loading or unreadable audit data reads as such, not as "No session has
 started yet". A null effective value reads "CLI default" only after a
 successful roster read contains the assigned agent and "Unavailable" only
-after one lacks it; a loading or failed roster read says so. After a
+after one lacks it; a loading or failed roster read says so. A task with no
+stored assigned agent is never called a removed agent and does not consult
+the roster: its effective value shows as returned, and a null value reads
+"Not set" with a note that the team manager's default, or else the CLI
+default, applies. After a
 successful revisit the dialog opens the new root (`new_root_task_id`). All states are in English and
 zh-CN. See the
 [full task design](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).

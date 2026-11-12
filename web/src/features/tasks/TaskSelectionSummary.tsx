@@ -5,8 +5,10 @@
  * `effective_*` and `*_source` come straight from Task GET and resolve the
  * CURRENT agent default. A null effective value is only called the CLI
  * default when a successful roster read contains the assigned agent, and the
- * agent is only called gone when a successful read lacks it; while the roster
- * is loading or unreadable the row says that instead of guessing. The
+ * agent is only called gone when the task names one and a successful read
+ * lacks it; while the roster is loading or unreadable the row says that
+ * instead of guessing. A task with no stored assignment is its own state: the
+ * daemon resolves the team manager's default for it, so nobody was removed. The
  * "last started with" row is the existing `session_start` audit row, with
  * loading and unreadable audit data kept apart from a confirmed absence.
  */
@@ -49,19 +51,21 @@ const SOURCE_KEYS: Record<TaskSelectionSource, MessageKey> = {
   agent_default: 'tasks.selection.source.agentDefault',
 };
 
-type AgentState = 'known' | 'gone' | 'loading' | 'unreadable';
+type AgentState = 'known' | 'gone' | 'loading' | 'unreadable' | 'unassigned';
 
 const NULL_VALUE_KEYS: Record<AgentState, MessageKey> = {
   known: 'tasks.selection.cliDefault',
   gone: 'tasks.selection.unavailable',
   loading: 'tasks.selection.rosterLoading',
   unreadable: 'tasks.selection.unavailable',
+  unassigned: 'tasks.selection.unassigned',
 };
 
 const NULL_HELP_KEYS: Record<Exclude<AgentState, 'known'>, MessageKey> = {
   gone: 'tasks.selection.unavailableHelp',
   loading: 'tasks.selection.rosterLoadingHelp',
   unreadable: 'tasks.selection.rosterUnreadableHelp',
+  unassigned: 'tasks.selection.unassignedHelp',
 };
 
 export function TaskSelectionSummary({
@@ -77,10 +81,11 @@ export function TaskSelectionSummary({
   // rather than an invented default.
   if (task.model_source === undefined && task.reasoning_effort_source === undefined) return null;
   // Only a successful roster read can establish that the agent is present
-  // or gone; a pending or failed read establishes neither.
+  // or gone; a pending or failed read establishes neither. No stored
+  // assignment is not a removal, whatever the roster read says.
   const roster = agents.data?.agents;
   const agentState: AgentState = !task.assigned_agent
-    ? 'gone'
+    ? 'unassigned'
     : roster !== undefined
       ? (roster.some((agent) => agent.name === task.assigned_agent) ? 'known' : 'gone')
       : agents.isError ? 'unreadable' : 'loading';
