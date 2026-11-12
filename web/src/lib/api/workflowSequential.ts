@@ -112,5 +112,5 @@ export const putSequentialSettings = async (slug: string, command: SequentialSet
   return value;
 };
 /** Original receipt only. Never substitutes the latest current-generation GET. */
-export const getSequentialSettingsOperation = async (slug: string, key: string): Promise<SequentialSettingsReceipt> =>
-  receipt(await request(`/orgs/${slug}/workflows/sequential/settings/operations`, { params: { operation_key: key } }), slug, key);
+export const getSequentialSettingsOperation = async (slug: string, key: string, signal?: AbortSignal): Promise<SequentialSettingsReceipt> =>
+  receipt(await request(`/orgs/${slug}/workflows/sequential/settings/operations`, { params: { operation_key: key }, signal }), slug, key);

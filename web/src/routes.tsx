@@ -134,6 +134,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="reviews" element={<WorkflowReviewsPage />} />
           <Route path="reviews/:activationId" element={<WorkflowReviewsPage />} />
           <Route path="workflows" element={<SequentialWorkflowsPage view="definitions" />} />
+          <Route path="workflows/setup" element={<SequentialWorkflowsPage view="setup" />} />
           <Route path="workflows/runs" element={<SequentialWorkflowsPage view="runs" />} />
           <Route path="workflows/definitions/:definitionId" element={<SequentialWorkflowsPage view="definition" />} />
           <Route path="workflows/runs/:runId" element={<SequentialWorkflowsPage view="run" />} />

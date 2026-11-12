@@ -3854,7 +3854,8 @@ invocation or transitive workflow behavior. Changed identity may need separate
 genuine memory qualification; epochs and collection acceptance are untouched.
 Health200, disk HEAD and SPA/index equality are insufficient. The original serving/native owner resolves unavailable proof;
 setup adds no endpoint, maintenance lock, settlement writer or auth grant.
-Finish at Settings → Coding with Admission Disabled. Real workflow/Founder
+Finish at Settings → Coding with Admission Disabled (historical: since U8b that page
+points to Workflows → Setup and only recovers earlier saves by original key). Real workflow/Founder
 persistence/scratch/rejection/revision/control/cross-team/two-org/backup/restore/
 reopen/rollback acceptance remains open before ordinary coding use. Source delivery
 alone is not installed, loaded, operational or enabled acceptance.

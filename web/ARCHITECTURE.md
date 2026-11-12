@@ -41,7 +41,7 @@ QA's independently source-pinned public two-template scratch journey and root's
 actual Founder acceptance remain distinct. No new global mock/test seam, source
 execution/merge grant, or automated behavioral CI is introduced.
 
-## Sequential Workflows (U8a)
+## Sequential Workflows (U8a/U8b)
 
 `features/workflows/SequentialWorkflowsPage` mounts the read-only Definitions,
 Runs, definition overview and run detail routes. `lib/workflowSequentialView`
@@ -55,8 +55,20 @@ data with `refreshFailed` (PRD F6). Run detail and the task banner consume the
 nested admitted-definition read's own loading/error/`refreshFailed` state: a stale
 definition keeps the derived process/exhaustion/assessments with a warning whose
 Refresh refetches the definition, and any other definition error explains that the
-original admitted definition is unavailable. No configuration or run control
-is mounted. See `docs/superpowers/specs/2026-11-12-sequential-coding-u8.md`.
+original admitted definition is unavailable. No run control is mounted.
+
+U8b adds `features/workflows/SequentialSetup` (Setup tab): it edits only the current
+repo-free default agents through the U7b `useSequentialSettingsActions` /
+`useSequentialSettingsFence` provider custody, keeps drafts and lookup outcomes in a
+per-QueryClient per-org memory (never persisted) and has no admission, repository or
+run control. The shared sequential read treats the settings read's 404
+`sequential_settings_not_found` as "nothing saved yet" (no org fence); the original-save
+lookup runs under the same org admission generation/abort/refusal policy, and the Setup
+editor never rehydrates from a read older than its own committed generation, nor adopts
+a conflict read that is not newer than the refused basis. Settings →
+Coding (`features/settings/sections/CodingSection`) is a pointer to Setup plus a
+read-only original-key lookup for historical saves. See
+`docs/superpowers/specs/2026-11-12-sequential-coding-u8.md`.
 
 ## Layers (strict)
 

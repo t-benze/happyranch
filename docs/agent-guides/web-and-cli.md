@@ -4323,7 +4323,11 @@ S1. The page below consumes this client. No configuration save enables the curre
 
 ### Founder coding settings page
 
-`/orgs/:slug/settings/coding` mounts `CodingSection` outside the general settings
+Historical (THR-320). Since U8b (TASK-15605) `CodingSection` no longer edits: it points
+to Workflows → Setup and offers only the read-only original-key lookup described in
+§ U8b. The editor contract below is retained as history for its saved records.
+
+`/orgs/:slug/settings/coding` mounted `CodingSection` outside the general settings
 gate through `useCodingSettings`/`useCodingSettingsActions`; the real provider
 keys the view by org and ignores a read settling (or rejecting) after a later
 accepted save or readback. Four org-wide cross-team selectors show Name · ID, team/role and
@@ -4551,7 +4555,9 @@ grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
 ## Guided coding host command and Settings handoff
 
 The published human-terminal command is
-`python3 scripts/setup_coding.py --org happyranch`, followed by Settings → Coding.
+`python3 scripts/setup_coding.py --org happyranch`, followed by Settings → Coding
+(since U8b that page is a pointer to Workflows → Setup with read-only original-save
+recovery; it no longer edits the historical repo-bearing settings).
 Use the actual reviewed pinned source update supplied by root; the runtime guide
 specifies bootstrap, strict flags, all-runtime maintenance and private recovery
 material. No agent may run host setup effects. Managed/unknown attribution and
@@ -4590,7 +4596,8 @@ finite identity proves neither startup invocation nor transitive workflow behavi
 Disk HEAD/health200/SPA fallback cannot fill an observation gap. No new verifier
 or attestation endpoint is supplied.
 
-After verified host/definition observation, open the actual printed
+Historical procedure (before U8b; the page no longer offers this editor — see § U8b):
+after verified host/definition observation, open the actual printed
 `/orgs/ORG/settings/coding` URL, select repositories and
 sha1/sha256 formats and four distinct eligible org agents across teams, including
 an eligible final manager. Leave Admission Disabled, save and reopen; an uncertain
@@ -4835,7 +4842,38 @@ The three locked PRD design corrections
 (exhaustion, preserved approval/Revise with separate pending rechecks, selected
 reviewer vs legacy reviewer list) and the bilingual copy are specified in the
 [U8 specification](../superpowers/specs/2026-11-12-sequential-coding-u8.md).
-U8b Setup/Save custody and the Settings → Coding redirect remain.
+U8b (below) adds Setup/Save custody and the Settings → Coding redirect.
+
+## U8b Workflows Setup and Settings → Coding redirect (TASK-15605)
+
+`/orgs/:slug/workflows/setup` (Setup tab) edits the CURRENT repo-free default agents of
+the latest stored definition version through only the merged U7b routes and provider
+custody: one row per definition role (permanent agent IDs; the agents list is advisory,
+the server decides eligibility), saved limits/admission shown read-only. No admission,
+repository, start, retry, reassign or merge control; saving never changes admission
+(first save starts Disabled). One Save freezes one key/body (`useSequentialSettingsFence`);
+pending locks edits/Save/Discard; stale/conflict keeps the draft and needs explicit
+"Continue from current configuration", which is enabled (control and handler) only once a
+current read is newer than the refused expected_generation and not below the known commit
+(until then the draft and lock stay, Discard keeps the lock and the copy asks for a newer
+read with Refresh); other definite refusals keep the draft; an
+uncertain outcome shows "Last confirmed" beside the frozen original and offers only the
+read-only original-save lookup (absent/error stay uncertain and locked; a found receipt
+is shown apart from a newer current read). That lookup shares the sequential reads' org
+admission generation/abort set: a 403/404 other than its exact 404 operation_not_found
+fences the whole org with the original key/body still held, and a late receipt after a
+sibling refusal is dropped without releasing custody. A committed generation is a
+hydration floor: an older current read never replaces the saved editor values or lowers
+expected_generation, and the receipt panel compares generations ordinally. Drafts/lookup outcomes are per QueryClient
+per org (never persisted), so navigation, org A→B→A and locale changes keep them with no
+request. The settings GET's 404 `sequential_settings_not_found` means "nothing saved
+yet" and does not fence the org; every other 403/404 keeps the U8a org-wide fence and F6
+applies to the settings read. `/orgs/:slug/settings/coding` no longer edits: it points to
+Workflows → Setup and keeps historical repo-bearing saves recoverable by a read-only
+GET `/settings/coding?operation_key=KEY` lookup (the old send fence was memory-only, so
+recovery is by the original key the old page displayed). Nothing there sends a PUT,
+converts or resends the historical command. See the
+[U8 specification](../superpowers/specs/2026-11-12-sequential-coding-u8.md).
 
 ## U7b repo-free settings and original save (TASK-15482)
 
