@@ -138,7 +138,13 @@ settings GETs and the U7b settings PUT, original-operation GET and provider cust
   Definite refusals release the fence: generation-stale/operation-conflict shows
   "Configuration changed elsewhere", re-reads current separately, keeps the draft and blocks
   Save until explicit "Continue from current configuration" (rebases expected_generation,
-  keeps draft values); other definite codes show "Not saved" with the code and keep the
+  keeps draft values). The conflict records the refused expected_generation; Continue is
+  enabled (control AND handler) only for an independently read generation newer than that
+  basis (operation-conflict: not below it) and never below the known committed generation.
+  Until then the draft and the conflict lock stay (Discard keeps the lock), the copy says a
+  newer configuration has not been read yet instead of offering the older read, and a
+  Refresh re-reads current settings (TASK-15610). Continuing an unedited draft takes the
+  newer read itself; other definite codes show "Not saved" with the code and keep the
   draft. Uncertain: "Last confirmed" (current read) beside "Your original save" (frozen
   command) and only the read-only "Check original save"; absent (404 operation_not_found)
   or error stays uncertain and locked; a matching receipt releases the fence and is shown

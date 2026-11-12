@@ -4853,7 +4853,10 @@ the server decides eligibility), saved limits/admission shown read-only. No admi
 repository, start, retry, reassign or merge control; saving never changes admission
 (first save starts Disabled). One Save freezes one key/body (`useSequentialSettingsFence`);
 pending locks edits/Save/Discard; stale/conflict keeps the draft and needs explicit
-"Continue from current configuration"; other definite refusals keep the draft; an
+"Continue from current configuration", which is enabled (control and handler) only once a
+current read is newer than the refused expected_generation and not below the known commit
+(until then the draft and lock stay, Discard keeps the lock and the copy asks for a newer
+read with Refresh); other definite refusals keep the draft; an
 uncertain outcome shows "Last confirmed" beside the frozen original and offers only the
 read-only original-save lookup (absent/error stay uncertain and locked; a found receipt
 is shown apart from a newer current read). That lookup shares the sequential reads' org
