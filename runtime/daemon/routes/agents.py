@@ -846,6 +846,17 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                         model=resolved_model,
                         reasoning_effort=resolved_effort,
                     )
+                    if body.system_prompt is not None or body.executor is not None:
+                        # Refuse a body the workspace reconcile below would reject
+                        # BEFORE the canonical write, so the refusal is a no-effect
+                        # validation failure, not partial mutation (UNKNOWN writer).
+                        from runtime.orchestrator.workspace_adapters import (
+                            _assert_no_reserved_headers_in_body,
+                        )
+                        try:
+                            _assert_no_reserved_headers_in_body(body.name, updated.system_prompt)
+                        except ValueError as exc:
+                            raise HTTPException(status_code=422, detail=str(exc)) from None
                 with authority_change.canonical_change():
                     active_path = paths.agents_dir / f"{body.name}.md"
                     from runtime.orchestrator.agent_def import render_agent_text
