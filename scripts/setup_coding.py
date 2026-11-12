@@ -2341,7 +2341,7 @@ class Coordinator:
             # Rendering is an actual human observation, separate from index byte
             # equality. Do not accept a checkbox to override missing code facts.
             port = read_file(self.home / 'daemon.port', 64).decode().strip()
-            self.confirm(f'Open http://127.0.0.1:{port}/orgs/{self.args.org}/settings/coding in your browser. Confirm the actual Coding page renders, not a placeholder/error. Loaded owner and asset checks above remain required.')
+            self.confirm(f'Open http://127.0.0.1:{port}/orgs/{self.args.org}/workflows/setup in your browser. Confirm the actual Workflows Setup page renders, not a placeholder/error. An unavailable or not-configured catalog is not installation or admission evidence. Loaded owner and asset checks above remain required.')
 
         self.revalidate_start()
         self.diagnostic.effect('serving', 'accepted-selected-source-assets-human-render')
@@ -2456,10 +2456,10 @@ class Coordinator:
         self.require_backup()
         self.diagnostic.enter('settings-disabled-handoff')
         port = read_file(self.home / 'daemon.port', 64).decode().strip()
-        print(f'8. http://127.0.0.1:{port}/orgs/{self.args.org}/settings/coding')
-        print('The built-in recipe is available automatically; select repositories and sha1/sha256 formats; choose four distinct eligible org agents across teams and an eligible final manager. Leave Admission Disabled. Save and reopen; uncertain saves use Check original save.')
+        print(f'8. http://127.0.0.1:{port}/orgs/{self.args.org}/workflows/setup')
+        print('Workflows Setup edits repo-free default agents for stored sequential definitions. First save defaults to Disabled; saving preserves admission and starts no run. An unavailable or empty catalog requires separately authorized sequential installation and definition registration. This host command does neither and does not enable sequential admission. Uncertain saves use Check original save.')
         print(f'Backup: {self.backup}; saved definition observation: {self.receipts / "saved-coding-definition.json"}')
-        print('Host preparation and saved definition observation complete; choose agents in Settings → Coding. Coding remains disabled; workflow and operational acceptance are open.')
+        print('Host preparation and historical saved definition observation complete; continue at Workflows → Setup. Historical Explicit settings do not transfer. Sequential public fresh start remains unavailable pending the atomic U9 cutover; workflow and operational acceptance are open.')
 
 
 def identity_or_link(path):

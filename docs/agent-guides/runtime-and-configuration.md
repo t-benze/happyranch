@@ -3854,8 +3854,14 @@ invocation or transitive workflow behavior. Changed identity may need separate
 genuine memory qualification; epochs and collection acceptance are untouched.
 Health200, disk HEAD and SPA/index equality are insufficient. The original serving/native owner resolves unavailable proof;
 setup adds no endpoint, maintenance lock, settlement writer or auth grant.
-Finish at Settings → Coding with Admission Disabled (historical: since U8b that page
-points to Workflows → Setup and only recovers earlier saves by original key). Real workflow/Founder
+Finish at the printed `/orgs/ORG/workflows/setup` (Workflows → Setup), which edits
+repo-free defaults only for stored sequential definitions. First save starts
+Disabled; saving preserves admission. A missing/empty sequential catalog is not
+installed by this historical host command. Sequential install, definition
+registration and admission remain separate authorized operations, with the public
+cutover still pending U9b. Historical Explicit settings never transfer; Settings →
+Coding only recovers earlier saves by original key. See the
+[cutover/backout runbook](../runbooks/sequential-coding-cutover.md). Real workflow/Founder
 persistence/scratch/rejection/revision/control/cross-team/two-org/backup/restore/
 reopen/rollback acceptance remains open before ordinary coding use. Source delivery
 alone is not installed, loaded, operational or enabled acceptance.
