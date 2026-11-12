@@ -31,6 +31,12 @@ native transport acceptance.
   before observed membership/install. Its old `outside-join` phase combined
   decrypt and join; the underlying cause remains unresolved. These attempts
   stay spent. The evidence repair grants no dispatch or join allowance.
+- Attempt4 (TASK-15753, run43310355906/JOB-6656 exit1) reached C init0,
+  then C start returned-2 immediately; address waiting was not reached. It
+  remains failed/spent. The never-created-target hypothesis is refuted by the
+  existing Bridge constructor, which created the target before worker start.
+  The actual cause remains unresolved; the next failure classification is
+  evidence, not a new native acceptance result or run allowance.
 - Signed Mac.app, Swift ClientBridge and GUI on founder hardware are separate,
   founder-assisted acceptance and are **NOT RUN**. The current GUI is BYO;
   managed enrollment currently reads a development environment key, which
@@ -106,8 +112,11 @@ private pipes into the unchanged C ABI. Decryption uses a private-key pipe;
 no plaintext output file, argv, env, workflow input, log, PR body or artifact.
 Darwin ignores XDG_CONFIG_HOME: on the disposable runner a checked, absent
 Application Support tsnet path is linked into private scratch, using the actual
-interpreter executable identity. Existing/foreign state refuses; cleanup removes
-only that exact link. Existing native node state remains private scratch and is removed. The runner
+interpreter executable identity. The runner exclusively creates the0700 state
+target inside private0700 scratch before installing the link; Bridge checks the
+target's literal directory type, owner and0700 mode before worker start.
+Existing/foreign state (including dangling links and legacy tslib state) refuses;
+cleanup removes only that exact link and removes state with scratch. The runner
 receives no Headscale admin key, daemon bearer, cloud credential or real data.
 
 The host observes the client's Headscale membership before install. Headscale
@@ -213,6 +222,16 @@ Failure fields contain an allowlisted exception CLASS and fixed stage/error
 label; unknown classes/diagnostic labels become `Unknown`. Exception messages,
 argv, raw native text, keys, node/enrollment/pairing material and credential URLs
 are never exported. A failure before the join call has no join diagnostics.
+
+On nonzero C init/start, the worker reads and frees the unchanged shipped
+`tsnet_last_error` allocation and exports only `bridge_error_class`: `state-dir`,
+`log-dir`, `executable`, `control-url`, `already-started`, `not-initialised` or
+`unknown`. The Bridge allowlist projects unrecognized labels to `unknown`.
+The summary and Actions log retain that label (`null` when no C error was
+observed), never the accessor's raw text, paths, keys or URLs. These are pattern
+classifications; an unrecognized hostname/auth/backend error remains `unknown`.
+Pinned tsnet v1.78.0 puts its log config/filch files in the same state root;
+there is no separate harness log-directory setting.
 
 The host `summary.json` always includes the `control_waits` list. VM-only
 premerge and Linux diagnose-only runs record `[]`: no hosted control wait

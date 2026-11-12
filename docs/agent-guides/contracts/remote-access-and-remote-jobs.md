@@ -75,14 +75,24 @@
   The premerge VM-half asserts empty membership through the shipped nodes phase.
   Public failure evidence separates handoff/decrypt/native-process/C-init/C-start/
   join-wait timings, allowlisted exception classes, return codes and fixed-label
-  join diagnostics before scratch removal. Host control waits retain safe labels,
-  counts and elapsed time. `control_waits` is always a list: `[]` when no hosted
+  join diagnostics before scratch removal.
+  C init/start failures also retain the allowlisted `bridge_error_class` from
+  the existing C error accessor, with raw text withheld and unknown patterns
+  mapped to `unknown`. The native runner exclusively creates the0700 target
+  before its state link; Bridge verifies directory type, owner and0700 mode
+  before worker start. Existing/foreign/legacy state refuses; exact-link removal
+  and scratch deletion remove the transient state.
+  Host wait entries retain safe labels, counts and elapsed time. `control_waits`
+  is always a list: `[]` when no hosted
   wait occurred (VM-only premerge or Linux diagnose-only), otherwise genuine
   wait entries with `failure_label` (null on success), `observations` and
   `elapsed_seconds`. Empty lists carry no fabricated per-wait fields.
   No private text/argv/credential is exported; see the
   runbook for the closed projection. Failed native attempts remain spent and the
   original join cause remains unresolved; evidence repair grants no new run.
+  Attempt4 (TASK-15753/run43310355906/JOB-6656) failed at C start-2 after C
+  init0. A missing target at C start is refuted by the prior Bridge constructor;
+  no native root cause or acceptance is established by this harness repair.
   The host observes the existing pairing marker before revoke. VM ownership
   markers permit logs/purge/teardown/clean-state only after positive terminal
   observation of every prior Cloud Assistant invocation. M4 retains InvokeIds;

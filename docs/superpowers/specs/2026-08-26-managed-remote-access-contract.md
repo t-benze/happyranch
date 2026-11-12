@@ -88,6 +88,21 @@ Unrecognized diagnostic/exception labels become Unknown. Native attempts1–3 re
 failed/spent; attempt3's original join cause is unresolved. This evidence repair
 does not authorize another dispatch, join or certificate issuance.
 
+Attempt4 (TASK-15753/run43310355906/JOB-6656 exit1) reached C init0 then
+immediate C start-2, without reaching address wait, and remains failed/spent.
+The never-created-target hypothesis is refuted: the prior Bridge created its
+target before worker start. The actual cause remains unresolved. The harness
+now creates the0700 target exclusively inside private0700 scratch before the
+Darwin link; Bridge verifies literal directory type, owner and0700 mode before
+spawning. Existing/foreign/dangling/legacy state still refuses; only the exact
+owned link is removed, and scratch deletion removes state. Nonzero C init/start
+exports `bridge_error_class` through the unchanged shipped last-error accessor:
+`state-dir`, `log-dir`, `executable`, `control-url`, `already-started`,
+`not-initialised` or `unknown` (null when no C error was observed). Unknown
+patterns/labels map to `unknown`; raw native text, paths, keys and URLs remain
+private. Log config/filch files share the pinned tsnet state root. This is
+classification evidence, not native acceptance or authorization for another run.
+
 **Execution boundary:** JOB-6610 and JOB-6615 both failed at Linux outside join;
 JOB-6615 classified tcp-connect without endpoint attribution. JOB-6618, the ONE
 report-only syscall diagnostic, also exited1 and yielded no attributable parsed

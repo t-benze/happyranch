@@ -18,6 +18,7 @@ import select
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import time
@@ -37,6 +38,35 @@ JOIN_SECONDS = 90
 JOIN_PHASES = ('join-call', 'native-start', 'join-wait')
 DIAGNOSTIC_LABELS = ('dns', 'tcp-connect', 'tls-verify', 'tls-reset', 'control-upgrade/noise',
                      'auth-key-rejected', 'register', 'netmap-wait', 'derp-connect', 'timeout')
+BRIDGE_ERROR_CLASSES = {'state-dir', 'log-dir', 'executable', 'control-url', 'already-started', 'not-initialised', 'unknown'}
+
+
+def bridge_error_class(lib: ctypes.CDLL) -> str:
+    """Read/free the shipped ABI's error allocation; export a fixed label only."""
+    pointer = lib.tsnet_last_error()
+    if not pointer:
+        return 'unknown'
+    try:
+        text = ctypes.string_at(pointer).decode(errors='replace').lower()
+    finally:
+        lib.tsnet_free_string(pointer)
+    if text == 'tsnet already initialised':
+        return 'already-started'
+    if text in {'tsnet not initialised — call tsnet_init first', 'tsnet context is nil'}:
+        return 'not-initialised'
+    prefix = 'tsnet.start failed: tsnet: '
+    if not text.startswith(prefix):
+        return 'unknown'
+    text = text[len(prefix):]
+    if text == 'cannot find executable path':
+        return 'executable'
+    if text.startswith(('logpolicy.config.save ', 'logpolicy.loadconfig ', 'logpolicy.config.validate ', 'error creating filch:')):
+        return 'log-dir'
+    if text.startswith(('mkdir ', 'stat ', 'lstat ', 'rename ', 'expected old tslib path ', 'creating state directory:')) or text.endswith(' is not a directory') or text == '$home is not defined':
+        return 'state-dir'
+    if text.startswith(('starting backend: controlclient.new: no server url specified', 'starting backend: parse ')):
+        return 'control-url'
+    return 'unknown'
 
 
 def exception_class(error: Exception) -> str:
@@ -153,6 +183,7 @@ def worker(library: Path, state: Path) -> None:
     lib.tsnet_conn_write.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
     lib.tsnet_conn_close.argtypes = [ctypes.c_int]
     lib.tsnet_local_addr.restype = ctypes.c_void_p
+    lib.tsnet_last_error.restype = ctypes.c_void_p
     lib.tsnet_free_string.argtypes = [ctypes.c_void_p]
 
     class Stream(io.RawIOBase):
@@ -185,9 +216,13 @@ def worker(library: Path, state: Path) -> None:
             if action == "join":
                 print('{"join_phase":"join-call"}', flush=True)
                 code = lib.tsnet_init(message["key"].encode(), CONTROL.encode(), b"synthetic-m4-outside")
+                if code:
+                    print(json.dumps(dict(bridge_error_class=bridge_error_class(lib))), flush=True)
                 print(json.dumps(dict(join_phase='native-start', return_code=code)), flush=True)
                 assert code == 0
                 code = lib.tsnet_start()
+                if code:
+                    print(json.dumps(dict(bridge_error_class=bridge_error_class(lib))), flush=True)
                 print(json.dumps(dict(join_phase='join-wait', return_code=code)), flush=True)
                 assert code == 0
                 deadline = time.monotonic() + JOIN_SECONDS
@@ -256,7 +291,12 @@ def worker(library: Path, state: Path) -> None:
 class Bridge:
     def __init__(self, library: Path, scratch: Path) -> None:
         self.state = scratch / "client-state"
-        self.state.mkdir(mode=0o700)
+        if sys.platform != 'darwin':
+            self.state.mkdir(mode=0o700)
+        # The native runner exclusively creates the Darwin target before its
+        # alias. Refuse symlink/foreign/non-private targets before worker start.
+        info = self.state.lstat()
+        assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700, 'private client state required'
         environment = dict(os.environ, XDG_CONFIG_HOME=str(self.state),
                            TS_DEBUG_ALWAYS_USE_DERP="true", TS_DEBUG_LOGTAIL_FLUSHDELAY="24h",
                            TS_DEBUG_NOISE_DIAL="true")
@@ -270,6 +310,7 @@ class Bridge:
         self.join_phase = 'join-call'
         self.join_error = 'operation-failed'
         self.worker_exception = 'Unknown'
+        self.bridge_error_class: str | None = None
         self.response_buffer = b''
         self.process = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), "--worker", str(library), "--worker-state", str(self.state)],
@@ -313,6 +354,11 @@ class Bridge:
             except ValueError:
                 self.join_error = 'worker-response-unavailable'
                 raise RuntimeError('client response unavailable') from None
+            if 'bridge_error_class' in result:
+                assert action == 'join' and set(result) == {'bridge_error_class'}
+                label = result['bridge_error_class']
+                self.bridge_error_class = label if isinstance(label, str) and label in BRIDGE_ERROR_CLASSES else 'unknown'
+                continue
             if 'join_phase' in result:
                 assert action == 'join'
                 phase = result['join_phase']
