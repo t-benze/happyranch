@@ -381,6 +381,14 @@ worktrees, never startup's publication inputs. The org load check and the
 profile coordinator's `reconcile_startup` classification apply the same
 predicate. An unavailable native owner keeps every record blocking; the record
 stays UNKNOWN; it is never cleared by this startup exception.
+A held org can be released only by explicit Founder-authorized settlement with
+`scripts/settle_native_writer.py --runtime-root R --org ORG --writer-id ID
+--justification TEXT [--apply]` after verifying the failed writer left no
+partial effect. It refuses while any process has the org database open, refuses
+`disk_sweep` and non-UNKNOWN records, rewrites only the named terminal record to
+`settled` and, in the same transaction, appends a
+`native_writer_founder_settlement` audit row retaining the original payload,
+actor and justification. Restart the daemon afterwards.
 
 Whole-runtime construction records its actual candidate on the original caller's
 owner before later fallible work. Both normal startup and runtime replacement

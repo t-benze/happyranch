@@ -189,7 +189,12 @@ cleanup uses no-follow lstat: only ENOENT establishes literal absence; surviving
 entries (including dangling symlinks), inspection errors and prior uncertainty
 remain blockers, with actual cleanup causes retained in logs/exception notes.
 Cancellation, partial files/packages, failed rollback or uncertain compensation
-stay unknown. Existing unknown history is immutable; there is no clear writer.
+stay unknown. Existing unknown history is immutable; no runtime path clears it.
+The only exception is the explicit, Founder-authorized operator tool
+`scripts/settle_native_writer.py` (daemon stopped, named writer IDs, non-sweep,
+mandatory justification, dry run by default); see the runtime lifecycle
+contract. Agent update refuses reserved agent-body headers during validation,
+before the canonical write, so that refusal settles instead of leaving UNKNOWN.
 Retry initialization explicitly freezes EMPTY as well as nonempty schedules;
 missing legacy facts preserve history but cannot grant new retries or automatic
 ambiguous reentry. These are source corrections only; behavior UNEXECUTED,
