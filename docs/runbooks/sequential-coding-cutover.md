@@ -33,6 +33,11 @@ for the exact compatibility table, caller inventory and remaining obligations.
    installation, separate from registration/admission/loaded identity/acceptance.
    Exit1 refuses; exit4 preserves uncertainty. Never delete sidecars or reset
    ownership. Existing startup does not install the sequential extension.
+   **Known pre-existing limitation (TASK-15618):** this unchanged installer/check
+   inventories the whole database with 8192 rows/64MiB/5s, plus an 8192-owner install
+   copy cap. Current retained production history already exceeds it. This PR
+   deliberately does not repair installation; follow-on installer work is required
+   before initial installation on such an org. No direct-SQL or live workaround.
 4. Explicitly register ONLY the reviewed Coding v2 package resource:
 
    ```sh
@@ -85,15 +90,26 @@ for the exact compatibility table, caller inventory and remaining obligations.
    Original source host/outer settlement precedes first-visit release. Genuine
    Coding scratch remains separately reserved; V3 is not that scratch.
 
-The setup script reuses existing org/lifecycle/backup/inventory owners and one
+The setup script reuses existing org/lifecycle/checkpoint identity owners and one
 BEGIN IMMEDIATE through COMMIT. It requires a registered runtime, absent daemon
 PID/port controls and explicit operator-maintained exclusion of all current
 writers/preparation/processes/native owners/jobs across affected runtimes,
 shared stores and cooperative hosts. These observations do not prove historical
 closure or OS exclusion. Unknown owners remain with their original owner.
 It refuses missing/partial storage; it never installs or repairs. Full source
-and target readers and inventory/identity/backup/lifecycle checks share an
-original five-second cooperative deadline; existing finite reader limits apply.
+and target readers and scoped preservation/identity/backup/lifecycle checks share
+one original 900-second cooperative deadline. All schema SQL and exact typed
+rowid/cells in the three writable tables are preserved; an INSERT-only SQLite
+authorizer prevents other table/schema/trigger effects. Full backup SHA256 is
+streamed in 4MiB chunks up to32GiB; scoped backup equivalence covers all writable
+rows and SQL, not equality of unrelated historical payloads. Complete readers
+retain their workflow-data limits; only this operator selects 640M ownership SQL
+steps instead of the unchanged 32M default. Ordinary history contributes no rows
+or payload bytes to the preservation copy. Disable, original-key replay/readback
+stay available in the sized ordinary-history envelope; invalid/exhausted workflow
+history still refuses. Replay/readback require no backup/hash. See the explicit
+[10x sizing arithmetic and caller inventory](../superpowers/specs/2026-11-12-sequential-coding-u9.md#retained-history-repair-task-15618).
+These are cooperative limits, not hard OS-I/O or unbounded-history guarantees.
 
 Setup exits: **0** observed publication/read; **1** refused; **2** usage;
 **4** uncertain after COMMIT attempt, rollback/close/delivery or post-publication

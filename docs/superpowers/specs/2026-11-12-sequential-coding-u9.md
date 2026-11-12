@@ -35,8 +35,9 @@ dependency, startup-order or live-state change is part of U9a.
 Declared in `dev_agent/output/TASK-15616/plan.md` BEFORE source edits: use the
 explicitly permitted obligation-1 first PR. `scripts/setup_sequential_coding.py`
 is a separate non-venue cooperative offline operator entry point. It reuses the
-existing schema installer’s org resolver, read-only inventory, verified backup and
-lifecycle observations; it never imports/reuses the disposable publisher or
+existing schema installer’s org resolver, checkpoint/file and lifecycle
+observations; TASK-15618 supplies operator-scoped preservation/verified backup.
+It never imports/reuses the disposable publisher or
 marker. Installation remains `install_workflow_sequential_schema.py`, unchanged.
 
 `register` reads ONLY `read_coding_release`’s reviewed Coding v2 resource, compares
@@ -60,8 +61,8 @@ from latest generation/admission. Absence/error grants no resend or new key.
 Every invocation refuses the existing agent-environment markers and requires
 operator-confirmed complete cooperative offline/native-owner/job exclusion plus
 registered stopped-state observations. Fresh writes require a separate verified
-checkpointed backup. Complete source/target readers, full original inventory,
-identity/lifecycle/backup rereads and a five-second cooperative deadline surround
+checkpointed backup. Complete source/target readers, exact scoped preservation,
+identity/lifecycle/backup rereads and one 900-second cooperative deadline surround
 one BEGIN IMMEDIATE/COMMIT. No install/repair/startup/OrgState or daemon/network
 operation occurs. COMMIT attempt, rollback/close/delivery or post-publication
 uncertainty returns exit4 and preserves the original command/key. No retry.
@@ -73,6 +74,69 @@ still have NO production callers. The only new caller of `read_coding_release`
 is this explicit offline operator. No marker is created/removed, and V3 fixture
 behavior is unchanged. Obligations 2+3 MUST follow in ONE merge unit; this split
 does not complete U9b/U9 or remove the pending-U9 host setup message.
+
+## Retained-history repair (TASK-15618)
+
+R1 removes this operator's unconditional whole-database Python inventory. It
+snapshots complete `sqlite_schema` and exact typed rowid/cells of every table it
+can write: `workflow_seq_definitions`, `workflow_seq_settings`,
+`workflow_seq_settings_operations`. Source, verified backup and locked source
+must match. A native SQLite authorizer permits only the action's literal INSERTs
+and refuses other tables, UPDATE/DELETE, DDL and trigger-originated actions.
+Actual change count and exact expected appended rows, original rows and SQL are
+compared before COMMIT and again after it. Full original family readers and
+preflight whole-database FK checks remain; invalid history still refuses.
+
+Full backup SHA256 is streamed with stable file/checkpoint identity bookends;
+backup equivalence now compares all writable rows/schema, not unrelated ordinary
+historical payloads. The supplied digest still authenticates the entire backup.
+This is a cooperative offline contract, not racing-writer/OS exclusion. No
+transaction, original-key receipt, CAS, publication/close/rollback/delivery
+uncertainty, agent-environment refusal or fail-closed validation gate is removed.
+Ordinary history growth cannot consume the scoped copy allowance. Read-only
+original-key replay/readback never hash or require a backup. Disable remains
+reachable across the sized history envelope; invalid or exhausted workflow-family
+history still refuses rather than returning partial validation.
+
+Sizing lower bound observed by TASK-15617:1,452,916,736 main-file bytes,
+15,617 tasks,27,327 task_results, excluding live WAL. Tenfold target is
+14,529,167,360 bytes,156,170 tasks,273,270 results. Synthetic verification targets
+at least 160,000 tasks and 273,270 results with >=14,529,167,360 actual file bytes;
+source diagnostics report encoded payload bytes separately from file allocation.
+
+| Operator cap | Explicit production arithmetic |
+| --- | --- |
+| One 900s deadline, all phases | Target 14.529GB /32MiB/s =433.0s backup hash, leaving 467s for complete-reader/SQL/I/O/bookends; tenfold old 5s is 50s. Cooperative checks do not bound a blocking OS call. |
+| Full backup 32GiB | 34,359,738,368 bytes =23.65x observed,2.365x tenfold target. At full cap 900s requires 36.41MiB/s absent other work; tenfold target requires 15.40MiB/s. Exhaustion refuses before writes. |
+| Hash 4MiB chunks | Tenfold target 3465 blocks, maximum 8192 blocks; deadline checked each block, fixed buffer size. |
+| Ownership/FK guard 640M SQL steps per complete read | Operator-only; default 32M unchanged. 160k valid legacy-owned tasks measured 40.983M ownership steps (~256/task), leaving 15.62x headroom; 640M is 20x original 32M. No predicate is omitted. |
+| Scoped preservation 8192 acquired rows,64MiB raw/copy,1MiB cells,65536 work | Same complete-reader ceilings, including schema/copy overhead. Tenfold ordinary156170+273270 history contributes ZERO acquired preservation rows/payload bytes; only three writable families enter this copy. |
+| Family/schema 2M SQL; retained legacy original limits | Unchanged. Ordinary ASCII legacy-owned history uses SQL-only guards, not acquired workflow rows. Workflow/candidate exhaustion still refuses. |
+| Canonical command 16384 bytes; busy timeout 1s | Closed ~700-byte five-field command has >23x headroom, independent of history; lock admission remains fail-closed. |
+
+Caller disposition: `setup_sequential_coding.operation` and its backup/writer
+checks now use script-local `_readonly_inventory`, `_backup_observation`,
+`_inventory`, `_preserved` and `_insert_only`; `_inspect` uses `_history`.
+`_history` is the sole non-default caller of `read_sequential_history`'s internal
+`ownership_sql_limit` parameter. Runtime/installer callers keep 32M and every
+existing data allowance. `sequential_storage_inventory` still has exactly the
+installer `_readonly_inventory` caller (also its backup path) and
+`install_sequential_schema` pre/post writer callers.
+
+**Known pre-existing installer defect, deliberately deferred:**
+`install_workflow_sequential_schema.py` and `workflow_schema.py` are byte-identical.
+Their whole-database8192-row/64MiB/5s inventory, plus installer8192-owner copy cap,
+already blocks normal retained production history. This operator repair grants
+no claim initial installation works there. Follow-on installer sizing and
+preservation evidence/doc parity are required; no live workaround is authorized.
+The optional reader allowance preserves the installer's default behavior.
+
+N1: TASK-15616's original cases labeled missing-marker actually observed
+`sequential_venue_live_home`. Corrected outside-live-home disposable diagnostics
+assert exact `sequential_venue_marker_absent` before SQL at old/new heads. These
+are synthetic observations, not genuine V3 acceptance. TASK-15617 remains
+REQUEST_CHANGES history; prior failed/blocked/REQUEST_CHANGES roots and spent
+allowances remain unchanged.
 
 ## U9a interfaces and caller inventory
 

@@ -2696,8 +2696,16 @@ receipt from latest generation/admission. Preserve original command/key on loss.
 The existing offline owner requires registered stopped-state and operator-held
 complete native writer/preparation/process/job exclusion. Agent environments
 refuse. Fresh writes need a verified independent checkpointed backup. Complete
-readers, whole-source inventory, identity/backup/lifecycle rereads and one original
-five-second cooperative deadline enclose the single writer/COMMIT. Exit4 retains
+readers, exact scoped preservation of all three writable tables plus complete
+SQL/identity, verified backup and lifecycle rereads enclose one writer/COMMIT.
+TASK-15618 sizes this operator for retained ordinary history with one original
+900-second cooperative deadline, a streamed <=32GiB backup hash in 4MiB chunks,
+and a 640M-step ownership SQL guard; other reader callers keep 32M. The existing
+8192-row/64MiB workflow acquisition limits remain. An INSERT-only SQLite authorizer
+and exact expected append comparison protect all original rows and SQL. Replay/
+readback need no backup hash. See the [sizing and caller inventory](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#retained-history-repair-task-15618).
+The installer/shared whole-database inventory stays byte-identical: its 8192-row/
+64MiB/5s ceiling is a known pre-existing production-blocking defect for follow-on. Exit4 retains
 COMMIT/rollback/close/delivery/post-publication uncertainty, with no automatic retry.
 It installs no schema, creates no marker/run/task or native/remote action, converts
 no old Explicit setting and runs nothing at startup. Installation remains the
