@@ -4827,7 +4827,10 @@ separately from task status, from one accepted run-detail snapshot. A 403/404 on
 any sequential read renders a fixed denied note with no run/task/evidence, aborts and
 blanks every sequential projection of the org and fences late successes until a fresh
 read succeeds; a network refresh failure keeps the last-loaded view with a freshness
-warning (PRD F6). Exhaustion uses RunDetail `effective_limits`/`reducer_counters`.
+warning (PRD F6), including the nested admitted-definition read (retained with a
+warning and a Refresh of that read on transport failure; otherwise an explicit
+"original admitted definition unavailable" state). Exhaustion uses RunDetail
+`effective_limits`/`reducer_counters`.
 The three locked PRD design corrections
 (exhaustion, preserved approval/Revise with separate pending rechecks, selected
 reviewer vs legacy reviewer list) and the bilingual copy are specified in the

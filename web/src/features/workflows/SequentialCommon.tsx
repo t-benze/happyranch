@@ -13,10 +13,10 @@ export function ReadOnlyNote(): JSX.Element {
 }
 
 /** PRD F6: last-loaded data stays visible; this warning says it may be out of date. Distinct from a refusal. */
-export function StaleNotice({ error, refetch }: { error: Error | null | undefined; refetch: () => Promise<unknown> }): JSX.Element {
+export function StaleNotice({ error, refetch, message = 'seqwf.stale' }: { error: Error | null | undefined; refetch: () => Promise<unknown>; message?: MessageKey }): JSX.Element {
   const { t } = useTranslation();
   return <div role="status" className="bg-attention-soft text-text-primary mt-3 flex flex-wrap items-center gap-2 rounded-md px-3 py-2 text-sm">
-    <span>{t('seqwf.stale')}</span>
+    <span>{t(message)}</span>
     {error && <span className="text-text-muted font-mono text-xs wrap-anywhere">{reviewDiagnostic(error)}</span>}
     <Button size="sm" variant="outline" onClick={() => void refetch()}>{t('workflows.refresh')}</Button>
   </div>;

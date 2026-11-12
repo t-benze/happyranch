@@ -95,7 +95,8 @@ no persisted cache and selection-exit eviction prevent stale cached content from
 supplying current access. U8a (TASK-15587) refines this per PRD v1.0.4 F6: a 403/404
 on any sequential read evicts and fences every sequential projection of the org,
 while a transport (network) refresh failure keeps that mount's last-loaded data
-with a freshness warning; see the U8 spec. U8 still owns UI.
+with a freshness warning, including the nested admitted-definition read used by
+run detail and the task banner (TASK-15595); see the U8 spec. U8 still owns UI.
 
 ## U7 implementation units, in order
 

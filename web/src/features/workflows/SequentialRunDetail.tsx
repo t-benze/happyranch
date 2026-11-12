@@ -5,11 +5,14 @@
  * successor claim unless its visit exists. Read-only.
  */
 import { Link } from 'react-router-dom';
+import { Button } from '@/design-system/primitives/Button';
 import { useTranslation } from '@/hooks/i18n';
 import { useSequentialDefinition, useSequentialRun } from '@/hooks/workflows';
 import { deriveRun, parseDefinition, taskLinks, type DefView, type RunFacts, type SequentialRunDetail as Detail, type Visit } from '@/lib/workflowSequentialView';
 import { OutcomeBadge, RunHeadlineText, RunStateBadge, useRecordedToken, useVisitState } from '@/shared/workflows/SequentialRunPresentation';
-import { ReadOnlyNote, ReadState, TaskRef } from './SequentialCommon';
+import { isAccessRefusal } from '@/shared/workflows/SequentialTaskBanner';
+import { ReadOnlyNote, ReadState, StaleNotice, TaskRef } from './SequentialCommon';
+import { reviewDiagnostic } from './strings';
 
 const ASSESSMENT_TYPES = new Set(['independent-code-review@1', 'code-qa@1', 'document-review@1']);
 const REVIEW_TYPES = new Set(['independent-code-review@1', 'document-review@1']);
@@ -42,6 +45,7 @@ function Loaded({ slug, detail }: { slug: string; detail: Detail }): JSX.Element
       {links.carrier && <TaskRef label="seqwf.carrierTask" id={links.carrier} base={base} />}
     </div>
     <ReadOnlyNote />
+    {defQ.refreshFailed && def && <StaleNotice message="seqwf.defStale" error={defQ.refreshError} refetch={defQ.refetch} />}
     <section aria-labelledby="seqwf-state" className="border-border-default bg-bg-raised mt-4 rounded-lg border p-4 text-sm wrap-anywhere">
       <h2 id="seqwf-state" className="text-h2 text-text-primary">{t('seqwf.currentState')}</h2>
       <p className="mt-2"><RunHeadlineText facts={facts} roleOf={roleOf} taskHref={id => `${base}/tasks/${encodeURIComponent(id)}`} /></p>
@@ -68,9 +72,27 @@ function Loaded({ slug, detail }: { slug: string; detail: Detail }): JSX.Element
         <pre className="border-border-default rounded-md border p-3 font-sans whitespace-pre-wrap wrap-anywhere">{i.value}</pre></div>)}
     </section>
     <Bindings detail={detail} def={def} />
-    {def ? <Process slug={slug} detail={detail} def={def} facts={facts} /> : defQ.isError ? null : <p className="text-text-muted mt-4">{t('seqwf.loading')}</p>}
-    {def && <Finalization detail={detail} def={def} facts={facts} />}
+    {def ? <>
+      <Process slug={slug} detail={detail} def={def} facts={facts} />
+      <Finalization detail={detail} def={def} facts={facts} />
+    </> : defQ.isError && isAccessRefusal(defQ.error) ? null
+      : defQ.isError || defQ.data ? <DefinitionUnavailable error={defQ.isError ? defQ.error : null} refetch={defQ.refetch} />
+      : <p role="status" className="text-text-muted mt-4">{t('seqwf.loading')}</p>}
   </>;
+}
+
+/**
+ * The admitted definition could not be read (non-refusal error) or shown structurally:
+ * say so instead of silently dropping the process, exhaustion explanation and assessments.
+ */
+function DefinitionUnavailable({ error, refetch }: { error: Error | null; refetch: () => Promise<unknown> }): JSX.Element {
+  const { t } = useTranslation();
+  return <div role="alert" className="border-border-default mt-4 rounded-md border p-4 text-sm">
+    <h2 className="text-text-primary font-medium">{t('seqwf.defUnavailable')}</h2>
+    <p className="text-text-muted mt-1">{t('seqwf.defUnavailableBody')}</p>
+    {error && <pre className="text-text-muted mt-2 text-xs whitespace-pre-wrap wrap-anywhere">{reviewDiagnostic(error)}</pre>}
+    <Button className="mt-3" size="sm" variant="outline" onClick={() => void refetch()}>{t('workflows.refresh')}</Button>
+  </div>;
 }
 
 function Bindings({ detail, def }: { detail: Detail; def: DefView | null }): JSX.Element {

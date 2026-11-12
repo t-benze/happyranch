@@ -51,7 +51,7 @@ function LinkedRun({ slug, taskId, runId, linkStale, refreshLink }: { slug: stri
   const detail = useSequentialRun(runId);
   const accepted = detail.data && detail.data.run.id === runId ? detail.data : null;
   const def = useSequentialDefinition(accepted?.run.definition_id ?? '');
-  if (detail.isError && isAccessRefusal(detail.error)) return <BannerShell><Denied /></BannerShell>;
+  if ((detail.isError && isAccessRefusal(detail.error)) || (def.isError && isAccessRefusal(def.error))) return <BannerShell><Denied /></BannerShell>;
   if (!accepted) {
     return <BannerShell>{detail.isError
       ? <div className="flex flex-wrap items-center gap-2" role="alert"><span>{t('seqwf.banner.detailError')}</span>
@@ -60,14 +60,16 @@ function LinkedRun({ slug, taskId, runId, linkStale, refreshLink }: { slug: stri
   }
   const run = accepted.run;
   const parsed = def.data ? parseDefinition(def.data.definition_json) : null;
+  // The headline's next-step/exhaustion explanation needs the admitted definition; say when it is missing.
+  const defUnavailable = !parsed && (def.isError || !!def.data);
   const facts = deriveRun(accepted, parsed);
   const roleOf = (node: string) => parsed?.nodes.find(n => n.id === node)?.role ?? node;
   const rel = REL[run.tasks.find(x => x.task_id === taskId)?.relationship ?? ''] ?? null;
   const base = `/orgs/${slug}`;
   return <BannerShell>
-    {(detail.refreshFailed || linkStale) && <div role="status" className="bg-attention-soft mb-2 flex flex-wrap items-center gap-2 rounded-md px-2 py-1">
+    {(detail.refreshFailed || linkStale || (def.refreshFailed && !!parsed)) && <div role="status" className="bg-attention-soft mb-2 flex flex-wrap items-center gap-2 rounded-md px-2 py-1">
       <span>{t('seqwf.stale')}</span>
-      <Button size="sm" variant="outline" onClick={() => { void refreshLink(); void detail.refetch(); }}>{t('workflows.refresh')}</Button></div>}
+      <Button size="sm" variant="outline" onClick={() => { void refreshLink(); void detail.refetch(); void def.refetch(); }}>{t('workflows.refresh')}</Button></div>}
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <span className="text-text-muted">{t('seqwf.banner.runState')}</span>
       <RunStateBadge state={run.state} />
@@ -80,6 +82,9 @@ function LinkedRun({ slug, taskId, runId, linkStale, refreshLink }: { slug: stri
       </Link>
     </div>
     <p className="mt-1"><RunHeadlineText facts={facts} roleOf={roleOf} taskHref={id => `${base}/tasks/${encodeURIComponent(id)}`} /></p>
+    {defUnavailable && <div role="alert" className="bg-attention-soft mt-1 flex flex-wrap items-center gap-2 rounded-md px-2 py-1">
+      <span>{t('seqwf.banner.defUnavailable')}</span>
+      <Button size="sm" variant="outline" onClick={() => void def.refetch()}>{t('workflows.refresh')}</Button></div>}
     <p className="text-text-muted mt-1 text-xs">{t('seqwf.banner.independent')}</p>
   </BannerShell>;
 }

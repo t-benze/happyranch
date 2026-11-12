@@ -1,6 +1,6 @@
 # Sequential Coding U8: common Workflows journey and task integration
 
-> Status: current design; U8a (read/journey half) delivered in source by TASK-15582 and corrected by TASK-15587 (TASK-15583 findings: access fencing, single-snapshot banner, R-M3-7 exhaustion, PRD F6 freshness). U8b (Setup editing/Save custody UI and the Settings → Coding redirect with original-save recovery) and U9 (public selector/fresh-start cutover) remain. Public fresh start stays OFF.
+> Status: current design; U8a (read/journey half) delivered in source by TASK-15582 and corrected by TASK-15587 (TASK-15583 findings: access fencing, single-snapshot banner, R-M3-7 exhaustion, PRD F6 freshness) and by TASK-15595 (TASK-15588 finding: nested admitted-definition read states). U8b (Setup editing/Save custody UI and the Settings → Coding redirect with original-save recovery) and U9 (public selector/fresh-start cutover) remain. Public fresh start stays OFF.
 > Current Source: docs/agent-guides/web-and-cli.md § U8a; web/ARCHITECTURE.md § Sequential Workflows (U8a)
 
 THR-336 / ROOT TASK-15165. Plan rev3 TASK-14461 §U8 as re-scoped by R-M2-1
@@ -102,6 +102,18 @@ status) keeps the last state loaded in this mount visible with a freshness
 warning and a Refresh button; background refetches no longer hide loaded data.
 Other HTTP failures keep the error view. The warning is visibly distinct from the
 denied message, and a refusal still evicts and gates strictly as above.
+
+This applies to every read a view depends on, including the nested admitted-definition
+read that run detail and the task banner use for the process, the next-step/exhaustion
+explanation and the assessments (TASK-15595). When only the definition refresh fails
+on transport while the run and task-link reads succeed, the retained definition and
+everything derived from it stay visible with a freshness warning; its Refresh
+refetches the failing definition read. When the definition was never loaded in this
+mount, fails with a non-refusal HTTP error, or cannot be shown structurally, run
+detail states that the original admitted definition is unavailable (with the raw
+diagnostic and Refresh) instead of silently dropping the process and assessments,
+and the banner states that the next step and any limit explanation cannot be shown.
+A 403/404 on the definition read fences the org exactly as any other sequential read.
 
 ## Copy
 
