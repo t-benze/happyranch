@@ -2681,7 +2681,48 @@ Manager completion decisions use the same `model` / `reasoning_effort` names
 on delegate, then and fanout/parallel handoffs. Invalid target choices return
 existing decision feedback before any child is created. Linked retry omission
 carries; explicit null clears independently. Handoffs never inherit the manager's
-own override. Web dialogs, detail rendering and TS mirrors are planned PR3. See the
+own override.
+
+The Web surfaces shipped in PR3. Tasks has a **New task** dialog
+(`features/tasks/NewTaskDialog.tsx`: brief, optional "Run by" agent, model,
+effort) and Revisit gained the same two fields
+(`features/tasks/TaskSelectionFields.tsx`). Unset fields add no selection key
+to POST `/tasks`. Revisit prefills the stored override of the predecessor ROOT
+that the route restarts (found by walking `parent_task_id` from the flagged
+task with the existing Task GET, 20-hop bound) and takes its options from that
+root's assigned agent; the request still names the flagged task, and a subtask
+view names the root it restarts. Until that root has loaded, or if it cannot
+be read, no baseline is shown and the dialog cannot be submitted. An
+untouched field is omitted (carry), an edited field sends its value, and an
+emptied or "Clear ... override" field sends explicit null; each field states
+in words which of these will happen. Options come only from the TARGET agent's
+executor through `hooks/task-selection.ts`, which composes the agent page's
+`hooks/executor-options.ts` (`/health/prereqs` effort values and runtime
+profiles) with the existing adapter list's `input_options`; the Web holds no
+model or effort catalog. A custom executor that declares no model and/or
+effort template has that field disabled with a short reason; OpenCode effort
+is disabled until the applicable model is a pinned `provider/model`; with no
+agent chosen (server-picked default manager) both fields stay disabled.
+A blocked field that still holds a value keeps it visible with an explicit
+clear action; nothing is dropped silently. HTTP422 `invalid_task_selection`
+is shown in the dialog with the server's reason, executor and valid effort
+options, and no task is created. Task detail's status rail shows the effective
+model and effort with each field's source (founder, manager or agent default),
+plus the latest `session_start` audit row as "Last start". Task detail's
+second Task GET (`task-chain-block`, which holds that audit projection) is
+invalidated together with the `task` detail key by the shared task-view
+invalidation, and by live `progress` / `completion_reported` task events;
+there is no live `session_start` bus event, so a start shows on the first of
+those. Loading or unreadable audit data reads as such, not as "No session has
+started yet". A null effective value reads "CLI default" only after a
+successful roster read contains the assigned agent and "Unavailable" only
+after one lacks it; a loading or failed roster read says so. A task with no
+stored assigned agent is never called a removed agent and does not consult
+the roster: its effective value shows as returned, and a null value reads
+"Not set" with a note that the team manager's default, or else the CLI
+default, applies. After a
+successful revisit the dialog opens the new root (`new_root_task_id`). All states are in English and
+zh-CN. See the
 [full task design](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
 
 ### Per-agent model and reasoning-effort selection

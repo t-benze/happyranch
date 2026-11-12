@@ -71,6 +71,9 @@ export const useCancelTask: ReturnType<typeof useData>['tasks']['useCancelTask']
   taskId,
 ) => useData().tasks.useCancelTask(taskId);
 
+export const useSubmitTask: ReturnType<typeof useData>['tasks']['useSubmitTask'] = () =>
+  useData().tasks.useSubmitTask();
+
 export const useRevisitTask: ReturnType<typeof useData>['tasks']['useRevisitTask'] = (
   taskId,
 ) => useData().tasks.useRevisitTask(taskId);

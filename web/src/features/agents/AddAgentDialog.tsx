@@ -35,7 +35,7 @@ import { Label } from '@/design-system/primitives/Label';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { useCreateAgent } from '@/hooks/agents';
 import { useTeamsList } from '@/hooks/teams';
-import { useExecutorOptions } from './useExecutorOptions';
+import { useExecutorOptions } from '@/hooks/executor-options';
 import { useTranslation } from '@/hooks/i18n';
 import { classifyAgentError, renderAgentError, type AgentErrorView } from './strings';
 

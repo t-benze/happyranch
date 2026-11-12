@@ -172,6 +172,9 @@ export interface ThreadsApi {
 export type CancelTaskArgs = Parameters<typeof tasksApi.cancelTask>[2];
 export type CancelTaskResult = Awaited<ReturnType<typeof tasksApi.cancelTask>>;
 
+export type SubmitTaskArgs = Parameters<typeof tasksApi.submitTask>[1];
+export type SubmitTaskResult = Awaited<ReturnType<typeof tasksApi.submitTask>>;
+
 export type RevisitTaskArgs = Parameters<typeof tasksApi.revisitTask>[2];
 export type RevisitTaskResult = Awaited<ReturnType<typeof tasksApi.revisitTask>>;
 
@@ -275,6 +278,7 @@ export interface TasksApi {
   ) => void;
 
   useCancelTask: (taskId: string) => MutationLike<CancelTaskArgs, CancelTaskResult>;
+  useSubmitTask: () => MutationLike<SubmitTaskArgs, SubmitTaskResult>;
   useRevisitTask: (taskId: string) => MutationLike<RevisitTaskArgs, RevisitTaskResult>;
   useResolveEscalation: (
     taskId: string,

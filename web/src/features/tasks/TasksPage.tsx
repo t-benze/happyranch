@@ -21,7 +21,7 @@ import { renderThreadErrorDetail, type ThreadErrorDetail } from '@/lib/threadErr
  * right-aligned group-by segmented control.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Filter, RefreshCw } from 'lucide-react';
+import { AlertCircle, Filter, Plus, RefreshCw } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { Button } from '@/design-system/primitives/Button';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -35,6 +35,7 @@ import { TASK_LIST_STATUSES, useTasksListStreams, useTasksRoutes, type TaskListS
 import type { TaskRecord } from '@/lib/api/types';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { useTranslation } from '@/hooks/i18n';
+import { NewTaskDialog } from './NewTaskDialog';
 import type { MessageKey, MessageParams } from '@/lib/i18n';
 
 type GroupBy = 'status' | 'agent' | 'thread';
@@ -231,6 +232,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
 }): JSX.Element {
   const { t } = useTranslation();
   const [filterOpen, setFilterOpen] = useState(false);
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [draftStatus, setDraftStatus] = useState(filters?.status ?? '');
   const [draftAgent, setDraftAgent] = useState(filters?.assigned_agent ?? '');
   const agents = useAgentsList();
@@ -464,6 +466,9 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           <Button variant="ghost" size="sm" aria-expanded={filterOpen} onClick={() => setFilterOpen(!filterOpen)}>
             <Filter size={14} aria-hidden /> {t('tasks.page.filter')}
           </Button>
+          <Button size="sm" onClick={() => setNewTaskOpen(true)}>
+            <Plus size={14} aria-hidden /> {t('tasks.page.newTask')}
+          </Button>
           </div>
         </div>
         {filterOpen && (
@@ -648,6 +653,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           <div className="space-y-6">{moreAlerts}</div>
         ) : null}
         </ContentWrap>
+        {newTaskOpen && <NewTaskDialog onClose={() => setNewTaskOpen(false)} />}
       </main>
     </div>
   );

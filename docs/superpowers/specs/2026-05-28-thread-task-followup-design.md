@@ -55,7 +55,7 @@ In every "Fire" case, the helper still no-ops if the chain has no thread linkage
 
 ## 5. Finding the originating thread
 
-Revisit roots (founder-initiated only since TASK-3604 removed daemon auto-revisit) do **not** copy `dispatched_from_thread_id`. The founder `/revisit` route only copies `session_timeout_seconds`. Rather than change insert semantics (risk: every future revisit caller has to remember to propagate), we walk backward at trigger time.
+Revisit roots (founder-initiated only since TASK-3604 removed daemon auto-revisit) do **not** copy `dispatched_from_thread_id`. Of the per-task fields, the founder `/revisit` route copies `session_timeout_seconds` and (since THR-356) carries the predecessor root's model / reasoning-effort override; it copies no thread linkage. Rather than change insert semantics (risk: every future revisit caller has to remember to propagate), we walk backward at trigger time.
 
 **Lookup algorithm:**
 
