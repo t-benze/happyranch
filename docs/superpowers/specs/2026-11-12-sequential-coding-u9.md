@@ -117,19 +117,63 @@ source diagnostics report encoded payload bytes separately from file allocation.
 Caller disposition: `setup_sequential_coding.operation` and its backup/writer
 checks now use script-local `_readonly_inventory`, `_backup_observation`,
 `_inventory`, `_preserved` and `_insert_only`; `_inspect` uses `_history`.
-`_history` is the sole non-default caller of `read_sequential_history`'s internal
-`ownership_sql_limit` parameter. Runtime/installer callers keep 32M and every
-existing data allowance. `sequential_storage_inventory` still has exactly the
+`_history` was the original non-default caller of `read_sequential_history`'s internal
+`ownership_sql_limit` parameter. Runtime/default callers keep 32M and every existing data allowance; TASK-15719
+now independently opts the explicit installer into 640M. `sequential_storage_inventory` still has exactly the
 installer `_readonly_inventory` caller (also its backup path) and
 `install_sequential_schema` pre/post writer callers.
 
-**Known pre-existing installer defect, deliberately deferred:**
-`install_workflow_sequential_schema.py` and `workflow_schema.py` are byte-identical.
-Their whole-database8192-row/64MiB/5s inventory, plus installer8192-owner copy cap,
-already blocks normal retained production history. This operator repair grants
-no claim initial installation works there. Follow-on installer sizing and
-preservation evidence/doc parity are required; no live workaround is authorized.
-The optional reader allowance preserves the installer's default behavior.
+### Installer retained-history repair (TASK-15719)
+
+TASK-15741 follow-on: installer-only preflights in the same snapshot before each
+complete reader cap tasks AND ownership at160,000 each (160,001 bounded COUNT;
+`workflow_seq_install_task_ownership_count_exhausted:TABLE`), and raw tasks.id
+plus all ownership cells at64MiB (`workflow_seq_install_ownership_bytes_exhausted`).
+160,000 /15,722 =10.18x; the unchanged complete reader still owns all validation.
+See the cutover runbook for measured Python peaks. Shared readers/defaults stay
+unchanged; no live acceptance follows.
+
+The formerly deferred 8192-row inventory and 8192-owner-copy ceiling is repaired
+only in the explicit offline installer. `SequentialInstallAllowance` carries one
+original 900s deadline, 8,388,608 rows, 16GiB encoded cells and 32MiB raw row bytes.
+Inventory still streams a typed SHA256 of EVERY pre-existing row and rowid;
+a SQL length preflight refuses oversized rows before Python fetch. Backup SHA256
+uses 4MiB chunks and refuses files over 32GiB. The installer selects the existing
+640M ownership SQL allowance per complete read; no shared `_structure_cells`,
+A/B/C, acquired workflow-data, startup, venue or default reader budget changes.
+
+Measured snapshot from TASK-15711: 776,704 rows /1,221,994,577 raw cell bytes /
+1,465,761,792 file bytes /15,712 tasks, with largest row 1,893,889 bytes. Tenfold:
+7,767,040 rows /12,219,945,770 cells /14,657,617,920 file bytes /157,120 tasks.
+The new caps give 10.80x rows, 14.06x cells (before typed encoding overhead),
+23.44x file bytes and 17.72x largest row; tags, numeric encodings and rowids
+consume the encoded allowance. At 10x rows, even an extra 256 encoded bytes/row
+adds 1,988,362,240 bytes, still within 16GiB with the measured raw cells.
+Cooperative 900s is 33x the measured 27.267s complete copy installation, not a
+full 10x combined execution or hard OS-I/O guarantee. Complete workflow-history
+caps remain independently binding; ordinary-history headroom cannot admit
+exhausted/invalid workflow-family rows.
+
+The owning BEGIN IMMEDIATE transaction copies every original ownership row into
+a file-backed TEMP table, recreates the reviewed v2 table, INSERT SELECTs exact
+rowids/values and drops TEMP staging before the complete target reader. It never
+regenerates marks. Source/backup/locked source and target inventories retain
+all old tables, including ownership. Independent target/schema/FK validation
+and exact pre/post comparison still precede COMMIT. No durable intermediate
+stage, resume protocol, schema-column change or startup install is introduced.
+A killed transaction leaves the original or the complete installed DB; retained
+cold journal residue still refuses the immutable check. Preserve it and assess
+an explicit native checkpointed backup image, never delete sidecars to pass.
+
+Execution evidence is out-of-repository, not a new test venue: **no supported
+automated venue; executed evidence only**. The actual fresh copy was 1,466,736,640
+bytes/777,130 rows. Base 31b7350d refuses; head check exit 3 takes 6.753/6.648s and
+install exit 0 takes 26.893/27.267s. Full typed old-table digests, integrity/FKs,
+complete readback, mark counts, compatible no-op, supported legacy dimensions,
+160k owners, actual finite caps and interruptions are separately recorded in
+TASK-15719. Live install, service changes and genuine/native V3 acceptance remain
+NOT RUN. Neither draft nor submission migration is a prerequisite; the separate
+submission-check coding_authority_history_invalid is retained unrepaired.
 
 N1: TASK-15616's original cases labeled missing-marker actually observed
 `sequential_venue_live_home`. Corrected outside-live-home disposable diagnostics

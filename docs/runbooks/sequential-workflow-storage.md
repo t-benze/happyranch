@@ -1,6 +1,6 @@
 # Sequential workflow storage — operator draft
 
-**UNVERIFIED execution behavior / SOURCE ONLY.** TASK-14597 adds
+**SOURCE ONLY; isolated-copy installer evidence, no live acceptance.** TASK-14597 adds
 `scripts/install_workflow_sequential_schema.py` and the explicit installer in
 `runtime/infrastructure/workflow_schema.py`. It uses the U2a
 complete readers and ownership@2 reference; importing source installs nothing.
@@ -41,7 +41,7 @@ The explicit, separately admitted operator transaction must:
    corrupt markers/history and original v1 marks. V3 acceptance has NOT RUN;
    disposable structural observations are distinct.
 
-## Explicit check/install interface (execution UNVERIFIED)
+## Explicit check/install interface (isolated copies executed)
 
 Use compatible source and a separately authorized cooperative offline operation.
 The command names below describe the delivered interface, not permission to run
@@ -92,11 +92,34 @@ SHA256 are mandatory for a new install. The script verifies the checksum, comple
 family readers and equality of all SQL plus typed rows/rowids to the original RO
 source inventory. It refuses aliases/hardlinks and known file drift; the backup
 is never written. Keep the backup and inventory with operator custody outside the
-source path. The streaming preservation inventory has separate finite ceilings:
-8192 rows, 64 MiB encoded cells and five cooperative seconds per observation;
+source path. TASK-15719 sizes only this operator's streaming preservation inventory
+for 8,388,608 total rows, 16GiB encoded cells (including schema/tags/rowids), and
+32MiB raw cell bytes per row. A SQL preflight checks every row's length before
+Python payload acquisition. The backup is hashed in 4MiB chunks up to 32GiB.
+One original 900s cooperative deadline spans source, backup and locked pre/post
+checks, ownership copying and commit preflight. Only the installer selects 640M
+ownership SQL steps per complete read. Default inventory callers retain 8192
+rows/64MiB/5s; default/runtime/venue reader budgets and all workflow-data limits
+are unchanged. Exhaustion has named inventory/row/backup/deadline causes;
 unsupported virtual/generated/WITHOUT ROWID/shadowed-rowid tables refuse rather
 than omit identities. These bounds supplement, never replace or relax, the
 existing complete-reader allowances.
+
+TASK-15741 adds installer-only preflights BEFORE each complete-reader acquisition
+(source, backup, locked source and target, including an installed no-op), in the
+SAME native read snapshot. Each of tasks and ownership is limited to160,000 rows;
+a bounded COUNT reads at most160,001 scalar rows and refuses with
+`workflow_seq_install_task_ownership_count_exhausted:tasks` or
+`:workflow_task_ownership`. A second SQL scalar-length preflight limits the SUM
+of tasks.id and all five ownership cells to64MiB, refusing with
+`workflow_seq_install_ownership_bytes_exhausted`. These are admission limits,
+not alternate validators: the unchanged complete reader still checks every
+completeness/duplicate/foreign/wrong-owner/cross-family binding predicate.
+The 64MiB bound prevents arbitrarily long IDs/marks from defeating the count cap;
+unrelated task/result/audit payloads remain with the streamed inventory.
+Memory may grow with task COUNT only within the finite160,000 cap, alongside
+bounded acquired bytes/rows and unchanged workflow-reader allowances. SQLite
+native allocations and hard RSS are outside these Python observations.
 
 The complete layout comparison retains its fully acquired and independently
 validated column tuples inside the same schema snapshot. Sequential row reads
@@ -113,7 +136,8 @@ acquisition it rechecks the original identity, lifecycle, backup observation,
 complete source readers and original inventory. It executes the literal sequential
 DDL without `executescript`, inserts marker1, and rebuilds only the ownership
 table/view from the reviewed v2 literals. Explicit original rowids and every v1
-column/value are copied unchanged; original view branches and owner-index dimension
+column/value are copied unchanged through a file-backed TEMP SQL table (no
+whole-history Python list); original view branches and owner-index dimension
 remain. No source adoption or old document-layout upgrade occurs.
 
 Before COMMIT, the complete scoped reader independently compares the entire
@@ -125,6 +149,15 @@ rollback error); publication follows successful COMMIT and connection close.
 Compatible reruns return from the initial RO check without a writer, backup or
 offline acknowledgement. Check/install never grants startup reachability,
 settings authority or execution permission.
+
+Neither draft nor submission migration is a prerequisite: the copied F+Coding
+org installs directly. Separate submission-check `coding_authority_history_invalid`
+remains unrepaired. See the [happyranch operator checklist and measured durations](sequential-coding-cutover.md#happyranch-operator-checklist-separate-operating-authority-required).
+Copy experiments cover all supported document layouts with/without Coding/indexes,
+full preservation, finite limits and interrupted transactions. They do not establish
+live/native/V3 acceptance. Before-COMMIT SIGKILL may retain a cold nonempty journal;
+the unchanged checkpoint guard refuses until an explicitly assessed checkpointed
+image is available. Never remove recovery files to force a rerun.
 
 Existing org startup must not install this extension. Fresh-org initialization
 needs its own reviewed source/rollout authorization. Generic Database and the

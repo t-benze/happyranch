@@ -21,7 +21,7 @@ grants no live operation or genuine execution acceptance. See the
 2. Preserve historical Coding initialization and PR1262 org/profile/startup
    ownership ordering. Its v1 builtin and old Explicit settings neither install
    nor enable the new sequential family. Never convert those settings.
-3. Under the separately authorized offline procedure, use the unchanged
+3. Under the separately authorized offline procedure, use the explicit
    [sequential storage installer](sequential-workflow-storage.md), including
    complete readers, checkpoint/backup/native exclusions and uncertainty rules:
 
@@ -34,11 +34,31 @@ grants no live operation or genuine execution acceptance. See the
    installation, separate from registration/admission/loaded identity/acceptance.
    Exit1 refuses; exit4 preserves uncertainty. Never delete sidecars or reset
    ownership. Existing startup does not install the sequential extension.
-   **Known pre-existing limitation (TASK-15618):** this unchanged installer/check
-   inventories the whole database with 8192 rows/64MiB/5s, plus an 8192-owner install
-   copy cap. Current retained production history already exceeds it. This PR
-   deliberately does not repair installation; follow-on installer work is required
-   before initial installation on such an org. No direct-SQL or live workaround.
+   The installer now selects its own finite retained-history allowance (TASK-15719):
+   8,388,608 total rows, 16GiB encoded cells including tags/rowids/schema,
+   32MiB raw bytes per row, <=32GiB verified backup and one original 900s deadline.
+   Every retained row is hashed; ownership is copied in SQL through file-backed
+   temporary staging inside the same transaction. Default readers/venue/startup
+   keep their existing budgets. Exhaustion refuses rather than sampling history.
+   TASK-15741 also bounds the complete-reader task/ownership collections before
+   acquisition: at most160,000 tasks AND160,000 ownership marks, and64MiB total
+   raw tasks.id plus all five ownership cells. Both preflights use scalar SQL in
+   the same read snapshot as the unchanged complete reader. Count overflow
+   refuses `workflow_seq_install_task_ownership_count_exhausted:tasks` or
+   `:workflow_task_ownership`; bytes overflow refuses
+   `workflow_seq_install_ownership_bytes_exhausted`. Every source, backup,
+   locked source/target and already-installed no-op is gated before acquisition.
+   Refusal is before any durable write; reconcile capacity with the source owner,
+   never prune/split history or bypass completeness checks to fit.
+   160,000 /15,722 measured tasks =10.18x; tenfold is157,220, leaving2,780
+   additional tasks above10x. Existing cell/row/backup/deadline caps still apply.
+   Neither `migrate_workflow_draft_schema.py` nor
+   `migrate_workflow_submission_schema.py` is a prerequisite: the complete reader
+   accepts F/E/G/H/I/J with the required complete v1 companion. On the isolated
+   happyranch copy, F+Coding+owner indexes installs directly. The separate
+   submission `--check` refusal `coding_authority_history_invalid` remains a
+   recorded finding, unrepaired and unrelated to sequential installation.
+
 4. Explicitly register ONLY the reviewed Coding v2 package resource:
 
    ```sh
@@ -117,6 +137,157 @@ Setup exits: **0** observed publication/read; **1** refused; **2** usage;
 failure. Keep exact command/key, stdout/stderr and original receipt; reconcile
 before any explicitly authorized retry. No automatic resend. Success is not
 public attachment, effective access, loaded identity or execution acceptance.
+
+## Happyranch operator checklist (separate operating authority required)
+
+Use compatible reviewed source and an ordinary operator shell, outside an agent
+session. The commands below are an ordered maintenance procedure, never authority
+for an agent to operate the live org. `RUNTIME` is the actual registered runtime
+(e.g. `/home/benze/.happyranch/runtime`); use a new private backup directory outside
+it. All paths passed to the scripts must be absolute. Preserve logs and original
+operation custody throughout. No PR1252 action is part of this procedure.
+
+1. Obtain the named stop/install/register/restart authority and maintenance
+   window. Reconcile every original unsettled writer/preparation/native owner/job
+   across registered runtimes, shared daemon stores and cooperative hosts.
+   Exclude new publications, profile/move/start/restart throughout. Use the
+   documented `scripts/daemon.sh stop --force` and `scripts/daemon.sh status`;
+   positively establish stopped controls (no daemon PID/port) and native/job
+   exclusion. A stopped daemon or missing PID alone does not settle unknown work.
+2. Preserve the original DB and recovery files. Under the stopped-state custody,
+   use SQLite's native writable open/recovery and `PRAGMA wal_checkpoint(TRUNCATE)`;
+   close it, then create a separate native SQLite backup. Never delete a journal,
+   WAL or SHM to satisfy the check. If nonempty recovery residue remains, hold
+   this source and reconcile with its owner; a separately preserved checkpointed
+   SQLite backup image can be assessed as a new explicit source, never silently
+   substituted. Record `PRAGMA integrity_check` = `ok`,
+   `PRAGMA foreign_key_check` = no rows, the backup's SHA256, source identity,
+   all-table row counts and full typed content/rowid digests. No draft/submission
+   migration is required. Do not run either migration as a workaround.
+
+   After establishing those exclusions, create the pre-install backup without
+   overwriting an existing recovery artifact (replace the absolute backup path):
+
+   ```sh
+   python - <<'PYTHON'
+   import hashlib, sqlite3
+   from pathlib import Path
+   source = Path('/home/benze/.happyranch/runtime/orgs/happyranch/happyranch.db')
+   backup = Path('/absolute/private-backup/pre-install.db')
+   if backup.exists():
+       raise RuntimeError('preserve existing backup; choose a new custody path')
+   conn = sqlite3.connect(source.as_uri() + '?mode=rw', uri=True)
+   try:
+       assert conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
+       assert conn.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
+       assert conn.execute('PRAGMA foreign_key_check').fetchall() == []
+   finally:
+       conn.close()
+   source_conn = sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)
+   backup_conn = sqlite3.connect(backup)
+   try:
+       source_conn.backup(backup_conn)
+   finally:
+       backup_conn.close()
+       source_conn.close()
+   with backup.open('rb') as stream:
+       print(hashlib.file_digest(stream, 'sha256').hexdigest())
+   PYTHON
+   ```
+3. Run the following in order, retaining actual return codes (check exit 3 is expected
+   for a first install; check exit 0 means already installed):
+
+   ```sh
+   python scripts/install_workflow_sequential_schema.py --runtime-root /home/benze/.happyranch/runtime --org happyranch --check
+   python scripts/install_workflow_sequential_schema.py --runtime-root /home/benze/.happyranch/runtime --org happyranch --confirm-cooperative-offline --backup /absolute/private-backup/pre-install.db --backup-sha256 VERIFIED_SHA256
+   python scripts/install_workflow_sequential_schema.py --runtime-root /home/benze/.happyranch/runtime --org happyranch --check
+   ```
+
+   Expected installation exit 0 and readback exit 0; refusal exit 1 or uncertainty exit 4 stops the
+   sequence. Before registration, independently read with
+   `inspect_sequential_install` / `read_sequential_history` in one native snapshot:
+   require sequential=True, tasks count = ownership count, complete old/new
+   validation and clean integrity/FKs. Compare every pre-existing table's typed
+   row/rowid digest and all unchanged SQL. Ownership's schema changes to v2;
+   every original mark and rowid stays identical. Keep these receipts.
+
+   The following direct production readers provide that readback; retain its
+   output, including every old-table count/digest. They have no admission effect.
+
+   ```sh
+   python - <<'PYTHON'
+   import json, sqlite3, time
+   from contextlib import closing
+   from pathlib import Path
+   from runtime.infrastructure.workflow_schema import (
+       SequentialInstallAllowance, inspect_sequential_install, sequential_storage_inventory,
+   )
+   allowance = SequentialInstallAllowance(deadline=time.monotonic() + 900)
+   def snapshot(path):
+       with closing(sqlite3.connect(path.as_uri() + '?mode=ro&immutable=1', uri=True)) as conn:
+           conn.row_factory = sqlite3.Row
+           conn.execute('PRAGMA foreign_keys=ON')
+           conn.execute('BEGIN')
+           layout = inspect_sequential_install(conn, expected_org_slug='happyranch', allowance=allowance)
+           assert [tuple(row) for row in conn.execute('PRAGMA integrity_check')] == [('ok',)]
+           assert conn.execute('PRAGMA foreign_key_check').fetchall() == []
+           return layout, sequential_storage_inventory(conn, allowance=allowance)
+   _, before = snapshot(Path('/absolute/private-backup/pre-install.db'))
+   layout, after = snapshot(Path('/home/benze/.happyranch/runtime/orgs/happyranch/happyranch.db'))
+   assert layout.sequential
+   assert all(after[1][table] == digest for table, digest in before[1].items())
+   assert after[1]['tasks'][0] == after[1]['workflow_task_ownership'][0]
+   print(json.dumps(after[1], sort_keys=True))
+   PYTHON
+   ```
+4. Take a NEW verified checkpointed backup matching the installed source. Register
+   the reviewed release with no admission/default changes:
+
+   ```sh
+   python scripts/setup_sequential_coding.py register --runtime-root /home/benze/.happyranch/runtime --org happyranch --confirm-cooperative-offline --backup /absolute/private-backup/pre-register.db --backup-sha256 NEW_VERIFIED_SHA256
+   python scripts/setup_sequential_coding.py register --runtime-root /home/benze/.happyranch/runtime --org happyranch --confirm-cooperative-offline
+   ```
+
+   Retain the returned definition pin; repeating exact registration is a read-only
+   no-op and verifies the same stored definition. Registration exit 0 does not enable Coding.
+   Existing defaults/admission steps above remain separately authorized.
+5. With the named service owner's authority, use `scripts/daemon.sh start` and
+   `scripts/daemon.sh status`. Verify the loaded compatible release/engine and
+   complete stored definition separately. Verify Workflows Setup and current
+   Disabled/Allowed state without allocating a run. Genuine native/public Coding
+   acceptance remains separate; storage/check/readback alone does not prove it.
+6. On pre-COMMIT failure preserve source, sidecars and backup; native rollback or
+   recovery must leave all original content unchanged. A SIGKILL before cache
+   spill can leave a nonempty cold journal: checks correctly refuse checkpoint
+   residue even though the old complete reader accepts the untouched DB. Keep
+   that evidence and obtain an explicit checkpointed-image disposition; never
+   delete the journal or blindly retry. After COMMIT use compatible readers;
+   old-code-only downgrade is unsupported. Restore the verified pre-install DB
+   only as separately authorized offline recovery after checking no new/remote
+   effects require retention. After registration/runs preserve their newer
+   evidence and follow the backout/drain rules below.
+
+TASK-15719 executed this on a **copy only**, not the live org: 1,466,736,640
+file bytes /777,130 rows. Two fresh-source `--check` calls took 6.753s/6.648s
+(exit 3); two full installs 26.893s/27.267s (exit 0), including script-side
+backup hashing/validation. Native backup acquisition plus scratch duplication
+was 1.370s. Budget roughly one minute for check+install on this host at this
+shape, plus the operator's exclusion, custody, backup/readback, registration
+and restart work (not timed). The 10x envelope is sizing arithmetic plus separate
+actual row/byte-cap and 160k-owner fixtures, not a timed full 10x combined install.
+900s is a cooperative refusal deadline, not a hard OS-I/O or duration guarantee.
+Live install/register/restart/rollback and genuine V3 acceptance: **NOT RUN**.
+
+TASK-15741 measured warmed `inspect_sequential_install` with ordinary synthetic F
+IDs and complete marks using Python3.14.4 `tracemalloc`:16,000 tasks peaked at
+3,602,841 bytes (3.44MiB);160,000 tasks, exactly the cap, peaked at35,896,873 bytes
+(34.23MiB). These are executed Python allocation peaks at the admitted count,
+not a content-independent RSS promise or an extrapolation. A full160,000-task
+installer run (all source/backup/locked validations, inventory and COMMIT) peaked
+at59,472,402 Python bytes (56.72MiB), taking47.769s with tracemalloc enabled.
+The fixed64MiB raw acquisition allowance and160,000-entry caps bound payload/collection growth;
+existing32MiB row and workflow-reader allowances remain independently binding.
+Larger unrelated cell payloads do not buy larger task/ownership collections.
 
 ## Backout and drain
 
