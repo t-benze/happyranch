@@ -1347,3 +1347,20 @@ all validators stay unchanged, as do every other output contract and the
 browser response shape. This grants no action/access/reissue authority. Keep
 causal BLOCK, original Pause, command=None receipt uncertainty/no reissue,
 U6b2a, Option B UNSETTLED, R-M3-2 limits and the genuine FINAL callback.
+
+
+For your OWN genuinely bound ordinary executable-manager source completion only,
+use unchanged `workflow-sequential-start@1` in `workflow_start`. The ordinary CLI
+callback must match the server's current org/task/principal/SID; worker, foreign,
+recovery, ended, thread and browser sources cannot start. Complete without a job
+wait. Preserve exact pins, limits and the original stable operation key/body after
+transport uncertainty; never automatically reissue or invent source/result IDs.
+The committed positive INTEGER and native invocation are server-derived. Exact
+full replay retains original bytes/IDs, including before graph admission; changing
+the action does not escape the original callback identity. Public live fresh start
+stays OFF behind the unchanged disposable-venue fence until U9 atomically attaches new starts and
+fences old fresh starts; no flag/fallback or self-setup authority follows. Only
+positive ORIGINAL host/outer settlement releases the first visit. Preserve
+cancellation, source return/thread association and all existing FINAL callback
+rules. Genuine report-completion remains the FINAL action; no notification or
+live activation is authorized by U7d source delivery.

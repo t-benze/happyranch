@@ -2606,3 +2606,30 @@ and prior-H RED / exact-head GREEN evidence are in
 TASK-15572 extends the existing keeper with nonempty native-bearing findings and
 records its correction in `dev_agent/output/TASK-15572/handoff.md`. Prior failure
 history remains; no native/V3/real-merge claim follows.
+
+
+## U7d ordinary sequential-start completion (TASK-15578)
+
+The unchanged sequential StartCommand is consumed only through its executable
+team manager's own ordinary `workflow_start` completion. Sequential intake now
+requires the CLI label with no browser Origin, and under the original binding
+lease compares supplied identities to the actual tracker org/task/principal/SID,
+rejects recovery and requires completed status without a job wait. The label is
+not a credential. The existing venue/settings/pin/ancestry precheck precedes
+result insertion. The existing result consumer derives the positive INTEGER
+from the committed native PK/full report and authenticates the original native
+invocation before atomic native-action/graph/source parking. Pending replay after
+tracker clear also selects the saved sequential decision and compares the full native payload, including when the incoming action changes.
+Exact full replay keeps original bytes/IDs; changed body/key reuse refuses and
+transport loss never authorizes reissue. Cancellation, original limits and positive original host/outer
+settlement before first-visit release remain with their unchanged owners.
+
+Public live fresh start remains OFF: both intake and consumer still require the
+unchanged disposable-venue guard, which refuses the live daemon home/aliases and
+absent/invalid/nonmatching runtime/org/DB-inode marker. U9 owns atomic new public
+attachment/release selection plus old-fresh-start fencing; no flag shortcut or
+historical engine fallback is added. Historical start@1/@2, original return and
+source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncertainty
+are unchanged; thread sources still refuse, notifications remain excluded.
+No new route/schema/credential/permission/access observer or daemon network I/O.
+See the [current U7 source and evidence limits](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).

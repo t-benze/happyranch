@@ -1,6 +1,6 @@
 # Sequential Coding U7: common transport and agent initiation
 
-> Status: current design; U7a/U7b/U7c1/U7c2b delivered in source, including complete Final acceptance and R-M3-6 browser redaction; U7d remains.
+> Status: current design; U7a/U7b/U7c1/U7c2b delivered in source, including complete Final acceptance and R-M3-6 browser redaction; U7d ordinary completion intake delivered in source; public fresh start remains OFF until U9.
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
 
 THR-336 / ROOT TASK-15165; TASK-15465, linked retry of pre-edit failed TASK-15462.
@@ -445,3 +445,74 @@ and prior-H RED / exact-head GREEN evidence are in
 TASK-15572 extends the existing keeper with nonempty native-bearing findings and
 records its correction in `dev_agent/output/TASK-15572/handoff.md`. Prior failure
 history remains; no native/V3/real-merge claim follows.
+
+
+## U7d ordinary source completion consumer (TASK-15578)
+
+Pre-edit assumptions: no schema/table/column/index/migration, dependency,
+credential, permission, command-family or new endpoint change. U7d reuses the
+existing result-owned sequential consumer and strengthens its completion intake;
+it does not introduce a second admission writer or reinterpret historical starts.
+Only `workflow_start` with unchanged `workflow-sequential-start@1` selects this
+path. Coding start@1/@2, ordinary routing and all prior owners retain their bytes
+and semantics outside the narrowly selected completion branch.
+
+The existing completion POST now requires the CLI surface label and absence of
+browser Origin for this sequential decision only, including read-only replay.
+The label is descriptive, not a credential. Under the ORIGINAL session binding
+lease, `precheck_completion` compares supplied task/agent/SID with the tracker's
+actual org/task/principal tuple, rejects recovery, and requires completed status
+without a job wait. The server-selected source task goes to the existing venue,
+Allowed settings/pin/binding/lower-limit and ordinary ancestry precheck BEFORE
+native callback insertion. Missing/malformed/Disabled settings and pin mismatch
+therefore retain zero result/business writes, spend and allocation. Worker,
+non-manager, foreign, ended/unbound, thread and workflow-owned sources refuse
+through the existing manager/session/ownership/ancestry gates. The pending
+interval after native result COMMIT/tracker clear and before graph admission also compares the complete original native payload. `is_start_result`
+recognizes the SAVED native decision, so switching the incoming action cannot
+escape exactness or the CLI/no-Origin check. Native JSON is parsed without
+rewriting it; a literal format prefilter is not authority. Parsing/copy work
+prepays 48 times the native decision character count plus512 bytes on one finite
+reader allowance, and decoded traversal/return share its original deadline.
+Unrelated ordinary/Coding discriminators keep their original replay branches.
+An already admitted source retains its original full-payload replay path; no
+new native result, SID, command/key or transport retry is generated.
+
+`run_step` still selects the existing `consume_start` before ordinary result-action
+spending. Its INTEGER PK and full genuine report binding, actual RetryClaim,
+original ordinary/v2 TaskInvocation, current executable manager and fixed current
+authority determine principal/source/SID/result. The command has no identity
+selectors. The original writer atomically claims native action, admits the graph
+and parks the source. Same-key changed bytes refuse; exact admitted replay retains
+original bytes and IDs. Cancellation and original budgets remain controlling.
+The unchanged original positive host/outer/close/release producer alone makes the
+first visit queue-eligible after evidence COMMIT. Source return and source/thread
+association remain with their original owners; thread sources still refuse and
+no notification feature is added.
+
+**Exact OFF boundary:** both fresh completion precheck and committed-result
+consumer call unchanged `check_venue_start`. It refuses the live daemon home
+and every resolved alias, requires an absolute existing non-aliased home outside
+it, and a closed no-follow disposable marker matching this runtime/org/DB inode.
+Missing/invalid marker, live home or movement refuses before fresh result or
+business mutation. The consumer is attached only behind that existing disposable
+venue fence; it is unreachable for public live fresh starts today. There is no
+new enable flag or fallback into historical Coding. U9 must atomically attach the
+new release selector/public fresh-start boundary AND refuse old fresh start@2
+before writes/spend/allocation, while retaining admitted historical callbacks,
+settlement, cancellation and LOCAL Final. U7d does not remove/relax the venue
+fence or perform that cutover.
+
+Existing route OpenAPI is regenerated/checked; its wire shape and existing
+classification remain, with no new browser TS function. U7a GETs, U7b settings,
+U7c preflight/Final/witness/browser redaction, history/engine/dispatcher, native
+Pause, U6 and LOCAL Final owners remain byte-identical. OUT-OF-REPO diagnostics
+exercise the actual completion route/consumer with explicitly synthetic native,
+authority and host/outer scaffolding. A genuine stored callback in this fixture
+is not a genuine manager executor, V3/V5/M4, effective-access or live acceptance
+claim. Exact B/H, changed-file/AST/caller inventory, commands/exits, authenticated
+local-CI job receipt, hosted snapshot and NOT RUN limits are in
+`dev_agent/output/TASK-15578/handoff.md`. No repo tests, Vitest, Python units,
+integration, E2E or live operations run. PRD v1.0.4/msg131 ACCESS-1, shared
+OS-user/gh limits, prior failures/spent allowances, Founder reservations, V3 end
+and PR1252 hold all remain. Independent review/QA and manager merge remain.
