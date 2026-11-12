@@ -103,12 +103,74 @@ function useOwnerReturn() {
   const onError = useMutationRefusal();
   return useMutation({ retry: false, onError, mutationFn: ({ slug, body }: Parameters<ReturnType<WorkflowsApi['useOwnerReturn']>['mutateAsync']>[0]) => workflowRevisions.startDocumentRevision(slug, body.instance_id, body) });
 }
-/** Selection changes/refusals hide old data; cache never supplies fresh access. */
+/** Fixed refusal published on every sibling projection fenced by an org's access refusal (AC11). */
+class SequentialAccessFenced extends Error {
+  readonly status = 403;
+  readonly code = 'sequential_access_fenced';
+  constructor() { super('sequential_access_fenced'); }
+}
+/** Per-QueryClient, per-org admission generation plus the org's in-flight sequential reads. */
+interface SequentialAdmission { generation: Map<string, number>; inflight: Map<string, Set<AbortController>> }
+const sequentialAdmissions = new WeakMap<QueryClient, SequentialAdmission>();
+function admissionStore(qc: QueryClient): SequentialAdmission {
+  let value = sequentialAdmissions.get(qc);
+  if (!value) { value = { generation: new Map(), inflight: new Map() }; sequentialAdmissions.set(qc, value); }
+  return value;
+}
+/**
+ * A 403/404 on ANY sequential read refuses the whole org's sequential projections:
+ * bump the generation (late sibling successes then throw instead of caching), abort
+ * every in-flight read, and blank every cached entry. Siblings carry the fixed fence
+ * refusal until a read started after this point succeeds (fresh admission).
+ */
+function refuseSequentialOrg(qc: QueryClient, slug: string, ownHash: string) {
+  const store = admissionStore(qc);
+  store.generation.set(slug, (store.generation.get(slug) ?? 0) + 1);
+  for (const controller of store.inflight.get(slug) ?? []) controller.abort();
+  for (const q of qc.getQueryCache().findAll({ queryKey: ['workflow-sequential', slug] })) {
+    q.setState(q.queryHash === ownHash ? { ...q.state, data: undefined, dataUpdatedAt: 0 }
+      : { ...q.state, data: undefined, dataUpdatedAt: 0, error: new SequentialAccessFenced(), errorUpdatedAt: Date.now(), status: 'error' });
+  }
+}
+/** PRD F6: only a transport failure (no HTTP status) is a network refresh failure. */
+function isNetworkFailure(error: unknown): boolean {
+  return !!error && status(error) === undefined && (error as { name?: string }).name !== 'AbortError';
+}
+/**
+ * Selection changes/refusals hide old data; cache never supplies fresh access.
+ * A network refresh failure keeps this mount's last-loaded value with `refreshFailed`.
+ */
 function useSequentialRead<T>(kind: string, id: string, load: (slug: string, signal: AbortSignal) => Promise<T>) {
   const { slug = '' } = useParams();
   const qc = useQueryClient();
   const key = ['workflow-sequential', slug, kind, id];
-  const query = useQuery({ queryKey: key, queryFn: ({ signal }) => load(slug, signal),
+  const query = useQuery({ queryKey: key, queryFn: async ({ signal }) => {
+    const store = admissionStore(qc);
+    const generation = store.generation.get(slug) ?? 0;
+    const controller = new AbortController();
+    const relay = () => controller.abort();
+    signal.addEventListener('abort', relay);
+    const inflight = store.inflight.get(slug) ?? new Set<AbortController>();
+    store.inflight.set(slug, inflight.add(controller));
+    const fenced = () => (store.generation.get(slug) ?? 0) !== generation;
+    try {
+      const value = await load(slug, controller.signal);
+      if (fenced()) throw new SequentialAccessFenced();
+      return value;
+    } catch (error) {
+      // U8a: a refused read keeps no run/evidence bytes in ANY sequential entry of this org.
+      if (status(error) === 403 || status(error) === 404) {
+        const owned = qc.getQueryCache().find<T>({ queryKey: key, exact: true });
+        refuseSequentialOrg(qc, slug, owned?.queryHash ?? '');
+        throw error;
+      }
+      if (fenced()) throw new SequentialAccessFenced();
+      throw error;
+    } finally {
+      inflight.delete(controller);
+      signal.removeEventListener('abort', relay);
+    }
+  },
     enabled: !!slug && !!id, staleTime: 0, gcTime: 0, retry: false,
     refetchOnMount: 'always', refetchOnWindowFocus: 'always', placeholderData: undefined });
   useEffect(() => () => {
@@ -116,7 +178,15 @@ function useSequentialRead<T>(kind: string, id: string, load: (slug: string, sig
     void qc.cancelQueries({ queryKey: ownedKey, exact: true });
     qc.removeQueries({ queryKey: ownedKey, exact: true });
   }, [qc, slug, kind, id]);
-  return { ...query, data: query.isFetchedAfterMount && !query.isError && !query.isFetching ? query.data : undefined };
+  const loaded = query.isFetchedAfterMount && query.data !== undefined;
+  const retained = loaded && query.isError && isNetworkFailure(query.error);
+  return {
+    ...query,
+    isError: query.isError && !retained,
+    data: loaded && (!query.isError || retained) ? query.data : undefined,
+    refreshFailed: retained,
+    refreshError: retained ? query.error : null,
+  };
 }
 const sequentialReads = {
   useSequentialDefinitions: () => useSequentialRead('definitions', 'catalog', workflowSequential.listSequentialDefinitions),

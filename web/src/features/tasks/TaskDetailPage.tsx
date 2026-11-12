@@ -29,6 +29,7 @@ import { useTranslation } from '@/hooks/i18n';
 import type { Locale, MessageKey, MessageParams } from '@/lib/i18n';
 // eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes getTask (useTask deliberately drops active_chain); routed direct per THR-011 founder ruling (option 3), pending a future hook
 import { getTask } from '@/lib/api/tasks';
+import { SequentialTaskBanner } from '@/shared/workflows/SequentialTaskBanner';
 import type {
   ActiveChainResponse,
   EscalationReason,
@@ -1185,6 +1186,7 @@ export function TaskDetailPage(): JSX.Element {
                 )}
               </div>
             )}
+            {slug && taskId && <SequentialTaskBanner slug={slug} taskId={taskId} />}
             {failureNote && (
               <div
                 role="alert"

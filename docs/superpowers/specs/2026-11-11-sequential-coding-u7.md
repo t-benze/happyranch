@@ -91,8 +91,12 @@ The route module is registered by create_app. Every route has one TS mirror in
 OpenAPI/classification/TS review parity and an out-of-repo synthetic diagnostic;
 Vitest/openapi-coverage.test.ts remain retired. The provider contract and real/mock
 implementations expose only reads. Org/selection keys, abort signals, zero retry,
-no persisted cache, selection-exit eviction and hiding data during refresh/error
-prevent stale cached content from supplying current access. U8 still owns UI.
+no persisted cache and selection-exit eviction prevent stale cached content from
+supplying current access. U8a (TASK-15587) refines this per PRD v1.0.4 F6: a 403/404
+on any sequential read evicts and fences every sequential projection of the org,
+while a transport (network) refresh failure keeps that mount's last-loaded data
+with a freshness warning, including the nested admitted-definition read used by
+run detail and the task banner (TASK-15595); see the U8 spec. U8 still owns UI.
 
 ## U7 implementation units, in order
 
