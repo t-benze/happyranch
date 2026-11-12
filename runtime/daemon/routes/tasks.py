@@ -541,7 +541,10 @@ MAX_OUTPUT_BYTES = 200 * 1024
 
 def _task_selection_view(task: TaskRecord, org: OrgState) -> dict:
     from runtime.orchestrator.task_selection import selection_view
-    assigned = task.assigned_agent or (org.teams.executable_manager_for_team(task.team) if org.teams else None)
+    assigned = task.assigned_agent
+    # Retained tasks may outlive their team in the current roster.
+    if not assigned and org.teams is not None and task.team in org.teams.teams():
+        assigned = org.teams.executable_manager_for_team(task.team)
     definition = prompt_loader.load_agent(OrgPaths(root=org.root), assigned) if assigned else None
     return selection_view(task, definition)
 
