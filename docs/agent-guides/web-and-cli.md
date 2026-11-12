@@ -2685,6 +2685,19 @@ get raw `gh pr merge` grants. The full workflow narrative (submit â†’ blocked â†
 merge/revise) is documented in `runtime/skills/bundled/jobs/SKILL.md` and
 `docs/agent-guides/features-and-invariants.md`.
 
+### Per-task model and reasoning-effort selection
+
+`happyranch run --model MODEL --reasoning-effort LEVEL` selects task-local values;
+omitted fields use current agent defaults. `happyranch revisit TASK` carries the
+predecessor values unless changed; `--clear-model-override` and
+`--clear-reasoning-effort-override` clear independently (API explicit null).
+Each clear flag excludes its matching value flag. Local syntax errors refuse
+before connection; server HTTP422 includes executor, reason and valid effort
+options. Only explicit task effort uses finite membership; agent-default grammar
+is unchanged. Task GET/list expose override/effective fields and per-field source.
+Web dialogs, detail rendering and TS mirrors are planned PR3. See the
+[full task design](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+
 ### Per-agent model and reasoning-effort selection
 
 Built-ins accept case-preserving fullmatch `[A-Za-z][A-Za-z0-9_-]{0,31}` through shared `model_effort_args` validation; historical catalog values are metadata, not a membership gate. UI uses plain text: blank on explicit Save maps to null/default, without trimming or truncation. Explicit wire/direct empty strings refuse; CLI clear retains its existing meaning. Custom adapters still require approved declared-value membership (at most16 lowercase identifiers); legacy/model-only effort controls remain disabled with saved values visible. Token acceptance proves syntax/transport only, not native model/account support.

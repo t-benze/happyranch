@@ -299,16 +299,18 @@ def cmd_threads_decline(args: argparse.Namespace) -> None:
 
 def cmd_threads_dispatch(args: argparse.Namespace) -> None:
     import json as _json
-    client = OpcClient.from_env()
-    slug = resolve_org_slug(
-        args_org=args.org, available=_shared._fetch_available_orgs(client),
-    )
     _shared.require_absolute_payload_path(args.from_file, kind="thread-dispatch")
     try:
         body = _json.loads(Path(args.from_file).read_text())
     except (OSError, ValueError) as exc:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
+    from cli.commands.tasks import task_selection_payload
+    if not isinstance(body, dict):
+        raise SystemExit("thread dispatch payload must be an object")
+    body = task_selection_payload(args, body)
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
     thread_id = args.thread_id or body.get("thread_id", "")
     r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/dispatch", json=body)
     if not _ok(r):
@@ -326,6 +328,9 @@ def cmd_threads_dispatch(args: argparse.Namespace) -> None:
             f"ok: dispatched {resp['task_id']} from"
             f" {resp['dispatched_from_thread_id']}"
         )
+    print(_json.dumps({key: resp.get(key) for key in (
+        "effective_model", "effective_reasoning_effort", "model_source", "reasoning_effort_source",
+    )}, ensure_ascii=False))
 
 
 
@@ -779,6 +784,8 @@ def register(sub) -> None:
     p_threads_dispatch.add_argument("--org", default=None, help="Org slug")
     p_threads_dispatch.add_argument("--thread-id", dest="thread_id", default=None)
     p_threads_dispatch.add_argument("--from-file", required=True)
+    from cli.commands.tasks import task_selection_arguments
+    task_selection_arguments(p_threads_dispatch)
     p_threads_dispatch.set_defaults(func=cmd_threads_dispatch)
 
     p_threads_show = threads_sub.add_parser("show", help="Show a thread's metadata + transcript")

@@ -528,6 +528,7 @@ def _task_to_dict(t: TaskRecord, org: OrgState, budget: ChildWaitBudget, origins
     # their own helpers. Rename here so list + detail responses match.
     d = t.model_dump(exclude={"executor_pid"})
     d["task_id"] = d.pop("id")
+    d.update(_task_selection_view(t, org))
     d.update(origins[t.id])
     d["child_wait"] = derive_child_wait(org.db, t, budget)
     return d
@@ -538,7 +539,34 @@ def _task_to_dict(t: TaskRecord, org: OrgState, budget: ChildWaitBudget, origins
 MAX_OUTPUT_BYTES = 200 * 1024
 
 
+def _task_selection_view(task: TaskRecord, org: OrgState) -> dict:
+    from runtime.orchestrator.task_selection import selection_view
+    assigned = task.assigned_agent
+    # Retained tasks may outlive their team in the current roster.
+    if not assigned and org.teams is not None and task.team in org.teams.teams():
+        assigned = org.teams.executable_manager_for_team(task.team)
+    definition = prompt_loader.load_agent(OrgPaths(root=org.root), assigned) if assigned else None
+    return selection_view(task, definition)
+
+
+def _validated_task_overrides(
+    org: OrgState, assigned: str | None, model: str | None, effort: str | None, source: str | None,
+) -> dict:
+    from runtime.orchestrator.task_selection import TaskSelectionError, resolve_task_selection
+    definition = prompt_loader.load_agent(OrgPaths(root=org.root), assigned) if assigned else None
+    if definition is None:
+        raise HTTPException(status_code=422, detail={"code": "unknown_owner", "owner": assigned})
+    try:
+        resolve_task_selection(definition, model, effort)
+    except TaskSelectionError as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
+    return {"model_override": model, "reasoning_effort_override": effort,
+            "override_source": source if model is not None or effort is not None else None}
+
+
 class SubmitTask(BaseModel):
+    model: str | None = None
+    reasoning_effort: str | None = None
     team: str | None = None
     brief: str
     owner: str | None = None  # assign a specific agent (default: team manager)
@@ -623,9 +651,10 @@ def persist_root_task(
             if db._conn.in_transaction:
                 raise RuntimeError('root submission requires its own transaction')
             team, assigned = resolve_task_owner(body, org)
+            selection = _validated_task_overrides(org, assigned, body.model, body.reasoning_effort, 'founder')
             db._conn.execute('BEGIN IMMEDIATE')
             try:
-                task = TaskRecord(id=db.next_task_id(), brief=body.brief, team=team, assigned_agent=assigned)
+                task = TaskRecord(id=db.next_task_id(), brief=body.brief, team=team, assigned_agent=assigned, **selection)
                 db._insert_task_uncommitted(task)
                 if bind is not None:
                     bind(task)
@@ -716,6 +745,7 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
         # The lock acquisition may yield to a roster writer. Validate the
         # current executable identity again before allocation or attachment claims.
         team, assigned = resolve_task_owner(body, org)
+        selection = _validated_task_overrides(org, assigned, body.model, body.reasoning_effort, "founder")
         task_id = org.db.next_task_id() if prevalidated_attachments else None
 
         # Re-check claimability INSIDE the lock — the pre-validation outside
@@ -752,7 +782,7 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
                         id=task_id,
                         brief=body.brief,
                         team=team,
-                        assigned_agent=assigned,
+                        assigned_agent=assigned, **selection,
                     ),
                     attachments=attachment_params,
                     uploaded_by=uploaded_by,
@@ -1982,6 +2012,9 @@ class CancelBody(BaseModel):
 
 
 class RevisitBody(BaseModel):
+    # Omitted carries the predecessor; explicit null clears this field.
+    model: str | None = None
+    reasoning_effort: str | None = None
     founder_note: str | None = None
     # Founder-supplied per-task subprocess timeout (seconds). Persisted on the
     # new root and inherited by every delegated child. No daemon auto-successor
@@ -2305,6 +2338,7 @@ async def revisit_from_notification(
     founder_note: str | None,
     actor: str,
     session_timeout_seconds: int | None = None,
+    selection_changes: dict | None = None,
 ) -> RevisitResult:
     """Spawn a new root task linked to the predecessor.
 
@@ -2381,6 +2415,13 @@ async def revisit_from_notification(
         )
         async with org.db_lock:
             with origin_guard(org, task_id):
+                changes = selection_changes or {}
+                selection = _validated_task_overrides(
+                    org, predecessor.assigned_agent or org.teams.executable_manager_for_team(predecessor.team),
+                    changes.get("model", predecessor.model_override),
+                    changes.get("reasoning_effort", predecessor.reasoning_effort_override),
+                    "founder" if selection_changes is not None else predecessor.override_source,
+                )
                 new_id = org.db.next_task_id()
                 # Track family tasks closed during the db lock so tail handling
                 # (parent-wake, thread-followup) can be applied after release.
@@ -2393,7 +2434,7 @@ async def revisit_from_notification(
                     status=TaskStatus.PENDING,
                     parent_task_id=None,
                     revisit_of_task_id=predecessor.id,
-                    session_timeout_seconds=new_timeout,
+                    session_timeout_seconds=new_timeout, **selection,
                 ))
                 audit = AuditLogger(org.db)
                 audit.log_revisit_of(
@@ -2404,6 +2445,7 @@ async def revisit_from_notification(
                     prior_status=prior_status,
                     founder_note=founder_note,
                     actor=actor,
+                    overrides=selection,
                 )
                 audit.log_revisit_spawned(
                     predecessor_task_id=predecessor.id, new_root=new_id,
@@ -2513,6 +2555,7 @@ async def revisit_task(
         founder_note=body.founder_note,
         actor="cli",
         session_timeout_seconds=body.session_timeout_seconds,
+        selection_changes=body.model_dump(include={"model", "reasoning_effort"}, exclude_unset=True),
     )
     return {
         "new_root_task_id": result.new_root_id,

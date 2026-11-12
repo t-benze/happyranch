@@ -952,6 +952,7 @@ class TasksMixin:
             task.note,
             task.orchestration_step_count,
             task.session_timeout_seconds,
+            task.model_override, task.reasoning_effort_override, task.override_source,
             task.task_type,
             task.active_fanout,
             task.current_session_id,
@@ -962,12 +963,22 @@ class TasksMixin:
                revision_count, created_at, updated_at, completed_at, parent_task_id,
                revisit_of_task_id, dispatched_from_thread_id,
                block_kind, note,
-               orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
+               orchestration_step_count, session_timeout_seconds,
+               model_override, reasoning_effort_override, override_source, task_type, active_fanout,
                current_session_id, zombie_flagged_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             params,
         )
         self._insert_task_owner_uncommitted(task.id, ownership=ownership)
+        self._record_task_overrides_uncommitted(task)
+
+    def _record_task_overrides_uncommitted(self, task: TaskRecord) -> None:
+        from runtime.orchestrator.task_selection import override_fields
+        fields = override_fields(task)
+        if fields:
+            self.insert_audit_log_uncommitted(
+                task.id, task.override_source or "manager", "task_created", fields,
+            )
 
     def _insert_task_owner_uncommitted(self, task_id: str, *, ownership: tuple[str, str] | None = None) -> None:
         from runtime.infrastructure.workflow_task_ownership import insert_owner_uncommitted
@@ -1002,6 +1013,9 @@ class TasksMixin:
             cancelled_at=row["cancelled_at"],
             last_heartbeat=row["last_heartbeat"],
             session_timeout_seconds=row["session_timeout_seconds"],
+            model_override=row["model_override"],
+            reasoning_effort_override=row["reasoning_effort_override"],
+            override_source=row["override_source"],
             task_type=row["task_type"],
             executor_pid=row["executor_pid"],
             current_session_id=row["current_session_id"],
@@ -1094,6 +1108,9 @@ class TasksMixin:
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
+                model_override=row["model_override"],
+                reasoning_effort_override=row["reasoning_effort_override"],
+                override_source=row["override_source"],
                 task_type=row["task_type"],
                 executor_pid=row["executor_pid"],
                 current_session_id=row["current_session_id"],
@@ -1380,6 +1397,9 @@ class TasksMixin:
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
+                model_override=row["model_override"],
+                reasoning_effort_override=row["reasoning_effort_override"],
+                override_source=row["override_source"],
                 task_type=row["task_type"],
                 executor_pid=row["executor_pid"],
                 current_session_id=row["current_session_id"],
@@ -1447,6 +1467,9 @@ class TasksMixin:
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
+                model_override=row["model_override"],
+                reasoning_effort_override=row["reasoning_effort_override"],
+                override_source=row["override_source"],
                 task_type=row["task_type"],
                 executor_pid=row["executor_pid"],
                 current_session_id=row["current_session_id"],
@@ -1687,6 +1710,9 @@ class TasksMixin:
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
+                model_override=row["model_override"],
+                reasoning_effort_override=row["reasoning_effort_override"],
+                override_source=row["override_source"],
                 task_type=row["task_type"],
                 executor_pid=row["executor_pid"],
                 current_session_id=row["current_session_id"],
@@ -2527,8 +2553,9 @@ class TasksMixin:
                        revision_count, created_at, updated_at, completed_at, parent_task_id,
                        revisit_of_task_id, dispatched_from_thread_id,
                        block_kind, note,
-                       orchestration_step_count, session_timeout_seconds, task_type, active_fanout)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       orchestration_step_count, session_timeout_seconds,
+                       model_override, reasoning_effort_override, override_source, task_type, active_fanout)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         child.id,
                         child.status.value,
@@ -2546,11 +2573,13 @@ class TasksMixin:
                         child.note,
                         child.orchestration_step_count,
                         child.session_timeout_seconds,
+                        child.model_override, child.reasoning_effort_override, child.override_source,
                         child.task_type,
                         child.active_fanout,
                     ),
                 )
                 self._insert_task_owner_uncommitted(child.id)
+                self._record_task_overrides_uncommitted(child)
                 # Insert attachment links for this child if present.
                 child_atts = None
                 if children_attachments and i < len(children_attachments):
@@ -2576,9 +2605,10 @@ class TasksMixin:
                            revision_count, created_at, updated_at, completed_at,
                            parent_task_id, revisit_of_task_id, dispatched_from_thread_id,
                            block_kind, note,
-                           orchestration_step_count, session_timeout_seconds, task_type,
+                           orchestration_step_count, session_timeout_seconds,
+                           model_override, reasoning_effort_override, override_source, task_type,
                            active_fanout)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             fl["id"],
                             fl["status"].value if isinstance(fl["status"], TaskStatus) else fl["status"],
@@ -2596,11 +2626,13 @@ class TasksMixin:
                             None,
                             fl.get("orchestration_step_count", 0),
                             fl.get("session_timeout_seconds", 0),
+                            fl.get("model_override"), fl.get("reasoning_effort_override"), fl.get("override_source"),
                             fl.get("task_type", "subtask"),
                             None,
                         ),
                     )
                     self._insert_task_owner_uncommitted(fl["id"])
+                    self._record_task_overrides_uncommitted(children[ci].model_copy(update={"id": fl["id"]}))
             self._conn.execute(
                 """UPDATE tasks
                    SET status = ?, block_kind = ?, note = ?, active_fanout = ?, updated_at = ?
@@ -2648,9 +2680,10 @@ class TasksMixin:
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
                    revisit_of_task_id, dispatched_from_thread_id,
                    block_kind, note,
-                   orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
+                   orchestration_step_count, session_timeout_seconds,
+                   model_override, reasoning_effort_override, override_source, task_type, active_fanout,
                    current_session_id, zombie_flagged_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     child.id,
                     child.status.value,
@@ -2668,6 +2701,7 @@ class TasksMixin:
                     child.note,
                     child.orchestration_step_count,
                     child.session_timeout_seconds,
+                    child.model_override, child.reasoning_effort_override, child.override_source,
                     child.task_type,
                     child.active_fanout,
                     child.current_session_id,
@@ -2675,6 +2709,7 @@ class TasksMixin:
                 ),
             )
             self._insert_task_owner_uncommitted(child.id)
+            self._record_task_overrides_uncommitted(child)
             if attachments:
                 self._insert_task_attachments_txn(
                     child.id, attachments, uploaded_by,
@@ -3152,9 +3187,10 @@ class TasksMixin:
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
                    revisit_of_task_id, dispatched_from_thread_id,
                    block_kind, note,
-                   orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
+                   orchestration_step_count, session_timeout_seconds,
+                   model_override, reasoning_effort_override, override_source, task_type, active_fanout,
                    current_session_id, zombie_flagged_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     next_child.id,
                     next_child.status.value,
@@ -3172,6 +3208,7 @@ class TasksMixin:
                     next_child.note,
                     next_child.orchestration_step_count,
                     next_child.session_timeout_seconds,
+                    next_child.model_override, next_child.reasoning_effort_override, next_child.override_source,
                     next_child.task_type,
                     next_child.active_fanout,
                     next_child.current_session_id,
@@ -3179,6 +3216,7 @@ class TasksMixin:
                 ),
             )
             self._insert_task_owner_uncommitted(next_child.id)
+            self._record_task_overrides_uncommitted(next_child)
             if attachments:
                 self._insert_task_attachments_txn(
                     next_child.id, attachments, uploaded_by,
@@ -4581,9 +4619,10 @@ class TasksMixin:
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
                    revisit_of_task_id, dispatched_from_thread_id,
                    block_kind, note,
-                   orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
+                   orchestration_step_count, session_timeout_seconds,
+                   model_override, reasoning_effort_override, override_source, task_type, active_fanout,
                    current_session_id, zombie_flagged_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     task.id,
                     task.status.value,
@@ -4601,6 +4640,7 @@ class TasksMixin:
                     task.note,
                     task.orchestration_step_count,
                     task.session_timeout_seconds,
+                    task.model_override, task.reasoning_effort_override, task.override_source,
                     task.task_type,
                     task.active_fanout,
                     task.current_session_id,
@@ -4608,6 +4648,7 @@ class TasksMixin:
                 ),
             )
             self._insert_task_owner_uncommitted(task.id)
+            self._record_task_overrides_uncommitted(task)
             for att in attachments:
                 # Reject if storage_key is already claimed — including by
                 # legacy duplicate rows excluded from the partial unique index.
@@ -4697,7 +4738,7 @@ class TasksMixin:
 
     def _dispatch_thread_task_uncommitted(
         self, *, token: str, thread_id: str, dispatcher: str,
-        task: TaskRecord, request_digest: str,
+        task: TaskRecord, request_digest: str, applied_settings: dict | None = None,
     ) -> dict:
         """Join the continuation owner's transaction, including supersession."""
         if not self._conn.in_transaction:
@@ -4721,6 +4762,7 @@ class TasksMixin:
                 "kind_tag": "task_dispatched", "task_id": task.id,
                 "dispatcher": dispatcher, "target_agent": task.assigned_agent,
                 "team": task.team, "brief_preview": task.brief[:160],
+                **(applied_settings or {}),
             },
         )
         self._record_dispatch_on_invocation_uncommitted(
@@ -4729,7 +4771,8 @@ class TasksMixin:
         self.insert_audit_log_uncommitted(
             task_id=thread_id, agent=dispatcher, action="thread_dispatch",
             payload={"task_id": task.id, "dispatcher": dispatcher,
-                     "target_agent": task.assigned_agent, "team": task.team},
+                     "target_agent": task.assigned_agent, "team": task.team,
+                     **(applied_settings or {})},
         )
         return {"ok": True, "replayed": False, "task_id": task.id,
                 "system_message_seq": seq}
@@ -4745,6 +4788,7 @@ class TasksMixin:
         task: TaskRecord,
         team: str,
         request_digest: str,
+        applied_settings: dict | None = None,
     ) -> dict:
         """Atomically admit replacements from the same task follow-up turn.
 
@@ -4868,18 +4912,21 @@ class TasksMixin:
                 task.updated_at.isoformat(), None, None, None,
                 task.dispatched_from_thread_id, None, task.note,
                 task.orchestration_step_count, task.session_timeout_seconds,
+                task.model_override, task.reasoning_effort_override, task.override_source,
                 task.task_type, task.active_fanout, task.current_session_id, None,
             )
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
                    revisit_of_task_id, dispatched_from_thread_id, block_kind, note,
-                   orchestration_step_count, session_timeout_seconds, task_type,
+                   orchestration_step_count, session_timeout_seconds,
+                   model_override, reasoning_effort_override, override_source, task_type,
                    active_fanout, current_session_id, zombie_flagged_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 params,
             )
             self._insert_task_owner_uncommitted(task.id)
+            self._record_task_overrides_uncommitted(task)
             sys_seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id, speaker=dispatcher,
                 kind=ThreadMessageKind.SYSTEM,
@@ -4888,6 +4935,7 @@ class TasksMixin:
                     "dispatcher": dispatcher, "target_agent": dispatcher,
                     "team": team, "brief_preview": task.brief[:160],
                     "replacement_for_task_id": original_id,
+                    **(applied_settings or {}),
                 },
             )
             self._record_dispatch_on_invocation_uncommitted(
@@ -4914,6 +4962,7 @@ class TasksMixin:
                     "task_id": task.id, "dispatcher": dispatcher,
                     "target_agent": dispatcher, "team": team,
                     "replacement_for_task_id": original_id,
+                    **(applied_settings or {}),
                 }), now),
             )
             self._conn.commit()

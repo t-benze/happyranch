@@ -2608,9 +2608,10 @@ class Database(
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
                    revisit_of_task_id, dispatched_from_thread_id,
                    block_kind, note,
-                   orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
+                   orchestration_step_count, session_timeout_seconds,
+                   model_override, reasoning_effort_override, override_source, task_type, active_fanout,
                    current_session_id, zombie_flagged_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     task.id,
                     task.status.value,
@@ -2628,6 +2629,7 @@ class Database(
                     task.note,
                     task.orchestration_step_count,
                     task.session_timeout_seconds,
+                    task.model_override, task.reasoning_effort_override, task.override_source,
                     task.task_type,
                     task.active_fanout,
                     task.current_session_id,
@@ -2635,6 +2637,7 @@ class Database(
                 ),
             )
             self._insert_task_owner_uncommitted(task.id)
+            self._record_task_overrides_uncommitted(task)
             self._conn.commit()
             return thread_id
         except Exception:

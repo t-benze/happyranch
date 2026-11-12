@@ -317,9 +317,20 @@ Write `/tmp/thread-dispatch-<thread_id>.json`:
 Then:
 happyranch threads dispatch --org <slug> --thread-id <id> --from-file /tmp/thread-dispatch-<id>.json
 
+If the founder requests a model or effort (for example "use opus, high effort"),
+put `"model":"opus"` and `"reasoning_effort":"high"` in the self-dispatch JSON
+(or use `--model opus --reasoning-effort high`). Omission uses your current agent
+default per field. The daemon validates your current executor before task creation;
+unsupported choices refuse with a reason and valid effort options. Tell the
+founder that reason/options; never silently dispatch on the default. On success,
+state the returned effective model/effort and sources in your reply confirmation.
+The CLI prints these fields and the selected task_dispatched system message
+retains them. These settings apply to this task; ordinary children do not
+inherit them. Per-handoff selections are planned separately.
+
 Each distinct dispatch posts its own system message into the thread. There is no
 per-turn dispatch count limit. The daemon hashes the stripped brief, effective team,
-effective self target, `resolves` (or empty string), and invocation purpose. Repeating
+effective self target, `resolves` (or empty string), and invocation purpose, plus model/effort when selected. Repeating
 that same request on the same pending token returns the original task with
 `replayed: true` and creates no task, message, audit or supersession. If the
 successor is still pending, replay restores a missing queue notification; an
