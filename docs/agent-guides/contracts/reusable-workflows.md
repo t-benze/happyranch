@@ -434,6 +434,14 @@ TASK-15719's explicit installer alone opts into 8,388,608 rows/16GiB encoded cel
 32MiB raw bytes per row, 32GiB chunk-hashed backup and one original 900s deadline,
 plus 640M ownership SQL steps per complete read. Every retained row/rowid is
 preserved; file-backed SQL staging replaces the capped Python ownership list.
+TASK-15741 additionally bounds inherited complete-reader sets/dicts BEFORE every
+acquisition in the same snapshot: at most160,000 tasks AND ownership marks,
+checked with COUNT limited to160,001; over-cap refuses
+`workflow_seq_install_task_ownership_count_exhausted:TABLE` before writes.
+SQL scalar lengths also gate at most64MiB of tasks.id plus all ownership cells
+(`workflow_seq_install_ownership_bytes_exhausted`), before payload fetch.
+Every original ownership/binding predicate still runs; no shared reader changes.
+See the cutover runbook for sizing and measured Python peaks.
 Runtime/venue/startup and default callers keep their budgets; unsupported rowid/virtual/generated
 shapes refuse. Original complete-reader caps and refusals remain intact. File and
 lifecycle checks are cooperative observations, not an OS fence or native closure

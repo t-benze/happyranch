@@ -125,6 +125,14 @@ installer `_readonly_inventory` caller (also its backup path) and
 
 ### Installer retained-history repair (TASK-15719)
 
+TASK-15741 follow-on: installer-only preflights in the same snapshot before each
+complete reader cap tasks AND ownership at160,000 each (160,001 bounded COUNT;
+`workflow_seq_install_task_ownership_count_exhausted:TABLE`), and raw tasks.id
+plus all ownership cells at64MiB (`workflow_seq_install_ownership_bytes_exhausted`).
+160,000 /15,722 =10.18x; the unchanged complete reader still owns all validation.
+See the cutover runbook for measured Python peaks. Shared readers/defaults stay
+unchanged; no live acceptance follows.
+
 The formerly deferred 8192-row inventory and 8192-owner-copy ceiling is repaired
 only in the explicit offline installer. `SequentialInstallAllowance` carries one
 original 900s deadline, 8,388,608 rows, 16GiB encoded cells and 32MiB raw row bytes.

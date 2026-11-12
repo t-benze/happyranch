@@ -2696,8 +2696,10 @@ Disabled pins still refuse. Existing limits and R-M3-2 per-read allowances remai
 
 Offline setup/admission below remains separate authority. Source delivery and
 out-of-repo SYNTHETIC diagnostics do not prove live installation, loaded identity,
-native/V3/V5/M4 or operator acceptance. Keep the known installer8192-row/64MiB/5s
-and8192-owner production-history limitation for follow-on work. See the
+native/V3/V5/M4 or operator acceptance. TASK-15719 sizes the explicit installer
+separately; TASK-15741 caps complete-reader acquisition at160,000 tasks and
+ownership marks plus64MiB of task-ID/ownership cells before payload fetch.
+Default/runtime/venue/startup budgets remain unchanged. See the
 [compatibility table/full caller inventory](../../superpowers/specs/2026-11-12-sequential-coding-u9.md)
 and [operator install/backout](../../runbooks/sequential-coding-cutover.md).
 
@@ -2730,8 +2732,12 @@ and a 640M-step ownership SQL guard; other reader callers keep 32M. The existing
 8192-row/64MiB workflow acquisition limits remain. An INSERT-only SQLite authorizer
 and exact expected append comparison protect all original rows and SQL. Replay/
 readback need no backup hash. See the [sizing and caller inventory](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#retained-history-repair-task-15618).
-The installer/shared whole-database inventory stays byte-identical: its 8192-row/
-64MiB/5s ceiling is a known pre-existing production-blocking defect for follow-on. Exit4 retains
+The separate explicit installer now streams every retained row under its own
+8,388,608-row/16GiB-cell/32MiB-row/32GiB-backup/900s allowance; before each
+complete reader it gates160,000 tasks and ownership marks and64MiB of their
+acquired cells, refusing with named count/byte causes. Shared inventory defaults
+stay8192-row/64MiB/5s; setup and shared reader behavior are unchanged. See the
+[installer limits and measurements](../../runbooks/sequential-coding-cutover.md). Exit4 retains
 COMMIT/rollback/close/delivery/post-publication uncertainty, with no automatic retry.
 It installs no schema, creates no marker/run/task or native/remote action, converts
 no old Explicit setting and runs nothing at startup. Installation remains the

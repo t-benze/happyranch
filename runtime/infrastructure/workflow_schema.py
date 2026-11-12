@@ -2526,6 +2526,37 @@ class SequentialInstallAllowance:
         if time.monotonic() >= self.deadline:
             raise ValueError('workflow_seq_install_deadline_exhausted')
 
+    def check_ownership_acquisition(self, conn: sqlite3.Connection) -> None:
+        """Bound inherited complete-reader collections BEFORE any payload fetch.
+
+        Installer-only admission, not ownership validation. The unchanged reader
+        still checks every mark and binding in this SAME native snapshot.
+        """
+        self.check()
+        present = []
+        for table, columns in (('tasks', ('id',)),
+                               ('workflow_task_ownership', ('task_id', 'org_slug', 'version', 'kind', 'owner_id'))):
+            # Missing companions retain their complete-reader refusal. Invalid
+            # layouts still reach that oracle; this preflight grants no validity.
+            if conn.execute('SELECT 1 FROM sqlite_schema WHERE type=\'table\' AND name=?',
+                            (table,)).fetchone() is None:
+                continue
+            self.check()
+            if conn.execute('SELECT count(*) FROM (SELECT 1 FROM ' + table
+                            + ' LIMIT 160001)').fetchone()[0] > 160000:
+                raise ValueError('workflow_seq_install_task_ownership_count_exhausted:' + table)
+            present.append((table, columns))
+        # Count alone cannot bound arbitrarily long IDs/marks. Acquire only SQL
+        # scalar lengths; unrelated native payloads stay with streaming inventory.
+        consumed = 0
+        for table, columns in present:
+            self.check()
+            sizes = '+'.join('coalesce(length(CAST(' + column + ' AS BLOB)),0)' for column in columns)
+            consumed += conn.execute('SELECT coalesce(sum(' + sizes + '),0) FROM ' + table).fetchone()[0]
+            if consumed > 64 * 1048576:
+                raise ValueError('workflow_seq_install_ownership_bytes_exhausted')
+        self.check()
+
 
 def sequential_storage_inventory(conn: sqlite3.Connection, *,
                                  allowance: SequentialInstallAllowance | None = None) -> tuple[tuple, dict[str, tuple[int, str]]]:
@@ -2616,9 +2647,12 @@ def inspect_sequential_install(conn: sqlite3.Connection, *, expected_org_slug: s
 
     options = {} if allowance is None else {'deadline': allowance.deadline,
                                             'ownership_sql_limit': 640000000}
-    if allowance is not None:
-        allowance.check()
-    history = read_sequential_history(conn, expected_org_slug=expected_org_slug, **options)
+    if allowance is None:
+        history = read_sequential_history(conn, expected_org_slug=expected_org_slug, **options)
+    else:
+        with _schema_snapshot(conn):
+            allowance.check_ownership_acquisition(conn)
+            history = read_sequential_history(conn, expected_org_slug=expected_org_slug, **options)
     layout = history.layout
     if layout.document is None or layout.ownership != (2 if layout.sequential else 1):
         raise ValueError('workflow_seq_install_requires_complete_document_and_ownership_companion')

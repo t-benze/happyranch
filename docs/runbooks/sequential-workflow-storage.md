@@ -105,6 +105,22 @@ unsupported virtual/generated/WITHOUT ROWID/shadowed-rowid tables refuse rather
 than omit identities. These bounds supplement, never replace or relax, the
 existing complete-reader allowances.
 
+TASK-15741 adds installer-only preflights BEFORE each complete-reader acquisition
+(source, backup, locked source and target, including an installed no-op), in the
+SAME native read snapshot. Each of tasks and ownership is limited to160,000 rows;
+a bounded COUNT reads at most160,001 scalar rows and refuses with
+`workflow_seq_install_task_ownership_count_exhausted:tasks` or
+`:workflow_task_ownership`. A second SQL scalar-length preflight limits the SUM
+of tasks.id and all five ownership cells to64MiB, refusing with
+`workflow_seq_install_ownership_bytes_exhausted`. These are admission limits,
+not alternate validators: the unchanged complete reader still checks every
+completeness/duplicate/foreign/wrong-owner/cross-family binding predicate.
+The 64MiB bound prevents arbitrarily long IDs/marks from defeating the count cap;
+unrelated task/result/audit payloads remain with the streamed inventory.
+Memory may grow with task COUNT only within the finite160,000 cap, alongside
+bounded acquired bytes/rows and unchanged workflow-reader allowances. SQLite
+native allocations and hard RSS are outside these Python observations.
+
 The complete layout comparison retains its fully acquired and independently
 validated column tuples inside the same schema snapshot. Sequential row reads
 reuse those tuples for the unchanged type/length gates instead of acquiring

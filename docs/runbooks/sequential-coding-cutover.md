@@ -40,6 +40,18 @@ grants no live operation or genuine execution acceptance. See the
    Every retained row is hashed; ownership is copied in SQL through file-backed
    temporary staging inside the same transaction. Default readers/venue/startup
    keep their existing budgets. Exhaustion refuses rather than sampling history.
+   TASK-15741 also bounds the complete-reader task/ownership collections before
+   acquisition: at most160,000 tasks AND160,000 ownership marks, and64MiB total
+   raw tasks.id plus all five ownership cells. Both preflights use scalar SQL in
+   the same read snapshot as the unchanged complete reader. Count overflow
+   refuses `workflow_seq_install_task_ownership_count_exhausted:tasks` or
+   `:workflow_task_ownership`; bytes overflow refuses
+   `workflow_seq_install_ownership_bytes_exhausted`. Every source, backup,
+   locked source/target and already-installed no-op is gated before acquisition.
+   Refusal is before any durable write; reconcile capacity with the source owner,
+   never prune/split history or bypass completeness checks to fit.
+   160,000 /15,722 measured tasks =10.18x; tenfold is157,220, leaving2,780
+   additional tasks above10x. Existing cell/row/backup/deadline caps still apply.
    Neither `migrate_workflow_draft_schema.py` nor
    `migrate_workflow_submission_schema.py` is a prerequisite: the complete reader
    accepts F/E/G/H/I/J with the required complete v1 companion. On the isolated
@@ -265,6 +277,17 @@ and restart work (not timed). The 10x envelope is sizing arithmetic plus separat
 actual row/byte-cap and 160k-owner fixtures, not a timed full 10x combined install.
 900s is a cooperative refusal deadline, not a hard OS-I/O or duration guarantee.
 Live install/register/restart/rollback and genuine V3 acceptance: **NOT RUN**.
+
+TASK-15741 measured warmed `inspect_sequential_install` with ordinary synthetic F
+IDs and complete marks using Python3.14.4 `tracemalloc`:16,000 tasks peaked at
+3,602,841 bytes (3.44MiB);160,000 tasks, exactly the cap, peaked at35,896,873 bytes
+(34.23MiB). These are executed Python allocation peaks at the admitted count,
+not a content-independent RSS promise or an extrapolation. A full160,000-task
+installer run (all source/backup/locked validations, inventory and COMMIT) peaked
+at59,472,402 Python bytes (56.72MiB), taking47.769s with tracemalloc enabled.
+The fixed64MiB raw acquisition allowance and160,000-entry caps bound payload/collection growth;
+existing32MiB row and workflow-reader allowances remain independently binding.
+Larger unrelated cell payloads do not buy larger task/ownership collections.
 
 ## Backout and drain
 
