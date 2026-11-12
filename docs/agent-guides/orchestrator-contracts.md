@@ -42,21 +42,25 @@ Availability starts nothing and grants no authority. Full contract: [coding work
 “Current built-in coding definition”. Loaded identity and scratch remain unproved.
 
 
-## Current explicit coding execution and caller return — ROOT13015
+## Historical Explicit coding execution and admitted return — ROOT13015
 
-Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
-coding integration. This current contract supersedes unconditional-disabled
-instructions in the historical K3/R2/revision/source checkpoints below; their
-original observations, failures, approvals and immutable encodings remain history.
+Founder THR320 seq194/196/225 and manager TASK-13015 authorized the original
+settings-pinned coding integration. Its fresh-start composition is superseded
+by U9; this section now describes admitted-run replay/continuation only. Original
+observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
-current canonical settings with Admission Explicit and matching settings/release/
-mapping pins, and the existing current-authority/native admission predicates.
-Missing, malformed or Disabled settings refuse before callback persistence, spend
-or allocation. Disabled remains the default; ordinary routing remains legacy.
-Literal start@1 stays readable but is not a fresh-start path. Admitted start@2
-work retains its original pins across later disable/default changes and still
-requires current selected-role/repository authority, Pause and native proof.
+Fresh old `workflow-coding-start@1`/`@2` starts now refuse with
+`coding_fresh_start_retired`, including with healthy old Explicit settings.
+Fresh Coding uses the reviewed sequential v2 definition/common engine, latest
+Allowed NEW settings, compatible storage, mounted native runtime and current
+authority/eligible roles. Fresh selection and engine prepare-admission both
+check the latest Allowed generation; old Explicit settings cannot substitute.
+Disabled remains the default; ordinary routing remains legacy. See
+`docs/superpowers/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
+
+Authenticated admitted old @1/@2 replay/continuation retains its original pins
+across later disable/default changes and still requires current selected-role/
+repository authority, Pause and native proof. No admitted history is converted.
 
 Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
 this is neither per-org admission nor installed/loaded/operational acceptance.
@@ -6118,7 +6122,12 @@ write, Git probe or schema recursion is added. Metadata is a point-in-time
 observation; unchanged publication rechecks remain authoritative.
 
 
-## Disabled settings-pinned coding start and native attribution
+## Historical disabled settings-pinned coding start and native attribution
+
+This old-family checkpoint is retained for admitted-run replay only. U9
+supersedes fresh-start composition: old @1/@2 refuse with coding_fresh_start_retired;
+fresh Coding uses reviewed v2/latest Allowed NEW settings. Original native
+attribution and history contracts below remain intact.
 
 The historical K3a start@1 contract above remains readable. Start@2 adds exactly
 settings:{generation,snapshot_digest}; callback models and run-start parsing

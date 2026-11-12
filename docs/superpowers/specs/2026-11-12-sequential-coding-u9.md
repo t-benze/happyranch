@@ -1,6 +1,6 @@
 # Sequential Coding U9: release selection and atomic fresh-start cutover
 
-> Status: current design; U9a interfaces delivered; TASK-15616 delivers only U9b obligation 1 (inert offline registration/separate admission) in the expressly permitted first PR. Atomic obligations 2+3 and their parity/evidence remain implementation. Public fresh start stays OFF; old start@2 admission is unchanged.
+> Status: current source contract; U9a, inert U9b setup and atomic U9b obligations 2+3+4 delivered. TASK-15624 mounts reviewed-v2 public fresh Coding selection together with unconditional old-fresh refusal. Separate installation/loaded identity/admission/native acceptance remain open.
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md; docs/runbooks/sequential-coding-cutover.md
 
 THR-336 / ROOT TASK-15606. U9a maker TASK-15613; inert U9b setup maker
@@ -13,7 +13,7 @@ PRD v1.0.4 Shared Artifact
 Founder THR-336 msg131 ACCESS-1 control. Source delivery is not installation,
 deployment, admission, loaded identity or genuine execution acceptance.
 
-## Split declared before edits
+## Historical U9a split declared before edits
 
 The U9a brief permitted a first coherent interface unit. At that checkpoint the only
 definition/settings publisher, `setup_sequential_venue.py`, excludes the live
@@ -30,7 +30,7 @@ fence. **U9b must attach both together in one merge unit**, without an enable
 flag or historical fallback. No schema, endpoint, credential, permission,
 dependency, startup-order or live-state change is part of U9a.
 
-## Inert U9b setup split (TASK-15616)
+## Historical inert U9b setup split (TASK-15616)
 
 Declared in `dev_agent/output/TASK-15616/plan.md` BEFORE source edits: use the
 explicitly permitted obligation-1 first PR. `scripts/setup_sequential_coding.py`
@@ -138,7 +138,7 @@ are synthetic observations, not genuine V3 acceptance. TASK-15617 remains
 REQUEST_CHANGES history; prior failed/blocked/REQUEST_CHANGES roots and spent
 allowances remain unchanged.
 
-## U9a interfaces and caller inventory
+## U9a interfaces and pre-cutover caller inventory
 
 `sequential_release.read_coding_release` reads only the constant bundled
 `coding.v2.json` via the package loader. Acquisition reads at most 3796 bytes
@@ -177,9 +177,9 @@ no old-family parsing, callback, settlement, cancellation or LOCAL action.
 | `OrgState` / historical builtin registration | Preserve normal inert Coding initialization and profile/startup/native ownership ordering (PR1262). No sequential install or config conversion on startup. |
 | U7a/U7b/U7c, engine/history/dispatch, U6, old Coding families | No edits in U9a. Future attachment does not select current settings for admitted replay, mutate stored pins or enter legacy Coding progression. |
 
-## Exact compatibility table
+## Exact compatibility table (current source)
 
-| Family / state | U9a + inert U9b setup | Required after atomic U9b |
+| Family / state | Historical U9a + inert setup | Current atomic U9b |
 | --- | --- | --- |
 | Literal `workflow-coding-start@1` | Historical syntax/readers; not a fresh-start route | Same historical behavior; fresh refusal before writes/spend/allocation |
 | Old `workflow-coding-start@2`, fresh | Existing Explicit/settings/native gates unchanged | Categorical fresh refusal, even with old Explicit settings and healthy old engine; zero legacy fallback |
@@ -193,7 +193,7 @@ no old-family parsing, callback, settlement, cancellation or LOCAL action.
 | Ordinary delegate/then/fanout / legacy routing | Unchanged | Unchanged; no missing-ownership fallback |
 | Empty installed sequential extension | Compatible reader still required | No old-code-only downgrade, table drop, pin/mark rewrite or effect-undo claim |
 
-## U9b implementation remainder and atomic obligations
+## U9b atomic obligations (source delivered)
 
 1. **SOURCE DELIVERED in the inert first PR (TASK-15616):** explicit reviewed
    non-venue definition registration and separate
@@ -202,26 +202,68 @@ no old-family parsing, callback, settlement, cancellation or LOCAL action.
    publisher as a live bypass, install at startup, convert old Explicit settings
    or add a top-level enable flag. Installation remains the existing explicit
    reviewed offline schema path, with original backup/native exclusions.
-2. **REMAINS IMPLEMENTATION, paired with obligation 3:** in the SAME merge unit
+2. **SOURCE DELIVERED with obligation 3 (TASK-15624):** in the SAME merge unit
    mount the v2-only selector/public fresh-start boundary
    and old fresh-start@2 fence at ALL intake/consumption/inner-writer seams above.
    Complete admitted replay must precede fresh fencing. Check mounted native
    engine/storage/current authority and latest Allowed settings independently;
    no callback/spend/graph writes on fresh refusal. No new start endpoint.
-3. Replace `check_venue_start` only for public Coding under that combined cutover;
+3. **SOURCE DELIVERED (TASK-15624):** replace `check_venue_start` only for public Coding under that combined cutover;
    explicitly retain the disposable fence for V3 noncatalog fixtures. A missing
    marker must not accidentally become authority, and a marker must not bypass
-   fresh Coding release selection. U9a makes neither change.
-4. Renew doc/skill/setup-copy parity for each unit. TASK-15616 supplies setup-split
-   parity; atomic parity/evidence remains, including removal of the U9-pending
+   fresh Coding release selection. U9a alone made neither change.
+4. **SOURCE DELIVERED (TASK-15624):** renew doc/skill/setup-copy parity. TASK-15616 supplies setup-split
+   parity; atomic parity includes removal of the U9-pending
    operator message only when true. Supply full B/H/caller/negative-space inventory, exact-head
    static job/hosted receipts, independent review and scoped QA. Exercise genuine
    bounded V3 compatibility/install/reopen/backout and old/new/mixed-history
    cases only under remaining original authority/window; record missing proof.
 
-No public attachment is complete until all four obligations land. Any unresolved
+All four source obligations are delivered; independent source gates and actual
+installation/loaded identity/operational acceptance remain separate. Any unresolved
 ownership/product contract, credential/permission, non-additive schema or daemon
 GitHub/network need returns to the manager before dependent edits.
+
+## Mounted atomic boundary and pin compatibility repair (TASK-15624)
+
+This section supersedes the historical unmounted/OFF descriptions above.
+The manager's explicit Option A ruling authorizes original-pin validation as an
+engineering-internal repair of this compatibility table, with no product/schema/
+authentication contract change.
+
+| Seam | Current attachment and ordering |
+| --- | --- |
+| `tasks.submit_completion` -> `require_start_ready` | Existing full authenticated callback replay and ownership404/409 order stay first. Only the fresh old branch raises `coding_fresh_start_retired` before callback persistence. |
+| `CodingStartStore.consume`, `_start`, `start_in_writer` | Complete original storage and full report/command/key/INTEGER result/task/principal/SID replay return original instance first. Absent replay reaches the same unconditional fence before discovery/native/spend/allocation. |
+| `precheck_completion` -> `precheck_start` | Preserve genuine current ordinary-manager session binding. `_fresh_start` selects reviewed v2 for every Coding identity/version and checks actual mounted native attachments; current authority/bound agents, latest Allowed pins and ordinary source are independently checked. Other definitions retain the exact disposable venue fence before SQL. |
+| `consume_start`, `_consume` | Authenticate committed callback, then original admission replay before fresh observation/capture/policy. Replay retains original limits/IDs and existing active/event1 scope; later lifecycle scopes remain with their original owner. |
+| sequential `start_in_writer` | Authenticate callback and full original admission replay first. Fresh Coding requires the reviewed pin prepared outside SQL, mounted native runtime, `_selection` latest Allowed pins, bound agents and original native/current-authority checks before action/graph writes. |
+| `_consume` lock boundary | Preserve authority -> teams -> db ordering. Reobserve package/venue and runtime after waits BEFORE entering the existing admission writer; no filesystem/package I/O enters that writer. |
+| `sequential_engine._prepare_admission` | Retain independent fresh `_pins`/latest-generation veto, Allowed/bindings/limits and current authority/native checks unchanged. Common graph/reducer/first-visit settlement owners are unchanged. |
+
+At B, `_pins` had exactly four direct callers: `sequential_start._selection`,
+`sequential_engine._prepare_admission`, `validate_selected_run_uncommitted`
+(admission), and `_validate_lifecycle` (session/accept/transition/return/cancel/
+evidence). At H, the first two still call `_pins`; its exact latest-generation
+SQL and codes are unchanged. The latter two call `_original_pins`, as does
+`_pins` itself. `_original_pins` retains every original definition/settings/
+operation/type/hash/ABI/owner check and removes only the latest-generation veto.
+Original Allowed, generation/digest/bindings/limits, native identity and full
+closure checks remain at their existing validators.
+
+Existing admitted sequential rows can change behavior: valid original Allowed
+rows stranded solely by newer Allowed OR Disabled generations now validate and
+continue with their original pins. No row is rewritten or re-pinned; malformed,
+missing or originally Disabled pins still refuse. Fresh generation1 remains
+stale after generation2; fresh generation2 must be Allowed at BOTH fresh readers.
+This source assessment is not a live database census or a live continuation claim.
+
+No budget/cap changes. Selected reads retain 5s/2M SQL steps,8192 rows,64MiB,
+1MiB values,65536 work and original R-M3-2 per-read allowances; new replay selects
+only its operation/run closure, never unrelated ordinary historical payloads.
+The production-history and deferred installer arithmetic above remains unchanged.
+Noncatalog V3 fixtures retain the unchanged disposable publisher/fence; missing
+markers refuse, and existing markers never supply Coding release or authority.
 
 ## Operator repair and evidence limits
 

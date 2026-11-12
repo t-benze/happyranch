@@ -505,8 +505,13 @@ first visit remains ineligible: `queue_admission_allowed` stays false without th
 positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
 producer and manager skill instructions. Existing U3e-1a cancellation, U3e-2
 caller return, default Disabled admission, repository/mixed U5 successful-output hold,
-Pause backout and stale-settings limits remain controlling. Marker removal
-refuses the next fresh start; it grants no continuation/activation authority.
+Pause backout remains controlling. The stale-settings continuation limit is
+historical and superseded by [U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624):
+admission replay, lifecycle and the cancel fence retain admitted original Allowed
+pins after newer Allowed or Disabled settings; fresh selection and engine
+prepare-admission still require latest Allowed settings. Marker removal refuses
+the next noncatalog fixture fresh start; it grants no continuation/activation
+authority over public Coding.
 Structural fixtures and static lint are not genuine callback/host/launch,
 restart, cancellation, return or two-template acceptance. V3/V3-0b/U5 remainder remain
 UNVERIFIED; no live install/settings/admission/deploy/restart is authorized.
@@ -792,11 +797,13 @@ Exact full replay keeps original bytes/IDs; changed body/key reuse refuses and
 transport loss never authorizes reissue. Cancellation, original limits and positive original host/outer
 settlement before first-visit release remain with their unchanged owners.
 
-Public live fresh start remains OFF: both intake and consumer still require the
-unchanged disposable-venue guard, which refuses the live daemon home/aliases and
-absent/invalid/nonmatching runtime/org/DB-inode marker. U9 owns atomic new public
-attachment/release selection plus old-fresh-start fencing; no flag shortcut or
-historical engine fallback is added. Historical start@1/@2, original return and
+At the historical U7d checkpoint, public live fresh start was OFF behind the
+disposable-venue guard. U9 now mounts reviewed-v2 public Coding selection and
+old fresh @1/@2 refusal atomically. Fresh Coding requires latest Allowed NEW
+settings, compatible storage, mounted native runtime and current authority;
+`check_venue_start` remains only for noncatalog V3 fixtures. A missing marker
+supplies no authority and a marker cannot bypass Coding selection. There is no
+flag shortcut or historical engine fallback. Admitted old @1/@2, original return and
 source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncertainty
 are unchanged; thread sources still refuse, notifications remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.

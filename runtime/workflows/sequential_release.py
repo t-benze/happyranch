@@ -1,6 +1,6 @@
-"""Unmounted U9 release selection; package availability is not admission.
+"""Fresh-only U9 release selection; package availability is not admission.
 
-U9b must attach this selector and the legacy fresh-start fence atomically.
+Public Coding selection and the legacy fresh-start fence are mounted together.
 Neither function owns historical replay, settings, storage or startup writes.
 """
 from __future__ import annotations
@@ -59,7 +59,7 @@ def select_coding_release(pin: DefinitionPin) -> CompiledDefinition:
 
     Historical readers must keep their original saved pins and never call this
     fresh-only selector. Storage, defaults, Allowed admission and mounted native
-    execution remain separate requirements for the future public attachment.
+    execution remain separate requirements at the public attachment.
     """
     compiled = read_coding_release()
     if type(pin) is not DefinitionPin or pin != compiled.pin:
@@ -68,9 +68,9 @@ def select_coding_release(pin: DefinitionPin) -> CompiledDefinition:
 
 
 def refuse_legacy_fresh_start() -> NoReturn:
-    """Future fresh-only fence, AFTER authenticated admitted replay selection.
+    """Fresh-only fence, AFTER authenticated admitted replay selection.
 
-    U9b must mount this at callback intake and consumption/inner admission before
+    U9b mounts this at callback intake and consumption/inner admission before
     callback writes, native spending or graph allocation. It must never fence an
     admitted callback, settlement, cancellation or LOCAL Final under old pins.
     """

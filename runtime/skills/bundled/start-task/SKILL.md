@@ -251,7 +251,7 @@ U4a observes only literal no-follow ordinary clone/object metadata, refusing com
 
 For a genuine executable team manager's OWN source callback, sequential start uses decision action `workflow_start` with the unchanged `workflow-sequential-start@1` StartCommand. Preserve the exact definition/settings pins, one stable operation key and actual remaining limits; syntax and lower limits create no new allowance. An unavailable venue refuses the start and grants no setup authority. Only positive original source host/outer settlement can release the first visit to the queue. Source and carrier create no fake result or SID. Use only the actual task/agent/session binding; genuine `report-completion` remains the FINAL action.
 
-## Explicit settings-pinned coding composition (ROOT13015)
+## Historical Explicit settings-pinned coding composition (ROOT13015)
 
 THR-308 seq403 removes generic audit_log coding scanning and its watermark.
 Complete coding validation no longer detects arbitrary unrecognised coding audit
@@ -259,17 +259,19 @@ rows or ordinary audit decoding/depth/size/digit failures through that scan.
 Direct audit-backed history readers, non-audit coding checks and structural/FK/
 integrity checks remain; budget limits are unchanged and scan charges disappear.
 
-Only the configured current executable agent manager composes start@2 for its
-OWN genuine callback. `workflows coding run-start --from-file ABS --emit-decision`
-validates and prints only; keep the original file/key. New callbacks/start actions
-require current canonical Explicit settings and matching release/mapping/settings
-pins, complete coding/shared storage and registered release, and actual mounted native
-queue/host/authority. Normal org startup initializes inert coding storage without upgrading document
-layouts or changing settings; this is separate from loaded/admitted acceptance.
-Missing, malformed and Disabled settings refuse before writes/spend/allocation. Default
-Admission stays Disabled and ordinary routing stays legacy. Literal start@1 is
-historical/readable, not a fresh-start route. Later disable/default edits do not
-replace admitted pins or strand genuine callbacks/settlement.
+The ROOT13015 start@2/Explicit fresh-start composition is historical and
+superseded by U9; retain it only for authenticated admitted-run replay and
+continuation under the original command/key/pins. The old `run-start
+--emit-decision` syntax validates and prints only; it grants no fresh route.
+Fresh old `workflow-coding-start@1`/`@2` starts now refuse with
+`coding_fresh_start_retired`, even with healthy old Explicit settings.
+Fresh Coding uses reviewed sequential v2 with latest Allowed NEW settings,
+compatible storage, mounted native runtime and current authority/eligible roles.
+Fresh selection and engine prepare-admission both retain latest-Allowed checks.
+Admission stays Disabled by default and ordinary routing stays legacy. Later
+Allowed/Disabled generations or default edits do not replace admitted original
+pins or strand genuine callbacks/settlement. Normal inert old-storage startup
+is separate from sequential installation and loaded/admitted acceptance.
 
 Follow only the actual consumed stage supplement, exact selected repository/B/H/
 PR and genuine task/agent/SID/INTEGER result. Four distinct actual eligible org
@@ -288,7 +290,8 @@ No host/config/DB/import/activation work is authorized by source delivery; human
 operator setup and Founder settings remain separate. First genuine four-role
 scratch through merge precedes ordinary use. Deferred native recovery remains
 unavailable. Historical disabled checkpoints later in this skill retain their
-original-head evidence; this paragraph governs current settings-pinned execution.
+original-head evidence; U9 governs fresh starts and this section governs only
+admitted original-pin execution.
 Your genuine current-session report-completion remains the FINAL action.
 
 ## Steps
@@ -1017,11 +1020,13 @@ The final-manager GET remains own-current-original CLI-only, browser-excluded an
 native-remote-denied. Source/static evidence supplies no runtime or authoring PASS.
 
 
-For a settings-pinned coding start, use the actual bound start@2 command with its
+For historical admitted settings-pinned replay only, preserve the bound start@2 command with its
 settings generation/snapshot_digest and mapping Pin. `run-start --emit-decision`
 validates syntax and prints only the closed decision for the selected executable
 manager's own genuine callback; no allocation or authority follows. Historical
-start@1 retains its reader. Coding readiness remains unconditionally disabled.
+start@1 retains its reader. This superseded disabled-source checkpoint grants no
+fresh start: old @1/@2 refuse with coding_fresh_start_retired; fresh Coding uses
+U9 reviewed v2 and latest Allowed NEW settings.
 New-family stage supplements carry the original settings pin and authenticated
 scope; later defaults or disable publications do not replace that assignment.
 Each selected principal uses its own actual team and authorized tools. Preserve
@@ -1283,8 +1288,8 @@ and original-operation lookup; it grants agents no setup command. Saving preserv
 admission (initial Disabled), allocates zero work and cannot enable runs. Preserve
 the original key/body on transport loss; original receipt and current generation
 are separate reads. Historical repo-bearing settings/key recovery is unchanged.
-U7c selected preflight/Final transport and U7d completion consumption remain. Final success stays Held;
-public fresh start remains OFF until U9's atomic old-start fence. No browser
+U7c2b/U7d below supersede this earlier transport/Final-Held checkpoint.
+Public Coding fresh start uses U9's reviewed-v2 selection and old-fresh fence. No browser
 start, daemon repository I/O or Final job/recovery executor follows. See the
 current docs/superpowers/specs/2026-11-11-sequential-coding-u7.md.
 
@@ -1308,8 +1313,8 @@ use it only in your OWN genuine FINAL report-completion summary. Failed/uncertai
 recording uses causal BLOCK, empty content/claims; no later MERGED read clears it.
 Transport exit0/merged is an observation, never engine admission/settlement.
 U5b2b2 validates the genuine callback after original positive outer settlement;
-Final success STILL rolls back then business-Held. U7c2 owes compatible Final
-witness/output acceptance; U7d and atomic U9 fresh-start cutover remain. No job,
+The earlier Final-Held/witness checkpoint is superseded by U7c2b below.
+U9 now mounts the atomic fresh-start cutover. No job,
 recovery runner, daemon PR executor, second CLI OrgState, new permission/credential,
 access observer or live activation follows. ACCESS-1/shared-user/gh limits remain.
 
@@ -1319,8 +1324,9 @@ It supplies no agent command, OutputRef, accepted output, effect or permission.
 Final success stays Held until U7c2b implements complete output-history acceptance
 and same-transaction publication/return validation and mounts the consumer.
 Keep the same original allowances/deadline, causal BLOCK/receipt uncertainty,
-Pause/cancellation owners and genuine FINAL callback. Public fresh start remains
-OFF until U9; no job/recovery Final executor or live operation follows.
+Pause/cancellation owners and genuine FINAL callback. Public Coding fresh start
+now requires the U9 reviewed-v2/current-Allowed/native gates; no job/recovery Final
+executor or live operation follows.
 
 Sequential U7c2b supersedes earlier source-checkpoint Final-Held descriptions:
 the daemon can accept the genuine original Final callback after positive outer
@@ -1332,8 +1338,8 @@ causal BLOCK, command=None/receipt uncertainty/no reissue, Pause generation and
 cancellation owners, original caps/deadline and R-M3-2 per-read allowances.
 ACCESS-1 remains current authority only, with agent-owned effective access and
 no daemon GitHub/network observer or new credentials. Your genuine current
-report-completion remains the FINAL action. Public fresh start stays OFF until
-U9; U7d/U8/U9 and live activation remain separate.
+report-completion remains the FINAL action. U9 now mounts public fresh Coding
+selection and old-fresh refusal atomically; live activation remains separate.
 
 Sequential U7c2b R-M3-6 redacts accepted Final observations ONLY at the Founder
 browser projection boundary. The existing content_utf8 contains the closed
@@ -1357,9 +1363,13 @@ wait. Preserve exact pins, limits and the original stable operation key/body aft
 transport uncertainty; never automatically reissue or invent source/result IDs.
 The committed positive INTEGER and native invocation are server-derived. Exact
 full replay retains original bytes/IDs, including before graph admission; changing
-the action does not escape the original callback identity. Public live fresh start
-stays OFF behind the unchanged disposable-venue fence until U9 atomically attaches new starts and
-fences old fresh starts; no flag/fallback or self-setup authority follows. Only
+the action does not escape the original callback identity. Public Coding fresh
+start requires the reviewed full v2 pin, compatible storage, mounted native engine,
+current authority/eligible roles and latest Allowed NEW settings. Old fresh starts
+refuse categorically; admitted old/new runs keep original pins after later defaults/
+Disable. Noncatalog V3 fixtures retain the original disposable fence; a marker
+never bypasses Coding selection or supplies authority. No flag/fallback or
+self-setup authority follows. Only
 positive ORIGINAL host/outer settlement releases the first visit. Preserve
 cancellation, source return/thread association and all existing FINAL callback
 rules. Genuine report-completion remains the FINAL action; no notification or
@@ -1369,8 +1379,9 @@ Sequential Coding U9b’s inert setup split (TASK-15616) supplies only human-own
 cooperative offline `scripts/setup_sequential_coding.py` registration and a
 separate admission action. Agents must not invoke it on real orgs or self-install,
 configure or allow runs. Initial new defaults remain Disabled; Save preserves
-admission; old Explicit settings never transfer. Public fresh start STILL requires
-the disposable-venue fence and old @2 fresh admission is unchanged until the
-selector/public attachment and old-fresh fence land atomically. Preserve original
+admission; old Explicit settings never transfer. TASK-15624 mounts reviewed-v2
+public selection and the old-fresh fence atomically. Noncatalog V3 fixtures keep
+the disposable fence. Loaded identity, admission and genuine acceptance remain
+separate from source delivery. Preserve original
 command/key and uncertainty; source/merge is not operating authority. See
 `docs/runbooks/sequential-coding-cutover.md`; genuine FINAL callback rules remain.

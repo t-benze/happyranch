@@ -166,8 +166,9 @@ def _read_selected(conn: sqlite3.Connection, metadata: dict, table: str, budget:
     return list(_selected_rows(conn, table, metadata[table], budget, columns=columns, where=where, args=args))
 
 
-def _pins(conn: sqlite3.Connection, metadata: dict, *, org_slug: str, definition_id: str,
-          settings_id: str, budget: _ReadBudget) -> tuple[CompiledDefinition, dict, StorageSettings]:
+def _original_pins(conn: sqlite3.Connection, metadata: dict, *, org_slug: str, definition_id: str,
+                   settings_id: str, budget: _ReadBudget) -> tuple[CompiledDefinition, dict, StorageSettings]:
+    """Authenticate immutable pins; later defaults/admission do not re-pin a run."""
     data = {}
     for table, where, args in (
         ('workflow_seq_definitions', 'id=?', (definition_id,)),
@@ -181,11 +182,19 @@ def _pins(conn: sqlite3.Connection, metadata: dict, *, org_slug: str, definition
     settings, snapshots = _selected_settings(data, definitions, org_slug, budget)
     setting = settings[settings_id]
     _require(setting['definition_id'] == definition_id, 'run_pin_invalid')
+    return definitions[definition_id], setting, snapshots[settings_id]
+
+
+def _pins(conn: sqlite3.Connection, metadata: dict, *, org_slug: str, definition_id: str,
+          settings_id: str, budget: _ReadBudget) -> tuple[CompiledDefinition, dict, StorageSettings]:
+    """Fresh admission alone requires the latest settings generation."""
+    compiled, setting, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
+        definition_id=definition_id, settings_id=settings_id, budget=budget)
     newer = list(_bounded_rows(conn, 'workflow_seq_settings', ('generation',), (('integer',),), budget,
         where='org_slug=? AND definition_identity=? AND generation>?',
         args=(org_slug, setting['definition_identity'], setting['generation']), maximum=1))
     _require(not newer, 'settings_generation_stale')
-    return definitions[definition_id], setting, snapshots[settings_id]
+    return compiled, setting, snapshot
 
 
 def _ownership(conn: sqlite3.Connection, metadata: dict, *, org_slug: str, run: dict, visit: dict,
@@ -249,7 +258,7 @@ def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str
         _require(len(data['workflow_seq_runs']) == 1, 'run_missing')
         run = data['workflow_seq_runs'][0]
         _require(run['org_slug'] == org_slug, 'run_pin_invalid')
-        compiled, settings, snapshot = _pins(conn, metadata, org_slug=org_slug,
+        compiled, settings, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
             definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
         for table, where, args, omit in (
             ('workflow_seq_schema_versions', 'version=?', (1,), ()),
@@ -416,7 +425,7 @@ def _validate_lifecycle(conn: sqlite3.Connection, *, org_slug: str, run_id: str,
         runs = _read_selected(conn, metadata, 'workflow_seq_runs', budget, 'id=?', (run_id,))
         _require(len(runs) == 1 and runs[0]['org_slug'] == org_slug, 'run_missing')
         run = runs[0]
-        compiled, settings, snapshot = _pins(conn, metadata, org_slug=org_slug,
+        compiled, settings, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
             definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
         start = _parse(_hashed(run['start_bytes'], run['start_digest']), parse_start, budget)
         original = Limits.model_validate(_decode(run['original_limits_bytes'], budget))

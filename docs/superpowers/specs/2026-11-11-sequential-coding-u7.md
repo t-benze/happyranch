@@ -1,7 +1,8 @@
 # Sequential Coding U7: common transport and agent initiation
 
-> Status: current design; U7a/U7b/U7c1/U7c2b delivered in source, including complete Final acceptance and R-M3-6 browser redaction; U7d ordinary completion intake delivered in source; U9a selector/fence interfaces are unmounted, public fresh start remains OFF until atomic U9b (see the U9 spec).
+> Status: current design; U7a/U7b/U7c1/U7c2b delivered in source, including complete Final acceptance and R-M3-6 browser redaction; U7d ordinary completion intake delivered in source; U9 now delivers the atomic reviewed-v2 public fresh-start cutover and old fresh @1/@2 refusal in source (TASK-15624; see the [U9 spec](2026-11-12-sequential-coding-u9.md)). Deployment and execution acceptance remain separate.
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
+> Historical checkpoints below retain their original source-head exclusions. Their public fresh-start OFF/unmounted/venue-only descriptions are superseded by U9; admitted history and original evidence limits remain intact.
 
 THR-336 / ROOT TASK-15165; TASK-15465, linked retry of pre-edit failed TASK-15462.
 Plan rev3 TASK-14461 §U7, R-M2-1, R-M3-3 and R-M3-4 govern. Product authority:
@@ -518,7 +519,7 @@ first visit queue-eligible after evidence COMMIT. Source return and source/threa
 association remain with their original owners; thread sources still refuse and
 no notification feature is added.
 
-**Exact OFF boundary:** both fresh completion precheck and committed-result
+**Historical U7d OFF boundary (superseded by U9):** both fresh completion precheck and committed-result
 consumer call unchanged `check_venue_start`. It refuses the live daemon home
 and every resolved alias, requires an absolute existing non-aliased home outside
 it, and a closed no-follow disposable marker matching this runtime/org/DB inode.

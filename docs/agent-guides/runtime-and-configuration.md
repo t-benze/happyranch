@@ -176,21 +176,25 @@ acceptance. Source/static checks prove no workflow behavior. Python units are
 RETIRED; integration including callback/lifespan/SessionTracker is SKIPPED24342;
 no ad-hoc Product E2E or new test/build merge gate follows.
 
-## Current explicit coding execution and caller return — ROOT13015
+## Historical Explicit coding execution and admitted return — ROOT13015
 
-Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
-coding integration. This current contract supersedes unconditional-disabled
-instructions in the historical K3/R2/revision/source checkpoints below; their
-original observations, failures, approvals and immutable encodings remain history.
+Founder THR320 seq194/196/225 and manager TASK-13015 authorized the original
+settings-pinned coding integration. Its fresh-start composition is superseded
+by U9; this section now describes admitted-run replay/continuation only. Original
+observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
-current canonical settings with Admission Explicit and matching settings/release/
-mapping pins, and the existing current-authority/native admission predicates.
-Missing, malformed or Disabled settings refuse before callback persistence, spend
-or allocation. Disabled remains the default; ordinary routing remains legacy.
-Literal start@1 stays readable but is not a fresh-start path. Admitted start@2
-work retains its original pins across later disable/default changes and still
-requires current selected-role/repository authority, Pause and native proof.
+Fresh old `workflow-coding-start@1`/`@2` starts now refuse with
+`coding_fresh_start_retired`, including with healthy old Explicit settings.
+Fresh Coding uses the reviewed sequential v2 definition/common engine, latest
+Allowed NEW settings, compatible storage, mounted native runtime and current
+authority/eligible roles. Fresh selection and engine prepare-admission both
+check the latest Allowed generation; old Explicit settings cannot substitute.
+Disabled remains the default; ordinary routing remains legacy. See
+`docs/superpowers/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
+
+Authenticated admitted old @1/@2 replay/continuation retains its original pins
+across later disable/default changes and still requires current selected-role/
+repository authority, Pause and native proof. No admitted history is converted.
 
 Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
 this is neither per-org admission nor installed/loaded/operational acceptance.
@@ -3606,7 +3610,11 @@ ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-o
 <!-- /K3b native service attribution: TASK12034 / ROOT10693 step93 -->
 
 
-## Coding settings pins at execution boundaries
+## Historical coding settings pins at execution boundaries
+
+This old-family checkpoint is retained for admitted-run replay only; U9 governs
+fresh Coding (reviewed v2/latest Allowed NEW settings) and refuses fresh old
+@1/@2 with coding_fresh_start_retired. Original pin semantics below remain intact.
 
 The disabled engine consumes canonical DB settings through the common current/
 pinned resolver. Start@2 binds a strict positive settings generation/digest to its
@@ -3858,8 +3866,12 @@ Finish at the printed `/orgs/ORG/workflows/setup` (Workflows → Setup), which e
 repo-free defaults only for stored sequential definitions. First save starts
 Disabled; saving preserves admission. A missing/empty sequential catalog is not
 installed by this historical host command. Sequential install, definition
-registration and admission remain separate authorized operations, with the public
-cutover still pending the atomic U9b follow-on. The inert offline
+registration and admission remain separate authorized operations. Atomic U9b
+source now selects only reviewed Coding v2 for public fresh start and refuses
+old fresh starts after authenticated replay. Latest Allowed new settings, current
+authority and mounted engine/storage are independent requirements; noncatalog V3
+fixtures keep their disposable fence. Admitted runs retain original pins after
+new defaults/Disable. The offline
 `setup_sequential_coding.py` source supplies definition registration and separate
 Allow/Disable, with complete offline/backup exclusions; it does not install or
 attach public starts. Historical Explicit settings never transfer; Settings →

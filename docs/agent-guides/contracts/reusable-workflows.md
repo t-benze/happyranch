@@ -237,8 +237,8 @@ explicitly extract canonical content before compilation; the compiler never
 strips or normalizes saved bytes. Coding release v2 is separate
 bundled data at `runtime/workflows/builtin_templates/coding.v2.json`, explicitly
 included in wheel packaging. U9a adds the package reader/selector below; inert
-U9b setup adds explicit offline registration, with no public fresh-start
-attachment. The three
+U9b setup adds explicit offline registration; atomic U9b now attaches reviewed-v2
+public Coding selection and old-fresh refusal together. The three
 other files live only in documentation as **noncatalog** examples.
 
 Historical `templates.py`, `release_templates.py`, `coding.v1.json` and
@@ -576,14 +576,19 @@ DB inode must match. Refusals are `sequential_venue_marker_absent`,
 publish via an exclusive pending inode and descriptor-relative rename/unlink.
 This is a fresh filesystem observation, not a racing-rename or same-UID fence.
 
-U3e alone will attach the fence outside writers at the completion pre-check and
-again before capture/admission. No callback or continuation consults the fence.
-Marker removal disables the next fresh start; a newer Disabled generation makes
-older settings fail `settings_generation_stale`. The latter may also hold U3c
-continuations because its selected reader checks newest-generation pins; use
-marker removal alone for the V3 mid-run scenario. V3, V3-0b and U3e attachment
-remain UNVERIFIED. See the [U3s record](../../superpowers/specs/2026-11-08-sequential-venue-start.md)
-for the finite matrix, future attachment and teardown contracts, and I1–I4.
+U3e attached this fence outside writers at completion pre-check and before
+capture/admission. Since U9 it applies only to noncatalog V3 fixture fresh
+starts; public Coding uses reviewed-v2 selection instead. No callback or
+continuation consults the marker. Marker removal refuses the next fixture fresh
+start and grants no authority over public Coding.
+Under U9 Option A, authenticated admitted runs retain their original Allowed
+generation/digest/admission snapshot after a newer Allowed or Disabled generation;
+replay and lifecycle validate those original pins and all existing authority/native
+proofs. The old U3c newest-generation continuation veto is superseded. Fresh
+selection and engine prepare-admission retain latest-Allowed checks; older fresh
+pins still fail `settings_generation_stale`. V3/V3-0b execution remains UNVERIFIED.
+See the [historical U3s record](../../superpowers/specs/2026-11-08-sequential-venue-start.md)
+for its original finite matrix, teardown contracts and I1–I4.
 
 ## U3a ownership union and holding attachment
 
@@ -652,6 +657,13 @@ sequential/ownership structure to independent literal DDL/view references using
 the parallel S1 `_candidate_structure` copy, and calls the unchanged selected
 `_native_contract`. A named-table probe selects the document letter/coding flag;
 column metadata comes from that matched structure.
+
+**Historical U3b selected-pin probe:** the newer-generation probe described
+below is superseded for admitted-run validation by [U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624).
+Admission replay and lifecycle (including the cancel fence) validate original
+Allowed pins after newer Allowed or Disabled settings. Only fresh
+`sequential_start._selection` and engine `_prepare_admission` retain the
+latest-generation veto. The original U3b acquisition evidence follows unchanged.
 
 Indexed selected row reads use a parallel `_rows` copy with explicit columns and
 WHERE/args into unchanged `_bounded_rows`, plus the same per-row type loop.
@@ -978,8 +990,13 @@ first visit remains ineligible: `queue_admission_allowed` stays false without th
 positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
 producer and manager skill instructions. Existing U3e-1a cancellation, U3e-2
 caller return, default Disabled admission, repository/mixed U5 successful-output hold,
-Pause backout and stale-settings limits remain controlling. Marker removal
-refuses the next fresh start; it grants no continuation/activation authority.
+Pause backout remains controlling. The stale-settings continuation limit is
+historical and superseded by [U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624):
+admission replay, lifecycle and the cancel fence retain admitted original Allowed
+pins after newer Allowed or Disabled settings; fresh selection and engine
+prepare-admission still require latest Allowed settings. Marker removal refuses
+the next noncatalog fixture fresh start; it grants no continuation/activation
+authority over public Coding.
 Structural fixtures and static lint are not genuine callback/host/launch,
 restart, cancellation, return or two-template acceptance. V3/V3-0b/U5 remainder remain
 UNVERIFIED; no live install/settings/admission/deploy/restart is authorized.
@@ -1574,10 +1591,11 @@ reads return no workflow content or link. Existing Founder task-result visibilit
 supplies authored-content access; agent sessions retain their addressed readers.
 No managed-connector allowlist or credential/permission changes. TS mirrors,
 classification and OpenAPI ship together; retired Vitest is not restored.
-U7b settings CAS and original lookup are implemented in source below. Selected
-task-session preflight/Final transport and agent completion consumption remain implementation. Final success stays Held, public fresh start OFF
-until atomic U9; no human/browser start. ACCESS-1/shared-OS-user/gh limitations,
-original Pause/receipt uncertainty/cancellation and historical families remain.
+U7b settings CAS and original lookup are implemented in source below. The
+U7c/U7d sections below supersede this earlier transport/Final-Held checkpoint.
+U9 mounts public Coding selection and old-fresh refusal atomically; no human/
+browser start. ACCESS-1/shared-OS-user/gh limitations, original Pause/receipt
+uncertainty/cancellation and historical families remain.
 
 
 ## U7b repo-free settings and original save (TASK-15482)
@@ -1632,7 +1650,8 @@ All new copies/walks prepay the SAME original allowance/deadline; refusal escape
 unchanged and the original SQL hook is restored. There is no production caller,
 write, effect or admission. **Final success stays Held.** U7c2b still must supply
 complete output-history acceptance and same-transaction publication/return
-validation before mounting; public fresh start stays OFF until U9.
+validation before mounting (subsequently supplied by U7c2b); U9 now mounts
+public fresh Coding selection together with the old-fresh fence.
 The [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md)
 records the pre-edit split, witness preimage, allowance accounting and evidence
 limits. ACCESS-1/current authority, agent-owned effective access, original Pause,
@@ -1660,7 +1679,8 @@ and unchanged subject/origin only. No daemon GitHub/network observer, credential
 or effective-access claim. Original Pause, receipt uncertainty command=None/no
 reissue, cancellation, U6b2a and Option B UNSETTLED retain their owners.
 
-Public fresh start stays OFF until U9. U7d/U8/U9, native/V3/V5/M4 and genuine
+U9 now mounts public fresh Coding selection and old-fresh refusal atomically.
+Native/V3/V5/M4 and genuine
 access/merge/activation acceptance remain separate. Source diagnostics are
 out-of-repo SYNTHETIC; units/Vitest RETIRED, integration SKIPPED24342 and no E2E.
 See the [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7c2b-complete-final-admission-task-15564).
@@ -1702,48 +1722,52 @@ Exact full replay keeps original bytes/IDs; changed body/key reuse refuses and
 transport loss never authorizes reissue. Cancellation, original limits and positive original host/outer
 settlement before first-visit release remain with their unchanged owners.
 
-Public live fresh start remains OFF: both intake and consumer still require the
-unchanged disposable-venue guard, which refuses the live daemon home/aliases and
-absent/invalid/nonmatching runtime/org/DB-inode marker. U9 owns atomic new public
-attachment/release selection plus old-fresh-start fencing; no flag shortcut or
-historical engine fallback is added. Historical start@1/@2, original return and
+At the historical U7d checkpoint, public live fresh start was OFF behind the
+disposable-venue guard. U9 now mounts reviewed-v2 public Coding selection and
+old fresh @1/@2 refusal atomically. Fresh Coding requires latest Allowed NEW
+settings, compatible storage, mounted native runtime and current authority;
+`check_venue_start` remains only for noncatalog V3 fixtures. A missing marker
+supplies no authority and a marker cannot bypass Coding selection. There is no
+flag shortcut or historical engine fallback. Admitted old @1/@2, original return and
 source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncertainty
 are unchanged; thread sources still refuse, notifications remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.
 See the [current U7 source and evidence limits](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
 
-## U9a unmounted release boundary (TASK-15613)
+## U9 release boundary and atomic cutover (TASK-15624)
 
-`sequential_release.read_coding_release` reads exactly the reviewed 3795-byte
-Coding v2 package resource (one bounded 3796-byte read), verifies source and
-canonical digests, removes exactly one presentation LF and uses the unchanged
-common compiler. `select_coding_release` compares the complete definition/source/
-ABI pin; package absence/corruption and mismatch have categorical refusals with
-no path disclosure, v1/filesystem fallback, registration or storage write.
-`refuse_legacy_fresh_start` supplies an unconditional fresh-only refusal, intended
-after authenticated admitted replay. The selector/fence remain unmounted; the
-package reader now serves the explicit offline setup owner described below.
+`sequential_release` reads only the fixed reviewed bundled Coding v2 resource,
+checks source/canonical bytes and the full compiler/validator/interpreter/
+capability pin, then uses the common engine. There is no v1/filesystem fallback.
+U9b mounts this fresh-only selector together with `coding_fresh_start_retired`
+at old callback intake and consumption/inner writers, after authenticated exact
+admitted replay. Literal old @1/@2 syntax/history, callback/settlement/cancellation
+and LOCAL Final remain with their original family owners.
 
-Both existing admission paths remain unchanged: new sequential starts still
-require `check_venue_start` for V3; old @1 is historical-only and old @2 retains
-its existing Explicit/native gates. U9b must mount the public v2 selector AND
-old fresh-start@2 fence in ONE merge unit, preserving exact admitted replay,
-settlement, cancellation and LOCAL Final under old pins. TASK-15616 supplies
-only the inert first PR: explicit offline registration and
-separate admission below; the disposable publisher remains unchanged and is not
-a live shortcut. No new public start, flag,
-startup installation, old-settings conversion or legacy progression fallback
-is introduced by U9a. U7/U8, original budgets/owners and ordinary routing remain.
+Public Coding fresh start independently requires mounted native runtime and
+compatible storage, current authority/eligible roles, and latest Allowed NEW
+settings. Any Coding identity/version goes through reviewed-v2 selection; a V3
+marker cannot divert it into the fixture lane. Noncatalog V3 fixtures keep the
+original disposable fence and common engine. A missing marker grants no authority.
+No endpoint, flag, startup installation, old-settings conversion or legacy
+progression fallback is added. Only the genuine original ordinary manager source
+callback initiates work; positive original host/outer settlement still releases
+the first visit.
 
-The historical host setup now points directly to Workflows → Setup, with
-repo-free defaults and explicit missing-catalog/install/admission limits. It
-does not establish new availability. Source/resource and extracted-copy
-diagnostics are out-of-repo SYNTHETIC, not native/V3/genuine merge or operator
-acceptance. Exact compatibility, U9b remainder and operator install/backout are
-in the [U9 spec](../../superpowers/specs/2026-11-12-sequential-coding-u9.md) and
-[runbook](../../runbooks/sequential-coding-cutover.md). Python units/Vitest
-RETIRED, integration SKIPPED24342, E2E untriggered; independent review/scoped QA
-and manager merge remain separate.
+Original-pin validation authenticates the immutable definition/settings/operation
+snapshot and all native/history checks without a latest-generation veto. Fresh
+`sequential_start._selection` AND engine `_prepare_admission` retain that veto
+and their original codes. A valid admitted run previously stranded solely by
+newer Allowed/Disabled defaults can continue at its original pins; no saved row
+changes, re-pinning or budget replenishment occurs. Invalid/missing/originally
+Disabled pins still refuse. Existing limits and R-M3-2 per-read allowances remain.
+
+Offline setup/admission below remains separate authority. Source delivery and
+out-of-repo SYNTHETIC diagnostics do not prove live installation, loaded identity,
+native/V3/V5/M4 or operator acceptance. Keep the known installer8192-row/64MiB/5s
+and8192-owner production-history limitation for follow-on work. See the
+[compatibility table/full caller inventory](../../superpowers/specs/2026-11-12-sequential-coding-u9.md)
+and [operator install/backout](../../runbooks/sequential-coding-cutover.md).
 
 ## U9b inert operator registration and admission (TASK-15616)
 
@@ -1782,11 +1806,11 @@ no old Explicit setting and runs nothing at startup. Installation remains the
 existing explicit offline schema path. See the
 [operator procedure](../../runbooks/sequential-coding-cutover.md).
 
-This source unit is inert: public fresh start STILL requires `check_venue_start`
-and old @2 fresh admission is unchanged. The atomic selector/public attachment
-and old-fresh fence remain required together in one later PR. Existing historical
-replay, settlement, cancellation, LOCAL Final, U7/U8, Pause and original budgets
-are unchanged. The pending-U9 message in `setup_coding.py` remains true and stays.
+The original TASK-15616 setup unit was inert. TASK-15624 now supplies the paired
+public Coding selector/old-fresh fence described above and updates host setup
+copy accordingly. Historical replay, settlement, cancellation, LOCAL Final,
+U7/U8, Pause and original budgets retain their owners. Noncatalog V3 fixtures
+still require `check_venue_start`.
 No live setup/admission/deploy/restart, genuine scratch, V3 extension or effect
 recovery is authorized. Source/static and synthetic diagnostics do not establish
 operator/native/V3 acceptance; independent review/QA and manager merge remain.
