@@ -2746,3 +2746,39 @@ still require `check_venue_start`.
 No live setup/admission/deploy/restart, genuine scratch, V3 extension or effect
 recovery is authorized. Source/static and synthetic diagnostics do not establish
 operator/native/V3 acceptance; independent review/QA and manager merge remain.
+
+
+## U4c current selected-Developer repository transport (TASK-15660)
+
+The earlier U4 checkpoint's unavailable public subject-binding adapter is
+superseded by [U4c](../../superpowers/specs/2026-11-12-sequential-coding-u4c.md).
+`happyranch workflows sequential repository-resolve` and `repository-bind`
+require `--org ORG --session-id CURRENT --from-file /absolute/command.json --json`.
+The canonical closed command contains exactly `format` with value
+`workflow-sequential-repository-command@1`, `repo_key`, `base`, and `scope`.
+There is no operation key or response cache. The existing 48KiB command bound
+and repository service limits apply without a new allowance.
+
+Both POSTs reuse U7c1's own-current ordinary task-session route boundary. The
+server derives task/principal and the service derives the selected code-change
+visit; browser/bearer, foreign, ended, recovery and thread sessions are refused.
+Native browser audience is explicitly excluded; no TS mirror applies. Current
+session checks bookend off-loop service execution; unchanged native selected
+checks own each service admission. These are cooperative checks, not a new
+atomic racing-session or filesystem fence.
+
+Resolve is read-only and returns a fresh current-authority receipt on each
+call. It never binds or releases editing. Bind forwards existing behavior:
+exact/narrower requests reuse the original immutable subject; drift returns a
+durable Held, preserving original subject/hold bytes. An identical request
+after origin drift yields `repository_changed`, which takes precedence over
+original success. Broader supported scope yields the existing
+`sequential_repository_subject_changed` Held; subsequent changed requests may
+refuse `sequential_repository_hold_conflict`. No body-conflict policy is added.
+The CLI prints the original service JSON, exits 2 on Held/refusal/uncertainty,
+and never retries automatically. After transport loss the Developer may
+explicitly reissue the same canonical body; current bind semantics still win.
+Only positive subject COMMIT releases editing; failed COMMIT releases nothing.
+U7c1 GET `repository-preflight` remains a read of the already-bound subject.
+No selected-context, observer, schema, credential, permission generation,
+network/effect, historical evidence or live deployment change follows.

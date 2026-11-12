@@ -638,14 +638,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
     from cli.commands.workflow_sequential_transport import cmd_workflow_sequential
-    sequential = workflow_sub.add_parser('sequential', help='Own live selected subject read and LOCAL Final transport')
+    sequential = workflow_sub.add_parser('sequential', help='Own live repository resolve/bind/read and LOCAL Final transport')
     sequential_sub = sequential.add_subparsers(dest='sequential_command', required=True)
-    for form in ('repository-preflight', 'finalize'):
+    for form in ('repository-preflight', 'repository-resolve', 'repository-bind', 'finalize'):
         command = sequential_sub.add_parser(form)
         command.add_argument('--org', required=True)
         command.add_argument('--session-id', required=True)
         command.add_argument('--json', action='store_true', required=True)
-        if form == 'finalize':
+        if form != 'repository-preflight':
             command.add_argument('--from-file', required=True)
         command.set_defaults(func=cmd_workflow_sequential)
     coding = workflow_sub.add_parser('coding', help='Fixed release import and agent-manager role defaults; no coding run allocation')

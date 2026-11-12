@@ -2,7 +2,7 @@
 
 Only the selected live code-change invocation may observe its own configured
 clone. The resolve receipt alone grants no editing. bind returns only after positive
-subject/hold COMMIT; U7 still owns public task-session transport.
+subject/hold COMMIT; U4c mounts the own-current task-session transport.
 """
 from __future__ import annotations
 
@@ -139,7 +139,7 @@ def _observe(org_root: Path, org_slug: str, principal: str, origin: str | None,
 
 
 class SequentialRepositoryPreflight:
-    """Internal worker-thread binding service; public adapter remains unmounted."""
+    """Worker-thread binding service; U4c forwards without changing replay semantics."""
 
     def __init__(self, org: Any) -> None:
         self.org = org

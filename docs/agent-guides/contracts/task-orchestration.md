@@ -808,3 +808,8 @@ source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncerta
 are unchanged; thread sources still refuse, notifications remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.
 See the [current U7 source and evidence limits](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
+
+
+U4c supersedes the earlier unmounted repository adapter checkpoint only: see
+[repository transport](../../superpowers/specs/2026-11-12-sequential-coding-u4c.md).
+The callback and native settlement contracts above remain unchanged.
