@@ -53,7 +53,7 @@ import {
 import { TaskPauseControls } from './TaskPauseControls';
 import { CancelTaskDialog } from './CancelTaskDialog';
 import { RevisitTaskDialog } from './RevisitTaskDialog';
-import { TaskSelectionSummary, latestSessionSelection, type LastRunSelection } from './TaskSelectionSummary';
+import { TaskSelectionSummary, latestSessionSelection, type LastRunSelection, type LastRunState } from './TaskSelectionSummary';
 import { ResolveEscalationDialog } from './ResolveEscalationDialog';
 
 type Translate = (key: MessageKey, params?: MessageParams) => string;
@@ -594,7 +594,8 @@ interface ChainWithBlock {
   joinedFanout: JoinedFanout | null;
   /** DERIVE from the latest `session_start` audit row: what the most recent
    *  session was launched with (THR-356). Null before any session. */
-  lastRun: LastRunSelection | null;
+  /** Undefined when the response carried no audit log to read. */
+  lastRun: LastRunSelection | null | undefined;
   /** Revisit lineage from the envelope: `[this, predecessor, …, original]`.
    *  Length 1 (or empty) means the task was never revisited. Backs the
    *  "Revisit & dependency chain" predecessor timeline. */
@@ -827,14 +828,14 @@ export function TaskStatusCard({
   jobs,
   workStatus,
   blockedOnJobs = null,
-  lastRun = null,
+  lastRun = { status: 'loading' },
 }: {
   task: TaskRecord;
   slug: string | undefined;
   jobs: JobRecord[];
   workStatus: WorkStatusResponse | null;
   blockedOnJobs?: BlockedJobEntry[] | null;
-  lastRun?: LastRunSelection | null;
+  lastRun?: LastRunState;
 }): JSX.Element {
   const { locale, t } = useTranslation();
   const threadId = task.originating_thread_id ?? task.dispatched_from_thread_id;
@@ -1317,7 +1318,13 @@ export function TaskDetailPage(): JSX.Element {
                   jobs={jobsQuery.data?.jobs ?? []}
                   workStatus={chainQuery.data?.workStatus ?? null}
                   blockedOnJobs={chainQuery.data?.blockedOnJobs ?? null}
-                  lastRun={chainQuery.data?.lastRun ?? null}
+                  lastRun={
+                    chainQuery.data
+                      ? (chainQuery.data.lastRun === undefined
+                        ? { status: 'unavailable' }
+                        : { status: 'ready', value: chainQuery.data.lastRun })
+                      : { status: chainQuery.isError ? 'unavailable' : 'loading' }
+                  }
                 />
               </>
             )}

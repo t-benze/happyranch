@@ -75,9 +75,9 @@ export const submitTask = (
     brief: string;
     owner?: string;
     attachments?: TaskAttachmentRef[];
-    /** Optional per-task override; omit to use the assigned agent's default. */
-    model?: string;
-    reasoning_effort?: string;
+    /** Optional per-task override; omitted or null uses the assigned agent's default. */
+    model?: string | null;
+    reasoning_effort?: string | null;
   },
 ): Promise<{ task_id: string; team: string; assigned_agent: string }> =>
   request(`/orgs/${slug}/tasks`, { method: 'POST', body });
@@ -126,6 +126,16 @@ export const resolveEscalation = (
     body: { ...body, rationale: body.rationale ?? '', brief: body.brief ?? '' },
   });
 
+/** The route's real body (`revisit_task` in runtime/daemon/routes/tasks.py). */
+export interface RevisitTaskResponse {
+  new_root_task_id: string;
+  predecessor_root_task_id: string;
+  flagged_task_id: string;
+  /** Task ids from the predecessor root down to the flagged task. */
+  cascade: string[];
+  predecessor_status: string;
+}
+
 export const revisitTask = (
   slug: string,
   taskId: string,
@@ -137,7 +147,7 @@ export const revisitTask = (
     model?: string | null;
     reasoning_effort?: string | null;
   },
-): Promise<TaskRecord> =>
+): Promise<RevisitTaskResponse> =>
   request(`/orgs/${slug}/tasks/${taskId}/revisit`, { method: 'POST', body });
 
 export const cancelTask = (

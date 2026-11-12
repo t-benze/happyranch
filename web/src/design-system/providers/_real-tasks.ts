@@ -44,6 +44,11 @@ function useRealOrgSlug(): string {
 // only refresh path. A predicate on key[0].startsWith('tasks') covers all four
 // families in one shot; 'task' and 'task-recall' don't start with 'tasks', so
 // the detail/recall keys are correctly excluded and invalidated explicitly.
+// 'task-chain-block' is Task detail's second read of the same Task GET (chain,
+// blockers and the audit projection behind "Last start"); it follows the
+// detail key so the two never disagree after a lifecycle change.
+const TASK_DETAIL_KEYS = ['task', 'task-chain-block'];
+
 function invalidateTaskViews(
   qc: ReturnType<typeof useQueryClient>,
   slug: string,
@@ -56,13 +61,15 @@ function invalidateTaskViews(
       return (
         Array.isArray(key) &&
         typeof key[0] === 'string' &&
-        (key[0].startsWith('tasks') || (allDetails && key[0] === 'task')) &&
+        (key[0].startsWith('tasks') || (allDetails && TASK_DETAIL_KEYS.includes(key[0]))) &&
         key[1] === slug
       );
     },
   })];
   if (taskId) {
-    refreshes.push(qc.invalidateQueries({ queryKey: ['task', slug, taskId] }));
+    for (const family of TASK_DETAIL_KEYS) {
+      refreshes.push(qc.invalidateQueries({ queryKey: [family, slug, taskId] }));
+    }
   }
   return Promise.all(refreshes).then(() => undefined);
 }
@@ -333,6 +340,10 @@ function useTaskTailSSE(
         onEvent(ev);
         if (ev.type === 'task_complete' || ev.type === 'task_failed' || ev.type === 'task_blocked') {
           invalidateTaskViews(qc, slug, taskId);
+        } else if (ev.type === 'progress' || ev.type === 'completion_reported') {
+          // Live session beats: a session has started or just reported, so
+          // the session_start audit projection ("Last start") may be stale.
+          qc.invalidateQueries({ queryKey: ['task-chain-block', slug, taskId] });
         }
       },
     }).catch((error: unknown) => {

@@ -2745,7 +2745,7 @@ Eligible predecessor states: failed, cancelled (incl. historical founder-cancell
 Traps:
 
 - `revisit_of_task_id` is a sideways reference, not an ancestor edge. `walk_ancestors` must not follow it.
-- Per-task overrides copied to revisit roots are narrow; explicit human revisit copies only `session_timeout_seconds`.
+- Per-task overrides copied to revisit roots are narrow: explicit human revisit copies `session_timeout_seconds` and, since THR-356, carries the predecessor ROOT's model / reasoning-effort override tuple unless the request changes a field (omitted carries, explicit null clears, per field; the result takes founder provenance when the request names either field). The tuple and the validating agent are the ancestor root's, not the flagged subtask's. Nothing else is copied (for example `dispatched_from_thread_id` is not). See [the THR-356 design](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
 - Auto-resolve to `superseded` must NEVER fire without a recorded successor task_id / thread ruling in the audit citation. The negative case (un-ruled escalation stays blocked) is a tested invariant.
 - On the thread-dispatch path the continuation carries an optional `resolves <task_id>`, honored **only** for a manager-authorized dispatch (the founder supersedes via `revisit`). A worker self-dispatch naming `resolves` is rejected `403 thread_supersede_not_authorized` and never closes the predecessor — the maker-checker boundary, tested both directions.
 

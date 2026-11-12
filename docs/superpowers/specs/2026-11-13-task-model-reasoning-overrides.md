@@ -151,13 +151,23 @@ this contract. No new schema, adapter contract or session_start key is added.
 ## Web surfaces (PR3 shipped)
 
 The Tasks page has a New task dialog and Revisit has model/effort inputs.
-Unset adds no selection key. Revisit prefills the predecessor's override:
-untouched omits the field (carry), an edit sends the value and an emptied or
-explicitly cleared field sends JSON null, per field. Task detail renders the
+Unset adds no selection key. Revisit prefills the override of the predecessor
+ROOT, the task the route restarts: the dialog walks `parent_task_id` from the
+flagged task with the existing Task GET (same 20-hop bound) and uses that root's
+saved override as the baseline and that root's assigned agent for options. The
+request still names the flagged task. Untouched omits the field (carry), an
+edit sends the value and an emptied or explicitly cleared field sends JSON
+null, per field. While the root is loading or unreadable no baseline is shown
+and Revisit cannot be submitted. Task detail renders the
 effective model and effort, the per-field source (founder, manager or agent
 default) and the latest existing `session_start` audit row as what the most
-recent session was launched with. A null effective value is "CLI default"
-while the assigned agent is in the roster and "Unavailable" otherwise.
+recent session was launched with. That projection is refreshed by the same
+invalidation as the detail read, and on live `progress` and
+`completion_reported` task events; the bus has no live `session_start` event.
+Loading and unreadable audit data are shown as such, never as "no session has
+started". A null effective value is "CLI default" only after a successful
+roster read contains the assigned agent and "Unavailable" only after one lacks
+it; a loading or failed roster read says so.
 
 Options and disabling come from the target agent's current executor using
 existing reads only: `/health/prereqs` effort values, runtime profiles and the
