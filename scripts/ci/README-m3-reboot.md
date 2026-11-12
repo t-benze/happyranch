@@ -47,7 +47,10 @@ the real installed daemon bound to loopback, and a userspace peer tailscaled
 with a loopback SOCKS listener. No dependency/order override is added to product
 units. The saved credential is used for an actual paired HTTP 200/body check
 before/after boot and after explicit re-enable. Credentials and enrollment keys
-are never printed or collected. Headscale projections contain only public node
+are never printed or collected. Before the first reboot the installer source and
+credstore link must be absent; systemd may retain the initial runtime credential
+copy until service stop. After reboot the runtime copy must also be absent.
+Headscale projections contain only public node
 key hashes, IDs/IPs/names and consumed preauthkey IDs/usage, never key values.
 
 All state/build/cache/source/logs live under `/var/lib/happyranch-m3`; only logs

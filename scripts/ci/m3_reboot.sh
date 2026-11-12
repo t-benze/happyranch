@@ -46,9 +46,14 @@ start_fixture() {
 enrollment_absent() {
   local path
   for path in /etc/happyranch/enrollment.key /etc/credstore/happyranch-tsnet-enrollment \
-    /run/credentials/happyranch-tsnet-sidecar.service/enrollment-key "$M2_WORK/enrollment.key"; do
+    "$M2_WORK/enrollment.key"; do
     [[ ! -e $path && ! -L $path ]] || fail "enrollment input remains: $path"
   done
+  # systemd retains its initial runtime copy until the enrolling service stops.
+  # After reboot there is no source/credstore from which to create another copy.
+  if [[ ${1:-restarted} == restarted ]]; then
+    absent /run/credentials/happyranch-tsnet-sidecar.service/enrollment-key
+  fi
   test -f /var/lib/happyranch-tsnet-sidecar/credential.consumed
 }
 headscale_snapshot() {
@@ -112,14 +117,15 @@ print('Saved paired credential: real-daemon tailnet teams returned 200 and expec
 PY
 }
 identity_save() {
-  enrollment_absent
+  enrollment_absent initial
   headscale_snapshot nodes | tee "$M2_LOGS/nodes-before.json"
   headscale_snapshot keys > "$M2_LOGS/keys-before.json"
   sha256sum /var/lib/happyranch-tsnet-sidecar/credential.consumed > "$M2_LOGS/marker-before.sha"
 }
 identity_check() {
-  local label=$1
-  enrollment_absent
+  local label=$1 boundary=restarted
+  if [[ $label == pre-reboot ]]; then boundary=initial; fi
+  enrollment_absent "$boundary"
   headscale_snapshot nodes | tee "$M2_LOGS/nodes-$label.json"
   headscale_snapshot keys > "$M2_LOGS/keys-$label.json"
   sha256sum /var/lib/happyranch-tsnet-sidecar/credential.consumed > "$M2_LOGS/marker-$label.sha"

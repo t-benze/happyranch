@@ -99,7 +99,7 @@ def main() -> None:
         command = (
             f"cd {BASE}/repo && mkdir -p {BASE}/logs/{number}; "
             f"M3_AUTHORIZED_VM=yes M3_PASS={number} "
-            f"PATH={BASE}/tools/bin:/usr/local/go/bin:/usr/bin:/bin "
+            f"PATH={BASE}/tools/bin:/usr/local/go/bin:/usr/sbin:/usr/bin:/sbin:/bin "
             f"GOMAXPROCS=2 GOFLAGS=-p=2 bash scripts/ci/m3_reboot.sh {name} "
             f"> {log} 2>&1; rc=$?; tail -60 {log}; exit \"$rc\""
         )
