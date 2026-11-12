@@ -29,11 +29,8 @@ class CloudAssistant:
         self.region = region
 
     def api(self, operation: str, *args: str) -> dict:
-        region_args = ["--region", self.region]
-        if operation != "RebootInstance":
-            region_args += ["--RegionId", self.region]
         result = subprocess.run(
-            ["aliyun", "ecs", operation, *region_args, *args],
+            ["aliyun", "ecs", operation, "--RegionId", self.region, *args],
             capture_output=True, text=True, timeout=45, check=False,
         )
         if result.returncode:
@@ -57,14 +54,18 @@ class CloudAssistant:
                     if row.get("InvocationStatus") != "Success":
                         return int(row.get("ExitCode") or 1), output
                     return int(row.get("ExitCode", 0)), output
-            time.sleep(3)
+            time.sleep(1)
         raise RuntimeError(f"Cloud Assistant invocation {invocation} did not settle")
 
     def reboot(self, before: str) -> str:
-        self.api("RebootInstance", "--InstanceId", self.instance)
+        rc, _ = self.run(
+            "systemd-run --unit=happyranch-m3-reboot --on-active=5 /usr/bin/systemctl reboot", timeout=15
+        )
+        if rc:
+            raise RuntimeError("guest reboot scheduling failed")
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
-            time.sleep(10)
+            time.sleep(5)
             try:
                 rc, output = self.run("cat /proc/sys/kernel/random/boot_id", timeout=15)
                 after = output.strip()

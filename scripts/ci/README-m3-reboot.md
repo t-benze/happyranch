@@ -20,7 +20,9 @@ python3 scripts/ci/m3_reboot_aliyun.py \
 The runner installs build prerequisites (apt Go with automatic module toolchain
 selection, system Python venv support, uv in a test venv), clones public source,
 and checks out the exact SHA without credentials. It runs **two complete clean
-passes**, rebooting twice per pass through `ecs RebootInstance`. A changed
+passes**, rebooting twice per pass through a delayed test-scoped
+`systemd-run --on-active=5 /usr/bin/systemctl reboot` via Cloud Assistant
+(no `ecs:RebootInstance` RAM permission required). A changed
 `/proc/sys/kernel/random/boot_id` and a successful Cloud Assistant observation
 prove return from each reboot; reachability polling never reissues the reboot.
 The VM driver can also be invoked phase by phase from the checked-out repo:
