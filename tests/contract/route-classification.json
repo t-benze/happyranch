@@ -165,7 +165,6 @@
     "POST /api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions",
     "GET /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}",
     "GET /api/v1/orgs/{slug}/tasks/{task_id}/retry-verification",
-    "GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection",
     "GET /api/v1/orgs/{slug}/settings/coding",
     "GET /api/v1/orgs/{slug}/settings/coding/options",
     "PUT /api/v1/orgs/{slug}/settings/coding",

@@ -75,32 +75,6 @@ class RevisionCollection(ClosedRecord):
     required_action: str | None
 
 
-class OwnerReviewOriginal(ClosedRecord):
-    handoff_id: Token
-    human_request_id: Token | None
-    collection: RevisionCollection | None
-
-
-class OwnerReviewSuccessor(ClosedRecord):
-    revision_operation_id: Token
-    human_request_id: Token | None
-
-
-class OwnerReviewReturn(ClosedRecord):
-    eligible: StrictBool
-    reason: str | None
-    required_action: str | None
-
-
-class OwnerReviewSelection(ClosedRecord):
-    format: Literal['workflow-owner-review-selection@1']
-    activation_id: Token
-    instance_id: Token
-    original: OwnerReviewOriginal | None
-    successor: OwnerReviewSuccessor | None
-    return_: OwnerReviewReturn = Field(alias='return')
-
-
 class DocumentRevisionCurrent(ClosedRecord):
     state: Literal['revision_author_queued', 'revision_author_running', 'revision_staged',
         'revision_reviewing', 'revision_complete', 'revision_failed', 'revision_cancelled', 'revision_held']

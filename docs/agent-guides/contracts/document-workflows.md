@@ -5,24 +5,13 @@
 > extends an earlier one, the later section controls; sections marked
 > "Historical" are retained evidence, not current instructions.
 
-**Mounted generic owner review — THR139465/480/493/506, ROOT TASK10693.**
-The normal `/orgs/:slug/reviews` list and `/orgs/:slug/reviews/:activationId`
-detail use owner-selected discovery and the existing recipient-safe reads.
+**Document review — THR139465/480/493/506, ROOT TASK10693.**
 Template pins supply output/role/outcome labels; there are no template-name
-branches. Exact selected identity, canonical base64, strict UTF8 and SHA256 are
-validated before rendering raw text. Current r1/r2 and read-only History remain
-separate; an individual recorded response does not establish joined approval.
+branches. Current r1/r2 and read-only History remain separate; an individual
+recorded response does not establish joined approval.
 Only current collection validity with approved_use establishes approved input.
 Explicit Request changes or Sign off requires exact nonempty operator findings
-and a matching @1/@2/@3 command. A synchronous latch precedes hashing; one
-closed key/body is frozen in sessionStorage before POST. Ambiguous sends lock
-editing/opposite effects and offer only explicit same-command replay after a
-fresh selected read, including reload. No effect/poll/locale change auto-sends.
-Current read/refetch errors gate effects; access refusal hides selected bytes,
-drafts and receipts and evicts sensitive selected cache/envelopes. Query identity
-includes org/activation/lane/object; outgoing reads abort, panes detach, and late
-hash/mutation results cannot affect a new selection. Locale changes preserve
-mounted drafts/focus/selection without network work.
+and a matching @1/@2/@3 command.
 Return to author is a separate confirmation following full server readiness;
 POST independently rechecks the original r1 CAS and authority. Genuine successor
 and new author task IDs/status come from the server, with no optimistic r2 bytes
@@ -33,16 +22,9 @@ held/noncurrent collection permits only explicit identical acknowledgement
 recovery; it never permits a new command. Current graph/status comes from the
 selected successor independently of retained r1. Pending author completion does
 not mean r2 reviews closed; unsupported further revision appears only for a
-current objected r2 graph. Selected-read start/refusal or snapshot change
-invalidates the admission token synchronously; the writer rechecks that token
-and selected identity immediately after asynchronous command validation.
-No raw proof editor, peer cancellation, author staging, direct submission,
-r3/reassignment, execution/merge or digest-derived access controls are mounted.
-This frontend source requires the compatible discovery/revision readers; old
-daemon errors remain visible dependencies. No backend/native/schema/auth/shared
-transport/dependency/hook changes follow. Bounded intercepted frontend rendering
-and assertions establish UI behavior only; independent final-head review/scoped
-QA and the assigned public synthetic two-template journey remain separate gates.
+current objected r2 graph.
+Independent final-head review/scoped QA and the assigned public synthetic
+two-template journey remain separate gates.
 Real Founder Request changes AND Sign off and genuine agent judgment remain
 UNOBSERVED/root-owned. Python units RETIRED; integration/callback SKIPPED24342;
 broad/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Required automated
@@ -634,7 +616,7 @@ sources and isolation fences remain retained; execution is not a merge check.
 Manager-owned bounded two-template public smoke must precede Founder invitation.
 No live migration/enable/assignment/deploy/restart follows.
 
-- **Owner review discovery (THR139 seq506).** Current owner GET `/workflows/activations/{activation_id}/review-selection?proof_kind=owner-human` returns closed `workflow-owner-review-selection@1` navigation IDs, read-only r1 collection and complete advisory return readiness. Relational owner/grants precede decoding and renew at the coherent read boundary; no domain/lease/event/queue/join writes. I and separately admitted selected readers remain required. POST independently retains atomic replay/CAS/current checks. Old daemon discovery is unavailable with dependent actions disabled. Native policy unchanged; mounted UI and behavioral acceptance remain separate. See the four maintained guides and product-design-u0 specification.
+- **Owner review return and selected readers (THR139 seq506).** I and separately admitted selected readers remain required. POST independently retains atomic replay/CAS/current checks. Native policy is unchanged; behavioral acceptance remains separate. See the four maintained guides and product-design-u0 specification.
 
 ## Unattached sequential storage reference (THR336 U2a)
 

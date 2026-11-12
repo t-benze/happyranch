@@ -19,7 +19,7 @@ only the six merged U7a GETs through the existing provider hooks.
 ## Routes and views
 
 All routes are under `/orgs/:slug`; all are read-only except Setup (U8b). The Sidebar adds
-**Workflows** beside Reviews; the AppBar title follows it.
+**Workflows**; the AppBar title follows it.
 
 | Route | View |
 | --- | --- |
@@ -30,8 +30,7 @@ All routes are under `/orgs/:slug`; all are read-only except Setup (U8b). The Si
 | `workflows/runs/:runId` | Run detail: admitted-version link, settings generation, counters, source/carrier task links, run state, request/inputs, fixed assignments, process, recorded assessments and finalization |
 
 A run's definition link always opens `definitions/{run.definition_id}`, its
-admitted version. The independent document `/reviews` pages and all fixed-history
-readers are unchanged.
+admitted version. All fixed-history readers are unchanged.
 
 ## Recorded facts only
 

@@ -12,7 +12,4 @@ export const mockWorkflowsApi: WorkflowsApi = {
   useSequentialDefinitions: () => empty(), useSequentialDefinition: () => empty(),
   useSequentialSettings: () => empty(), useSequentialRuns: () => empty(),
   useSequentialRun: () => empty(), useTaskSequentialWorkflow: () => empty(),
-  useActivations: () => empty([]), useReviewDetail: () => ({ ...empty(), captureAdmission: () => () => false }),
-  useHumanResponse: () => ({ isPending: false, mutateAsync: async () => { throw new Error('workflow_display_only'); } }),
-  useOwnerReturn: () => ({ isPending: false, mutateAsync: async () => { throw new Error('workflow_display_only'); } }),
 };

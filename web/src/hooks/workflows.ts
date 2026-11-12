@@ -1,8 +1,4 @@
 import { useData } from '@/design-system/providers/DataContext';
-export const useWorkflowActivations: ReturnType<typeof useData>['workflows']['useActivations'] = () => useData().workflows.useActivations();
-export const useWorkflowReviewDetail: ReturnType<typeof useData>['workflows']['useReviewDetail'] = (id, history) => useData().workflows.useReviewDetail(id, history);
-export const useHumanReviewResponse: ReturnType<typeof useData>['workflows']['useHumanResponse'] = () => useData().workflows.useHumanResponse();
-export const useOwnerReviewReturn: ReturnType<typeof useData>['workflows']['useOwnerReturn'] = () => useData().workflows.useOwnerReturn();
 export const useSequentialDefinitions: ReturnType<typeof useData>['workflows']['useSequentialDefinitions'] = () => useData().workflows.useSequentialDefinitions();
 export const useSequentialDefinition: ReturnType<typeof useData>['workflows']['useSequentialDefinition'] = (id) => useData().workflows.useSequentialDefinition(id);
 export const useSequentialSettings: ReturnType<typeof useData>['workflows']['useSequentialSettings'] = (id) => useData().workflows.useSequentialSettings(id);

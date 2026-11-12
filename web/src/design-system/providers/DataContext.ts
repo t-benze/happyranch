@@ -20,8 +20,6 @@
  */
 import { createContext, useContext } from 'react';
 import type * as Sequential from '@/lib/api/workflowSequential';
-import type { ReviewDetail } from '@/lib/workflowReviewSelection';
-import type { HumanReviewCommand, HumanReviewReceipt, DocumentRevisionCommand, DocumentRevisionReceipt, WorkflowActivationReceipt } from '@/lib/api/types';
 import type {
   HealthResponse,
   OrgsListResponse,
@@ -750,10 +748,6 @@ export interface WorkflowsApi {
   useSequentialRuns: () => WorkflowQuery<Sequential.SequentialRuns>;
   useSequentialRun: (id: string) => WorkflowQuery<Sequential.SequentialRunDetail>;
   useTaskSequentialWorkflow: (id: string) => WorkflowQuery<Sequential.SequentialTaskWorkflow>;
-  useActivations: () => WorkflowQuery<WorkflowActivationReceipt[]>;
-  useReviewDetail: (activationId: string, history: boolean) => WorkflowQuery<ReviewDetail> & { captureAdmission: (detail: ReviewDetail) => () => boolean };
-  useHumanResponse: () => MutationLike<{ slug: string; activationId: string; body: HumanReviewCommand }, HumanReviewReceipt>;
-  useOwnerReturn: () => MutationLike<{ slug: string; activationId: string; body: DocumentRevisionCommand }, DocumentRevisionReceipt>;
 }
 
 export interface DataContextValue {

@@ -1185,24 +1185,13 @@ Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
 
 
 
-**Mounted generic owner review — THR139465/480/493/506, ROOT TASK10693.**
-The normal `/orgs/:slug/reviews` list and `/orgs/:slug/reviews/:activationId`
-detail use owner-selected discovery and the existing recipient-safe reads.
+**Document review — THR139465/480/493/506, ROOT TASK10693.**
 Template pins supply output/role/outcome labels; there are no template-name
-branches. Exact selected identity, canonical base64, strict UTF8 and SHA256 are
-validated before rendering raw text. Current r1/r2 and read-only History remain
-separate; an individual recorded response does not establish joined approval.
+branches. Current r1/r2 and read-only History remain separate; an individual
+recorded response does not establish joined approval.
 Only current collection validity with approved_use establishes approved input.
 Explicit Request changes or Sign off requires exact nonempty operator findings
-and a matching @1/@2/@3 command. A synchronous latch precedes hashing; one
-closed key/body is frozen in sessionStorage before POST. Ambiguous sends lock
-editing/opposite effects and offer only explicit same-command replay after a
-fresh selected read, including reload. No effect/poll/locale change auto-sends.
-Current read/refetch errors gate effects; access refusal hides selected bytes,
-drafts and receipts and evicts sensitive selected cache/envelopes. Query identity
-includes org/activation/lane/object; outgoing reads abort, panes detach, and late
-hash/mutation results cannot affect a new selection. Locale changes preserve
-mounted drafts/focus/selection without network work.
+and a matching @1/@2/@3 command.
 Return to author is a separate confirmation following full server readiness;
 POST independently rechecks the original r1 CAS and authority. Genuine successor
 and new author task IDs/status come from the server, with no optimistic r2 bytes
@@ -1213,16 +1202,9 @@ held/noncurrent collection permits only explicit identical acknowledgement
 recovery; it never permits a new command. Current graph/status comes from the
 selected successor independently of retained r1. Pending author completion does
 not mean r2 reviews closed; unsupported further revision appears only for a
-current objected r2 graph. Selected-read start/refusal or snapshot change
-invalidates the admission token synchronously; the writer rechecks that token
-and selected identity immediately after asynchronous command validation.
-No raw proof editor, peer cancellation, author staging, direct submission,
-r3/reassignment, execution/merge or digest-derived access controls are mounted.
-This frontend source requires the compatible discovery/revision readers; old
-daemon errors remain visible dependencies. No backend/native/schema/auth/shared
-transport/dependency/hook changes follow. Bounded intercepted frontend rendering
-and assertions establish UI behavior only; independent final-head review/scoped
-QA and the assigned public synthetic two-template journey remain separate gates.
+current objected r2 graph.
+Independent final-head review/scoped QA and the assigned public synthetic
+two-template journey remain separate gates.
 Real Founder Request changes AND Sign off and genuine agent judgment remain
 UNOBSERVED/root-owned. Python units RETIRED; integration/callback SKIPPED24342;
 broad/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Required automated
@@ -3434,43 +3416,23 @@ existing nonterminal13286 escalation/continue prerequisite. Positive/dependent
 proof NOT RUN/PROOF NOT RUN; integration SKIPPED24342/211270–271, units RETIRED.
 
 
-### Current owner review discovery (THR139 seq506)
+### Owner review return and selected readers (THR139 seq506)
 
-GET `/api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection?proof_kind=owner-human`
-returns closed `workflow-owner-review-selection@1`: activation/instance IDs, nullable
-original `{handoff_id,human_request_id,collection}`, nullable successor
-`{revision_operation_id,human_request_id}`, and `return` `{eligible,reason,required_action}`.
 The collection has the existing closed RevisionCollection fields, including current
-validity and approved-use status. No H yet gives null original; no authenticated graph
-gives null request/collection; a template with no human slot has null human ID.
-A genuine successor is discoverable immediately at admission, before r2 staging.
+validity and approved-use status.
 IDs navigate independently authenticated readers and grant no access or approval.
-
-Relational same-org/current activation/current owner and active read grants precede
-private proof decoding, repeat after each awaited lock and at the coherent read
-boundary. Complete H/I, pinned contract and template-selected human request closure
-validate before disclosure. No peer IDs/findings/inputs, bytes, sessions or proofs
-are returned. The GET reuses READ-ONLY `current_collection`; no domain DB, authority
-lease, event, queue or join writes. It never collects, discovers or fulfills work.
 
 Return readiness reuses the full read-only predicate consumed inside POST's atomic
 writer: supported @3/@4 document contract/actions and I, full current authority,
 a genuine successful Boolean-quiescent r1 source, all peers closed with an objection
 and no join, no successor, same author and available capacity. A needs_revision
-label alone is insufficient. GET advises only; POST retains replay/CAS/current
-revalidation and allocation ordering. Access loss refuses the whole read; visible
-effect holds return eligible:false with existing reason/action. Missing proof403,
-invisible/wrong-owner404, malformed/duplicate/unknown/blank selectors, IDs or any
-nonempty GET body422, missing compatible H/I409 with operator remedy, storage500
-category-only. No migration is performed.
+label alone is insufficient. POST retains replay/CAS/current
+revalidation and allocation ordering.
 
-The typed `getOwnerReviewSelection` client sends only owner-human. Older daemons
-report discovery unavailable; dependent actions stay disabled without fallback
-access or guessed IDs. Native route classification/assertion parity preserves the
-existing SurfaceAllowList and credential/transport policy; source inspection is
-not native execution evidence. Mounted UI is a separate serial unit. Python units
-remain retired, integration SKIPPED24342, broad behavior/proof UNEXECUTED and
-FOUNDER-WAIVED139429/430; lint/static evidence is not behavioral acceptance.
+Python units remain retired, integration SKIPPED24342, broad behavior/proof
+UNEXECUTED and FOUNDER-WAIVED139429/430; lint/static evidence is not behavioral
+acceptance.
+
 
 Naming namespace capture includes active/pending executable agent managers and
 workers. Mainline typed human Founder managers have no agent definition and are
