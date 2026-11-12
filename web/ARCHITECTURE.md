@@ -49,7 +49,9 @@ is the pure recorded-facts model (definition parsing, exhaustion predicate,
 per-node visits); `shared/workflows/SequentialRunPresentation` and
 `SequentialTaskBanner` are shared with Task detail so run detail and banner render
 the same facts. Reads go through the existing `DataContext.workflows` sequential
-hooks; a refused read blanks its own cache entry. No configuration or run control
+hooks; a refused read aborts, blanks and fences every sequential projection of the
+org until a fresh read succeeds, and a network refresh failure keeps the last-loaded
+data with `refreshFailed` (PRD F6). No configuration or run control
 is mounted. See `docs/superpowers/specs/2026-11-12-sequential-coding-u8.md`.
 
 ## Layers (strict)

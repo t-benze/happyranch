@@ -89,7 +89,9 @@ export function RunHeadlineText({ facts, roleOf, taskHref }: {
     case 'completed': return <span>{t('seqwf.headline.completed')}</span>;
     case 'failed': return <span>{t('seqwf.headline.failed')}</span>;
     case 'cancelled': return <span>{t('seqwf.headline.cancelled')}</span>;
-    case 'exhausted': return <span>{render('seqwf.headline.exhausted', { role: roleOf(h.target.id), visit: visitRef(h.visit) })}</span>;
+    case 'exhausted': return <span>{h.limit === 'revision'
+      ? render('seqwf.headline.exhausted', { role: roleOf(h.target.id), visit: visitRef(h.visit) })
+      : render('seqwf.headline.ceiling', { role: roleOf(h.target.id), visit: visitRef(h.visit), limit: t(h.limit === 'visits' ? 'seqwf.limit.visits' : 'seqwf.limit.events') })}</span>;
     case 'held': return <span>{h.cause ? render('seqwf.headline.heldCause', { cause: label(h.cause) }) : t('seqwf.headline.heldUndisclosed')}
       {h.visit && <> {visitRef(h.visit)}</>}</span>;
     default: return h.visit

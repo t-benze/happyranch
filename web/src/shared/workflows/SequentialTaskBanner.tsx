@@ -9,7 +9,6 @@ import { Button } from '@/design-system/primitives/Button';
 import { useTranslation } from '@/hooks/i18n';
 import { useSequentialDefinition, useSequentialRun, useTaskSequentialWorkflow } from '@/hooks/workflows';
 import type { MessageKey } from '@/lib/i18n';
-import type { SequentialRun } from '@/lib/workflowSequentialView';
 import { deriveRun, parseDefinition } from '@/lib/workflowSequentialView';
 import { RunHeadlineText, RunStateBadge } from './SequentialRunPresentation';
 
@@ -28,9 +27,9 @@ export function SequentialTaskBanner({ slug, taskId }: { slug: string; taskId: s
   if (link.isError) return <BannerShell>{isAccessRefusal(link.error) ? <Denied /> :
     <div className="flex flex-wrap items-center gap-2" role="alert"><span>{t('seqwf.banner.error')}</span>
       <Button size="sm" variant="outline" onClick={() => void link.refetch()}>{t('workflows.refresh')}</Button></div>}</BannerShell>;
-  const run = link.data?.run;
-  if (!run) return null;
-  return <LinkedRun key={JSON.stringify([slug, taskId, run.id])} slug={slug} taskId={taskId} run={run} rel={REL[run.tasks.find(x => x.task_id === taskId)?.relationship ?? ''] ?? null} />;
+  const runId = link.data?.run?.id;
+  if (!runId) return null;
+  return <LinkedRun key={JSON.stringify([slug, taskId, runId])} slug={slug} taskId={taskId} runId={runId} linkStale={!!link.refreshFailed} refreshLink={link.refetch} />;
 }
 
 function BannerShell({ children }: { children: ReactNode }): JSX.Element {
@@ -42,16 +41,33 @@ function Denied(): JSX.Element {
   return <p role="status">{t('seqwf.banner.denied')}</p>;
 }
 
-function LinkedRun({ slug, taskId, run, rel }: { slug: string; taskId: string; run: SequentialRun; rel: MessageKey | null }): JSX.Element {
+/**
+ * The task-link read only selects the run id. State badge, relationship, version
+ * link and headline all come from ONE accepted run-detail snapshot, so they can
+ * never disagree; nothing run-specific is shown before that snapshot exists.
+ */
+function LinkedRun({ slug, taskId, runId, linkStale, refreshLink }: { slug: string; taskId: string; runId: string; linkStale: boolean; refreshLink: () => Promise<unknown> }): JSX.Element {
   const { t, render } = useTranslation();
-  const detail = useSequentialRun(run.id);
-  const def = useSequentialDefinition(run.definition_id);
+  const detail = useSequentialRun(runId);
+  const accepted = detail.data && detail.data.run.id === runId ? detail.data : null;
+  const def = useSequentialDefinition(accepted?.run.definition_id ?? '');
   if (detail.isError && isAccessRefusal(detail.error)) return <BannerShell><Denied /></BannerShell>;
+  if (!accepted) {
+    return <BannerShell>{detail.isError
+      ? <div className="flex flex-wrap items-center gap-2" role="alert"><span>{t('seqwf.banner.detailError')}</span>
+        <Button size="sm" variant="outline" onClick={() => void detail.refetch()}>{t('workflows.refresh')}</Button></div>
+      : <p role="status">{t('seqwf.loading')}</p>}</BannerShell>;
+  }
+  const run = accepted.run;
   const parsed = def.data ? parseDefinition(def.data.definition_json) : null;
-  const facts = detail.data && detail.data.run.id === run.id ? deriveRun(detail.data, parsed) : null;
+  const facts = deriveRun(accepted, parsed);
   const roleOf = (node: string) => parsed?.nodes.find(n => n.id === node)?.role ?? node;
+  const rel = REL[run.tasks.find(x => x.task_id === taskId)?.relationship ?? ''] ?? null;
   const base = `/orgs/${slug}`;
   return <BannerShell>
+    {(detail.refreshFailed || linkStale) && <div role="status" className="bg-attention-soft mb-2 flex flex-wrap items-center gap-2 rounded-md px-2 py-1">
+      <span>{t('seqwf.stale')}</span>
+      <Button size="sm" variant="outline" onClick={() => { void refreshLink(); void detail.refetch(); }}>{t('workflows.refresh')}</Button></div>}
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <span className="text-text-muted">{t('seqwf.banner.runState')}</span>
       <RunStateBadge state={run.state} />
@@ -63,8 +79,7 @@ function LinkedRun({ slug, taskId, run, rel }: { slug: string; taskId: string; r
         {t('seqwf.versionLink', { identity: run.definition.identity, version: run.definition.version })}
       </Link>
     </div>
-    <p className="mt-1">{facts ? <RunHeadlineText facts={facts} roleOf={roleOf} taskHref={id => `${base}/tasks/${encodeURIComponent(id)}`} />
-      : detail.isError ? t('seqwf.banner.detailError') : t('seqwf.loading')}</p>
+    <p className="mt-1"><RunHeadlineText facts={facts} roleOf={roleOf} taskHref={id => `${base}/tasks/${encodeURIComponent(id)}`} /></p>
     <p className="text-text-muted mt-1 text-xs">{t('seqwf.banner.independent')}</p>
   </BannerShell>;
 }

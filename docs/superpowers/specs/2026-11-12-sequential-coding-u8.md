@@ -1,6 +1,6 @@
 # Sequential Coding U8: common Workflows journey and task integration
 
-> Status: current design; U8a (read/journey half) delivered in source by TASK-15582. U8b (Setup editing/Save custody UI and the Settings → Coding redirect with original-save recovery) and U9 (public selector/fresh-start cutover) remain. Public fresh start stays OFF.
+> Status: current design; U8a (read/journey half) delivered in source by TASK-15582 and corrected by TASK-15587 (TASK-15583 findings: access fencing, single-snapshot banner, R-M3-7 exhaustion, PRD F6 freshness). U8b (Setup editing/Save custody UI and the Settings → Coding redirect with original-save recovery) and U9 (public selector/fresh-start cutover) remain. Public fresh start stays OFF.
 > Current Source: docs/agent-guides/web-and-cli.md § U8a; web/ARCHITECTURE.md § Sequential Workflows (U8a)
 
 THR-336 / ROOT TASK-15165. Plan rev3 TASK-14461 §U8 as re-scoped by R-M2-1
@@ -43,15 +43,26 @@ Unknown state/outcome/cause tokens are shown verbatim, never reinterpreted.
 
 The three locked design corrections:
 
-1. **Exhaustion.** A held run whose held, selected visit recorded an outcome that
-   the admitted definition maps to a counter-consuming return, with no later
-   visit and counters at the effective limit (the lower of definition and run
-   original limits — the sequential reducer's own predicate), is shown as
-   "revision allowance exhausted" and its return target says **No further
-   {role} task was created**. A successor is described as created only when its
-   visit/task exists. The transition reason itself is not in the U7 projection;
-   any other held run without an observation hold says the cause is not included
-   in this view.
+1. **Exhaustion.** Derived from the R-M3-7 RunDetail facts `effective_limits`
+   (L: the reducer's definition ∩ original settings ∩ admitted StartCommand
+   lower-limits intersection) and `reducer_counters` (R: the last transition's
+   `after`), never from the settings-snapshot `limits` or the database event
+   count. A held run's held, selected visit V with a recorded outcome that the
+   admitted definition maps to a `next` edge, no later visit and no observation
+   hold is exhausted when the reducer's limit check holds on its pre-transition
+   counters (R with one event fewer): `visits ≥ L.max_visits`, `events+1 ≥
+   L.max_events`, or for a counter-consuming return `returns ≥ L.content_returns`
+   or `epoch ≥ L.max_content_epochs`; or R was already outside L. A return whose
+   epoch advanced (R.epoch > V.epoch) was a required-input hold instead. A return
+   ceiling shows "revision allowance exhausted"; a visit/event ceiling names that
+   limit. The target node says **No further {role} task was created** and the
+   state section shows the effective allowance with the token `limit_exhausted`
+   labelled as derived, because `Decision.reason` is not stored. The reducer
+   evaluates settlement/output-evidence holds before limits with the same counter
+   shape, so such a hold coinciding with a satisfied limit check cannot be told
+   apart (stated limitation). A successor is described as created only when its
+   visit/task exists. Any other held run without an observation hold says the
+   cause is not included in this view.
 2. **Assessments.** Every visit keeps its recorded outcome and findings: an
    approval stays Approved for its content revision, QA Revise stays Revise with
    its findings and is never relabelled PASS. "Recorded assessments and
@@ -64,25 +75,33 @@ The three locked design corrections:
    the setting has no browser control, so no value or link is shown and it is
    never the source of the assignment.
 
-The task-detail banner (`shared/workflows/SequentialTaskBanner`) reads the task
-link and the same run detail/definition, and renders the same headline through
-the shared presentation, separately from the task's own status.
+The task-detail banner (`shared/workflows/SequentialTaskBanner`) uses the task
+link only to select the run id; its state badge, relationship, version link and
+headline all render from ONE accepted run-detail snapshot through the shared
+presentation, separately from the task's own status. Before that snapshot is
+accepted it shows a single loading line.
 
 ## Access, view-only and late responses
 
 U7 GETs expose no configure permission and U8a renders no configuration or run
 control (no Start, Retry, Reassign, Merge again, Cancel, repository selector).
-Every permitted view is therefore view-only and says so. A 403/404 refusal shows
-a fixed denied message on the page or banner and discloses no run id, task
-link, request, output or finding; the refused query's cache entry is blanked
-before the error is published. Query keys include org and selection, pages are
-keyed by org/selection, reads abort and are evicted on unmount, and data is hidden
-while refreshing or after an error (unchanged U7 semantics), so a late response
-for another org/selection cannot render.
+Every permitted view is therefore view-only and says so. A 403/404 refusal on
+ANY sequential read (AC11) bumps a per-QueryClient, per-org admission generation,
+aborts every in-flight sequential read of that org, and blanks every cached
+`workflow-sequential` entry of the org — including the task-link read that holds
+the run, definition pin and source/carrier/visit links. Sibling entries carry a
+fixed access-fence refusal; a read started under an older generation throws
+instead of caching its late success. Nothing is shown again until a read started
+after the refusal succeeds (Refresh, remount or focus refetch). The page or banner
+shows the fixed denied message and discloses no run id, task link, request,
+output or finding. Query keys include org and selection; reads abort and are
+evicted on unmount, so a late response for another org/selection cannot render.
 
-PRD F6 asks a refresh failure to keep the last-loaded state with a freshness
-warning; the merged U7 hook hides data on refresh/error. U8a keeps the U7
-semantics and records this as an open manager decision.
+PRD v1.0.4 F6: a network refresh failure (a transport failure with no HTTP
+status) keeps the last state loaded in this mount visible with a freshness
+warning and a Refresh button; background refetches no longer hide loaded data.
+Other HTTP failures keep the error view. The warning is visibly distinct from the
+denied message, and a refusal still evicts and gates strictly as above.
 
 ## Copy
 

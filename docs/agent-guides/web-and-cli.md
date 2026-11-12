@@ -4823,8 +4823,12 @@ and `workflows/runs/:runId` render only the U7a GETs, read-only: no start, retry
 reassign, merge, cancel, configuration or repository control. Run detail links its
 exact admitted version, real task links and "Task not created yet"; completed runs
 have no active node. The task-detail banner shows the linked run's own state
-separately from task status. Refusal renders a fixed denied note with no run/task/
-evidence and blanks the refused cache entry. The three locked PRD design corrections
+separately from task status, from one accepted run-detail snapshot. A 403/404 on
+any sequential read renders a fixed denied note with no run/task/evidence, aborts and
+blanks every sequential projection of the org and fences late successes until a fresh
+read succeeds; a network refresh failure keeps the last-loaded view with a freshness
+warning (PRD F6). Exhaustion uses RunDetail `effective_limits`/`reducer_counters`.
+The three locked PRD design corrections
 (exhaustion, preserved approval/Revise with separate pending rechecks, selected
 reviewer vs legacy reviewer list) and the bilingual copy are specified in the
 [U8 specification](../superpowers/specs/2026-11-12-sequential-coding-u8.md).

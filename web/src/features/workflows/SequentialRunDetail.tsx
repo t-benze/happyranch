@@ -46,8 +46,10 @@ function Loaded({ slug, detail }: { slug: string; detail: Detail }): JSX.Element
       <h2 id="seqwf-state" className="text-h2 text-text-primary">{t('seqwf.currentState')}</h2>
       <p className="mt-2"><RunHeadlineText facts={facts} roleOf={roleOf} taskHref={id => `${base}/tasks/${encodeURIComponent(id)}`} /></p>
       {facts.headline.kind === 'exhausted' && <p className="mt-2">{t('seqwf.allowance', {
-        returns: run.counters.content_returns, returnsLimit: Math.min(detail.limits.content_returns, def?.limits.content_returns ?? Infinity),
-        epoch: run.counters.epoch, epochLimit: Math.min(detail.limits.max_content_epochs, def?.limits.max_content_epochs ?? Infinity),
+        returns: detail.reducer_counters.content_returns, returnsLimit: detail.effective_limits.content_returns,
+        epoch: detail.reducer_counters.epoch, epochLimit: detail.effective_limits.max_content_epochs,
+        visits: detail.reducer_counters.visits, visitsLimit: detail.effective_limits.max_visits,
+        events: detail.reducer_counters.events, eventsLimit: detail.effective_limits.max_events,
       })}</p>}
       {facts.headline.kind === 'exhausted' && <p className="text-text-muted mt-1">{t('seqwf.exhaustedAction')}</p>}
       {detail.holds.length > 0 && <ul className="mt-3 flex flex-col gap-2">{detail.holds.map((h, i) => <li key={i} className="bg-attention-soft rounded-md px-3 py-2">
@@ -101,7 +103,9 @@ function Process({ slug, detail, def, facts }: { slug: string; detail: Detail; d
         <h3 className="font-medium">{t('seqwf.nodeRole', { node: n.id, role: n.role })} — <span className="font-mono">{principal(n.role)}</span></h3>
         {visits.length === 0 && !exhaustedHere && <p className="text-text-muted mt-1">{t('seqwf.notCreated')}</p>}
         <ul className="mt-2 flex flex-col gap-2">{visits.map(v => <VisitRow key={v.id} v={v} base={base} detail={detail} active={facts.active?.id === v.id} />)}</ul>
-        {exhaustedHere && <p className="bg-attention-soft mt-2 rounded-md px-3 py-2">{t('seqwf.noFurtherTask', { role: n.role })}</p>}
+        {exhaustedHere && <p className="bg-attention-soft mt-2 rounded-md px-3 py-2">{facts.headline.kind === 'exhausted' && facts.headline.limit !== 'revision'
+          ? t('seqwf.noFurtherTaskCeiling', { role: n.role, limit: t(facts.headline.limit === 'visits' ? 'seqwf.limit.visits' : 'seqwf.limit.events') })
+          : t('seqwf.noFurtherTask', { role: n.role })}</p>}
       </li>;
     })}</ol>
   </section>;

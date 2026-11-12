@@ -728,6 +728,9 @@ export interface IdentitiesApi {
 export interface WorkflowQuery<T> extends QueryLike<T> {
   isFetching: boolean;
   refetch: () => Promise<unknown>;
+  /** Sequential reads (PRD F6): a network refresh failure kept this mount's last-loaded data. */
+  refreshFailed?: boolean;
+  refreshError?: Error | null;
 }
 export interface SequentialSettingsFence {
   command: Sequential.SequentialSettingsCommand;

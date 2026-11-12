@@ -12,8 +12,18 @@ export function ReadOnlyNote(): JSX.Element {
   return <p className="bg-info-soft text-text-primary mt-3 rounded-md px-3 py-2 text-sm">{t('seqwf.readOnly')}</p>;
 }
 
+/** PRD F6: last-loaded data stays visible; this warning says it may be out of date. Distinct from a refusal. */
+export function StaleNotice({ error, refetch }: { error: Error | null | undefined; refetch: () => Promise<unknown> }): JSX.Element {
+  const { t } = useTranslation();
+  return <div role="status" className="bg-attention-soft text-text-primary mt-3 flex flex-wrap items-center gap-2 rounded-md px-3 py-2 text-sm">
+    <span>{t('seqwf.stale')}</span>
+    {error && <span className="text-text-muted font-mono text-xs wrap-anywhere">{reviewDiagnostic(error)}</span>}
+    <Button size="sm" variant="outline" onClick={() => void refetch()}>{t('workflows.refresh')}</Button>
+  </div>;
+}
+
 /** Refusal shows a fixed message only; other failures keep the raw daemon code verbatim. */
-export function ReadState({ q, children }: { q: { isLoading: boolean; isError: boolean; error: Error | null; data: unknown; refetch: () => Promise<unknown> }; children: () => ReactNode }): JSX.Element {
+export function ReadState({ q, children }: { q: { isLoading: boolean; isError: boolean; error: Error | null; data: unknown; refetch: () => Promise<unknown>; refreshFailed?: boolean; refreshError?: Error | null }; children: () => ReactNode }): JSX.Element {
   const { t } = useTranslation();
   if (q.isError) {
     return isAccessRefusal(q.error)
@@ -23,11 +33,10 @@ export function ReadState({ q, children }: { q: { isLoading: boolean; isError: b
         <Button className="mt-3" size="sm" variant="outline" onClick={() => void q.refetch()}>{t('workflows.refresh')}</Button></div>;
   }
   if (!q.data) return <p role="status" className="text-text-muted">{t('seqwf.loading')}</p>;
-  return <>{children()}</>;
+  return <>{q.refreshFailed && <StaleNotice error={q.refreshError} refetch={q.refetch} />}{children()}</>;
 }
 
 export function TaskRef({ label, id, base }: { label: MessageKey; id: string; base: string }): JSX.Element {
   const { render } = useTranslation();
   return <span>{render(label, { task: <Link className="text-id-task font-mono hover:underline" to={`${base}/tasks/${encodeURIComponent(id)}`}>{id}</Link> })}</span>;
 }
-

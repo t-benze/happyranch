@@ -2,9 +2,9 @@
  * Pure U8a presentation model over the U7 sequential projections.
  *
  * Everything here derives from RECORDED facts returned by the U7 GETs: the
- * admitted definition text, run state/counters/original limits, visits with
- * their recorded outcomes/findings and observation holds. Nothing invents a
- * task, progress, cause or assessment. Unknown tokens stay verbatim.
+ * admitted definition text, run state, R-M3-7 effective limits and reducer
+ * counters, visits with their recorded outcomes/findings and observation holds.
+ * Nothing invents a task, progress, cause or assessment. Unknown tokens stay verbatim.
  */
 import type { SequentialRun, SequentialRunDetail } from './api/workflowSequential';
 export type { SequentialRun, SequentialRunDetail };
@@ -78,16 +78,20 @@ export function parseDefinition(text: string): DefView | null {
 
 export type Visit = SequentialRunDetail['visits'][number];
 
-/** The recorded outcome is a counter-consuming return in the admitted definition. */
-export function isReturnOutcome(def: DefView, nodeId: string, outcome: string | null): DefNode | null {
+/** The admitted definition's `next` edge for a recorded outcome, with its target node. */
+export function nextEdge(def: DefView, nodeId: string, outcome: string | null): { target: DefNode; returning: boolean } | null {
   const node = def.nodes.find(n => n.id === nodeId);
   const e = node?.outcomes.find(o => o.outcome === outcome)?.edge;
-  return e && e.action === 'next' && e.consume_counter ? def.nodes.find(n => n.id === e.node) ?? null : null;
+  const target = e && e.action === 'next' ? def.nodes.find(n => n.id === e.node) ?? null : null;
+  return e && e.action === 'next' && target ? { target, returning: !!e.consume_counter } : null;
 }
+
+/** Which effective ceiling the reducer's limit predicate found spent. */
+export type ExhaustedLimit = 'revision' | 'visits' | 'events';
 
 export type RunHeadline =
   | { kind: 'completed' } | { kind: 'failed' } | { kind: 'cancelled' }
-  | { kind: 'exhausted'; target: DefNode; visit: Visit }
+  | { kind: 'exhausted'; target: DefNode; visit: Visit; limit: ExhaustedLimit }
   | { kind: 'held'; cause: string | null; visit: Visit | null }
   | { kind: 'active'; visit: Visit | null };
 
@@ -101,11 +105,32 @@ export interface RunFacts {
 }
 
 /**
- * Exhaustion uses the sequential reducer's own predicate over recorded values:
- * effective limit = the lower of the admitted definition and the run's
- * original limits; a returning outcome holds when returns/epochs/visits are
- * spent. No later visit may exist (no successor was created).
+ * Exhaustion mirrors runtime/workflows/sequential_reducer.py over RunDetail
+ * `effective_limits` (L: definition ∩ original settings ∩ admitted lower limits)
+ * and `reducer_counters` (R: the last transition's `after`). Neither the
+ * settings-snapshot `limits` nor the database event count is used. For the held
+ * selected visit V whose recorded outcome follows a `next` edge, with no later
+ * visit and no observation hold, the reducer reached `limit_exhausted` when its
+ * pre-transition counters (R with one event fewer) met
+ * `visits >= L.visits || events + 1 >= L.events || (returning && (returns >= L.returns || epoch >= L.epochs))`,
+ * or the run was already outside L before that result. A returning edge whose
+ * epoch advanced (R.epoch > V.epoch) was a required-input hold, not exhaustion.
+ * Decision.reason is not stored: this is a derivation. The reducer checks
+ * settlement/output evidence before limits with the same counter shape, so
+ * such a hold cannot be told apart when the limit predicate also holds.
  */
+export function exhaustedLimit(detail: SequentialRunDetail, visit: Visit, returning: boolean): ExhaustedLimit | null {
+  const L = detail.effective_limits;
+  const R = detail.reducer_counters;
+  if (!L || !R) return null;
+  if (returning && R.epoch !== visit.epoch) return null;
+  const outside = R.visits > L.max_visits || R.epoch > L.max_content_epochs || R.content_returns > L.content_returns;
+  if (returning && (R.content_returns >= L.content_returns || R.epoch >= L.max_content_epochs)) return 'revision';
+  if (R.visits >= L.max_visits) return 'visits';
+  if (R.events >= L.max_events) return 'events';
+  return outside ? 'revision' : null;
+}
+
 export function deriveRun(detail: SequentialRunDetail, def: DefView | null): RunFacts {
   const visits = [...detail.visits].sort((a, b) => a.ordinal - b.ordinal);
   const byNode = new Map<string, Visit[]>();
@@ -120,18 +145,12 @@ export function deriveRun(detail: SequentialRunDetail, def: DefView | null): Run
   else if (run.state === 'cancelled') headline = { kind: 'cancelled' };
   else if (run.state === 'held') {
     const heldVisit = active ?? [...visits].reverse().find(v => v.selected) ?? null;
-    const target = def && heldVisit ? isReturnOutcome(def, heldVisit.node_id, heldVisit.outcome) : null;
-    const lim = def ? {
-      returns: Math.min(def.limits.content_returns, detail.limits.content_returns),
-      epochs: Math.min(def.limits.max_content_epochs, detail.limits.max_content_epochs),
-      visits: Math.min(def.limits.max_visits, detail.limits.max_visits),
-    } : null;
-    const c = run.counters;
-    const spent = !!lim && (c.content_returns >= lim.returns || c.epoch >= lim.epochs || c.visits >= lim.visits);
+    const edgeFacts = def && heldVisit ? nextEdge(def, heldVisit.node_id, heldVisit.outcome) : null;
+    const limit = edgeFacts && heldVisit ? exhaustedLimit(detail, heldVisit, edgeFacts.returning) : null;
     const later = heldVisit ? visits.some(v => v.ordinal > heldVisit.ordinal) : true;
     const hold = detail.holds.find(h => h.visit_id === heldVisit?.id) ?? detail.holds[0] ?? null;
-    headline = target && heldVisit && spent && !later && !hold
-      ? { kind: 'exhausted', target, visit: heldVisit }
+    headline = edgeFacts && heldVisit && limit && !later && !hold
+      ? { kind: 'exhausted', target: edgeFacts.target, visit: heldVisit, limit }
       : { kind: 'held', cause: hold?.cause ?? null, visit: heldVisit };
   } else headline = { kind: 'active', visit: active };
   return { headline, byNode, active, pendingFinal };
