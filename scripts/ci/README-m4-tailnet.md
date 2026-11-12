@@ -214,12 +214,18 @@ label; unknown classes/diagnostic labels become `Unknown`. Exception messages,
 argv, raw native text, keys, node/enrollment/pairing material and credential URLs
 are never exported. A failure before the join call has no join diagnostics.
 
-The host `summary.json` retains `control_waits` for public-key handoff,
+The host `summary.json` always includes the `control_waits` list. VM-only
+premerge and Linux diagnose-only runs record `[]`: no hosted control wait
+occurred, so no wait entry, label, count or elapsed time is fabricated.
+Runner runs retain the genuine `HostedRun.waits` entries for public-key handoff,
 outside join, pair-ready acknowledgement and native completion: attempted
 observation count, elapsed seconds, status and a fixed failure label
 (`observation-failed`, `runner-completed`, `deadline`, `unexpected-membership`,
 `runner-failed`) plus allowlisted exception class. Thus a completed runner and
 an expired host wait remain distinguishable without retaining assertion text.
+Each observed wait has `failure_label` (null on success), `observations` and
+`elapsed_seconds`; these are per-entry fields, not top-level summary fields.
+An empty list explicitly represents their absence when no wait occurred.
 All membership, readiness, success and deadline assertions remain required.
 
 Linux `--diagnose-only` remains solely for separately authorized non-acceptance

@@ -80,6 +80,10 @@ runner return codes, allowlisted exception classes and the existing fixed-label
 join diagnostic projection retained before scratch deletion. Actions receives the
 same safe fields, never private text/argv/credentials. Host summaries retain which
 control wait failed, its safe assertion label, observation count and elapsed time.
+`control_waits` is always a list: VM-only premerge and Linux diagnose-only use
+`[]` because no hosted wait occurred; runner runs retain genuine wait entries.
+`failure_label` (null on success), `observations` and `elapsed_seconds` belong
+to those entries; an empty list explicitly represents no per-wait evidence.
 Unrecognized diagnostic/exception labels become Unknown. Native attempts1–3 remain
 failed/spent; attempt3's original join cause is unresolved. This evidence repair
 does not authorize another dispatch, join or certificate issuance.
