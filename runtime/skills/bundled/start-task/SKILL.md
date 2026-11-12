@@ -1364,3 +1364,13 @@ positive ORIGINAL host/outer settlement releases the first visit. Preserve
 cancellation, source return/thread association and all existing FINAL callback
 rules. Genuine report-completion remains the FINAL action; no notification or
 live activation is authorized by U7d source delivery.
+
+Sequential Coding U9b’s inert setup split (TASK-15616) supplies only human-owned
+cooperative offline `scripts/setup_sequential_coding.py` registration and a
+separate admission action. Agents must not invoke it on real orgs or self-install,
+configure or allow runs. Initial new defaults remain Disabled; Save preserves
+admission; old Explicit settings never transfer. Public fresh start STILL requires
+the disposable-venue fence and old @2 fresh admission is unchanged until the
+selector/public attachment and old-fresh fence land atomically. Preserve original
+command/key and uncertainty; source/merge is not operating authority. See
+`docs/runbooks/sequential-coding-cutover.md`; genuine FINAL callback rules remain.

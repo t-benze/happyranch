@@ -3859,7 +3859,10 @@ repo-free defaults only for stored sequential definitions. First save starts
 Disabled; saving preserves admission. A missing/empty sequential catalog is not
 installed by this historical host command. Sequential install, definition
 registration and admission remain separate authorized operations, with the public
-cutover still pending U9b. Historical Explicit settings never transfer; Settings →
+cutover still pending the atomic U9b follow-on. The inert offline
+`setup_sequential_coding.py` source supplies definition registration and separate
+Allow/Disable, with complete offline/backup exclusions; it does not install or
+attach public starts. Historical Explicit settings never transfer; Settings →
 Coding only recovers earlier saves by original key. See the
 [cutover/backout runbook](../runbooks/sequential-coding-cutover.md). Real workflow/Founder
 persistence/scratch/rejection/revision/control/cross-team/two-org/backup/restore/
