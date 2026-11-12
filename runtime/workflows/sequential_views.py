@@ -8,7 +8,7 @@ from contextlib import ExitStack
 from typing import Any, Literal
 
 from runtime.workflows.sequential_contracts import (
-    BindingClaim, Closed, Counters, DefinitionPin, InputValue, Limits, SettingsPin,
+    BindingClaim, Closed, Counters, DefinitionPin, InputValue, Limits, SettingsPin, effective_limits,
 )
 from runtime.workflows.sequential_definition import compile_definition, parse_result, parse_start
 from runtime.workflows.sequential_engine import SequentialRefusal, _bound_agents, _engine_rows
@@ -18,6 +18,7 @@ from runtime.workflows.sequential_history import (
 from runtime.workflows.sequential_repository_subject import read_repository_subject
 from runtime.workflows.sequential_coding_evidence import _current_authority
 from runtime.infrastructure.workflow_sequential_ownership import read_sequential_owner
+from runtime.workflows.sequential_run_validation import _prior_state
 
 
 class ProjectionRefusal(ValueError):
@@ -108,6 +109,8 @@ class RunDetail(Closed):
     inputs: tuple[InputValue, ...]
     holds: tuple[HoldView, ...]
     limits: Limits
+    effective_limits: Limits
+    reducer_counters: Counters
     visits: tuple[VisitView, ...]
     outputs: tuple[OutputView, ...]
 
@@ -235,8 +238,18 @@ def _project(conn: sqlite3.Connection, org: Any, kind: str, selected: str | None
         value = _decode(row['evidence_bytes'], budget)
         holds.append(HoldView(visit_id=row['visit_id'], cause=value['cause'],
                               next_owner=value['next_owner'], action=value['action']))
+    original = _parse(rows[0]['original_limits_bytes'], lambda raw: Limits.model_validate(_decode(raw, budget)), budget)
+    events = _engine_rows(conn, 'workflow_seq_events', budget, 'run_id=? AND kind=?', (run.id, 'transition'))
+    budget.work(len(events) * max(1, len(events).bit_length()))
+    events.sort(key=lambda item: item['sequence'])
+    # Complete replay above authenticates these immutable before/after records.
+    # The engine's counter owner ignores admission/cancel/return events; the
+    # existing RunView.counters.events remains the database event_count.
+    counters, _ = _prior_state(rows[0], compiled, start, original, visits, events, {}, budget)
+    budget.reserve(512)
     return RunDetail(run=run, request=start.request, bindings=start.bindings, inputs=start.inputs, holds=tuple(holds),
-        limits=_parse(rows[0]['original_limits_bytes'], lambda raw: Limits.model_validate(_decode(raw, budget)), budget),
+        limits=original, effective_limits=effective_limits(compiled.definition.limits, original, start.lower_limits),
+        reducer_counters=counters,
         visits=tuple(visit_views), outputs=output_views)
 
 

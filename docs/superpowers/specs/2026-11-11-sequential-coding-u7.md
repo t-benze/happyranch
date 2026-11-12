@@ -40,7 +40,7 @@ Unknown/duplicate queries and nonempty GET bodies refuse. Responses are no-store
 | `/workflows/sequential/definitions/{definition_id}` | Exact immutable version/pins/definition text |
 | `/workflows/sequential/settings?definition_identity=…` | Latest saved generation/digest, repo-free defaults/limits/admission; no work allocation |
 | `/workflows/sequential/runs` | Authenticated run state/counters, pinned version and real source/carrier/visit links |
-| `/workflows/sequential/runs/{run_id}` | Same run, original request/bindings/limits, visits/outcomes/findings, allowed UTF8 output content |
+| `/workflows/sequential/runs/{run_id}` | Same run, original request/bindings/limits, effective limits/reducer counters, visits/outcomes/findings, allowed UTF8 output content |
 | `/tasks/{task_id}/sequential-workflow` | Same run projection or null for an ordinary/retained task; no invented tasks |
 
 Existing Founder bearer task-result visibility permits the returned authored
@@ -61,6 +61,30 @@ capture, complete read, projection and closing authority/serialization. The comp
 oracle retains its original D2 A/B/C/L allowances; the bounded projection has its
 own finite allowance on that same deadline, never retries/reset after refusal.
 R-M3-2 per-read limits, original run budgets and cancellation owners are unchanged.
+
+### R-M3-7 exhaustion facts (TASK-15584)
+
+RunDetail adds `effective_limits` and `reducer_counters`; existing `limits` stays
+the original settings-limit snapshot and `run.counters.events` stays the database
+event count. `effective_limits` uses the same `effective_limits` owner as the
+reducer's `effective_run_limits`: definition, original limits and admitted
+StartCommand.lower_limits are intersected without replenishment. The engine's
+`_prior_state` owner reconstructs `reducer_counters` from authenticated immutable
+transition before/after records (initial epoch1/returns0/visits1/events0).
+Its `events` is transition consumption, not the number of stored events:
+admission/cancellation/return do not consume it, and a transition already outside
+the reducer's ceiling leaves it unchanged. Epoch, content_returns and visits
+are the same reducer quantities checked against the run row by complete replay.
+
+The reducer's `Decision.reason` is NOT stored in TransitionRecord or the run row.
+No schema, writer or new reason is added; existing observation `holds` keep their
+separate meaning. The frontend can derive exhaustion from these owner facts and
+the admitted definition's selected outcome/edge, including return, visit and
+event ceilings. R-M3-7 authorizes only the minimal RunDetail construction edit;
+all added event acquisition, sorting, parsing and model work uses the ORIGINAL
+projection `_ReadBudget`/deadline, with existing refusal and no retry/reset/raise.
+R-M3-6 Final summary/findings disclosure is unchanged. No new route, browser UI,
+daemon network operation or execution/admission capability follows.
 
 The route module is registered by create_app. Every route has one TS mirror in
 `workflowSequential.ts` and an included classification entry. R-M3-4 retains
