@@ -133,6 +133,23 @@ Details: [CI and testing contracts](docs/agent-guides/contracts/ci-and-testing.m
 
 ## Engineering delivery gates
 
+- **Code review gate (founder THR-355):** `code_reviewer` returns
+  `REQUEST_CHANGES` only for defects with reachable production or invariant
+  impact. Paperwork (docs wording, doc parity, test naming or wording, PR-body or
+  evidence prose) is a non-blocking NOTE that the manager resolves at merge.
+  Docs-only and tiny PRs get one light review pass. A tiny PR changes at most 100
+  lines in at most 5 files, none of them executed by the shipped daemon, CLI, web
+  app or packaging. A PR is never tiny if it touches routes, schema, auth or
+  permissions, cleanup or deletion, load-bearing invariants, CI or hooks,
+  dependencies, or skill text that changes an agent's authority. Every full
+  review explicitly checks (a) new rules, vetoes, constraints and startup policies
+  against existing live data and historical rows, and (b) work, byte and time
+  budgets against production-shaped data, with exhaustion that fails safe. HIGH
+  and CRITICAL require a reachable production path. Each PR has at most 3
+  reviewer rounds. A 4th round needs the manager's recorded fix, re-scope,
+  override or close decision, and merge still needs reviewer APPROVE and QA PASS
+  at the exact head. Full text: KB `engineering-team-workflow` and the
+  `code_reviewer` charter.
 - **CI recovery:** For a pinned PR head and failure signature, allow one
   cancel/rerun at most. Then capture SHA, job URL, and log excerpt; classify
   branch-scoped repair vs mainline/environmental block vs diagnosis. Never
