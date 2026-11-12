@@ -22,7 +22,8 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 
-from m4_tailnet_client import Bridge, EXPECTED, ROUTE, application_probe, build_archive, control_get
+from m4_tailnet_client import (Bridge, EXPECTED, ROUTE, application_probe, build_archive, control_get,
+                              exception_class, safe_join_diagnostics)
 
 REPOSITORY = 't-benze/happyranch'
 COORDINATION_PR = 1449
@@ -49,7 +50,8 @@ def decrypt(private: bytes, ciphertext: str) -> str:
                                 input=base64.b64decode(ciphertext, validate=True), capture_output=True,
                                 pass_fds=(read_fd,), timeout=30, check=False)
         if result.returncode:
-            raise RuntimeError('credential decryption refused')
+            # Fixed command identity only; do not retain argv, stderr or output.
+            raise subprocess.CalledProcessError(result.returncode, 'openssl-decrypt')
         return result.stdout.decode().strip()
     finally:
         os.close(read_fd)
@@ -203,18 +205,39 @@ def run(scratch: Path, output: Path) -> None:
     (scratch / 'recipient.key').unlink()
     inbox = Inbox(request)
     record: dict = dict(sha=request['sha'], run_id=request['run_id'], attempt=1, native=request['native'],
-                        outside_client='native macOS unchanged shipped C archive', status='FAIL', checks=[])
+                        outside_client='native macOS unchanged shipped C archive', status='FAIL', checks=[], phases=[])
     bridge: Bridge | None = None
+    phase_started = time.monotonic()
+
+    def set_phase(name: str) -> None:
+        nonlocal phase_started
+        if record['phases']:
+            record['phases'][-1]['elapsed_seconds'] = round(time.monotonic() - phase_started, 3)
+        record['phase'] = name
+        record['phases'].append(dict(phase=name, elapsed_seconds=0))
+        phase_started = time.monotonic()
+
     try:
-        record['phase'] = 'enrollment-handoff'
+        set_phase('handoff-fetch')
         credentials = inbox.wait('enroll', 600)
         assert set(credentials) == {'enroll'}
+        set_phase('decrypt')
+        enrollment = decrypt(private, credentials['enroll'])
+        set_phase('native-process-start')
         native_state_link(scratch)
         bridge = Bridge(scratch / 'native/libtsnet.dylib', scratch)
-        record['phase'] = 'outside-join'
-        bridge.call('join', key=decrypt(private, credentials['enroll']))
+        set_phase('join-call')
+        try:
+            bridge.call('join', key=enrollment)
+        finally:
+            # Retain only the closed projection BEFORE worker/state removal.
+            record['join_diagnostics'] = safe_join_diagnostics(bridge.join_diagnostics)
+            record['phases'][-1:] = bridge.join_phases
+            record['phase'] = bridge.join_phase
+            phase_started = time.monotonic() - bridge.join_phases[-1]['elapsed_seconds']
+        del enrollment
         record['checks'].append(dict(name='outside-joined', joined=True))
-        record['phase'] = 'pairing-handoff'
+        set_phase('pairing-handoff')
         payload = inbox.wait('pairs', 240)
         assert set(payload) == {'address', 'pair-main', 'pair-revoked', 'pair-ready'}
         address = ipaddress.ip_address(payload['address'])
@@ -234,7 +257,7 @@ def run(scratch: Path, output: Path) -> None:
             assert isinstance(value, str) and value.startswith('hrpair_')
             return value
 
-        record['phase'] = 'allowed-unpaired-controls'
+        set_phase('allowed-unpaired-controls')
         paired = pair('pair-main')
         allowed(paired)
         record['checks'].append(dict(name='allowed-200', status=200, body=EXPECTED))
@@ -243,7 +266,7 @@ def run(scratch: Path, output: Path) -> None:
             assert call('GET', ROUTE, value) == {'status': 403, 'body': {'error': 'identity_denied'}}
             allowed(paired)
             record['checks'].append(dict(name='unpaired-' + name, status=403, paired_control=200))
-        record['phase'] = 'revocation-controls'
+        set_phase('revocation-controls')
         revoked = pair('pair-revoked')
         allowed(revoked)
         # Existing pairing is the VM-visible acknowledgement AFTER this positive
@@ -260,7 +283,7 @@ def run(scratch: Path, output: Path) -> None:
             time.sleep(0.2)
         allowed(paired)
         record['checks'].append(dict(name='revoked-refused', status=403, baseline=200, unaffected_control=200))
-        record['phase'] = 'forbidden-route-controls'
+        set_phase('forbidden-route-controls')
         for method, path, category in [
             ('POST', '/api/v1/executor-binaries/register', 'method_denied'),
             ('POST', '/api/v1/runtime/custom-cli/m4-operation/commit', 'route_denied'),
@@ -276,7 +299,7 @@ def run(scratch: Path, output: Path) -> None:
                                          error=category, paired_control=200))
         orgs = call('GET', '/api/v1/orgs', paired)
         assert orgs['status'] == 200 and [org['slug'] for org in orgs['body']['orgs']] == ['m2-synthetic']
-        record['phase'] = 'DERP-exposure'
+        set_phase('DERP-exposure')
         record['checks'].append(dict(name='DERP-path', **bridge.call('derp-proof')))
         allowed(paired)
         before = control_get('/health')
@@ -286,13 +309,23 @@ def run(scratch: Path, output: Path) -> None:
         assert after['status'] == 200 and all(not probe['reachable'] for probe in probes)
         record['checks'].append(dict(name='public-exposure', control=before, control_after=after, probes=probes))
         record['status'] = 'CLIENT_CHECKS_PASSED_VM_CLEANUP_PENDING'
+    except Exception as error:
+        label = bridge.join_error if bridge is not None and record['phase'] in ('join-call', 'native-start', 'join-wait') else 'operation-failed'
+        record['failure'] = dict(stage=record['phase'], exception_class=exception_class(error),
+                                 error_class=label if label in {'operation-failed', 'worker-failed', 'worker-deadline', 'worker-response-unavailable'} else 'Unknown',
+                                 worker_exception_class=bridge.worker_exception if bridge is not None else 'Unknown',
+                                 return_code=error.returncode if isinstance(error, subprocess.CalledProcessError) else None)
+        raise
     finally:
+        record['phases'][-1]['elapsed_seconds'] = round(time.monotonic() - phase_started, 3)
         cleanup_errors = []
         if bridge is not None:
+            record['worker_return_code_before_cleanup'] = bridge.process.poll()
             try:
                 bridge.close()
             except Exception:
                 cleanup_errors.append('client-reap')
+            record['worker_return_code'] = bridge.process.poll()
         try:
             native_state_link(scratch, remove=True)
             record['native_state_link_absent'] = True
@@ -306,7 +339,11 @@ def run(scratch: Path, output: Path) -> None:
         if cleanup_errors:
             record['status'] = 'FAIL'
             record['cleanup_errors'] = cleanup_errors
+        record['runner_return_code'] = 1 if record['status'] == 'FAIL' else 0
         (output / 'client-summary.json').write_text(json.dumps(record, indent=2) + '\n')
+        print('M4 public client evidence ' + json.dumps({key: record[key] for key in
+              ('phase', 'phases', 'failure', 'join_diagnostics', 'runner_return_code',
+               'worker_return_code_before_cleanup', 'worker_return_code') if key in record}), flush=True)
     assert not cleanup_errors, 'native client cleanup failed'
     print('Native client checks complete; host VM cleanup receipt still required', flush=True)
 
@@ -342,6 +379,6 @@ def main() -> None:
 if __name__ == '__main__':
     try:
         main()
-    except Exception:
-        print('M4 runner FAILED; private exception withheld', file=sys.stderr)
+    except Exception as error:
+        print('M4 runner FAILED; exception_class=' + exception_class(error) + '; private exception withheld', file=sys.stderr)
         sys.exit(1)

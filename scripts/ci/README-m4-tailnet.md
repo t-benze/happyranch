@@ -26,6 +26,11 @@ native transport acceptance.
 - TASK-15684's ONE native attempt (run43270232585, JOB-6633 exit1) failed at
   the first empty-membership poll: Headscale returned `null`. Join and all
   installed-product checks remained unproven; the attempt stays a failure.
+- Attempt2 (run43279212804/JOB-6639) failed with no macOS capacity/steps.
+  Attempt3 (run43283669745/JOB-6640) built the native archive, then failed
+  before observed membership/install. Its old `outside-join` phase combined
+  decrypt and join; the underlying cause remains unresolved. These attempts
+  stay spent. The evidence repair grants no dispatch or join allowance.
 - Signed Mac.app, Swift ClientBridge and GUI on founder hardware are separate,
   founder-assisted acceptance and are **NOT RUN**. The current GUI is BYO;
   managed enrollment currently reads a development environment key, which
@@ -193,6 +198,29 @@ always-cleanup. VM plain-log collection excludes cell/keys/DB/state, records
 stream byte counts/hashes and <=256KiB excerpts, gzip>1MB and45MB total cap.
 Guest1s memory/swap sampling and per-service peaks remain; builds use2 workers,
 fixture MemoryMax600M. Sampling is not a hard instantaneous whole-host bound.
+
+The public client summary and Actions log retain distinct `handoff-fetch`,
+`decrypt`, `native-process-start`, `join-call` (C init), `native-start` (C start)
+and `join-wait` (local address) phases with elapsed seconds. Private worker
+progress uses fixed labels and the original join deadline; C init/start return
+codes, runner return code and worker return codes before/after cleanup are
+separate fields (null means not observed/exited yet; cleanup kill is not the
+original failure). Before deleting scratch, the runner copies the existing
+`Bridge.join_diagnostics` through a closed projection: fixed DNS/TCP/TLS/Noise/
+auth/register/netmap/DERP labels, counts, deadline and elapsed time only.
+These pattern observations do not establish an endpoint or root cause.
+Failure fields contain an allowlisted exception CLASS and fixed stage/error
+label; unknown classes/diagnostic labels become `Unknown`. Exception messages,
+argv, raw native text, keys, node/enrollment/pairing material and credential URLs
+are never exported. A failure before the join call has no join diagnostics.
+
+The host `summary.json` retains `control_waits` for public-key handoff,
+outside join, pair-ready acknowledgement and native completion: attempted
+observation count, elapsed seconds, status and a fixed failure label
+(`observation-failed`, `runner-completed`, `deadline`, `unexpected-membership`,
+`runner-failed`) plus allowlisted exception class. Thus a completed runner and
+an expired host wait remain distinguishable without retaining assertion text.
+All membership, readiness, success and deadline assertions remain required.
 
 Linux `--diagnose-only` remains solely for separately authorized non-acceptance
 diagnostics because it reuses the same worker; no default/full Linux acceptance

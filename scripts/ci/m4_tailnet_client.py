@@ -10,6 +10,7 @@ import ctypes
 import http.client
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -33,6 +34,32 @@ EXPECTED = {"teams": [{"name": "default", "manager": None, "workers": [],
 
 HOSTNAME = '47-238-219-200.sslip.io'
 JOIN_SECONDS = 90
+JOIN_PHASES = ('join-call', 'native-start', 'join-wait')
+DIAGNOSTIC_LABELS = ('dns', 'tcp-connect', 'tls-verify', 'tls-reset', 'control-upgrade/noise',
+                     'auth-key-rejected', 'register', 'netmap-wait', 'derp-connect', 'timeout')
+
+
+def exception_class(error: Exception) -> str:
+    name = type(error).__name__
+    return name if name in {'AssertionError', 'RuntimeError', 'TimeoutError', 'OSError', 'BrokenPipeError',
+                           'FileNotFoundError', 'ValueError', 'UnicodeDecodeError', 'JSONDecodeError',
+                           'HTTPError', 'URLError', 'SSLError', 'SSLCertVerificationError',
+                           'TimeoutExpired', 'CalledProcessError'} else 'Unknown'
+
+
+def safe_number(value: object) -> int | float | None:
+    return value if type(value) in (int, float) and 0 <= value <= 10_000_000 and math.isfinite(value) else None
+
+
+def safe_join_diagnostics(value: dict) -> dict:
+    """Closed public projection, even when a private/native producer changes."""
+    observations = value.get('observations', {})
+    return dict(stage=value.get('stage') if value.get('stage') in DIAGNOSTIC_LABELS else 'Unknown',
+                error_class=value.get('error_class') if value.get('error_class') in DIAGNOSTIC_LABELS else 'Unknown',
+                **{key: safe_number(value.get(key)) for key in
+                   ('elapsed_seconds', 'deadline_seconds', 'port80_attempts', 'port443_attempts')},
+                observations={key: safe_number(observations.get(key)) for key in DIAGNOSTIC_LABELS[:-1]},
+                native_text_exported=False)
 
 
 class DiagnosticComplete(Exception):
@@ -156,8 +183,13 @@ def worker(library: Path, state: Path) -> None:
             message = json.loads(line)
             action = message["action"]
             if action == "join":
-                assert lib.tsnet_init(message["key"].encode(), CONTROL.encode(), b"synthetic-m4-outside") == 0
-                assert lib.tsnet_start() == 0
+                print('{"join_phase":"join-call"}', flush=True)
+                code = lib.tsnet_init(message["key"].encode(), CONTROL.encode(), b"synthetic-m4-outside")
+                print(json.dumps(dict(join_phase='native-start', return_code=code)), flush=True)
+                assert code == 0
+                code = lib.tsnet_start()
+                print(json.dumps(dict(join_phase='join-wait', return_code=code)), flush=True)
+                assert code == 0
                 deadline = time.monotonic() + JOIN_SECONDS
                 while time.monotonic() < deadline:
                     pointer = lib.tsnet_local_addr()
@@ -216,9 +248,9 @@ def worker(library: Path, state: Path) -> None:
             else:
                 raise RuntimeError("unknown worker operation")
             print(json.dumps(result), flush=True)
-        except Exception:
+        except Exception as error:
             # Even JSON/native exceptions may contain response credential bytes.
-            print('{"worker_error":"operation_failed"}', flush=True)
+            print(json.dumps(dict(worker_error='operation_failed', exception_class=exception_class(error))), flush=True)
 
 
 class Bridge:
@@ -234,6 +266,11 @@ class Bridge:
         self.stderr_path = scratch / "client-private.stderr"
         self.stderr = self.stderr_path.open("wb")
         self.join_diagnostics: dict = {}
+        self.join_phases: list[dict] = []
+        self.join_phase = 'join-call'
+        self.join_error = 'operation-failed'
+        self.worker_exception = 'Unknown'
+        self.response_buffer = b''
         self.process = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), "--worker", str(library), "--worker-state", str(self.state)],
             env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, text=True,
@@ -241,26 +278,63 @@ class Bridge:
 
     def call(self, action: str, **fields: object) -> dict:
         started = time.monotonic()
+        if action == 'join':
+            self.join_phases = [dict(phase='join-call', elapsed_seconds=0, return_code=None)]
+            self.phase_started = started
         try:
             return self._call(action, **fields)
         finally:
             if action == 'join':
-                self.join_diagnostics = join_diagnostic(self.state, self.stderr_path, time.monotonic()-started)
+                self.join_phases[-1]['elapsed_seconds'] = round(time.monotonic() - self.phase_started, 3)
+                self.join_diagnostics = safe_join_diagnostics(join_diagnostic(self.state, self.stderr_path, time.monotonic()-started))
 
     def _call(self, action: str, **fields: object) -> dict:
         assert self.process.stdin is not None and self.process.stdout is not None
         self.process.stdin.write(json.dumps(dict(action=action, **fields)) + "\n")
         self.process.stdin.flush()
-        if not select.select([self.process.stdout], [], [], JOIN_SECONDS + 10 if action == "join" else 35)[0]:
-            raise RuntimeError(f"client {action} deadline exceeded")
-        line = self.process.stdout.readline()
-        try:
-            result = json.loads(line)
-        except ValueError:
-            raise RuntimeError(f"client {action} response unavailable") from None
-        if "worker_error" in result:
-            raise RuntimeError(f"client {action} failed (private native detail not exported)")
-        return result
+        deadline = time.monotonic() + (JOIN_SECONDS + 10 if action == "join" else 35)
+        while True:
+            # Read bytes directly: TextIOWrapper read-ahead can hide a buffered
+            # progress/result line from select(). One original deadline remains.
+            while b'\n' not in self.response_buffer:
+                remaining = max(0, deadline - time.monotonic())
+                if not select.select([self.process.stdout], [], [], remaining)[0]:
+                    self.join_error = 'worker-deadline'
+                    raise RuntimeError('client response deadline')
+                data = os.read(self.process.stdout.fileno(), 65536)
+                if not data:
+                    self.join_error = 'worker-response-unavailable'
+                    raise RuntimeError('client response unavailable')
+                self.response_buffer += data
+                assert len(self.response_buffer) <= 1_000_001, 'worker response budget'
+            line, self.response_buffer = self.response_buffer.split(b'\n', 1)
+            try:
+                result = json.loads(line)
+            except ValueError:
+                self.join_error = 'worker-response-unavailable'
+                raise RuntimeError('client response unavailable') from None
+            if 'join_phase' in result:
+                assert action == 'join'
+                phase = result['join_phase']
+                if phase == 'join-call':
+                    assert len(self.join_phases) == 1 and set(result) == {'join_phase'}
+                    continue
+                assert len(self.join_phases) < 3 and phase == JOIN_PHASES[len(self.join_phases)]
+                assert set(result) == {'join_phase', 'return_code'} and type(result['return_code']) is int
+                self.join_phases[-1].update(elapsed_seconds=round(time.monotonic() - self.phase_started, 3),
+                                            return_code=result['return_code'])
+                # A nonzero native return belongs to the phase that just ended.
+                if result['return_code'] == 0:
+                    self.join_phase = phase
+                    self.phase_started = time.monotonic()
+                    self.join_phases.append(dict(phase=phase, elapsed_seconds=0, return_code=None))
+                continue
+            if 'worker_error' in result:
+                self.join_error = 'worker-failed'
+                name = result.get('exception_class')
+                self.worker_exception = name if name in {'AssertionError', 'RuntimeError', 'ValueError', 'OSError'} else 'Unknown'
+                raise RuntimeError('client operation failed; private detail withheld')
+            return result
 
     def close(self) -> None:
         # Do not flush upstream diagnostic logs on graceful Go shutdown. These

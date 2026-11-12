@@ -23,7 +23,7 @@ import time
 
 from m3_reboot_aliyun import CloudAssistant
 
-from m4_tailnet_client import Bridge, DiagnosticComplete, build_archive, control_get, worker
+from m4_tailnet_client import Bridge, DiagnosticComplete, build_archive, control_get, exception_class, worker
 from m4_tailnet_control import HostedRun
 from m4_tailnet_runner import decrypt
 
@@ -213,6 +213,7 @@ def main() -> None:
         record['security_group_before'] = security_group()
         if args.runner_run:
             hosted = HostedRun(args.runner_run, args.sha)
+            record['control_waits'] = hosted.waits
             request = hosted.public_request()
             public_bytes = request['public_key'].encode('ascii')
             record['public_request'] = request
@@ -301,7 +302,7 @@ echo exact-source={args.sha}
         # All exception text emitted by this driver is controlled. Native/cloud
         # raw command diagnostics and response bodies are never exported here.
         record['verdict'] = 'FAIL'
-        record['failure_type'] = type(error).__name__
+        record['failure_type'] = exception_class(error)
         record['failure'] = 'operation failed; private exception withheld'
         raise
     finally:

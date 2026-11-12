@@ -74,6 +74,15 @@ coordinate join and the positive-control pairing marker before targeted revoke.
 Headscale `null` and `[]` both mean empty membership during the bounded join
 wait; other invalid JSON/schema shapes and unexpected members still refuse.
 The premerge VM-half also asserts empty membership through the shipped nodes phase.
+Public client evidence separates handoff-fetch, decrypt, native-process-start,
+join-call/C-init, native-start/C-start and join-wait, with timings, native/worker/
+runner return codes, allowlisted exception classes and the existing fixed-label
+join diagnostic projection retained before scratch deletion. Actions receives the
+same safe fields, never private text/argv/credentials. Host summaries retain which
+control wait failed, its safe assertion label, observation count and elapsed time.
+Unrecognized diagnostic/exception labels become Unknown. Native attempts1–3 remain
+failed/spent; attempt3's original join cause is unresolved. This evidence repair
+does not authorize another dispatch, join or certificate issuance.
 
 **Execution boundary:** JOB-6610 and JOB-6615 both failed at Linux outside join;
 JOB-6615 classified tcp-connect without endpoint attribution. JOB-6618, the ONE
