@@ -35,6 +35,8 @@ export interface SequentialRuns {
 export interface SequentialRunDetail {
   format: 'workflow-sequential-run-view@1'; run: SequentialRun; request: string;
   bindings: SequentialBinding[]; limits: SequentialLimits;
+  effective_limits: SequentialLimits;
+  reducer_counters: SequentialRun['counters'];
   inputs: { name: string; contract: 'bounded-text@1'; value: string }[];
   holds: { visit_id: string | null; cause: string; next_owner: string; action: string }[];
   visits: { id: string; node_id: string; ordinal: number; epoch: number; task_id: string; principal: string;
