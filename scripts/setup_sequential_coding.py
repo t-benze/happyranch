@@ -45,7 +45,7 @@ _MARKERS = ('HAPPYRANCH_RUNTIME_SESSION_ID', 'HAPPYRANCH_ORG_SLUG',
             'HAPPYRANCH_TASK_TMP_ROOT', 'HAPPYRANCH_TASK_SCRATCH_MANIFEST')
 
 # Sized against 10x the observed 1.453GB / 15,617-task / 27,327-result org.
-# Complete-reader defaults and the existing installer remain unchanged.
+# Complete-reader defaults remain unchanged; the installer sizes its own path.
 _OPERATION_SECONDS = 900.0
 _BACKUP_BYTES = 32 * 1024**3
 _HASH_CHUNK = 4 * 1048576

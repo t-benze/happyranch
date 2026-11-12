@@ -12,6 +12,7 @@ import re
 import sqlite3
 import stat
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -20,9 +21,13 @@ from scripts.migrate_workflow_submission_schema import (  # noqa: E402
     _lifecycle_snapshot, resolve_org_database,
 )
 from runtime.infrastructure.workflow_schema import (  # noqa: E402
-    _coding_org_identity, SequentialCommitUncertain, inspect_sequential_install,
+    _coding_org_identity, SequentialCommitUncertain, SequentialInstallAllowance, inspect_sequential_install,
     install_sequential_schema, sequential_storage_inventory,
 )
+
+_OPERATION_SECONDS = 900.0
+_BACKUP_BYTES = 32 * 1024**3
+_HASH_CHUNK = 4 * 1048576
 
 
 def _file_observation(path: Path) -> tuple:
@@ -51,7 +56,8 @@ def _checkpoint_observation(path: Path) -> tuple:
     return tuple(observed)
 
 
-def _readonly_inventory(path: Path, org: str) -> tuple:
+def _readonly_inventory(path: Path, org: str, allowance: SequentialInstallAllowance) -> tuple:
+    allowance.check()
     before = _checkpoint_observation(path)
     conn = sqlite3.connect(path.as_uri() + '?mode=ro&immutable=1', uri=True, timeout=1.0)
     try:
@@ -59,8 +65,8 @@ def _readonly_inventory(path: Path, org: str) -> tuple:
         conn.execute('PRAGMA query_only=ON')
         conn.execute('PRAGMA foreign_keys=ON')
         conn.execute('BEGIN')
-        layout = inspect_sequential_install(conn, expected_org_slug=org)
-        inventory = sequential_storage_inventory(conn)
+        layout = inspect_sequential_install(conn, expected_org_slug=org, allowance=allowance)
+        inventory = sequential_storage_inventory(conn, allowance=allowance)
         if _checkpoint_observation(path) != before:
             raise ValueError('workflow_seq_readonly_source_changed')
         return layout, inventory, before
@@ -69,15 +75,29 @@ def _readonly_inventory(path: Path, org: str) -> tuple:
 
 
 def _backup_observation(backup: Path, source: Path, digest: str, org: str,
-                        source_inventory: tuple) -> tuple:
+                        source_inventory: tuple, allowance: SequentialInstallAllowance) -> tuple:
+    allowance.check()
     before = _file_observation(backup)
     if before[1:3] == _file_observation(source)[1:3]:
         raise ValueError('workflow_seq_backup_is_source')
     if re.fullmatch('[0-9a-f]{64}', digest) is None:
         raise ValueError('workflow_seq_backup_sha256_invalid')
+    if before[4] > _BACKUP_BYTES:
+        raise ValueError('workflow_seq_backup_bytes_exhausted')
+    checksum = hashlib.sha256()
+    consumed = 0
     with backup.open('rb') as stream:
-        actual = hashlib.file_digest(stream, 'sha256').hexdigest()
-    _, inventory, observation = _readonly_inventory(backup, org)
+        while True:
+            allowance.check()
+            chunk = stream.read(_HASH_CHUNK)
+            if not chunk:
+                break
+            consumed += len(chunk)
+            if consumed > _BACKUP_BYTES:
+                raise ValueError('workflow_seq_backup_bytes_exhausted')
+            checksum.update(chunk)
+    actual = checksum.hexdigest()
+    _, inventory, observation = _readonly_inventory(backup, org, allowance)
     if actual != digest or observation[0] != before or inventory != source_inventory:
         raise ValueError('workflow_seq_backup_inventory_or_digest_mismatch')
     return observation
@@ -99,9 +119,10 @@ def main(argv: list[str] | None = None) -> int:
     conn = None
     outcome = None
     result = 1
+    allowance = SequentialInstallAllowance(deadline=time.monotonic() + _OPERATION_SECONDS)
     try:
         path = resolve_org_database(args.runtime_root, args.org)
-        layout, inventory, original = _readonly_inventory(path, args.org)
+        layout, inventory, original = _readonly_inventory(path, args.org, allowance)
         if (resolve_org_database(args.runtime_root, args.org) != path
                 or _checkpoint_observation(path) != original):
             raise ValueError('workflow_seq_source_identity_changed')
@@ -120,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             if (any(item[1] is not None for item in offline if item[0] in ('daemon.pid', 'daemon.port'))
                     or not any(item[0] == 'runtimes.yaml' and item[1] is not None for item in offline)):
                 raise ValueError('workflow_seq_documented_daemon_stop_unproven')
-            backup = _backup_observation(args.backup, path, args.backup_sha256, args.org, inventory)
+            backup = _backup_observation(args.backup, path, args.backup_sha256, args.org, inventory, allowance)
             if _checkpoint_observation(path) != original:
                 raise ValueError('workflow_seq_source_identity_changed')
             identity = original[0][:4]
@@ -129,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             conn.execute('PRAGMA foreign_keys=ON')
 
             def offline_check() -> None:
+                allowance.check()
                 if (resolve_org_database(args.runtime_root, args.org) != path
                         or _coding_org_identity(conn, expected_org_slug=args.org, expected_path=str(path)) != identity
                         or _lifecycle_snapshot(args.runtime_root) != offline
@@ -138,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
             offline_check()
             installed = install_sequential_schema(
                 conn, expected_org_slug=args.org, expected_path=str(path),
-                source_identity=identity, source_inventory=inventory, offline_check=offline_check)
+                source_identity=identity, source_inventory=inventory, offline_check=offline_check,
+                allowance=allowance)
             outcome = f'{installed}: org {args.org}; compatible reader required, engine unavailable'
             result = 0
     except SequentialCommitUncertain as exc:

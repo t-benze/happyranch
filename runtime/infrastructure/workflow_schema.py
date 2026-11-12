@@ -13,9 +13,11 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
@@ -2501,12 +2503,38 @@ class SequentialCommitUncertain(RuntimeError):
     """COMMIT was attempted; preserve its cause and reconcile before retry."""
 
 
-def sequential_storage_inventory(conn: sqlite3.Connection) -> tuple[tuple, dict[str, tuple[int, str]]]:
+@dataclass(frozen=True)
+class SequentialInstallAllowance:
+    """Explicit offline installer only; default readers never select these caps."""
+
+    deadline: float
+    rows: int = 8 * 1024**2
+    cell_bytes: int = 16 * 1024**3
+    row_bytes: int = 32 * 1024**2
+
+    def __post_init__(self) -> None:
+        import math
+
+        if (type(self.deadline) not in (int, float) or not math.isfinite(self.deadline)
+                or any(type(value) is not int or not 0 < value <= maximum
+                       for value, maximum in ((self.rows, 8 * 1024**2),
+                                              (self.cell_bytes, 16 * 1024**3),
+                                              (self.row_bytes, 32 * 1024**2)))):
+            raise ValueError('workflow_seq_install_allowance_invalid')
+
+    def check(self) -> None:
+        if time.monotonic() >= self.deadline:
+            raise ValueError('workflow_seq_install_deadline_exhausted')
+
+
+def sequential_storage_inventory(conn: sqlite3.Connection, *,
+                                 allowance: SequentialInstallAllowance | None = None) -> tuple[tuple, dict[str, tuple[int, str]]]:
     """Exact whole-database SQL and typed row/rowid inventory, never a reference.
 
-    This separate preservation/backup observation is bounded to 8192 rows,
-    64 MiB encoded cells and five cooperative seconds. Complete family readers
-    still own schema/data acceptance; no candidate SQL is executed as DDL.
+    Defaults retain 8192 rows/64MiB/five seconds. Only the explicit offline
+    installer selects a larger finite allowance. Its SQL preflight gates raw
+    row bytes BEFORE fetching payloads; hashing retains at most one bounded row,
+    never a history-sized collection. Complete readers still own acceptance.
     """
     import hashlib
     import time
@@ -2533,7 +2561,9 @@ def sequential_storage_inventory(conn: sqlite3.Connection) -> tuple[tuple, dict[
         else:
             raise ValueError('workflow_seq_inventory_storage_invalid')
         consumed += len(raw)
-        if consumed > 64 * 1048576 or time.monotonic() > deadline:
+        if allowance is not None:
+            allowance.check()
+        if consumed > (64 * 1048576 if allowance is None else allowance.cell_bytes) or time.monotonic() > (deadline if allowance is None else allowance.deadline):
             raise ValueError('workflow_seq_inventory_exhausted')
         return str(len(raw)).encode('ascii') + b':' + raw
 
@@ -2556,10 +2586,20 @@ def sequential_storage_inventory(conn: sqlite3.Connection) -> tuple[tuple, dict[
                 raise ValueError('workflow_seq_inventory_table_unsupported:' + table)
             digest = hashlib.sha256()
             rows = 0
+            if allowance is not None:
+                sizes = '+'.join('coalesce(length(CAST("' + item[1].replace('"', '""')
+                                + '" AS BLOB)),0)' for item in metadata)
+                allowance.check()
+                if cursor.execute('SELECT 1 FROM ' + quoted + ' WHERE (' + sizes
+                                  + ')>? LIMIT 1', (allowance.row_bytes,)).fetchone() is not None:
+                    raise ValueError('workflow_seq_inventory_row_exhausted')
+                allowance.check()
             for row in cursor.execute('SELECT _rowid_,' + columns + ' FROM ' + quoted + ' ORDER BY _rowid_'):
                 count += 1
                 rows += 1
-                if count > 8192:
+                if allowance is not None:
+                    allowance.check()
+                if count > (8192 if allowance is None else allowance.rows):
                     raise ValueError('workflow_seq_inventory_exhausted')
                 for value in row:
                     digest.update(encode(value))
@@ -2569,22 +2609,30 @@ def sequential_storage_inventory(conn: sqlite3.Connection) -> tuple[tuple, dict[
         cursor.close()
 
 
-def inspect_sequential_install(conn: sqlite3.Connection, *, expected_org_slug: str) -> SequentialLayout:
+def inspect_sequential_install(conn: sqlite3.Connection, *, expected_org_slug: str,
+                               allowance: SequentialInstallAllowance | None = None) -> SequentialLayout:
     """Use complete existing readers; absent ownership needs its original owner."""
     from runtime.workflows.sequential_history import read_sequential_history
 
-    history = read_sequential_history(conn, expected_org_slug=expected_org_slug)
+    options = {} if allowance is None else {'deadline': allowance.deadline,
+                                            'ownership_sql_limit': 640000000}
+    if allowance is not None:
+        allowance.check()
+    history = read_sequential_history(conn, expected_org_slug=expected_org_slug, **options)
     layout = history.layout
     if layout.document is None or layout.ownership != (2 if layout.sequential else 1):
         raise ValueError('workflow_seq_install_requires_complete_document_and_ownership_companion')
     if conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
         raise ValueError('workflow_seq_install_foreign_key_mismatch')
+    if allowance is not None:
+        allowance.check()
     return layout
 
 
 def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
                               expected_path: str, source_identity: tuple,
-                              source_inventory: tuple, offline_check: Callable[[], None]) -> str:
+                              source_inventory: tuple, offline_check: Callable[[], None],
+                              allowance: SequentialInstallAllowance | None = None) -> str:
     """One explicit owning writer; no startup, adoption, backfill or live caller.
 
     The original RO inventory/identity remain authoritative across RW reopen.
@@ -2602,37 +2650,45 @@ def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: st
         raise ValueError('workflow_seq_install_requires_idle_native_foreign_keys')
     committing = False
     try:
+        if allowance is not None:
+            allowance.check()
+            # Disk-backed staging, owned by this connection and transaction;
+            # no persistent intermediate stage or Python ownership collection.
+            conn.execute('PRAGMA temp_store=FILE')
         conn.execute('BEGIN IMMEDIATE')
         offline_check()
         if _coding_org_identity(conn, expected_org_slug=expected_org_slug,
                                 expected_path=expected_path) != source_identity:
             raise ValueError('workflow_seq_install_source_identity_changed')
-        layout = inspect_sequential_install(conn, expected_org_slug=expected_org_slug)
-        if sequential_storage_inventory(conn) != source_inventory:
+        layout = inspect_sequential_install(conn, expected_org_slug=expected_org_slug, allowance=allowance)
+        if sequential_storage_inventory(conn, allowance=allowance) != source_inventory:
             raise ValueError('workflow_seq_install_source_inventory_changed')
         if layout.sequential:
             conn.rollback()
             return 'compatible-already-installed'
         # Complete source and exact preservation inventory bound this acquisition.
-        owners = [tuple(row) for row in conn.execute(
-            'SELECT rowid,task_id,org_slug,version,kind,owner_id '
-            'FROM workflow_task_ownership ORDER BY rowid LIMIT 8193')]
-        if len(owners) > 8192:
+        if allowance is None and source_inventory[1]['workflow_task_ownership'][0] > 8192:
             raise ValueError('workflow_seq_inventory_exhausted')
+        conn.execute('CREATE TEMP TABLE workflow_seq_install_owners AS '
+                     'SELECT rowid AS original_rowid,task_id,org_slug,version,kind,owner_id '
+                     'FROM workflow_task_ownership')
         _execute_ddl(conn, CANONICAL_WORKFLOW_SEQUENTIAL_DDL)
         conn.execute('INSERT INTO workflow_seq_schema_versions(version) VALUES (1)')
         conn.execute('DROP VIEW workflow_task_owner_bindings')
         conn.execute('DROP TABLE workflow_task_ownership')
         conn.execute(SEQUENTIAL_OWNERSHIP_DDL)
-        conn.executemany('INSERT INTO workflow_task_ownership '
-                         '(rowid,task_id,org_slug,version,kind,owner_id) VALUES (?,?,?,?,?,?)', owners)
+        conn.execute('INSERT INTO workflow_task_ownership '
+                     '(rowid,task_id,org_slug,version,kind,owner_id) '
+                     'SELECT original_rowid,task_id,org_slug,version,kind,owner_id '
+                     'FROM temp.workflow_seq_install_owners ORDER BY original_rowid')
+        conn.execute('DROP TABLE temp.workflow_seq_install_owners')
         conn.execute(sequential_binding_view_ddl(layout.document, coding_extension=layout.coding))
-        target = inspect_sequential_install(conn, expected_org_slug=expected_org_slug)
+        target = inspect_sequential_install(conn, expected_org_slug=expected_org_slug, allowance=allowance)
         if (not target.sequential or target.ownership != 2
                 or (target.document, target.coding, target.owner_indexed)
                 != (layout.document, layout.coding, layout.owner_indexed)):
             raise ValueError('workflow_seq_install_target_mismatch')
-        after_schema, after_tables = sequential_storage_inventory(conn)
+        after_schema, after_tables = sequential_storage_inventory(conn, allowance=allowance)
         old_schema, old_tables = source_inventory
         if (set(after_tables) != set(old_tables) | set(SEQUENTIAL_TABLES)
                 or any(after_tables[table] != rows for table, rows in old_tables.items())
@@ -2651,6 +2707,8 @@ def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: st
                 or conn.execute('PRAGMA foreign_key_check').fetchone() is not None):
             raise ValueError('workflow_seq_install_foreign_key_mismatch')
         offline_check()
+        if allowance is not None:
+            allowance.check()
         if _coding_org_identity(conn, expected_org_slug=expected_org_slug,
                                 expected_path=expected_path) != source_identity:
             raise ValueError('workflow_seq_install_source_identity_changed')
