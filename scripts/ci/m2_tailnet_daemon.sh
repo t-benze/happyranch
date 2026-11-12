@@ -2,7 +2,7 @@
 # Disposable GitHub-hosted Ubuntu 24.04 only. Bash keeps the CLI phases visible.
 set -euo pipefail
 M2_BUILD=${M2_BUILD:-${RUNNER_TEMP:-/tmp}/managed-m2-build}
-M2_WORK=/var/tmp/happyranch-m2
+M2_WORK=${M2_WORK:-/var/tmp/happyranch-m2}
 M2_LOGS=${M2_LOGS:-${RUNNER_TEMP:-/tmp}/managed-m2-logs}
 MANAGED_DOWNLOADS=${MANAGED_DOWNLOADS:-${RUNNER_TEMP:-/tmp}/managed-downloads}
 python=/opt/happyranch/venv/bin/python
@@ -73,8 +73,17 @@ print('M2 fixture: synthetic org teams returned 200 with bearer and 401 without 
 """)
 PY
 }
+start_fixture() {
+  local unit=$1
+  shift
+  sudo systemd-run --unit="$unit" "$@"
+}
 provision() {
   [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted ]] || fail 'requires a disposable GitHub-hosted runner'
+  provision_cell
+}
+# Shared scaffolding; callers must enforce their own disposable-host admission.
+provision_cell() {
   [[ $(uname -m) == x86_64 && $(ps -p 1 -o comm=) == systemd ]] || fail 'requires amd64 and systemd PID 1'
   for path in /opt/happyranch /etc/happyranch "$M2_WORK"; do absent "$path"; done
   ! getent passwd happyranch >/dev/null || fail 'happyranch account already exists'
@@ -154,14 +163,14 @@ log:
   format: text
   level: info
 EOF
-  sudo systemd-run --unit="${fixtures[0]}" "$M2_WORK/headscale" serve --config "$M2_WORK/config.yaml"
+  start_fixture "${fixtures[0]}" "$M2_WORK/headscale" serve --config "$M2_WORK/config.yaml"
   wait_for curl --silent --fail --connect-timeout 2 --max-time 3 --output /dev/null https://127.0.0.1:18080/health
   sudo "$M2_WORK/headscale" --config "$M2_WORK/config.yaml" users create ci
   for name in peer enrollment; do
     # The generated key goes straight into a root-owned 0600 file, never argv/logs.
     sudo bash -euo pipefail -c 'umask 077; "$1/headscale" --config "$1/config.yaml" preauthkeys create --user ci --reusable=false --expiration 10m | tr -d "\r\n" > "$1/$2.key"' _ "$M2_WORK" "$name"
   done
-  sudo systemd-run --unit="${fixtures[1]}" "$M2_WORK/tailscaled" --state="$M2_WORK/peer.state" --socket="$M2_WORK/peer.sock" --tun=userspace-networking --socks5-server=127.0.0.1:11080
+  start_fixture "${fixtures[1]}" "$M2_WORK/tailscaled" --state="$M2_WORK/peer.state" --socket="$M2_WORK/peer.sock" --tun=userspace-networking --socks5-server=127.0.0.1:11080
   wait_for sudo test -S "$M2_WORK/peer.sock"
   sudo "$M2_WORK/tailscale" --socket="$M2_WORK/peer.sock" up --login-server=https://127.0.0.1:18080 \
     --auth-key="file:$M2_WORK/peer.key" --hostname=synthetic-peer-ci --accept-dns=false --timeout=60s
@@ -169,7 +178,7 @@ EOF
   # The installed product entrypoint auto-provisions its runtime in this test-owned home.
   sudo install -d -m 0700 "$M2_WORK/daemon-home"
   sudo install -m 0600 /etc/happyranch/daemon.token "$M2_WORK/daemon-home/daemon.token"
-  sudo systemd-run --unit="${fixtures[2]}" \
+  start_fixture "${fixtures[2]}" \
     --setenv="HAPPYRANCH_DAEMON_HOME=$M2_WORK/daemon-home" \
     --setenv=HAPPYRANCH_DAEMON_BIND_HOST=127.0.0.1 --setenv=HAPPYRANCH_DAEMON_PORT=18765 \
     "$python" -m runtime.daemon
@@ -347,18 +356,24 @@ residue() {
 logs() {
   mkdir -p "$M2_LOGS"
   runtime_directories 2>&1 | tee "$M2_LOGS/runtime-directories.txt"
+  # M3 supplies a guest pass boundary; hosted M2 keeps its existing arguments.
+  local journal_args=() status_args=()
+  if [[ -n ${M2_JOURNAL_SINCE:-} ]]; then
+    journal_args=(--since "$M2_JOURNAL_SINCE" --output short-unix)
+    status_args=(--lines=0) # The bounded unit journal already supplies the tail.
+  fi
   # Manager reloads are not included in the individual unit journals.
   # shellcheck disable=SC2024
-  sudo journalctl -b --no-pager -o short-precise _PID=1 --grep='Reloading|Reloaded|happyranch' \
+  sudo journalctl -b --no-pager -o short-precise "${journal_args[@]}" _PID=1 --grep='Reloading|Reloaded|happyranch' \
     > "$M2_LOGS/systemd-manager.journal.txt" 2>&1 || true
   cat "$M2_LOGS/systemd-manager.journal.txt"
   local unit
   for unit in "${services[@]}" "$target" "${fixtures[@]}"; do
     # These redirects intentionally create runner-owned artifact logs.
     # shellcheck disable=SC2024
-    sudo journalctl --no-pager -o short-precise -u "$unit" > "$M2_LOGS/$unit.journal.txt" 2>&1 || true
+    sudo journalctl --no-pager -o short-precise "${journal_args[@]}" -u "$unit" > "$M2_LOGS/$unit.journal.txt" 2>&1 || true
     # shellcheck disable=SC2024
-    sudo systemctl status --no-pager --full "$unit" > "$M2_LOGS/$unit.status.txt" 2>&1 || true
+    sudo systemctl status --no-pager --full "${status_args[@]}" "$unit" > "$M2_LOGS/$unit.status.txt" 2>&1 || true
     # shellcheck disable=SC2024
     sudo systemctl cat "$unit" > "$M2_LOGS/$unit.cat.txt" 2>&1 || true
     cat "$M2_LOGS/$unit."*.txt
