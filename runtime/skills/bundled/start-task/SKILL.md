@@ -1393,8 +1393,17 @@ use `happyranch workflows sequential repository-resolve` then `repository-bind`,
 each with `--org ORG --session-id CURRENT --from-file /absolute/command.json --json`.
 The duplicate-free canonical UTF8 command has exactly format with value
 workflow-sequential-repository-command@1, repo_key, base and scope (existing
-48KiB command bound); no operation_key. Resolve is read-only and returns fresh
-current-authority observation, never editing permission. Bind returns only after
+48KiB command bound); no operation_key. A SELECT-only adapter gate checks the
+current selected Developer before either service call; non-selected ordinary/
+non-sequential, browser/bearer, foreign/ended/recovery/thread callers refuse with
+zero INSERT/UPDATE/DELETE and zero COMMITs. Existing audience/session (403), absent
+task (404), ownership/selection (409) refusal codes remain. The service's own
+checks remain authoritative; losing selection after the gate can still refuse
+with its pre-existing transient lease. This residual window is accepted, with
+no new fence. Resolve returns fresh current-authority observation and persists
+no repository/subject/hold/evidence/business rows; the coordinator's transient
+publication lease is acquired and released. It grants no editing permission.
+Bind returns only after
 positive subject/hold COMMIT. Exact/narrower requests reuse the original bound
 subject; identical input after origin drift returns durable repository_changed
 Held, preserving original subject/hold. Broader scope follows existing bind

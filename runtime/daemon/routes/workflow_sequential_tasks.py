@@ -13,8 +13,9 @@ from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.sequential_coding_final_records import CodingFinalSelection
 from runtime.workflows.sequential_coding_policy import CodingEvidenceRefusal
+from runtime.workflows.sequential_dispatch import _cancelled, _discover_result, _native_task
 from runtime.workflows.sequential_engine import SequentialRefusal
-from runtime.workflows.sequential_history import _bytes
+from runtime.workflows.sequential_history import _ReadBudget, _bytes, _sql_budget
 from runtime.workflows.sequential_repository_command import read_repository_command
 from runtime.workflows.sequential_repository_preflight import SequentialRepositoryPreflight
 from runtime.workflows.sequential_repository_records import RepositoryChangeSubject
@@ -29,6 +30,36 @@ _RESPONSES = {
     409: {'description': 'Unbound subject, stale selection, cancellation, ownership/history/authority unavailable'},
     422: {'description': 'Exactly one session query, bounded canonical change for Final only; empty body'},
 }
+
+
+def _repository_owner(org: OrgDep, task_id: str, principal: str, sid: str, *, allow_held: bool) -> None:
+    """SELECT-only pre-filter; the service still owns authoritative admission."""
+    dispatcher = org.workflow_sequential_dispatch
+    budget = _ReadBudget()
+    with dispatcher._reader() as conn, _sql_budget(conn, budget):
+        run, visit, compiled = dispatcher._entry(conn, task_id, budget=budget)
+        conn.set_progress_handler(budget.progress, 1000)
+        task = _native_task(conn, task_id)
+        store = getattr(org.db, '_task_pause_store', None)
+        live = []
+        for invocation in (() if store is None else store._live.values()):
+            budget.step()
+            if (invocation.owner == 'sequential' and invocation.workflow_dispatcher is dispatcher
+                    and (invocation.task.id, invocation.agent, invocation.session_id) == (task_id, principal, sid)):
+                live.append(invocation)
+        budget.work(len(compiled.definition.nodes))
+        node = next(item for item in compiled.definition.nodes if item.id == visit['node_id'])
+        if (len(live) != 1 or live[0].orch is not org.orchestrator
+                or live[0].orch._paths.root != org.root
+                or run['state'] not in (('active', 'held') if allow_held else ('active',))
+                or run['active_visit_id'] != visit['id'] or visit['selected'] != 1
+                or visit['state'] != ('held' if run['state'] == 'held' else 'running')
+                or (visit['principal'], visit['session_id']) != (principal, sid)
+                or task['status'] != 'in_progress' or visit['result_id'] is not None
+                or _discover_result(conn, visit) is not None or _cancelled(conn, run, visit)
+                or node.output_contract.type != 'code-change@1'):
+            raise SequentialRefusal('sequential_repository_session_unavailable')
+        budget.check()
 
 
 async def _read(request: Request, response: Response, org: OrgDep, sid: str,
@@ -74,6 +105,9 @@ async def _read(request: Request, response: Response, org: OrgDep, sid: str,
         if repository_operation is not None:
             def invoke() -> bytes:
                 revalidate()
+                _repository_owner(org, task_id, principal, sid, allow_held=repository_operation == 'bind')
+                # Selection can change after this read; the unchanged service
+                # rechecks it under its existing transient publication lease.
                 service = SequentialRepositoryPreflight(org)
                 operation = service.bind if repository_operation == 'bind' else service.resolve
                 result = operation(task_id=task_id, principal=principal, session_id=sid, request=declaration)

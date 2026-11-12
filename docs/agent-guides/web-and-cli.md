@@ -4946,15 +4946,23 @@ There is no operation key or response cache. The existing 48KiB command bound
 and repository service limits apply without a new allowance.
 
 Both POSTs reuse U7c1's own-current ordinary task-session route boundary. The
-server derives task/principal and the service derives the selected code-change
-visit; browser/bearer, foreign, ended, recovery and thread sessions are refused.
+server derives task/principal, then a SELECT-only adapter gate checks ownership
+and the current selected Developer code-change visit before either service call.
+Non-selected ordinary/non-sequential, browser/bearer, foreign, ended, recovery
+and thread callers refuse with zero INSERT/UPDATE/DELETE and zero COMMITs.
+Existing refusal codes remain: 403 audience/session, 404 absent task, and 409
+sequential_carrier_identity_conflict for ordinary non-visit ownership or
+sequential_repository_session_unavailable for unavailable Developer selection.
 Native browser audience is explicitly excluded; no TS mirror applies. Current
-session checks bookend off-loop service execution; unchanged native selected
-checks own each service admission. These are cooperative checks, not a new
-atomic racing-session or filesystem fence.
+session checks bookend off-loop service execution. The service's unchanged
+selected/native checks remain authoritative: selection lost after the gate can
+still refuse with the pre-existing transient lease. This residual window is
+accepted; no atomic racing-session or filesystem fence is added.
 
-Resolve is read-only and returns a fresh current-authority receipt on each
-call. It never binds or releases editing. Bind forwards existing behavior:
+Resolve returns a fresh current-authority receipt on each call and persists no
+repository/subject/hold/evidence/business rows. The coordinator's transient
+publication lease is acquired and released; successful resolve is not zero total
+writes. It never binds or releases editing. Bind forwards existing behavior:
 exact/narrower requests reuse the original immutable subject; drift returns a
 durable Held, preserving original subject/hold bytes. An identical request
 after origin drift yields `repository_changed`, which takes precedence over
