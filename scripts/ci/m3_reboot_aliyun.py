@@ -15,6 +15,7 @@ import io
 import json
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import time
 import tarfile
@@ -40,7 +41,7 @@ class CloudAssistant:
     def run(self, command: str, timeout: int = 120) -> tuple[int, str]:
         invocation = self.api(
             "RunCommand", "--Type", "RunShellScript", "--InstanceId.1", self.instance,
-            "--CommandContent", command, "--ContentEncoding", "PlainText", "--Timeout", str(timeout),
+            "--CommandContent", "exec /bin/bash -c " + shlex.quote(command), "--ContentEncoding", "PlainText", "--Timeout", str(timeout),
         )["InvokeId"]
         deadline = time.monotonic() + timeout + 90
         while time.monotonic() < deadline:
