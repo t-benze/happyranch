@@ -4791,6 +4791,14 @@ Web OpenAPI-coverage test remains retired. Focused exercise:
 
 ## U7a common read projections (TASK-15465, R-M3-4)
 
+R-M3-7 / TASK-15584 adds RunDetail `effective_limits` and `reducer_counters` using
+the reducer's shared limit intersection and engine's immutable transition-counter
+owner. Existing settings-snapshot `limits` and database-event `run.counters`
+retain their meaning. Reducer consumption excludes admission/cancel/return and
+is not event_count. Decision.reason is not stored; the browser must use these
+facts plus the admitted definition for exhaustion, with no invented hold reason.
+All new work shares the original read budget/deadline; R-M3-6 disclosure remains.
+
 Six existing-Founder-bearer GETs expose stored sequential definition versions,
 repo-free settings, runs/detail and source/carrier/visit task links, under
 `/workflows/sequential` and `/tasks/{task_id}/sequential-workflow`. Exact paths,

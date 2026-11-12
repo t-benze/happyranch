@@ -2485,6 +2485,16 @@ one original deadline, leaving native consumer work on its own enclosing allowan
 
 ## U7a common read projections (TASK-15465, R-M3-4)
 
+R-M3-7 / TASK-15584 additively exposes RunDetail `effective_limits` (the reducer's
+definition/original/start-lower intersection) and `reducer_counters` (the engine's
+authenticated transition before/after reconstruction). Existing `limits` and
+`run.counters` are unchanged: the latter's events counts ALL stored events,
+whereas reducer events measures consumption and excludes admission/cancel/return.
+Decision.reason is not durably stored; no writer/schema is added. Exhaustion is
+derivable from these facts plus the admitted definition. New parse/work charges
+share the original projection budget/deadline; exhaustion refuses without reset.
+R-M3-6 Final redaction stays unchanged. See the current U7 spec R-M3-7 note.
+
 Six existing-Founder-bearer GETs expose stored sequential definition versions,
 repo-free settings, runs/detail and source/carrier/visit task links, under
 `/workflows/sequential` and `/tasks/{task_id}/sequential-workflow`. Exact paths,
