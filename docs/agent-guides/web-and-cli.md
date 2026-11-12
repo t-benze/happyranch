@@ -4932,3 +4932,47 @@ U7c2 still owes compatible Final witness/output acceptance, U7d agent initiation
 and U9 atomic fresh-start cutover. Full command/route grammar, audience exclusions,
 per-read allowances and SYNTHETIC evidence limits: [current U7 spec](../superpowers/specs/2026-11-11-sequential-coding-u7.md).
 No schema/permission/credential/access observer or live operation is introduced.
+
+
+## U4c current selected-Developer repository transport (TASK-15660)
+
+The earlier U4 checkpoint's unavailable public subject-binding adapter is
+superseded by [U4c](../superpowers/specs/2026-11-12-sequential-coding-u4c.md).
+`happyranch workflows sequential repository-resolve` and `repository-bind`
+require `--org ORG --session-id CURRENT --from-file /absolute/command.json --json`.
+The canonical closed command contains exactly `format` with value
+`workflow-sequential-repository-command@1`, `repo_key`, `base`, and `scope`.
+There is no operation key or response cache. The existing 48KiB command bound
+and repository service limits apply without a new allowance.
+
+Both POSTs reuse U7c1's own-current ordinary task-session route boundary. The
+server derives task/principal, then a SELECT-only adapter gate checks ownership
+and the current selected Developer code-change visit before either service call.
+Non-selected ordinary/non-sequential, browser/bearer, foreign, ended, recovery
+and thread callers refuse with zero INSERT/UPDATE/DELETE and zero COMMITs.
+Existing refusal codes remain: 403 audience/session, 404 absent task, and 409
+sequential_carrier_identity_conflict for ordinary non-visit ownership or
+sequential_repository_session_unavailable for unavailable Developer selection.
+Native browser audience is explicitly excluded; no TS mirror applies. Current
+session checks bookend off-loop service execution. The service's unchanged
+selected/native checks remain authoritative: selection lost after the gate can
+still refuse with the pre-existing transient lease. This residual window is
+accepted; no atomic racing-session or filesystem fence is added.
+
+Resolve returns a fresh current-authority receipt on each call and persists no
+repository/subject/hold/evidence/business rows. The coordinator's transient
+publication lease is acquired and released; successful resolve is not zero total
+writes. It never binds or releases editing. Bind forwards existing behavior:
+exact/narrower requests reuse the original immutable subject; drift returns a
+durable Held, preserving original subject/hold bytes. An identical request
+after origin drift yields `repository_changed`, which takes precedence over
+original success. Broader supported scope yields the existing
+`sequential_repository_subject_changed` Held; subsequent changed requests may
+refuse `sequential_repository_hold_conflict`. No body-conflict policy is added.
+The CLI prints the original service JSON, exits 2 on Held/refusal/uncertainty,
+and never retries automatically. After transport loss the Developer may
+explicitly reissue the same canonical body; current bind semantics still win.
+Only positive subject COMMIT releases editing; failed COMMIT releases nothing.
+U7c1 GET `repository-preflight` remains a read of the already-bound subject.
+No selected-context, observer, schema, credential, permission generation,
+network/effect, historical evidence or live deployment change follows.

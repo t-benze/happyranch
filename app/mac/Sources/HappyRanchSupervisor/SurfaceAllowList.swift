@@ -113,6 +113,8 @@ public struct SurfaceAllowList: Sendable {
             ("GET", "/workflows/coding/runs/*/final-manager"),
             // Sequential selections belong only to their own live task-session CLI.
             ("GET", "/workflows/sequential/repository-preflight"),
+            ("POST", "/workflows/sequential/repository-resolve"),
+            ("POST", "/workflows/sequential/repository-bind"),
             ("GET", "/workflows/sequential/final-manager"),
             // Original-current author staging is a native-sensitive mutation.
             ("POST", "/workflows/submissions/handoffs"),

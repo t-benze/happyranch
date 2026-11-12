@@ -1,5 +1,9 @@
 # Sequential Coding U7: common transport and agent initiation
 
+Current subject-binding transport: [U4c](2026-11-12-sequential-coding-u4c.md)
+supersedes historical unavailable/unmounted repository-adapter statements below.
+All other historical checkpoints retain their scope.
+
 > Status: current design; U7a/U7b/U7c1/U7c2b delivered in source, including complete Final acceptance and R-M3-6 browser redaction; U7d ordinary completion intake delivered in source; U9 now delivers the atomic reviewed-v2 public fresh-start cutover and old fresh @1/@2 refusal in source (TASK-15624; see the [U9 spec](2026-11-12-sequential-coding-u9.md)). Deployment and execution acceptance remain separate.
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
 > Historical checkpoints below retain their original source-head exclusions. Their public fresh-start OFF/unmounted/venue-only descriptions are superseded by U9; admitted history and original evidence limits remain intact.

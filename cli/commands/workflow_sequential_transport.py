@@ -1,4 +1,4 @@
-"""Live selected-manager HTTP selection and LOCAL single-attempt Final mount."""
+"""Own-current repository transport and live-manager LOCAL single-attempt Final mount."""
 from __future__ import annotations
 
 import argparse
@@ -21,6 +21,7 @@ from runtime.workflows.sequential_coding_output import CodeChangeDeclaration
 from runtime.workflows.sequential_contracts import Closed, Token
 from runtime.workflows.sequential_definition import _json
 from runtime.workflows.sequential_history import _bytes
+from runtime.workflows.sequential_repository_command import read_repository_command
 from runtime.workflows.sequential_repository_records import RepositoryChangeSubject
 
 
@@ -96,6 +97,17 @@ def cmd_workflow_sequential(args: argparse.Namespace) -> None:
                 if response.status_code != 200:
                     raise ValueError(f'sequential_preflight_refused:{response.status_code}:' + response.text[:4096])
                 result = RepositoryChangeSubject.model_validate_json(response.content, strict=True).model_dump(mode='json')
+            elif args.sequential_command in ('repository-resolve', 'repository-bind'):
+                absolute = require_absolute_payload_path(args.from_file, kind='sequential-repository')
+                with Path(absolute).open('rb') as stream:
+                    raw = stream.read(49153)
+                read_repository_command(raw)
+                response = client.post(f'/api/v1/orgs/{org}/workflows/sequential/{args.sequential_command}',
+                    params={'session_id': args.session_id}, content=raw,
+                    headers={'Content-Type': 'application/json'})
+                if response.status_code != 200:
+                    raise ValueError(f'sequential_repository_refused:{response.status_code}:' + response.text[:4096])
+                result = _json(response.content, 16384)
             else:
                 absolute = require_absolute_payload_path(args.from_file, kind='sequential-finalize')
                 with Path(absolute).open('rb') as stream:
@@ -106,9 +118,16 @@ def cmd_workflow_sequential(args: argparse.Namespace) -> None:
                     raise ValueError('sequential_finalize_noncanonical')
                 result = finalize(client, org, args.session_id, command)
         print(_bytes(result).decode('utf8'))
+        if args.sequential_command in ('repository-resolve', 'repository-bind') and (
+                result.get('disposition') == 'Held' or result.get('format') == 'workflow-sequential-repository-hold@1'):
+            raise SystemExit(2)
         if args.sequential_command == 'finalize' and result['outcome'] != 'merged':
             raise SystemExit(2)
     except (OSError, ValueError, TypeError, KeyError, httpx.HTTPError, subprocess.SubprocessError) as exc:
+        if args.sequential_command in ('repository-resolve', 'repository-bind'):
+            print(f'error: sequential repository transport refused or uncertain; no automatic retry; '
+                  f'preserve the body for explicit reissue: {exc}', file=sys.stderr)
+            raise SystemExit(2) from None
         print(f'error: sequential transport refused or recording uncertain; preserve original records; '
               f'do not reissue Final: {exc}', file=sys.stderr)
         raise SystemExit(2) from None

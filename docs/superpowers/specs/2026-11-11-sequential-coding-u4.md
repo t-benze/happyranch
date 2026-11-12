@@ -1,5 +1,9 @@
 # Sequential Coding U4: task-owned repository resolution
 
+Current subject-binding transport: [U4c](2026-11-12-sequential-coding-u4c.md)
+supersedes historical unavailable/unmounted repository-adapter statements below.
+All other historical checkpoints retain their scope.
+
 2026-11-11; THR-336 / ROOT TASK-15144, maker TASK-15145. This specifies the
 whole re-scoped U4. U4a supplies inert records/readers and an unmounted preflight;
 U4b1 attaches durable business holds; U4b2 attaches immutable subject binding

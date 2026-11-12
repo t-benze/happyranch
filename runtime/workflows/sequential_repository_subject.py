@@ -116,9 +116,13 @@ def repository_instruction(conn: sqlite3.Connection, run: dict, compiled: Compil
     receipt = read_repository_subject(conn, run, compiled, budget)
     if receipt is None:
         return ('Sequential Coding phase: resolve-only. Resolve repository/origin, full SHA1 base and '
-                'authorized scope inside this task. Editing is withheld until the internal subject '
-                'binding returns after positive COMMIT. No public binding command is available yet; '
-                'report an unavailable adapter. Do not fabricate a receipt or result.')
+                'authorized scope inside this task. Use happyranch workflows sequential repository-resolve '
+                'and repository-bind --org ORG --session-id CURRENT --from-file /absolute/command.json --json. '
+                'The canonical command has exactly format=workflow-sequential-repository-command@1, '
+                'repo_key, base and scope. Resolve alone never releases editing. Editing is withheld '
+                'until binding returns after positive subject COMMIT; Held keeps it withheld. '
+                'No automatic transport retry; explicit same-body reissue uses existing bind semantics '
+                'and may return durable Held on drift. Do not fabricate a receipt or result.')
     return ('Sequential Coding phase: editing under the committed immutable subject below. '
             'Correction visits retain this subject. Another target/origin/base or expanded scope '
             'requires a new authorized run. This supplies no effective-access or publication grant. '

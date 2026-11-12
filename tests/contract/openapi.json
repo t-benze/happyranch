@@ -5244,8 +5244,50 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/sequential/repository-bind": {
+      "POST": {
+        "params": [
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/sequential/repository-preflight": {
       "GET": {
+        "params": [
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/sequential/repository-resolve": {
+      "POST": {
         "params": [
           [
             "session_id",
