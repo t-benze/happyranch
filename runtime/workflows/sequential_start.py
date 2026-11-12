@@ -19,10 +19,11 @@ from runtime.workflows.coding_authority_history import _bounded_rows, _decoded
 from runtime.workflows.sequential_contracts import Closed, Limits, StartCommand
 from runtime.workflows.sequential_definition import CompiledDefinition, parse_start, validate_start
 from runtime.workflows.sequential_engine import (
-    AdmissionIds, SequentialRefusal, _bound_agents, _engine_rows, _identity, admit_uncommitted,
+    AdmissionIds, SequentialRefusal, _bound_agents, _engine_rows, _identity, _replay, admit_uncommitted,
 )
-from runtime.workflows.sequential_history import StorageSettings, _ReadBudget, _bytes, _parse, _sql_budget
-from runtime.workflows.sequential_run_validation import _pins, _selected_layout
+from runtime.workflows.sequential_history import StorageSettings, _ReadBudget, _bytes, _decode, _parse, _sql_budget
+from runtime.workflows.sequential_release import select_coding_release
+from runtime.workflows.sequential_run_validation import _pins, _selected_layout, validate_selected_run_uncommitted
 from runtime.workflows.sequential_venue import check_venue_start
 
 
@@ -78,13 +79,39 @@ def _selection(conn: sqlite3.Connection, *, org_slug: str, command: StartCommand
     return compiled, setting, snapshot
 
 
-def precheck_start(org: Any, workflow: dict, *, source_task_id: str) -> None:
-    """Fresh SQL-free venue observation, then one coherent read-only pin scope."""
+def _require_runtime(org: Any) -> None:
+    """Actual native engine attachments, independent of release/settings/marker."""
+    orch = org.orchestrator
+    dispatcher = getattr(org, 'workflow_sequential_dispatch', None)
+    _check(dispatcher is not None and getattr(dispatcher, 'org', None) is org
+           and getattr(orch, '_workflow_sequential_dispatch', None) is dispatcher
+           and getattr(org.db, '_workflow_sequential_dispatch', None) is dispatcher
+           and orch._db is org.db and getattr(orch, '_host_supervisor', None) is not None
+           and getattr(orch, '_queue', None) is not None and getattr(orch, '_main_loop', None) is not None
+           and orch._main_loop.is_running() and not org._runner_admission_closed,
+           'sequential_host_unavailable')
+
+
+def _fresh_start(org: Any, command: StartCommand) -> CompiledDefinition | None:
+    """Observe package/venue outside SQL; neither supplies admission authority."""
+    if command.definition.identity == 'release/happyranch/coding':
+        release = select_coding_release(command.definition)
+        _require_runtime(org)
+        return release
     check_venue_start(org_slug=org.slug, org_root=org.root, db_path=org.db.path)
+    return None
+
+
+def precheck_start(org: Any, workflow: dict, *, source_task_id: str) -> None:
+    """Fresh release/native or disposable observation, then coherent pin scope."""
     budget = _ReadBudget()
     command = _parse(_bytes(workflow), parse_start, budget)
+    release = _fresh_start(org, command)
+    capture = org.workflow_authority.capture_admission() if release is not None else None
     with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
-        _selection(conn, org_slug=org.slug, command=command, budget=budget)
+        compiled, _, _ = _selection(conn, org_slug=org.slug, command=command, budget=budget)
+        if capture is not None:
+            _bound_agents(compiled, command, capture)
         _ordinary_source(conn, org, source_task_id, budget)
 
 
@@ -251,17 +278,41 @@ def _claim_action(org: Any, claim: RetryClaim) -> Any:
     return context
 
 
+def _admitted_replay(conn: sqlite3.Connection, org: Any, claim: RetryClaim,
+                     command: StartCommand, budget: _ReadBudget) -> AdmissionIds | None:
+    """Authenticate original admission before any fresh release/default selection."""
+    rows = _engine_rows(conn, 'workflow_seq_runs', budget,
+        'org_slug=? AND source_principal=? AND start_operation_key=?',
+        (org.slug, claim.assigned_agent, command.operation_key))
+    if not rows:
+        return None
+    _check(len(rows) == 1)
+    original = Limits.model_validate(_decode(rows[0]['original_limits_bytes'], budget))
+    replay = _replay(conn, org_slug=org.slug, command=command,
+        start=_bytes(command.model_dump(mode='json')), source=claim, original_limits=original, budget=budget)
+    _check(replay is not None)
+    validate_selected_run_uncommitted(conn, org_slug=org.slug, run_id=replay.run_id, scope='admission')
+    budget.check()
+    return replay
+
+
 def start_in_writer(conn: sqlite3.Connection, *, org: Any, claim: RetryClaim, decision: NextStep,
                     report: CompletionReport, invocation: Any, capture: AuthorityAdmissionCapture,
-                    revise_limit: int) -> AdmissionIds:
+                    revise_limit: int, release: CompiledDefinition | None) -> AdmissionIds:
     """Atomic native ownership + unchanged U3b graph + accepted source parking."""
     _check(conn is org.db._conn and conn.in_transaction)
     budget = _ReadBudget()
     with _sql_budget(conn, budget):
         command = _callback(conn, org, claim, decision, report, budget)
+        replay = _admitted_replay(conn, org, claim, command, budget)
+        if replay is not None:
+            return replay
+        if command.definition.identity == 'release/happyranch/coding':
+            _require_runtime(org)
+            _check(release is not None and release.pin == command.definition,
+                   'sequential_release_pin_mismatch')
         compiled, setting, snapshot = _selection(conn, org_slug=org.slug, command=command, budget=budget)
         run_id = _identity('run', org.slug, claim.assigned_agent, command.operation_key)
-        existing = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (run_id,))
         bound = _bound_agents(compiled, command, capture)
         node = next(n for n in compiled.definition.nodes if n.id == compiled.definition.entry_node)
         carrier = TaskRecord(id='TASK-SEQ-' + hashlib.sha256(_bytes([run_id, 'carrier'])).hexdigest(),
@@ -270,28 +321,21 @@ def start_in_writer(conn: sqlite3.Connection, *, org: Any, claim: RetryClaim, de
         visit = TaskRecord(id='TASK-SEQ-' + hashlib.sha256(_bytes([run_id, 'visit', 1])).hexdigest(),
             parent_task_id=carrier.id, assigned_agent=bound[node.role]['name'], team=bound[node.role]['team'],
             task_type='subtask', brief='Sequential node ' + node.id + '; follow only the bound node brief and domain supplement.')
-        action = None
-        if not existing:
-            _source(conn, org, claim, invocation, capture, revise_limit, budget)
-            action = _claim_action(org, claim)
-        else:
-            # U3b authenticates the original quartet/command/limits and refuses
-            # later-state replay. Never spend or park the source a second time.
-            _check(existing[0]['settings_id'] == setting['id'])
+        _source(conn, org, claim, invocation, capture, revise_limit, budget)
+        action = _claim_action(org, claim)
         budget.check()
     ids = admit_uncommitted(conn, org.db, org_slug=org.slug, compiled=compiled, settings_row=setting,
         start=_bytes(command.model_dump(mode='json')), source=claim, carrier_task=carrier, visit_task=visit,
         original_limits=snapshot.limits, authority=org.workflow_authority, capture=capture)
-    if not existing:
-        now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-        changed = conn.execute("UPDATE tasks SET block_kind='delegated',note=?,updated_at=? WHERE id=? "
-            "AND status='in_progress' AND block_kind IS NULL AND current_session_id=? AND assigned_agent=?",
-            ('sequential-owned:' + ids.run_id, now, claim.task_id, claim.current_session_id, claim.assigned_agent))
-        _check(changed.rowcount == 1)
-        if action is not None:
-            ack = org.db._acknowledge_v2_decision_dispatch_uncommitted(
-                root_task_id=claim.task_id, manager_agent=action.manager_agent, result_id=action.causal_result_id)
-            _check(ack.status == 'applied')
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    changed = conn.execute("UPDATE tasks SET block_kind='delegated',note=?,updated_at=? WHERE id=? "
+        "AND status='in_progress' AND block_kind IS NULL AND current_session_id=? AND assigned_agent=?",
+        ('sequential-owned:' + ids.run_id, now, claim.task_id, claim.current_session_id, claim.assigned_agent))
+    _check(changed.rowcount == 1)
+    if action is not None:
+        ack = org.db._acknowledge_v2_decision_dispatch_uncommitted(
+            root_task_id=claim.task_id, manager_agent=action.manager_agent, result_id=action.causal_result_id)
+        _check(ack.status == 'applied')
     org.workflow_authority._validate_admission_uncommitted(conn, capture)
     return ids
 
@@ -299,6 +343,12 @@ def start_in_writer(conn: sqlite3.Connection, *, org: Any, claim: RetryClaim, de
 async def _consume(dispatcher: Any, claim: RetryClaim, decision: NextStep,
                    report: CompletionReport, invocation: Any) -> AdmissionIds:
     org = dispatcher.org
+    budget = _ReadBudget()
+    with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
+        command = _callback(conn, org, claim, decision, report, budget)
+        replay = _admitted_replay(conn, org, claim, command, budget)
+        if replay is not None:
+            return replay
     capture = org.workflow_authority.capture_admission()
     revise_limit = _policy(org, claim)
     async with org.workflow_authority._async_writer_lock:
@@ -306,9 +356,10 @@ async def _consume(dispatcher: Any, claim: RetryClaim, decision: NextStep,
             async with org.db_lock:
                 # Re-read file-backed policy after lock waits, BEFORE the writer.
                 _check(_policy(org, claim) == revise_limit)
+                release = _fresh_start(org, command)
                 with org.workflow_authority.admission_writer(capture) as conn:
                     return start_in_writer(conn, org=org, claim=claim, decision=decision, report=report,
-                        invocation=invocation, capture=capture, revise_limit=revise_limit)
+                        invocation=invocation, capture=capture, revise_limit=revise_limit, release=release)
 
 
 def consume_start(dispatcher: Any, claim: RetryClaim, decision: NextStep,
@@ -321,7 +372,10 @@ def consume_start(dispatcher: Any, claim: RetryClaim, decision: NextStep,
     try:
         budget = _ReadBudget()
         with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
-            _callback(conn, org, claim, decision, report, budget)
+            command = _callback(conn, org, claim, decision, report, budget)
+            replay = _admitted_replay(conn, org, claim, command, budget)
+            if replay is not None:
+                return replay
         precheck_start(org, decision.workflow, source_task_id=claim.task_id)
         return dispatcher._on_loop(_consume(dispatcher, claim, decision, report, current_invocation()))
     except SequentialRefusal:

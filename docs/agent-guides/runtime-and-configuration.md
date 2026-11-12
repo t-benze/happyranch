@@ -3858,8 +3858,12 @@ Finish at the printed `/orgs/ORG/workflows/setup` (Workflows → Setup), which e
 repo-free defaults only for stored sequential definitions. First save starts
 Disabled; saving preserves admission. A missing/empty sequential catalog is not
 installed by this historical host command. Sequential install, definition
-registration and admission remain separate authorized operations, with the public
-cutover still pending the atomic U9b follow-on. The inert offline
+registration and admission remain separate authorized operations. Atomic U9b
+source now selects only reviewed Coding v2 for public fresh start and refuses
+old fresh starts after authenticated replay. Latest Allowed new settings, current
+authority and mounted engine/storage are independent requirements; noncatalog V3
+fixtures keep their disposable fence. Admitted runs retain original pins after
+new defaults/Disable. The offline
 `setup_sequential_coding.py` source supplies definition registration and separate
 Allow/Disable, with complete offline/backup exclusions; it does not install or
 attach public starts. Historical Explicit settings never transfer; Settings →

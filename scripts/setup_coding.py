@@ -2459,7 +2459,7 @@ class Coordinator:
         print(f'8. http://127.0.0.1:{port}/orgs/{self.args.org}/workflows/setup')
         print('Workflows Setup edits repo-free default agents for stored sequential definitions. First save defaults to Disabled; saving preserves admission and starts no run. An unavailable or empty catalog requires separately authorized sequential installation and definition registration. This host command does neither and does not enable sequential admission. Uncertain saves use Check original save.')
         print(f'Backup: {self.backup}; saved definition observation: {self.receipts / "saved-coding-definition.json"}')
-        print('Host preparation and historical saved definition observation complete; continue at Workflows → Setup. Historical Explicit settings do not transfer. Sequential public fresh start remains unavailable pending the atomic U9 cutover; workflow and operational acceptance are open.')
+        print('Host preparation and historical saved definition observation complete; continue at Workflows → Setup. Historical Explicit settings do not transfer. Sequential fresh start requires the reviewed v2 release, mounted engine/storage, current authority and latest Allowed new settings; workflow and operational acceptance are open.')
 
 
 def identity_or_link(path):

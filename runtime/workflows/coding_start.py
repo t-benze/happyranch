@@ -22,6 +22,7 @@ from runtime.workflows.coding_saved_records import _canonical, _check, _hash
 from runtime.workflows.coding_source_history import _session_start
 from runtime.workflows.coding_start_history import claim_for, rows, same
 from runtime.workflows.coding_start_records import CodingRunReceipt, effective_mapping, parse_decision, parse_native_decision
+from runtime.workflows.sequential_release import SequentialReleaseUnavailable, refuse_legacy_fresh_start
 
 
 class CodingStartError(ValueError):
@@ -49,25 +50,11 @@ def require_ready(org: Any) -> None:
 
 
 def require_start_ready(conn: sqlite3.Connection, org: Any, command: dict) -> None:
-    # Fresh starts alone require current explicit settings. Admitted callbacks
-    # and continuations keep their original pins when new admission is disabled.
-    require_ready(org)
-    from runtime.workflows._coding_settings_execution import _settings_family
-    from runtime.infrastructure.workflow_schema import _read_workflow_schema
-    owned = not conn.in_transaction
-    if owned:
-        conn.execute('BEGIN')
+    """U9 fresh-only fence; the caller must select authenticated replay first."""
     try:
-        _check(_settings_family(command))
-        budget = _Budget()
-        layout, inventory = _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
-        _check(inventory is not None and org.workflow_coding_builtin.available(inventory.release))
-        _resolve_start(command, inventory.mappings, inventory.release, budget, fresh=True)
-    except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
-        raise CodingStartError('coding_start_settings_unavailable') from None
-    finally:
-        if owned:
-            conn.rollback()
+        refuse_legacy_fresh_start()
+    except SequentialReleaseUnavailable as exc:
+        raise CodingStartError(exc.code) from None
 
 
 class CodingStartStore:
@@ -181,8 +168,10 @@ class CodingStartStore:
             raise CodingStartError('coding_queued_mutation_unavailable')
 
     def consume(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str:
-        with self.db._lock:
-            require_start_ready(self.db._conn, self.org, decision.workflow)
+        replay = self._read_replay(claim, decision, report)
+        if replay is not None:
+            return replay
+        require_start_ready(self.db._conn, self.org, decision.workflow)
         # BEFORE v2 action spending, result claim, or allocation.
         owner = current_invocation()
         coroutine = self._start(claim, decision, report, owner)
@@ -195,6 +184,10 @@ class CodingStartStore:
         _check(load_org_config(self.org.orchestrator._paths).max_revise_rounds == revise_limit)
 
     async def _start(self, claim: RetryClaim, decision: NextStep, report: CompletionReport, invocation: Any) -> str:
+        replay = self._read_replay(claim, decision, report)
+        if replay is not None:
+            return replay
+        require_start_ready(self.db._conn, self.org, decision.workflow)
         references = self.support._schema_references()
         authority = self.org.workflow_authority
         # Discovery/file I/O occurs before the synchronous bootstrap interval.
@@ -225,6 +218,31 @@ class CodingStartStore:
                             capture=capture, references=references, revise_limit=revise_limit, active_sessions=sessions,
                             checkpoints=checkpoints)
 
+    def _read_replay(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str | None:
+        references = self.support._schema_references()
+        with self.db.coherent_read_view() as conn:
+            inventory = self.support._storage(conn, references)
+            return self._admitted_replay(conn, claim, decision, report, inventory)
+
+    def _admitted_replay(self, conn: sqlite3.Connection, claim: RetryClaim, decision: NextStep,
+                         report: CompletionReport, inventory: Any) -> str | None:
+        command = decision.workflow
+        parse_decision(_canonical(dict(action='workflow_start', workflow=command)))
+        _check(type(claim.result_row_id) is int and claim.result_row_id > 0
+               and (report.task_id, report.agent) == (claim.task_id, claim.assigned_agent)
+               and self.db.authority_policy_v2_decision_result_report_binds(
+                   root_task_id=claim.task_id, spending_result_id=claim.result_row_id, report=report))
+        for instance, entry in inventory.queued.runs.items():
+            old = entry['command']
+            if (entry['source']['principal'], old['operation_key']) == (claim.assigned_agent, command['operation_key']):
+                if (entry['source']['result']['id'] != claim.result_row_id
+                        or entry['source']['task_id'] != claim.task_id
+                        or entry['source']['session_id'] != claim.current_session_id
+                        or old != command):
+                    raise CodingStartError('coding_start_operation_conflict')
+                return instance
+        return None
+
     def start_in_writer(self, conn: sqlite3.Connection, *, claim: RetryClaim, decision: NextStep,
                         report: CompletionReport, invocation: Any, capture: AuthorityAdmissionCapture,
                         references: tuple[str, ...], revise_limit: int, active_sessions: tuple, checkpoints: list) -> str:
@@ -236,24 +254,17 @@ class CodingStartStore:
         _check(conn is self.db._conn and conn.in_transaction)
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
         inventory = self.support._storage(conn, references)
+        replay = self._admitted_replay(conn, claim, decision, report, inventory)
+        if replay is not None:
+            return replay  # No current authority/native/capacity/action/graph writes.
+        require_start_ready(conn, self.org, decision.workflow)
         command = decision.workflow
         parsed = parse_decision(_canonical(dict(action='workflow_start', workflow=command)))
         _check(self.db.authority_policy_v2_decision_result_report_binds(
             root_task_id=claim.task_id, spending_result_id=claim.result_row_id, report=report))
-        # Frozen replay precedes fresh native claim/current capacity checks.
-        # Complete schema/reference admission reconstructed these histories on
-        # this connection/org/snapshot. Consume locally before any write; the
-        # post-write validator below must reconstruct the changed state anew.
-        mappings, imported, saved = inventory.mappings, inventory.release, inventory.queued
-        for instance, entry in saved.runs.items():
-            old = entry['command']
-            if (entry['source']['principal'], old['operation_key']) == (claim.assigned_agent, command['operation_key']):
-                if (entry['source']['result']['id'] != claim.result_row_id
-                        or entry['source']['task_id'] != claim.task_id
-                        or entry['source']['session_id'] != claim.current_session_id
-                        or old != command):
-                    raise CodingStartError('coding_start_operation_conflict')
-                return instance  # No admission/task/counter/event/pointer writes.
+        # Historical graph construction is unreachable for fresh starts after
+        # the unconditional fence above; retained family readers stay unchanged.
+        mappings, imported = inventory.mappings, inventory.release
         if not self.org.workflow_coding_builtin.available(inventory.release):
             raise CodingStartError('coding_start_release_unavailable')
         source_before, callback, actual, native = self._native(conn, claim, invocation,

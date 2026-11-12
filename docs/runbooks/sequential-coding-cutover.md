@@ -1,13 +1,14 @@
 # Sequential Coding cutover and backout — operator draft
 
-**SOURCE ONLY: registration/admission delivered; public cutover remains OFF.**
-TASK-15616 delivers only U9b obligation 1, the expressly permitted inert first
-PR. Public sequential fresh start still requires `check_venue_start`; old @2
-fresh admission retains its original Explicit/native gates. The public selector
-attachment and old-fresh fence MUST follow together in one merge unit. Even
-Allowed new settings do not remove this fence. This runbook grants no live
-operation. See the [U9 spec](../superpowers/specs/2026-11-12-sequential-coding-u9.md)
-for the exact compatibility table, caller inventory and remaining obligations.
+**SOURCE ONLY: atomic public Coding cutover and old-fresh fence delivered.**
+TASK-15624 attaches reviewed Coding v2 selection and unconditional old fresh
+refusal together. Public Coding requires compatible installed storage, registered
+reviewed v2, current authority/eligible bindings, mounted native engine and latest
+Allowed NEW settings. Noncatalog V3 fixtures retain `check_venue_start`; a marker
+never supplies Coding authority or bypasses release selection. Authenticated
+admitted replay precedes fresh gates and preserves original pins. Source delivery
+grants no live operation or genuine execution acceptance. See the
+[U9 compatibility table and caller inventory](../superpowers/specs/2026-11-12-sequential-coding-u9.md).
 
 ## Install and setup sequence
 
@@ -83,8 +84,8 @@ for the exact compatibility table, caller inventory and remaining obligations.
    Exact command replay is read-only, even after newer defaults/admission; changed
    key-body reuse conflicts. A read-only no-op/replay needs no backup. Absence or
    read failure supplies no resend, replacement key or success authority.
-7. **Still pending atomic U9b:** verify loaded selector/engine identity separately
-   from source/storage/settings. Once attached and separately authorized, the
+7. Verify loaded selector/engine identity separately from source/storage/settings.
+   With separately authorized operating ownership, the
    genuine ordinary executable manager's own unchanged sequential `workflow_start`
    callback is the only public Coding initiation. No Founder/browser Start action.
    Original source host/outer settlement precedes first-visit release. Genuine
@@ -126,16 +127,15 @@ public attachment, effective access, loaded identity or execution acceptance.
   erase marks, rewrite pins/settings/events or reset source/carrier rows.
 - Close NEW admission using a fresh explicit Disabled command with current CAS,
   preserving original operations. Keep admitted old/new callbacks, settlement,
-  cancellation and LOCAL Final under original pins/current authority. This inert
-  split does not yet fence old @2 fresh starts. After atomic cutover, keep that
-  fence: backout must not reopen old @2 or fall back into bespoke progression.
+  cancellation and LOCAL Final under original pins/current authority. Keep the
+  unconditional old-fresh fence: backout must not reopen old @2 or fall back into bespoke progression.
 - Defaults/admission changes never reassign or re-pin work. Supported cancellation
   is a business stop; Stop success/PID absence does not settle native/remote
   uncertainty. Original command=None/receipt uncertainty permits no reissue.
 - Database restore is separate recovery and cannot undo external effects.
 
 Record installed/loaded versions, storage/settings identities, original operations,
-commands/exits and NOT RUN evidence. Public cutover, real operator installation/
+commands/exits and NOT RUN evidence. Real loaded cutover, operator installation/
 reopen/backout, native/genuine V3/V5/M4 and access/merge acceptance remain NOT RUN
 by this source unit. V3 ends 2026-11-23T08:48:38Z; nothing here extends it or
 authorizes live changes. Independent review/QA/guarded merge remain source gates.
