@@ -1927,7 +1927,9 @@ keep their original views and cumulative allowances. Generic audit watermark
 collectors/publication remain removed per THR-308 seq403. Source/static evidence
 does not establish runtime behavior or clear historical uncertainty.
 
-The Founder page is `/orgs/:slug/settings/coding` (TASK12632): org-keyed view,
+Since U8b (TASK-15605) that page no longer edits; it points to Workflows → Setup and keeps
+historical saves recoverable only by the read-only original-key GET. Historically, the
+Founder page was `/orgs/:slug/settings/coding` (TASK12632): org-keyed view,
 four org-wide cross-team selectors, one explicit frozen key/body per Save, 409
 draft retention with explicit adoption, a provider-lifetime per-org send fence
 (survives pane/org switches; fields locked while pending), uncertain-save lock
@@ -2138,7 +2140,8 @@ grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
 ## Guided human host coding setup — ROOT12877 / THR320seq162
 
 From the reviewed published host checkout, a genuine human terminal may run
-`python3 scripts/setup_coding.py --org happyranch`, then use Settings → Coding.
+`python3 scripts/setup_coding.py --org happyranch`, then use Settings → Coding (since U8b a
+pointer to Workflows → Setup with read-only original-save recovery, not an editor).
 This explicit coordinator reuses existing lifecycle/build and saved-definition observation
 owners. Normal OrgState.load atomically adds inert coding storage without
 upgrading document layouts; the coordinator invokes no migration chain. Managed markers,

@@ -132,6 +132,11 @@ function refuseSequentialOrg(qc: QueryClient, slug: string, ownHash: string) {
       : { ...q.state, data: undefined, dataUpdatedAt: 0, error: new SequentialAccessFenced(), errorUpdatedAt: Date.now(), status: 'error' });
   }
 }
+/** The settings GET's 404 when no generation was ever saved for this definition identity (U8b first setup). */
+function isSettingsNotSaved(kind: string, error: unknown): boolean {
+  return kind === 'settings' && status(error) === 404
+    && (error as { code?: string | null } | null)?.code === 'sequential_settings_not_found';
+}
 /** PRD F6: only a transport failure (no HTTP status) is a network refresh failure. */
 function isNetworkFailure(error: unknown): boolean {
   return !!error && status(error) === undefined && (error as { name?: string }).name !== 'AbortError';
@@ -158,6 +163,12 @@ function useSequentialRead<T>(kind: string, id: string, load: (slug: string, sig
       if (fenced()) throw new SequentialAccessFenced();
       return value;
     } catch (error) {
+      // U8b: "nothing saved yet" for this definition identity is a positive setup
+      // fact, not an access refusal; it discloses nothing and must not fence the org.
+      if (isSettingsNotSaved(kind, error)) {
+        if (fenced()) throw new SequentialAccessFenced();
+        throw error;
+      }
       // U8a: a refused read keeps no run/evidence bytes in ANY sequential entry of this org.
       if (status(error) === 403 || status(error) === 404) {
         const owned = qc.getQueryCache().find<T>({ queryKey: key, exact: true });

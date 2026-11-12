@@ -83,9 +83,9 @@ export interface NamespaceCoverage {
 
 export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
-    namespace: 'workflows', routeTokens: ['reviews', 'reviews/:activationId', 'workflows', 'workflows/runs', 'workflows/definitions/:definitionId', 'workflows/runs/:runId'], status: 'translated',
+    namespace: 'workflows', routeTokens: ['reviews', 'reviews/:activationId', 'workflows', 'workflows/setup', 'workflows/runs', 'workflows/definitions/:definitionId', 'workflows/runs/:runId'], status: 'translated',
     qualifiedRouteTokens: ['src/routes.tsx#/orgs/:slug:reviews', 'src/routes.tsx#/orgs/:slug:reviews/:activationId',
-      'src/routes.tsx#/orgs/:slug:workflows', 'src/routes.tsx#/orgs/:slug:workflows/runs',
+      'src/routes.tsx#/orgs/:slug:workflows', 'src/routes.tsx#/orgs/:slug:workflows/setup', 'src/routes.tsx#/orgs/:slug:workflows/runs',
       'src/routes.tsx#/orgs/:slug:workflows/definitions/:definitionId', 'src/routes.tsx#/orgs/:slug:workflows/runs/:runId'],
     qualifiedSurfaces: [
       'src/features/workflows/WorkflowReviewPanel.tsx#WorkflowReviewPanel->src/features/workflows/ReviewResponseDialog.tsx#ReviewResponseDialog:component',

@@ -1,7 +1,8 @@
 /**
- * U8a common Workflows journey (read-only): Definitions, definition overview,
- * Runs and run detail. Agents initiate runs from their tasks; this surface has
- * no start, retry, reassign, merge or configuration control.
+ * Common Workflows journey: Definitions, definition overview, Setup (U8b),
+ * Runs and run detail. Agents initiate runs from their tasks; no view has a
+ * start, retry, reassign or merge control, and only Setup edits configuration
+ * (current default agents; never admission or repositories).
  */
 import { Link, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
@@ -11,9 +12,10 @@ import { useSequentialDefinition, useSequentialDefinitions, useSequentialRuns } 
 import { parseDefinition, taskLinks, type DefEdge, type DefView } from '@/lib/workflowSequentialView';
 import { RunStateBadge } from '@/shared/workflows/SequentialRunPresentation';
 import { SequentialRunDetail } from './SequentialRunDetail';
+import { SequentialSetup } from './SequentialSetup';
 import { ReadOnlyNote, ReadState, TaskRef } from './SequentialCommon';
 
-export function SequentialWorkflowsPage({ view }: { view: 'definitions' | 'runs' | 'definition' | 'run' }): JSX.Element {
+export function SequentialWorkflowsPage({ view }: { view: 'definitions' | 'setup' | 'runs' | 'definition' | 'run' }): JSX.Element {
   const { slug = '', definitionId = '', runId = '' } = useParams();
   const { t } = useTranslation();
   const base = `/orgs/${slug}/workflows`;
@@ -21,17 +23,20 @@ export function SequentialWorkflowsPage({ view }: { view: 'definitions' | 'runs'
     <nav aria-label={t('seqwf.breadcrumb')} className="text-text-muted mb-3 flex flex-wrap items-center gap-1 text-xs">
       <Link className="hover:underline" to={base}>{t('seqwf.title')}</Link>
       {view !== 'definitions' && <><span aria-hidden="true">›</span>
-        <Link className="hover:underline" to={view === 'runs' || view === 'run' ? `${base}/runs` : base}>{t(view === 'runs' || view === 'run' ? 'seqwf.tab.runs' : 'seqwf.tab.definitions')}</Link></>}
+        {view === 'setup' ? <span className="text-text-primary">{t('seqwf.tab.setup')}</span>
+          : <Link className="hover:underline" to={view === 'runs' || view === 'run' ? `${base}/runs` : base}>{t(view === 'runs' || view === 'run' ? 'seqwf.tab.runs' : 'seqwf.tab.definitions')}</Link>}</>}
       {(view === 'definition' || view === 'run') && <><span aria-hidden="true">›</span><span className="text-text-primary font-mono wrap-anywhere">{view === 'run' ? runId : definitionId}</span></>}
     </nav>
-    {view === 'definitions' || view === 'runs' ? <>
+    {view === 'definitions' || view === 'runs' || view === 'setup' ? <>
       <h1 className="font-display text-h1 text-text-primary">{t('seqwf.title')}</h1>
-      <ReadOnlyNote />
+      {view === 'setup' ? <p className="bg-info-soft text-text-primary mt-3 rounded-md px-3 py-2 text-sm">{t('seqwf.setup.note')}</p> : <ReadOnlyNote />}
       <SubTabBar className="mt-4" active={view} tabs={[
         { value: 'definitions', label: t('seqwf.tab.definitions'), to: base },
+        { value: 'setup', label: t('seqwf.tab.setup'), to: `${base}/setup` },
         { value: 'runs', label: t('seqwf.tab.runs'), to: `${base}/runs` },
       ]} />
-      <div className="mt-4">{view === 'definitions' ? <DefinitionsList key={slug} base={base} /> : <RunsList key={slug} slug={slug} />}</div>
+      <div className="mt-4">{view === 'definitions' ? <DefinitionsList key={slug} base={base} />
+        : view === 'setup' ? <SequentialSetup key={slug} slug={slug} /> : <RunsList key={slug} slug={slug} />}</div>
     </> : view === 'definition'
       ? <DefinitionOverview key={JSON.stringify([slug, definitionId])} id={definitionId} />
       : <SequentialRunDetail key={JSON.stringify([slug, runId])} slug={slug} runId={runId} />}
