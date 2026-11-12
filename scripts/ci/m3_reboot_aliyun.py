@@ -29,8 +29,11 @@ class CloudAssistant:
         self.region = region
 
     def api(self, operation: str, *args: str) -> dict:
+        region_args = ["--region", self.region]
+        if operation != "RebootInstance":
+            region_args += ["--RegionId", self.region]
         result = subprocess.run(
-            ["aliyun", "ecs", operation, "--RegionId", self.region, *args],
+            ["aliyun", "ecs", operation, *region_args, *args],
             capture_output=True, text=True, timeout=45, check=False,
         )
         if result.returncode:
