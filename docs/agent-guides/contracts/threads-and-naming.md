@@ -114,6 +114,14 @@ commit, independent current eligibility permits only SAME-token put_once through
 the existing queue; notification loss never rolls back, remints or reapplies.
 
 **Naming v1 core, API and routing source (THR-293 seq14/22/34).** One daemon controls each org.
+THR-308 seq426 Decision 4 permits only the cold `identity_names_load` caller to
+omit its native reservation and active/settled audit pair when read/compare and
+complete admission prove an installed namespace unchanged inside the same
+`BEGIN IMMEDIATE` isolation used by reconciliation, including successful COMMIT.
+Would-write loads reserve before the original reconciliation; failed, unreadable,
+interrupted or uncertain proofs reserve and preserve UNKNOWN history and the
+next-boot hold. No-op loads create no writer identity or epoch change. Other
+writers, including compatibility and policy-manager selectors, retain their rows.
 OrgState admits the existing generic/workflow/canonical source before installing
 an org-only, atomic three-table naming extension. Installer-only N-SAC-1 in
 `runtime/identities/admission.py` checks selected/actual DB ownership, task/audit

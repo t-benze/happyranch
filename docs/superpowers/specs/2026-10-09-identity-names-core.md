@@ -119,6 +119,13 @@ change. Cancellation drains the physical consumer write and original terminal
 compensation before projection. Cold/dynamic load and startup compatibility
 batch integrate through their existing callers and retain original attach guards.
 
+THR-308 seq426 Decision 4 changes only cold `identity_names_load`: a successful
+read/compare inside the normal `BEGIN IMMEDIATE` isolation, including complete
+admission and COMMIT, may prove no writes are needed and omit native reservation
+and active/settled audits. Would-write loads use the original reserved refresh.
+Failed/unreadable/interrupted/uncertain proofs reserve and retain UNKNOWN and
+next-boot refusal. Compatibility, selector and all other writer intervals remain.
+
 New ID creation and rename require fresh available naming. Existing same-ID
 reads/callbacks and lifecycle writes preserve original baseline guards, responses,
 eligibility, selector/bootstrap and byte-owned compensation. After actual terminal

@@ -4,7 +4,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 uv run --frozen --python 3.14 python - <<'PY'
 from pathlib import Path
+from contextlib import contextmanager
 from contextvars import copy_context
+import json
 import sqlite3
 import logging
 import os
@@ -33,6 +35,33 @@ from runtime.infrastructure import workflow_schema_load as load_guard
 from runtime.identities.registry import Namespace, reconcile_namespace
 from runtime.daemon.org_state import OrgState
 from runtime.config import Settings
+from runtime.identities import registry as names
+from runtime.orchestrator import producer_move
+from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+
+startup_failures = []
+def startup_expect(condition, case):
+    print('STARTUP', case, 'PASS' if condition else 'FAIL')
+    if not condition:
+        startup_failures.append(case)
+
+# Observe real load reservations as well as persisted audit history. The spy
+# delegates to the shipping writer; no fixture supplies its disposition/rows.
+real_writer = producer_move.native_writer
+reservations = []
+@contextmanager
+def observe_writer(db, **kwargs):
+    if kwargs['publisher'] == 'identity_names_load':
+        reservations.append(db._conn.total_changes)
+    with real_writer(db, **kwargs) as disposition:
+        if kwargs['publisher'] == 'identity_names_load':
+            assert naming_rows(db)[-1]['state'] == 'active', 'naming entered before durable reservation'
+        yield disposition
+
+def naming_rows(db):
+    return [json.loads(row[0]) for row in db._conn.execute(
+        "SELECT payload FROM audit_log WHERE action='team_move_native_writer' ORDER BY id")
+        if json.loads(row[0])['publisher'] == 'identity_names_load']
 
 # Real OrgState.load, without a listener, runners or serving-daemon access.
 with tempfile.TemporaryDirectory(prefix='org-load-timing-') as scratch:
@@ -55,15 +84,115 @@ with tempfile.TemporaryDirectory(prefix='org-load-timing-') as scratch:
             state = OrgState.load(slug='scratch', root=root, settings=settings)
             state.close()
             messages.clear()
+            reservations.clear()
             start = time.perf_counter()
-            state = OrgState.load(slug='scratch', root=root, settings=settings)
+            with patch('runtime.workflows.authority.native_writer', observe_writer):
+                state = OrgState.load(slug='scratch', root=root, settings=settings)
             elapsed = time.perf_counter() - start
+            startup_expect(not reservations and len(naming_rows(state.db)) == 2
+                           and state.naming_readiness == 'ready', 'naming-noop-zero-rows-and-reservations')
             state.close()
         print(f'LOCAL FIXTURE OrgState.load reopen: wall={elapsed:.6f}s; {messages[-1]}')
         print('Empty-roster fixture; authority publication remains fenced; no serving/restart claim.')
     finally:
         log.removeHandler(capture)
         log.setLevel(prior_level)
+
+# Would-write and every uncertain proof keep the original active/terminal pair.
+for scenario in ('would-write', 'unreadable', 'failed-read', 'failed-commit', 'interrupt'):
+    with tempfile.TemporaryDirectory(prefix='naming-load-') as scratch:
+        root = Path(scratch) / 'orgs' / 'scratch'
+        (root / 'org' / 'agents').mkdir(parents=True)
+        (root / 'org' / 'teams.yaml').write_text('teams: {}\n')
+        with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': scratch}):
+            settings = Settings()
+            state = OrgState.load(slug='scratch', root=root, settings=settings)
+            state.close()
+            if scenario == 'would-write':
+                directory = root / 'org/agents/_terminated'
+                directory.mkdir()
+                definition = AgentDef(name='retired', team='engineering', role='worker',
+                    executor='synthetic_unregistered', allow_rules=('happyranch',), repos={},
+                    enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+                    system_prompt='Inert synthetic definition.')
+                (directory / 'retired.md').write_text(render_agent_text(definition))
+            real_transaction = names.transaction
+            @contextmanager
+            def commit_failure(db):
+                try:
+                    with real_transaction(db) as conn:
+                        yield conn
+                        conn.set_authorizer(lambda action, arg1, *_:
+                            sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_TRANSACTION
+                            and arg1 == 'COMMIT' else sqlite3.SQLITE_OK)
+                finally:
+                    db._conn.set_authorizer(None)
+            error_patch = {
+                'would-write': patch.object(names, 'capture_namespace', wraps=names.capture_namespace),
+                'unreadable': patch.object(names, 'capture_namespace', side_effect=OSError('synthetic unreadable')),
+                'failed-read': patch.object(names, 'read_rows', side_effect=sqlite3.DatabaseError('synthetic read failure')),
+                'failed-commit': patch.object(names, 'transaction', commit_failure),
+                'interrupt': patch.object(names, 'capture_namespace', side_effect=KeyboardInterrupt('synthetic interrupt')),
+            }[scenario]
+            reservations.clear()
+            try:
+                with patch('runtime.workflows.authority.native_writer', observe_writer), error_patch:
+                    state = OrgState.load(slug='scratch', root=root, settings=settings)
+            except KeyboardInterrupt:
+                assert scenario == 'interrupt'
+                db = Database(OrgPaths(root=root).db_path)
+            else:
+                db = state.db
+            rows = naming_rows(db)
+            expected = 'settled' if scenario == 'would-write' else 'unknown'
+            startup_expect(len(reservations) == 1 and len(rows) == 4
+                and [r['state'] for r in rows[-2:]] == ['active', expected]
+                and rows[-1]['writer_id'] == rows[-2]['writer_id'], 'naming-' + scenario + '-ownership')
+            if scenario == 'would-write':
+                assert tuple(db._conn.execute("SELECT lifecycle,current_label FROM identity_name_owners WHERE canonical_id='retired'").fetchone()) == ('terminated', 'retired')
+            else:
+                assert db._conn.execute("SELECT count(*) FROM identity_name_owners").fetchone()[0] == 1
+            if scenario == 'interrupt':
+                db.close()
+            else:
+                assert state.naming_readiness == ('ready' if scenario == 'would-write' else 'unavailable')
+                state.close()
+            state = OrgState.load(slug='scratch', root=root, settings=settings)
+            startup_expect(state._startup_publication_held == (scenario != 'would-write')
+                and len(naming_rows(state.db)) == 4, 'naming-' + scenario + '-next-boot')
+            state.close()
+
+with tempfile.TemporaryDirectory(prefix='status-normalize-') as scratch:
+    db = Database(Path(scratch) / 'org.db')
+    try:
+        cases = (
+            ('valid', 'escalated', None, 'escalated', None, 0),
+            ('dirty', 'escalated', 'delegated', 'escalated', None, 1),
+            ('legacy', 'blocked', 'escalated', 'escalated', None, 1),
+            ('delegate', 'blocked', 'delegated', 'in_progress', 'delegated', 1),
+            ('job', 'blocked', 'blocked_on_job', 'in_progress', 'blocked_on_job', 1),
+            ('approved', 'approved', None, 'completed', None, 1),
+            ('rejected', 'rejected', None, 'failed', None, 1),
+            ('review', 'in_review', None, 'failed', None, 1),
+            ('superseded', 'resolved_superseded', None, 'superseded', None, 1),
+        )
+        for key, status, reason, *_ in cases:
+            db.insert_task(TaskRecord(id=key, brief='synthetic migration'))
+            db._conn.execute('UPDATE tasks SET status=?,block_kind=? WHERE id=?', (status, reason, key))
+        db._conn.execute('CREATE TEMP TABLE status_updates (task_id TEXT)')
+        db._conn.execute('CREATE TEMP TRIGGER observe_status AFTER UPDATE OF status,block_kind ON main.tasks BEGIN INSERT INTO status_updates VALUES (new.id); END')
+        db._conn.commit()
+        db._create_tables()
+        for key, _, _, status, reason, updates in cases:
+            assert tuple(db._conn.execute('SELECT status,block_kind FROM tasks WHERE id=?', (key,)).fetchone()) == (status, reason), key
+            count = db._conn.execute('SELECT count(*) FROM status_updates WHERE task_id=?', (key,)).fetchone()[0]
+            startup_expect(count == updates, 'status-' + key + '-writes')
+        db._conn.execute('DELETE FROM status_updates')
+        db._conn.commit()
+        db._create_tables()
+        startup_expect(db._conn.execute('SELECT count(*) FROM status_updates').fetchone()[0] == 0, 'status-second-pass-no-writes')
+    finally:
+        db.close()
 
 # Each table row drives the actual production owner, with an actual SQLite DB.
 # Interposition only observes/perturbs the boundary AFTER the real source check.
@@ -294,6 +423,12 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
             assert db._conn.execute("SELECT count(*) FROM audit_log WHERE action='team_move_native_writer'").fetchone()[0] == 2
 
         for name, action in actions.items():
+            if name.startswith('Pause '):
+                # A byte-different journal still exercises invalidation. The
+                # canonical no-op is covered separately below.
+                db._conn.execute("UPDATE task_pause_controls SET admission_journal_json=? WHERE root_task_id='TASK-1'",
+                                 ('{ "version": 1, "entries": [] }',))
+                db._conn.commit()
             if name == 'settings reviewer backfill':
                 db._conn.execute("DELETE FROM org_settings WHERE section='reviewer_agents'")
                 db._conn.commit()
@@ -312,6 +447,39 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
                 read()
                 expect(checks() == before + 1, name + ' did not establish a fresh reusable result')
             print('CASE invalidation:', name)
+
+        before = db._conn.total_changes
+        journal_before = db._conn.execute("SELECT admission_journal_json FROM task_pause_controls WHERE root_task_id='TASK-1'").fetchone()[0]
+        restore_pause_preparations(SimpleNamespace(_db=db))
+        restore_pause_preparations(SimpleNamespace(_db=db))  # actual sweep re-run
+        startup_expect(db._conn.total_changes == before, 'pause-identical-restore-and-sweep-zero-writes')
+        assert db._conn.execute("SELECT admission_journal_json FROM task_pause_controls WHERE root_task_id='TASK-1'").fetchone()[0] == journal_before
+
+        # Real recovery changes still persist once; the sweep then preserves
+        # exact bytes and uncertainty. A job-owned prepared entry stays owned.
+        fingerprint = dict(status='pending', block_kind=None, count=0,
+            session_id=None, agent=None, fanout=None, jobs=None, parent=None,
+            brief_digest='0' * 64)
+        entry = dict(id='ordinary', org='scratch', root_task_id='TASK-1',
+            task_id='TASK-1', agent='builder', session_id='synthetic-session',
+            owner='ordinary', owner_identity={}, fingerprint=fingerprint,
+            generation=0, phase='prepared', retry={}, context={},
+            started_at=None, captured_generation=None)
+        job = dict(entry, id='job', owner='job', session_id=None)
+        with store.writer('TASK-1') as (_, row):
+            row['journal']['entries'] = [entry, job]
+            store.save_journal_uncommitted(row)
+        before = db._conn.total_changes
+        restore_pause_preparations(SimpleNamespace(_db=db))
+        assert db._conn.total_changes == before + 1
+        actual = store.row_uncommitted('TASK-1')['journal']['entries']
+        assert actual == [dict(entry, phase='unknown', context={'execution_unknown': True}), job], actual
+        before = db._conn.total_changes
+        restored_bytes = store.row_uncommitted('TASK-1')['admission_journal_json']
+        restore_pause_preparations(SimpleNamespace(_db=db))
+        startup_expect(db._conn.total_changes == before
+            and store.row_uncommitted('TASK-1')['admission_journal_json'] == restored_bytes,
+            'pause-recovered-unknown-and-job-sweep-zero-writes')
 
         other = sqlite3.connect(paths.db_path)
         try:
@@ -450,4 +618,5 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
         print('Synthetic local SQLite; not a serving-daemon restart or production-size estimate.')
     finally:
         db.close()
+assert not startup_failures, startup_failures
 PY

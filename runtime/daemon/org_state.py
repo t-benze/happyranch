@@ -524,7 +524,7 @@ class OrgState:
                     )
                 if attachment_owner is not None:
                     attachment_owner["org"] = state
-                from runtime.identities.registry import read_name_metadata, refresh_names
+                from runtime.identities.registry import read_name_metadata, load_names
                 # Binding reads current validated org metadata at prompt construction;
                 # no cached snapshot, reconciliation or new launch/readiness gate.
                 orchestrator._name_metadata_reader = lambda: read_name_metadata(state)
@@ -569,8 +569,7 @@ class OrgState:
                     # Cold load has no concurrent route coroutine. Discovery stays
                     # outside short publication/profile leases.
                     with _startup_span("org_naming", org=slug):
-                        with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
-                            refresh_names(state, install=True, writer=interval.native_disposition)
+                        load_names(state)
                     with _startup_span("org_workflow_authority", org=slug):
                         try:
                             state.workflow_authority.recover_or_publish()

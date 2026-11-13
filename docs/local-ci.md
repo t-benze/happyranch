@@ -173,6 +173,12 @@ restore the retired Python unit selection or execute general integration/E2E.
 
 Focused schema-load observation (THR308seq348/353/354): run
 `bash scripts/test-workflow-schema-load.sh` locally with frozen Python3.14.
+THR308 PR4 extends that same script with actual OrgState naming reservation/audit
+observations (no-op, would-write, unreadable, failed read/COMMIT, interruption and
+next-boot holds), canonical Pause restore/sweep no-writes and real constructor
+status normalization. The timing script also drives the real metrics store and
+composer before/after the serving endpoint, with ASGI/listener creation isolated,
+including unchanged throttle/content and incomplete-startup refusal.
 It drives the production validation/reuse seam and real settings/Pause/naming
 writers on disposable SQLite files, including independent-connection movement,
 failed metadata, schema cookies and the first integrity/FK checks. The isolated

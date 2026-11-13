@@ -1166,6 +1166,8 @@ def restore_pause_preparations(orch: Any) -> None:
     and missing closure remain unknown. A deferred
     retry/recovery retains its original identity and budget, without replaying
     a consumed result or treating missing PID as a no-launch proof.
+    Canonical byte-identical journals keep their existing writer transaction
+    but perform no UPDATE, including the later sweep's repeated restore.
     """
     store = getattr(orch._db, "_task_pause_store", None)
     if store is None:

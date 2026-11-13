@@ -2596,7 +2596,8 @@ class SchemaMixin:
         # IS NULL guard makes this safely idempotent across restarts.
         self._backfill_revisit_of_task_id()
 
-        # One-shot data remap. Guard with a sentinel so re-runs are no-ops.
+        # Data remap for layouts with block_kind. Each row predicate below
+        # makes the composed normalization a no-op once its end state is valid.
         applied = self._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks' "
             "AND sql LIKE '%block_kind%'"
@@ -2612,9 +2613,11 @@ class SchemaMixin:
             self._conn.execute("UPDATE tasks SET status='completed' WHERE status='approved'")
             self._conn.execute("UPDATE tasks SET status='failed'    WHERE status='rejected'")
             self._conn.execute(
-                "UPDATE tasks SET status='blocked', block_kind='escalated' "
-                "WHERE status='escalated'"
+                "UPDATE tasks SET block_kind=NULL "
+                "WHERE status='escalated' AND block_kind IS NOT NULL"
             )
+            # The composed legacy escalated -> blocked(escalated) ->
+            # escalated/NULL result, without rewriting valid escalated rows.
             # Normalize dead legacy values.
             self._conn.execute("UPDATE tasks SET status='failed' WHERE status='in_review'")
             # --- THR-037 Change B (Path B) live-row migration ---
