@@ -140,6 +140,15 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     try:
+        if sys.platform == "darwin" and config.managed is not None:
+            # The managed installer owns the pair. Source DIY/lab and Linux
+            # retain their existing per-unit lifecycle. Foreground run is shared.
+            if args.command == "install":
+                raise ServiceManagerError("managed macOS install requires runtime.remote_access.installer with --sidecar-binary and --sidecar-config")
+            if args.command in {"start", "stop", "restart", "status", "enable", "disable", "uninstall"}:
+                from runtime.remote_access.launchd_installer import main as managed_main
+
+                return managed_main([args.command])
         supervisor = ConnectorSupervisor(
             config=config,
             config_path=Path(args.config).expanduser().resolve() if sys.platform == "darwin" else None,

@@ -748,7 +748,7 @@ pointing at staged `config.json`. No bundle path is invented; frozen entry refus
 The C4 key reader validates the explicit absolute literal, nonempty <=64KiB
 single-link same-user 0600 input before writes/launchctl. C5 stores `enrollment.key`,
 wipes its memory copy, preserves the operator input and refuses an existing
-stored key. C6 consumption remains pending; failure may retain partial files
+stored key. C6b below supersedes that reinstall rule after C6a consumption; failure may retain partial files
 requiring inspection/revocation and explicit purge. Existing trust/anchors are
 never seeded or replaced. Config, copied policy, digest receipt and fixed logs
 are 0600. New directories are 0700; managed connector/state roots require 0700.
@@ -760,7 +760,8 @@ cross-device subtrees, >4096 entries or depth >32, without claiming a concurrent
 The existing `LaunchdServiceManager` writes/enables the plist; installation does
 not bootstrap/start or claim readiness. Identical plists are enabled without new
 backups. `check-drift` observes plist/config/policy digests from `install.json`,
-layout and log metadata, reporting `readiness=not-verified`, `sidecar=not-installed`.
+layout and log metadata, initially reporting `readiness=not-verified`, `sidecar=not-installed`
+(C6b below replaces these placeholders with both process/readiness observations).
 It detects missing/differing/unsafe files and a changed source interpreter, with
 non-secret `error:`/exit 1 on refusal. Digests are observations, not authentication.
 Uninstall preflights, delegates stop/bootout/disable/plist removal, rechecks and
@@ -776,7 +777,8 @@ The same-user concurrent-rename limitation remains. No source
 input, token, unrelated log, shared parent or lifecycle backup is removed.
 The maintained contract defines exact paths and remaining limitations.
 Standalone filesystem/fake-launchctl tests add no native acceptance. C5 uses
-ZERO Mac-mini runs; C6–C8 and combined end-of-goal native acceptance remain open.
+ZERO Mac-mini runs; C6a/C6b deliver sidecar integration below; C7/C8 and
+combined end-of-goal native acceptance remain open.
 
 Start-failure probe context records bounded plist lint, mode/owner versus current
 UID, session types and a label-filtered launchd log excerpt before cleanup.
@@ -822,9 +824,10 @@ healthy loop. It dials the configured literal-loopback `ConnectorAddr` every
 `ready=false` with the existing C3 reason `readiness-or-listener-lost`, then
 exits 1 after service teardown. The normal detection budget is cadence plus
 timeout: at most 1.25s with the default 30s watchdog, plus Go scheduling and
-readiness-publication/teardown time. Shorter watchdogs scale the probe budgets
-to a combined 3/8 interval; the independent monotonic watchdog still exits 75
-if publication or teardown stalls. A successful probe immediately closes the
+readiness-publication/teardown time. For watchdog interval w, the cap-aware
+combined probe budget is min(1s,w/4)+min(250ms,w/8), with each term floored at
+1ns; for example, w=3s gives 750ms+250ms=1s. The independent monotonic watchdog
+still exits 75 if publication or teardown stalls. A successful probe immediately closes the
 connection without sending protocol data or credentials. TCP reachability does
 not prove application-level health. Connector-loss recovery is sidecar exit +
 launchd KeepAlive, without a second supervisor. Linux still relies on systemd
@@ -850,6 +853,70 @@ modules relative to Linux remain `github.com/google/uuid@v1.6.0` and
 `github.com/prometheus-community/pro-bing@v0.4.0`, already pinned in go.mod/go.sum.
 Build instructions and exact record fields are in the sidecar README. Darwin
 checks here are cross-build/test compilation/vet only; native execution is NOT
-RUN (zero authorized). Python handoff/installer integration remains C6b, so C5
-still reports sidecar=not-installed. App bundling/frozen entry, signing and
+RUN (zero authorized). C6b below delivers Python handoff/installer integration
+and replaces C5's sidecar placeholder with real observations. App bundling/frozen entry, signing and
 packaged-app acceptance remain open; Swift HomeConnector is unchanged.
+
+
+C6b (PR 7) integrates the Darwin sidecar with the existing managed installer.
+It owns `ai.happyranch.connector` and `ai.happyranch.tsnet-sidecar` through the
+same LaunchdServiceManager (the sole launchctl caller), both KeepAlive with the
+existing 10-second throttle. Required install inputs are an explicit absolute
+`--sidecar-binary` and private `--sidecar-config` JSON; no bundled path is guessed.
+The binary is a literal executable, regular/single-link, root/current-euid owned,
+without group/other write bits. Config uses Go's string fields, refuses unknown/
+duplicate fields, validates private HTTPS control/role/peer/private-only policy,
+a valid listen port and a connector address matching the managed loopback port.
+Installer-owned StateDir/CredentialFile replace source path fields. It stages
+0600 `sidecar.json` in connector state, uses a separate current-user 0700
+`happyranch-tsnet-sidecar` state leaf under the C4 Library root, and passes only
+config/readiness/credential paths plus `--watchdog-interval` from watchdog_sec.
+The readiness leaf is `ai.happyranch.tsnet-sidecar.readiness.json` in sidecar state.
+No credential content or environment is rendered. Source Python must be installed/
+importable; frozen entry and executable signing/content attestation are not supplied.
+
+Install enables but never starts either agent, retaining C5. Linux's managed
+installer starts its target and blocks on Type=notify; launchd has neither a READY
+boundary nor dependency target. Darwin installer start/stop/restart/status/enable/
+disable operate the composite; the existing managed-config CLI delegates lifecycle
+and uninstall to it (managed install requires installer inputs). Start/enable is
+connector then sidecar; stop/disable is sidecar then connector. Restart stops both
+with bootout/absence verification before starting both in forward order. Uninstall
+stops both before any file removal, rechecks the private layout, disables both,
+then removes both plists, safe pending files, staged configuration/receipt and four
+fixed logs. Sidecar stop failure leaves connector and all files untouched; connector
+stop failure also retains all files. Failed sidecar start may leave connector active.
+Source DIY/lab CLI and all Linux behavior stay unchanged.
+
+Startup gates wait for the connector probe/listener and exit nonzero on failure.
+After startup, PR1494's Darwin TCP probe publishes ready=false with reason
+readiness-or-listener-lost on connector loss, closes admission and exits 1.
+launchd KeepAlive restarts it; it may cycle under the existing 10-second throttle
+until the connector is ready. TCP reachability does not prove protocol health.
+There is no BindsTo/Upholds relationship, login ordering guarantee or in-process
+supervisor. Status has connector/sidecar
+objects with all C3 process/readiness fields and ready only when both are ready.
+Absent plist and service adds not-installed; other C3 substates (including not-loaded,
+starting, running-not-ready, stale/corrupt/PID mismatch) remain. Drift validates the
+version-2 receipt's staged config/policy/sidecar/plist digests, executable paths,
+layout/logs and enrollment state, and reports both observations. Process state
+alone cannot imply readiness. A C5-only receipt requires explicit uninstall/reinstall;
+an unconsumed stored key requires explicit purge before fresh enrollment. No
+automatic migration or trust-state replacement is performed.
+
+Key only means staged: reinstall refuses replacement. Marker only means consumed:
+reinstall without enrollment input verifies the exact SHA256(RoleIdentity+NUL+
+ControlURL) newline marker and preserves node identity/state. Both key and marker
+refuse install/start/drift, as does an invalid marker. Neither present refuses
+start/drift and requires a fresh explicit key for install. Go alone consumes/deletes
+the key and writes the marker. Normal uninstall preserves both state trees (including
+marker, node state and ambiguous enrollment for inspection); purge additionally
+removes both validated no-follow 0700 trees. Unsafe entries refuse before effects.
+Both modes support partial/repeated removal. Shared parents, operator inputs,
+daemon token, unrelated logs and backups remain. Same-user rename and C3 wall-clock/
+process-identity/scheduling limitations remain; receipts are observations, not auth.
+
+Retained standalone mac_native launchd/installer tests use temporary real files and
+scripted launchctl; no native run is authorized or claimed for C6b. Goal budget is
+PR 7/10; Mac mini 6/8 used, slice 0 runs. C7/C8 retain app bundling/frozen entry,
+signing, Swift coexistence and combined packaged/native acceptance. No app screen, dependency or CI trigger changes.

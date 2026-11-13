@@ -1386,5 +1386,45 @@ sys.exit(result)
             self.assertEqual(json.dumps(process.__dict__, sort_keys=True), '{"active_state": "active", "load_state": "loaded", "pid": 55, "sub_state": "running", "unit_file_state": "enabled", "unit_name": "x.service"}')
 
 
+
+class ManagedCompositeCli(unittest.TestCase):
+    def test_managed_cli_lifecycle_uses_both_installed_agents(self) -> None:
+        from scripts.mac_native.test_connector_installer import ManagedDarwinInstaller, SIDE_TARGET
+
+        fixture = ManagedDarwinInstaller()
+        for command in ("start", "stop", "restart", "status", "enable", "disable", "uninstall"):
+            with self.subTest(command=command), fixture.home() as paths:
+                fixture.install(paths)
+                rows = {"start": [row("print", DOMAIN), *fixture.start_rows()],
+                        "stop": [row("print", DOMAIN), *fixture.stop_rows()],
+                        "restart": [row("print", DOMAIN), *fixture.stop_rows(), *fixture.start_rows()],
+                        "status": [row("print", DOMAIN), *fixture.status_rows()],
+                        "enable": [row("print", DOMAIN), row("enable", TARGET), row("enable", SIDE_TARGET)],
+                        "disable": [row("print", DOMAIN), row("disable", SIDE_TARGET), row("disable", TARGET)],
+                        "uninstall": fixture.uninstall_rows(loaded=True)}[command]
+                runner = Runner(self, rows)
+                out, err = io.StringIO(), io.StringIO()
+                with patch("runtime.remote_access.launchd_agent._default_run", runner), redirect_stdout(out), redirect_stderr(err):
+                    code = cli.main([command, "--config", str(paths["state"] / "config.json")])
+                self.assertEqual((code, err.getvalue()), (0, ""))
+                self.assertFalse(runner.rows)
+                if command == "status":
+                    self.assertEqual(json.loads(out.getvalue())["sidecar"]["readiness_state"], "not-loaded")
+                if command == "uninstall":
+                    self.assertFalse(paths["plist"].exists())
+                    self.assertFalse(paths["side_plist"].exists())
+
+    def test_managed_cli_install_requires_the_composite_installer(self) -> None:
+        from scripts.mac_native.test_connector_installer import ManagedDarwinInstaller
+
+        fixture = ManagedDarwinInstaller()
+        with fixture.home() as paths:
+            err = io.StringIO()
+            with patch("subprocess.run", side_effect=AssertionError("managed CLI install must refuse before native effects")) as run, redirect_stderr(err):
+                self.assertEqual(cli.main(["install", "--config", str(paths["source"])]), 1)
+            run.assert_not_called()
+            self.assertIn("--sidecar-binary and --sidecar-config", err.getvalue())
+            self.assertFalse((paths["root"] / "Library").exists())
+
 if __name__ == "__main__":
     unittest.main()
