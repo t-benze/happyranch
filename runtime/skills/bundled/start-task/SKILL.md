@@ -205,6 +205,8 @@ restart, or use a manual cleanup fallback on this note's authority.
 
 Frozen Mac daemon cleanup helpers enter the fixed hidden `--cleanup-helper`
 dispatch (`disk-sweep`, `worktree-safety`, `check-path-use`) before daemon startup.
+The same closed entry also supports `repository-git`/`repository-reader` in both
+frozen daemon and CLI; source repository children retain Python `-I` script argv.
 Source helper argv stays Python `-m`/script-based. The sweep revision hashes
 loader code (`code-sha256:`), with no loose-source requirement or fabricated
 fallback; unavailable code prevents worker launch. This grants agents no new

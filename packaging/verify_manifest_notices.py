@@ -167,11 +167,13 @@ def python_spec_sources():
         [str(SOURCE / 'runtime/daemon/__main__.py')], [str(SOURCE / 'cli/main.py')]]
     for lane, (_, kwargs) in zip(('daemon', 'cli'), calls):
         mode = kwargs.get('module_collection_mode', {})
-        expected = {'runtime.infrastructure.learnings_store': 'pyz+py'}
-        REPORT.append(dict(label=lane + ' Analysis retains renderer source and PYZ bytecode',
+        expected = {'runtime.infrastructure.learnings_store': 'pyz+py',
+                    'runtime.workflows.repository_artifact_objects': 'pyz+py'}
+        REPORT.append(dict(label=lane + ' Analysis retains renderer/helper source and PYZ bytecode',
                            actual=mode, expected=expected, exit=0 if mode == expected else 1,
                            limitation='Analysis argument inspection only; no frozen execution or telemetry qualification.'))
-        assert mode == expected, (lane, 'renderer source retention missing or broadened', mode)
+        assert mode == expected, (lane, 'renderer/helper source retention missing or broadened', mode)
+        assert 'runtime.workflows.repository_artifact_objects' in kwargs['hiddenimports']
 
 
 def python_spec_notices(scratch, stdlib=None):
