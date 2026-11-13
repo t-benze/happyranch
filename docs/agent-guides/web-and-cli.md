@@ -1784,6 +1784,18 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 - Snapshot: `tests/contract/openapi.json`; its Python unit test is retired. Regenerate intentional changes with `uv run python scripts/generate_openapi_snapshot.py --write`.
 - TypeScript mirrors: `web/src/lib/api/`; browser inclusions and justified exclusions: `tests/contract/route-classification.json`. Review their parity with the snapshot; the retired web coverage test no longer checks it automatically.
 
+Settings GET `/api/v1/orgs/{slug}/settings` and PUT
+`/api/v1/orgs/{slug}/settings/org` responses include
+`org.reviewer_configuration` with `state: none|configured|missing|invalid` and
+`missing_agents`, alongside the persisted syntactically valid reviewer IDs.
+Founder PUT accepts `reviewer_agents: []` as deliberate none; null, duplicate,
+blank and unknown IDs refuse. Omitted fields preserve policy. The internal v2
+marker is never client-writable. Existing Founder/org/publication boundaries
+remain. B1 provides the backend/TS contract; reviewer selection UI is B3.
+Snapshot path/status checks do not prove response-property parity: review
+`getSettings`/`putOrgSettings`, TS models, route classification and fixtures.
+The retired web openapi-coverage suite remains NOT RUN.
+
 ### Tasks list
 
 The Tasks heading, grouping controls, inline filters and root rows share one

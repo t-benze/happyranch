@@ -479,8 +479,102 @@ async def locked_recheck(org: OrgState, client: httpx.AsyncClient, kind: str) ->
     assert persistent(org) == before
 
 
+async def reviewer_settings(org: OrgState, client: httpx.AsyncClient) -> None:
+    """B1 L3/L6: loaded-org diagnosis, explicit intent and nonmutating preflight."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.org_config import write_org_setting_to_db
+    from runtime.workflows.authority import WorkflowAuthorityError
+    response = await client.get(f"{PREFIX}/settings")
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_configuration"] == {"state": "configured", "missing_agents": []}
+    marker_before = tuple(org.db.execute(
+        "SELECT * FROM org_settings WHERE section='reviewer_agents_policy'").fetchone())
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": []})
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_configuration"] == {"state": "none", "missing_agents": []}
+    assert json.loads(org.db.get_org_setting("reviewer_agents")) == []
+    assert tuple(org.db.execute("SELECT * FROM org_settings WHERE section='reviewer_agents_policy'").fetchone()) == marker_before
+    pair = org.db.get_reviewer_agents_pair()
+    response = await client.put(f"{PREFIX}/settings/org", json={"threads": {"default_turn_cap": 7}})
+    assert response.status_code == 200, response.text
+    assert org.db.get_reviewer_agents_pair() == pair
+    for invalid in (None, ["other", "other"], [""], ["ghost"]):
+        response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": invalid})
+        assert response.status_code == 422, response.text
+        assert org.db.get_reviewer_agents_pair() == pair
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": ["other"]}, headers={"Authorization": "Bearer invalid-synthetic"})
+    assert response.status_code in (401, 403), response.text
+    assert org.db.get_reviewer_agents_pair() == pair
+    # A loaded value can become stale without the active default masking it.
+    org.db._conn.execute("UPDATE org_settings SET value_json=? WHERE section='reviewer_agents'", ('["other","ghost"]',))
+    org.db._conn.commit()
+    response = await client.get(f"{PREFIX}/settings")
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_agents"] == ["other", "ghost"]
+    assert response.json()["org"]["reviewer_configuration"] == {"state": "missing", "missing_agents": ["ghost"]}
+    try:
+        org.workflow_authority.capture_canonical_snapshot()
+    except WorkflowAuthorityError as exc:
+        assert exc.code == "authority_reviewer_incoherent"
+    else:
+        raise AssertionError("stale reviewers published authority")
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": ["other"]})
+    assert response.status_code == 200, response.text
+    # Literal unmarked loaded value: preflight must never stamp intent.
+    org.db._conn.execute("DELETE FROM org_settings WHERE section='reviewer_agents_policy'")
+    org.db._conn.execute("UPDATE org_settings SET value_json='broken' WHERE section='reviewer_agents'")
+    org.db._conn.commit()
+    before = org.db._conn.total_changes
+    write_org_setting_to_db(OrgPaths(org.root), org.db, {"reviewer_agents": []}, validate_only=True)
+    assert org.db._conn.total_changes == before
+    assert "reviewer_agents_policy" not in org.db.get_reviewer_agents_pair()
+    response = await client.get(f"{PREFIX}/settings")
+    assert response.status_code == 200 and response.json()["org"]["reviewer_configuration"]["state"] == "invalid"
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": []})
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_configuration"]["state"] == "none"
+    org.db._conn.execute("UPDATE org_settings SET value_json=? WHERE section='reviewer_agents_policy'", ('{"version":true}',))
+    org.db._conn.commit()
+    before = org.db.get_reviewer_agents_pair()
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": ["other"]})
+    assert response.status_code == 422, response.text
+    assert org.db.get_reviewer_agents_pair() == before
+
+
+async def reviewer_fresh(org: OrgState, client: httpx.AsyncClient) -> None:
+    """B1 L3a: real fresh constructor, ordinary empty publication and reopen."""
+    for slug, example_text in (("fresh-omitted", None), ("fresh-empty", "reviewer_agents: []\n")):
+        payload = {"slug": slug}
+        if example_text is not None:
+            example = org.root.parent.parent / "synthetic-example"
+            (example / "org" / "agents").mkdir(parents=True)
+            (example / "org" / "teams.yaml").write_text("teams: {}\n")
+            (example / "org" / "config.yaml").write_text(example_text)
+            payload["from_example"] = str(example)
+        response = await client.post("/api/v1/orgs", json=payload)
+        assert response.status_code == 200, response.text
+        response = await client.get(f"/api/v1/orgs/{slug}/settings")
+        assert response.status_code == 200, response.text
+        assert response.json()["org"]["reviewer_agents"] == []
+        assert response.json()["org"]["reviewer_configuration"] == {"state": "none", "missing_agents": []}
+        root = org.root.parent / slug
+        reopened = OrgState.load(slug=slug, root=root, settings=Settings())
+        try:
+            readiness = reopened.workflow_authority.verify_admission_ready()
+            snapshot = json.loads(readiness.snapshot_bytes)
+            assert snapshot["reviewer_agents"] == [] and snapshot["agents"] == []
+            assert snapshot["teams"] == [{"name": "default", "manager": {"kind": "human", "principal": "founder"}, "workers": []}]
+            audits = reopened.db.execute("SELECT task_id,payload FROM audit_log WHERE action='org_config_write' AND task_id IN ('config:reviewer_agents','config:reviewer_agents_policy') ORDER BY id").fetchall()
+            assert [row["task_id"] for row in audits] == ["config:reviewer_agents", "config:reviewer_agents_policy"]
+            assert json.loads(audits[0]["payload"])["after"] == {"value": []}
+        finally:
+            reopened.close()
+
+
 async def main() -> int:
     cases = [
+        ("reviewer-settings-L3-L6", {}, reviewer_settings, ()),
+        ("reviewer-fresh-L3", {}, reviewer_fresh, ()),
         ("cli-worker-success", {}, cli_success, ()),
         ("cli-busy-refusal", {}, cli_refusal, ()),
         ("cli-daemon-missing", {}, cli_startup_error, ("missing",)),

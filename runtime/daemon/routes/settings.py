@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from runtime.orchestrator.producer_move import native_writer
 
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
@@ -307,6 +307,11 @@ def _layer_to_view(layer) -> WorkHoursLayerView:
     )
 
 
+class ReviewerConfigurationView(BaseModel):
+    state: Literal["none", "configured", "missing", "invalid"]
+    missing_agents: list[str]
+
+
 class OrgSettingsView(BaseModel):
     """Read-only view of selected org-level settings.
 
@@ -321,6 +326,7 @@ class OrgSettingsView(BaseModel):
     threads: ThreadsSettingsView
     working_hours: WorkingHoursSettingsView
     reviewer_agents: list[str]
+    reviewer_configuration: ReviewerConfigurationView
 
 
 def _org_config_to_view_from_resolved(
@@ -330,6 +336,7 @@ def _org_config_to_view_from_resolved(
     threads_kwargs: dict,
     wh_cfg,
     reviewer_agents: list[str],
+    reviewer_configuration: ReviewerConfigurationView,
 ) -> OrgSettingsView:
     """Build OrgSettingsView from DB-resolved values (THR-095 single-store)."""
     return OrgSettingsView(
@@ -364,6 +371,7 @@ def _org_config_to_view_from_resolved(
             overrides={name: _layer_to_view(layer) for name, layer in wh_cfg.overrides.items()},
         ),
         reviewer_agents=list(reviewer_agents),
+        reviewer_configuration=reviewer_configuration,
     )
 
 
@@ -395,7 +403,7 @@ def get_settings(slug: str, org: OrgDep) -> SettingsResponse:
         OrgConfig,
         WorkingHoursConfig,
         resolve_org_setting_dreaming,
-        resolve_org_setting_reviewer_agents,
+        resolve_reviewer_configuration,
         resolve_org_setting_threads,
         resolve_org_setting_session_timeout,
         resolve_org_setting_working_hours,
@@ -406,7 +414,7 @@ def get_settings(slug: str, org: OrgDep) -> SettingsResponse:
     sto = resolve_org_setting_session_timeout(org.db, code_default=None)
     wh_cfg = resolve_org_setting_working_hours(org.db, code_default=WorkingHoursConfig())
     paths = OrgPaths(root=org.root)
-    reviewer_agents = resolve_org_setting_reviewer_agents(
+    reviewers = resolve_reviewer_configuration(
         org.db, known_agents=_resolve_agent_names(paths),
     )
     return SettingsResponse(
@@ -416,7 +424,10 @@ def get_settings(slug: str, org: OrgDep) -> SettingsResponse:
             dreaming_cfg=dreaming_cfg,
             threads_kwargs=threads_kwargs,
             wh_cfg=wh_cfg,
-            reviewer_agents=list(reviewer_agents),
+            reviewer_agents=list(reviewers.agents),
+            reviewer_configuration=ReviewerConfigurationView(
+                state=reviewers.state, missing_agents=list(reviewers.missing_agents),
+            ),
         ),
     )
 
@@ -589,9 +600,7 @@ class OrgSettingsPatch(BaseModel):
     @classmethod
     def _reviewer_agents_must_be_nonempty_strings(cls, v: list[str] | None) -> list[str] | None:
         if v is None:
-            return v
-        if not v:
-            raise ValueError("reviewer_agents must be a non-empty list of agent names")
+            raise ValueError("reviewer_agents must be a list of agent names")
         if not all(isinstance(n, str) and n.strip() for n in v):
             raise ValueError("reviewer_agents entries must be non-empty strings")
         if len(set(v)) != len(v):
@@ -856,15 +865,15 @@ def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> Setting
                     raise HTTPException(status_code=422, detail={"errors": wh_errors})
 
             # THR-175: validate reviewer_agents against the live roster. A malformed
-            # or unusable list (empty, non-string, unknown agent) is a HARD REJECT —
+            # or unusable list (non-string, unknown agent) is a HARD REJECT —
             # the setting gates reviewer-leg auto-advance, so a stale identity would
             # silently disable the QA/downstream gate.
             if "reviewer_agents" in patch_raw:
                 known_agents = _resolve_agent_names(paths)
                 ra = patch_raw["reviewer_agents"]
                 ra_errors: list[str] = []
-                if not isinstance(ra, list) or not ra:
-                    ra_errors.append("reviewer_agents must be a non-empty list of agent names")
+                if not isinstance(ra, list):
+                    ra_errors.append("reviewer_agents must be a list of agent names")
                 else:
                     unknown = sorted(set(ra) - known_agents)
                     if unknown:

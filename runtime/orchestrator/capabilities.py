@@ -12,6 +12,8 @@ def build_capabilities_prompt(
     self_only: bool = False,
     reviewer_agents: list[str] | None = None,
     name_metadata=None,
+    reviewer_configuration_state: str = "invalid",
+    missing_reviewer_agents: list[str] | None = None,
 ) -> str:
     """Build the prompt sent to a task owner for each decision step.
 
@@ -26,6 +28,22 @@ def build_capabilities_prompt(
     ``run_step._build_agent_prompt`` always pass the actual manager name.
     ``self_only`` suppresses the team roster and restricts delegation to self.
     """
+    if reviewer_configuration_state == "none":
+        reviewer_notice = ("No reviewer configured. Configure reviewer agents in Settings if needed. "
+                           "Explicit expect_verdict and your team's required review process still apply.\n")
+    elif reviewer_configuration_state == "missing":
+        reviewer_notice = ("Configured reviewer unavailable: " + ", ".join(missing_reviewer_agents or [])
+                           + ". Repair reviewer configuration in Settings before delegation or advancement.\n")
+    elif reviewer_configuration_state == "invalid":
+        reviewer_notice = "Reviewer configuration invalid. Repair it in Settings before delegation or advancement.\n"
+    else:
+        reviewer_notice = (
+            "Configured reviewer agents: " + ", ".join(repr(a) for a in reviewer_agents or [])
+            + '. Every reviewer leg MUST declare expect_verdict: "APPROVE"; omission is a HARD REJECT '
+            'before any child spawns. Only explicit APPROVE advances downstream; REQUEST_CHANGES, REVISE, '
+            'BLOCK, PASS and missing verdict never advance.\n'
+        )
+
     pretty = manager_name.replace("_", " ").title()  # "content_manager" -> "Content Manager"
     if self_only:
         me = manager_name
@@ -61,6 +79,8 @@ def build_capabilities_prompt(
             "width 2–8) is a team-manager-only capability. "
             "If you need parallel work, delegate sequentially or escalate to "
             "your parent.\n",
+            "### Reviewer configuration\n",
+            reviewer_notice,
             "### Constraints\n",
             f"- This is orchestration step {step_number}.",
             "- Org-specific authority limits come from your role_guidance / "
@@ -156,19 +176,8 @@ def build_capabilities_prompt(
         "Linked retries carry omitted fields; explicit null clears each field independently.",
         "The orchestrator auto-advances on verdict match; mismatches, blocked subtasks,",
         "or final-leg matches wake you. Full shape: the **start-task** skill.\n",
-        "### Reviewer legs (HARD REJECT)\n",
-        "Reviewer identities are configured per-org, not hardcoded: any chain leg whose",
-        "`agent` is one of this org's configured reviewer agents"
-        + (
-            " (" + ", ".join(repr(a) for a in reviewer_agents) + ")"
-            if reviewer_agents else ""
-        )
-        + " is a reviewer leg. Every reviewer leg MUST declare"
-        " `expect_verdict: \"APPROVE\"`; a reviewer leg that OMITS `expect_verdict` is a",
-        " HARD REJECT and the whole delegation is denied before any child spawns.",
-        " A reviewer leg that does not return an explicit APPROVE (REQUEST_CHANGES / REVISE /",
-        " BLOCK / missing verdict) never auto-advances downstream — the chain clears and",
-        " you are woken. Only an explicit APPROVE advances to the next leg (e.g. QA).\n",
+        "### Reviewer configuration\n",
+        reviewer_notice,
         "**done** -- Task is complete (or you handled it yourself):",
         "```json",
         '{"action": "done", "summary": "<what was accomplished or your findings>"}',

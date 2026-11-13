@@ -4279,7 +4279,15 @@ through its existing failure path and feeds that failure to the fan-out barrier.
 Admission failure never counts as successful carrier completion; actual final-leg
 completion retains the existing success path.
 
-A configured reviewer leg (org setting `reviewer_agents`, default `code_reviewer`) MUST declare `expect_verdict: "APPROVE"`; omission is a HARD REJECT — the whole delegation is denied before any child spawns, the owner receives a feedback task result and feedback orchestration step naming the required `expect_verdict: "APPROVE"`, and the root stays PENDING and is re-enqueued for a corrected decision (never a root failure). Missing agent / missing workspace delegates keep hard terminal failure. Same semantics apply to pipeline-carrier legs in fan-out decisions.
+A configured reviewer leg (the classified v2 org setting `reviewer_agents`) MUST declare `expect_verdict: "APPROVE"`; omission is a HARD REJECT — the whole delegation is denied before any child spawns, the owner receives a feedback task result and feedback orchestration step naming the required `expect_verdict: "APPROVE"`, and the root stays PENDING and is re-enqueued for a corrected decision (never a root failure). Missing agent / missing workspace delegates keep hard terminal failure. Same semantics apply to pipeline-carrier legs in fan-out decisions.
+
+Reviewer resolution distinguishes `none`, `configured`, `missing` and `invalid`.
+Only v2-marked `[]` is none; startup first pins unmarked legacy `[]` to
+`["code_reviewer"]`. Stale/invalid policy refuses delegate/fanout allocation
+and both saved-chain advancement seams, preserving parent wake/carrier fan-in.
+None retains explicit expectation matching and task/team review rules. B1 keeps
+the global omitted parser default pending B2; it is never a reader fallback.
+Historical chain payloads and the explicit APPROVE guard remain unchanged.
 
 Implementation: `runtime/orchestrator/chain.py` and `runtime/orchestrator/run_step.py`. Spec: `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.
 

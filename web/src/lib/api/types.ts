@@ -990,6 +990,10 @@ export interface OrgSettings {
   session_timeout_seconds: number | null;
   /** Server-returned operator setting; intentionally has no browser control. */
   reviewer_agents: string[];
+  reviewer_configuration: {
+    state: 'none' | 'configured' | 'missing' | 'invalid';
+    missing_agents: string[];
+  };
   dreaming: DreamingSettings;
   threads: ThreadsSettings;
   working_hours: WorkingHoursSettings;
@@ -1063,6 +1067,7 @@ export interface WorkingHoursPatch {
 }
 
 export interface OrgSettingsPatch {
+  reviewer_agents?: string[];
   session_timeout_seconds?: number | null;
   dreaming?: DreamingPatch;
   threads?: ThreadsPatch;

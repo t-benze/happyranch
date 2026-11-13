@@ -141,6 +141,7 @@ const SETTINGS = {
   org: {
     session_timeout_seconds: null,
     reviewer_agents: [],
+    reviewer_configuration: { state: 'none', missing_agents: [] },
     dreaming: { enabled: false, schedule: { time: '02:00', timezone: 'UTC' }, catch_up_on_startup: false, agents: { mode: 'all', include: [], exclude: [] } },
     threads: { enabled: true, default_turn_cap: 500, invocation_timeout_seconds: null },
     working_hours: {
