@@ -202,7 +202,7 @@ system Tailscale is involved. Native toolchain and archive hash are recorded.
 | absent/never-paired | Same transport GET ->403 identity_denied; paired200 before/after each. |
 | revoked | Targeted device200 before revoke; same credential403 within30s, unaffected device200. |
 | forbidden routes | Six retained M2 method/path rows ->exact403 category; paired allowed200 brackets each; synthetic org survives. Forbidden routes are never allowed as controls. |
-| DERP | Existing TS_DEBUG_ALWAYS_USE_DERP disables client UDP; actual native log projection must show disabled UDP and only connected private region999. Config alone is not path proof. Allowed200 follows the projection. |
+| DERP | Bounded all-interface native packet observation plus native socket controls and a fresh exact real-daemon200 prove the private VM relay path with no native UDP; only region999 exists in the unchanged fixture. Missing/partial evidence refuses. The existing separate allowed200 follows, then exposure probes. |
 | public exposure | Verified443 health200 before/after bounded application-level probes; daemon path on control443 is404; public18765/18443/8765 yield no TLS/HTTP response. Guest crosscheck requires daemon/connector loopback controls and no forbidden public listener. No response is a bounded observation, not universal reachability proof; raw TCP through a proxy is insufficient. |
 | logs/cleanup | Fresh run directory, microsecond journal boundary and shipped attribution. Installed-product purge assertions remain unchanged. Without install, assert absent product state and label not applicable. Remove transient state/CA/links/test sockets; preserve unchanged DNS hashes and only the validated cert cache. |
 
@@ -243,24 +243,88 @@ classifications; an unrecognized hostname/auth/backend error remains `unknown`.
 Pinned tsnet v1.78.0 puts its log config/filch files in the same state root;
 there is no separate harness log-directory setting.
 
-DERP proof retains its strict connected-region set `{999}` and actual UDP-disable
-log assertions, followed by allowed200 and the live exposure probes. Pinned
-v1.78.0 writes JSON lines with top-level `text` to `tailscaled.log1.txt` and
-`tailscaled.log2.txt`; backend logging reaches filch even with nil embedder Logf.
-Both existing regexes match its messages. The fixture omits `logtail.enabled`;
-Headscale v0.25.1 defaults it to false and
-sends `Debug.DisableLogTail`. Tailscale handles that before publishing the first
-netmap: logtail.Disable makes subsequent writes return without writing filch.
-DERP starts from that netmap, so its later connected message cannot reach these
-files under this source configuration; nil embedder Logf supplies no independent
-backend stderr copy. The initial drain can additionally remove startup UDP logs.
-This proves an unavailable evidence channel in the source configuration, while
-attributing the exact attempt6 assertion still requires its unavailable private
-logs/control response. Only diagnostics are added; no weaker/config-only proof
-or configuration change follows.
+The acceptance gate uses an independent **native packet and socket proof**. The
+old filch proof remains a closed corroborating diagnostic: Headscale0.25.1 sends
+DisableLogTail before the first netmap, so Tailscale1.78.0 drops later backend
+writes before filch. A missing DERP/UDP log observation cannot establish the new
+proof. No logtail enablement or product change is made.
 
-On proof success/failure the worker emits `derp_diagnostics`, reprojected by Bridge
-and again by the runner. Before private cleanup the runner writes it to
+The existing macOS `/usr/sbin/tcpdump` captures `pktap,all`, including loopback
+and tunnel interfaces, without a BPF, PID or endpoint filter. `-tt -nn -q -k PD`
+produces private header summaries with process IDs and direction; no payload
+printing is requested. A root supervisor uses the runner's existing Python via
+noninteractive sudo, owns/waits for that one capture child, and applies a35s
+alarm and2,000,000-byte child-output file limit after sudo (plus the fixed
+19-byte supervisor marker; reaching the limit refuses). Capture also stops at4096
+packets. There is no installation, persistent OS setting or network change.
+The35s proof window includes startup, the old log diagnostic, two `lsof`
+observations and a real native GET of the synthetic daemon teams route. The
+original worker request deadline is unchanged; late results cannot pass.
+
+The gate requires all of the following before the original subsequent200 and
+unchanged exposure controls:
+
+- The exact still-running native PID has positive TCP socket evidence and no
+  UDP socket in both `lsof -nP -a -p PID -i -FpfP` observations.
+- Every IP transport header has known syntax/direction. Unattributed egress,
+  fragments/unsupported packets, malformed metadata and unknown formats refuse.
+  Other positively attributed processes may have traffic. ARP contributes only
+  to completeness accounting; it is not an IP transport.
+- Zero native UDP packets on every captured interface/address/port, not only
+  UDP visible at the VM. A guest capture alone would miss packets dropped by
+  the unchanged security group before reaching the VM.
+- Native TCP egress is exclusively to the VM's443, with positive payload bytes
+  both ways on a matching native flow, and the actual unchanged bridge returns
+  200 with the exact expected real-daemon body during that window.
+- Capture starts positively, terminates/reaps normally before its deadline,
+  has a closed supervisor stop marker, and reports zero drops. Captured and
+  received counts must agree, as must parsed and captured counts. Missing,
+  partial/unread or incompatible counter semantics fail closed.
+
+Source basis: [Apple tcpdump metadata/all-interface API](https://github.com/apple-oss-distributions/tcpdump/blob/main/tcpdump/tcpdump.1),
+[pinned peer transport](https://github.com/tailscale/tailscale/blob/v1.78.0/wgengine/magicsock/endpoint.go),
+[pinned UDP/DERP dispatch](https://github.com/tailscale/tailscale/blob/v1.78.0/wgengine/magicsock/magicsock.go),
+and [Headscale map composition](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/derp/derp.go).
+
+Strength argument: pinned Tailscale `endpoint.send`/`sendAddr` transport peer
+WireGuard data by UDP or DERP. A fresh unmocked daemon response while this native
+process sends no UDP, has no observed UDP sockets, and exchanges TCP payload
+only with the VM443 endpoint establishes the observed relay path, rather than
+merely a Headscale control connection or a configured preference. The exact-SHA
+fresh fixture has only embedded region999, empty upstream DERP URLs/paths,
+no auto-update and no relay mesh configuration. Those configuration facts name
+the observed endpoint; configuration alone never passes the gate. The unchanged
+C ABI exposes no independent peer-path status; no new product readout is added.
+
+Limits: this is a bounded observation of this process/request and relies on the
+OS's packet/process metadata and counters, the unchanged authenticated fixture
+and bridge, and the trusted disposable runner. It does not certify all future
+UDP behavior, all network topologies, or signed-app/Swift/GUI behavior. Socket
+snapshots alone would not prove the path. Native tool/metadata/counter behavior
+and actual acceptance are NOT RUN premerge; conservative refusal is intentional
+if this runner cannot supply complete evidence. The next separately authorized
+native attempt must exercise the actual observer, request, post-proof200 and
+exposure controls; offline fixtures cannot supply that acceptance.
+
+`packet_diagnostics` reaches client-summary.json and Actions before private
+cleanup and remains in the final summary. Its closed labels are `unknown`,
+`capture-unavailable`, `capture-start`, `capture-budget`, `capture-deadline`,
+`capture-cleanup`, `capture-incomplete`, `capture-format`, `metadata-missing`,
+`udp-observed`, `udp-socket-observed`, `socket-evidence`,
+`relay-endpoint-unexpected`, `relay-traffic-missing`, `request-failed`, `passed`.
+Only packet/native/UDP/socket counts, TCP socket observation count and relay
+transmit/receive byte counts accompany it, clamped to0..16,000,000 with real
+integer types only. Unknown labels map to `unknown`; no PID, tuple, address,
+path, URL, key, raw header or payload is exported. Raw header/stderr files stay
+in private runner scratch and existing finally/always-cleanup removes them.
+The offline UDP sensitivity fixture must refuse with `udp-observed`; enabled
+UDP sockets, unexpected endpoints, partial captures and absent positive request
+controls have separate failures. All earlier failure/issuance budgets remain
+spent. Host/guest/control drivers are unchanged, so this client-only change does
+not trigger another conditional VM premerge pass.
+
+For corroborating log evidence the worker emits `derp_diagnostics`, reprojected
+by Bridge and again by the runner. Before private cleanup the runner writes it to
 client-summary.json and Actions stdout; the final cleanup summary retains it.
 `label` is one of `no-log-files`, `log-budget`, `no-decodable-entries`,
 `region-missing`, `region-unexpected`, `udp-disable-missing`, `unknown`, `passed`.
@@ -274,9 +338,8 @@ A pre-cleanup publication error records the fixed `derp-evidence-publication`
 failure and still reaps/removes private state before final evidence publication.
 No raw text, paths, addresses, keys or URLs cross this boundary. Attempt6
 (TASK-15774/run43330485188/JOB-6668) remains failed/spent at derp-proof; post-proof
-200 and exposure probes were not reached. Any bridge/logger/ABI/dependency or
-acceptance-contract alternative requires a manager decision; this diagnostic
-change supplies no run/issuance allowance or native acceptance.
+200 and exposure probes were not reached. Bridge/logger/ABI/dependencies remain
+unchanged. This packet-proof change supplies no run/issuance allowance or native acceptance.
 
 Before generating or publishing the recipient request, `prepare` executes that
 same host with an exclusively owned malformed log config and a synthetic key.

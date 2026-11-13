@@ -76,19 +76,31 @@
   Public failure evidence separates handoff/decrypt/native-process/C-init/C-start/
   join-wait timings, allowlisted exception classes, return codes and fixed-label
   join diagnostics before scratch removal.
-  DERP proof also writes its closed `derp_diagnostics` to client-summary.json and
-  Actions stdout before private cleanup, retaining it in the final summary.
-  Only the fixed labels and bounded integer counts/region IDs documented in the
-  runbook leave the worker; unknown labels become `unknown`. Actual connected
-  region999 and UDP-disabled logs, then allowed200 and exposure probes remain
-  mandatory. Pinned v1.78.0 filenames/JSON/logger wiring/regexes are correct, but
-  Headscale's default-disabled logtail sends DisableLogTail before the netmap,
-  causing later DERP log writes to be discarded. Its initial drain can also
-  consume startup entries despite24h delay. The exact attempt6 assertion remains
-  unproved without private logs/control response; this adds diagnostics only and
-  does not authorize a weaker proof. TASK-15774/run43330485188/JOB-6668 remains
-  failed/spent at derp-proof; subsequent200/exposure were not reached. Bridge/
-  logger/ABI/dependency/acceptance changes require a separate manager decision.
+  DERP acceptance now uses a bounded all-interface native packet/socket proof,
+  retaining PR1459's closed filch diagnostic as corroboration. The runner's
+  existing tcpdump observes pktap,all without PID/endpoint/BPF filters; unknown
+  egress attribution, malformed/unsupported packets, drops, unread/partial data,
+  tool/start/cleanup errors and time/byte/count limits all fail closed. Two lsof
+  observations require positive native TCP and no UDP socket. A fresh exact
+  real-daemon200 during capture, zero native UDP and bidirectional native TCP
+  payload only with the VM443 endpoint establish the observed peer relay path:
+  pinned Tailscale sends peer data over UDP or DERP, and the exact-SHA fixture
+  has only region999, no upstream DERP URLs/paths/auto-update/mesh. Configuration
+  or control-connection counts alone cannot pass. The original separate
+  allowed200 and exposure controls follow only after proof success.
+  `packet_diagnostics` adds closed labels/bounded integer counts only, beside
+  existing `derp_diagnostics`, in pre-cleanup and final summary/Actions output.
+  No addresses, PIDs, URLs, tuples, raw headers or payloads are public; private
+  capture files are removed with runner scratch. The runbook owns exact limits,
+  labels and sensitivity cases. This observes only this native process/request
+  window, relies on OS attribution/counters and the authenticated unchanged
+  fixture/bridge, and does not certify future UDP behavior or signed-app/GUI.
+  Actual native observer/transport acceptance remains NOT RUN premerge.
+  Headscale's default DisableLogTail still discards later filch writes; no
+  logtail or product change follows. Attempt6 TASK-15774/run43330485188/JOB-6668
+  remains failed/spent; post-proof200/exposure were not reached. Host/guest/
+  control drivers are unchanged; no conditional VM pass, join, dispatch or
+  issuance allowance is added. All historical budgets remain unchanged.
   C init/start failures also retain the allowlisted `bridge_error_class` from
   the existing C error accessor, with raw text withheld and unknown patterns
   mapped to `unknown`. The native runner exclusively creates the0700 target
