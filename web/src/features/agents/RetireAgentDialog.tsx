@@ -35,8 +35,11 @@ interface RetireAgentDialogProps {
   onClose: () => void;
   /** Where focus goes when the dialog closes; the opener is outside this root. */
   onCloseAutoFocus?: (event: Event) => void;
-  /** Called once the server confirmed the retirement. */
-  onRetired: (agentName: string) => void;
+  /**
+   * Called once the retirement is confirmed. `manager` comes from the server
+   * receipt, or from the roster role when only the roster re-read confirmed it.
+   */
+  onRetired: (agentName: string, retired: { manager: boolean }) => void;
 }
 
 export function RetireAgentDialog({
@@ -53,6 +56,7 @@ export function RetireAgentDialog({
   const [checking, setChecking] = useState(false);
   // Synchronous latch: a second activation before React re-renders is dropped.
   const inFlight = useRef(false);
+  const isManager = role === 'manager';
 
   const onConfirm = async () => {
     if (inFlight.current) return;
@@ -60,8 +64,8 @@ export function RetireAgentDialog({
     setBusy(true);
     setError(null);
     try {
-      await retire.mutateAsync({ agentName });
-      onRetired(agentName);
+      const receipt = await retire.mutateAsync({ agentName });
+      onRetired(agentName, { manager: receipt.role === 'manager' });
     } catch (err: unknown) {
       const view = classifyRetireError(err);
       if (view.outcome === 'refused') {
@@ -77,7 +81,7 @@ export function RetireAgentDialog({
         ? null
         : fresh.data.agents.some((a) => a.name === agentName);
       if (listed === false) {
-        onRetired(agentName);
+        onRetired(agentName, { manager: isManager });
         return;
       }
       setState(listed === null ? 'unconfirmed' : 'stillListed');
@@ -100,9 +104,9 @@ export function RetireAgentDialog({
         </DialogHeader>
         <ul className="text-text-primary list-disc space-y-1.5 pl-5 text-sm">
           <li>{t('agents.retire.consequence.stops')}</li>
-          <li>{t('agents.retire.consequence.preserved')}</li>
-          <li>{t('agents.retire.consequence.terminated')}</li>
-          {role === 'manager' && (
+          <li>{t(isManager ? 'agents.retire.consequence.preservedManager' : 'agents.retire.consequence.preserved')}</li>
+          <li>{t(isManager ? 'agents.retire.consequence.terminatedManager' : 'agents.retire.consequence.terminated')}</li>
+          {isManager && (
             <li>{t('agents.retire.consequence.team', { team: team ?? '—' })}</li>
           )}
         </ul>

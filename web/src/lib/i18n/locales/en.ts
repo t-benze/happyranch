@@ -2682,6 +2682,8 @@ export const en = {
   'agents.retire.consequence.stops': "It stops receiving work and leaves the active roster.",
   'agents.retire.consequence.preserved': "Its workspace, memory and history are preserved.",
   'agents.retire.consequence.terminated': "It appears under Terminated agents, where Distill knowledge works.",
+  'agents.retire.consequence.preservedManager': "Its definition, workspace, memory and history are preserved.",
+  'agents.retire.consequence.terminatedManager': "It appears under Terminated agents. Distill knowledge is not yet available for retired managers.",
   'agents.retire.consequence.team': "If its team {team} has no other members, the now-empty team is also removed from the active roster.",
   'agents.retire.confirm': "Retire agent",
   'agents.retire.pending': "Retiring…",

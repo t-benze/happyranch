@@ -2557,6 +2557,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'agents.retire.consequence.stops': "它将不再接收工作，并离开活跃名册。",
   'agents.retire.consequence.preserved': "它的工作区、记忆和历史记录会被保留。",
   'agents.retire.consequence.terminated': "它会出现在“已终止的 Agent”标签页中，可在那里使用“提炼知识”。",
+  'agents.retire.consequence.preservedManager': "它的定义、工作区、记忆和历史记录会被保留。",
+  'agents.retire.consequence.terminatedManager': "它会出现在“已终止的 Agent”标签页中。已退役的管理者暂不支持“提炼知识”。",
   'agents.retire.consequence.team': "如果其团队 {team} 没有其他成员，这个空团队也会从活跃名册中移除。",
   'agents.retire.confirm': "退役智能体",
   'agents.retire.pending': "正在退役…",
