@@ -1830,8 +1830,11 @@ def validate_e05_operations(row: dict, observations: dict, point: dict, groups: 
         elif action == 'thread-reply':
             expected, stdout = dict(thread_id=tid, seq=seq, kind='message'), f'ok: reply seq={seq} on {tid}\n'
         elif action == 'thread-dispatch':
-            expected = dict(task_id=T, team='engineering', assigned_agent='case_manager', dispatched_from_thread_id=D['thread'], system_message_seq=2, superseded_task_id=None, replayed=False)
-            stdout = f"ok: dispatched {T} from {D['thread']}\n"
+            expected = dict(task_id=T, team='engineering', assigned_agent='case_manager', dispatched_from_thread_id=D['thread'], system_message_seq=2, superseded_task_id=None, replayed=False,
+                            model_override=None, reasoning_effort_override=None, override_source=None, effective_model=None, effective_reasoning_effort=None,
+                            model_source='agent_default', reasoning_effort_source='agent_default')
+            stdout = (f"ok: dispatched {T} from {D['thread']}\n"
+                      '{"effective_model": null, "effective_reasoning_effort": null, "model_source": "agent_default", "reasoning_effort_source": "agent_default"}\n')
         elif action == 'thread-task-final':
             expected, stdout = {'ok':True}, ''
         else:
