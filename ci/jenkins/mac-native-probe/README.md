@@ -37,19 +37,87 @@ Submit manually with:
 
 There are no SCM/cron/remote-token/upstream/downstream triggers, concurrent
 builds, controller checkout or credential bindings. The absolute build timeout
-is 30 minutes. The EXIT trap removes only the build's fresh checkout scratch;
+is 90 minutes after the reviewed template is applied. The EXIT trap removes only the build's fresh checkout scratch;
 `evidence/` stays for archival. Catchable cancellation runs cleanup; SIGKILL,
 agent loss or machine failure may leave scratch and must be reported honestly.
 The next run does not sweep previous scratch. Jenkins retains 20 builds/30 days.
 
 ## Output bounds and failure handling
 
+### Packaging toolchain preflight (THR-346 msg86 Option B / TASK-15955)
+
+`SUITE=toolchain` provisions uv **0.12.21**, Node **24.19.0 LTS** (bundled npm),
+and Go **1.23.12** from official Darwin arm64 release tarballs. The exact URLs,
+SHA256 and official checksum sources are reviewed at `SOURCE_SHA` in
+[`toolchain-pins.json`](../../../scripts/mac_native/toolchain-pins.json).
+The source-side provisioner downloads with curl (10s connect, at most 90s/file,
+128MiB/file) inside one 240s budget. It verifies SHA256 **before** opening each
+archive; a mismatch refuses extraction. Safe tar extraction also limits members
+(20,000 per archive, 30,000 aggregate), each file (256MiB) and total payload (768MiB). Partial trees are never
+reused; the existing job EXIT trap deletes them with its private scratch.
+
+Only this suite's child processes receive the three scratch bin directories
+prepended to the fixed job host PATH. No host PATH file, ~/.local, Homebrew,
+host cache or persistent tool installation is changed. uv/npm/Go caches are
+under the private toolchain directory, including GOROOT/GOPATH/GOMODCACHE/GOCACHE.
+`GOTOOLCHAIN=local` prevents automatic Go downloads; GOFLAGS is inherited unchanged. Existing job HOME/temp/user-site isolation
+and locked Python-library bootstrap remain unchanged. Other suites do not fetch
+these tools. A future packaging suite must explicitly use the returned process
+environment; this PR does not implement or execute packaged-app acceptance.
+
+The packaging wrapper already isolates npm/Go/Swift/uv caches under output
+scratch. Its freezer overrides `UV_PYTHON_INSTALL_DIR` with its reserved
+freeze-work/python-install, requests exactly `cpython@3.12.10` with `--no-bin`,
+then disables Python downloads. Before frozen `uv sync --group build --frozen`,
+the fresh project venv receives the complete wheel-only backend closure from
+[`packaging/build-backend-requirements.txt`](../../../packaging/build-backend-requirements.txt)
+using `uv pip install --require-hashes --only-binary :all:`. The sync uses
+`--no-build-isolation-package happyranch`, so the editable root cannot resolve
+an unpinned backend. Other packages retain build isolation; runtime manifests and
+uv.lock are unchanged. Both a mismatched hash and an omitted transitive pin
+refuse under uv 0.12.21; see the PR evidence.
+The pinned uv release embeds that Python artifact's SHA256
+`2579c9ffcbb0a745f1de3d645612c7466269eb9a23316a54ece49d50c1c9122f`
+([versioned catalog](https://github.com/astral-sh/uv/blob/0.12.21/crates/uv-python/download-metadata.json)).
+Node dependencies use `npm ci` and the committed package-lock integrity pins;
+Go uses `-mod=readonly`/go.sum with `GOTOOLCHAIN=local`. No packaging command is
+run by this preflight. Native build compatibility is still unproven.
+
+After provisioning, all seven tools are observed: command path/version/file and
+native arm64/arm64e or universal architecture (npm uses its bundled Node).
+uv, Node and Go must match the exact pins and scratch executable paths; npm
+must also resolve from the provisioned Node tree. Swift>=6, Xcode>=16, regular job Python 3.14
+and packaging utilities must be present. Go must be exactly the provisioned 1.23.12 Darwin/arm64. This preserves the
+[build contract](../../../app/mac/README.md#internal-candidate-build)
+conservative 1.23 line for the pinned gVisor runtime internals. Host Go 1.26.1
+is not used; newer maintained compatibility remains unestablished. No Go module
+or runtime dependency update is included.
+`ready` stays false on missing, incompatible, failed or truncated observations.
+The observation phase has one 90s deadline, five seconds/command and 1024 output
+bytes/command. Scratch free bytes are recorded. No app build/run occurs.
+
+**Native proof deferred:** the live job still has its 32MiB cap. The selected Node
+tarball is 52,234,372 bytes, already larger than that cap before extraction.
+Do not run this head under the live configuration. After independent review,
+QA, merge and manager-owned template application, a separately authorized
+exact-head toolchain run must prove provisioning and scratch cleanup. Existing
+build 18 at af00de26 remains historical FAILURE (missing uv/wrong Node), not proof
+of the new provisioner. No app-build or packaged-run allowance is spent here.
+
+Portable checks, outside the retired Python unit suite:
+
+```sh
+python3 -B -m unittest scripts.mac_native.test_toolchain scripts.mac_native.test_provisioning -v
+```
+
+### Existing job bounds
+
 `build.log` and `probe.log` each retain at most 4 MiB (4,194,304 bytes). A pipe
 reader writes only that many bytes and checks one extra byte: exceeding the
 cap fails the build nonzero and closes the pipe. This also bounds checkout
 command output without imposing a file-size limit on Git's fetched packfiles.
-The dependency bootstrap and Python probe share `ulimit -f 32768`: each regular
-file, including `probe.json`, is limited to 32 MiB (33,554,432 bytes). This job
+The dependency bootstrap and Python probe share `ulimit -f 262144`: each regular
+file, including `probe.json`, is limited to 256 MiB (268,435,456 bytes). This job
 runs `#!/bin/bash -p`, not POSIX mode, so `-f` uses 1024-byte units. Apple's
 [Bash 3.2 implementation](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/ulimit.def)
 sets the file-size block factor to 1024; a local Bash 5.3.9 `ulimit -f 1`
@@ -323,16 +391,13 @@ bundle build/run evidence. Source runtime dependencies must already be available
 to the job's Python; missing dependencies are an environment failure, never PASS.
 The suite never builds a bundle or installs tools.
 
-The existing Jenkins job cannot build the frozen bundle inside its probe-only
-`ulimit -f4096`: each regular file is capped at 2-4MiB, below fresh CPython native
-libraries/stdlib archives and PyInstaller bundle outputs. The documented freeze
-requires a fresh managed CPython 3.12.10 on Darwin arm64; uv/toolchain availability
-on the mini is unverified. Full packaging additionally requires Xcode 16, Node 24,
-Swift/Go and allows 45 minutes for build in a 95-minute workflow, versus this job's
-30-minute absolute timeout. These are blockers, not permission to change the
-job, add another job/trigger or launch the packaging workflow. Founder owns any
-job-config/venue decision; the manager owns all S3 native runs (0 of 3 spent by
-this maker). Native Mac and frozen Mac bundle evidence remain NOT RUN here.
+The earlier S3 probe-only limits were insufficient for a fresh freeze. The
+reviewed template now proposes 90min/256MiB per file under THR-346 msg86; live
+application remains manager-owned. See the toolchain section above for the
+scratch-only pins and conservative Go line. Full packaging still needs
+its separately authorized build/run allowance; no new job/trigger, host install
+or workflow launch follows. Native Mac and frozen Mac bundle evidence remain
+NOT RUN here.
 
 On Linux, the normal dispatcher emits skipped JSON. For the explicitly allowed
 source/simulated-frozen substitute, call the existing suite function directly:
@@ -384,7 +449,7 @@ Fixtures are fixed-count and each payload is below 4096 bytes; no database is
 created. Its complete report is checked below 60000 bytes before stdout/output.
 There are no external commands or waits in the suite. All fixture writes are
 inside one temporary directory under the checked-out source in build scratch,
-removed before success. Existing 30-minute, 32 MiB file, 4 MiB log and 64 KiB identity/
+removed before success. Template 90-minute, 256 MiB file, 4 MiB log and 64 KiB identity/
 probe limits remain. Namespace checks do not claim to serialize racing external
 renames or simultaneous differently-spelled writers.
 

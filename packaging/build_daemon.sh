@@ -170,7 +170,13 @@ PYBASE
 # admitted concrete executable and raw prefix remain identity expectations.
 UV_PROJECT_ARGS=(--project "$REPO_ROOT" --directory "$REPO_ROOT"
     --python "$PYTHON_REQUEST" --managed-python --no-python-downloads)
-uv sync "${UV_PROJECT_ARGS[@]}" --group build --frozen
+# The editable root's backend is not part of uv.lock. Populate its complete
+# wheel-only closure with mandatory hashes before building; no implicit backend
+# resolution is permitted. Runtime packages still use the unchanged frozen lock.
+uv venv --no-config --python "$MANAGED_PYTHON" --managed-python --no-python-downloads "$REPO_ROOT/.venv"
+uv pip install --no-config --python "$REPO_ROOT/.venv/bin/python" --no-python-downloads \
+    --require-hashes --only-binary :all: --requirements "$REPO_ROOT/packaging/build-backend-requirements.txt"
+uv sync "${UV_PROJECT_ARGS[@]}" --group build --frozen --no-build-isolation-package happyranch
 uv run "${UV_PROJECT_ARGS[@]}" --no-sync --no-env-file python -I - "$WORK/python-toolchain.json" "$REPO_ROOT/.venv" "$MANAGED_PYTHON" "$MANAGED_PREFIX" "$REPO_ROOT" "$UV_PYTHON_INSTALL_DIR" <<'PYTOOL'
 import json, platform, sys, sysconfig
 from pathlib import Path

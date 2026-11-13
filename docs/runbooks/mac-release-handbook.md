@@ -80,6 +80,19 @@ setup guidance. SHA1 letter case is normalized for the existing identity check.
 Keep the same configuration throughout a retained signing run. This setup does
 not query Apple, unlock a Keychain or change credential policy.
 
+The separate existing Jenkins native probe now has a reviewed source proposal
+for scratch-only uv 0.12.21/Node 24.19.0 LTS/Go 1.23.12 provisioning and 90min/256MiB limits
+(THR-346 msg86); see the [probe contract](../../ci/jenkins/mac-native-probe/README.md).
+This changes no signing-host prerequisites or release route. The live 32MiB
+configuration cannot admit its 52,234,372-byte Node tarball; native provisioning
+proof awaits merge and manager config application. Preflight requires those
+exact versions at scratch paths, with private caches and GOTOOLCHAIN=local.
+The freezer hash-installs the complete build-only editable backend closure
+before sync; runtime manifests/uv.lock are unchanged. Go 1.23.12 preserves the
+conservative gVisor runtime/ABI line; newer maintained compatibility remains
+unestablished.
+No packaged app is built or run by that preflight.
+
 ## Step 1 — Build in CI, only when a new build is needed
 
 The shipped build path is `.github/workflows/build-mac-app.yml` (Build macOS App).
