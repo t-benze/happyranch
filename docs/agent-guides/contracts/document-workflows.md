@@ -463,8 +463,9 @@ Direct-connect route/sweep retries take the same stable profile lease, re-read
 the durable projection terminal state before creating a U1A operation/fence,
 and only the winner records that existing durable claim and mutates/publishes.
 A genuinely empty org with a classified v2 empty reviewer setting publishes a
-coherent ordinary authority snapshot with `agents=[]`, `teams=[]` and
-`reviewer_agents=[]`; attachment and reopen use normal publication and closure
+coherent ordinary authority snapshot with `agents=[]` and `reviewer_agents=[]`.
+Canonical teams may be empty or include the constructor's existing Founder-managed
+Default team. Attachment and reopen use normal publication and closure
 checks. There is no reviewer-error-based empty-skeleton exemption or requirement
 to retain generation zero/fenced. Attachment still proves absence of active and
 pending definitions and canonical/in-memory teams outside leases/transactions,

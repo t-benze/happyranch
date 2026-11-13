@@ -14,7 +14,7 @@ class ReviewerPolicyError(ValueError):
     """The durable reviewer pair is unavailable or cannot be classified."""
 
 
-def parse_reviewer_agents(raw: str) -> list[str]:
+def parse_reviewer_agents(raw: str | None) -> list[str]:
     try:
         value = json.loads(raw)
     except (TypeError, ValueError) as exc:
@@ -26,7 +26,7 @@ def parse_reviewer_agents(raw: str) -> list[str]:
     return value
 
 
-def validate_reviewer_policy(raw: str) -> None:
+def validate_reviewer_policy(raw: str | None) -> None:
     def closed_object(pairs: list[tuple]) -> dict:
         if len(pairs) != 1 or pairs[0][0] != "version":
             raise ReviewerPolicyError("invalid reviewer_agents_policy")

@@ -319,7 +319,32 @@ with tempfile.TemporaryDirectory(prefix='reviewer-rollback-') as scratch:
     startup_expect(json.loads(db.get_org_setting('reviewer_agents')) == ['code_reviewer'] and len(reviewer_audits(db)) == 2,
                    'L5-reopen-after-rollback-converts-once')
     db.close()
-print('NOT RUN L5 commit-I/O failure: existing SQLite ABORT trigger proves statement/audit rollback, not failed COMMIT I/O.')
+# Existing schema-load owner already uses SQLite authorizers for commit faults.
+# Deny the real COMMIT, then observe rollback and production reopen.
+with tempfile.TemporaryDirectory(prefix='reviewer-commit-refusal-') as scratch:
+    path = Path(scratch)/'org.db'
+    db = Database(path)
+    db._conn.execute("INSERT INTO org_settings VALUES ('reviewer_agents','[]','old','founder')")
+    db._conn.commit()
+    def deny_commit(action, arg1, arg2, database, source):
+        return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_TRANSACTION and arg1 == 'COMMIT' else sqlite3.SQLITE_OK
+    db._conn.set_authorizer(deny_commit)
+    try:
+        db.establish_reviewer_agents_policy(['code_reviewer'])
+    except sqlite3.DatabaseError:
+        startup_expect(db.get_reviewer_agents_pair() == {'reviewer_agents':'[]'} and not reviewer_audits(db),
+                       'L5-commit-refusal-rolls-back-whole-pair')
+    else:
+        startup_expect(False,'L5-commit-refusal-rolls-back-whole-pair')
+    finally:
+        db._conn.set_authorizer(None)
+    db.close()
+    db = Database(path)
+    db.establish_reviewer_agents_policy(['code_reviewer'])
+    startup_expect(json.loads(db.get_org_setting('reviewer_agents')) == ['code_reviewer'] and len(reviewer_audits(db)) == 2,
+                   'L5-reopen-after-commit-refusal-converts-once')
+    db.close()
+print('NOT RUN L5 physical disk-I/O/crash failure: authorizer covers actual COMMIT refusal, not a physical storage crash.')
 
 
 # Real OrgState.load, without a listener, runners or serving-daemon access.
