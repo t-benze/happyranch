@@ -118,8 +118,16 @@ THR308seq348/353/354 permits explicit source reads later in the SAME unpublished
 bookends: local `total_changes`, main AND TEMP schema cookies, `data_version`,
 connection/database and configuration identity. Every load's first validation
 is complete, including unchanged `integrity_check` and `foreign_key_check`.
-Known settings seed/backfill, Pause journal UPDATEs and naming reservation audit
-writes invalidate reuse. Unknown, failed or changed metadata forces a full read.
+Known settings seed/backfill, actual Pause journal UPDATEs and naming reservation
+audit writes invalidate reuse. Pause restore, including the sweep's repeated
+restore, keeps its existing transaction/recovery decisions but skips UPDATE when
+canonical serialized journal bytes already equal the stored value; any difference
+still writes. The cold naming loader omits its reservation/active/settled pair
+only after a successful unchanged read/compare under `BEGIN IMMEDIATE` and COMMIT
+(THR308seq426 Decision 4). Would-write reserves before reconciliation; failed,
+unreadable, interrupted and uncertain proofs still reserve/retain UNKNOWN exactly
+as before, including next-boot refusal. Compatibility/selector/other writer rows
+stay unchanged. Unknown, failed or changed metadata forces a full read.
 Autocommit reuse brackets a pinned read snapshot with outside observations;
 fresh BEGIN IMMEDIATE source reads compare under their existing writer fence.
 Only cutover recovery's final read, task-ownership installation's target and
@@ -1202,7 +1210,8 @@ preserve lifecycle-owned uncertainty. The unused move-only C3 causal census is r
 history readers remain; terminal rows or missing trackers never prove cleanup. Native profile/workflow,
 roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
 membership, keeping their original synchronization and journals without a move-hold
-check. The nightly disk sweeper retains its separate native hold gate.
+check. Only a proven no-op cold naming load omits its interval under Decision 4
+above. The nightly disk sweeper retains its separate native hold gate.
 Strict bounded version1 producer/writer audits append in existing audit_log;
 earlier uncertainty survives later clean outcomes. No extra table, permission
 or auth change. The online move/reset/publication service is removed;
@@ -1642,6 +1651,14 @@ The daemon persists runtime metrics as a time-series of full snapshots in a
 | Cadence | ~60s (piggybacks `work_hours_scheduler_loop`; throttled to one write per ~55s) |
 | Retention | 30 days (pruned on each write; module constant `_RETENTION_DAYS`) |
 | Pattern | Append-only — same durable pattern as `audit_log`, but a separate store (no `audit_log` overload) |
+
+The first snapshot is queued on the event loop after successful ASGI/listener
+startup returns and the serving observation has been emitted. Earlier scheduler
+ticks keep all recovery/scheduling work but skip telemetry persistence. The
+initial write and later ticks share the same composer, ~55s throttle, content
+and pruning rules. Neither readiness nor the live metrics route depends on a
+persisted row; the history route already supports an empty store. This is no
+serving-latency claim and moves no recovery after serving.
 
 The snapshot payload is the same dict returned by `GET /api/v1/metrics`:
 `MetricsRegistry.snapshot()` plus live pull-gauges (`tasks`, `jobs_in_flight`,

@@ -501,6 +501,11 @@ or changed observation runs its original full target callable and budget. A hit
 returns the identical cached complete result and charges as a source reuse hit;
 a target miss cannot seed complete-source reuse. Other targets and ordinary
 public reads retain their complete checks.
+THR308seq426 Decision 4 leaves these guard semantics unchanged: only the cold
+naming loader's proven unchanged transaction omits native reservation/audit rows.
+Byte-identical Pause journals also avoid UPDATE. On a normal no-op restart those
+earlier writes no longer dirty the connection before naming's source read. Failed
+or would-write naming loads still reserve; all changed-bookend fallback remains.
 Retained counter deltas are charged once to C, including refusals. Advances
 remain provisional until the complete read and snapshot exit succeed; an outer
 writer still owns publication after its own successful exit.

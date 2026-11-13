@@ -576,7 +576,7 @@ format, once per reached phase per org:
 | `org_pause_restore` | `restore_pause_preparations` |
 | `org_state` | `OrgState` construction |
 | `org_startup_owner` | native writer history, active journal and native owner inspection, with existing hold handling |
-| `org_naming` | identity-names writer interval and `refresh_names(install=True)`, including source and target admission |
+| `org_naming` | `load_names`: unchanged transactional proof without a reservation, otherwise the original reserved `refresh_names(install=True)`; failures retain UNKNOWN |
 | `org_workflow_authority` | `recover_or_publish` and its existing exception handling |
 | `org_coding_builtin` | `ensure_registered` |
 | `org_rediscover_coding` | `_rediscover_returned` calling Coding `rediscover_returned` |
@@ -586,10 +586,11 @@ The gap from workflow schema validation to revalidation includes team-move
 validation, cutover recovery and Pause setup. The gap from revalidation to
 `startup_workflow_validation` includes ownership, roster/settings, construction,
 Pause restore, startup owner inspection, naming, authority publication and
-built-in registration. Cutover's public read, ownership's target read and naming's
-target admission remain complete reads outside the source-reuse guard; their
-time is not included in that guard's `full_seconds`. Naming's writer reservation
-can invalidate reuse even when names are unchanged. These source boundaries do
+built-in registration. Cutover/ownership/naming zero-write targets may reuse
+under Decision 1's complete bookends; changed targets retain their full reader.
+The naming loader now omits its reservation/audit pair only for a successfully
+committed unchanged proof (Decision 4). Failed or would-write loads still reserve
+and invalidate reuse. Public reads remain complete. These source boundaries do
 not establish how many seconds each call took on a prior boot. Imports between
 spans, migration guidance and small assignments remain load residual. A phase
 is complete if its bracket returns normally, including existing caught failures;

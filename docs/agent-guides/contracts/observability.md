@@ -1,5 +1,10 @@
 # Usage, metrics and failure diagnostics contracts
 
+THR-308 PR4 queues the first metrics snapshot after successful ASGI/listener
+startup returns. Early scheduler ticks skip telemetry persistence; recovery stays
+before serving. The same composer/throttle/retention owns later writes. Live
+metrics and readiness use current state; history permits an empty store.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

@@ -365,10 +365,11 @@ class TaskPauseStore:
         return row
 
     def save_journal_uncommitted(self, row: dict) -> None:
+        """Persist canonical bytes only when different, under the caller's writer."""
         raw = json.dumps(row["journal"], sort_keys=True, separators=(",", ":"), allow_nan=False)
         decode_journal(raw)
-        self.db._conn.execute("UPDATE task_pause_controls SET admission_journal_json=? WHERE root_task_id=?",
-                              (raw, row["root_task_id"]))
+        self.db._conn.execute("UPDATE task_pause_controls SET admission_journal_json=? WHERE root_task_id=? AND admission_journal_json<>?",
+                              (raw, row["root_task_id"], raw))
 
     def control(self, task_id: str, *, held: bool, expected_generation: int,
                 actor: str, sessions: Any) -> bool:

@@ -1012,6 +1012,11 @@ class _DiagnosticServer(uvicorn.Server):
             except Exception:
                 pass  # C stays unavailable, never substitutes readiness success
 
+        # Pure telemetry runs on the next event-loop turn, after this actual
+        # ASGI/listener startup endpoint returns. It grants no readiness.
+        from runtime.daemon.metrics_store import start_metrics_persistence
+        start_metrics_persistence(self._diagnostic_app.state.daemon)
+
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
