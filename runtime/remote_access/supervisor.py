@@ -2,16 +2,18 @@
 
 Composes readiness, the service manager, the lab provider, the trust-state
 store, the policy consumer, and the credential provider into the supervised
-Linux connector lifecycle:
+Linux/macOS connector lifecycle:
 
-- ``run`` — the systemd ``Type=notify`` foreground loop: readiness gates
+- ``run`` — the shared foreground loop (systemd ``Type=notify`` on Linux,
+  connector-owned readiness record/self-watchdog on macOS): readiness gates
   before ANY listener; on readiness loss the listener is stopped
   immediately and the process exits nonzero for systemd recovery; READY is
-  emitted once and WATCHDOG only after healthy passes. A runnable
+  emitted once and WATCHDOG only after healthy passes. The macOS sink translates
+  these same events without sd_notify; launchd KeepAlive owns recovery. A runnable
   configuration REQUIRES a concrete lab provider/listener — provider-less
   run configurations are rejected at startup and NEVER emit READY=1.
 - ``install``/``uninstall``/``start``/``stop``/``restart``/``enable``/
-  ``disable``/``status`` — systemd service lifecycle. ``install`` treats the
+  ``disable``/``status`` — native service lifecycle. ``install`` treats the
   source trust state only as an initial seed when NO managed pair exists;
   once a managed snapshot+anchor pair exists it is authoritative and is
   never overwritten or rolled back by a stale operator source pair.
@@ -235,7 +237,7 @@ def sd_notify(state: str, notify_socket: str | None = None) -> bool:
 
 
 class ConnectorSupervisor:
-    """Composes the Linux connector lifecycle."""
+    """Composes the native connector lifecycle."""
 
     def __init__(
         self,
@@ -258,7 +260,12 @@ class ConnectorSupervisor:
         self._readiness = readiness
         self._injected_provider = provider
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
-        self._notify_fn = notify_fn or (lambda state: sd_notify(state))
+        self._launchd_readiness = None
+        if sys.platform == "darwin":
+            from runtime.remote_access.launchd_readiness import LaunchdReadiness
+
+            self._launchd_readiness = LaunchdReadiness(self._readiness_path(), config.watchdog_sec)
+        self._notify_fn = self._launchd_readiness or notify_fn or (lambda state: sd_notify(state))
         self._provider: LabProviderAdapter | None = None
         self._provider_running = False
         self._lifecycle_lock = threading.RLock()
@@ -906,8 +913,20 @@ class ConnectorSupervisor:
     def disable(self) -> None:
         self.manager.disable(self.config.unit_name)
 
+    def _readiness_path(self) -> Path:
+        from runtime.remote_access.launchd_agent import launchd_label
+
+        return self._managed_state_root() / f"{launchd_label(self.config.unit_name)}.readiness.json"
+
     def status(self) -> ServiceStatus:
-        return self.manager.status(self.config.unit_name)
+        process = self.manager.status(self.config.unit_name)
+        if sys.platform == "darwin":
+            from runtime.remote_access.launchd_readiness import readiness_status
+
+            return readiness_status(process, self._readiness_path(),
+                                    watchdog_sec=self.config.watchdog_sec,
+                                    poll_seconds=self.config.poll_seconds)
+        return process
 
     def upgrade(self, *, verify_start: bool = True) -> UpgradeOutcome:
         if sys.platform == "darwin":
@@ -924,6 +943,28 @@ class ConnectorSupervisor:
     # ── the foreground readiness loop (systemd Type=notify) ───────────────
 
     def run(
+        self,
+        *,
+        max_iterations: int | None = None,
+        poll_seconds: float | None = None,
+        wait_fn: Callable[[float], None] = time.sleep,
+    ) -> int:
+        """Select platform supervision outside the shared, unchanged notify loop."""
+        sink = self._launchd_readiness
+        if sink is None:
+            return self._run_loop(max_iterations=max_iterations, poll_seconds=poll_seconds, wait_fn=wait_fn)
+        try:
+            sink.start()
+            return self._run_loop(max_iterations=max_iterations, poll_seconds=poll_seconds, wait_fn=wait_fn)
+        finally:
+            # Keep the watchdog armed through listener/stream cleanup and the
+            # final not-ready publication, including exception and signal exits.
+            try:
+                self.shutdown()
+            finally:
+                sink.stop()
+
+    def _run_loop(
         self,
         *,
         max_iterations: int | None = None,

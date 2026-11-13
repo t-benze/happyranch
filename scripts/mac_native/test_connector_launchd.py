@@ -5,9 +5,11 @@ import io
 import json
 import os
 import plistlib
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
+from datetime import datetime
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import Mock, patch
@@ -858,6 +860,317 @@ class NativeProbeContext(unittest.TestCase):
                 self.assertEqual(section["cleanup"], {"bootout_exit": 0, "service_absent": True, "plist_absent": True})
                 # No start success, restart, kill or native call is fabricated.
                 self.assertEqual(sum(argv[:2] == ["launchctl", "bootstrap"] for argv in calls), 1)
+
+
+
+# C3 tests exercise the public supervisor/CLI and real child-process exits.
+class _LoopProvider:
+    def __init__(self) -> None:
+        self.listening = False
+
+    def start(self) -> None:
+        self.listening = True
+
+    def stop(self) -> None:
+        self.listening = False
+
+
+def _loop_supervisor(root: Path, *, watchdog: float = 2, poll: float = 0.01) -> ConnectorSupervisor:
+    from types import SimpleNamespace
+    from runtime.remote_access.readiness import ReadinessReport
+
+    readiness = Mock()
+    readiness.evaluate.return_value = ReadinessReport(ready=True)
+    store = Mock()
+    store.load.return_value = SimpleNamespace(revocation_epoch=0)
+    return ConnectorSupervisor(
+        config=ConnectorConfig(managed_dir_root=str(root), watchdog_sec=watchdog, poll_seconds=poll),
+        readiness=readiness, state_store=store, provider=_LoopProvider(),
+    )
+
+
+def _record_path(root: Path) -> Path:
+    return root / "happyranch-connector" / f"{LABEL}.readiness.json"
+
+
+class ConnectorReadinessLifecycle(unittest.TestCase):
+    def test_record_lifecycle_and_permissions(self) -> None:
+        from runtime.remote_access.readiness import ReadinessReport
+
+        with tempfile.TemporaryDirectory() as folder, patch("sys.platform", "darwin"):
+            root = Path(folder)
+            supervisor = _loop_supervisor(root)
+            path = _record_path(root)
+            self.assertFalse(path.exists(), "construction/status must not publish readiness")
+            observations = []
+
+            def evaluate(_now: datetime) -> ReadinessReport:
+                self.assertTrue(path.is_file(), "run must publish starting before readiness evaluation")
+                if not observations:
+                    initial = json.loads(path.read_text())
+                    self.assertFalse(initial["ready"])
+                    self.assertIsNone(initial["last_healthy_wall_time"])
+                    self.assertEqual(initial["reason"], "starting")
+                return ReadinessReport(ready=True)
+
+            def observe(_seconds: float) -> None:
+                self.assertTrue(path.is_file(), "healthy passes must publish readiness")
+                value = json.loads(path.read_text())
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                self.assertEqual(path.stat().st_uid, os.getuid())
+                self.assertEqual(value["pid"], os.getpid())
+                self.assertTrue(value["ready"])
+                self.assertGreaterEqual(value["last_healthy_wall_time"], value["process_started_at"])
+                observations.append(value)
+
+            supervisor._readiness.evaluate.side_effect = evaluate
+            self.assertEqual(supervisor.run(max_iterations=3, wait_fn=observe), 0)
+            self.assertEqual([item["sequence"] for item in observations], [2, 3, 4])
+            self.assertEqual(len({item["process_started_at"] for item in observations}), 1)
+            final = json.loads(path.read_text())
+            self.assertFalse(final["ready"])
+            self.assertEqual(final["reason"], "stopping")
+            self.assertGreater(final["sequence"], observations[-1]["sequence"])
+            self.assertFalse(supervisor._injected_provider.listening)
+
+    def test_record_atomic_publication_failure(self) -> None:
+        for failure in ("fsync", "replace"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder, patch("sys.platform", "darwin"):
+                root = Path(folder)
+                supervisor = _loop_supervisor(root)
+                path = _record_path(root)
+                observed = []
+                original_replace = os.replace
+                original_fsync = os.fsync
+
+                def observe(_seconds: float) -> None:
+                    self.assertTrue(path.is_file(), "no complete record was published")
+                    previous = path.read_bytes()
+                    syncs = []
+
+                    def fsync(fd: int) -> None:
+                        syncs.append(fd)
+                        if failure == "fsync":
+                            raise OSError("synthetic fsync failure")
+                        return original_fsync(fd)
+
+                    def replace(source: Path, target: Path) -> None:
+                        staged = Path(source)
+                        self.assertEqual(Path(target), path)
+                        self.assertNotEqual(staged, path)
+                        self.assertEqual(staged.parent, path.parent)
+                        self.assertEqual(stat.S_IMODE(staged.stat().st_mode), 0o600)
+                        self.assertEqual(path.read_bytes(), previous)
+                        self.assertTrue(syncs, "publication must fsync before rename")
+                        self.assertTrue(json.loads(staged.read_text())["ready"])
+                        if failure == "replace":
+                            raise OSError("synthetic rename failure")
+                        return original_replace(source, target)
+
+                    with patch("os.fsync", side_effect=fsync), patch("os.replace", side_effect=replace):
+                        with self.assertRaises(OSError):
+                            supervisor._notify_fn("WATCHDOG=1\n")
+                    self.assertEqual(path.read_bytes(), previous, "failed publication replaced complete record")
+                    self.assertEqual(list(path.parent.iterdir()), [path], "pending inode leaked")
+                    observed.append(failure)
+
+                self.assertEqual(supervisor.run(max_iterations=1, wait_fn=observe), 0)
+                self.assertEqual(observed, [failure])
+
+    def test_status_matrix_and_cli_fields(self) -> None:
+        from runtime.remote_access.launchd_agent import LaunchdStatus
+
+        now = 1000.0
+        record = dict(pid=1234, process_started_at=900.0, ready=True,
+                      last_healthy_wall_time=995.0, sequence=3, reason="healthy")
+        # Freshness = watchdog(10) + one configured poll interval(2).
+        cases = [
+            ("ready", "loaded", "running", 1234, record),
+            ("ready", "loaded", "running", 1234, {**record, "last_healthy_wall_time": 988.0}),
+            ("stale-readiness", "loaded", "running", 1234, {**record, "last_healthy_wall_time": 987.9}),
+            ("stale-readiness", "loaded", "running", 1234, {**record, "last_healthy_wall_time": 1001.0}),
+            ("pid-mismatch", "loaded", "running", 777, record),
+            ("running-not-ready", "loaded", "running", 1234, {**record, "ready": False, "last_healthy_wall_time": None, "reason": "starting"}),
+            ("record-missing", "loaded", "running", 1234, None),
+            ("starting", "loaded", "spawn scheduled", 0, record),
+            ("not-loaded", "unloaded", "dead", 0, record),
+            ("not-loaded", "not-found", "dead", 0, None),
+        ]
+        with tempfile.TemporaryDirectory() as folder, patch("sys.platform", "darwin"), patch("time.time", return_value=now):
+            root = Path(folder)
+            path = _record_path(root)
+            path.parent.mkdir(parents=True)
+            config = ConnectorConfig(managed_dir_root=folder, watchdog_sec=10, poll_seconds=2)
+            for expected, loaded, substate, pid, data in cases:
+                with self.subTest(expected=expected, pid=pid, data=data):
+                    path.unlink(missing_ok=True)
+                    if data is not None:
+                        path.write_text(json.dumps(data))
+                        path.chmod(0o600)
+                    process = LaunchdStatus(unit_name=LABEL, active_state="active" if pid else "inactive",
+                                            sub_state=substate, load_state=loaded, pid=pid,
+                                            unit_file_state="enabled", domain=DOMAIN, last_exit_code=9)
+                    manager = Mock()
+                    manager.status.return_value = process
+                    supervisor = ConnectorSupervisor(config=config, manager=manager)
+                    stdout = io.StringIO()
+                    with patch.object(cli, "_load_config", return_value=config), patch.object(cli, "ConnectorSupervisor", return_value=supervisor), redirect_stdout(stdout):
+                        self.assertEqual(cli.main(["status"]), 0)
+                    value = json.loads(stdout.getvalue())
+                    self.assertEqual(value.get("readiness_state"), expected)
+                    self.assertEqual(value.get("ready"), expected == "ready")
+                    for key, original in process.__dict__.items():
+                        self.assertEqual(value[key], original, f"changed existing launchd field {key}")
+                    self.assertEqual(value["readiness_max_age_seconds"], 12)
+
+    def test_invalid_readiness_records(self) -> None:
+        from runtime.remote_access.launchd_agent import LaunchdStatus
+
+        base = dict(pid=1234, process_started_at=900.0, ready=True,
+                    last_healthy_wall_time=995.0, sequence=3, reason="healthy")
+        malformed = ["{", "[]", "x" * 4097, "[" * 1500, b"\xff",
+                     json.dumps(base).replace('"pid": 1234', '"pid": 7, "pid": 1234'), json.dumps({**base, "pid": True}),
+                     json.dumps({**base, "ready": "true"}), json.dumps({**base, "sequence": True}),
+                     json.dumps({**base, "last_healthy_wall_time": float("nan")}),
+                     json.dumps({**base, "last_healthy_wall_time": None}),
+                     json.dumps({**base, "process_started_at": 999.0}),
+                     json.dumps({**base, "reason": "synthetic-bearer-material"})]
+        with tempfile.TemporaryDirectory() as folder, patch("sys.platform", "darwin"), patch("time.time", return_value=1000):
+            root = Path(folder)
+            path = _record_path(root)
+            path.parent.mkdir(parents=True)
+            manager = Mock()
+            manager.status.return_value = LaunchdStatus(unit_name=LABEL, active_state="active", sub_state="running", load_state="loaded", pid=1234)
+            supervisor = ConnectorSupervisor(config=ConnectorConfig(managed_dir_root=folder), manager=manager)
+            for raw in malformed:
+                with self.subTest(raw=str(raw)[:80]):
+                    path.write_bytes(raw if isinstance(raw, bytes) else raw.encode())
+                    path.chmod(0o600)
+                    value = supervisor.status().__dict__
+                    self.assertEqual(value.get("readiness_state"), "record-corrupt")
+                    self.assertFalse(value.get("ready"))
+                    self.assertNotIn("synthetic-bearer-material", json.dumps(value))
+            path.write_text(json.dumps(base))
+            path.chmod(0o644)
+            self.assertEqual(supervisor.status().__dict__.get("readiness_state"), "record-foreign")
+            path.chmod(0o600)
+            with patch("os.getuid", return_value=os.getuid() + 1):
+                self.assertEqual(supervisor.status().__dict__.get("readiness_state"), "record-foreign")
+            sibling = path.with_suffix(".foreign")
+            os.link(path, sibling)
+            self.assertEqual(supervisor.status().__dict__.get("readiness_state"), "record-foreign")
+            sibling.unlink()
+            sibling = path.with_suffix(".foreign")
+            path.rename(sibling)
+            path.symlink_to(sibling)
+            self.assertEqual(supervisor.status().__dict__.get("readiness_state"), "record-foreign")
+            path.unlink()
+            os.mkfifo(path, 0o600)
+            self.assertEqual(supervisor.status().__dict__.get("readiness_state"), "record-foreign")
+
+    def _child(self, scenario: str, root: Path) -> tuple[int, str]:
+        import subprocess
+        import sys
+
+        program = '''
+import json, sys, time
+from pathlib import Path
+from scripts.mac_native.test_connector_launchd import _loop_supervisor
+from runtime.remote_access.readiness import ReadinessReport
+sys.platform = "darwin"
+root = Path(sys.argv[1])
+scenario = sys.argv[2]
+supervisor = _loop_supervisor(root, watchdog=0.2, poll=0.02)
+wait = time.sleep
+if scenario == "startup-hang":
+    supervisor._readiness.evaluate.side_effect = lambda now: time.sleep(10)
+elif scenario == "loop-hang":
+    wait = lambda seconds: time.sleep(10)
+elif scenario == "publication-hang":
+    import os
+    os.fsync = lambda fd: time.sleep(10)
+elif scenario == "readiness-loss":
+    supervisor._readiness.evaluate.side_effect = [ReadinessReport(ready=True), ReadinessReport(ready=False)]
+elif scenario == "listener-loss":
+    def wait(seconds: float) -> None:
+        supervisor._injected_provider.listening = False
+result = supervisor.run(max_iterations=30, wait_fn=wait)
+print(json.dumps({"result": result, "listening": supervisor._injected_provider.listening}), flush=True)
+sys.exit(result)
+'''
+        with subprocess.Popen([sys.executable, "-B", "-c", program, str(root), scenario], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as child:
+            try:
+                stdout, stderr = child.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                stdout, stderr = child.communicate()
+                self.fail(f"{scenario}: connector hung instead of self-watchdog exit; {stderr[-500:]}")
+            self.assertNotIn("Traceback", stderr, stderr)
+            return child.returncode, stdout
+
+    def test_watchdog_kills_stalled_subprocess(self) -> None:
+        for scenario in ("startup-hang", "loop-hang", "publication-hang"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as folder:
+                code, _ = self._child(scenario, Path(folder))
+                self.assertEqual(code, 75, "self-watchdog must force a distinct nonzero exit")
+
+    def test_healthy_subprocess_survives_multiple_deadlines(self) -> None:
+        import time
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            started = time.monotonic()
+            code, output = self._child("healthy", root)
+            self.assertEqual(code, 0)
+            self.assertGreater(time.monotonic() - started, 0.4, "must span multiple watchdog intervals")
+            self.assertFalse(json.loads(output)["listening"])
+            path = _record_path(root)
+            self.assertTrue(path.is_file(), "healthy child never published readiness")
+            record = json.loads(path.read_text())
+            self.assertGreaterEqual(record["sequence"], 32)
+            self.assertFalse(record["ready"])
+
+    def test_readiness_and_listener_loss_close_admission(self) -> None:
+        for scenario in ("readiness-loss", "listener-loss"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                code, output = self._child(scenario, root)
+                self.assertEqual(code, 1)
+                self.assertFalse(json.loads(output)["listening"])
+                path = _record_path(root)
+                self.assertTrue(path.is_file(), "readiness loss never persisted a not-ready record")
+                record = json.loads(path.read_text())
+                self.assertFalse(record["ready"])
+                self.assertEqual(record["reason"], "readiness-or-listener-lost")
+                self.assertIsNotNone(record["last_healthy_wall_time"])
+
+    def test_linux_notify_and_status_bytes(self) -> None:
+        import socket
+
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="c3-") as folder, patch("sys.platform", "linux"):
+            root = Path(folder)
+            socket_path = root / "notify.sock"
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as receiver:
+                receiver.bind(str(socket_path))
+                receiver.settimeout(0.5)
+                with patch.dict(os.environ, {"NOTIFY_SOCKET": str(socket_path)}):
+                    supervisor = _loop_supervisor(root)
+                    self.assertEqual(supervisor.run(max_iterations=3, wait_fn=lambda seconds: None), 0)
+                    supervisor.shutdown()
+                messages = []
+                try:
+                    for _ in range(4):
+                        messages.append(receiver.recv(1024))
+                except TimeoutError:
+                    self.fail(f"Linux sd_notify datagrams missing: {messages!r}")
+                self.assertEqual(messages, [b"READY=1\n", b"WATCHDOG=1\n", b"WATCHDOG=1\n", b"STOPPING=1\n"])
+            self.assertFalse(_record_path(root).exists())
+            manager = Mock()
+            from runtime.remote_access.service_manager import ServiceStatus
+            process = ServiceStatus("x.service", "active", "running", "loaded", 55, "enabled")
+            manager.status.return_value = process
+            self.assertIs(ConnectorSupervisor(config=ConnectorConfig(), manager=manager).status(), process)
+            self.assertEqual(json.dumps(process.__dict__, sort_keys=True), '{"active_state": "active", "load_state": "loaded", "pid": 55, "sub_state": "running", "unit_file_state": "enabled", "unit_name": "x.service"}')
 
 
 if __name__ == "__main__":
