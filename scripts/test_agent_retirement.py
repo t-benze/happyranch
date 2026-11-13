@@ -479,8 +479,236 @@ async def locked_recheck(org: OrgState, client: httpx.AsyncClient, kind: str) ->
     assert persistent(org) == before
 
 
+async def reviewer_settings(org: OrgState, client: httpx.AsyncClient) -> None:
+    """B1 L3/L6: loaded-org diagnosis, explicit intent and nonmutating preflight."""
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.org_config import write_org_setting_to_db
+    from runtime.workflows.authority import WorkflowAuthorityError
+    response = await client.get(f"{PREFIX}/settings")
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_configuration"] == {"state": "configured", "missing_agents": []}
+    marker_before = tuple(org.db.execute(
+        "SELECT * FROM org_settings WHERE section='reviewer_agents_policy'").fetchone())
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": []})
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_configuration"] == {"state": "none", "missing_agents": []}
+    assert json.loads(org.db.get_org_setting("reviewer_agents")) == []
+    assert tuple(org.db.execute("SELECT * FROM org_settings WHERE section='reviewer_agents_policy'").fetchone()) == marker_before
+    audit = org.db.execute("SELECT agent,payload FROM audit_log WHERE task_id='config:reviewer_agents' AND action='org_config_write' ORDER BY id DESC LIMIT 1").fetchone()
+    assert audit["agent"] == "founder" and json.loads(audit["payload"]) == {
+        "section": "reviewer_agents", "tiers": ["value"],
+        "before": {"value": ["other"]}, "after": {"value": []}}
+    pair = org.db.get_reviewer_agents_pair()
+    response = await client.put(f"{PREFIX}/settings/org", json={"threads": {"default_turn_cap": 7}})
+    assert response.status_code == 200, response.text
+    assert org.db.get_reviewer_agents_pair() == pair
+    for invalid in (None, ["other", "other"], [""], ["ghost"]):
+        response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": invalid})
+        assert response.status_code == 422, response.text
+        assert org.db.get_reviewer_agents_pair() == pair
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": ["other"]}, headers={"Authorization": "Bearer invalid-synthetic"})
+    assert response.status_code in (401, 403), response.text
+    assert org.db.get_reviewer_agents_pair() == pair
+    # A loaded value can become stale without the active default masking it.
+    org.db._conn.execute("UPDATE org_settings SET value_json=? WHERE section='reviewer_agents'", ('["other","ghost"]',))
+    org.db._conn.commit()
+    response = await client.get(f"{PREFIX}/settings")
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_agents"] == ["other", "ghost"]
+    assert response.json()["org"]["reviewer_configuration"] == {"state": "missing", "missing_agents": ["ghost"]}
+    try:
+        org.workflow_authority.capture_canonical_snapshot()
+    except WorkflowAuthorityError as exc:
+        assert exc.code == "authority_reviewer_incoherent"
+    else:
+        raise AssertionError("stale reviewers published authority")
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": ["other"]})
+    assert response.status_code == 200, response.text
+    # Literal unmarked loaded value: preflight must never stamp intent.
+    org.db._conn.execute("DELETE FROM org_settings WHERE section='reviewer_agents_policy'")
+    org.db._conn.execute("UPDATE org_settings SET value_json='broken' WHERE section='reviewer_agents'")
+    org.db._conn.commit()
+    before = org.db._conn.total_changes
+    write_org_setting_to_db(OrgPaths(org.root), org.db, {"reviewer_agents": []}, validate_only=True)
+    assert org.db._conn.total_changes == before
+    assert "reviewer_agents_policy" not in org.db.get_reviewer_agents_pair()
+    response = await client.get(f"{PREFIX}/settings")
+    assert response.status_code == 200 and response.json()["org"]["reviewer_configuration"]["state"] == "invalid"
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": []})
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_configuration"]["state"] == "none"
+    repair_audit = org.db.execute("SELECT id,agent,payload FROM audit_log WHERE task_id='config:reviewer_agents' AND action='org_config_write' ORDER BY id DESC LIMIT 1").fetchone()
+    assert repair_audit["agent"] == "founder" and json.loads(repair_audit["payload"]) == {
+        "section": "reviewer_agents", "tiers": ["value"],
+        "before": {"value": {"invalid": True}}, "after": {"value": []}}, "malformed repair lost safe before-state"
+    # An absent-row control must retain its distinct empty before snapshot.
+    org.db._conn.execute("DELETE FROM org_settings WHERE section IN ('reviewer_agents','reviewer_agents_policy')")
+    org.db._conn.commit()
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": []})
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_configuration"]["state"] == "none"
+    absent_audit = org.db.execute("SELECT id,agent,payload FROM audit_log WHERE task_id='config:reviewer_agents' AND action='org_config_write' ORDER BY id DESC LIMIT 1").fetchone()
+    assert absent_audit["id"] > repair_audit["id"]
+    assert absent_audit["agent"] == "founder" and json.loads(absent_audit["payload"]) == {
+        "section": "reviewer_agents", "tiers": ["value"],
+        "before": {}, "after": {"value": []}}, "absent reviewer row gained a before-state"
+    org.db._conn.execute("UPDATE org_settings SET value_json=? WHERE section='reviewer_agents_policy'", ('{"version":true}',))
+    org.db._conn.commit()
+    before = org.db.get_reviewer_agents_pair()
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": ["other"]})
+    assert response.status_code == 422, response.text
+    assert org.db.get_reviewer_agents_pair() == before
+
+
+async def reviewer_fresh(org: OrgState, client: httpx.AsyncClient) -> None:
+    """B1 L3a: real fresh constructor, ordinary empty publication and reopen."""
+    for slug, example_text in (("fresh-omitted", None), ("fresh-empty", "reviewer_agents: []\n")):
+        payload = {"slug": slug}
+        if example_text is not None:
+            example = org.root.parent.parent / "synthetic-example"
+            (example / "org" / "agents").mkdir(parents=True)
+            (example / "org" / "teams.yaml").write_text("teams: {}\n")
+            (example / "org" / "config.yaml").write_text(example_text)
+            payload["from_example"] = str(example)
+        response = await client.post("/api/v1/orgs", json=payload)
+        assert response.status_code == 200, response.text
+        response = await client.get(f"/api/v1/orgs/{slug}/settings")
+        assert response.status_code == 200, response.text
+        assert response.json()["org"]["reviewer_agents"] == []
+        assert response.json()["org"]["reviewer_configuration"] == {"state": "none", "missing_agents": []}
+        root = org.root.parent / slug
+        reopened = OrgState.load(slug=slug, root=root, settings=Settings())
+        try:
+            readiness = reopened.workflow_authority.verify_admission_ready()
+            snapshot = json.loads(readiness.snapshot_bytes)
+            assert snapshot["reviewer_agents"] == [] and snapshot["agents"] == []
+            assert snapshot["teams"] == [{"name": "default", "manager": {"kind": "human", "principal": "founder"}, "workers": []}]
+            audits = reopened.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='org_config_write' AND task_id IN ('config:reviewer_agents','config:reviewer_agents_policy') ORDER BY id").fetchall()
+            assert [row["task_id"] for row in audits] == ["config:reviewer_agents", "config:reviewer_agents_policy"]
+            assert all(row["agent"] == "orchestrator" for row in audits)
+            assert [json.loads(row["payload"]) for row in audits] == [
+                {"section": "reviewer_agents", "tiers": ["value"], "before": {}, "after": {"value": []}},
+                {"section": "reviewer_agents_policy", "tiers": ["version"], "before": {}, "after": {"version": 2}}]
+        finally:
+            reopened.close()
+
+    # An explicit active reviewer other than code_reviewer wins at construction.
+    example = org.root.parent.parent / "configured-reviewer-example"
+    (example / "org" / "agents").mkdir(parents=True)
+    (example / "org" / "teams.yaml").write_text("teams:\n  engineering:\n    manager: keeper\n    workers: [other]\n")
+    (example / "org" / "config.yaml").write_text("reviewer_agents: [other]\n")
+    for name, role in (("keeper", "manager"), ("other", "worker")):
+        (example / "org" / "agents" / f"{name}.md").write_text(
+            f"---\nname: {name}\nteam: engineering\nrole: {role}\nexecutor: claude\n---\nSynthetic inert role.\n")
+    response = await client.post("/api/v1/orgs", json={"slug": "fresh-configured", "from_example": str(example)})
+    assert response.status_code == 200, response.text
+    response = await client.get("/api/v1/orgs/fresh-configured/settings")
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_agents"] == ["other"]
+    assert response.json()["org"]["reviewer_configuration"] == {"state": "configured", "missing_agents": []}
+    # Parse failure cannot become omission/none; original constructor rollback stays.
+    (example / "org" / "config.yaml").write_text("reviewer_agents: [\n")
+    from runtime.orchestrator.org_config import OrgConfigError
+    try:
+        await client.post("/api/v1/orgs", json={"slug": "fresh-invalid", "from_example": str(example)})
+    except OrgConfigError:
+        assert not (org.root.parent / "fresh-invalid").exists()
+    else:
+        raise AssertionError("fresh constructor accepted unreadable reviewer config")
+
+
+async def reviewer_empty_profiles(org: OrgState, client: httpx.AsyncClient, scenario: str) -> None:
+    """Coherent empty attachment cannot discharge existing publication owners."""
+    from runtime.infrastructure.producer_admission import NativeWriterLifecycle, NativeWriterStore
+    from runtime.workflows.authority import WorkflowAuthorityError
+    from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+    profiles = org._profile_coordinator
+    slug = "empty-" + scenario
+    response = await client.post("/api/v1/orgs", json={"slug": slug})
+    assert response.status_code == 200, response.text
+    empty = profiles.orgs[slug]
+    db, authority = empty.db, empty.workflow_authority
+    readiness = authority.verify_admission_ready()
+    assert json.loads(readiness.snapshot_bytes)["reviewer_agents"] == []
+    # Both preparation and final dynamic attachment of this published generation
+    # use the real coordinator, without a zero/fenced bootstrap exception.
+    with profiles.dynamic_org_attachment(empty):
+        assert authority.verify_admission_ready().snapshot_bytes == readiness.snapshot_bytes
+
+    def add_operation() -> None:
+        db._conn.execute(
+            "INSERT INTO workflow_profile_operations VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("synthetic-operation", "synthetic_profile", "register", "[]", 1,
+             "captured", "0" * 64, "synthetic-profile-owner", 0, "2001-01-01T00:00:00+00:00"))
+        db._conn.commit()
+
+    if scenario == "operation":
+        add_operation()
+    elif scenario in ("active", "unbound"):
+        db._conn.execute("INSERT INTO workflow_profile_dependencies VALUES (?,?,?,?,?)",
+                         (authority.namespace, "synthetic_profile", "synthetic-consumer", 0, scenario))
+        db._conn.commit()
+    elif scenario == "prepared":
+        pointer = db.execute("SELECT * FROM workflow_authority_pointers WHERE namespace=?", (authority.namespace,)).fetchone()
+        db._conn.execute("INSERT INTO workflow_publication_journals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("synthetic-prepared-owner", authority.namespace, pointer["current_generation"] + 1,
+             pointer["current_generation"], readiness.snapshot_bytes, readiness.snapshot_digest,
+             "synthetic-writer", "synthetic-writer-invocation", pointer["profile_fence"],
+             "prepared", "synthetic-recovery-owner", None))
+        db._conn.commit()
+    elif scenario == "lease":
+        db._conn.execute("INSERT INTO workflow_publication_leases VALUES (?,?,?)",
+                         (authority.namespace, "synthetic-live-owner", os.getpid()))
+        db._conn.commit()
+    elif scenario == "invalid":
+        db._conn.execute("UPDATE org_settings SET value_json='broken' WHERE section='reviewer_agents'")
+        db._conn.commit()
+    elif scenario == "native":
+        store = NativeWriterStore(db, slug)
+        original = NativeWriterLifecycle(org_slug=slug, writer_id="synthetic-native-owner", publisher="synthetic-writer")
+        with db._lock:
+            store.save_uncommitted(original)
+            store.save_uncommitted(original.model_copy(update={"state": "unknown"}))
+            db._conn.commit()
+        before = rows(empty, "audit_log")
+        profiles.reconcile_startup()
+        try:
+            profiles.assert_org_admission(slug)
+        except WorkflowAuthorityError as exc:
+            assert exc.code == "authority_pointer_not_ready", str(exc)
+        else:
+            raise AssertionError("empty startup erased UNKNOWN native ownership")
+        assert [r for r in rows(empty, "audit_log") if r in before] == before
+        assert store.history_uncommitted()[original.writer_id].state == "unknown"
+        return
+
+    tables = ("org_settings", "workflow_profile_operations", "workflow_profile_dependencies", "workflow_publication_journals",
+              "workflow_publication_leases", "workflow_authority_pointers")
+    before = {table: rows(empty, table) for table in tables}
+    reached = False
+    acquire = authority._acquire_lease
+    def moving_acquire(owner: str) -> None:
+        nonlocal reached
+        acquire(owner)
+        reached = True
+        add_operation()  # Movement AFTER the genuine capture, before validation.
+    with patch.object(authority, "_acquire_lease", moving_acquire if scenario == "revision" else acquire):
+        try:
+            with profiles.dynamic_org_attachment(empty):
+                raise AssertionError("empty attachment accepted retained " + scenario + " ownership")
+        except ProfileCoordinatorError as exc:
+            assert exc.code in {"profile_dependency_incoherent", "profile_consumer_changed"}, str(exc)
+    if scenario == "revision":
+        assert reached, "revision fixture did not reach the publication lease"
+        assert rows(empty, "workflow_profile_operations")[0][0] == "synthetic-operation"
+        before["workflow_profile_operations"] = rows(empty, "workflow_profile_operations")
+    assert {table: rows(empty, table) for table in tables} == before, "empty refusal rewrote retained ownership"
+
+
 async def main() -> int:
     cases = [
+        ("reviewer-settings-L3-L6", {}, reviewer_settings, ()),
+        ("reviewer-fresh-L3", {}, reviewer_fresh, ()),
         ("cli-worker-success", {}, cli_success, ()),
         ("cli-busy-refusal", {}, cli_refusal, ()),
         ("cli-daemon-missing", {}, cli_startup_error, ("missing",)),
@@ -500,6 +728,8 @@ async def main() -> int:
         ("workspace-failure", {}, workspace_failure, ()),
         ("manager-session-compatibility", {}, manager_compatibility, ()),
     ]
+    cases += [("reviewer-empty-profile-" + scenario, {}, reviewer_empty_profiles, (scenario,))
+              for scenario in ("operation", "active", "unbound", "prepared", "lease", "revision", "native", "invalid")]
     cases += [("team-task-" + status.value, {"workers": ()}, open_task, (status,))
               for status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.ESCALATED)]
     cases += [("locked-recheck-" + kind, {} if kind == "busy" else {"workers": ()}, locked_recheck, (kind,))

@@ -6,6 +6,7 @@ uv run --frozen --python 3.14 python - <<'PY'
 from pathlib import Path
 from contextlib import contextmanager
 from contextvars import copy_context
+from itertools import product
 import json
 import sqlite3
 import logging
@@ -62,6 +63,369 @@ def naming_rows(db):
     return [json.loads(row[0]) for row in db._conn.execute(
         "SELECT payload FROM audit_log WHERE action='team_move_native_writer' ORDER BY id")
         if json.loads(row[0])['publisher'] == 'identity_names_load']
+
+# B1 L1-L6. Literal legacy rows precede the first real production load.
+# No fresh initializer, resolver stub, supplied reviewer set or launched worker.
+from runtime.models import BlockKind, TaskStatus, CompletionReport
+from runtime.daemon.queue import TaskQueue
+from runtime.orchestrator import run_step as reviewer_steps
+from runtime.orchestrator.org_config import (
+    OrgConfigError, resolve_reviewer_configuration, resolve_known_agent_names,
+    establish_reviewer_agents_policy, write_org_setting_to_db,
+)
+from runtime.workflows.authority import WorkflowAuthorityError
+from runtime.infrastructure.db.knowledge import ReviewerPolicyError
+
+@contextmanager
+def literal_reviewer_fixture(*, raw='[]', marker=None, sentinel=False, config='', saved=None,
+                             verdict=None, expectation=None, reviewer='code_reviewer',
+                             metadata=('2001-01-01T00:00:00+00:00', 'founder')):
+    with tempfile.TemporaryDirectory(prefix='reviewer-legacy-') as scratch:
+        root = Path(scratch) / 'orgs' / 'scratch'
+        (root / 'org' / 'agents').mkdir(parents=True)
+        (root / 'org' / 'teams.yaml').write_text(
+            'teams:\n  engineering:\n    manager: owner\n    workers: [code_reviewer, worker, other, senior_dev, family_manager]\n')
+        for name in ('owner', 'code_reviewer', 'worker', 'other', 'senior_dev', 'family_manager'):
+            role = 'manager' if name == 'owner' else 'worker'
+            (root / 'org' / 'agents' / f'{name}.md').write_text(
+                f'---\nname: {name}\nteam: engineering\nrole: {role}\nexecutor: claude\n---\nSynthetic inert role.\n')
+            (root / 'workspaces' / name).mkdir(parents=True)
+        (root / 'org' / 'config.yaml').write_text(config)
+        if sentinel:
+            (root / '.org_settings_seeded').write_text('')
+        paths = OrgPaths(root)
+        db = Database(paths.db_path)
+        if raw is not None:
+            db._conn.execute('INSERT INTO org_settings VALUES (?,?,?,?)',
+                             ('reviewer_agents', raw, *metadata))
+        if marker is not None:
+            db._conn.execute('INSERT INTO org_settings VALUES (?,?,?,?)',
+                             ('reviewer_agents_policy', marker, *metadata))
+        db._conn.commit()
+        if marker is None:
+            assert db.get_org_setting('reviewer_agents_policy') is None
+        if saved is not None:
+            # Literal pre-change omitted-expectation chain, before upgrade.
+            chain = '{"step_index":0,"legs":[{"agent":"worker","prompt":"Synthetic downstream"}],"step_audit_id":0}'
+            assert 'first_leg_expect_verdict' not in json.loads(chain)
+            if expectation is not None:
+                chain = json.dumps({**json.loads(chain), 'first_leg_expect_verdict': expectation})
+            fanout = '{"children_ids":["TASK-101","TASK-103"],"children_details":[],"width":2,"manager_agent":"owner","status":"spawned"}'
+            records = [('TASK-101', 'in_progress', 'owner', 'subtask' if saved == 'carrier' else 'task',
+                        'delegated', chain, 'TASK-100' if saved == 'carrier' else None, None, None),
+                       ('TASK-102', 'completed', reviewer, 'subtask', None, None, 'TASK-101', 'synthetic-child', None)]
+            if saved == 'carrier':
+                records += [('TASK-100', 'in_progress', 'owner', 'task', 'delegated', None, None, None, fanout),
+                            ('TASK-103', 'completed', 'worker', 'subtask', None, None, 'TASK-100', None, None)]
+            for task_id, status, agent, kind, blocked, active, parent, session, fan in records:
+                db._conn.execute('INSERT INTO tasks (id,status,assigned_agent,team,brief,task_type,block_kind,active_chain,parent_task_id,current_session_id,active_fanout,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (task_id,status,agent,'engineering','Synthetic legacy task',kind,blocked,active,parent,session,fan,*[metadata[0]]*2))
+            db._conn.commit()
+            db.insert_task_result('TASK-102', reviewer, 'synthetic-child',
+                                  'Synthetic genuine completed report', 100, verdict=verdict)
+        original = db._conn.execute("SELECT * FROM org_settings WHERE section='reviewer_agents'").fetchone()
+        original = tuple(original) if original else None
+        db.close()
+        with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': scratch}):
+            state = OrgState.load(slug='scratch', root=root, settings=Settings())
+            state.close()
+            state = OrgState.load(slug='scratch', root=root, settings=Settings())
+            state.orchestrator._queue = TaskQueue()  # Real queue, never started.
+            try:
+                yield state, original
+            finally:
+                state.close()
+
+
+def reviewer_audits(db):
+    return [(row['task_id'], row['agent'], json.loads(row['payload'])) for row in db._conn.execute(
+        "SELECT task_id,agent,payload FROM audit_log WHERE action='org_config_write' AND task_id IN ('config:reviewer_agents','config:reviewer_agents_policy') ORDER BY id")]
+
+
+def submit_reviewer_decision(state, action, *, downstream=True, reviewer='code_reviewer', reviewer_in_then=False):
+    db, orch = state.db, state.orchestrator
+    parent_id = db.next_task_id()
+    db.insert_task(TaskRecord(id=parent_id, assigned_agent='owner', brief='Synthetic submission'))
+    assert db.try_claim_for_step(parent_id, TaskStatus.PENDING, None, 1)
+    db.update_task(parent_id, current_session_id='synthetic-owner')
+    child = {'agent': reviewer, 'prompt': 'Synthetic review',
+             'then': [{'agent': 'worker', 'prompt': 'Synthetic downstream'}]}
+    if reviewer_in_then:
+        child = {'agent': 'worker', 'prompt': 'Synthetic author',
+                 'then': [{'agent': reviewer, 'prompt': 'Synthetic review'},
+                          {'agent': 'other', 'prompt': 'Synthetic downstream'}]}
+    if not downstream:
+        child.pop('then')
+    decision = ({'action': 'delegate', **child} if action == 'delegate' else
+                {'action': 'fanout', 'width_cap_ack': 2,
+                 'children': [child, {'agent': 'worker', 'prompt': 'Synthetic sibling'}]})
+    # The persisted-report reader retains the legacy JSON summary transport;
+    # decision_json alone is historical evidence, not report.decision.
+    db.insert_task_result(parent_id, 'owner', 'synthetic-owner', json.dumps(decision), 100,
+                          decision_json=json.dumps(decision))
+    report = db.get_latest_completion_report(parent_id)
+    assert orch._parse_next_step(report).action == action, 'submission did not reach its decision'
+    before = db.next_task_id()
+    reviewer_steps._consume_completion_report(orch, parent_id, report, reclaim_terminal_worktree=False)
+    return parent_id, before
+
+
+for sentinel in (False, True):
+    with literal_reviewer_fixture(sentinel=sentinel) as (state, original):
+        db, orch = state.db, state.orchestrator
+        tag = 'L1b' if sentinel else 'L1a'
+        startup_expect(json.loads(db.get_org_setting('reviewer_agents')) == ['code_reviewer'], tag+'-legacy-empty-pinned')
+        audits = reviewer_audits(db)
+        startup_expect(audits == [
+            ('config:reviewer_agents', 'orchestrator', {'section': 'reviewer_agents', 'tiers': ['value'], 'before': {'value': []}, 'after': {'value': ['code_reviewer']}}),
+            ('config:reviewer_agents_policy', 'orchestrator', {'section': 'reviewer_agents_policy', 'tiers': ['version'], 'before': {}, 'after': {'version': 2}}),
+        ], tag+'-exact-once-audits-reopen')
+        for action in ('delegate', 'fanout'):
+            for in_then in (False, True):
+                parent, before = submit_reviewer_decision(state, action, reviewer_in_then=in_then)
+                rows = db.get_task_results(parent)
+                case = tag+'-'+action+('-then' if in_then else '-first')
+                startup_expect(not db.get_children(parent) and db.next_task_id() == before
+                    and db.get_task(parent).status == TaskStatus.PENDING
+                    and any('HARD REJECT' in row['output_summary'] for row in rows), case+'-omission-zero-children')
+                queued = list(orch._queue._queue._queue)
+                startup_expect(all(db.get_task(item[1]).parent_task_id is None for item in queued), case+'-no-child-queue')
+
+for raw, saved, verdict in product(
+        ('[]', '["code_reviewer"]', '["senior_dev"]', '["family_manager"]'),
+        ('ordinary', 'carrier'), (None, 'REQUEST_CHANGES', 'REVISE', 'BLOCK', 'PASS', 'APPROVE')):
+    reviewer = (json.loads(raw) or ['code_reviewer'])[0]
+    with literal_reviewer_fixture(raw=raw, saved=saved, verdict=verdict, reviewer=reviewer) as (state, original):
+        db, orch = state.db, state.orchestrator
+        before = db.next_task_id()
+        before_links = db._conn.execute('SELECT count(*) FROM task_attachments').fetchone()[0]
+        reviewer_steps._enqueue_parent_if_waiting(orch, 'TASK-102')
+        parent = db.get_task('TASK-101')
+        tag = (('L2a' if saved == 'ordinary' else 'L2b') if raw == '[]' else 'L4-'+reviewer+'-'+saved)+'-'+str(verdict)
+        if verdict == 'APPROVE':
+            startup_expect(len(db.get_children(parent.id)) == 2 and db.next_task_id() != before,
+                           tag+'-advances-once')
+            reviewer_steps._enqueue_parent_if_waiting(orch, 'TASK-102')
+            startup_expect(len(db.get_children(parent.id)) == 2, tag+'-duplicate-no-advance')
+        else:
+            startup_expect(db.get_children(parent.id) == ['TASK-102'] and db.next_task_id() == before
+                and parent.active_chain is None and db._conn.execute('SELECT count(*) FROM task_attachments').fetchone()[0] == before_links,
+                tag+'-zero-downstream-ids-links')
+            target = 'TASK-101' if saved == 'ordinary' else 'TASK-100'
+            queued = list(orch._queue._queue._queue)
+            startup_expect([item[1] for item in queued] == [target], tag+'-wake-or-fanin-tail')
+            if saved == 'carrier':
+                startup_expect(parent.status == TaskStatus.FAILED, tag+'-carrier-failed')
+
+# Marked none retains ordinary advancement and explicit saved expectations.
+for expectation, verdict, advances in ((None, None, True), ('APPROVE', 'PASS', False)):
+    for saved in ('ordinary','carrier'):
+        with literal_reviewer_fixture(raw='[]', marker='{"version":2}', saved=saved,
+                                      verdict=verdict, expectation=expectation) as (state, original):
+            reviewer_steps._enqueue_parent_if_waiting(state.orchestrator, 'TASK-102')
+            startup_expect(len(state.db.get_children('TASK-101')) == (2 if advances else 1),
+                           'L3-none-'+saved+'-'+str(expectation)+'-explicit-expectations-retained')
+
+for raw, marker in (('["code_reviewer"]', None), ('[]', '{"version":2}')):
+    with literal_reviewer_fixture(raw=raw, marker=marker) as (state, original):
+        parent,before = submit_reviewer_decision(state,'delegate',downstream=False)
+        startup_expect(len(state.db.get_children(parent)) == 1,
+                       'L3-bare-single-leg-exception-'+raw)
+with literal_reviewer_fixture(raw='[]', marker='{"version":2}') as (state, original):
+    for action in ('delegate', 'fanout'):
+        parent, before = submit_reviewer_decision(state, action)
+        startup_expect(bool(state.db.get_children(parent)) and state.db.next_task_id() != before,
+                       'L3-none-'+action+'-omitted-expectation-admitted')
+
+for raw, timestamp in (( '["code_reviewer"]', '2026-08-24T08:41:47.100629+00:00'),
+                        ( '["senior_dev"]', '2026-11-05T11:14:11.056269+00:00'),
+                        ( '["family_manager"]', '2026-11-05T11:14:16.517155+00:00')):
+    for sentinel in (False, True):
+        with literal_reviewer_fixture(raw=raw, sentinel=sentinel, metadata=(timestamp,'founder')) as (state, original):
+            db = state.db
+            startup_expect(tuple(db._conn.execute("SELECT * FROM org_settings WHERE section='reviewer_agents'").fetchone()) == original,
+                           'L4-'+raw+'-'+str(sentinel)+'-all-columns-unchanged')
+            startup_expect([row[0] for row in reviewer_audits(db)] == ['config:reviewer_agents_policy'],
+                           'L4-'+raw+'-'+str(sentinel)+'-marker-audit-only')
+            for action in ('delegate', 'fanout'):
+                parent, before = submit_reviewer_decision(state, action, reviewer=json.loads(raw)[0])
+                startup_expect(not db.get_children(parent) and db.next_task_id() == before
+                    and any('HARD REJECT' in row['output_summary'] for row in db.get_task_results(parent)),
+                    'L4-'+raw+'-'+str(sentinel)+'-'+action+'-omission-preserved')
+
+for sentinel in (False, True):
+    for config, expected in (('', ['code_reviewer']), ('reviewer_agents: [other]\n', ['other']),
+                             ('reviewer_agents: [ghost]\n', ['code_reviewer']), ('reviewer_agents: []\n', ['code_reviewer'])):
+        with literal_reviewer_fixture(raw=None, sentinel=sentinel, config=config) as (state, original):
+            startup_expect(json.loads(state.db.get_org_setting('reviewer_agents')) == expected,
+                           'L6-missing-'+str(sentinel)+'-'+repr(config))
+for raw, marker in (('broken',None), ('[]','{"version":true}'), ('[]','{"version":3}'),
+                    ('[]','{"version":2,"extra":0}'), ('[]','{"version":2,"version":2}'),
+                    (None,'{"version":2}'), (b'[]',None), ('[]',b'{"version":2}')):
+    try:
+        with literal_reviewer_fixture(raw=raw, marker=marker):
+            startup_expect(False, 'L6-corrupt-pair-refused-'+str((raw,marker)))
+    except OrgConfigError:
+        startup_expect(True, 'L6-corrupt-pair-refused-'+str((raw,marker)))
+for raw in ('["ghost"]', '["code_reviewer","ghost"]'):
+    with literal_reviewer_fixture(raw=raw) as (state, original):
+        resolution = resolve_reviewer_configuration(state.db, known_agents=resolve_known_agent_names(OrgPaths(state.root)))
+        startup_expect(resolution.state == 'missing' and resolution.missing_agents == ('ghost',), 'L6-stale-no-default-masking-'+raw)
+        try:
+            state.workflow_authority.capture_canonical_snapshot()
+        except WorkflowAuthorityError as exc:
+            startup_expect(exc.code == 'authority_reviewer_incoherent', 'L6-stale-authority-refusal-'+raw)
+        else:
+            startup_expect(False, 'L6-stale-authority-refusal-'+raw)
+        for action in ('delegate','fanout'):
+            parent,before = submit_reviewer_decision(state,action)
+            startup_expect(not state.db.get_children(parent) and state.db.next_task_id() == before
+                and 'reviewer configuration unavailable' in (state.db.get_task(parent).note or ''),
+                'L6-stale-'+action+'-zero-child-allocation-'+raw)
+for saved in ('ordinary', 'carrier'):
+    for raw, marker in (('["ghost"]', '{"version":2}'), ('["code_reviewer","ghost"]', '{"version":2}'),
+                        ('broken', '{"version":2}'), ('[]', None), ('[]', '{"version":true}')):
+        with literal_reviewer_fixture(saved=saved, verdict='APPROVE') as (state, original):
+            db, orch = state.db, state.orchestrator
+            # Corruption/staleness after load must also refuse saved advancement.
+            db._conn.execute("UPDATE org_settings SET value_json=? WHERE section='reviewer_agents'", (raw,))
+            if marker is None:
+                db._conn.execute("DELETE FROM org_settings WHERE section='reviewer_agents_policy'")
+            else:
+                db._conn.execute("UPDATE org_settings SET value_json=? WHERE section='reviewer_agents_policy'", (marker,))
+            db._conn.commit()
+            before = db.next_task_id()
+            links = db._conn.execute('SELECT count(*) FROM task_attachments').fetchone()[0]
+            reviewer_steps._enqueue_parent_if_waiting(orch, 'TASK-102')
+            parent = db.get_task('TASK-101')
+            startup_expect(db.get_children(parent.id) == ['TASK-102'] and db.next_task_id() == before
+                and parent.active_chain is None
+                and db._conn.execute('SELECT count(*) FROM task_attachments').fetchone()[0] == links,
+                'L6-'+saved+'-unavailable-zero-downstream-'+str((raw,marker)))
+            target = 'TASK-101' if saved == 'ordinary' else 'TASK-100'
+            startup_expect([item[1] for item in list(orch._queue._queue._queue)] == [target]
+                and (saved != 'carrier' or parent.status == TaskStatus.FAILED),
+                'L6-'+saved+'-unavailable-wake-or-fanin-'+str((raw,marker)))
+
+# L5: two real connections with SQL trace/event ordering, no timing sleeps or
+# production failpoint. A third owner is never inferred from a fixture flag.
+import threading
+for first, second in (('convert','convert'), ('convert','clear'), ('clear','convert'),
+                      ('convert','configure'), ('configure','convert'), ('legacy-configure','convert')):
+    with tempfile.TemporaryDirectory(prefix='reviewer-race-') as scratch:
+        dbs = [Database(Path(scratch)/'org.db') for _ in range(2)]
+        dbs[0]._conn.execute("INSERT INTO org_settings VALUES ('reviewer_agents','[]','old','founder')")
+        dbs[0]._conn.commit()
+        locked, waiting, release = threading.Event(), threading.Event(), threading.Event()
+        errors = []
+        def trace_first(sql):
+            if sql.startswith('SELECT section, value_json FROM org_settings'):
+                locked.set()
+                if not release.wait(10):
+                    errors.append('first transaction was not released')
+        def trace_second(sql):
+            if sql == 'BEGIN IMMEDIATE':
+                waiting.set()
+        dbs[0]._conn.set_trace_callback(trace_first)
+        dbs[1]._conn.set_trace_callback(trace_second)
+        def act(db, action):
+            try:
+                if action == 'convert':
+                    db.establish_reviewer_agents_policy(['code_reviewer'])
+                elif action == 'legacy-configure':
+                    db._conn.execute('BEGIN IMMEDIATE')
+                    db._conn.execute("UPDATE org_settings SET value_json='[\"other\"]' WHERE section='reviewer_agents'")
+                    db.get_reviewer_agents_pair()  # Hold the real SQLite owner until the contender enters.
+                    db._conn.commit()
+                else:
+                    db.replace_reviewer_agents([] if action == 'clear' else ['other'])
+            except BaseException as exc:
+                errors.append(repr(exc))
+        threads = [threading.Thread(target=act,args=(dbs[0],first)), threading.Thread(target=act,args=(dbs[1],second))]
+        try:
+            threads[0].start()
+            assert locked.wait(10), 'L5 first connection never owned locked reread'
+            threads[1].start()
+            assert waiting.wait(10), 'L5 competing BEGIN never reached'
+        finally:
+            release.set()
+            for thread in threads:
+                if thread.ident is not None:
+                    thread.join(10)
+            for db in dbs:
+                db._conn.set_trace_callback(None)
+        expected = [] if 'clear' in (first,second) else ['other'] if any('configure' in action for action in (first,second)) else ['code_reviewer']
+        startup_expect(not errors and not any(t.is_alive() for t in threads)
+                       and json.loads(dbs[0].get_org_setting('reviewer_agents')) == expected
+                       and sum(a[0]=='config:reviewer_agents_policy' for a in reviewer_audits(dbs[0])) == 1,
+                       'L5-serialized-'+first+'-'+second)
+        for db in dbs:
+            db.close()
+with tempfile.TemporaryDirectory(prefix='reviewer-lock-refusal-') as scratch:
+    path = Path(scratch)/'org.db'
+    owner, contender = Database(path), Database(path)
+    owner._conn.execute("INSERT INTO org_settings VALUES ('reviewer_agents','[]','old','founder')")
+    owner._conn.commit()
+    contender._conn.execute('PRAGMA busy_timeout=10')  # Bound this synthetic lock-exhaustion case only.
+    owner._conn.execute('BEGIN IMMEDIATE')
+    try:
+        contender.establish_reviewer_agents_policy(['code_reviewer'])
+    except sqlite3.OperationalError as exc:
+        startup_expect('locked' in str(exc) and contender.get_reviewer_agents_pair() == {'reviewer_agents':'[]'}
+            and not reviewer_audits(contender), 'L5-lock-exhaustion-keeps-unclassified-pair')
+    else:
+        startup_expect(False, 'L5-lock-exhaustion-keeps-unclassified-pair')
+    finally:
+        owner._conn.rollback()
+        owner.close()
+        contender.close()
+with tempfile.TemporaryDirectory(prefix='reviewer-rollback-') as scratch:
+    path = Path(scratch)/'org.db'
+    db = Database(path)
+    db._conn.execute("INSERT INTO org_settings VALUES ('reviewer_agents','[]','old','founder')")
+    db._conn.execute("CREATE TRIGGER synthetic_abort_marker BEFORE INSERT ON audit_log WHEN NEW.task_id='config:reviewer_agents_policy' BEGIN SELECT RAISE(ABORT,'synthetic marker audit failure'); END")
+    db._conn.commit()
+    try:
+        db.establish_reviewer_agents_policy(['code_reviewer'])
+    except sqlite3.IntegrityError:
+        startup_expect(db.get_reviewer_agents_pair() == {'reviewer_agents':'[]'} and not reviewer_audits(db), 'L5-audit-failure-rolls-back-whole-pair')
+    else:
+        startup_expect(False,'L5-audit-failure-rolls-back-whole-pair')
+    db._conn.execute('DROP TRIGGER synthetic_abort_marker')
+    db._conn.commit()
+    db.close()
+    db = Database(path)
+    db.establish_reviewer_agents_policy(['code_reviewer'])
+    startup_expect(json.loads(db.get_org_setting('reviewer_agents')) == ['code_reviewer'] and len(reviewer_audits(db)) == 2,
+                   'L5-reopen-after-rollback-converts-once')
+    db.close()
+# Existing schema-load owner already uses SQLite authorizers for commit faults.
+# Deny the real COMMIT, then observe rollback and production reopen.
+with tempfile.TemporaryDirectory(prefix='reviewer-commit-refusal-') as scratch:
+    path = Path(scratch)/'org.db'
+    db = Database(path)
+    db._conn.execute("INSERT INTO org_settings VALUES ('reviewer_agents','[]','old','founder')")
+    db._conn.commit()
+    def deny_commit(action, arg1, arg2, database, source):
+        return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_TRANSACTION and arg1 == 'COMMIT' else sqlite3.SQLITE_OK
+    db._conn.set_authorizer(deny_commit)
+    try:
+        db.establish_reviewer_agents_policy(['code_reviewer'])
+    except sqlite3.DatabaseError:
+        startup_expect(db.get_reviewer_agents_pair() == {'reviewer_agents':'[]'} and not reviewer_audits(db),
+                       'L5-commit-refusal-rolls-back-whole-pair')
+    else:
+        startup_expect(False,'L5-commit-refusal-rolls-back-whole-pair')
+    finally:
+        db._conn.set_authorizer(None)
+    db.close()
+    db = Database(path)
+    db.establish_reviewer_agents_policy(['code_reviewer'])
+    startup_expect(json.loads(db.get_org_setting('reviewer_agents')) == ['code_reviewer'] and len(reviewer_audits(db)) == 2,
+                   'L5-reopen-after-commit-refusal-converts-once')
+    db.close()
+print('NOT RUN L5 physical disk-I/O/crash failure: authorizer covers actual COMMIT refusal, not a physical storage crash.')
+
 
 # Real OrgState.load, without a listener, runners or serving-daemon access.
 with tempfile.TemporaryDirectory(prefix='org-load-timing-') as scratch:
@@ -453,7 +817,7 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
                                  ('{ "version": 1, "entries": [] }',))
                 db._conn.commit()
             if name == 'settings reviewer backfill':
-                db._conn.execute("DELETE FROM org_settings WHERE section='reviewer_agents'")
+                db._conn.execute("DELETE FROM org_settings WHERE section IN ('reviewer_agents','reviewer_agents_policy')")
                 db._conn.commit()
             with org_load_validation(db, org_slug='scratch'):
                 read()
