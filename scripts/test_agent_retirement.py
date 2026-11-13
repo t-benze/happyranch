@@ -4,14 +4,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
 import traceback
+from types import SimpleNamespace
 from unittest.mock import patch
 
 # Direct invocation finds this checkout, never an installed/live source tree.
@@ -20,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import httpx
 import yaml
 
+from cli.commands import agents as cli_agents
 from runtime.config import Settings
 from runtime.daemon.app import create_app
 from runtime.daemon.state import DaemonState
@@ -154,6 +157,76 @@ async def worker_success(org: OrgState, client: httpx.AsyncClient) -> None:
         ("founder", "founder", {"action": "terminate", "name": "worker", "source": "founder"})]
     listing = await client.get(f"{PREFIX}/agents/enrollments", params={"status": "terminated"})
     assert listing.status_code == 200 and any(row["name"] == "worker" for row in listing.json()["enrollments"])
+
+
+async def invoke_retire_cli(client: httpx.AsyncClient, *, startup_error: Exception | None = None
+                            ) -> tuple[int, str, str, list[httpx.Response]]:
+    loop = asyncio.get_running_loop()
+    responses: list[httpx.Response] = []
+
+    def post(path: str, **kwargs) -> httpx.Response:
+        # Bridge the synchronous shipping CLI to this fixture's real ASGI app.
+        response = asyncio.run_coroutine_threadsafe(client.post(path, **kwargs), loop).result()
+        responses.append(response)
+        return response
+
+    def invoke() -> tuple[int, str, str, list[httpx.Response]]:
+        stdout, stderr = StringIO(), StringIO()
+        code = 0
+        with patch.object(cli_agents.OpcClient, "from_env", return_value=SimpleNamespace(post=post),
+                          side_effect=startup_error), redirect_stdout(stdout), redirect_stderr(stderr):
+            try:
+                cli_agents.cmd_retire_agent(argparse.Namespace(name="worker", org="alpha"))
+            except SystemExit as exc:
+                code = exc.code
+        return code, stdout.getvalue(), stderr.getvalue(), responses
+
+    return await asyncio.to_thread(invoke)
+
+
+async def cli_success(org: OrgState, client: httpx.AsyncClient) -> None:
+    before = persistent(org)
+    code, stdout, stderr, responses = await invoke_retire_cli(client)
+    assert code == 0, (code, stdout, stderr)
+    assert stderr == "", stderr
+    response = responses[-1]
+    assert response.request.url.path == f"{PREFIX}/agents/worker/retire"
+    assert response.status_code == 200, response.text
+    assert json.loads(stdout) == response.json()
+    assert stdout == json.dumps(response.json(), indent=2) + "\n"
+    assert not (org.root / "org/agents/worker.md").exists()
+    assert (org.root / "org/agents/_terminated/worker.md").read_bytes() == before[0]["worker.md"]
+    assert not (org.root / "workspaces/worker").exists()
+    assert (org.root / "workspaces/_terminated/worker/memory/lesson.md").read_bytes() == before[1]["worker/memory/lesson.md"]
+    assert org.teams.manager_for_team("retiring").workers == ()
+
+
+async def cli_refusal(org: OrgState, client: httpx.AsyncClient) -> None:
+    org.db.insert_task(TaskRecord(id="TASK-cli-busy", assigned_agent="worker", team="retiring",
+                                 brief="Synthetic CLI busy"))
+    before, audit = persistent(org), rows(org, "audit_log")
+    code, stdout, stderr, responses = await invoke_retire_cli(client)
+    assert code == 1, (code, stdout, stderr)
+    assert stderr == "", stderr
+    response = responses[-1]
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "agent_not_quiescent"
+    assert "Error (409)" in stdout and "agent_not_quiescent" in stdout and "TASK-cli-busy" in stdout, stdout
+    assert persistent(org) == before
+    assert rows(org, "audit_log") == audit
+
+
+async def cli_startup_error(org: OrgState, client: httpx.AsyncClient, kind: str) -> None:
+    error = (cli_agents.DaemonNotRunning("synthetic daemon not running") if kind == "missing"
+             else cli_agents.DaemonStateInconsistent("synthetic daemon state inconsistent"))
+    before, audit = persistent(org), rows(org, "audit_log")
+    code, stdout, stderr, responses = await invoke_retire_cli(client, startup_error=error)
+    assert code == 1, (code, stdout, stderr)
+    assert stdout == f"Error: {error}\n", stdout
+    assert stderr == "", stderr
+    assert responses == []
+    assert persistent(org) == before
+    assert rows(org, "audit_log") == audit
 
 
 async def worker_then_manager(org: OrgState, client: httpx.AsyncClient) -> None:
@@ -408,6 +481,10 @@ async def locked_recheck(org: OrgState, client: httpx.AsyncClient, kind: str) ->
 
 async def main() -> int:
     cases = [
+        ("cli-worker-success", {}, cli_success, ()),
+        ("cli-busy-refusal", {}, cli_refusal, ()),
+        ("cli-daemon-missing", {}, cli_startup_error, ("missing",)),
+        ("cli-daemon-inconsistent", {}, cli_startup_error, ("inconsistent",)),
         ("worker-preservation", {}, worker_success, ()),
         ("worker-then-manager-authority", {}, worker_then_manager, ()),
         ("founder-auth-and-unknown", {}, auth_and_unknown, ()),

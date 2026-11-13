@@ -276,8 +276,14 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
 
 def cmd_retire_agent(args: argparse.Namespace) -> None:
     """Founder action: preserve an idle agent in the terminated archive."""
+    import json
+
     identities.validate_address(args.name)
-    client = OpcClient.from_env()
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
     target = identities.agent_target(client, args.org, args.name, lifecycles={"active"})
     response = client.post(f"/api/v1/orgs/{args.org}/agents/{target}/retire")
     if _ok(response):
