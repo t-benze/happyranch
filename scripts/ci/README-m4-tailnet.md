@@ -544,4 +544,20 @@ flag or packet filter changes. No allowance is replenished.
 Native attempt8 remains unspent; JOB-6699 and all prior failed/spent runs remain
 failed/spent, with no allowance replenished.
 
+TASK-15883 diagnostic continuation: on a transport-format refusal, the probe
+replaces its first sample with token classes from the actual rejected pktap
+metadata/body (timestamp omitted), retaining at most two earlier context samples.
+Every ASCII letter run becomes `A`, every digit run `N`; only the existing closed
+punctuation set survives. Every other non-whitespace character becomes fixed `W`,
+including control/non-ASCII characters; empty projection becomes `W`. The same
+2048-character input, 256-character output and three-line caps apply; overlong
+input/output becomes `overlong`, and the public sink revalidates every token.
+No raw addresses, ports, PIDs, process names, paths, hostnames, payload or capture
+text are published. Native summaries still exclude skeletons. This diagnostic
+adds no accepted protocol: unknown/native/unattributed unsupported packets still
+refuse, as do all existing UDP/socket, endpoint, counter/drop, identity, ordering,
+limit and cleanup failures. A separately budgeted real probe must establish the
+rejected class before any conditional non-transport ruling is implemented.
+TASK-15875's three failures remain spent; the TASK-15883 allowance is separate.
+
 Custody boundary (engineering_manager TASK-15621): the no-raw-address/PID/tuple/payload rule applies to the packet-proof and capture-diagnostic public fields. The pre-existing reviewed pairs handoff payload synthetic tailnet address and VM service journal metadata are existing public surfaces and are outside that assertion; credentials, enrollment/pairing material and raw capture lines remain forbidden everywhere.

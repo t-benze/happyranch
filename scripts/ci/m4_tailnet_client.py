@@ -128,6 +128,26 @@ def structural_skeleton(line: object) -> str:
     return skeleton if 0 < len(skeleton) <= PROBE_SKELETON_OUTPUT else 'overlong'
 
 
+def generic_structural_skeleton(line: object) -> str:
+    """Token classes only, including unknown protocol text; probe use only."""
+    if type(line) is not str:
+        return 'unknown'
+    if len(line) > PROBE_SKELETON_INPUT:
+        return 'overlong'
+    tokens = []
+    for token in re.findall(r'[A-Za-z]+|[0-9]+|[ \t]+|.', line):
+        if all(char in ' \t' for char in token):
+            continue
+        if re.fullmatch(r'[A-Za-z]+', token):
+            tokens.append('A')
+        elif re.fullmatch(r'[0-9]+', token):
+            tokens.append('N')
+        else:
+            tokens.append(token if token in PROBE_PUNCTUATION else 'W')
+    skeleton = ' '.join(tokens) or 'W'
+    return skeleton if len(skeleton) <= PROBE_SKELETON_OUTPUT else 'overlong'
+
+
 def safe_probe_skeletons(value: object) -> list[str]:
     """Revalidate the closed projection at the probe's public sink."""
     if type(value) is not list:
@@ -232,6 +252,12 @@ def packet_evidence(text: str, pid: int, diagnostic: dict, *, endpoint: tuple[st
             capture_refusal(diagnostic, 'truncated')
         match = re.fullmatch(r'(IP6?) (\S+) > (\S+): (tcp |UDP, length )([0-9]{1,10})', body)
         if not match:
+            if type(diagnostic.get('_probe_skeletons')) is list:
+                # A terminal separator/early preview must not hide the actual
+                # rejected transport. No raw metadata/body leaves this helper.
+                diagnostic['_probe_skeletons'][:] = [
+                    generic_structural_skeleton(f'({metadata}) {body}'),
+                    *diagnostic['_probe_skeletons'][:PROBE_SKELETON_LINES - 1]]
             capture_refusal(diagnostic, 'transport')
         family, source, destination, protocol, size_text = match.groups()
         detail['ipv6_packets' if family == 'IP6' else 'ipv4_packets'] += 1
