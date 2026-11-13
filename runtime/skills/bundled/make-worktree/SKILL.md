@@ -94,6 +94,21 @@ The guard does NOT inspect the task worktree diff — a zero-diff task
 passes when the primary checkout is unchanged. Edits in the task
 worktree are expected and never falsely accused.
 
+On setup, the guard writer best-effort adds the exact root-only rule
+`/.worktree-guard.json` to the clone's shared Git common-dir `info/exclude`,
+creating `info/` when needed and preserving existing content. Repeated setup
+does not duplicate the rule. This makes an untracked root guard invisible to
+Git status and non-force worktree removal. Modified tracked or staged guards,
+a `.gitignore` negation, subdirectory guards and other untracked files still
+count as dirty. If the exclude cannot be written, setup still records and
+verifies the guard; without another ignore rule the file remains dirty.
+Aliased or unsafe excludes warn and are skipped without changing target bytes:
+a symlinked/non-directory `info` parent, a symlinked or multiply linked final
+file, or any non-regular final file. Setup and guard enforcement continue.
+Existing clones gain the rule only on their next guard setup; no bulk rollout
+or removal is promised. The 91 observed guard-only dirty worktrees were an
+observation, not a promise that later safety gates will permit removal.
+
 ## Repository Git process
 
 Guard setup and verification do not configure Git hooks. `setup` also
