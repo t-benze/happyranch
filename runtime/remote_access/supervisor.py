@@ -41,6 +41,7 @@ from runtime.remote_access.authorization import AuthorizationVerifier, DeviceAut
 from runtime.remote_access.credentials import (
     CredentialUnavailable,
     DaemonCredentialProvider,
+    DarwinFileDaemonCredentialProvider,
     FileDaemonCredentialProvider,
     SystemdCredentialProvider,
 )
@@ -129,7 +130,8 @@ class ConnectorConfig:
     state_path: str = "~/.happyranch/remote_access/trust-state.json"
     # managed-dir root override: where install() stages the service config/
     # state/policy. None = /var/lib (system mode) or the user XDG state home
-    # (user mode). An override keeps hermetic tests/conformance fully under a
+    # (Linux user mode), or ~/Library/Application Support/HappyRanch/connector
+    # (Darwin). An override keeps hermetic tests/conformance fully under a
     # temp root; production leaves it None.
     managed_dir_root: str | None = None
     # service-manager settings
@@ -155,7 +157,9 @@ class ConnectorConfig:
             raise ConnectorConfigError("tenant_id/home_id/connector_id are required")
         if self.daemon_port is None:
             raise ConnectorConfigError("daemon_port is required")
-        if not self.daemon_token_path and not self.credentials_directory:
+        if sys.platform == "darwin":
+            self.validate_darwin_credentials()
+        elif not self.daemon_token_path and not self.credentials_directory:
             raise ConnectorConfigError("daemon_token_path or credentials_directory is required")
         if not self.policy_path:
             raise ConnectorConfigError("policy_path is required")
@@ -176,6 +180,12 @@ class ConnectorConfig:
                 self.managed.validate()
             except ManagedProviderError as exc:
                 raise ConnectorConfigError("invalid managed provider config") from exc
+
+    def validate_darwin_credentials(self) -> None:
+        if self.credentials_directory is not None or "CREDENTIALS_DIRECTORY" in os.environ:
+            raise ConnectorConfigError("macOS connector does not support systemd credentials_directory or CREDENTIALS_DIRECTORY")
+        if not self.daemon_token_path:
+            raise ConnectorConfigError("macOS connector requires explicit daemon_token_path for the Mac-app daemon")
 
     @classmethod
     def from_file(cls, path: Path) -> "ConnectorConfig":
@@ -344,6 +354,9 @@ class ConnectorSupervisor:
         )
 
     def credential_provider(self) -> DaemonCredentialProvider:
+        if sys.platform == "darwin":
+            self.config.validate_darwin_credentials()
+            return DarwinFileDaemonCredentialProvider(Path(self.config.daemon_token_path))
         # Under the service path systemd sets $CREDENTIALS_DIRECTORY (the
         # LoadCredential= injection the unit renders): consume it AUTOMATICALLY
         # — no redundant config, and never fall back to reading the daemon
@@ -606,10 +619,15 @@ class ConnectorSupervisor:
         service config/state/policy and where the rendered unit points
         ``--config``. ``StateDirectory=<state_dir>`` resolves to the same
         location systemd creates for the service user (system: ``/var/lib``;
-        user: the XDG state home)."""
+        user: the XDG state home). Darwin uses the per-user Library connector
+        root; the explicit root override retains its existing semantics."""
         cfg = config or self.config
         if cfg.managed_dir_root:
             return Path(cfg.managed_dir_root).expanduser() / cfg.state_dir
+        if sys.platform == "darwin":
+            from runtime.remote_access.launchd_files import DARWIN_CONNECTOR_STATE_ROOT
+
+            return DARWIN_CONNECTOR_STATE_ROOT.expanduser() / cfg.state_dir
         if cfg.system:
             return Path("/var/lib") / cfg.state_dir
         return Path.home() / ".local" / "state" / cfg.state_dir

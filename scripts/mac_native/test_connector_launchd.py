@@ -893,6 +893,219 @@ def _record_path(root: Path) -> Path:
     return root / "happyranch-connector" / f"{LABEL}.readiness.json"
 
 
+class DarwinCredentialFiles(unittest.TestCase):
+    def test_state_paths_defaults_overrides_and_linux_parity(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, patch.object(Path, "home", return_value=Path(folder)), patch.dict(os.environ, {"HOME": folder}):
+            root = Path(folder)
+            with patch("sys.platform", "darwin"):
+                supervisor = ConnectorSupervisor(config=ConnectorConfig())
+                expected = root / "Library/Application Support/HappyRanch/connector/happyranch-connector"
+                self.assertEqual(supervisor._managed_state_root(), expected)
+                self.assertEqual(supervisor._readiness_path(), expected / f"{LABEL}.readiness.json")
+                custom = ConnectorSupervisor(config=ConnectorConfig(managed_dir_root=str(root / "override"), state_dir="custom", unit_name="ai.example.other"))
+                self.assertEqual(custom._readiness_path(), root / "override/custom/ai.example.other.readiness.json")
+                self.assertFalse(expected.exists(), "path selection must not create state")
+            with patch("sys.platform", "linux"):
+                self.assertEqual(ConnectorSupervisor(config=ConnectorConfig())._managed_state_root(), root / ".local/state/happyranch-connector")
+                self.assertEqual(ConnectorSupervisor(config=ConnectorConfig(system=True))._managed_state_root(), Path("/var/lib/happyranch-connector"))
+                self.assertEqual(ConnectorSupervisor(config=ConnectorConfig(managed_dir_root=folder, state_dir="custom", system=True))._managed_state_root(), root / "custom")
+
+    def test_readiness_directories_private_and_aliases_refused(self) -> None:
+        from runtime.remote_access.launchd_readiness import LaunchdReadiness
+
+        for kind in ("new", "leaf-link", "parent-link", "dangling-link", "loose-directory"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                outside = root / "outside"
+                outside.mkdir(mode=0o700)
+                parent = root / "state/nested"
+                if kind == "leaf-link":
+                    parent.parent.mkdir()
+                    parent.symlink_to(outside, target_is_directory=True)
+                elif kind == "parent-link":
+                    parent.parent.symlink_to(outside, target_is_directory=True)
+                elif kind == "dangling-link":
+                    parent.parent.symlink_to(root / "missing", target_is_directory=True)
+                elif kind == "loose-directory":
+                    parent.mkdir(parents=True)
+                    parent.chmod(0o755)
+                sink = LaunchdReadiness(parent / "ready.json", 10)
+                try:
+                    if kind == "new":
+                        old_umask = os.umask(0)
+                        try:
+                            sink.start()
+                        finally:
+                            os.umask(old_umask)
+                        for directory in (parent.parent, parent):
+                            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+                            self.assertEqual(directory.stat().st_uid, os.geteuid())
+                    else:
+                        with self.assertRaises(OSError):
+                            sink.start()
+                    self.assertEqual(list(outside.iterdir()), [])
+                finally:
+                    sink.stop()
+
+    def test_darwin_token_real_file_guards_and_bounded_secret_free_errors(self) -> None:
+        from runtime.remote_access.credentials import CredentialUnavailable, FileDaemonCredentialProvider
+
+        cases = ("valid", "limit", "empty", "whitespace", "unicode-whitespace", "oversize", "invalid-utf8", "group", "other", "symlink", "parent-link", "hardlink", "directory", "fifo", "missing", "foreign-euid")
+        for kind in cases:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder, patch("sys.platform", "darwin"), patch.dict(os.environ, {}, clear=True):
+                root = Path(folder)
+                token = root / "daemon.token"
+                token.write_bytes(b"synthetic-daemon-bearer\n")
+                token.chmod(0o600)
+                if kind in {"limit", "empty", "whitespace", "unicode-whitespace", "oversize", "invalid-utf8"}:
+                    token.write_bytes({"limit": b"x" * 65536, "empty": b"", "whitespace": b" \n", "unicode-whitespace": "\u2003".encode(), "oversize": b"x" * 65537, "invalid-utf8": b"\xff"}[kind])
+                elif kind in {"group", "other"}:
+                    token.chmod(0o640 if kind == "group" else 0o604)
+                elif kind == "hardlink":
+                    os.link(token, root / "alias")
+                elif kind in {"symlink", "directory", "fifo", "missing"}:
+                    token.rename(root / "original")
+                    if kind == "symlink":
+                        token.symlink_to(root / "original")
+                    elif kind == "directory":
+                        token.mkdir()
+                    elif kind == "fifo":
+                        os.mkfifo(token, 0o600)
+                elif kind == "parent-link":
+                    (root / "alias").symlink_to(root, target_is_directory=True)
+                    token = root / "alias/daemon.token"
+                provider = ConnectorSupervisor(config=ConnectorConfig(daemon_token_path=str(token))).credential_provider()
+                self.assertIsInstance(provider, FileDaemonCredentialProvider)
+                if kind in {"valid", "limit"}:
+                    expected = "x" * 65536 if kind == "limit" else "synthetic-daemon-bearer"
+                    self.assertEqual(provider.read_bearer(), expected)
+                    token.chmod(0o400)
+                    self.assertEqual(provider.read_bearer(), expected)
+                else:
+                    identity = os.geteuid() + 1 if kind == "foreign-euid" else os.geteuid()
+                    with patch("os.geteuid", return_value=identity), self.assertRaises(CredentialUnavailable) as failure:
+                        provider.read_bearer()
+                    self.assertTrue(str(failure.exception).startswith("macOS daemon token "))
+                    self.assertLess(len(str(failure.exception)), 120)
+                    self.assertNotIn("synthetic-daemon-bearer", str(failure.exception))
+                    self.assertIsNone(failure.exception.__cause__)
+
+    def test_darwin_refuses_loadcredential_and_requires_explicit_token_cleanly(self) -> None:
+        from runtime.remote_access.supervisor import ConnectorConfigError
+
+        for settings, environment in (({}, {}), ({"credentials_directory": "/synthetic/systemd"}, {}), ({"daemon_token_path": "/synthetic/token"}, {"CREDENTIALS_DIRECTORY": "/synthetic/systemd"}), ({"daemon_token_path": "/synthetic/token"}, {"CREDENTIALS_DIRECTORY": ""})):
+            with self.subTest(settings=settings, environment=environment), tempfile.TemporaryDirectory() as folder, patch("sys.platform", "darwin"), patch.dict(os.environ, environment, clear=True):
+                config = ConnectorConfig(tenant_id="t", home_id="h", connector_id="c", daemon_port=1234, policy_path="/synthetic/policy", **settings)
+                with self.assertRaises(ConnectorConfigError):
+                    ConnectorSupervisor(config=config).credential_provider()
+                path = Path(folder) / "config.json"
+                config.to_file(path)
+                stderr = io.StringIO()
+                with redirect_stderr(stderr):
+                    self.assertEqual(cli.main(["status", "--config", str(path)]), 1)
+                text = stderr.getvalue()
+                self.assertTrue(text.startswith("error: macOS connector "), text)
+                self.assertNotIn("Traceback", text)
+                self.assertNotIn("/synthetic", text)
+
+    def test_linux_credential_selection_and_file_semantics_unchanged(self) -> None:
+        import hashlib
+        import inspect
+        from runtime.remote_access.credentials import FileDaemonCredentialProvider, SystemdCredentialProvider
+
+        self.assertEqual(hashlib.sha256(inspect.getsource(SystemdServiceManager).encode()).hexdigest(), "88be99a3bb10db48794e363ccd91bfb82b3f555da33e13ee2c57afa3ede0e7fd")
+        with tempfile.TemporaryDirectory() as folder, patch("sys.platform", "linux"), patch.dict(os.environ, {}, clear=True):
+            root = Path(folder)
+            token = root / "daemon.token"
+            token.write_text("synthetic-linux-token")
+            token.chmod(0o600)
+            alias = root / "alias"
+            alias.symlink_to(token)
+            supervisor = ConnectorSupervisor(config=ConnectorConfig(daemon_token_path=str(alias)))
+            self.assertIs(type(supervisor.credential_provider()), FileDaemonCredentialProvider)
+            self.assertEqual(supervisor.credential_provider().read_bearer(), "synthetic-linux-token")
+            supervisor.config.credentials_directory = folder
+            self.assertIs(type(supervisor.credential_provider()), SystemdCredentialProvider)
+            self.assertEqual(supervisor.credential_provider().read_bearer(), "synthetic-linux-token")
+            with patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": str(root / "missing")}):
+                from runtime.remote_access.credentials import CredentialUnavailable
+                with self.assertRaises(CredentialUnavailable):
+                    supervisor.credential_provider().read_bearer()
+
+    def test_enrollment_reader_contract(self) -> None:
+        from runtime.remote_access import credentials
+        reader = getattr(credentials, "read_darwin_enrollment", None)
+        self.assertTrue(callable(reader), "Darwin enrollment reader must be available to C5/C6")
+        from runtime.remote_access.launchd_files import DARWIN_ENROLLMENT_KEY_PATH
+
+        self.assertEqual(DARWIN_ENROLLMENT_KEY_PATH, Path("~/Library/Application Support/HappyRanch/connector/happyranch-connector/enrollment.key"))
+        for kind in ("valid", "limit", "empty", "oversize", "mode", "owner", "hardlink", "symlink", "parent-link", "fifo", "directory", "relative", "dotdot"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                path = root / "enrollment.key"
+                path.write_bytes(b"synthetic-enrollment-key\n")
+                path.chmod(0o600)
+                if kind in {"limit", "empty", "oversize"}:
+                    path.write_bytes({"limit": b"x" * 65536, "empty": b" \n", "oversize": b"x" * 65537}[kind])
+                elif kind == "mode":
+                    path.chmod(0o400)
+                elif kind == "hardlink":
+                    os.link(path, root / "alias")
+                elif kind == "symlink":
+                    path.rename(root / "original")
+                    path.symlink_to(root / "original")
+                elif kind == "parent-link":
+                    (root / "alias").symlink_to(root, target_is_directory=True)
+                    path = root / "alias/enrollment.key"
+                elif kind in {"fifo", "directory"}:
+                    path.unlink()
+                    os.mkfifo(path, 0o600) if kind == "fifo" else path.mkdir()
+                elif kind == "relative":
+                    path = Path("enrollment.key")
+                elif kind == "dotdot":
+                    path = root / "child/../enrollment.key"
+                identity = os.geteuid() + 1 if kind == "owner" else os.geteuid()
+                with patch("os.geteuid", return_value=identity):
+                    if kind in {"valid", "limit"}:
+                        value = reader(path)
+                        self.assertIsInstance(value, bytearray)
+                        self.assertEqual(value, path.read_bytes())
+                    else:
+                        with self.assertRaises(ValueError) as failure:
+                            reader(path)
+                        self.assertNotIn("synthetic-enrollment-key", str(failure.exception))
+
+    def test_plist_cli_and_status_expose_no_file_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, patch("sys.platform", "darwin"), patch.dict(os.environ, {}, clear=True):
+            root = Path(folder)
+            token, key = root / "daemon.token", root / "enrollment.key"
+            token.write_text("synthetic-c4-bearer-value")
+            key.write_text("synthetic-c4-enrollment-value")
+            token.chmod(0o600)
+            key.chmod(0o600)
+            config = ConnectorConfig(tenant_id="t", home_id="h", connector_id="c", daemon_port=1234,
+                                     daemon_token_path=str(token), managed_dir_root=folder,
+                                     state_path=str(root / "trust.json"), policy_path=str(root / "policy.json"))
+            config_path = root / "config.json"
+            config.to_file(config_path)
+            runner = Runner(self, [row("print", DOMAIN), *absent(), enabled()])
+            manager = LaunchdServiceManager(unit_dir=root / "agents", run=runner)
+            supervisor = ConnectorSupervisor(config=config, config_path=config_path, manager=manager)
+            text = supervisor._launch_agent_text()
+            value = plistlib.loads(text.encode())
+            self.assertEqual(value["ProgramArguments"][-2:], ["--config", str(config_path)])
+            self.assertEqual(supervisor.credential_provider().read_bearer(), token.read_text())
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(cli, "ConnectorSupervisor", return_value=supervisor), redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(cli.main(["status", "--config", str(config_path)]), 0)
+            status = json.loads(stdout.getvalue())
+            self.assertEqual(status["load_state"], "not-found")
+            self.assertFalse(status["ready"])
+            self.assertFalse(runner.rows)
+            for secret in (token.read_text(), key.read_text()):
+                self.assertNotIn(secret, text + stdout.getvalue() + stderr.getvalue() + config_path.read_text())
+
+
 class ConnectorReadinessLifecycle(unittest.TestCase):
     def test_record_lifecycle_and_permissions(self) -> None:
         from runtime.remote_access.readiness import ReadinessReport
@@ -954,9 +1167,9 @@ class ConnectorReadinessLifecycle(unittest.TestCase):
                             raise OSError("synthetic fsync failure")
                         return original_fsync(fd)
 
-                    def replace(source: Path, target: Path) -> None:
-                        staged = Path(source)
-                        self.assertEqual(Path(target), path)
+                    def replace(source: Path, target: Path, **kwargs: int) -> None:
+                        staged = path.parent / source if kwargs else Path(source)
+                        self.assertEqual(path.parent / target if kwargs else Path(target), path)
                         self.assertNotEqual(staged, path)
                         self.assertEqual(staged.parent, path.parent)
                         self.assertEqual(stat.S_IMODE(staged.stat().st_mode), 0o600)
@@ -965,7 +1178,7 @@ class ConnectorReadinessLifecycle(unittest.TestCase):
                         self.assertTrue(json.loads(staged.read_text())["ready"])
                         if failure == "replace":
                             raise OSError("synthetic rename failure")
-                        return original_replace(source, target)
+                        return original_replace(source, target, **kwargs)
 
                     with patch("os.fsync", side_effect=fsync), patch("os.replace", side_effect=replace):
                         with self.assertRaises(OSError):

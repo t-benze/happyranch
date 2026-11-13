@@ -61,6 +61,36 @@ class FileDaemonCredentialProvider:
         return token
 
 
+class DarwinFileDaemonCredentialProvider(FileDaemonCredentialProvider):
+    """Same-user macOS read with no-follow, inode/owner/mode and size checks."""
+
+    def read_bearer(self) -> str:
+        from runtime.remote_access.launchd_files import read_private_file
+
+        try:
+            data = read_private_file(self._token_path.expanduser().absolute(), exact_mode=False)
+            token = data.decode("utf-8").strip()
+            if not token:
+                raise ValueError("empty daemon token")
+            return token
+        except (OSError, ValueError, UnicodeError):
+            raise CredentialUnavailable("macOS daemon token unavailable or unsafe") from None
+
+
+def read_darwin_enrollment(path: Path) -> bytearray:
+    """C5/C6 handoff: literal single-link current-euid 0600 key, <=64 KiB.
+
+    Returns bytes like the Linux installer reader; no decoding, staging or
+    enrollment side effect. Callers own the returned key's lifetime.
+    """
+    from runtime.remote_access.launchd_files import read_private_file
+
+    try:
+        return read_private_file(Path(path), exact_mode=True)
+    except (OSError, ValueError):
+        raise ValueError("macOS enrollment key unavailable or unsafe (requires current-user single-link regular 0600 file, nonempty, at most 64 KiB)") from None
+
+
 class SystemdCredentialProvider:
     """Reads the daemon bearer from systemd's ``LoadCredential=`` injection
     (``$CREDENTIALS_DIRECTORY/daemon.token``).

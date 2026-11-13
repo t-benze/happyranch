@@ -667,11 +667,47 @@ shutdown. Exclusive same-directory temporary files are flushed/fsynced before
 rename; failed publication retains the prior complete record and cleans up the
 temporary file. No STATUS input, bearer, key or credential content is recorded.
 
-The provisional default is
-`~/.local/state/happyranch-connector/ai.happyranch.connector.readiness.json`,
-using existing overridable `managed_dir_root`/`state_dir`; custom labels get
-separate files. This explicitly assumes the existing managed-state resolution
-until C4 settles macOS paths, without changing credential custody or migration.
+C4 (PR 3) finalizes the Darwin default state root as
+`~/Library/Application Support/HappyRanch/connector/<state_dir>` (default
+`state_dir=happyranch-connector`). The readiness file is
+`<managed-state-root>/<label>.readiness.json`; custom labels get separate files.
+`managed_dir_root` retains its override semantics: `<override>/<state_dir>`.
+Directories are traversed without following any symlink; new directories are
+0700 and an existing writable state leaf must be current-euid owned 0700.
+Existing ancestor modes remain unchanged. Readiness publication/cleanup uses
+the pinned parent descriptor and status refuses aliased parents. The C3
+provisional `~/.local/state` path was never released/deployed; no migration or
+compatibility code is needed. Linux StateDirectory/state-root resolution stays
+unchanged.
+
+The founder-approved macOS same-user posture reads the daemon token directly
+through `DarwinFileDaemonCredentialProvider` (the file-provider interface).
+`daemon_token_path` must be explicit, normally
+`~/Library/Application Support/HappyRanch/daemon.token` for the bundled app.
+The app's `AppDelegate` selects that daemon home and `EnvironmentSanitizer`
+passes `HAPPYRANCH_DAEMON_HOME`. `runtime.runtime.token_file()` alone defaults to
+`~/.happyranch/daemon.token` and is therefore not a safe connector default.
+Darwin rejects configured `credentials_directory` or any presence of
+`CREDENTIALS_DIRECTORY`, including empty, with fixed clean configuration errors.
+The token reader follows no leaf or parent symlink and requires a regular
+single-link file owned by the current euid, no group/other mode bits, valid UTF8,
+nonempty after stripping, and at most 64 KiB. Named/open inode identity and
+before/after metadata checks bound replacement/read drift; failures expose only
+a fixed non-secret reason. Linux credential classes and selection stay unchanged.
+
+`launchd_files.DARWIN_ENROLLMENT_KEY_PATH` is
+`~/Library/Application Support/HappyRanch/connector/happyranch-connector/enrollment.key`;
+overridden layouts use `<managed-state-root>/enrollment.key`.
+`credentials.read_darwin_enrollment()` is the C5/C6 handoff reader: an absolute
+literal, no-symlink-parent/leaf, current-euid, single-link regular 0600 file,
+nonempty and at most 64 KiB, returning a bytearray. This matches the Linux
+installer contract except root ownership is replaced by current-euid ownership
+without a group-owner requirement. It performs no staging/enrollment. Plists,
+config argv and CLI/status observations carry paths only, never token/key values.
+Standalone coverage uses real filesystem objects on Linux with Darwin selection;
+alternate-euid cases substitute process identity against real ownership metadata.
+Native Darwin path/credential execution is NOT RUN; no C4 Mac mini run is authorized.
+
 A watchdog thread begins before publication/checks and force-exits 75 after
 `watchdog_sec` without a completed healthy pass (including publication), using
 monotonic time and no main-loop/filesystem lock at expiry. Startup and shutdown
@@ -693,7 +729,7 @@ is not exposed. The maintained contract lists every added JSON field.
 Linux sd_notify, systemd manager bytes, units, installer and status stay unchanged.
 
 No native proof is claimed in this PR; the existing sleep-agent suite is unchanged.
-Final credentials/state layout, the per-user managed installer, Darwin sidecar
+The per-user managed installer, Darwin sidecar
 and readiness, signing, frozen entry/bundling, Swift coexistence and packaged-app
 acceptance remain future work. No change to Swift HomeConnector is included.
 

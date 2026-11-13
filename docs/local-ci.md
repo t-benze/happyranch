@@ -8,7 +8,12 @@ python -B -m unittest scripts.mac_native.test_connector_launchd -v
 
 This retained native-script venue uses fake runners and temporary paths, outside
 of the retired Python-unit selection. It checks CLI errors, platform selection,
-Linux argv parity and macOS plist/lifecycle/status/recovery contracts. QA owns
+Linux argv/state/credential parity and macOS plist/lifecycle/status/recovery,
+literal private state paths and same-user credential/enrollment file contracts.
+All original 33 cases are retained; C4 adds seven cases. The C4 permission
+cases use real files/modes/links/FIFOs; alternate-euid cases substitute process
+identity against real ownership metadata. They do not prove native Darwin file
+execution or installer/sidecar consumption. QA owns
 real Darwin execution with `SUITE=connector-launchd`; see the
 [Mac-native job guide](../ci/jenkins/mac-native-probe/README.md#connector-launchagent-lifecycle-suiteconnector-launchd-thr-360-c1c2).
 It adds no required check or automation trigger. Existing real-systemd
