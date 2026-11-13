@@ -6,6 +6,16 @@ a copy, submits it once to Apple, then staples and verifies another copy. That
 produces a **different signed/notarized/stapled ZIP with a new SHA256**.
 Signing is not publication. Never create a public release or upload here.
 
+THR-360 C7 bundles the separate managed connector helper at
+`Contents/Helpers/happyranch-tsnet-sidecar` (Darwin/arm64, Go1.23.12, cgo off).
+Its Darwin THIRD_PARTY_NOTICES and dependency inventory are separate originals
+in the app licenses manifest. Both existing signing scripts include a helper
+present in the retained baseline before outer-app signing, with the existing
+identity, runtime option and no new entitlements. Their accepted older ZIP/
+source/layout pins remain unchanged: a new app still needs the separate
+authorized artifact-binding/release procedure. No C7 native build, signing,
+notarization, release or packaged-app acceptance is claimed.
+
 ## Prerequisites
 
 Use your ordinary owner login and its `$HOME` in a native arm64 shell,

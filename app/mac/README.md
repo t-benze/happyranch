@@ -99,6 +99,38 @@ uses invocation-local Go/npm/Swift/temp caches, and builds Go c-archive, frozen
 daemon+CLI, Vite web and Swift app with ordinary tools. Iconutil produces the
 app icon. Runtime skill/catalog resources and their originals remain bundled.
 
+The managed remote-access sidecar is built separately from
+`app/linux/tsnet-sidecar/cmd/happyranch-tsnet-sidecar` for Darwin/arm64 with
+Go1.23.12, `GOTOOLCHAIN=local`, `-mod=readonly`, `GOWORK=off` and `CGO_ENABLED=0`.
+It ships at `Contents/Helpers/happyranch-tsnet-sidecar`; the build and basic
+bundle reader check its executable bit and arm64 architecture. Its separate
+`third_party/darwin-arm64/THIRD_PARTY_NOTICES.md` and `dependency-inventory.json`
+are retained byte-for-byte in the licenses manifest under
+`runtime:Go-sidecar-Darwin-arm64`, with both original source names recorded.
+The existing bridge and in-app Swift connector keep their behavior.
+
+The bundled daemon's hidden `--remote-access` dispatch reuses the source
+connector parser (`run --managed ...`) and the Darwin installer parser
+(`installer install ...`, `installer check-drift`, and the same lifecycle
+commands). For example, with an operator-prepared private sidecar config:
+
+```sh
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch-daemon --remote-access installer install --sidecar-config /absolute/private/sidecar.json --enrollment-key-file /absolute/private/enrollment.key
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch-daemon --remote-access installer check-drift
+```
+
+Frozen installs default to the bundled helper; `--sidecar-binary` overrides it.
+Source installs still require the explicit executable. Absolute plist paths
+are intentional: after moving the app, run check-drift from its current path.
+Missing executables or a different current daemon path require uninstall then
+reinstall; there is no automatic plist rewrite. Keep the app installed at the
+selected location. The existing signing scripts enumerate a retained sidecar
+before the outer app using their existing exec-signing identity/options, without
+new entitlements. Their older artifact pins remain; this is not approval to
+rebind/sign/release a new artifact. C7 has no app build or native execution;
+packaged connector acceptance depends on the separate THR-346 packaged-app check
+pending founder approval.
+
 Both frozen entry points retain `runtime.infrastructure.learnings_store` source
 at `daemon/_internal/runtime/infrastructure/learnings_store.py` alongside their
 ordinary PYZ bytecode, using PyInstaller's standard `pyz+py` collection mode. The

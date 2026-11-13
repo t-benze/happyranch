@@ -378,12 +378,23 @@ def snapshot(source, output, mapping):
     for module in go_modules:
         if not module.get('Main') and module.get('Dir'):
             require(Path(module['Dir']).is_relative_to(output / 'scratch/go-modules'), module['Path'], 'Go module root escapes invocation cache')
+    # The separately linked sidecar has its own target-specific, reviewed
+    # inventory and aggregated original texts. Do not reuse the bridge graph.
+    sidecar_root = source / 'app/linux/tsnet-sidecar/third_party/darwin-arm64'
+    sidecar_inventory = read(sidecar_root / 'dependency-inventory.json', source, MAX_JSON)
+    require(json.loads(sidecar_inventory)['artifact'] == dict(
+        cgo_enabled=False, goarch='arm64', goos='darwin',
+        package='happyranch/linux-tsnet-sidecar/cmd/happyranch-tsnet-sidecar'),
+        'Darwin sidecar', 'wrong target inventory')
+    sidecar_runtime = dict(key='Go-sidecar-Darwin-arm64', name='HappyRanch Darwin tsnet sidecar',
+        version=sha(sidecar_inventory), source=str(sidecar_root),
+        originals=[str(sidecar_root / name) for name in ('THIRD_PARTY_NOTICES.md', 'dependency-inventory.json')])
     return dict(schema=SCHEMA, target='darwin-arm64', source_tree=mapping['source_tree'],
                 npm_lock=lock, npm_installed=installed, npm_emitted=sorted(emitted),
                 go_modules=go_modules,
                 go_deps=go_deps,
                 python_lock=tomllib.loads(read(source / 'uv.lock', source, MAX_JSON).decode()),
-                python_installed=py['distributions'], runtime=py['runtime'] + vendor_runtime + [dict(
+                python_installed=py['distributions'], runtime=py['runtime'] + vendor_runtime + [sidecar_runtime, dict(
                     key='Go', name='Go runtime', version=mapping['go_version'], source=mapping['go_root'], originals=mapping['go_originals'])],
                 assets=assets,
                 input_digests={p: sha(read(source / p, source, MAX_JSON)) for p in

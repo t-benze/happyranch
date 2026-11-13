@@ -1,4 +1,4 @@
-"""Current-user managed macOS installation; source Python entry until C7/C8.
+"""Current-user managed macOS installation from source or the bundled daemon.
 
 The operator provisions a managed connector config and policy. This installer
 stages them, preserving existing trust state, and delegates every launchctl
@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import plistlib
 import re
 import stat
 import sys
@@ -215,11 +216,23 @@ class DarwinManagedInstaller:
 
     def _plist(self) -> bytes:
         if getattr(sys, "frozen", False):
-            raise DarwinInstallerError("bundled macOS connector entry point is not available yet")
+            self._bundled_sidecar()  # Only the shipped daemon owns this dispatch.
+        entry = ((sys.executable, "--remote-access") if getattr(sys, "frozen", False)
+                 else (sys.executable, "-m", "runtime.remote_access.cli"))
         return render_launch_agent(LABEL, (
-            sys.executable, "-m", "runtime.remote_access.cli", "run", "--managed",
+            *entry, "run", "--managed",
             "--config", str(self.state / "config.json"),
         ), logs_dir=self.logs).encode()
+
+    @staticmethod
+    def _bundled_sidecar() -> Path | None:
+        if not getattr(sys, "frozen", False):
+            return None
+        executable = Path(sys.executable)
+        if (not executable.is_absolute() or ".." in executable.parts
+                or executable.parts[-4:] != ("Contents", "Resources", "daemon", "happyranch-daemon")):
+            raise DarwinInstallerError("bundled connector requires Contents/Resources/daemon/happyranch-daemon")
+        return executable.parents[2] / "Helpers/happyranch-tsnet-sidecar"
 
     @staticmethod
     def _config(data: bytes | bytearray) -> ConnectorConfig:
@@ -231,7 +244,7 @@ class DarwinManagedInstaller:
         cfg.validate()
         if (cfg.system or cfg.exec_start is not None or cfg.managed_dir_root is not None
                 or cfg.unit_name != "happyranch-connector.service" or cfg.state_dir != "happyranch-connector"):
-            raise DarwinInstallerError("macOS managed installer requires the fixed per-user layout and source entry")
+            raise DarwinInstallerError("macOS managed installer requires the fixed per-user layout and entry")
         if any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
                for value in (cfg.watchdog_sec, cfg.poll_seconds)) or cfg.watchdog_sec < 1e-9:
             raise DarwinInstallerError("macOS managed intervals must be finite and positive")
@@ -303,8 +316,10 @@ class DarwinManagedInstaller:
 
     def install(self, *, source_config: Path, enrollment_key_file: Path | None,
                 sidecar_binary: Path | None, sidecar_config: Path | None) -> dict:
+        if sidecar_binary is None:
+            sidecar_binary = self._bundled_sidecar()
         if sidecar_binary is None or sidecar_config is None:
-            raise DarwinInstallerError("install requires --sidecar-binary and --sidecar-config")
+            raise DarwinInstallerError("install requires --sidecar-config and a bundled helper or explicit --sidecar-binary")
         data = bytearray()
         try:
             self._preflight()
@@ -385,14 +400,26 @@ class DarwinManagedInstaller:
                            ("sidecar.json", self.state / "sidecar.json"), ("sidecar-plist", self.sidecar_plist)):
             if _digest(self._read(path)) != files[name]:
                 raise DarwinInstallerError(f"macOS managed {name} digest drift")
+        # Absolute launchd paths deliberately stay operator-managed. A moved
+        # app can leave the old executable present, so compare current argv too.
+        for plist in self.plists:
+            try:
+                arguments = plistlib.loads(self._read(plist))["ProgramArguments"]
+                executable = Path(arguments[0])
+                if not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK):
+                    raise ValueError("missing executable")
+            except (OSError, ValueError, TypeError, KeyError, IndexError, plistlib.InvalidFileException):
+                raise DarwinInstallerError("macOS LaunchAgent executable missing or invalid; uninstall then reinstall from the current app/source") from None
+        if _digest(self._plist()) != files["plist"]:
+            raise DarwinInstallerError("macOS LaunchAgent entry differs from the current app/source; uninstall then reinstall")
         cfg = self._config(self._read(self.state / "config.json"))
         raw_sidecar = _json(self._read(self.state / "sidecar.json"))
         sidecar = self._sidecar_config(json.dumps(raw_sidecar).encode(), cfg)
         if (cfg.state_path != str(self.state / "trust-state.json")
                 or cfg.policy_path != str(self.state / "policy.json")
-                or raw_sidecar != sidecar or _digest(self._plist()) != files["plist"]
+                or raw_sidecar != sidecar
                 or _digest(self._sidecar_agent(self._binary(Path(receipt["sidecar_binary"])), cfg)) != files["sidecar-plist"]):
-            raise DarwinInstallerError("macOS managed paths or source entry drift")
+            raise DarwinInstallerError("macOS managed paths or entry drift; uninstall then reinstall")
         for path in self.log_files:
             with self._directory(path.parent) as parent:
                 self._file_info(os.stat(path.name, dir_fd=parent, follow_symlinks=False))
@@ -490,7 +517,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--purge", action="store_true", help="also remove managed state and stored enrollment key")
     parser.add_argument("--enrollment-key-file", type=Path, help="current-user regular 0600 key file (install only)")
     parser.add_argument("--config", type=Path, help=f"prepared source connector config (install only; default {_SOURCE_CONFIG})")
-    parser.add_argument("--sidecar-binary", type=Path, help="absolute operator-provisioned sidecar executable (install only)")
+    parser.add_argument("--sidecar-binary", type=Path, help="absolute sidecar override (install only; frozen default: Contents/Helpers/happyranch-tsnet-sidecar)")
     parser.add_argument("--sidecar-config", type=Path, help="private operator-provisioned sidecar JSON (install only)")
     args = parser.parse_args(argv)
     if args.purge and args.command != "uninstall":

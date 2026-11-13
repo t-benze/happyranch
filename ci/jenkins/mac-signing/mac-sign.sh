@@ -197,7 +197,20 @@ capture() {
     printf '%s exit=%s (details: %s)\n' "$label" "$rc" "$LOG"
     return "$rc"
 }
-# All file bytes and modes; data mode permits only the 11 code files and exact
+# Keep the accepted artifact's fixed inventory/pins intact. New bundle copies
+# include the sidecar before outer signing, using the same exec branch/identity.
+# Membership comes from the retained baseline, so removal/addition cannot silently
+# change which bytes signing is allowed to transform.
+code_inventory() {
+    local kind typ ident rel
+    while IFS=$'\t' read -r kind typ ident rel; do
+        if [ "$kind" = main ] && [ -f "$RUN/baseline/HappyRanch.app/Contents/Helpers/happyranch-tsnet-sidecar" ]; then
+            printf 'exec\t2\tai.happyranch.HappyRanchApp.nested.11\tContents/Helpers/happyranch-tsnet-sidecar\n'
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$kind" "$typ" "$ident" "$rel"
+    done < "$INVENTORY"
+}
+# All file bytes and modes; data mode permits inventoried code and exact
 # outer signing/ticket paths to differ. All notices, README and plist stay exact.
 manifest() (
     cd "$1"
@@ -207,7 +220,7 @@ manifest() (
         rel=${p#./}
         if [ "$mode" = data ]; then
             case "$rel" in Contents/_CodeSignature|Contents/_CodeSignature/CodeResources|Contents/CodeResources) continue ;; esac
-            if /usr/bin/awk -F '\t' -v p="$rel" '$4==p {found=1} END {exit !found}' "$INVENTORY"; then continue; fi
+            if /usr/bin/awk -F '\t' -v p="$rel" '$4==p {found=1} END {exit !found}' <(code_inventory); then continue; fi
         fi
         if [ -d "$p" ]; then printf 'D %s %s\n' "$(stat -f %Lp "$p")" "$p"
         else printf 'F %s %s %s\n' "$(stat -f %Lp "$p")" "$(sha "$p")" "$p"; fi
@@ -237,7 +250,7 @@ verify_code() {
         if [ "$kind" != lib ]; then /usr/bin/grep -E '^CodeDirectory .*flags=.*runtime' "$LOG/metadata-$i.err"; fi
         capture "entitlements-$i" /usr/bin/codesign -d --entitlements :- "$target"
         if /usr/bin/grep -q '<key>' "$LOG/entitlements-$i.out"; then fail "Unexpected entitlements: $rel"; fi
-    done < "$INVENTORY"
+    done < <(code_inventory)
     capture verify-outer /usr/bin/codesign --verify --deep --strict --verbose=2 "$app"
     check_data "$app"
 }
@@ -303,7 +316,7 @@ sign)
         capture "original-entitlements-$i" /usr/bin/codesign -d --entitlements :- "$target"
         if grep -q '<key>' "$LOG/original-entitlements-$i.out"; then fail 'Unexpected original entitlements; return for review.'; fi
         capture "dependencies-$i" /usr/bin/otool -L "$target"
-    done < "$INVENTORY"
+    done < <(code_inventory)
     i=0
     while IFS=$'\t' read -r kind typ ident rel; do
         i=$((i+1)); target="$APP/$rel"
@@ -312,7 +325,7 @@ sign)
             exec) capture "sign-$i" /usr/bin/codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --timestamp --options runtime --identifier "$ident" "$target" ;;
             main) capture "sign-$i" /usr/bin/codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --timestamp --options runtime "$APP" ;;
         esac
-    done < "$INVENTORY"
+    done < <(code_inventory)
     verify_code "$APP"
     manifest "$APP" > "$RUN/signed-files.txt"
     /usr/bin/perl "$HERE/bounded-run.pl" --save "$RUN/sign.ready" 'Signed and verified; parent has not published completion.'

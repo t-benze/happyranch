@@ -634,6 +634,48 @@ never for unsafe metadata. Repeated normal/purge uninstall is idempotent.
 The existing standalone `scripts.mac_native.test_connector_launchd` and
 `test_connector_installer` venues exercise real temporary files and scripted
 launchctl boundaries; they prove neither native launchd nor actual Go enrollment.
-C6b uses ZERO Mac-mini runs (goal native usage remains 6/8). C7/C8 own frozen
-entry/bundling, signing, coexistence and combined
+C6b uses ZERO Mac-mini runs (goal native usage remains 6/8). C7 below adds frozen
+entry/bundling and signing enumeration. C8 retains coexistence and combined
 packaged/native acceptance. No new check or CI trigger is added.
+
+### macOS bundled connector entry and sidecar (THR-360 C7, PR 8)
+
+The bundled `Contents/Resources/daemon/happyranch-daemon` accepts the fixed hidden
+`--remote-access` dispatch before normal daemon startup. Its arguments go to the
+existing connector CLI; `--remote-access installer ...` goes to the existing
+Darwin managed installer. Frozen connector plists use
+`happyranch-daemon --remote-access run --managed --config <staged-config>`.
+Source argv remains Python `-m runtime.remote_access.cli run --managed ...`.
+The PyInstaller runtime-submodule hook already collects both paths.
+
+`build-app.sh` separately builds the existing sidecar command with the pinned
+Go1.23.12/`GOTOOLCHAIN=local`, readonly module graph, `GOWORK=off`, Darwin/arm64
+and cgo disabled. The fixed output is
+`Contents/Helpers/happyranch-tsnet-sidecar`; executable/arm64 checks include it.
+Frozen installs default to that path, derived only from the shipped daemon
+layout. An explicit absolute operator `--sidecar-binary` wins and retains the
+existing binary safety checks; source mode still needs that explicit input.
+`--sidecar-config` remains required. No new dependency or Swift change is made.
+
+The Darwin sidecar's existing aggregated THIRD_PARTY_NOTICES and dependency
+inventory are separate originals in the app licenses manifest, owned by
+`runtime:Go-sidecar-Darwin-arm64`; their source names and digests remain visible.
+Existing notice validation and archive reconciliation cover both. The local and
+Jenkins signing scripts include a sidecar present in their retained baseline
+before the outer app, via the existing exec branch/identity with no new
+entitlements. The accepted older artifact pins are preserved; actual signing
+and new-artifact pin binding remain separate release work.
+
+Assumption: absolute bundle paths are intentional and operator-managed.
+`check-drift` refuses missing/nonexecutable plist executables and a connector
+entry differing from the current app/source, including a move where the old app
+still exists, with uninstall/reinstall guidance. It never rewrites the plist or
+watches for app moves. Reinstall retains the existing enrollment/state rules;
+normal uninstall preserves state, whereas `--purge` removes managed state.
+
+C7 uses ZERO Mac-mini runs and ZERO app builds. Portable focused tests and Linux
+cross-compilation cannot prove packaged execution, launchd, code signing or
+native recovery. Combined acceptance remains open and depends on the separate
+THR-346 packaged-app check pending founder approval. Budget: PR8/10, Mac mini
+6/8 used, slice 0. Linux, the Swift connector, required checks and CI triggers
+remain unchanged.

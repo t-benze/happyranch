@@ -918,5 +918,44 @@ process-identity/scheduling limitations remain; receipts are observations, not a
 
 Retained standalone mac_native launchd/installer tests use temporary real files and
 scripted launchctl; no native run is authorized or claimed for C6b. Goal budget is
-PR 7/10; Mac mini 6/8 used, slice 0 runs. C7/C8 retain app bundling/frozen entry,
-signing, Swift coexistence and combined packaged/native acceptance. No app screen, dependency or CI trigger changes.
+PR 7/10; Mac mini 6/8 used, slice 0 runs. C7 below supplies app bundling/frozen
+entry and signing enumeration; C8 retains Swift coexistence and combined
+packaged/native acceptance. No app screen, dependency or CI trigger changes.
+
+### C7 — frozen daemon entry and bundled sidecar (PR 8)
+
+The daemon's fixed hidden `--remote-access` entry dispatches before startup to
+the existing connector CLI. `--remote-access installer ...` selects the Darwin
+installer. Frozen connector ProgramArguments are the absolute bundled daemon,
+`--remote-access run --managed --config <staged-config>`; source `-m` argv is
+unchanged. The existing runtime PyInstaller hook collects the needed modules.
+
+Build the existing sidecar command separately with the same pinned Go1.23.12,
+`GOTOOLCHAIN=local`, `-mod=readonly`, `GOWORK=off`, Darwin/arm64 and cgo disabled.
+Ship it at `Contents/Helpers/happyranch-tsnet-sidecar`; existing build/basic
+checks require executable arm64 bytes. Frozen installer default derives that
+path from `Contents/Resources/daemon/happyranch-daemon`; explicit operator binary
+paths take precedence. Source installs retain their explicit binary requirement;
+the private sidecar config is required in both modes. Sidecar validation,
+enrollment, lifecycle and same-user token custody do not change.
+
+Retain both existing Darwin THIRD_PARTY_NOTICES and dependency inventory as
+originals under the app licenses manifest's `runtime:Go-sidecar-Darwin-arm64`
+owner, validated and archived through the existing notice path. Both existing
+signers enumerate a helper from the retained baseline before the outer app and
+use the existing executable-signing branch/identity, with no entitlement or
+notarization change. Older artifact pins remain untouched; this supplies no
+new-artifact signing or publication approval.
+
+Assumption: absolute plist bundle paths are operator-managed. A missing or
+nonexecutable plist executable, or connector argv differing from the current
+bundle/source, makes check-drift refuse with uninstall/reinstall guidance. A
+move is detected even if the old executable still exists. No watcher or
+automatic rewrite is added; existing normal/purge state-retention rules apply.
+
+C7 authorizes no native run/app build (PR8/10, Mac mini6/8, slice0). Portable
+tests and Darwin cross-compilation are source evidence only. Packaged-app
+execution, signing and combined native acceptance remain unproven and depend
+on the separate THR-346 packaged-app check pending founder approval. Linux
+implementation/inventories, Swift sources, dependencies, required lint/static
+checks and CI triggers remain unchanged.

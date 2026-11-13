@@ -72,7 +72,7 @@ def python_fixture_snapshot(source, evidence, extra=()):
     return snapshot
 
 
-def fixture(root):
+def fixture(root, *, retained_resources=False):
     source, output, app = root / 'source', root / 'output', root / 'output/HappyRanch.app'
     (output / 'diagnostics').mkdir(parents=True)
     app.mkdir()
@@ -109,6 +109,9 @@ def fixture(root):
     write(output / 'diagnostics/go-deps.json', dict(ImportPath='github.com/google/uuid', Module=module))
     for filename in ('go.mod', 'go.sum'):
         write(source / 'app/mac/tsnet-bridge' / filename, (SOURCE / 'app/mac/tsnet-bridge' / filename).read_bytes())
+    sidecar = 'app/linux/tsnet-sidecar/third_party/darwin-arm64'
+    for filename in ('THIRD_PARTY_NOTICES.md', 'dependency-inventory.json'):
+        write(source / sidecar / filename, (SOURCE / sidecar / filename).read_bytes())
     shutil.copytree(SOURCE / 'web/public', source / 'web/public')
     shutil.copytree(SOURCE / 'web/public', app / 'Contents/Resources/web/dist')
     shutil.copytree(SOURCE / 'app/mac/Resources/AppIcon.appiconset', source / 'app/mac/Resources/AppIcon.appiconset')
@@ -131,7 +134,10 @@ def fixture(root):
     baseline = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'BASELINE' for t in node.targets))
     for row in baseline:
         original = SOURCE / row['path']
-        data = original.read_bytes()
+        # Focused bundle cases may use the verifier's authenticated historical
+        # originals. Default cases still detect current-source baseline drift.
+        data = (subprocess.check_output(['git', 'cat-file', 'blob', row['blob_oid']], cwd=SOURCE)
+                if retained_resources else original.read_bytes())
         assert hashlib.sha256(data).hexdigest() == row['sha256'], row['path']
         dest = app / ('Contents/Resources/licenses/LICENSE' if row['path'] == 'LICENSE' else 'Contents/Resources/daemon/_internal/' + row['path'])
         write(dest, data)
@@ -139,7 +145,8 @@ def fixture(root):
     plist = plistlib.loads((SOURCE / 'app/mac/scripts/Info.plist').read_bytes())
     plist.update(dict(CFBundleShortVersionString='1.0.1', CFBundleVersion='1.0.1', GitCommitSHA='1' * 40, GitTreeSHA='2' * 40, ReleaseArchitecture='arm64'))
     write(app / 'Contents/Info.plist', plistlib.dumps(plist))
-    for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon', 'Contents/Resources/daemon/happyranch'):
+    for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
+                 'Contents/Resources/daemon/happyranch', 'Contents/Helpers/happyranch-tsnet-sidecar'):
         write(app / name, struct.pack('<IIIIIIII', 0xfeedfacf, 0x100000c, 0, 2, 0, 0, 0, 0))
         (app / name).chmod(0o755)
     write(app / 'Contents/Resources/AppIcon.icns', b'preassembled icon fixture, not iconutil output')
