@@ -71,6 +71,7 @@ _CLASSIFICATION = {
     'unregistered_task': ('item', False),
     'non_clone': ('none', True),
     'registration_unknown': ('clone', False),
+    'candidate_lineage_unknown': ('item', False),
     'job_lineage_unknown': ('org', False),
     'org_unavailable': ('org', False),
     'run_error': ('run', False),
@@ -83,9 +84,15 @@ _PRESERVATION_REASONS = {
     'possible_nested_worktree', 'linked_descendant', 'git_unregistered_locked_or_prunable',
 }
 _ORG_REASONS = {
-    'unknown_job_status', 'unknown_conflicting_lineage', 'unknown_malformed_job_or_task_lineage',
-    'unknown_missing_or_cyclic_lineage', 'team_move_cleanup_owner_unavailable', 'team_move_native_held',
+    'unknown_job_status', 'team_move_cleanup_owner_unavailable', 'team_move_native_held',
 }
+
+
+class _LineageUnknown(Retain):
+    """Keep the ancestry observation's candidate/job context with its reason."""
+    def __init__(self, reason: str, finding: str) -> None:
+        super().__init__(reason)
+        self.finding = finding
 
 
 def _classification(reason: str, finding: str | None = None) -> dict:
@@ -159,6 +166,11 @@ def _finalize_night(report: dict) -> None:
         reasons.append('budget_closure_unproven')
     if reasons and report.get('scheduled_date') and report.get('outcome') == 'complete' and all(o.get('mode') == 'on' for o in report.get('orgs', [])):
         report['outcome'] = 'incomplete'
+    # Worker outcome describes completed coverage, allowing its normal exit.
+    # Only the parent's post-stop/reap publication can complete the night.
+    if (not isinstance(report.get('worker_group_stop'), str) or not report['worker_group_stop']
+            or type(report.get('worker_returncode')) is not int or report['worker_returncode'] != 0):
+        reasons.append('supervisor_closure_unproven')
     report['night'] = dict(definition='thr307-review3-coverage', complete=not reasons, reasons=list(dict.fromkeys(reasons)))
 
 
@@ -957,27 +969,27 @@ class Evidence:
             for row in conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks'):
                 check(self.deadline)
                 if row['id'] in tasks:
-                    raise Retain('unknown_conflicting_lineage')
+                    raise _LineageUnknown('unknown_conflicting_lineage', 'org_unavailable')
                 tasks[row['id']] = dict(row)
 
-            def ancestry(owner):
+            def ancestry(owner, finding):
                 seen = set()
                 while True:
                     check(self.deadline)
                     if not isinstance(owner, str) or not owner:
-                        raise Retain('unknown_malformed_job_or_task_lineage')
+                        raise _LineageUnknown('unknown_malformed_job_or_task_lineage', finding)
                     if owner in seen or owner not in tasks:
-                        raise Retain('unknown_missing_or_cyclic_lineage')
+                        raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
                     seen.add(owner)
                     row = tasks[owner]
                     parent = row['parent_task_id']
                     if parent is None:
                         return owner
                     if not isinstance(parent, str) or not parent:
-                        raise Retain('unknown_conflicting_lineage')
+                        raise _LineageUnknown('unknown_conflicting_lineage', finding)
                     owner = parent
 
-            root = ancestry(task_id)
+            root = ancestry(task_id, 'candidate_lineage_unknown')
             owner = tasks[task_id]
             if owner['assigned_agent'] != workspace.name:
                 raise Retain('unknown_owner_workspace')
@@ -1003,7 +1015,7 @@ class Evidence:
                     continue
                 if row['status'] not in ('pending', 'queued', 'running'):
                     raise Retain('unknown_job_status')
-                job_root = ancestry(row['task_id'])
+                job_root = ancestry(row['task_id'], 'job_lineage_unknown')
                 if job_root == root:
                     raise Retain('active_job:' + row['status'])
         finally:
@@ -1416,7 +1428,10 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 raise
             except Exception as exc:
                 classification = _classification(str(exc), 'registration_unknown' if isinstance(exc, _RegistrationUnknown) else
+                                                 exc.finding if isinstance(exc, _LineageUnknown) else
                                                  'org_unavailable' if isinstance(exc, sqlite3.Error) else None)
+                if isinstance(exc, _LineageUnknown):
+                    result.setdefault('scope_classifications', {})[candidate['path']] = classification
                 if classification['hold'] == 'org': result['org_hold'] = str(exc)
                 if classification['hold'] == 'clone':
                     repo = candidate['repo']
@@ -1820,7 +1835,22 @@ def _record_previous_night(state, date: str) -> None:
             report['night']['reasons'].append('scheduled_date_mismatch')
             report['night']['complete'] = False
         if report['night']['complete']:
-            return
+            # A parent JSON publication can itself precede an interrupted audit
+            # loop. Complete records require the matching existing org audits.
+            audit_reasons = []
+            for slug, org in sorted(state.orgs_snapshot().items()):
+                item = next((o for o in report.get('orgs', []) if o.get('org') == slug), None)
+                try:
+                    expected = _audit_payload(report, item, summary)
+                    rows = org.db.get_audit_logs_by_action('disk_sweep_summary')
+                    if not any(row['task_id'] == '' and row['agent'] == 'daemon' and row['payload'] == expected for row in rows):
+                        audit_reasons.append('summary_audit_missing_or_mismatched:' + slug)
+                except Exception as exc:
+                    audit_reasons.append('summary_audit_unavailable:' + slug + ':' + type(exc).__name__)
+            if not audit_reasons:
+                return
+            report['night']['reasons'].extend(audit_reasons)
+            report['night']['complete'] = False
         payload = dict(scheduled_date=date, status='incomplete', reasons=report['night']['reasons'], summary_path=str(summary))
     payload['delivery'] = 'record_only_founder_delivery_pending'
     for slug, org in sorted(state.orgs_snapshot().items()):
@@ -1916,6 +1946,7 @@ def _audit_payload(report: dict, item: dict | None, summary: Path) -> dict:
     return {
         'summary_path': str(summary), 'revision': report.get('revision'),
         'night': report.get('night'), 'policy': report.get('policy'), 'elapsed_seconds': report.get('elapsed_seconds'),
+        'worker_group_stop': report.get('worker_group_stop'), 'worker_returncode': report.get('worker_returncode'),
         'previous_interrupted_removals': report.get('previous_interrupted_removals', []),
         'unloaded_orgs_unknown': report.get('unloaded_orgs_unknown'),
         'source_revision': report.get('source_revision'),

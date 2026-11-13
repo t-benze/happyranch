@@ -60,6 +60,8 @@ or configuration authority.
 
 THR307 seq337 package step 2 uses the review revision 3 coverage definition.
 The authoritative classification table is `_CLASSIFICATION` in `disk_sweeper.py`.
+Candidate-own missing, cyclic or malformed task ancestry retains that candidate
+only; unknown job status or active-job ancestry still holds the whole org.
 A uniquely recorded missing worktree folder is retained locally only after the
 full existing no-follow census/pointer/ancestor proof; its recorded location
 protects containing candidates and it is never repaired. Unknown-location admin
@@ -70,7 +72,10 @@ cannot. Positively classified ordinary non-clone folders are listed exclusions;
 a configured clone with missing `.git` or unsafe/unavailable evidence stays unknown.
 The empty-scope Git prune is removed; admission/census frequency is unchanged.
 JSON and matching org audits carry `coverage`, `night`, policy, inventory windows,
-exclusions and deferred arrivals. Interrupted-removal intents and bounded prior
+exclusions and deferred arrivals. Worker-only JSON is unproven until the parent
+records stop/reap and a successful worker return code within the original budget;
+the prior-night check also requires matching summary audits for loaded orgs.
+Interrupted-removal intents and bounded prior
 report provenance are reporting only, never authority to finish, repair or retry.
 At startup and before each existing night, the daemon records the previous
 expected missing/incomplete night once per loaded org in existing audit rows

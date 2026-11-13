@@ -419,7 +419,8 @@ removed. `.worktree-guard.json` ignore and cost reduction remain later steps.
 | Unregistered TASK folder | That path | Conservatively unknown coverage |
 | Positively classified ordinary non-clone folder | Excluded | Listed exclusion |
 | Unknown/conflicting mapping, enumeration or ancestry | Whole clone | Not complete |
-| Unknown job status/lineage | Whole org | Not complete |
+| Candidate-own missing/cyclic/malformed task ancestry | Candidate only | Not complete |
+| Unknown job status or active-job lineage | Whole org | Not complete |
 | DB/native-writer failure, Git timeout | Org/run | Not complete |
 | Known dirty/active/recent/hardlink/mount/nested/descendant keep | Item | Located inspected keep |
 | Other unclassified observation | Existing conservative retention | Not complete |
@@ -451,7 +452,14 @@ and admitted org reached, mode on, completed inventory/window, every candidate
 removed or a final located inspected keep, and no unknown discovery/shared hold,
 unreached/in-flight/partial effect, operational error, deferred/unloaded org or
 unconfirmed removal. Stop/reap are within the original 1,800 seconds; a late or
-unproven closure is not complete. A failed publication is never claimed complete;
+unproven closure is not complete. Worker-only final JSON has
+`night.complete:false` with `supervisor_closure_unproven`; its `outcome` describes
+worker coverage only. The parent records `worker_group_stop` and integer
+`worker_returncode:0` after owned stop/reap, then recalculates the night. Both
+fields also appear in summary audits. The prior-night check requires matching
+summary audit payloads for every loaded org before suppressing an incomplete-night
+record; missing, mismatched or unavailable audits remain incomplete.
+A failed publication is never claimed complete;
 only a safely published value can establish the record. Preview is not a complete
 scheduled night. Legacy summaries without these facts remain unproven.
 
@@ -484,7 +492,12 @@ No catch-up, retry, marker reset, stop-control or run-admission change follows.
 
 Disposable driver C27–C30 cover coverage/table boundaries, missing-folder peer
 progress and containing-tree protection, startup/restart/pre-night persistence
-and deduplication, and interrupted-removal reporting without recovery. C26 sizes
+and deduplication, and interrupted-removal reporting without recovery. C27
+separates candidate-own ancestry from genuine unknown job lineage; C29 drives
+the real scheduled child/supervisor path with loss between worker and parent
+publications, and between parent publication and summary audits, plus a fully
+closed run. These closure checks do not consume or alter the 256-record
+interrupted-removal history cap. C26 sizes
 valid reports from their actual serialized bytes (still >32 MiB aggregate),
 retaining bounded-window/kept-since and malformed/oversized boundary assertions.
 C23 expectations distinguish proven arrivals from unregistered paths. C21/C25

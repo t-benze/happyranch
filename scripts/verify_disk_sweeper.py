@@ -3212,6 +3212,7 @@ def correction_policy_reporting():
                                       dry_run=False, scheduled_date=kwargs['scheduled_date'], revision='policy-fixture',
                                       native_writers=kwargs['native_writers'])
                 report['worker_group_stop'] = 'SIMULATED supervision only; actual in-process sweep'
+                report['worker_returncode'] = 0
                 ds.atomic_json(summary, report)
                 return report
             summary = f.base / 'scheduled-summary.json'
@@ -3300,6 +3301,7 @@ def scheduled_attempt(state, summary, *, forbidden=False):
                               dry_run=False, scheduled_date=kwargs['scheduled_date'], revision='stop-fixture',
                               native_writers=kwargs['native_writers'])
         report['worker_group_stop'] = 'SIMULATED supervision; actual disposable sweep'
+        report['worker_returncode'] = 0
         ds.atomic_json(summary, report)
         return report
     with patch.object(producer_move, 'native_writer', writer), patch.object(ds, 'run_worker', worker):
@@ -3715,7 +3717,7 @@ def correction_per_org_settlement():
 
 def measurement_legacy(value):
     """Remove only the newly documented keys, preserving every legacy byte."""
-    additions = {'measurement', 'measurements', 'measurement_history', 'stop_cause', 'source_revision', 'coverage', 'scope_classifications', 'exclusions', 'deferred_arrivals', 'inventory_window', 'interrupted_removals', 'previous_interrupted_removals', 'night', 'policy', 'elapsed_seconds', 'unloaded_orgs_unknown'}
+    additions = {'measurement', 'measurements', 'measurement_history', 'stop_cause', 'source_revision', 'coverage', 'scope_classifications', 'exclusions', 'deferred_arrivals', 'inventory_window', 'interrupted_removals', 'previous_interrupted_removals', 'night', 'policy', 'elapsed_seconds', 'unloaded_orgs_unknown', 'worker_group_stop', 'worker_returncode'}
     if isinstance(value, dict):
         return {key: measurement_legacy(item) for key, item in value.items() if key not in additions}
     if isinstance(value, list):
@@ -3977,44 +3979,65 @@ def c26():
 def c27():
     """Coverage distinguishes located keeps/exclusions from unknown discovery."""
     observations = []
-    for kind in ('dirty', 'metadata', 'unknown_residue', 'unregistered', 'non_clone', 'configured_missing_git', 'aliased_git', 'unreadable_git', 'unknown_owner', 'shared', 'unknown_job'):
-        with fixture() as f:
-            repo, p = f.worktree('TASK-1')
-            _, peer = f.worktree('TASK-2')
-            if kind == 'dirty': (p / 'source').write_text('dirty\n')
-            elif kind == 'metadata': (repo / '.git/worktrees/TASK-1/index').chmod(0)
-            elif kind == 'unknown_residue': residue_input(f, repo, p, empty=True)
-            elif kind == 'unregistered':
-                p = p.with_name('TASK-3'); p.mkdir()
-            elif kind in ('non_clone', 'configured_missing_git'):
-                agents = f.org / 'org/agents'; agents.mkdir()
-                (agents / 'maker.md').write_text('---\nname: maker\nteam: engineering\nrole: worker\nexecutor: codex\nrepos: {project: "https://example.invalid/project"}\n---\nFixture agent.\n')
-                extra = f.workspace / 'repos' / ('output' if kind == 'non_clone' else 'project')
-                if kind == 'non_clone': extra.mkdir()
-                else: (repo / '.git').rename(repo / 'held-git')
-            elif kind == 'aliased_git':
-                held = f.base / 'held-git'; (repo / '.git').rename(held); (repo / '.git').symlink_to(held)
-            elif kind == 'unreadable_git': (repo / '.git').chmod(0)
-            elif kind == 'unknown_owner': (f.workspace / 'repos/output').mkdir()
-            elif kind == 'shared': (repo / '.git/worktrees/TASK-1/gitdir').write_text(str(peer / '.git') + '\n')
-            elif kind == 'unknown_job':
-                f.db.execute("INSERT INTO jobs VALUES('TASK-1','mystery')"); f.db.commit()
-            calls = []; realgit = ds.git
-            def git(root, deadline, *args):
-                calls.append(args); return realgit(root, deadline, *args)
-            with patch.object(ds, 'git', git): report = f.sweep()
-            complete = kind in ('dirty', 'metadata', 'non_clone')
-            assert report.get('coverage', {}).get('complete') is complete, (kind, report)
-            assert report['outcome'] == ('complete' if complete else 'incomplete'), (kind, report)
-            assert not any(a[:2] == ('worktree', 'prune') for a in calls), calls
-            if kind == 'non_clone':
-                assert report['exclusions'] == [dict(path=str(extra), reason='ordinary_non_clone')]
-            if kind == 'unknown_residue':
-                assert report['unreached'] is None and report['coverage']['unknown_discovery']
-                assert row(report, peer)['state'] == 'removed'
-            if kind in ('shared', 'unknown_job'): assert peer.exists()
-            if complete: assert row(report, peer)['state'] == 'removed'
-            observations.append(dict(kind=kind, coverage=report['coverage']))
+    failures = []
+    for kind in ('candidate_missing', 'candidate_cycle', 'candidate_malformed', 'job_missing', 'job_cycle', 'job_malformed', 'dirty', 'metadata', 'unknown_residue', 'unregistered', 'non_clone', 'configured_missing_git', 'aliased_git', 'unreadable_git', 'unknown_owner', 'shared', 'unknown_job'):
+        try:
+            with fixture() as f:
+                repo, p = f.worktree('TASK-1')
+                _, peer = f.worktree('TASK-2')
+                if kind.startswith(('candidate_', 'job_')):
+                    owner = 'TASK-1' if kind.startswith('candidate_') else 'TASK-99'
+                    if kind.startswith('job_'):
+                        f.task(owner)
+                        f.db.execute("INSERT INTO jobs VALUES(?,'running')", (owner,))
+                    if kind.endswith('_missing'): f.db.execute('DELETE FROM tasks WHERE id=?', (owner,))
+                    else: f.db.execute('UPDATE tasks SET parent_task_id=? WHERE id=?', (owner if kind.endswith('_cycle') else '', owner))
+                    f.db.commit()
+                elif kind == 'dirty': (p / 'source').write_text('dirty\n')
+                elif kind == 'metadata': (repo / '.git/worktrees/TASK-1/index').chmod(0)
+                elif kind == 'unknown_residue': residue_input(f, repo, p, empty=True)
+                elif kind == 'unregistered':
+                    p = p.with_name('TASK-3'); p.mkdir()
+                elif kind in ('non_clone', 'configured_missing_git'):
+                    agents = f.org / 'org/agents'; agents.mkdir()
+                    (agents / 'maker.md').write_text('---\nname: maker\nteam: engineering\nrole: worker\nexecutor: codex\nrepos: {project: "https://example.invalid/project"}\n---\nFixture agent.\n')
+                    extra = f.workspace / 'repos' / ('output' if kind == 'non_clone' else 'project')
+                    if kind == 'non_clone': extra.mkdir()
+                    else: (repo / '.git').rename(repo / 'held-git')
+                elif kind == 'aliased_git':
+                    held = f.base / 'held-git'; (repo / '.git').rename(held); (repo / '.git').symlink_to(held)
+                elif kind == 'unreadable_git': (repo / '.git').chmod(0)
+                elif kind == 'unknown_owner': (f.workspace / 'repos/output').mkdir()
+                elif kind == 'shared': (repo / '.git/worktrees/TASK-1/gitdir').write_text(str(peer / '.git') + '\n')
+                elif kind == 'unknown_job':
+                    f.db.execute("INSERT INTO jobs VALUES('TASK-1','mystery')"); f.db.commit()
+                calls = []; realgit = ds.git
+                def git(root, deadline, *args):
+                    calls.append(args); return realgit(root, deadline, *args)
+                with patch.object(ds, 'git', git): report = f.sweep()
+                if kind.startswith('candidate_'):
+                    retained(report, p, 'unknown_conflicting_lineage' if kind.endswith('_malformed') else 'unknown_missing_or_cyclic_lineage')
+                    assert not peer.exists() and row(report, peer)['state'] == 'removed', (kind, report)
+                    assert not report.get('org_hold'), (kind, report)
+                elif kind.startswith('job_'):
+                    assert p.exists() and peer.exists() and report.get('org_hold'), (kind, report)
+                    assert all(c['state'] == 'retained' for c in report['candidates']), (kind, report)
+                complete = kind in ('dirty', 'metadata', 'non_clone')
+                assert report.get('coverage', {}).get('complete') is complete, (kind, report)
+                assert report['outcome'] == ('complete' if complete else 'incomplete'), (kind, report)
+                assert not any(a[:2] == ('worktree', 'prune') for a in calls), calls
+                if kind == 'non_clone':
+                    assert report['exclusions'] == [dict(path=str(extra), reason='ordinary_non_clone')]
+                if kind == 'unknown_residue':
+                    assert report['unreached'] is None and report['coverage']['unknown_discovery']
+                    assert row(report, peer)['state'] == 'removed'
+                if kind in ('shared', 'unknown_job'): assert peer.exists()
+                if complete: assert row(report, peer)['state'] == 'removed'
+                observations.append(dict(kind=kind, coverage=report['coverage']))
+        except AssertionError as exc:
+            failures.append(dict(kind=kind, error=str(exc)))
+    for failure in failures: print(json.dumps(dict(regression=failure)), flush=True)
+    assert not failures, failures
     return observations
 
 
@@ -4063,10 +4086,85 @@ def c28():
     return observations
 
 
+def scheduled_closure(kind):
+    """Interrupt the shipping scheduler between actual worker/parent publications."""
+    from datetime import datetime, timedelta, timezone
+    class Before(datetime):
+        @classmethod
+        def now(cls, tz=None): return cls(2026, 11, 13, 12, tzinfo=timezone.utc).astimezone(tz)
+    class After(datetime):
+        @classmethod
+        def now(cls, tz=None): return (Before.now(tz) + timedelta(days=1))
+    class SupervisorLost(BaseException): pass
+    with scheduled_fixture() as (f, orgs, state, stop, _, paths, refs):
+        for g in orgs: g.db.row_factory = sqlite3.Row
+        date = ds.next_night(Before.now()).date().isoformat()
+        summary = stop.with_name(date + '.json')
+        sleeps, boundary = [], []
+        async def sleep_once(_):
+            sleeps.append(1)
+            if len(sleeps) > 1: raise asyncio.CancelledError
+        realread = ds._read_json
+        def read(path):
+            report = realread(path)
+            if kind == 'worker_only' and path == summary and report.get('finished_at'):
+                assert 'worker_group_stop' not in report and 'worker_returncode' not in report
+                boundary.append('worker final published; parent final not published')
+                raise SupervisorLost
+            return report
+        audit_type = type(state.orgs['off'].db)
+        realaudit = audit_type.insert_audit_log
+        def audit(db, *args):
+            if kind == 'parent_only' and args[2] == 'disk_sweep_summary':
+                boundary.append('parent final published; summary audits not published')
+                raise SupervisorLost
+            return realaudit(db, *args)
+        with patch.object(ds, 'datetime', Before), patch.object(ds.asyncio, 'sleep', sleep_once), patch.object(ds, '_read_json', read), patch.object(audit_type, 'insert_audit_log', audit):
+            try: asyncio.run(ds.disk_sweeper_loop(state))
+            except (SupervisorLost, asyncio.CancelledError): pass
+        saved = json.loads(summary.read_text())
+        assert saved['night']['complete'] is (kind != 'worker_only'), (kind, saved)
+        if kind == 'worker_only':
+            assert boundary == ['worker final published; parent final not published'], boundary
+            assert 'supervisor_closure_unproven' in saved['night']['reasons'], saved
+            assert 'worker_group_stop' not in saved and 'worker_returncode' not in saved
+        else:
+            assert saved['worker_group_stop'] and saved['worker_returncode'] == 0, saved
+        for g in orgs:
+            rows = g.db.execute("SELECT payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+            assert len(rows) == (1 if kind == 'complete' else 0), (kind, rows)
+            if rows:
+                item = next(o for o in saved['orgs'] if o['org'] == g.org.name)
+                assert json.loads(rows[0][0]) == ds._audit_payload(saved, item, summary)
+        async def stop_at_sleep(_): raise asyncio.CancelledError
+        for _ in range(2):
+            with patch.object(ds, 'datetime', After), patch.object(ds.asyncio, 'sleep', stop_at_sleep), patch.object(ds, '_run_scheduled_worker', side_effect=AssertionError('no retry/catch-up')):
+                try: asyncio.run(ds.disk_sweeper_loop(state))
+                except asyncio.CancelledError: pass
+        notices = []
+        for g in orgs:
+            rows = g.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='disk_sweep_night_notice'").fetchall()
+            selected = [r for r in rows if json.loads(r[2])['scheduled_date'] == date]
+            assert len(selected) == (0 if kind == 'complete' else 1), (kind, selected)
+            if selected:
+                assert selected[0][:2] == ('', 'daemon')
+                payload = json.loads(selected[0][2]); notices.append(payload)
+                assert payload['status'] == 'incomplete' and payload['summary_path'] == str(summary)
+                reason = 'supervisor_closure_unproven' if kind == 'worker_only' else 'summary_audit_missing_or_mismatched:'
+                assert any(r.startswith(reason) for r in payload['reasons']), payload
+        assert json.loads(stop.with_name('last-scheduled.json').read_text())['scheduled_date'] == date
+        return dict(kind=kind, boundary=boundary, night=saved['night'], notices=notices, supervision='actual child, stop/reap and scheduled JSON/audit path')
+
+
 def c29():
     """Actual scheduler startup and pre-night checks write one durable org record."""
     from datetime import datetime, timezone
-    observations = []
+    observations, failures = [], []
+    for kind in ('worker_only', 'parent_only', 'complete'):
+        try: observations.append(scheduled_closure(kind))
+        except AssertionError as exc: failures.append(dict(kind=kind, error=str(exc)))
+    for failure in failures: print(json.dumps(dict(regression=failure)), flush=True)
+    assert not failures, failures
     class FixedDate(datetime):
         @classmethod
         def now(cls, tz=None): return cls(2026, 11, 14, 12, tzinfo=timezone.utc).astimezone(tz)
@@ -4087,6 +4185,10 @@ def c29():
                 if kind == 'complete': assert report['night']['complete'] is True
                 if kind == 'incomplete': report['unreached_orgs'] = ['/fixture/unreached']
                 ds.atomic_json(source, report)
+                if kind == 'complete':
+                    for slug, org in state.orgs_snapshot().items():
+                        item = next(o for o in report['orgs'] if o['org'] == slug)
+                        org.db.insert_audit_log('', 'daemon', 'disk_sweep_summary', ds._audit_payload(report, item, source))
             preserved = [path for path in paths if path.exists()]
             snapshot = candidate_contents(*preserved)
             for attempt in range(2):
