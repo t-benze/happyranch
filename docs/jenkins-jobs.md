@@ -24,8 +24,13 @@ in the probe README. All three versions and scratch paths are required; Go
 root/path/caches remain private with GOTOOLCHAIN=local and unchanged GOFLAGS.
 The freezer separately hash-installs the editable backend closure without
 changing runtime manifests/uv.lock. A source preflight does not
-prove a packaged-app build or acceptance result. The Node tarball 52,234,372B
-exceeds the live 32MiB cap: native proof waits for merge + manager config apply.
+prove a packaged-app build or acceptance result. Downloads record bounded per-origin
+curl exit/stderr/timing metrics, with queries/credentials omitted. Ordered
+official origins share the same hash pin and original 240s budget; no proxy or
+host/job change is permitted. Before downloads, non-gating executor CLI version
+and exit-only auth status are observed on the fixed host PATH with isolated HOME
+(host-stored login unverified); no session starts. Build 19 failed with curl 28
+before readiness; a separately authorized exact-head source probe is required.
 After immutable checkout/identity, its stdlib-only bootstrap takes the measured
 18-package `cleanup-helpers` import set from the checkout's `uv.lock` into a
 scratch-only venv without pip. It requires macOS arm64 regular CPython 3.14,

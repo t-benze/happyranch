@@ -80,12 +80,16 @@ setup guidance. SHA1 letter case is normalized for the existing identity check.
 Keep the same configuration throughout a retained signing run. This setup does
 not query Apple, unlock a Keychain or change credential policy.
 
-The separate existing Jenkins native probe now has a reviewed source proposal
+The separate existing Jenkins native probe has reviewed source
 for scratch-only uv 0.12.21/Node 24.19.0 LTS/Go 1.23.12 provisioning and 90min/256MiB limits
 (THR-346 msg86); see the [probe contract](../../ci/jenkins/mac-native-probe/README.md).
-This changes no signing-host prerequisites or release route. The live 32MiB
-configuration cannot admit its 52,234,372-byte Node tarball; native provisioning
-proof awaits merge and manager config application. Preflight requires those
+This changes no signing-host prerequisites or release route. Build 19 failed on
+the first Go download (curl 28), so native readiness remains unproven. Source
+diagnostics retain bounded curl exit/stderr/timing metrics per official origin;
+ordered Go fallback shares the same hash pin and 240s budget. A non-gating
+executor version/exit-only auth observation precedes downloads on the fixed host
+PATH with isolated HOME; host-stored login and a real session remain unverified.
+No proxy, host/job change or new credential workaround is authorized. Preflight requires those
 exact versions at scratch paths, with private caches and GOTOOLCHAIN=local.
 The freezer hash-installs the complete build-only editable backend closure
 before sync; runtime manifests/uv.lock are unchanged. Go 1.23.12 preserves the
