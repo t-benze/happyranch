@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import os
+import plistlib
 import signal
+import stat
 import subprocess
 import tempfile
 import time
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -40,8 +43,18 @@ def run(report: dict[str, Any]) -> None:
         if not passed:
             raise RuntimeError(f"connector-launchd check failed: {name}")
 
-    with tempfile.TemporaryDirectory(prefix="connector-launchd-") as folder:
-        scratch = Path(folder)
+    with ExitStack() as stack:
+        temporary = tempfile.TemporaryDirectory(prefix="connector-launchd-")
+        scratch = Path(temporary.name)
+
+        def scratch_receipt() -> None:
+            section["scratch_removed"] = not scratch.exists()
+            check("scratch_removed", section["scratch_removed"])
+
+        # LIFO: record after TemporaryDirectory removal on success AND failure.
+        # A successful receipt never suppresses the original probe exception.
+        stack.callback(scratch_receipt)
+        stack.enter_context(temporary)
         manager = LaunchdServiceManager(run=command)
         path = manager.unit_dir / f"{label}.plist"
         domain: str | None = None
@@ -64,7 +77,37 @@ def run(report: dict[str, Any]) -> None:
             owned = True  # Absence proven; cleanup owns any partial installation.
             installed = manager.install(plist, label)
             check("installed", installed == path and path.is_file())
-            manager.start(label)
+            try:
+                manager.start(label)
+            except Exception:
+                # Optional read-only context shares the original observation
+                # budget. Every failed observation is recorded, never raised
+                # in place of the actual start/bootstrap failure.
+                failure: dict[str, Any] = {"plist": {"current_uid": uid}}
+                section["start_failure"] = failure
+                try:
+                    info = path.stat()
+                    failure["plist"].update(mode=oct(stat.S_IMODE(info.st_mode)), owner_uid=info.st_uid)
+                    failure["plist"]["LimitLoadToSessionType"] = plistlib.loads(path.read_bytes()).get("LimitLoadToSessionType")
+                except Exception as exc:
+                    failure["plist"].update(error=type(exc).__name__, diagnostic=str(exc)[:512])
+                for key, argv in (
+                    ("plutil", ["plutil", "-lint", str(path)]),
+                    ("launchd_log", ["log", "show", "--last", "2m", "--style", "compact", "--predicate",
+                                     f'process == "launchd" AND eventMessage CONTAINS "{label}"']),
+                ):
+                    try:
+                        code, output = command(argv)
+                        observed: dict[str, Any] = {"exit_code": code}
+                        if key == "launchd_log":
+                            filtered = "\n".join(line for line in output.splitlines() if label in line)
+                            observed["excerpt"] = filtered.encode("utf-8")[:4096].decode("utf-8", errors="ignore")
+                        if key == "plutil" or code:
+                            observed["diagnostic"] = output.strip()[:512]
+                        failure[key] = observed
+                    except Exception as exc:
+                        failure[key] = {"error": type(exc).__name__, "diagnostic": str(exc)[:512]}
+                raise
 
             def wait_running(previous_pid: int = 0) -> Any:
                 until = min(deadline - 15, time.monotonic() + 30)
@@ -118,5 +161,3 @@ def run(report: dict[str, Any]) -> None:
             else:
                 # Domain failure/collision before install owns nothing to remove.
                 cleanup["not_installed"] = True
-    section["scratch_removed"] = not scratch.exists()
-    check("scratch_removed", section["scratch_removed"])

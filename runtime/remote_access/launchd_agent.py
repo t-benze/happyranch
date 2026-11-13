@@ -46,6 +46,7 @@ def render_launch_agent(
         "ProgramArguments": list(program_arguments),
         "KeepAlive": True,
         "ThrottleInterval": 10,
+        "LimitLoadToSessionType": ["Aqua", "Background"],
         # Installation alone must not start a process; enable is an explicit
         # launchctl override. --no-enable preserves an existing override.
         "Disabled": True,

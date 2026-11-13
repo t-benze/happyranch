@@ -587,13 +587,17 @@ held diagnosed correction; source changes never replenish or submit that budget.
 
 QA may select this source suite at the reviewed exact `SOURCE_SHA` using the
 existing string parameter. Do not change the Jenkins config. The maker does
-not run this job. Manager TASK-15950 step 5 raises PR 1's native cap from 3 to 4,
-permitting one further run after build24's empty print-disabled sentinel failure.
+not run this job. Manager TASK-15950 step 6 raises PR 1's native cap from 4 to 5,
+permitting one further run after build26's user-domain bootstrap failure.
 Build20's GUI-domain refusal, build22's parser refusal and build24's rejection
 of `disabled services = (no disabled services)` were genuine code failures.
-The founder goal ledger is currently 3 of 8 native runs used and becomes 4 of 8
-only after the future authorized fourth run executes; this maker leg consumes
-zero runs. The founder allowance remains 8 total.
+Build26 accepted that sentinel and installed, then `bootstrap user/502` failed
+with exit 5 / Input/output error; it is a genuine failure. Service/plist absence
+was recorded, but probe scratch removal was not recorded on its exception path.
+The founder goal ledger is currently 4 of 8 native runs used and becomes 5 of 8
+only after the future authorized fifth run executes; this maker leg consumes
+zero runs. The founder allowance remains 8 total. If run 5 fails, no further
+PR 1 run is authorized; the manager must re-plan the three remaining goal runs.
 
 The suite calls the real `LaunchdServiceManager` with a unique UUID label
 `ai.happyranch.connector-probe-<uuid>` and `/bin/sleep 300`. It writes a
@@ -607,6 +611,10 @@ User-domain fallback requires its own successful print; otherwise the error
 names both diagnostics. Other GUI errors refuse. The selected domain is recorded
 as `connector_launchd.domain`, and CLI status reports `domain` as well. Bootstrap
 refusal is a failure, not a skipped/pass result or reason to escalate privileges.
+The rendered plist explicitly declares `LimitLoadToSessionType` as the array
+`["Aqua", "Background"]`. This permits both session types without changing the
+domain-selection rules or `Disabled=true` semantics. The missing-key explanation
+for build26 is hypothesis H1, not a proven native diagnosis.
 
 Without GUI login, an explicitly started `user/<uid>` service runs for the
 current boot/background session while that domain exists. Autoload of
@@ -630,6 +638,8 @@ for command-group reaping (up to sixteen seconds beyond the observation deadline
 SIGKILL/host loss still cannot promise cleanup. launchctl may keep the label's
 disabled override after uninstall; no private launchd database is edited.
 Temp logs/scratch are removed by the owning temporary-directory context.
+The scratch-removal assertion is recorded after disposal on the failure path
+as well as success; a successful cleanup receipt never makes a failed probe pass.
 This stays within the existing job timeout and per-file/log caps.
 
 Before domain selection, `probe.json` records `connector_launchd.context`:
@@ -645,6 +655,17 @@ After selection and before the first status/lifecycle step, context also records
 characters of diagnostic output). It starts null until observed. This command
 shares the existing deadline and output cap; its code is recorded directly,
 not inferred from a later parser exception.
+
+Any start/bootstrap failure records `connector_launchd.start_failure` before
+cleanup: `plist` contains mode, owner UID, current UID and rendered
+`LimitLoadToSessionType`; `plutil` contains `plutil -lint <plist>`'s exit code and
+at most 512 diagnostic characters. `launchd_log` runs `log show --last 2m --style
+compact` with a predicate for launchd and the unique label, then filters retained
+lines to that label and caps the excerpt at 4096 UTF-8 bytes. A nonzero observation
+retains its actual exit and at most 512 diagnostic characters; exceptions/timeouts
+retain their type and capped diagnostic. These read-only commands share the
+unchanged 90-second deadline and 1MiB command-output cap. Exhaustion is recorded,
+and never replaces the original start failure.
 
 `probe.json` also includes `connector_launchd.checks`, the actual domain/PIDs and
 `cleanup.service_absent`, `cleanup.plist_absent`, `cleanup.bootout_exit`, plus

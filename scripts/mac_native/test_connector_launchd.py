@@ -155,7 +155,7 @@ class LaunchAgentFiles(unittest.TestCase):
             manager = LaunchdServiceManager(unit_dir=root / "agents", run=runner)
             text = render_launch_agent(LABEL, ("/a path/python", "--config", "/a path/config.json"), logs_dir=root / "logs")
             value = plistlib.loads(text.encode())
-            self.assertEqual(value, dict(Label=LABEL, ProgramArguments=["/a path/python", "--config", "/a path/config.json"], KeepAlive=True, ThrottleInterval=10, Disabled=True, StandardOutPath=str(root / "logs" / f"{LABEL}.stdout.log"), StandardErrorPath=str(root / "logs" / f"{LABEL}.stderr.log")))
+            self.assertEqual(value, dict(Label=LABEL, ProgramArguments=["/a path/python", "--config", "/a path/config.json"], KeepAlive=True, ThrottleInterval=10, Disabled=True, LimitLoadToSessionType=["Aqua", "Background"], StandardOutPath=str(root / "logs" / f"{LABEL}.stdout.log"), StandardErrorPath=str(root / "logs" / f"{LABEL}.stderr.log")))
             path = manager.install(text, LABEL)
             self.assertEqual(path.read_text(), text)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -488,6 +488,10 @@ class LaunchdLifecycle(unittest.TestCase):
             root = Path(folder)
             path = root / f"{LABEL}.plist"
             old = render_launch_agent(LABEL, ("/bin/sleep", "20"), logs_dir=root)
+            # Real old-shape bytes, accepted before this additive plist key.
+            old_value = plistlib.loads(old.encode())
+            old_value.pop("LimitLoadToSessionType", None)
+            old = plistlib.dumps(old_value, sort_keys=True).decode()
             new = render_launch_agent(LABEL, ("/bin/sleep", "30"), logs_dir=root)
             def replace_rows(fail: bool = False) -> list:
                 return [row("print", TARGET, output=RUNNING), row("bootout", TARGET), *absent(), enabled(), *absent(), row("bootstrap", DOMAIN, str(path), code=5 if fail else 0, output="bad executable" if fail else "")]
@@ -499,6 +503,7 @@ class LaunchdLifecycle(unittest.TestCase):
             self.assertTrue(outcome.ok)
             self.assertEqual(outcome.backup_path.read_text(), old)
             self.assertEqual(path.read_text(), new)
+            self.assertEqual(plistlib.loads(path.read_bytes()).get("LimitLoadToSessionType"), ["Aqua", "Background"])
             self.assertTrue(manager.rollback(LABEL).ok)
             self.assertEqual(path.read_text(), old)
             outcome = manager.upgrade(new, LABEL)
@@ -549,7 +554,8 @@ class NativeProbeContext(unittest.TestCase):
                                  {"exit_code": 0, "diagnostic": "disabled services = {\n}"} if user_available else None)
                 self.assertEqual(section["domain"], context["selected_domain"])
                 self.assertEqual(section["cleanup"], {"not_installed": True})
-                self.assertEqual(section["checks"], [])
+                self.assertTrue(section.get("scratch_removed"))
+                self.assertEqual(section["checks"], [{"name": "scratch_removed", "status": "PASS"}])
                 self.assertEqual(calls[:3], [["launchctl", "managername"], ["launchctl", "print", DOMAIN], ["launchctl", "print", user]])
 
     def test_print_disabled_context_precedes_status_failure(self) -> None:
@@ -579,9 +585,95 @@ class NativeProbeContext(unittest.TestCase):
                 section = json.loads(json.dumps(report))["connector_launchd"]
                 self.assertEqual(section["context"]["print_disabled"], expected)
                 self.assertEqual(section["context"]["selected_domain"], DOMAIN)
-                self.assertEqual(section["checks"], [])
+                self.assertTrue(section.get("scratch_removed"))
+                self.assertEqual(section["checks"], [{"name": "scratch_removed", "status": "PASS"}])
                 self.assertEqual(section["cleanup"], {"not_installed": True})
                 self.assertEqual(calls[-2], ["launchctl", "print-disabled", DOMAIN])
+
+    def test_start_failure_records_bounded_diagnostics_before_cleanup(self) -> None:
+        for observation in ("success", "nonzero", "timeout", "deadline"):
+            with self.subTest(observation=observation), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                report = {}
+                calls = []
+                plist_path = None
+                scratch = None
+                observed_deadlines = []
+                now = 1000.0
+                diagnostic = "Bootstrap failed: 5: Input/output error " + "x" * 700
+                def command(argv: list[str], env: dict[str, str], cwd: Path, deadline: float, **kwargs: object) -> tuple[int, bytes]:
+                    nonlocal plist_path, scratch, now
+                    calls.append(argv)
+                    label = report["connector_launchd"]["label"]
+                    target = f"{DOMAIN}/{label}"
+                    if argv == ["launchctl", "managername"]:
+                        return 0, b"Aqua"
+                    if argv in (["launchctl", "print", DOMAIN], ["launchctl", "print", f"user/{os.getuid()}"]):
+                        return 0, b"domain context"
+                    if argv == ["launchctl", "print-disabled", DOMAIN]:
+                        return 0, b"disabled services = (no disabled services)"
+                    if argv == ["launchctl", "print", target]:
+                        return 113, f'Could not find service "{label}" in domain'.encode()
+                    if argv == ["launchctl", "bootstrap", DOMAIN, str(root / "Library/LaunchAgents" / f"{label}.plist")]:
+                        plist_path = Path(argv[3])
+                        value = plistlib.loads(plist_path.read_bytes())
+                        scratch = Path(value["StandardOutPath"]).parent
+                        return 5, diagnostic.encode()
+                    if argv[0] in ("plutil", "log"):
+                        self.assertTrue(plist_path.is_file(), "diagnostics must precede cleanup")
+                        self.assertEqual(kwargs.get("output_cap"), 1048576)
+                        observed_deadlines.append(deadline)
+                        self.assertLessEqual(deadline, 1090.0)
+                        if observation == "timeout":
+                            raise TimeoutError("synthetic observation timeout " + "t" * 700)
+                        if argv[0] == "plutil":
+                            self.assertEqual(argv, ["plutil", "-lint", str(plist_path)])
+                            return (7 if observation == "nonzero" else 0), ("lint " + "p" * 700).encode()
+                        self.assertEqual(argv[:6], ["log", "show", "--last", "2m", "--style", "compact"])
+                        self.assertEqual(argv[6], "--predicate")
+                        self.assertIn('process == "launchd"', argv[7])
+                        self.assertIn(label, argv[7])
+                        if observation == "nonzero":
+                            return 9, ("log denied " + "d" * 700).encode()
+                        return 0, ("unrelated host event\n" + label + " " + "é" * 5000 + "\nother host event").encode()
+                    self.assertIn(argv, [["launchctl", verb, target] for verb in ("enable", "disable", "bootout")])
+                    if argv == ["launchctl", "disable", target] and observation == "deadline":
+                        now += 91
+                    return 0, b""
+                with patch.object(suite_connector_launchd, "_command", side_effect=command), patch.object(Path, "home", return_value=root), patch.object(suite_connector_launchd.time, "monotonic", side_effect=lambda: now):
+                    with self.assertRaisesRegex(ServiceManagerError, "bootstrap.*failed \\(5\\)") as raised:
+                        suite_connector_launchd.run(report)
+                # Failure remains the original bootstrap failure, not a PASS
+                # or an optional diagnostic error. Existing 200-char cap stays.
+                self.assertIn(diagnostic[:200], str(raised.exception))
+                self.assertNotIn(diagnostic[:201], str(raised.exception))
+                section = json.loads(json.dumps(report))["connector_launchd"]
+                self.assertIn("start_failure", section)
+                failure = section["start_failure"]
+                self.assertEqual(failure["plist"], {"mode": "0o600", "owner_uid": os.getuid(), "current_uid": os.getuid(), "LimitLoadToSessionType": ["Aqua", "Background"]})
+                for key in ("plutil", "launchd_log"):
+                    if observation in ("timeout", "deadline"):
+                        self.assertEqual(failure[key]["error"], "TimeoutError")
+                        self.assertLessEqual(len(failure[key]["diagnostic"]), 512)
+                    else:
+                        self.assertEqual(failure[key]["exit_code"], (7 if key == "plutil" else 9) if observation == "nonzero" else 0)
+                        self.assertLessEqual(len(failure[key].get("diagnostic", "")), 512)
+                if observation == "success":
+                    excerpt = failure["launchd_log"]["excerpt"]
+                    self.assertTrue(excerpt.startswith(section["label"]))
+                    self.assertNotIn("host event", excerpt)
+                    self.assertLessEqual(len(excerpt.encode()), 4096)
+                    self.assertGreater(len(excerpt.encode()), 4000)
+                if observation == "nonzero":
+                    self.assertIn("log denied", failure["launchd_log"]["diagnostic"])
+                self.assertEqual(len(observed_deadlines), 0 if observation == "deadline" else 2)
+                self.assertFalse(plist_path.exists())
+                self.assertFalse(scratch.exists())
+                self.assertTrue(section["scratch_removed"])
+                self.assertEqual(section["checks"], [{"name": name, "status": "PASS"} for name in ("unique_service_absent_before_install", "installed", "scratch_removed")])
+                self.assertEqual(section["cleanup"], {"bootout_exit": 0, "service_absent": True, "plist_absent": True})
+                # No start success, restart, kill or native call is fabricated.
+                self.assertEqual(sum(argv[:2] == ["launchctl", "bootstrap"] for argv in calls), 1)
 
 
 if __name__ == "__main__":

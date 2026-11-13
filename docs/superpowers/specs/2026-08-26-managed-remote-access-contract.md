@@ -618,6 +618,10 @@ logs. `plistlib` round-trip validates syntax before replacement. Arguments
 reference the source config without copying credentials into the plist. Linux
 continues using its existing systemd backend, argv, units and dedicated account.
 All CLI lifecycle service-manager failures now print `error:` and exit nonzero.
+Rendered `LimitLoadToSessionType=["Aqua", "Background"]` permits GUI-login and
+headless user sessions. Install/upgrade rewrite old definitions with this key;
+validation and rollback continue accepting old backups without it. The plist's
+`Disabled=true` default and all other keys remain unchanged.
 
 The manager prefers `gui/<uid>` and probes `user/<uid>` only after an explicit
 `Could not find domain for` response or exit 125 with `Domain does not support
@@ -649,6 +653,12 @@ but macOS readiness/watchdog publication is pending PR 2. Credentials and
 state layout, the per-user managed installer, Darwin sidecar and readiness,
 signing, frozen entry/bundling, Swift coexistence and packaged-app acceptance
 remain future work. No change to Swift HomeConnector is included.
+
+Start-failure probe context records bounded plist lint, mode/owner versus current
+UID, session types and a label-filtered launchd log excerpt before cleanup.
+Observation failures/timeouts are recorded without replacing the start failure;
+the original deadline and command cap apply. A finally-path receipt records
+scratch removal after disposal on success and failure.
 
 The source-only `connector-launchd` native suite uses a unique harmless sleep
 program, not the real connector: install, start and PID, SIGKILL and replacement

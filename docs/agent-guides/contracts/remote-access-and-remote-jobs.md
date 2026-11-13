@@ -27,6 +27,12 @@ service definition only: it does not stage or migrate credentials, policy or
 trust state. The source config must remain available. Frozen-app entry dispatch
 and paths that survive bundle moves/updates remain pending.
 
+Rendered plists explicitly set `LimitLoadToSessionType` to the array
+`["Aqua", "Background"]`, permitting GUI-login and headless user sessions.
+Install/upgrade render this key when replacing an older definition; validation
+still accepts old backups without it, and rollback restores their original bytes.
+`Disabled=true`, exact-label overrides and all other rendered keys are unchanged.
+
 The backend probes `gui/<current uid>` first. An explicit `Could not find
 domain for` response, or exit 125 with `Domain does not support specified
 action` (for example SSH/Jenkins without an Aqua session), permits a
@@ -89,9 +95,17 @@ a unique harmless `/bin/sleep` agent, install/start/running PID, SIGKILL/new PID
 stop/unloaded, uninstall/absent, and cleanup receipts. It uses no connector
 network listener or token and records the actual launchd domain. Source/fake
 coverage is not native acceptance, and no native job is run by the maker.
+On start failure, the probe records plist lint, mode/owner versus current UID,
+session types and a label-filtered launchd log excerpt before cleanup. Optional
+observations share the original deadline/caps; their errors never replace the
+start failure. Scratch removal is recorded after disposal even on failure.
 
 References: Apple's [LaunchAgent guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)
 and [launchd plist manual](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5).
+Apple's [loader source](https://github.com/apple-oss-distributions/launchd/blob/main/support/launchctl.c)
+also documents the Aqua default under session filtering and accepts session-type
+arrays; the older manpage describes only the string form. This does not establish
+the OS cause of a particular bootstrap failure; native lifecycle proof is required.
 
 - **Generic remote jobs S1 contracts + dark S2 persistence.** `runtime/remote_jobs/` contains
   strict immutable v1 models, canonical UTF-8 JSON/SHA-256 helpers, whole-job
