@@ -2326,6 +2326,36 @@ remain unchanged. See the current THR296 spec's separate online contract.
 - **Fail-closed launch.** The orchestrator and thread runner refuse to launch an agent whose active `.md` file is missing or archived. There is no silent fallback to `claude` for an unknown/terminated agent.
 - **Enumeration.** `GET /agents` and the default `GET /agents/enrollments` return active agents only. `GET /agents/enrollments?status=terminated` returns archived enrollment metadata.
 
+Founder-only retirement (`POST /api/v1/orgs/{slug}/agents/{agent_name}/retire`,
+`happyranch agents retire <name> --org ORG`) uses the existing founder bearer
+and `_require_human`; missing/invalid bearer returns403 `human_only`, with no
+agent-session alternative. Unknown/archived agents return404. The response
+contains `ok`, `status: terminated`, `name`, `role`, `team`, and `team_retired`.
+It shares the archive, quiescence, future-work cleanup and rollback path above.
+Historic tasks/results, memory, thread history and team-keyed authority/policy
+rows remain. The `agent_managed` audit uses scope/actor/source `founder` and
+payload action `terminate`; no task identity is fabricated.
+
+Only Founder retirement may remove a manager and its now-empty agent-managed
+team, in the same canonical writer interval. Nonempty teams (including pending
+enrollments) refuse409 `team_not_empty` with members. Routing teams refuse409
+`default_team_retire_forbidden` or `task_default_team_retire_forbidden`;
+non-terminal team tasks, regardless of assignee, refuse409 `team_has_open_tasks`.
+Managers must also be quiescent (`agent_not_quiescent`). Checks run before
+archiving and again under the teams lock. Live-state predicates precede any
+diagnostic limit, so retained completed history cannot conceal a blocker in
+either retirement or manager-session termination. Human-managed teams have no agent
+manager and cannot be retired through this endpoint. Successful removal checks
+the canonical authority snapshot against the shared registry before cleanup,
+outside durable publication/profile leases. Bounded identity and team inputs
+are revalidated under the mutation lease; the writer interval and teams lock
+span discovery and cleanup, with a separate leased segment for compensation.
+Failed cleanup restores the complete registry and archived files. Other teams
+and routing pointers are preserved. Manager-session `manage-agent terminate`
+remains worker-only, including `manager_terminate_forbidden`, team scoping,
+its existing audit and its `{ok: true, status: terminated}` response.
+
+
 ## Task Status Vocabularies
 
 Agents self-report `status="completed"|"blocked"` via `happyranch report-completion` (the report verb is unchanged — an agent still self-reports "blocked on jobs"). The orchestrator-owned `TaskStatus` on the `tasks` row is distinct, and under THR-037 Change B (Path B) is: `pending`, `in_progress`, `escalated`, `completed`, `failed`, `cancelled`, or `superseded`. (`blocked` is fully retired as of Phase 3 — see the Path-B spec.)

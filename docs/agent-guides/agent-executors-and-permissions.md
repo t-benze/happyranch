@@ -1719,3 +1719,20 @@ Saved-invalid settings fail before executor construction without entering native
 three-attempt refusal accounting. Custom override nonzero-before-callback fails
 with a plain rejection reason and no throttle/supervisor retry. Non-task runners
 keep their default selection. See [the task contract](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+
+### Founder retirement
+
+Founder-only retirement (`POST /api/v1/orgs/{slug}/agents/{agent_name}/retire`,
+`happyranch agents retire <name> --org ORG`) uses the existing founder bearer
+and `_require_human`; missing/invalid bearer returns403 `human_only`, with no
+agent-session alternative. Unknown/archived agents return404. The response
+contains `ok`, `status: terminated`, `name`, `role`, `team`, and `team_retired`.
+It shares the archive, quiescence, future-work cleanup and rollback path in the
+[agent lifecycle contract](orchestrator-contracts.md).
+Historic tasks/results, memory, thread history and team-keyed authority/policy
+rows remain. The `agent_managed` audit uses scope/actor/source `founder` and
+payload action `terminate`; no task identity is fabricated.
+Manager-session termination remains worker-only. Founder may also retire a
+quiescent manager and its empty non-routing agent-managed team; see the
+[agent lifecycle contract](orchestrator-contracts.md). No agent permission or
+sandbox rule changes accompany this route.

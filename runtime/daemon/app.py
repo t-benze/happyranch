@@ -511,6 +511,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(orgs.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(agents.router, prefix="/api/v1/orgs/{slug}")
+    app.include_router(agents.founder_router, prefix="/api/v1/orgs/{slug}")
     app.include_router(identities.router, prefix="/api/v1/orgs/{slug}", tags=["identities"])
     app.include_router(authority_policy.router, prefix="/api/v1/orgs/{slug}", tags=["authority-policy"])
     app.include_router(teams.router, prefix="/api/v1/orgs/{slug}")

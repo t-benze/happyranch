@@ -274,6 +274,23 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
 
 
 
+def cmd_retire_agent(args: argparse.Namespace) -> None:
+    """Founder action: preserve an idle agent in the terminated archive."""
+    import json
+
+    identities.validate_address(args.name)
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    target = identities.agent_target(client, args.org, args.name, lifecycles={"active"})
+    response = client.post(f"/api/v1/orgs/{args.org}/agents/{target}/retire")
+    if _ok(response):
+        print(json.dumps(response.json(), indent=2))
+
+
+
 def cmd_set_model(args: argparse.Namespace) -> None:
     """Founder action: set or clear an existing agent's model.
 
@@ -457,6 +474,13 @@ def cmd_identities_rename(args: argparse.Namespace) -> None:
 
 
 def register(sub) -> None:
+    p_agents = sub.add_parser("agents", help="Founder agent administration")
+    agents_sub = p_agents.add_subparsers(dest="agents_command", required=True)
+    p_retire = agents_sub.add_parser("retire", help="Archive an idle agent and its empty non-routing team")
+    p_retire.add_argument("name", help="Permanent agent ID or current name")
+    p_retire.add_argument("--org", required=True)
+    p_retire.set_defaults(func=cmd_retire_agent)
+
     p_identity = sub.add_parser("identities", help="Inspect/resolve current names and permanent IDs; operator rename")
     identity_sub = p_identity.add_subparsers(dest="identity_command", required=True)
     p_list = identity_sub.add_parser("list", help="Current Name · ID and independent name revision")
