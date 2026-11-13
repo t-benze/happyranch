@@ -5,10 +5,13 @@
  * back preserves scroll, expansions and focus. No cancellation control exists:
  * closing the drawer never stops processing.
  */
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Archive, ChevronLeft, Clock, Lock, X, CircleAlert, Check, Info } from 'lucide-react';
 import { Drawer, DrawerContent, DrawerTitle } from '@/design-system/primitives/Drawer';
 import { Button } from '@/design-system/primitives/Button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/design-system/primitives/Select';
+import { useAgentsList } from '@/hooks/agents';
+import { useIdentityPresentation } from '@/hooks/identities';
 import { useTranslation } from '@/hooks/i18n';
 import { ApiError } from '@/lib/api';
 import {
@@ -38,9 +41,14 @@ interface DrawerProps {
   canStart: boolean;
   /**
    * `recoverySubmissionId`: an unknown-outcome submission recorded by this
-   * browser. While set, the only start action is `onRecover` with that SAME ID.
+   * browser. While set, the only start action is `onRecover` with that SAME ID
+   * and the curator recorded with it (`recoveryProcessorId`, null when none was).
+   * `onConfirm` takes the curator the Founder chose from the active roster.
    */
-  start: { pending: boolean; error: unknown; onConfirm: () => void; recoverySubmissionId: string | null; onRecover: (submissionId: string) => void };
+  start: {
+    pending: boolean; error: unknown; onConfirm: (processorId: string) => void;
+    recoverySubmissionId: string | null; recoveryProcessorId: string | null; onRecover: (submissionId: string) => void;
+  };
 }
 
 export function KnowledgeDrawer(props: DrawerProps): JSX.Element {
@@ -148,6 +156,21 @@ function ConfirmView({ source, start, canStart, onClose, top }: DrawerProps & { 
   const operationId = start.error instanceof DistillLedgerError ? start.error.operationId : null;
   // A refused recovery names the daemon's own code, not the local wrapper code.
   const shownCode = start.error instanceof DistillLedgerError && start.error.refusal ? start.error.refusal : code;
+  // Curator: an existing ACTIVE agent chosen here and sent as processor_id.
+  // The recorded former manager is pre-selected only when it is recorded, is
+  // not the Founder and is still active; today's manager of a historical team
+  // is never substituted.
+  const roster = useAgentsList();
+  const identities = useIdentityPresentation();
+  const active = roster.isError ? [] : roster.data?.agents ?? [];
+  const [picked, setPicked] = useState<string | null>(null);
+  const former = source.former_manager ?? null;
+  const formerActive = former !== null && former !== 'founder' && active.some((a) => a.name === former);
+  const curator = picked !== null ? (active.some((a) => a.name === picked) ? picked : '') : formerActive ? former : '';
+  const curatorHint = picked === null && formerActive ? t('knowledge.curator.preselected')
+    : former === 'founder' ? t('knowledge.curator.retiredByFounder')
+      : former !== null && !formerActive && !roster.isLoading && !roster.isError ? t('knowledge.curator.formerInactive', { id: former })
+        : former === null ? t('knowledge.curator.noneRecorded') : null;
   let message: ReactNode;
   if (code) {
     message = (
@@ -161,6 +184,8 @@ function ConfirmView({ source, start, canStart, onClose, top }: DrawerProps & { 
     message = <p role="status" className="text-status-escalated">{t('knowledge.confirm.recoverPending')}</p>;
   } else if (!canStart && !blocked && !start.pending) {
     message = <p role="status" className="text-status-escalated">{t('knowledge.confirm.unresolved')}</p>;
+  } else if (!blocked && !curator && !start.pending) {
+    message = <p role="status" className="text-status-escalated">{t('knowledge.curator.required')}</p>;
   } else {
     message = <p>{t('knowledge.confirm.question', { name: source.name, id: source.source_id })}</p>;
   }
@@ -180,7 +205,7 @@ function ConfirmView({ source, start, canStart, onClose, top }: DrawerProps & { 
             {recovering ? (
               <Button onClick={() => start.onRecover(recovery)}>{t('knowledge.attempts.checkAgain')}</Button>
             ) : (
-              <Button onClick={start.onConfirm} disabled={!canStart || blocked || start.pending} loading={start.pending}>
+              <Button onClick={() => { if (curator) start.onConfirm(curator); }} disabled={!canStart || blocked || start.pending || !curator} loading={start.pending}>
                 {t('knowledge.confirm.start')}
               </Button>
             )}
@@ -204,6 +229,40 @@ function ConfirmView({ source, start, canStart, onClose, top }: DrawerProps & { 
           </Notice>
         </div>
       ) : null}
+      <SectionLabel>{t('knowledge.curator.heading')}</SectionLabel>
+      {recovery ? (
+        // A same-key re-send repeats the curator recorded with that submission.
+        <p className="text-text-secondary text-sm">
+          {start.recoveryProcessorId
+            ? t('knowledge.curator.recorded', { curator: identities.label(start.recoveryProcessorId) })
+            : t('knowledge.curator.recordedNone')}
+        </p>
+      ) : (
+        <div className="min-w-0">
+          <label htmlFor="distill-curator" className="text-text-secondary mb-1 block text-sm">{t('knowledge.curator.label')}</label>
+          <Select value={curator} onValueChange={setPicked} disabled={start.pending || active.length === 0}>
+            <SelectTrigger id="distill-curator" className="h-9 w-full" aria-describedby="distill-curator-hint">
+              <SelectValue placeholder={roster.isLoading ? t('knowledge.common.loading') : t('knowledge.curator.placeholder')} />
+            </SelectTrigger>
+            <SelectContent>
+              {active.map((agent) => (
+                <SelectItem key={agent.name} value={agent.name}>{identities.label(agent.name)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p id="distill-curator-hint" className="text-text-muted mt-1.5 text-xs leading-relaxed">
+            {curatorHint ? <>{curatorHint}{' '}</> : null}{t('knowledge.curator.help')}
+          </p>
+          {roster.isError ? (
+            <div role="alert" className="mt-2 flex flex-wrap items-center gap-3 text-sm">
+              <span className="text-text-secondary">{t('knowledge.curator.rosterError')}</span>
+              <Button variant="outline" size="sm" onClick={() => void roster.refetch()}>{t('common.retry')}</Button>
+            </div>
+          ) : !roster.isLoading && active.length === 0 ? (
+            <p role="status" className="text-text-secondary mt-2 text-sm">{t('knowledge.curator.noneActive')}</p>
+          ) : null}
+        </div>
+      )}
       <SectionLabel>{t('knowledge.coverage.heading')}</SectionLabel>
       <CoverageList coverage={source.coverage} mode="full" label={t('knowledge.coverage.heading')} />
       <SectionLabel>{t('knowledge.confirm.keepsHeading')}</SectionLabel>

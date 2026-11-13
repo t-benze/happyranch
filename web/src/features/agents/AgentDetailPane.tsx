@@ -47,8 +47,8 @@ interface AgentDetailPaneProps {
   onClose: () => void;
   /** Called when the user clicks Start Thread for this agent. */
   onStartThread?: () => void;
-  /** Called after this agent's retirement was confirmed; `manager` is its role. */
-  onRetired?: (agentName: string, retired: { manager: boolean }) => void;
+  /** Called after this agent's retirement was confirmed. */
+  onRetired?: (agentName: string) => void;
 }
 
 /** Sparse dirty-state tracker: only keys that differ from the last-saved snapshot. */
@@ -795,9 +795,9 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
             event.preventDefault();
             retireOpenerRef.current?.focus();
           }}
-          onRetired={(name, retired) => {
+          onRetired={(name) => {
             setRetireOpen(false);
-            if (onRetired) onRetired(name, retired);
+            if (onRetired) onRetired(name);
             else onClose();
           }}
         />

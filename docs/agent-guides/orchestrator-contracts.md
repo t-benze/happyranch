@@ -2383,9 +2383,11 @@ payload action `terminate`; no task identity is fabricated.
 In the web UI the Founder finds this as **Retire agent** at the bottom of an
 active agent's detail pane (Agents ▸ Active). It confirms the consequences,
 sends this one route, shows a refusal as the server returned it, and on success
-opens a worker's retained knowledge detail under Terminated agents. A retired
-manager lands on the Terminated list with nothing selected, and its dialog says
-knowledge Distill is not yet available for retired managers. When no refusal came back (lost
+opens the agent's retained knowledge detail under Terminated agents, for a
+worker and a manager alike; both can be Distill sources. Because this audit
+row's actor is `founder`, Distill after a Founder retirement has no usable
+recorded former manager: the web confirmation makes the Founder choose an
+existing active curator, sent as `processor_id`. When no refusal came back (lost
 response, 5xx, 404) it re-reads the roster before saying anything about the
 agent's state. The UI adds no eligibility rule.
 

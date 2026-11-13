@@ -14,7 +14,7 @@ from runtime.knowledge.sources import (
     RetiredSource, SourceError, SourceReference, capture_reference, capture_retired_source,
 )
 from runtime.knowledge.archives import ArchiveError
-from runtime.knowledge.distill import DistillLifecycle
+from runtime.knowledge.distill import DistillLifecycle, recorded_former_manager
 from runtime.knowledge.instill import InstillLifecycle
 from runtime.knowledge.imports import ImportError
 from runtime.knowledge.lifecycle_models import (
@@ -50,10 +50,19 @@ def _refuse(error: SourceError):
     raise HTTPException(status_code=status, detail={'code': code}) from None
 
 
-@router.get('/knowledge/retired-agents/{source_id}', response_model=RetiredSource)
-def retired_source(slug: str, source_id: str, org: OrgDep) -> RetiredSource:
+class RetiredSourceView(RetiredSource):
+    """Read projection only; the persisted capture stays `RetiredSource`."""
+    # Recorded retirement actor ('founder' for a Founder retirement), or null
+    # when none or more than one is recorded. A display hint, never authority.
+    former_manager: str | None = None
+
+
+@router.get('/knowledge/retired-agents/{source_id}', response_model=RetiredSourceView)
+def retired_source(slug: str, source_id: str, org: OrgDep) -> RetiredSourceView:
     try:
-        return capture_retired_source(org.root, source_id)
+        capture = capture_retired_source(org.root, source_id)
+        return RetiredSourceView(**capture.model_dump(),
+                                 former_manager=recorded_former_manager(org.db, source_id))
     except SourceError as error:
         _refuse(error)
 

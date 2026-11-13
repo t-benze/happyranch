@@ -408,9 +408,9 @@ def capture_retired_source(root: Path, source_id: str) -> RetiredSource:
                 raise SourceError('source_not_retired')
         text = obs.read(definitions / '_terminated' / f'{source_id}.md')
         _frontmatter(text)  # reject duplicate/invalid keys before the canonical parser
+        # Any retired role is a source (THR-296 seq369): a retired manager's
+        # team is only a recorded string and grants nothing.
         agent = parse_agent_text(text.replace('\r\n', '\n'), expected_name=source_id)
-        if agent.role != 'worker':
-            raise SourceError('source_not_retired_worker')
         if not obs.exists(workspace, directory=True):
             raise SourceError('retained_workspace_missing')
     except FileNotFoundError:

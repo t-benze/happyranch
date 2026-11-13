@@ -35,11 +35,8 @@ interface RetireAgentDialogProps {
   onClose: () => void;
   /** Where focus goes when the dialog closes; the opener is outside this root. */
   onCloseAutoFocus?: (event: Event) => void;
-  /**
-   * Called once the retirement is confirmed. `manager` comes from the server
-   * receipt, or from the roster role when only the roster re-read confirmed it.
-   */
-  onRetired: (agentName: string, retired: { manager: boolean }) => void;
+  /** Called once the retirement is confirmed. */
+  onRetired: (agentName: string) => void;
 }
 
 export function RetireAgentDialog({
@@ -64,8 +61,8 @@ export function RetireAgentDialog({
     setBusy(true);
     setError(null);
     try {
-      const receipt = await retire.mutateAsync({ agentName });
-      onRetired(agentName, { manager: receipt.role === 'manager' });
+      await retire.mutateAsync({ agentName });
+      onRetired(agentName);
     } catch (err: unknown) {
       const view = classifyRetireError(err);
       if (view.outcome === 'refused') {
@@ -81,7 +78,7 @@ export function RetireAgentDialog({
         ? null
         : fresh.data.agents.some((a) => a.name === agentName);
       if (listed === false) {
-        onRetired(agentName, { manager: isManager });
+        onRetired(agentName);
         return;
       }
       setState(listed === null ? 'unconfirmed' : 'stillListed');
@@ -105,7 +102,7 @@ export function RetireAgentDialog({
         <ul className="text-text-primary list-disc space-y-1.5 pl-5 text-sm">
           <li>{t('agents.retire.consequence.stops')}</li>
           <li>{t(isManager ? 'agents.retire.consequence.preservedManager' : 'agents.retire.consequence.preserved')}</li>
-          <li>{t(isManager ? 'agents.retire.consequence.terminatedManager' : 'agents.retire.consequence.terminated')}</li>
+          <li>{t('agents.retire.consequence.terminated')}</li>
           {isManager && (
             <li>{t('agents.retire.consequence.team', { team: team ?? '—' })}</li>
           )}

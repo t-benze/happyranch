@@ -33,6 +33,11 @@ export interface RetiredKnowledgeSource {
   coverage: SourceCoverage[];
   records: KnowledgeSourceRecord[];
   errors: string[];
+  /**
+   * Recorded retirement actor (`founder` for a Founder retirement), or null
+   * when none or more than one is recorded. Absent on older daemons.
+   */
+  former_manager?: string | null;
 }
 
 export interface RetiredKnowledgeReference {
