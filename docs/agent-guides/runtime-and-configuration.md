@@ -1946,8 +1946,8 @@ after healing. Own directory identities and reciprocal pointer signatures are
 revalidated no-follow before status; unsafe changed locations hold the clone. A clean
 status or successful mapping check is discarded. Kept items perform no later
 admission; deletion still repeats every existing fresh topology, ownership and
-tree gate. There is no schema, index or classification change. Cheaper destructive
-admission remains unfinished in this partial implementation. There is no two-pass
+tree gate. There is no schema, index or classification change. Every original destructive
+admission census pass remains in this slice. There is no two-pass
 ordering without real-night step 1 data.
 
 The fresh census also compares recorded shared-directory, reciprocal-pointer and
@@ -1966,6 +1966,16 @@ rule is unchanged. The reduced inventory is adopted only after fresh unregistrat
 folder absence and named-branch resolution all succeed. Every other original
 HEAD/branch and topology identity stays pinned. Any failed confirmation remains
 partial/unknown. This adds no repair, retry, housekeeping or clearance authority.
+
+The census records every literal ancestor of reciprocal worktree pointers,
+including ancestors above the immediate parent. A replacement that preserves
+its descendant directory inodes still vetoes admission against inventory.
+After the final topology census at remove, permission-repair and retry boundaries,
+a fresh recursive tree snapshot must equal the admitted tree before the existing
+final ownership transaction and effect. New mount evidence or any changed tree
+therefore retains; after a prior attempted effect it remains partial/unknown.
+No original census pass, fresh gate or refusal latch is removed. These remain
+sampled observations, not a racing-rename fence.
 
 Each full worktree admission also revalidates its own directory/pointer identities
 against discovery and compares freshly read HEAD/branch with that inventory.

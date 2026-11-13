@@ -250,6 +250,16 @@ folder absence and named-branch resolution all succeed. Every other original
 HEAD/branch and topology identity stays pinned. Any failed confirmation remains
 partial/unknown. This adds no repair, retry, housekeeping or clearance authority.
 
+The census records every literal ancestor of reciprocal worktree pointers,
+including ancestors above the immediate parent. A replacement that preserves
+its descendant directory inodes still vetoes admission against inventory.
+After the final topology census at remove, permission-repair and retry boundaries,
+a fresh recursive tree snapshot must equal the admitted tree before the existing
+final ownership transaction and effect. New mount evidence or any changed tree
+therefore retains; after a prior attempted effect it remains partial/unknown.
+No original census pass, fresh gate or refusal latch is removed. These remain
+sampled observations, not a racing-rename fence.
+
 Each full worktree admission also revalidates its own directory/pointer identities
 against discovery and compares freshly read HEAD/branch with that inventory.
 The saved identity is a veto on drift, never a successful deletion answer; every

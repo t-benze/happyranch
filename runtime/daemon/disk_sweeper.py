@@ -614,6 +614,11 @@ def _registration_metadata(repo: Path, deadline: float, *, metadata_path: Path |
     by_entry = {}
     mapped_inodes = set()
     try:
+        # Shared ancestors remain recorded even after the last linked entry
+        # is removed, so post-effect confirmation keeps the same identity set.
+        for ancestor in reversed(repo.parents):
+            with directory(ancestor, deadline) as fd:
+                topology[str(ancestor)] = identity(os.fstat(fd))
         with directory(repo, deadline) as fd:
             topology[str(repo)] = identity(os.fstat(fd))
             mapped_inodes.add(topology[str(repo)])
@@ -699,6 +704,14 @@ def _registration_metadata(repo: Path, deadline: float, *, metadata_path: Path |
                 raise Retain(f'conflicting_gitdir:{entry / "gitdir"}')
             if commondir not in ('../..\n', str(common) + '\n'):
                 raise Retain(f'redirected_commondir:{entry / "commondir"}')
+            # Pin every literal pointer ancestor, including those above the
+            # immediate parent. Preserving a descendant inode while replacing
+            # an outer ancestor must not create a new inventory baseline.
+            for ancestor in reversed(path.parents):
+                key = str(ancestor)
+                if key not in topology:
+                    with directory(ancestor, deadline) as ancestor_fd:
+                        topology[key] = identity(os.fstat(ancestor_fd))
             # Only final-folder ENOENT through a proven literal parent qualifies.
             # Every ancestor, entry/pointer, name and unique mapping is still
             # reconciled by all three existing censuses and Git's captured list.
@@ -724,6 +737,7 @@ def _registration_metadata(repo: Path, deadline: float, *, metadata_path: Path |
         prefix = repo / '.claude/worktrees'
         try:
             with directory(repo / '.claude', deadline) as fd:
+                topology[str(repo / '.claude')] = identity(os.fstat(fd))
                 try:
                     os.stat('worktrees', dir_fd=fd, follow_symlinks=False)
                 except FileNotFoundError:
@@ -1596,6 +1610,11 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     rows = registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)])
                     rows.require(path, deadline)
                     admitted_branch = rows[str(path)].get('branch')
+                    # Topology enumeration can be slow and mount evidence may
+                    # arrive during it. Refresh the recursive tree afterwards,
+                    # then ownership, before each actual effect boundary.
+                    if not trees_equal(fresh, snapshot(path, deadline), deadline):
+                        raise Retain('tree_changed_before_mutation')
                     evidence.ownership(path, Path(candidate['workspace']), path.name)
                     mutation_started = True
                     try:
@@ -1608,10 +1627,14 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # conservatively refuse that retry.
                         retry_tree = admit(candidate, evidence, deadline, now=now, retained=retained, topology=topology)
                         registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]).require(path, deadline)
+                        if not trees_equal(retry_tree, snapshot(path, deadline), deadline):
+                            raise Retain('tree_changed_before_mutation')
                         evidence.ownership(path, Path(candidate['workspace']), path.name)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
-                        admit(candidate, evidence, deadline, now=now, repairs=repairs, retained=retained, topology=topology)
+                        retry_tree = admit(candidate, evidence, deadline, now=now, repairs=repairs, retained=retained, topology=topology)
                         registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]).require(path, deadline)
+                        if not trees_equal(retry_tree, snapshot(path, deadline), deadline):
+                            raise Retain('tree_changed_before_mutation')
                         evidence.ownership(path, Path(candidate['workspace']), path.name)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
