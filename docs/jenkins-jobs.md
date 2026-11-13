@@ -16,6 +16,9 @@ This PR852 distribution is a **candidate pending independent review, QA and exac
 
 The separate existing `happyranch-mac-native-probe` Freestyle job uses the
 [reviewed template and bounds](../ci/jenkins/mac-native-probe/README.md).
+Its separately authorized `toolchain` suite observes existing packaging tools
+and scratch free space at an exact source head under those same limits. A
+passing source preflight is not a packaged-app build or acceptance result.
 After immutable checkout/identity, its stdlib-only bootstrap takes the measured
 18-package `cleanup-helpers` import set from the checkout's `uv.lock` into a
 scratch-only venv without pip. It requires macOS arm64 regular CPython 3.14,

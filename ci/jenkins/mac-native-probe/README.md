@@ -44,6 +44,38 @@ The next run does not sweep previous scratch. Jenkins retains 20 builds/30 days.
 
 ## Output bounds and failure handling
 
+### Packaging toolchain preflight (THR-346 msg77 / TASK-15936)
+
+The existing pinned dispatcher accepts `SUITE=toolchain`. This is a read-only
+prerequisite check for a future build from the same `SOURCE_SHA`, under the
+current job limits. It does not build or run a packaged app and consumes no
+app-build or packaged-run allowance. It records all seven tools even when one
+is missing: `command -v`, version, `file -L`, and `lipo -archs` for uv, Node,
+npm, Go, Swift, Xcode and Python. npm is a script, so its native interpreter is
+checked through Node rather than lipo. Native arm64/arm64e or universal binaries
+are required, with Node major24, Go `darwin/arm64`, Swift>=6, Xcode>=16 and the
+existing job's Python3.14. Free bytes are observed with statvfs on job TMPDIR.
+Each command has a five-second bound and 1024-byte output cap within one 90s
+deadline; the owned process group is killed/reaped on success and failure.
+Missing tools, failed/truncated commands or incompatible versions fail closed.
+This does not measure packaging intermediates or prove that a build will pass.
+
+No tool installs, toolchain downloads, host-file/PATH edits, credentials, daemon
+or GUI launch occur in the suite. The unchanged job still bootstraps its locked
+scratch-only Python dependencies before dispatch. A failed preflight needs the
+founder's host-install decision; do not vendor or download missing toolchains.
+The packaged-app suite and limits change remain gated on this evidence. A single
+exact-head preflight is separately authorized by TASK-15936; no retry is allowed
+unless a failure was caused by the preflight's own code.
+
+Portable classifier/bounds checks, outside the retired Python unit suite:
+
+```sh
+python3 -B -m unittest scripts.mac_native.test_toolchain -v
+```
+
+### Existing job bounds
+
 `build.log` and `probe.log` each retain at most 4 MiB (4,194,304 bytes). A pipe
 reader writes only that many bytes and checks one extra byte: exceeding the
 cap fails the build nonzero and closes the pipe. This also bounds checkout

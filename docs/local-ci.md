@@ -135,6 +135,14 @@ drives real Darwin Git refresh and native preparation in private scratch using
 the existing locked 18 bootstrap wheels. Linux emits skipped JSON. Native Jenkins
 and frozen-app acceptance remain separate; local lint is not native evidence.
 
+The manual [packaging toolchain preflight](../ci/jenkins/mac-native-probe/README.md#packaging-toolchain-preflight-thr-346-msg77--task-15936)
+uses `SUITE=toolchain` under the existing limits. It observes installed tools and
+scratch free space only; a missing tool blocks packaging pending a founder
+decision. Run its portable evidence-classification and output/deadline checks
+with `python3 -B -m unittest scripts.mac_native.test_toolchain -v`. This is a
+focused manual probe venue, outside the retired Python unit suite and required
+lint/static CI; native evidence still requires its separately authorized run.
+
 Behavioral tests and builds are outside all/pre-push/required merge checks.
 Normal hooks stay enabled; never bypass hooks or the guarded worktree.
 Independent full code review and scoped QA remain mandatory. Static checks
