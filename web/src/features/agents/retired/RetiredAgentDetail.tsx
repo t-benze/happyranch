@@ -82,10 +82,11 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
     if (view.kind === 'confirm') start.reset();
     setStack((s) => [...s.slice(0, -1), view]);
   };
-  const confirm = (submissionId?: string) => {
-    // A fresh key is minted only while starting is currently allowed.
-    if (!submissionId && !canStart) return;
-    start.mutate({ submissionId }, {
+  const confirm = (submissionId?: string, processorId?: string) => {
+    // A fresh key is minted only while starting is currently allowed and a
+    // curator was chosen; a re-send repeats the curator recorded with its key.
+    if (!submissionId && (!canStart || !processorId)) return;
+    start.mutate({ submissionId, processorId }, {
       onSuccess: (op: DistillOperation) => setStack((s) => (s.length ? [...s.slice(0, -1), { kind: 'operation', operationId: op.operation_id }] : s)),
     });
   };
@@ -263,8 +264,9 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
         start={{
           pending: start.isPending,
           error: start.error,
-          onConfirm: () => confirm(),
+          onConfirm: (processorId) => confirm(undefined, processorId),
           recoverySubmissionId: unknown[0]?.submission_id ?? null,
+          recoveryProcessorId: unknown[0]?.processor_id ?? null,
           onRecover: (submissionId) => confirm(submissionId),
         }}
       />

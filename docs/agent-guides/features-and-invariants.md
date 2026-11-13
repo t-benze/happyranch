@@ -2217,8 +2217,11 @@ Implementation: `runtime/infrastructure/kb_store.py` and `runtime/daemon/routes/
 
 ## Retired knowledge sources (S1, THR-296)
 
-`runtime/knowledge/sources.py` reads retained ordinary-worker definitions and
-workspaces under `_terminated`, addressed by same-org permanent ID. Active,
+`runtime/knowledge/sources.py` reads retained agent definitions and
+workspaces under `_terminated`, addressed by same-org permanent ID. Any retired
+role is a source, including a retired manager whose team was retired with it
+(Founder THR-296 seq369; the team is only a recorded string). The former
+`source_not_retired_worker` refusal no longer exists. Active,
 pending, unknown, aliased and missing-retained sources refuse. Retirement time
 is explicitly unknown: archive placement does not persist that date.
 
@@ -2279,8 +2282,28 @@ blocked and only same-key recovery or a GET re-read is offered. A
 `capture_available=false` explanation is derived from the actual coverage and
 recorded errors (runtime, declared Claude corpus, inconsistent input) and shows
 the recorded cause codes. Attempts started in another browser are not listed until
-Ready. There is no cancellation, processor choice or recipient action. It
+Ready. There is no cancellation or recipient action. It
 never claims complete knowledge capture.
+
+Curator choice (THR-296 seq369/seq376, TASK-15902): the Distill confirmation
+requires the Founder to choose the curator from the existing active roster
+(`useAgentsList`); it is sent as `processor_id` and shown as Processor on the
+operation. The retired-source GET adds read-only `former_manager`: the single
+recorded actor of the source's `agent_managed`/`terminate` audit row, else
+null. The picker pre-selects it only when it is recorded, is not `founder` and
+is still active; otherwise nothing is selected and Start stays disabled until
+a choice is made. Today's manager of a historical team is never substituted.
+"Try again" on a Failed operation returns to the same confirmation, so a
+`processor_missing_*`/`processor_ineligible_*` failure is retried with a chosen
+curator. The chosen curator is recorded in the per-browser ledger entry with
+the submission ID before the POST, and a same-key "Check again" re-sends that
+recorded value (entries recorded before this change re-send without one). The
+UI adds no eligibility rule: native task-owner admission validates the choice
+and an ineligible one is a Failed operation with the server's code. A caller
+that omits `processor_id` (CLI/API) keeps the server default: the recorded
+former manager, which fails `processor_ineligible_choose_existing_owner` after
+a Founder retirement and `processor_missing_choose_existing_owner` when none
+is recorded.
 
 S5 (TASK-15508) adds the active-agent Instill UI. On an active agent's detail,
 Learnings gains an **Instill knowledge** entry and an `Inherited · <source>`

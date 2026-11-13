@@ -127,6 +127,12 @@ export interface DistillAttempt {
   submission_id: string;
   operation_id: string | null;
   submitted_at: string;
+  /**
+   * The curator confirmed with this submission. A same-key re-send repeats it
+   * exactly; absent on entries recorded before a curator could be chosen,
+   * which re-send without one.
+   */
+  processor_id?: string | null;
 }
 
 const LEDGER_LIMIT = 20;
@@ -142,7 +148,8 @@ function isDistillAttempt(entry: unknown): entry is DistillAttempt {
   const value = entry as DistillAttempt | null;
   return !!value && typeof value.submission_id === 'string'
     && (value.operation_id === null || typeof value.operation_id === 'string')
-    && typeof value.submitted_at === 'string';
+    && typeof value.submitted_at === 'string'
+    && (value.processor_id === undefined || value.processor_id === null || typeof value.processor_id === 'string');
 }
 
 /** `valid` is the per-ledger entry predicate (Distill attempts by default). */
@@ -244,24 +251,27 @@ const NO_OPERATION_STATUSES = new Set([400, 401, 403, 404, 409, 422]);
 
 /**
  * Confirmed Distill submission. `submissionId` re-sends an earlier unknown
- * outcome with its original key. Omitted, a new key is minted only when every
- * recorded attempt has a confirmed terminal state, and only after that key is
+ * outcome with its original key and the curator recorded with it. Omitted, a
+ * new key is minted only when every recorded attempt has a confirmed terminal
+ * state, and only after that key and the chosen curator (`processorId`) are
  * durably recorded; otherwise nothing is sent.
  */
 export function useStartDistill(sourceId: string) {
   const slug = useSlug();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ submissionId }: { submissionId?: string }) => {
+    mutationFn: async ({ submissionId, processorId }: { submissionId?: string; processorId?: string }) => {
       const key = ledgerKey(slug, sourceId);
       const ledger = readLedger(key);
       if (!ledger.ok) throw new DistillLedgerError('ledger_unavailable');
       const submission_id = submissionId ?? newSubmissionId();
+      // The curator is part of the confirmation: a re-send uses the recorded one.
+      let processor_id: string | null = processorId ?? null;
       if (submissionId) {
         // Recovery re-sends only a key this browser actually recorded.
-        if (!ledger.attempts.some((entry) => entry.submission_id === submissionId)) {
-          throw new DistillLedgerError('ledger_unavailable');
-        }
+        const recordedEntry = ledger.attempts.find((entry) => entry.submission_id === submissionId);
+        if (!recordedEntry) throw new DistillLedgerError('ledger_unavailable');
+        processor_id = recordedEntry.processor_id ?? null;
       } else {
         const unresolved = ledger.attempts.some((entry) => {
           if (entry.operation_id === null) return true;
@@ -269,14 +279,18 @@ export function useStartDistill(sourceId: string) {
           return !op || IN_FLIGHT.has(op.state);
         });
         if (unresolved) throw new DistillLedgerError('unresolved_attempt');
-        const recorded = writeLedger(key, [...ledger.attempts, { submission_id, operation_id: null, submitted_at: new Date().toISOString() }]);
+        const recorded = writeLedger(key, [...ledger.attempts, {
+          submission_id, operation_id: null, submitted_at: new Date().toISOString(), ...(processor_id ? { processor_id } : {}),
+        }]);
         if (!recorded || !readLedger(key).attempts.some((entry) => entry.submission_id === submission_id)) {
           throw new DistillLedgerError('ledger_write_failed');
         }
       }
       let operation: api.DistillOperation;
       try {
-        operation = await api.distillKnowledge(slug, { submission_id, source_id: sourceId, confirmed: true });
+        operation = await api.distillKnowledge(slug, {
+          submission_id, source_id: sourceId, confirmed: true, ...(processor_id ? { processor_id } : {}),
+        });
       } catch (error) {
         const status = (error as { status?: number }).status;
         const refused = typeof status === 'number' && status >= 400 && status < 500;
