@@ -19,7 +19,10 @@ ROOT = Path(__file__).resolve().parents[2]
 def run(report: dict[str, Any]) -> None:
     label = f"ai.happyranch.connector-probe-{uuid.uuid4().hex}"
     checks: list[dict[str, Any]] = []
-    section: dict[str, Any] = {"label": label, "checks": checks, "cleanup": {}}
+    uid = os.getuid()
+    context: dict[str, Any] = {"uid": uid, "managername": None, "domains": {}, "selected_domain": None}
+    section: dict[str, Any] = {"label": label, "checks": checks, "cleanup": {},
+                               "context": context, "domain": None}
     report["connector_launchd"] = section
     deadline = time.monotonic() + 90
 
@@ -43,8 +46,16 @@ def run(report: dict[str, Any]) -> None:
         domain: str | None = None
         owned = False
         try:
+            # Preserve caller/domain facts before selection can refuse. These
+            # observations share the existing 90s deadline and 1MiB command cap;
+            # only 512 characters per diagnostic enter probe.json.
+            code, output = command(["launchctl", "managername"])
+            context["managername"] = {"exit_code": code, "diagnostic": output.strip()[:512]}
+            for candidate in (f"gui/{uid}", f"user/{uid}"):
+                code, output = command(["launchctl", "print", candidate])
+                context["domains"][candidate] = {"exit_code": code, "diagnostic": output.strip()[:512]}
             domain = manager.domain
-            section["domain"] = domain
+            section["domain"] = context["selected_domain"] = domain
             check("unique_service_absent_before_install", manager.status(label).load_state == "not-found")
             plist = render_launch_agent(label, ("/bin/sleep", "300"), logs_dir=scratch)
             owned = True  # Absence proven; cleanup owns any partial installation.

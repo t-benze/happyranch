@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import plistlib
 import tempfile
 from pathlib import Path
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import Mock, patch
 
+from scripts.mac_native import suite_connector_launchd
 from runtime.remote_access import cli
 from runtime.remote_access.service_manager import ServiceManagerError, SystemdServiceManager, service_manager
 from runtime.remote_access.launchd_agent import (
@@ -227,18 +229,68 @@ class LaunchdObservations(unittest.TestCase):
                 self.assertFalse(runner.rows)
 
     def test_domain_selection_and_honest_refusal(self) -> None:
-        uid = os.getuid()
-        for rows, expected in (([row("print", DOMAIN)], DOMAIN), ([row("print", DOMAIN, code=125, output="Could not find domain for"), row("print", f"user/{uid}")], f"user/{uid}")):
-            runner = Runner(self, rows)
-            manager = LaunchdServiceManager(run=runner)
-            self.assertEqual(manager.domain, expected)
-            self.assertEqual(manager.domain, expected)
-            self.assertFalse(runner.rows)
-        for rows in ([row("print", DOMAIN, code=1, output="Operation not permitted")], [row("print", DOMAIN, code=125, output="Could not find domain for"), row("print", f"user/{uid}", code=1, output="Operation not permitted")]):
-            runner = Runner(self, rows)
-            with self.assertRaisesRegex(ServiceManagerError, "Operation not permitted"):
-                LaunchdServiceManager(run=runner).domain
-            self.assertFalse(runner.rows)
+        user = f"user/{os.getuid()}"
+        unsupported = "Could not print domain: 125: Domain does not support specified action"
+        for diagnostic in ("Could not find domain for", unsupported):
+            with self.subTest(diagnostic=diagnostic):
+                runner = Runner(self, [row("print", DOMAIN, code=125, output=diagnostic),
+                                       row("print", user)])
+                manager = LaunchdServiceManager(run=runner)
+                self.assertEqual(manager.domain, user)
+                self.assertEqual(manager.domain, user)
+                self.assertFalse(runner.rows)
+            with self.subTest(diagnostic=diagnostic, user_available=False):
+                runner = Runner(self, [row("print", DOMAIN, code=125, output=diagnostic),
+                                       row("print", user, code=1, output="Operation not permitted")])
+                with self.assertRaises(ServiceManagerError) as failure:
+                    LaunchdServiceManager(run=runner).domain
+                message = str(failure.exception)
+                for expected in (DOMAIN, "(125)", diagnostic, user, "(1)", "Operation not permitted"):
+                    self.assertIn(expected, message)
+                self.assertFalse(runner.rows)
+        runner = Runner(self, [row("print", DOMAIN)])
+        manager = LaunchdServiceManager(run=runner)
+        self.assertEqual(manager.domain, DOMAIN)
+        self.assertEqual(manager.domain, DOMAIN)
+        self.assertFalse(runner.rows)
+        # Neither an unknown exit 125 nor the known text with another exit code
+        # permits a fallback to a different domain.
+        for code, diagnostic in ((1, "Operation not permitted"), (125, "Operation not permitted"),
+                                 (1, unsupported)):
+            with self.subTest(code=code, diagnostic=diagnostic):
+                runner = Runner(self, [row("print", DOMAIN, code=code, output=diagnostic)])
+                with self.assertRaises(ServiceManagerError) as failure:
+                    LaunchdServiceManager(run=runner).domain
+                self.assertIn(diagnostic, str(failure.exception))
+                self.assertFalse(runner.rows)
+
+    def test_cli_status_names_selected_domain(self) -> None:
+        for domain in (DOMAIN, f"user/{os.getuid()}"):
+            for load_state in ("loaded", "unloaded", "not-found"):
+                with self.subTest(domain=domain, load_state=load_state), tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    rows = [row("print", DOMAIN)] if domain == DOMAIN else [
+                        row("print", DOMAIN, code=125, output="Could not print domain: 125: Domain does not support specified action"),
+                        row("print", domain)]
+                    target = f"{domain}/{LABEL}"
+                    if load_state == "loaded":
+                        rows.append(row("print", target, output=RUNNING.replace(DOMAIN, domain)))
+                    else:
+                        rows += [row("print", target, code=113, output=MISSING), row("print", domain)]
+                    rows.append(row("print-disabled", domain, output="disabled services = {\n}"))
+                    runner = Runner(self, rows)
+                    manager = LaunchdServiceManager(unit_dir=root, run=runner)
+                    if load_state == "unloaded":
+                        (root / f"{LABEL}.plist").write_text(render_launch_agent(LABEL, ("/bin/sleep", "300")))
+                    supervisor = ConnectorSupervisor(config=ConnectorConfig(), manager=manager)
+                    stdout = io.StringIO()
+                    with patch.object(cli, "_load_config", return_value=ConnectorConfig()), patch.object(cli, "ConnectorSupervisor", return_value=supervisor), redirect_stdout(stdout):
+                        result = cli.main(["status"])
+                    self.assertEqual(result, 0)
+                    status = json.loads(stdout.getvalue())
+                    self.assertEqual(status["domain"], domain)
+                    self.assertEqual(status["load_state"], load_state)
+                    self.assertFalse(runner.rows)
 
     def test_real_shaped_print_running_crashed_and_never_exited(self) -> None:
         state = parse_launchctl_print(LABEL, RUNNING, enabled=True)
@@ -403,6 +455,46 @@ class LaunchdLifecycle(unittest.TestCase):
             self.assertTrue(outcome.rolled_back)
             self.assertEqual(path.read_text(), old)
             self.assertFalse(runner.rows)
+
+
+class NativeProbeContext(unittest.TestCase):
+    def test_context_precedes_failed_domain_selection(self) -> None:
+        unsupported = "Could not print domain: 125: Domain does not support specified action"
+        user = f"user/{os.getuid()}"
+        for user_available in (True, False):
+            with self.subTest(user_available=user_available), tempfile.TemporaryDirectory() as folder:
+                # Successful selection then refuses a service observation: no
+                # install or actual process effect is allowed in this fixture.
+                calls: list[list[str]] = []
+                def command(argv: list[str], env: dict[str, str], cwd: Path, deadline: float, **kwargs: object) -> tuple[int, bytes]:
+                    calls.append(argv)
+                    if argv == ["launchctl", "managername"]:
+                        return 0, ("Background" + "x" * 600).encode()
+                    if argv == ["launchctl", "print", DOMAIN]:
+                        return 125, unsupported.encode()
+                    if argv == ["launchctl", "print", user]:
+                        return (0 if user_available else 1), b"user context"
+                    self.assertTrue(user_available)
+                    self.assertEqual(argv[:2], ["launchctl", "print"])
+                    self.assertTrue(argv[2].startswith(f"{user}/ai.happyranch.connector-probe-"))
+                    return 1, b"service observation denied"
+                report = {}
+                with patch.object(suite_connector_launchd, "_command", side_effect=command), patch.object(Path, "home", return_value=Path(folder)):
+                    with self.assertRaises(ServiceManagerError):
+                        suite_connector_launchd.run(report)
+                # The dispatcher serializes this same report even on failure.
+                section = json.loads(json.dumps(report))["connector_launchd"]
+                self.assertIn("context", section)
+                context = section["context"]
+                self.assertEqual(context["uid"], os.getuid())
+                self.assertEqual(context["managername"], {"exit_code": 0, "diagnostic": ("Background" + "x" * 600)[:512]})
+                self.assertEqual(context["domains"][DOMAIN], {"exit_code": 125, "diagnostic": unsupported})
+                self.assertEqual(context["domains"][user], {"exit_code": 0 if user_available else 1, "diagnostic": "user context"})
+                self.assertEqual(context["selected_domain"], user if user_available else None)
+                self.assertEqual(section["domain"], context["selected_domain"])
+                self.assertEqual(section["cleanup"], {"not_installed": True})
+                self.assertEqual(section["checks"], [])
+                self.assertEqual(calls[:3], [["launchctl", "managername"], ["launchctl", "print", DOMAIN], ["launchctl", "print", user]])
 
 
 if __name__ == "__main__":

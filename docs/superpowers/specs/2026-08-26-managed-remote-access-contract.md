@@ -619,11 +619,17 @@ reference the source config without copying credentials into the plist. Linux
 continues using its existing systemd backend, argv, units and dedicated account.
 All CLI lifecycle service-manager failures now print `error:` and exit nonzero.
 
-The manager prefers `gui/<uid>` and tries `user/<uid>` only after an explicit
-missing GUI-domain response; refusal of the selected domain is an error.
-Headless operation requires that user domain to exist; boot/logged-out
-persistence is unproven. Install enables login startup unless `--no-enable`
-preserves the existing setting (fresh plist disabled); it does not start.
+The manager prefers `gui/<uid>` and probes `user/<uid>` only after an explicit
+`Could not find domain for` response or exit 125 with `Domain does not support
+specified action` (GUI domain unavailable to an SSH/Jenkins caller without an
+Aqua session). Only a successful user-domain print permits fallback; a failed
+probe reports both diagnostics. Other GUI diagnostics and later failures of the
+pinned domain refuse without switching domains or escalating privileges.
+Without GUI login, the explicitly started user-domain service runs for the
+current boot/background session while that domain exists; reboot/logged-out
+persistence is unproven. Autoload of `~/Library/LaunchAgents` after boot requires
+a GUI login. The packaged Mac app runs in the GUI domain. Install enables login
+startup unless `--no-enable` preserves the existing setting (fresh plist disabled); it does not start.
 Disabled overrides match exact labels; sibling/custom/probe labels leave the
 plist `Disabled` fallback intact. Malformed exact-label rows refuse.
 Start bootstraps or kickstarts while preserving prior disablement, restart
@@ -636,9 +642,9 @@ Backups are completely written, flushed and fsynced in a nonselectable temporary
 file before atomic publication. Rollback fully reads and validates its chosen
 backup before bootout; invalid candidates leave the running service untouched.
 
-Status reports loaded/running/PID and nullable last-exit code/signal from
-launchctl; absent, unloaded and inaccessible are distinct. Running is not
-readiness. Existing foreground notification already degrades without systemd,
+Status reports the selected `domain` (`gui/<uid>` or `user/<uid>`),
+loaded/running/PID and nullable last-exit code/signal from launchctl; absent,
+unloaded and inaccessible are distinct. Running is not readiness. Existing foreground notification already degrades without systemd,
 but macOS readiness/watchdog publication is pending PR 2. Credentials and
 state layout, the per-user managed installer, Darwin sidecar and readiness,
 signing, frozen entry/bundling, Swift coexistence and packaged-app acceptance
@@ -647,7 +653,9 @@ remain future work. No change to Swift HomeConnector is included.
 The source-only `connector-launchd` native suite uses a unique harmless sleep
 program, not the real connector: install, start and PID, SIGKILL and replacement
 PID, stop/unloaded, uninstall/absent, plus guaranteed cleanup attempts and
-explicit incomplete-cleanup errors. It records the actual domain. QA owns
-execution on the existing Mac-mini job; no new job or trigger is introduced.
+explicit incomplete-cleanup errors. Before domain selection it records UID,
+`launchctl managername`, both domain print exit codes and capped diagnostics;
+it retains these facts on selection failure and records a selected domain only
+on success. QA owns execution on the existing Mac-mini job; no new job or trigger is introduced.
 Neither fake-runner tests nor this stand-in prove network, credentials,
 readiness, sidecar, installer or packaged-app acceptance.

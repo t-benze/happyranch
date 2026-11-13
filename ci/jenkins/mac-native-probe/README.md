@@ -595,17 +595,27 @@ The suite calls the real `LaunchdServiceManager` with a unique UUID label
 per-user plist under the job's private HOME `Library/LaunchAgents` and directs
 empty stand-in stdout/stderr to private scratch. It uses no network, daemon,
 real connector, token, sudo or installed tool. The selected domain is the
-actual OS user's `gui/<uid>`, or existing `user/<uid>` after an explicit absent
-GUI domain; it is recorded as `connector_launchd.domain`. Bootstrap refusal
-is a failure, not a skipped/pass result or reason to escalate privileges.
+actual OS user's `gui/<uid>`, or existing `user/<uid>` after an explicit
+`Could not find domain for` response or exit 125 with `Domain does not support
+specified action`. The latter can occur for SSH/Jenkins without an Aqua session.
+User-domain fallback requires its own successful print; otherwise the error
+names both diagnostics. Other GUI errors refuse. The selected domain is recorded
+as `connector_launchd.domain`, and CLI status reports `domain` as well. Bootstrap
+refusal is a failure, not a skipped/pass result or reason to escalate privileges.
+
+Without GUI login, an explicitly started `user/<uid>` service runs for the
+current boot/background session while that domain exists. Autoload of
+`~/Library/LaunchAgents` after boot requires a GUI login; headless operation
+requires an existing user domain and explicit start. The packaged Mac app runs
+in the GUI domain. This probe does not prove reboot/logged-out persistence.
 
 Checks: unique target absent -> install -> start -> running/PID -> SIGKILL
 that PID -> new running PID via KeepAlive -> stop -> unloaded/not running ->
 uninstall -> absent. The suite has a 90-second observation deadline, command
 timeouts clipped to that deadline, 30-second start/recovery windows and a
 15-second reserve. launchctl observations are streamed with a 1MiB cap; the JSON
-contains only fixed checks, numbers, domain, label and cleanup facts. The sleep
-process writes nothing, so it cannot fill a log or reach the per-file cap.
+contains fixed checks, numbers, domain, label, cleanup and capped context facts.
+The sleep process writes nothing, so it cannot fill a log or reach the per-file cap.
 
 A finally block always attempts bootout and checks absence, then removes only
 that UUID plist, including on catchable interruption/failure. Cleanup starts only
@@ -615,9 +625,18 @@ for command-group reaping (up to sixteen seconds beyond the observation deadline
 SIGKILL/host loss still cannot promise cleanup. launchctl may keep the label's
 disabled override after uninstall; no private launchd database is edited.
 Temp logs/scratch are removed by the owning temporary-directory context.
-This stays within the existing 30-minute job and per-file/log caps.
+This stays within the existing job timeout and per-file/log caps.
 
-`probe.json` includes `connector_launchd.checks`, the actual domain/PIDs and
+Before domain selection, `probe.json` records `connector_launchd.context`:
+`uid`, `managername` (exit code and diagnostic), and `domains` keyed by
+`gui/<uid>` and `user/<uid>` (each exit code and diagnostic). Each diagnostic is
+capped at 512 characters, with the existing 1MiB command-output cap and 90-second
+deadline unchanged. `selected_domain` and `connector_launchd.domain` start null
+and are set only on successful selection. Earlier facts remain available if a
+later context command or domain selection fails; unreached facts remain null or
+absent. These diagnostic observations do not guarantee the domain stays usable.
+
+`probe.json` also includes `connector_launchd.checks`, the actual domain/PIDs and
 `cleanup.service_absent`, `cleanup.plist_absent`, `cleanup.bootout_exit`, plus
 scratch removal. Nonzero bootout is expected if already uninstalled, but only
 a service-not-found print response proves absence. A successful stand-in proves

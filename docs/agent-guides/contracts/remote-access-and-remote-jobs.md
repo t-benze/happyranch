@@ -27,13 +27,19 @@ service definition only: it does not stage or migrate credentials, policy or
 trust state. The source config must remain available. Frozen-app entry dispatch
 and paths that survive bundle moves/updates remain pending.
 
-The backend probes `gui/<current uid>` first. Only an explicit missing-domain
-response permits `user/<current uid>` fallback for a headless login. That domain
-is checked and pinned for the operation; unavailable/refused domains and failed
-launchctl commands return errors, without admin fallback. A headless user-domain
-service lasts only as long as that user domain; this does not establish boot or
-logged-out persistence. Login autoload of `~/Library/LaunchAgents` is a GUI-login
-mechanism; headless start requires an existing user domain and explicit start.
+The backend probes `gui/<current uid>` first. An explicit `Could not find
+domain for` response, or exit 125 with `Domain does not support specified
+action` (for example SSH/Jenkins without an Aqua session), permits a
+`user/<current uid>` probe. Fallback occurs only if that probe succeeds;
+otherwise the error names both domain diagnostics. Other GUI errors refuse.
+The selected domain is pinned for the operation; later launchctl failures never
+switch domains or escalate privileges.
+
+Without GUI login, an explicitly started `user/<uid>` service runs for the
+current boot/background session while that domain exists. It does not establish
+logged-out or reboot persistence. Autoload of `~/Library/LaunchAgents` after
+boot requires a GUI login; a headless session requires an existing user domain
+and explicit start. The packaged Mac app runs in the GUI domain.
 
 - `install` round-trips the plist through stdlib `plistlib` before writing an
   owner-only file; replacing a plist first creates an owner-only backup under
@@ -58,9 +64,9 @@ mechanism; headless start requires an existing user domain and explicit start.
   already absent. launchd may retain the label's disabled override; uninstall
   does not edit launchd's private preference database or remove logs/backups.
 - `status` parses top-level `launchctl print` state/PID/last-exit information
-  into `ServiceStatus`, with macOS-only nullable `last_exit_code` and
-  `last_exit_signal`. An installed/unloaded service differs from a missing
-  plist; permission/domain errors never count as absence. Exit observations
+  into `ServiceStatus`, with macOS-only `domain` (`gui/<uid>` or `user/<uid>`)
+  and nullable `last_exit_code` and `last_exit_signal`. An installed/unloaded
+  service differs from a missing plist; permission/domain errors never count as absence. Exit observations
   disappear after bootout. A running PID proves process state only, never
   listener readiness. Unknown print shapes refuse rather than invent state.
 - `upgrade` backs up and replaces the plist, then bootouts/bootstraps so launchd

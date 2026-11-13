@@ -11,7 +11,7 @@ import plistlib
 import re
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 from xml.parsers.expat import ExpatError
@@ -60,8 +60,9 @@ def render_launch_agent(
 
 @dataclass(frozen=True)
 class LaunchdStatus(ServiceStatus):
-    """ServiceStatus plus launchd exit observations; Linux serialization is unchanged."""
+    """ServiceStatus plus launchd domain/exit observations; Linux is unchanged."""
 
+    domain: str = ""
     last_exit_code: int | None = None
     last_exit_signal: int | None = None
 
@@ -116,7 +117,8 @@ def parse_launchctl_print(label: str, output: str, *, enabled: bool) -> LaunchdS
 class LaunchdServiceManager:
     """Current user's gui domain, or user domain on a genuinely headless login.
 
-    Only an explicit missing GUI-domain diagnostic permits fallback. Other
+    Only an explicit missing GUI domain or exit 125 unsupported-action
+    diagnostic permits fallback to a successfully probed user domain. Other
     launchctl errors refuse. The selected domain is pinned for this instance;
     bootstrap/bootout failures never trigger migration to another domain.
     """
@@ -147,9 +149,15 @@ class LaunchdServiceManager:
             code, output = self._run(["launchctl", "print", gui], timeout=10.0)
             if code == 0:
                 self._domain = gui
-            elif re.search(r'Could not find domain for', output):
+            elif (re.search(r'Could not find domain for', output)
+                  or (code == 125 and "Domain does not support specified action" in output)):
                 user = f"user/{uid}"
-                self._call("print", user)
+                user_code, user_output = self._run(["launchctl", "print", user], timeout=10.0)
+                if user_code:
+                    raise ServiceManagerError(
+                        f"launchctl print {gui} failed ({code}): {output.strip()[:200]}; "
+                        f"launchctl print {user} failed ({user_code}): {user_output.strip()[:200]}"
+                    )
                 self._domain = user
             else:
                 raise ServiceManagerError(f"launchctl print {gui} failed ({code}): {output.strip()[:200]}")
@@ -301,9 +309,10 @@ class LaunchdServiceManager:
             return LaunchdStatus(
                 unit_name=launchd_label(unit_name), active_state="inactive", sub_state="dead",
                 load_state="unloaded" if self._path(unit_name).exists() else "not-found",
-                unit_file_state="enabled" if enabled else "disabled",
+                unit_file_state="enabled" if enabled else "disabled", domain=self.domain,
             )
-        return parse_launchctl_print(launchd_label(unit_name), output, enabled=enabled)
+        return replace(parse_launchctl_print(launchd_label(unit_name), output, enabled=enabled),
+                       domain=self.domain)
 
     def _replace_and_start(self, text: str, name: str) -> None:
         # kickstart alone never rereads a changed plist: bootout/bootstrap is
