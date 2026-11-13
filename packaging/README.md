@@ -65,7 +65,12 @@ additional offline identity is admitted. Each original retains its source bounda
 The full build collects notices after assembly, validates resources/basic app,
 checks frozen CLI/catalog, records unsigned trust observations, archives and
 reconciles actual ZIP/notice bytes and release identity. The retained resource
-catalog/runtime is unchanged. Failure diagnostics use the current `basic` stage
+path/mode inventory is unchanged. Resource sizes and SHA-256 come from the exact
+Git commit/tree recorded in the app plist, with optional independently supplied
+`--source-sha`/`--source-tree` constraints. The selected verifier checkout supplies
+Git objects by default; `--source` selects another repository. Live checkout
+contents never supply expected bytes. Missing objects or tree/mode disagreement
+refuse; bundle and ZIP members must still match. Failure diagnostics use the current `basic` stage
 (its output remains `native.json`); REACHED records an attempted stage, including
 a failed attempt, and never asserts success.
 
@@ -486,8 +491,11 @@ bash app/mac/scripts/verify-release.sh licenses \
   --freezer-output-sha256 "$FREEZER_OUTPUT" --freezer-copy-sha256 "$FREEZER_COPY"
 ```
 
-Resource expectations are the accepted 29-member source baseline, with regular
-file type, mode, size and hash. Catalog expectations compare every list field
+Resource expectations retain the accepted 29 paths and regular-file modes.
+Expected size, SHA-256 and blob identity are derived from the selected committed
+source; standalone verification needs those Git objects locally. Build/archive
+callers constrain the selected source SHA/tree. Real bundle or ZIP mismatches
+still fail with `RESOURCE_VERIFICATION_FAILED` / `RESOURCE_MISMATCH`. Catalog expectations compare every list field
 and validation key, replacing only the relocated app prefix. Capture actual
 frozen CLI `skills catalog list --json` and `validate --json` outside checkout,
 without root/policy overrides; exit zero alone is insufficient. Ordinary-reader

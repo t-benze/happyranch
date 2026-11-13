@@ -113,6 +113,24 @@ def command(argv: list[str], cwd: Path, env: dict[str, str], seconds: float,
 
 
 
+def build_failure_evidence(out: Path) -> dict[str, Any]:
+    """Keep the full fixed-row verifier failure before outer scratch removal."""
+    path = out / 'diagnostics/resource-failure.json'
+    if not path.exists():
+        return {'status': 'NOT_AVAILABLE', 'reason': 'resource verifier failure file absent'}
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError('unsafe resource failure evidence')
+    with path.open('rb') as stream:
+        raw = stream.read(49153)
+    if len(raw) > 49152:
+        raise RuntimeError('resource failure evidence cap')
+    value = json.loads(raw)
+    if value.get('error') != 'RESOURCE_VERIFICATION_FAILED' or not isinstance(value.get('detail'), list):
+        raise RuntimeError('invalid resource failure evidence')
+    return {'status': 'COMPLETE', 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(),
+            'report': value}
+
+
 def checked(argv: list[str], cwd: Path, env: dict[str, str], seconds: float,
             **kwargs: Any) -> dict[str, Any]:
     row = command(argv, cwd, env, seconds, **kwargs)
@@ -327,8 +345,9 @@ def run(report: dict[str, Any]) -> None:
             '--source-tree', tree, '--arch', 'arm64', '--web-tool-originals', str(originals),
             '--output-dir', str(out)], area, build_env, 2700)
         if section['commands']['build']['exit_code'] != 0:
+            section['build_failure_evidence'] = build_failure_evidence(out)
             raise RuntimeError('documented app build failed; see build command evidence')
-        app = out / 'scratch/HappyRanch.app'
+        app = out / 'HappyRanch.app'
         binary = app / 'Contents/Resources/daemon/happyranch-daemon'
         if not binary.is_file():
             raise RuntimeError('build did not emit bundled daemon')

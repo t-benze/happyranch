@@ -486,6 +486,16 @@ no release/feed URL is supplied or baked by this suite.
 Only this suite's build child appends `-modcacherw` to inherited GOFLAGS, so the
 wrapper's private Go module cache remains removable by the existing outer EXIT.
 The provisioner and parent environment retain their original GOFLAGS.
+The completed build is consumed from `OUTPUT/HappyRanch.app` after the wrapper's
+final move. Its fixed 29 resource paths/modes are checked against committed Git
+blobs for that exact build SHA/tree, independently of live checkout contents.
+On a resource verification failure, the wrapper writes the whole error list to
+`diagnostics/resource-failure.json` (maximum49152B), preserves it as critical
+bounded diagnostics, and the harness copies its parsed report, byte count and
+SHA-256 into `probe.json.packaged.build_failure_evidence` before outer EXIT.
+The entire list survives collection independently of the2KiB command tail.
+The final EXIT collector writes compact JSON so diagnostic rows do not expand
+past its existing64KiB artifact limit; it preserves all parsed values.
 
 `probe.json.steps` always has keys `1`–`8`, each with name and
 PASS/FAIL/NOT_RUN plus bounded evidence. Linux reports every step NOT_RUN with
@@ -544,7 +554,9 @@ owns scratch disposal even on failure. No automatic resubmission is permitted.
 Portable manual harness checks (outside retired Python units/required CI):
 `python3 -B -m unittest scripts.mac_native.test_packaged -v`. These cover Linux
 skip fields, census selection, command failure/output/time bounds, patch-bearing
-freezer argv, child-only Go cache flags and final EXIT receipt collection.
+freezer argv, child-only Go cache flags, exact-source resource/ZIP mutation
+rejection, complete failure-list collection, completed app location and final
+EXIT receipt collection.
 They neither build nor execute the product.
 
 ## S7 case-safety suite

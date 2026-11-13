@@ -429,3 +429,11 @@ No publication performed.
 > original; skip building/downloading it. Preserve any existing signing state,
 > sign and submit once using my existing Keychain, and return the report for
 > THR-104. Stop for me at an OS prompt, ambiguity or non-Accepted result.
+
+Packaged resource verification retains29 fixed paths/modes and reads expected
+size/hash from the build's committed Git SHA/tree. Standalone resource/basic/ZIP
+inspection requires the corresponding Git objects (`--source` can select that
+repository); the build and archive transitions constrain the expected identity.
+A verification failure retains the complete bounded resource error list in the
+packaged probe artifact before scratch removal. See the
+[packaged observation contract](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation).

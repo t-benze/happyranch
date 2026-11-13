@@ -54,7 +54,7 @@ def main() -> None:
     try:
         result = join_exit_receipt(json.loads(bounded_read(args.probe)),
                                    bounded_read(args.identity).decode('utf-8'), args.source_sha)
-        raw = json.dumps(result, indent=2) + '\n'
+        raw = json.dumps(result, separators=(',', ':')) + '\n'
         if len(raw.encode()) > 65536:
             raise ValueError('collected report exceeds 64 KiB')
         with args.output.open('x') as stream:

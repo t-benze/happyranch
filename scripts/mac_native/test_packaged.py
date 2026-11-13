@@ -1,7 +1,12 @@
 """Portable harness contracts only; no native/product execution claim."""
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
+import plistlib
+import stat
+import zipfile
 import os
 from pathlib import Path
 import subprocess
@@ -14,6 +19,216 @@ from scripts.mac_native import suite_packaged as suite
 
 
 class PackagedHarnessTests(unittest.TestCase):
+    def resource_fixture(self, root: Path) -> tuple[Path, list[dict], str, str]:
+        script = suite.ROOT / 'app/mac/scripts/verify-release.sh'
+        text = script.read_text().split("<<'PYTHON'\n", 1)[1].rsplit('\nPYTHON', 1)[0]
+        baseline = next(node.value for node in ast.parse(text).body
+                        if isinstance(node, ast.Assign) and any(
+                            isinstance(target, ast.Name) and target.id == 'BASELINE'
+                            for target in node.targets))
+        rows = ast.literal_eval(baseline)
+        self.assertEqual(len(rows), 29)
+        sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=suite.ROOT, text=True).strip()
+        tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], cwd=suite.ROOT, text=True).strip()
+        app = root / 'HappyRanch.app'
+        (app / 'Contents').mkdir(parents=True)
+        (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'GitCommitSHA': sha, 'GitTreeSHA': tree}))
+        for row in rows:
+            relative = ('Contents/Resources/licenses/LICENSE' if row['path'] == 'LICENSE' else
+                        'Contents/Resources/daemon/_internal/' + row['path'])
+            row['member'] = relative
+            raw = subprocess.check_output(['git', 'show', sha + ':' + row['path']], cwd=suite.ROOT)
+            target = app / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+            target.chmod(int(row['posix_mode'], 8))
+        return app, rows, sha, tree
+
+    def resource_command(self, app: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(['bash', str(suite.ROOT / 'app/mac/scripts/verify-release.sh'),
+            'resources', '--app', str(app), *args], capture_output=True, text=True, timeout=15)
+
+    def test_all_29_resources_match_exact_head_and_reject_bundle_archive_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            app, rows, sha, _tree = self.resource_fixture(root)
+            good = self.resource_command(app)
+            self.assertEqual(good.returncode, 0, good.stderr)
+            observed = json.loads(good.stdout)['resources']
+            self.assertEqual(len(observed), 29)
+            for row, actual in zip(rows, observed, strict=True):
+                raw = subprocess.check_output(['git', 'show', sha + ':' + row['path']], cwd=suite.ROOT)
+                self.assertEqual((actual['size'], actual['sha256'], actual['posix_mode']),
+                                 (len(raw), hashlib.sha256(raw).hexdigest(), row['posix_mode']))
+            victim = app / next(row['member'] for row in rows if row['path'].endswith('/dream/SKILL.md'))
+            original = victim.read_bytes()
+            try:
+                victim.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+                bad = self.resource_command(app)
+                self.assertEqual(bad.returncode, 1, bad.stderr)
+                failure = json.loads(bad.stderr)
+                self.assertEqual(failure['error'], 'RESOURCE_VERIFICATION_FAILED')
+                self.assertEqual([row['error'] for row in failure['detail']], ['RESOURCE_MISMATCH'])
+                self.assertEqual(failure['detail'][0]['expected']['sha256'], hashlib.sha256(original).hexdigest())
+            finally:
+                victim.write_bytes(original)
+            self.assertEqual(victim.read_bytes(), original)
+            archive = root / 'candidate.zip'
+            def write_archive(corrupt: bool) -> None:
+                with zipfile.ZipFile(archive, 'w') as z:
+                    for row in rows:
+                        path = app / row['member']
+                        entry = zipfile.ZipInfo('HappyRanch.app/' + row['member'])
+                        entry.external_attr = (stat.S_IFREG | int(row['posix_mode'], 8)) << 16
+                        raw = path.read_bytes()
+                        z.writestr(entry, raw + b'changed' if corrupt and path == victim else raw)
+            write_archive(False)
+            original_zip = archive.read_bytes()
+            try:
+                write_archive(True)
+                bad = self.resource_command(app, '--archive', str(archive))
+                self.assertEqual(bad.returncode, 1, bad.stderr)
+                self.assertEqual([row['error'] for row in json.loads(bad.stderr)['detail']], ['RESOURCE_MISMATCH'])
+            finally:
+                archive.write_bytes(original_zip)
+            self.assertEqual(archive.read_bytes(), original_zip)
+            restored = self.resource_command(app, '--archive', str(archive))
+            self.assertEqual(restored.returncode, 0, restored.stderr)
+
+    def test_resource_expectations_ignore_changed_live_source(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            app, rows, _sha, _tree = self.resource_fixture(root)
+            source = root / 'source'
+            source.mkdir()
+            for row in rows:
+                target = source / row['path']
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((app / row['member']).read_bytes())
+                target.chmod(int(row['posix_mode'], 8))
+            def git(*args: str) -> str:
+                return subprocess.check_output(['git', '-C', str(source), *args], text=True, stderr=subprocess.PIPE).strip()
+            git('init', '-q')
+            git('add', '.')
+            git('-c', 'user.name=Synthetic Test', '-c', 'user.email=synthetic@example.invalid',
+                'commit', '-qm', 'synthetic committed resources')
+            sha, tree = git('rev-parse', 'HEAD'), git('rev-parse', 'HEAD^{tree}')
+            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'GitCommitSHA': sha, 'GitTreeSHA': tree}))
+            (source / rows[0]['path']).write_bytes(b'live checkout differs from committed bytes')
+            good = self.resource_command(app, '--source', str(source), '--source-sha', sha, '--source-tree', tree)
+            self.assertEqual(good.returncode, 0, good.stderr)
+            bad = self.resource_command(app, '--source', str(source), '--source-tree', '0' * 40)
+            self.assertEqual(bad.returncode, 1)
+            self.assertEqual(json.loads(bad.stderr)['error'], 'SOURCE_TREE_MISMATCH')
+
+    def test_resource_failure_artifact_keeps_all_rows_before_scratch_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            app, rows, _sha, _tree = self.resource_fixture(root)
+            diag = root / 'diagnostics'
+            diag.mkdir()
+            evidence = diag / 'resource-failure.json'
+            originals = {app / row['member']: (app / row['member']).read_bytes() for row in rows}
+            try:
+                for path in originals:
+                    path.write_bytes(b'corrupt')
+                bad = self.resource_command(app, '--resource-evidence', str(evidence))
+                self.assertEqual(bad.returncode, 1, bad.stderr)
+                failure = json.loads(bad.stderr)
+                self.assertEqual(len(failure['detail']), 29)
+                kept = suite.build_failure_evidence(root)
+                self.assertEqual(kept['status'], 'COMPLETE')
+                self.assertEqual(kept['report'], failure)
+                self.assertEqual(kept['bytes'], evidence.stat().st_size)
+                self.assertEqual(kept['sha256'], hashlib.sha256(evidence.read_bytes()).hexdigest())
+                self.assertGreater(kept['bytes'], 2048)
+                self.assertLess(kept['bytes'], 49152)
+
+                source = root / 'source'
+                source.mkdir()
+                report = {'suite': 'packaged', 'platform': 'darwin'}
+                def failed_build(argv: list[str], *_args) -> dict:
+                    out = Path(argv[argv.index('--output-dir') + 1])
+                    target = out / 'diagnostics/resource-failure.json'
+                    target.parent.mkdir(parents=True)
+                    target.write_bytes(evidence.read_bytes())
+                    return {'exit_code': 1}
+                with (patch.object(suite, 'ROOT', source),
+                      patch.dict(os.environ, {'TMPDIR': str(root / 'tmp'), 'SOURCE_SHA': _sha}),
+                      patch.object(suite, 'census', return_value=[]),
+                      patch.object(suite, 'checked', return_value={'tail': _sha}),
+                      patch.object(suite, 'command', side_effect=failed_build),
+                      patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={}),
+                      patch('scripts.mac_native.toolchain.provision', return_value={})):
+                    with self.assertRaisesRegex(RuntimeError, 'documented app build failed'):
+                        suite.run(report)
+                self.assertEqual(report['steps']['1']['status'], 'FAIL')
+                self.assertEqual(report['packaged']['build_failure_evidence'], kept)
+                build = (suite.ROOT / 'app/mac/scripts/build-app.sh').read_text()
+                finish = build[build.index('finish() {'):build.index('trap finish EXIT')]
+                sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=suite.ROOT, text=True).strip()
+                tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], cwd=suite.ROOT, text=True).strip()
+                trapped = subprocess.run(['bash', '-ec', finish + '\ntrap finish EXIT\nexit 1'],
+                    env=dict(os.environ, OUTPUT=str(root), STAGE='verification', RUN_ID='synthetic',
+                             SOURCE_SHA=sha, SOURCE_TREE=tree, VERSION='1.0.1', BUILD='1.0.1',
+                             ARCH='arm64', INSPECTION_STAGE='resources'), capture_output=True, text=True, timeout=10)
+                self.assertEqual(trapped.returncode, 1, trapped.stderr)
+                index = json.loads((diag / 'bounded/evidence-index.json').read_text())
+                row = next(row for row in index['inputs'] if row['name'] == 'resource-failure.json')
+                self.assertTrue(row['complete'])
+                self.assertEqual(json.loads((diag / 'bounded' / row['artifact']).read_bytes()), failure)
+                # Existing collector must retain a full failure-shaped probe under its cap.
+                probe = report
+                (root / 'probe.json').write_text(json.dumps(probe))
+                (root / 'identity.txt').write_text('source_sha=' + sha + '\nsuite=packaged\nscratch_removed=true\n')
+                collected = root / 'collected.json'
+                result = subprocess.run([sys.executable, '-B', str(suite.ROOT / 'scripts/mac_native/collect_packaged.py'),
+                    '--probe', str(root / 'probe.json'), '--identity', str(root / 'identity.txt'),
+                    '--source-sha', sha, '--output', str(collected)], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(collected.read_bytes())['packaged']['build_failure_evidence']['report'], failure)
+
+            finally:
+                for path, raw in originals.items():
+                    path.write_bytes(raw)
+            self.assertTrue(all(path.read_bytes() == raw for path, raw in originals.items()))
+            good = self.resource_command(app)
+            self.assertEqual(good.returncode, 0, good.stderr)
+
+    def test_packaged_consumes_completed_app_at_documented_build_output(self) -> None:
+        final_move = next(line for line in (suite.ROOT / 'app/mac/scripts/build-app.sh').read_text().splitlines()
+                          if line.startswith('mv "$APP" '))
+        with tempfile.TemporaryDirectory() as folder:
+            scratch = Path(folder).resolve()
+            source = scratch / 'source'
+            source.mkdir()
+            report = {}
+            def build(argv: list[str], _cwd: Path, _env: dict[str, str], _seconds: float) -> dict:
+                out = Path(argv[argv.index('--output-dir') + 1])
+                app = out / 'scratch/HappyRanch.app'
+                for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
+                             'Contents/Resources/daemon/happyranch'):
+                    path = app / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b'synthetic executable; never run')
+                subprocess.run(['bash', '-ec', final_move], check=True,
+                               env=dict(os.environ, APP=str(app), OUTPUT=str(out)), timeout=5)
+                return {'exit_code': 0}
+            def checked(argv: list[str], *_args, **_kwargs) -> dict:
+                if argv[0] == '/usr/bin/ditto':
+                    raise RuntimeError('stop after completed app observation')
+                return {'tail': 'a' * 40}
+            with (patch.object(suite, 'ROOT', source),
+                  patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40}),
+                  patch.object(suite, 'census', return_value=[]), patch.object(suite, 'checked', side_effect=checked),
+                  patch.object(suite, 'command', side_effect=build),
+                  patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={}),
+                  patch('scripts.mac_native.toolchain.provision', return_value={})):
+                with self.assertRaisesRegex(RuntimeError, 'stop after completed app observation'):
+                    suite.run(report)
+            self.assertEqual(report['steps']['1']['status'], 'PASS')
+            self.assertEqual(set(report['packaged']['bundle_hashes']), {'app_executable', 'daemon', 'cli'})
+
     def test_collector_joins_only_exact_outer_exit_receipts(self) -> None:
         sha = 'a' * 40
         probe = {'suite': 'packaged', 'platform': 'darwin', 'steps': suite.initial_steps(),

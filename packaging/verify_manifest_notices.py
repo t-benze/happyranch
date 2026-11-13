@@ -25,6 +25,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parent.parent
+SOURCE_SHA = subprocess.check_output(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD'], text=True).strip()
+SOURCE_TREE = subprocess.check_output(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 H = runpy.run_path(str(SOURCE / 'app/mac/scripts/manifest_notices.py'))
 REPORT = []
 
@@ -122,22 +124,20 @@ def fixture(root):
         raw = (SOURCE / 'packaging/fixtures/manifest-notices' / fact['file']).read_bytes()
         assert hashlib.sha256(raw).hexdigest() == fact['sha256']
         write(goroot / fact['file'].removeprefix('go-'), raw)
-    mapping = dict(source_tree='2' * 40, go_root=str(goroot), go_version=goversion,
+    mapping = dict(source_tree=SOURCE_TREE, go_root=str(goroot), go_version=goversion,
                    go_originals=[str(goroot / 'LICENSE'), str(goroot / 'PATENTS')], components=[])
     write(output / 'diagnostics/license-mapping.json', mapping)
-    # Copy accepted actual resources and assert baseline identities independently.
+    # Copy exact committed resource blobs; live checkout changes are irrelevant.
     script = (SOURCE / 'app/mac/scripts/verify-release.sh').read_text().split("<<'PYTHON'\n", 1)[1].rsplit('\nPYTHON', 1)[0]
     tree = ast.parse(script)
     baseline = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'BASELINE' for t in node.targets))
     for row in baseline:
-        original = SOURCE / row['path']
-        data = original.read_bytes()
-        assert hashlib.sha256(data).hexdigest() == row['sha256'], row['path']
+        data = subprocess.check_output(['git', '-C', str(SOURCE), 'show', SOURCE_SHA + ':' + row['path']])
         dest = app / ('Contents/Resources/licenses/LICENSE' if row['path'] == 'LICENSE' else 'Contents/Resources/daemon/_internal/' + row['path'])
         write(dest, data)
         dest.chmod(int(row['posix_mode'], 8))
     plist = plistlib.loads((SOURCE / 'app/mac/scripts/Info.plist').read_bytes())
-    plist.update(dict(CFBundleShortVersionString='1.0.1', CFBundleVersion='1.0.1', GitCommitSHA='1' * 40, GitTreeSHA='2' * 40, ReleaseArchitecture='arm64'))
+    plist.update(dict(CFBundleShortVersionString='1.0.1', CFBundleVersion='1.0.1', GitCommitSHA=SOURCE_SHA, GitTreeSHA=SOURCE_TREE, ReleaseArchitecture='arm64'))
     write(app / 'Contents/Info.plist', plistlib.dumps(plist))
     for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon', 'Contents/Resources/daemon/happyranch'):
         write(app / name, struct.pack('<IIIIIIII', 0xfeedfacf, 0x100000c, 0, 2, 0, 0, 0, 0))
@@ -304,7 +304,7 @@ def run(scratch, stdlib=None):
     ditto.write_text('#!' + sys.executable + '\nimport pathlib,sys,zipfile\napp=pathlib.Path(sys.argv[-2]); dest=pathlib.Path(sys.argv[-1])\nassert sys.argv[1:4]==["-c","-k","--keepParent"]\nwith zipfile.ZipFile(dest,"x",zipfile.ZIP_DEFLATED) as z:\n for p in sorted(app.rglob("*")): z.write(p,"HappyRanch.app/"+p.relative_to(app).as_posix())\n')
     ditto.chmod(0o755)
     env = dict(os.environ, PATH=str(bindir) + ':' + os.environ['PATH'])
-    archive = ['bash', str(SOURCE / 'app/mac/scripts/archive-app.sh'), str(app), str(output), '1.0.1', '1.0.1', '1' * 40, '2' * 40, 'arm64', 'portable-fixture']
+    archive = ['bash', str(SOURCE / 'app/mac/scripts/archive-app.sh'), str(app), str(output), '1.0.1', '1.0.1', SOURCE_SHA, SOURCE_TREE, 'arm64', 'portable-fixture']
     candidate_zip = output / 'HappyRanch-1.0.1-1.0.1-arm64.zip'
     call('case1 actual shipping archive transition (ditto substituted)', archive, env=env)
     assert candidate_zip.is_file()
@@ -441,7 +441,7 @@ def run(scratch, stdlib=None):
                     continue
                 dest.writestr(entry, b'changed original' if entry.filename == notice_member else src.read(entry))
         call('case5 ' + mode + ' archived notice', cli + ['archive', '--archive', str(tampered)], expected=1)
-    verifier = ['bash', str(SOURCE / 'app/mac/scripts/verify-release.sh'), 'reconcile', '--archive', str(candidate_zip), '--receipt', str(output / 'diagnostics/inner-zip.json'), '--version', '1.0.1', '--build', '1.0.1', '--source-sha', '1' * 40, '--source-tree', '2' * 40, '--arch', 'arm64', '--run-id', 'portable-fixture']
+    verifier = ['bash', str(SOURCE / 'app/mac/scripts/verify-release.sh'), 'reconcile', '--archive', str(candidate_zip), '--receipt', str(output / 'diagnostics/inner-zip.json'), '--version', '1.0.1', '--build', '1.0.1', '--source-sha', SOURCE_SHA, '--source-tree', SOURCE_TREE, '--arch', 'arm64', '--run-id', 'portable-fixture']
     for option, value in [('--version', '2.0.0'), ('--build', '2.0.0'), ('--arch', 'x86_64'), ('--source-tree', '3' * 40)]:
         args = verifier.copy()
         args[args.index(option) + 1] = value

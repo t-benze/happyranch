@@ -11,6 +11,7 @@ import argparse
 import glob
 import json
 import os
+import plistlib
 from pathlib import Path
 import stat
 import subprocess
@@ -117,11 +118,17 @@ def verify(root: Path) -> None:
     failure_output.mkdir(mode=0o700)
     (failure_output / 'diagnostics').mkdir(mode=0o700)
     (failure_output / 'diagnostics/resources.json').write_text('{"fixture": "resources completed"}\n')
+    failure_sha = subprocess.check_output(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD'], text=True).strip()
+    failure_tree = subprocess.check_output(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+    failure_app = failure_output / 'HappyRanch.app'
+    (failure_app / 'Contents').mkdir(parents=True)
+    (failure_app / 'Contents/Info.plist').write_bytes(plistlib.dumps(
+        {'GitCommitSHA': failure_sha, 'GitTreeSHA': failure_tree}))
     finish = build[build.index('finish() {'):build.index('trap finish EXIT')]
     current = build[build.index('INSPECTION_STAGE=basic'):build.index('# Requested frozen entry-point')]
     result = subprocess.run(['bash', '-euc', finish + '\ntrap finish EXIT\n' + current],
         env=dict(os.environ, OUTPUT=str(failure_output), STAGE='verification', RUN_ID='fixture',
-                 SOURCE_SHA=sha, SOURCE_TREE=tree, VERSION='1.0.1', BUILD='1.0.1', ARCH='arm64',
+                 SOURCE_SHA=failure_sha, SOURCE_TREE=failure_tree, REPO_ROOT=str(SOURCE), VERSION='1.0.1', BUILD='1.0.1', ARCH='arm64',
                  VERIFY=str(SOURCE / 'app/mac/scripts/verify-release.sh'), APP=str(failure_output / 'HappyRanch.app')), text=True, capture_output=True, timeout=30)
     REPORT.append(dict(label='actual basic failure trap', exit=result.returncode,
                        stdout=result.stdout, stderr=result.stderr))
