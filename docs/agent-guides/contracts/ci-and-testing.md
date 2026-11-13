@@ -216,3 +216,7 @@ trigger or Product E2E run. After the file exists on main, an authorized manager
 can dispatch a branch ref to validate later parser changes; see the M4 runbook.
 Observer compatibility does not close native relay acceptance or replenish any
 failed/spent run allowance. Source delivery authorizes no dispatch.
+The TASK-15875 probe additionally emits at most three closed structural skeletons
+for unrecognized prefixes (2048-character input, 256-character output per line);
+unknown/overlong input uses fixed labels. The M4 runbook owns the exact vocabulary
+and custody bounds. Native summaries and all proof gates remain unchanged.

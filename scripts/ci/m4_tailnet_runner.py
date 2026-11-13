@@ -25,7 +25,8 @@ from datetime import datetime, timezone
 from m4_tailnet_client import (Bridge, EXPECTED, NATIVE_HOST, ROUTE, application_probe, build_archive, control_get,
                               exception_class, safe_join_diagnostics, safe_derp_diagnostics,
                               prove_packet_path, safe_packet_diagnostics, PACKET_PROOF_COUNTS,
-                              observer_self_test, safe_capture_diagnostics, OBSERVER_LABELS)
+                              observer_self_test, safe_capture_diagnostics, OBSERVER_LABELS,
+                              safe_probe_skeletons)
 
 REPOSITORY = 't-benze/happyranch'
 COORDINATION_PR = 1449
@@ -212,6 +213,11 @@ def native_precondition(library: Path, scratch: Path, output: Path) -> None:
 
 def observer_precondition(scratch: Path, output: Path) -> None:
     diagnostic = dict(label='unknown', **{key: 0 for key in PACKET_PROOF_COUNTS})
+    # main validates the fixed RUNNER_TEMP names before either entry path.
+    # Native prepare uses managed-m4-private and retains its existing schema.
+    probe = scratch.name == 'managed-m4-observer-private'
+    if probe:
+        diagnostic['_probe_skeletons'] = []
     try:
         observer_self_test(scratch, diagnostic)
     finally:
@@ -219,6 +225,8 @@ def observer_precondition(scratch: Path, output: Path) -> None:
         public = dict(label=label if isinstance(label, str) and label in OBSERVER_LABELS else 'unknown',
                       packets=safe_packet_diagnostics(diagnostic),
                       capture=safe_capture_diagnostics(diagnostic.get('capture_diagnostics')))
+        if probe:
+            public['structural_skeletons'] = safe_probe_skeletons(diagnostic.get('_probe_skeletons'))
         # Publish only closed shapes and bounded integers, including on refusal.
         (output / 'client-summary.json').write_text(json.dumps(dict(
             status='PASS' if public['label'] == 'passed' else 'FAIL',

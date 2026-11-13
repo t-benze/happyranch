@@ -92,6 +92,59 @@ CAPTURE_COUNTS = ('header_lines', 'metadata_lines', 'ipv4_packets', 'ipv6_packet
                   *('unparsed_' + shape for shape in sorted(CAPTURE_SHAPES - {'unknown', 'passed'})))
 OBSERVER_LABELS = PACKET_PROOF_LABELS | {'observer-child-start', 'observer-request', 'observer-child-cleanup'}
 
+PROBE_WORDS = {'IP', 'IP6', 'pktap', 'proc', 'eproc', 'svc', 'in', 'out', 'pid',
+               'Flags', 'length', 'UDP', 'tcp', 'udp'}
+PROBE_PUNCTUATION = set('()[],:;<>.=+-/|*')
+PROBE_SKELETON_LINES = 3
+PROBE_SKELETON_INPUT = 2048
+PROBE_SKELETON_OUTPUT = 256
+
+
+def structural_skeleton(line: object) -> str:
+    """Probe-only closed token vocabulary; never return any unmatched text."""
+    if type(line) is not str:
+        return 'unknown'
+    if len(line) > PROBE_SKELETON_INPUT:
+        return 'overlong'
+    if not line or any(not (' ' <= char <= '~' or char == '\t') for char in line):
+        return 'unknown'
+    tokens = []
+    for token in re.findall(r'[A-Za-z0-9_.]+|[ \t]+|.', line):
+        if token.isspace():
+            continue
+        if token in PROBE_WORDS or token in PROBE_PUNCTUATION:
+            tokens.append(token)
+        elif token.isdecimal():
+            tokens.append('N')
+        elif re.fullmatch(r'(?:0x[0-9a-fA-F]+|[0-9a-fA-F.]+)', token):
+            tokens.append('A')
+        elif re.fullmatch(r'[A-Za-z0-9_.]+', token):
+            tokens.append('W')
+        else:
+            return 'unknown'
+    skeleton = ' '.join(tokens)
+    return skeleton if 0 < len(skeleton) <= PROBE_SKELETON_OUTPUT else 'overlong'
+
+
+def safe_probe_skeletons(value: object) -> list[str]:
+    """Revalidate the closed projection at the probe's public sink."""
+    if type(value) is not list:
+        return ['unknown']
+    result = []
+    allowed = PROBE_WORDS | PROBE_PUNCTUATION | {'A', 'N', 'W'}
+    for skeleton in value[:PROBE_SKELETON_LINES]:
+        if type(skeleton) is not str:
+            result.append('unknown')
+        elif len(skeleton) > PROBE_SKELETON_OUTPUT:
+            result.append('overlong')
+        elif skeleton in {'unknown', 'overlong'}:
+            result.append(skeleton)
+        elif skeleton and all(token in allowed for token in skeleton.split(' ')):
+            result.append(skeleton)
+        else:
+            result.append('unknown')
+    return result
+
 
 def safe_capture_diagnostics(value: object) -> dict:
     value = value if isinstance(value, dict) else {}
@@ -122,6 +175,14 @@ def packet_evidence(text: str, pid: int, diagnostic: dict, *, endpoint: tuple[st
     The local observer precondition uses this same parser with its owned endpoint.
     """
     detail = capture_detail(diagnostic)
+    # Only the credential-free observer probe enables this projection. Keep
+    # first unrecognized prefix shapes, never the original lines or substrings.
+    if type(diagnostic.get('_probe_skeletons')) is list:
+        for line in text.splitlines():
+            if not re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line):
+                diagnostic['_probe_skeletons'].append(structural_skeleton(line))
+                if len(diagnostic['_probe_skeletons']) >= PROBE_SKELETON_LINES:
+                    break
     records: list[tuple[str, str, list[str]]] = []
     for line in text.splitlines():
         prefix = re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)
