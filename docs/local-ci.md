@@ -4,6 +4,7 @@
 
 ```sh
 python -B -m unittest scripts.mac_native.test_connector_launchd -v
+python -B -m unittest scripts.mac_native.test_connector_installer -v
 ```
 
 This retained native-script venue uses fake runners and temporary paths, outside
@@ -13,7 +14,12 @@ literal private state paths and same-user credential/enrollment file contracts.
 All original 33 cases are retained; C4 adds seven cases. The C4 permission
 cases use real files/modes/links/FIFOs; alternate-euid cases substitute process
 identity against real ownership metadata. They do not prove native Darwin file
-execution or installer/sidecar consumption. QA owns
+execution or sidecar consumption. The sibling C5 installer selection drives the
+shipping platform-dispatch CLI with real private files/links/FIFOs, installed
+config/plist/digest observations, drift, stop/bootout delegation, partial/idempotent
+uninstall/purge and secret-free refusals. Existing lifecycle tests are unchanged.
+It uses scripted launchctl responses, not native launchd or a real sidecar;
+ZERO Mac-mini runs are authorized for C5. QA owns
 real Darwin execution with `SUITE=connector-launchd`; see the
 [Mac-native job guide](../ci/jenkins/mac-native-probe/README.md#connector-launchagent-lifecycle-suiteconnector-launchd-thr-360-c1c2).
 It adds no required check or automation trigger. Existing real-systemd

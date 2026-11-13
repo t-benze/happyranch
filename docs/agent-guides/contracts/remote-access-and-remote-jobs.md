@@ -146,8 +146,8 @@ process-birth identity. The watchdog depends on its Python thread being
 scheduled; it cannot promise recovery from host sleep or a runtime/GIL-wide
 freeze. Wall-clock discontinuity may temporarily report stale readiness; the
 restart deadline remains monotonic. No native proof is claimed in PR 2 and the
-sleep-agent native suite is unchanged. The managed
-installer, sidecar build/readiness, signing, app bundling, Swift coexistence and
+sleep-agent native suite is unchanged. C5's managed installer is described below;
+sidecar build/readiness, signing, app bundling, Swift coexistence and
 packaged-app acceptance remain pending. The Swift in-app HomeConnector is
 untouched; never enable both listeners together.
 
@@ -175,19 +175,84 @@ Linux credential readers retain their previous semantics and bytes.
 
 `launchd_files.DARWIN_ENROLLMENT_KEY_PATH` defines
 `~/Library/Application Support/HappyRanch/connector/happyranch-connector/enrollment.key`.
-With overrides, C5/C6 use `<managed-state-root>/enrollment.key`.
+Source lifecycle overrides resolve enrollment to `<managed-state-root>/enrollment.key`;
+C5's managed installer below uses the fixed default layout.
 `credentials.read_darwin_enrollment()` accepts an absolute literal path and
 returns a bytearray after the same no-follow, inode, owner, single-link and
 bounded/nonempty checks, requiring exactly 0600. This is the Linux installer's
 key contract with current-euid ownership instead of root ownership; no group
-ownership requirement is added. It never stages or enrolls a key. C5 installer
-and C6 sidecar consumption remain future work; callers expand the default
+ownership requirement is added. The reader itself never stages or enrolls a key.
+C5 stages it as described below; C6 consumption remains future work. Callers expand the default
 constant with `.expanduser()` before passing it to the reader. Plists/config arguments and
 CLI/status observations carry paths, never daemon-token or enrollment-key values.
 The retained standalone connector venue exercises real files, modes, symlinks,
 hardlinks and FIFOs on Linux with Darwin selection; alternate-euid checks use
 test-side identity substitution against real stat ownership. Native Darwin
 credential/path execution is NOT RUN in C4 (no Mac mini run authorized).
+
+### macOS managed installer (THR-360 C5, PR 4)
+
+On Darwin, `python -m runtime.remote_access.installer` supports
+`install --enrollment-key-file /absolute/input.key`, `check-drift`, and
+`uninstall [--purge]`. Linux's installer class/parser and systemd manager remain
+unchanged. No sudo, account creation, system domain or LaunchDaemon is used.
+Install also accepts `--config /absolute/source.json`, defaulting to the source
+CLI's `~/.happyranch/remote_access/config.json`. The operator supplies that config
+and its policy as current-user single-link regular 0600 files, at most 64 KiB
+each, with literal non-symlink parents. The config requires only a managed
+provider, `system=false`, default unit/state names and no `exec_start` or
+`managed_dir_root` override. The explicit daemon token path is expanded and
+retained; the installer never reads or copies the token.
+
+Assumption: the absolute installing Python interpreter has `runtime.remote_access.cli`
+installed/importable outside the checkout. Plist argv uses that source entry:
+`<python> -m runtime.remote_access.cli run --managed --config <managed-state-root>/config.json`.
+No bundle path is invented; a frozen interpreter refuses. The config is copied
+and repointed to `policy.json` and `trust-state.json` under C4's final
+`~/Library/Application Support/HappyRanch/connector/happyranch-connector` layout.
+Policy bytes are copied; existing trust snapshots/anchors and other state are
+never seeded or overwritten. `install.json` records config/policy/plist SHA-256
+digests for drift observation, not authentication.
+
+The C4 enrollment reader validates input before writes or launchctl. A 0600 copy
+is stored at C4's `enrollment.key` path; the in-memory bytearray is wiped on
+success/failure. The original input remains the operator's responsibility.
+Until C6 consumes it, the stored key remains: every install requires input and
+refuses an existing stored key. Keys never enter config, plist, argv, environment,
+receipt or output. Partial failure may retain the copy; inspect/revoke and purge
+explicitly before retrying. There is no automatic rollback or crash recovery.
+
+Managed files are current-euid, single-link 0600; new directories are 0700.
+The connector root and state leaf must be absent or 0700. Existing shared
+Library/LaunchAgents/log ancestors keep their modes but must be current-user
+owned without group/other write permission. Literal descriptor traversal refuses
+symlinks. Existing differing config/policy/receipt/plist, unsafe/foreign/linked/
+special entries or any plist pending entry refuse before managed writes or
+lifecycle effects. State scans refuse cross-device subtrees, depth over 32 or
+more than 4096 entries. This is not a racing same-user-writer fence.
+
+`LaunchdServiceManager` remains the only lifecycle owner. Install writes/enables
+the plist without bootstrapping, starting or claiming READY, matching the source
+LaunchAgent install contract. An identical plist is enabled without another
+backup. The two label-specific log files are precreated 0600. `check-drift` only
+observes files/layout: stored digests, `layout=ok`, `readiness=not-verified` and
+`sidecar=not-installed`. Missing/differing plist/config/policy/receipt/logs, unsafe
+layout or a changed source interpreter returns `error:`/exit 1. Native/JSON errors
+never echo raw inputs. This proves neither an active service nor readiness.
+
+Uninstall checks the layout, delegates stop/bootout verification, disable and
+plist removal to the existing manager, rechecks after stop, then removes only
+managed config/policy/receipt and the two fixed logs. Normal uninstall retains
+state, enrollment key and readiness record; `--purge` also removes the validated
+state subtree and its directory. Source config, operator key, daemon token,
+unrelated logs, shared parents and lifecycle backups remain untouched. Missing/
+partial installs and repeated removal are supported. Unsafe state refuses before
+launchctl/deletion; failed stop prevents removal. The disabled override may remain.
+
+The standalone installer tests use temporary filesystem objects and scripted
+launchctl observations, with ZERO Mac-mini runs for C5. Native acceptance is
+NOT RUN. Sidecar/key consumption, frozen entry/bundling and Swift coexistence
+remain C6–C8. Never enable both Swift HomeConnector and this connector.
 
 Native evidence is supplied by the `connector-launchd` Mac-mini suite for QA:
 a unique harmless `/bin/sleep` agent, install/start/running PID, SIGKILL/new PID,

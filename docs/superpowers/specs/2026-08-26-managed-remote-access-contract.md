@@ -729,9 +729,47 @@ is not exposed. The maintained contract lists every added JSON field.
 Linux sd_notify, systemd manager bytes, units, installer and status stay unchanged.
 
 No native proof is claimed in this PR; the existing sleep-agent suite is unchanged.
-The per-user managed installer, Darwin sidecar
-and readiness, signing, frozen entry/bundling, Swift coexistence and packaged-app
+The Darwin sidecar and readiness, signing, frozen entry/bundling, Swift coexistence and packaged-app
 acceptance remain future work. No change to Swift HomeConnector is included.
+
+C5 (PR 4) adds the per-user managed installer through Darwin-only dispatch in
+`runtime.remote_access.installer.main`; Linux's installer class/parser and systemd
+manager remain unchanged. Its commands are `install --enrollment-key-file`,
+`check-drift`, and `uninstall [--purge]`. Install's optional `--config` defaults
+to the existing source CLI config. The operator provisions a managed-only config
+and policy; 0600 no-follow reads validate both before staging under C4's final
+state directory. The config uses `system=false`, default unit/state names and no
+custom argv/root override. The token path stays explicit; the token is not copied.
+The source-entry assumption is an installed/importable `runtime.remote_access.cli`
+in the installing absolute Python interpreter, invoked with `run --managed --config`
+pointing at staged `config.json`. No bundle path is invented; frozen entry refuses.
+
+The C4 key reader validates the explicit absolute literal, nonempty <=64KiB
+single-link same-user 0600 input before writes/launchctl. C5 stores `enrollment.key`,
+wipes its memory copy, preserves the operator input and refuses an existing
+stored key. C6 consumption remains pending; failure may retain partial files
+requiring inspection/revocation and explicit purge. Existing trust/anchors are
+never seeded or replaced. Config, copied policy, digest receipt and fixed logs
+are 0600. New directories are 0700; managed connector/state roots require 0700.
+Literal home traversal refuses unsafe, foreign or symlinked directories/files;
+safe shared ancestor modes are retained. Preflight refuses conflicting files and
+plist pending entries. State traversal refuses cross-device subtrees, >4096
+entries or depth >32, without claiming a concurrent-writer fence or transaction.
+
+The existing `LaunchdServiceManager` writes/enables the plist; installation does
+not bootstrap/start or claim readiness. Identical plists are enabled without new
+backups. `check-drift` observes plist/config/policy digests from `install.json`,
+layout and log metadata, reporting `readiness=not-verified`, `sidecar=not-installed`.
+It detects missing/differing/unsafe files and a changed source interpreter, with
+non-secret `error:`/exit 1 on refusal. Digests are observations, not authentication.
+Uninstall preflights, delegates stop/bootout/disable/plist removal, rechecks and
+removes config/policy/receipt and fixed logs. Normal uninstall retains state/key;
+purge additionally removes the validated state subtree. Partial/missing installs
+are idempotent; unsafe state or failed stop prevents file removal. No source
+input, token, unrelated log, shared parent or lifecycle backup is removed.
+The maintained contract defines exact paths and remaining limitations.
+Standalone filesystem/fake-launchctl tests add no native acceptance. C5 uses
+ZERO Mac-mini runs; C6–C8 and combined end-of-goal native acceptance remain open.
 
 Start-failure probe context records bounded plist lint, mode/owner versus current
 UID, session types and a label-filtered launchd log excerpt before cleanup.
