@@ -229,7 +229,7 @@ def _measure_org(function: Callable) -> Callable:
 
 def _kept_history(summary: Path, deadline: float, date: str) -> dict:
     """One bounded, no-follow pass of reports; no candidate-state I/O."""
-    result = dict(date=date, paths={}, status='complete', reports=0)
+    result = dict(date=date, paths={}, status='complete', reports=0, bytes_read=0)
     try:
         # Bound enumeration, total bytes and path count, including legacy files.
         with directory(summary.parent, deadline) as parent:
@@ -249,10 +249,16 @@ def _kept_history(summary: Path, deadline: float, date: str) -> dict:
                 fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
                 try:
                     before = os.fstat(fd)
-                    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > min(8 * 1024 * 1024, remaining):
+                    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 8 * 1024 * 1024:
                         raise Retain('history_file_limit_or_type')
+                    # Ordinary aggregate exhaustion is a successful window,
+                    # not a corrupt report. Keep dates from validated files.
+                    if before.st_size > remaining:
+                        result['status'] = 'bounded_window'
+                        break
                     raw = os.read(fd, before.st_size + 1)
                     remaining -= len(raw)
+                    result['bytes_read'] += len(raw)
                     if len(raw) != before.st_size or signature(os.fstat(fd)) != signature(before) or signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != signature(before):
                         raise Retain('history_changed')
                     with directory(summary.parent, deadline) as current:

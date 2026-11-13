@@ -3909,12 +3909,72 @@ def c25():
     return dict(counts=observations, kept_size='existing complete snapshot only', residue=1, history='one pass, earliest observed date, no-follow refusal', failure='real scratch removal still succeeds')
 
 
+def c26():
+    """Ordinary history byte exhaustion preserves validated retained dates."""
+    from datetime import date, timedelta
+    observations = []
+    with fixture() as f:
+        repo, p = f.worktree('TASK-1')
+        (p / 'source').write_text('dirty\n')
+        summary = f.base / 'daemon/disk-sweep/2026-11-14.json'
+        common = dict(dry_run=True, scheduled_date='2026-11-14', revision='synthetic')
+        prototype = ds.sweep([str(f.org)], time.monotonic() + 12, summary, **common)
+        org = prototype['orgs'][0]
+        dirty = row(org, p)
+        dirty['measurement']['kept_since'] = '2026-10-13'
+        org['candidates'] = [dict(dirty, path=str(p) if n == 0 else f'/home/fixture/.happyranch/runtime/orgs/happyranch/workspaces/dev_agent/repos/happyranch/.claude/worktrees/TASK-{n:06d}') for n in range(1600)]
+        original = org['measurements']['clones'][str(repo)]
+        org['measurements']['clones'] = {f'/home/fixture/workspaces/maker/repos/project-{n}': original for n in range(12)}
+        ds._summarize_org(org)
+        raw = json.dumps(prototype, sort_keys=True, indent=2).encode()
+        # The review's ordinary 1.96 MB/report volume, not an individually
+        # oversized report. JSON permits trailing whitespace for exact sizing.
+        report_bytes = 1_962_316
+        assert len(raw) <= report_bytes, len(raw)
+        raw += b' ' * (report_bytes - len(raw))
+        paths = [summary.parent / ((date(2026, 10, 13) + timedelta(days=n)).isoformat() + '.json') for n in range(32)]
+        for path in paths:
+            path.write_bytes(raw)
+        assert 32 * report_bytes > 32 * 1024 * 1024
+        report = ds.sweep([str(f.org)], time.monotonic() + 12, summary, **common)
+        kept = row(report['orgs'][0], p)
+        assert kept['measurement']['kept_since'] == '2026-10-13', (kept['measurement'], report['measurement_history'])
+        history = report['measurement_history']
+        assert history['status'] == 'bounded_window', history
+        assert history['reports'] == 17 and history['bytes_read'] == 17 * report_bytes, history
+        assert json.loads(summary.read_text())['measurement_history'] == history
+        assert ds._audit_payload(report, report['orgs'][0], summary)['measurement_history'] == history
+        retained(report['orgs'][0], p, 'dirty_or_untracked')
+        observations.append(dict(input='32 valid production-sized reports', bytes_per_report=report_bytes, total_bytes=32 * report_bytes, history=history, kept_since=kept['measurement']['kept_since']))
+        # A malformed report inside the readable window still fails visibly,
+        # even after a newer valid report has contributed a date.
+        paths[-2].write_text('{')
+        report = ds.sweep([str(f.org)], time.monotonic() + 12, summary, **common)
+        history = report['measurement_history']
+        assert history['status'] == 'unavailable:JSONDecodeError' and history['reports'] == 1, history
+        assert row(report['orgs'][0], p)['measurement']['kept_since'] == '2026-11-14', history
+        retained(report['orgs'][0], p, 'dirty_or_untracked')
+        observations.append(dict(input='malformed second report', history=history))
+        paths[-2].write_bytes(raw)
+        # The first file outside the remaining aggregate allowance is also
+        # checked against the independent single-report limit before stopping.
+        with paths[-18].open('wb') as stream:
+            stream.truncate(8 * 1024 * 1024 + 1)
+        report = ds.sweep([str(f.org)], time.monotonic() + 12, summary, **common)
+        history = report['measurement_history']
+        assert history['status'] == 'unavailable:Retain' and history['reports'] == 17, history
+        assert row(report['orgs'][0], p)['measurement']['kept_since'] == '2026-11-14', history
+        retained(report['orgs'][0], p, 'dirty_or_untracked')
+        observations.append(dict(input='oversized boundary report', history=history))
+    return observations
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,26))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,27))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -3936,7 +3996,8 @@ if __name__=='__main__':
             purposes=('Terminal owned root and attribution','Nonterminal and invalid lineage','Real process cwd/root/exe/fd','Real TMPDIR/TMP/TEMP and alias','Readonly handling and bounded Git retry','Link/ancestor and actual mounted boundaries','Dirty/untracked and ignored Git contents','Nonmutating function and public CLI dry run','Missing/denied evidence and all job lineage','Jobs both phases and fresh retry change','Nested recent writes','Partial removal, deadline, shutdown and event loop','Detached commit retained refs','Same-night progress after refusals and exhaustion','Partial discovery with protected non-Git siblings','Narrow unreadable/broken/alias discovery scopes','Global deadline during partial discovery','Progress after many uncertain subtrees','Complete unreadable/missing registration census','No metadata alias or conflicting backlink traversal','Fresh registration gates and truthful partial effects','Primary-only control and metadata enumeration deadline')
             purposes += ('Additive TASK registration arrivals and shared mapping changes',)
             purposes += ('Measurement compatibility with pinned pre-instrumentation source', 'Known measurement counts, effects, history and failure isolation')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25),purposes),1):
+            purposes += ('Production-sized bounded history and invalid-report visibility',)
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

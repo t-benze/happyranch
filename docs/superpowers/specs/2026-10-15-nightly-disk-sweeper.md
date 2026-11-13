@@ -460,14 +460,21 @@ Instrumentation errors are reported and cannot authorize,
 refuse or fail an operation. Timings use a separate monotonic performance clock
 and do not modify the original deadline checks.
 
-`kept_since` is the earliest recorded retained date for the exact path, not an
-inode identity or proof of continuous retention. History is reduced once per
-worker run, before discovery, through literal no-follow report parents/files:
-at most 512 directory entries, 32 preceding date reports, 8 MiB per report,
-32 MiB total and 8192 paths. Safe carried earlier dates are retained. The current
-run date is the first observation when no prior date is available; history
-status exposes a bounded window or failure. Manual filenames are excluded.
-History failure discards the partial lookup and never changes a sweep decision.
+`kept_since` is the earliest recorded retained date for the exact path within
+report history actually read, including safe carried earlier dates, not an inode
+identity, proof of continuous retention or claim beyond that window. History is
+reduced once per worker run, before discovery, through literal no-follow report
+parents/files: at most 512 directory entries, 32 preceding date reports, 8 MiB per
+report, 32 MiB total and 8192 paths. Reaching the report-count or aggregate-byte
+boundary is a successful truncated window: validated dates survive, and
+`measurement_history.status=bounded_window` visibly reports truncation alongside
+`reports` (fully validated reports) and `bytes_read` (content bytes read, including
+any later invalid read). The next report is not read if it exceeds the remaining
+aggregate allowance; its type/link and independent 8 MiB limit still apply.
+The current run date is the first observation when no prior date is available.
+Manual filenames are excluded. Genuinely invalid/unsafe/individually oversized
+reports or other history failures expose `unavailable:<exception type>`, discard
+the partial lookup and never change a sweep decision.
 `kept_allocated_bytes` comes only from an already completed candidate snapshot,
 inode-deduplicated from its existing stat objects; otherwise it is the literal
 `unknown`. Partial walks cannot establish a size. This does not change the
@@ -489,7 +496,9 @@ This is a synthetic size measurement, not a production run or runtime forecast.
 The existing disposable driver owns cases 24 (byte-equivalent legacy report/
 audit projection against pinned pre-instrumentation source, including eligible
 preview and caught configuration errors) and 25 (known call counts, effects,
-kept size/date, report alias refusal and forced recorder failure). Case 12 adds
+kept size/date, report alias refusal and forced recorder failure). Case 26 drives
+32 production-sized reports through the real reader, checks aggregate truncation
+without lost dates and verifies malformed/oversized report visibility. Case 12 adds
 budget/shutdown cause and interrupted
 measurement assertions to its existing actual worker/process tests. Focused:
 `.venv/bin/python scripts/verify_disk_sweeper.py --cases 12 24 25` with task-owned
