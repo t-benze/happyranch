@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,7 +144,7 @@ func startLaunchdWatchdog(interval time.Duration) *launchdWatchdog {
 func (w *launchdWatchdog) healthy() { w.lastPass.Store(int64(time.Since(w.origin))) }
 func (w *launchdWatchdog) stop()    { close(w.done); <-w.stopped }
 
-func serveLaunchd(ctx context.Context, svc *sidecar.Sidecar, path string, interval time.Duration) int {
+func serveLaunchd(ctx context.Context, svc *sidecar.Sidecar, path string, interval time.Duration, connectorAddr string) int {
 	if !validReadinessPath(path) || interval <= 0 {
 		return 2
 	}
@@ -207,10 +208,30 @@ func serveLaunchd(ctx context.Context, svc *sidecar.Sidecar, path string, interv
 	}
 	ticker := time.NewTicker(cadence)
 	defer ticker.Stop()
+	// launchd has no systemd BindsTo equivalent. Check the validated loopback
+	// endpoint separately from the frequent readiness publications: at most 1s
+	// between probes, with at most 250ms in DialContext (1.25s loss detection).
+	// Short watchdogs scale both budgets down; the independent watchdog still
+	// bounds stalled publication/teardown. No protocol or credential is sent.
+	connectorTicker := time.NewTicker(max(time.Nanosecond, min(time.Second, interval/4)))
+	defer connectorTicker.Stop()
+	connectorDialer := net.Dialer{Timeout: max(time.Nanosecond, min(250*time.Millisecond, interval/8))}
 	for {
 		select {
 		case <-ctx.Done():
 			return stop(0, "stopping")
+		case <-connectorTicker.C:
+			conn, err := connectorDialer.DialContext(ctx, "tcp", connectorAddr)
+			if ctx.Err() != nil {
+				if conn != nil {
+					conn.Close()
+				}
+				return stop(0, "stopping")
+			}
+			if err != nil {
+				return stop(1, "readiness-or-listener-lost")
+			}
+			conn.Close()
 		case <-ticker.C:
 			if !svc.Running() {
 				return stop(1, "readiness-or-listener-lost")

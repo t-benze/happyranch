@@ -63,7 +63,7 @@ func run(ctx context.Context, args []string) int {
 	}
 	svc := sidecar.New(cfg, sidecar.NewTSNetEngine(), &net.Dialer{Timeout: 5 * time.Second})
 	if runtime.GOOS == "darwin" {
-		return serveLaunchd(ctx, svc, *readiness, *watchdog)
+		return serveLaunchd(ctx, svc, *readiness, *watchdog, cfg.ConnectorAddr)
 	}
 	return serve(ctx, svc)
 }

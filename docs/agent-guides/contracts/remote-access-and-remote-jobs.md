@@ -147,9 +147,10 @@ scheduled; it cannot promise recovery from host sleep or a runtime/GIL-wide
 freeze. Wall-clock discontinuity may temporarily report stale readiness; the
 restart deadline remains monotonic. No native proof is claimed in PR 2 and the
 sleep-agent native suite is unchanged. C5's managed installer is described below;
-sidecar build/readiness, signing, app bundling, Swift coexistence and
-packaged-app acceptance remain pending. The Swift in-app HomeConnector is
-untouched; never enable both listeners together.
+C6a's Go sidecar build/readiness and C6-loss connector-loss handling are
+recorded below. Python sidecar integration, signing, app bundling, Swift
+coexistence and packaged-app acceptance remain pending. The Swift in-app
+HomeConnector is untouched; never enable both listeners together.
 
 ### macOS credentials and state paths (THR-360 C4, PR 3)
 
@@ -512,6 +513,21 @@ durability, expected-peer, loopback-probe and listener gates. Healthy publicatio
 refreshes at half the watchdog interval, capped at 100ms. Listener loss publishes
 false and exits nonzero; SIGTERM/SIGINT publish false/stopping before teardown.
 
+C6-loss (PR 6) checks connector TCP reachability only in the Darwin launchd
+healthy loop. It dials the configured literal-loopback `ConnectorAddr` every
+`min(1s, watchdog_interval/4)`, with timeout
+`min(250ms, watchdog_interval/8)` (each floored at 1ns). One failed dial publishes
+`ready=false` with the existing C3 reason `readiness-or-listener-lost`, then
+exits 1 after service teardown. The normal detection budget is cadence plus
+timeout: at most 1.25s with the default 30s watchdog, plus Go scheduling and
+readiness-publication/teardown time. Shorter watchdogs scale the probe budgets
+to a combined 3/8 interval; the independent monotonic watchdog still exits 75
+if publication or teardown stalls. A successful probe immediately closes the
+connection without sending protocol data or credentials. TCP reachability does
+not prove application-level health. Connector-loss recovery is sidecar exit +
+launchd KeepAlive, without a second supervisor. Linux still relies on systemd
+BindsTo; its serving/readiness path is unchanged.
+
 The Go writer mirrors C3's descriptor-relative no-follow parent traversal,
 current-euid 0700 writable directory, exclusive 0600 temp, file fsync and atomic
 rename. The unchanged Python status reader accepts the record. A separate
@@ -524,8 +540,11 @@ credential-file/consumed-marker/deletion/empty-key restart contract.
 
 `tools/generate_inventory.py --target darwin-arm64 [--check]` maintains separate
 `third_party/darwin-arm64/{dependency-inventory.json,THIRD_PARTY_NOTICES.md}`;
-Linux's default outputs remain byte-identical. `--check` verifies without writes.
-Darwin-only build modules are `github.com/google/uuid@v1.6.0` and
+Linux's historical library inventory and notices remain byte-identical.
+`--check` verifies without writes. C6-loss reconciles Darwin against the command
+package graph, adding the already-pinned `github.com/mdlayher/sdnotify@v1.0.0`
+module/license omitted by the earlier library-only inventory. Darwin-only build
+modules relative to Linux remain `github.com/google/uuid@v1.6.0` and
 `github.com/prometheus-community/pro-bing@v0.4.0`, already pinned in go.mod/go.sum.
 Build instructions and exact record fields are in the sidecar README. Darwin
 checks here are cross-build/test compilation/vet only; native execution is NOT

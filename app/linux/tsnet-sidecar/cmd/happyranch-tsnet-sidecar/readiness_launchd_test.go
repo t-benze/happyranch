@@ -68,12 +68,12 @@ func TestLaunchdReadinessLifecycle(t *testing.T) {
 			if scenario == "startup-failure" {
 				e.startErr = sidecar.ErrEngine
 			}
-			svc := commandService(t, e)
+			svc, connector := launchdCommandService(t, e)
 			path := filepath.Join(t.TempDir(), "state", "sidecar.readiness.json")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			result := make(chan int, 1)
-			go func() { result <- serveLaunchd(ctx, svc, path, 2*time.Second) }()
+			go func() { result <- serveLaunchd(ctx, svc, path, 2*time.Second, connector.Addr().String()) }()
 			starting := awaitReadiness(t, path, func(r map[string]any) bool { return r["reason"] == "starting" })
 			if starting["ready"] != false || starting["last_healthy_wall_time"] != nil || starting["sequence"] != float64(1) || starting["pid"] != float64(os.Getpid()) || starting["process_started_at"].(float64) <= 0 {
 				t.Fatalf("pre-Up record: %v", starting)
@@ -200,24 +200,25 @@ func (e *blockedCloseEngine) Close() error { <-e.closing; return nil }
 func TestLaunchdWatchdogStalledPass(t *testing.T) {
 	if scenario := os.Getenv("SIDECAR_WATCHDOG_CASE"); scenario != "" {
 		e := &commandEngine{release: make(chan struct{})}
-		svc := commandService(t, e)
+		svc, connector := launchdCommandService(t, e)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		path := os.Getenv("SIDECAR_WATCHDOG_RECORD")
 		if scenario == "shutdown" {
 			// Swap only the existing engine interface, never the watchdog or publisher.
 			cfg := configForCommand(t)
-			connector, err := net.Listen("tcp", "127.0.0.1:0")
+			blockedConnector, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer connector.Close()
+			defer blockedConnector.Close()
+			connector = blockedConnector
 			cfg.ConnectorAddr = connector.Addr().String()
 			blocked := &blockedCloseEngine{commandEngine: commandEngine{listener: e.listener}, closing: make(chan struct{})}
 			svc = sidecar.New(cfg, blocked, &net.Dialer{})
 			go func() { awaitReadiness(t, path, func(r map[string]any) bool { return r["ready"] == true }); cancel() }()
 		}
-		os.Exit(serveLaunchd(ctx, svc, path, 150*time.Millisecond))
+		os.Exit(serveLaunchd(ctx, svc, path, 150*time.Millisecond, connector.Addr().String()))
 	}
 	for _, scenario := range []string{"startup", "shutdown"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -257,12 +258,12 @@ func TestLaunchdHealthyPassRenewsDeadline(t *testing.T) {
 		return
 	}
 	e := &commandEngine{}
-	svc := commandService(t, e)
+	svc, connector := launchdCommandService(t, e)
 	path := filepath.Join(t.TempDir(), "state", "readiness.json")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan int, 1)
-	go func() { result <- serveLaunchd(ctx, svc, path, 400*time.Millisecond) }()
+	go func() { result <- serveLaunchd(ctx, svc, path, 400*time.Millisecond, connector.Addr().String()) }()
 	first := awaitReadiness(t, path, func(r map[string]any) bool { return r["ready"] == true })
 	// Multiple completed publications carry a healthy service past its initial
 	// watchdog deadline. A missing healthy() tick exits the test subprocess too.
@@ -279,13 +280,13 @@ func TestLaunchdHealthyPassRenewsDeadline(t *testing.T) {
 
 func TestLaunchdPublicationFailureClosesService(t *testing.T) {
 	e := &commandEngine{}
-	svc := commandService(t, e)
+	svc, connector := launchdCommandService(t, e)
 	parent := filepath.Join(t.TempDir(), "state")
 	path := filepath.Join(parent, "ready.json")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan int, 1)
-	go func() { result <- serveLaunchd(ctx, svc, path, 2*time.Second) }()
+	go func() { result <- serveLaunchd(ctx, svc, path, 2*time.Second, connector.Addr().String()) }()
 	awaitReadiness(t, path, func(r map[string]any) bool { return r["ready"] == true })
 	// A real filesystem policy loss makes the next publication fail. The previous
 	// complete record remains; process status must cease claiming readiness.
