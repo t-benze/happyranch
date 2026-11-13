@@ -76,6 +76,19 @@
   Public failure evidence separates handoff/decrypt/native-process/C-init/C-start/
   join-wait timings, allowlisted exception classes, return codes and fixed-label
   join diagnostics before scratch removal.
+  DERP proof also writes its closed `derp_diagnostics` to client-summary.json and
+  Actions stdout before private cleanup, retaining it in the final summary.
+  Only the fixed labels and bounded integer counts/region IDs documented in the
+  runbook leave the worker; unknown labels become `unknown`. Actual connected
+  region999 and UDP-disabled logs, then allowed200 and exposure probes remain
+  mandatory. Pinned v1.78.0 filenames/JSON/logger wiring/regexes are correct, but
+  Headscale's default-disabled logtail sends DisableLogTail before the netmap,
+  causing later DERP log writes to be discarded. Its initial drain can also
+  consume startup entries despite24h delay. The exact attempt6 assertion remains
+  unproved without private logs/control response; this adds diagnostics only and
+  does not authorize a weaker proof. TASK-15774/run43330485188/JOB-6668 remains
+  failed/spent at derp-proof; subsequent200/exposure were not reached. Bridge/
+  logger/ABI/dependency/acceptance changes require a separate manager decision.
   C init/start failures also retain the allowlisted `bridge_error_class` from
   the existing C error accessor, with raw text withheld and unknown patterns
   mapped to `unknown`. The native runner exclusively creates the0700 target

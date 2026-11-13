@@ -207,9 +207,12 @@ system Tailscale is involved. Native toolchain and archive hash are recorded.
 | logs/cleanup | Fresh run directory, microsecond journal boundary and shipped attribution. Installed-product purge assertions remain unchanged. Without install, assert absent product state and label not applicable. Remove transient state/CA/links/test sockets; preserve unchanged DNS hashes and only the validated cert cache. |
 
 `managed-m4-logs-RUN_ID-1` contains only request.json and client-summary.json.
-Private native filch/stderr/build logs are not uploaded. Existing logtail delay
-keeps native logs local for the bounded run; the client worker is killed/reaped
-before graceful upload and scratch is removed by foreground/finally and workflow
+Private native filch/stderr/build logs are excluded from workflow artifacts.
+The logtail delay
+defers periodic drain wakes, but v1.78.0 starts an initial drain immediately;
+consumed filch entries can be truncated before any upload succeeds. It does not
+guarantee retention of startup evidence. The client worker is killed/reaped
+without graceful logtail shutdown and scratch is removed by foreground/finally and workflow
 always-cleanup. VM plain-log collection excludes cell/keys/DB/state, records
 stream byte counts/hashes and <=256KiB excerpts, gzip>1MB and45MB total cap.
 Guest1s memory/swap sampling and per-service peaks remain; builds use2 workers,
@@ -239,6 +242,41 @@ observed), never the accessor's raw text, paths, keys or URLs. These are pattern
 classifications; an unrecognized hostname/auth/backend error remains `unknown`.
 Pinned tsnet v1.78.0 puts its log config/filch files in the same state root;
 there is no separate harness log-directory setting.
+
+DERP proof retains its strict connected-region set `{999}` and actual UDP-disable
+log assertions, followed by allowed200 and the live exposure probes. Pinned
+v1.78.0 writes JSON lines with top-level `text` to `tailscaled.log1.txt` and
+`tailscaled.log2.txt`; backend logging reaches filch even with nil embedder Logf.
+Both existing regexes match its messages. The fixture omits `logtail.enabled`;
+Headscale v0.25.1 defaults it to false and
+sends `Debug.DisableLogTail`. Tailscale handles that before publishing the first
+netmap: logtail.Disable makes subsequent writes return without writing filch.
+DERP starts from that netmap, so its later connected message cannot reach these
+files under this source configuration; nil embedder Logf supplies no independent
+backend stderr copy. The initial drain can additionally remove startup UDP logs.
+This proves an unavailable evidence channel in the source configuration, while
+attributing the exact attempt6 assertion still requires its unavailable private
+logs/control response. Only diagnostics are added; no weaker/config-only proof
+or configuration change follows.
+
+On proof success/failure the worker emits `derp_diagnostics`, reprojected by Bridge
+and again by the runner. Before private cleanup the runner writes it to
+client-summary.json and Actions stdout; the final cleanup summary retains it.
+`label` is one of `no-log-files`, `log-budget`, `no-decodable-entries`,
+`region-missing`, `region-unexpected`, `udp-disable-missing`, `unknown`, `passed`.
+Unknown labels reproject to `unknown`. Only `file_count`, `total_bytes`,
+`decoded_entry_count`, `derp_connected_matches`, `udp_disable_matches` (integers
+clamped to0..16,000,000; invalid types/negative values become0) and
+`matched_regions` (sorted distinct integer IDs0..10,000,000, at most8) accompany
+the label. Booleans/floats/strings are not integer evidence. Counts can be partial
+on read failure; `unknown` also covers a worker failure before diagnostic delivery.
+A pre-cleanup publication error records the fixed `derp-evidence-publication`
+failure and still reaps/removes private state before final evidence publication.
+No raw text, paths, addresses, keys or URLs cross this boundary. Attempt6
+(TASK-15774/run43330485188/JOB-6668) remains failed/spent at derp-proof; post-proof
+200 and exposure probes were not reached. Any bridge/logger/ABI/dependency or
+acceptance-contract alternative requires a manager decision; this diagnostic
+change supplies no run/issuance allowance or native acceptance.
 
 Before generating or publishing the recipient request, `prepare` executes that
 same host with an exclusively owned malformed log config and a synthetic key.
