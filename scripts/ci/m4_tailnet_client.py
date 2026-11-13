@@ -84,59 +84,123 @@ def safe_packet_diagnostics(value: object) -> dict:
                    for key in PACKET_PROOF_COUNTS})
 
 
-def packet_evidence(text: str, pid: int, diagnostic: dict) -> None:
-    """Apple tcpdump -tt -nn -q -k PD, without a PID/endpoint filter.
+CAPTURE_SHAPES = {'unknown', 'passed', 'prefix', 'metadata', 'multiline', 'truncated',
+                  'transport', 'endpoint', 'attribution', 'counters'}
+CAPTURE_COUNTS = ('header_lines', 'metadata_lines', 'ipv4_packets', 'ipv6_packets',
+                  'other_process_packets', 'counter_lines', 'captured', 'received',
+                  'kernel_drops', 'interface_drops', 'metadata_drops', 'stderr_other_lines',
+                  *('unparsed_' + shape for shape in sorted(CAPTURE_SHAPES - {'unknown', 'passed'})))
+OBSERVER_LABELS = PACKET_PROOF_LABELS | {'observer-child-start', 'observer-request', 'observer-child-cleanup'}
 
-    Reject unattributed egress rather than hiding it with a metadata filter.
-    Reverse tuples attribute incoming kernel packets to observed native egress.
-    Addresses and tuples remain private, never part of the returned projection.
+
+def safe_capture_diagnostics(value: object) -> dict:
+    value = value if isinstance(value, dict) else {}
+    label = value.get('label')
+    return dict(label=label if isinstance(label, str) and label in CAPTURE_SHAPES else 'unknown',
+                **{key: min(value[key], 16_000_000) if type(value.get(key)) is int and value[key] >= 0 else 0
+                   for key in CAPTURE_COUNTS})
+
+
+def capture_detail(diagnostic: dict) -> dict:
+    return diagnostic.setdefault('capture_diagnostics', safe_capture_diagnostics(None))
+
+
+def capture_refusal(diagnostic: dict, shape: str) -> None:
+    detail = capture_detail(diagnostic)
+    detail['label'] = shape
+    detail['unparsed_' + shape] += 1
+    diagnostic['label'] = 'capture-format'
+    raise AssertionError('unsupported capture structure')
+
+
+def packet_evidence(text: str, pid: int, diagnostic: dict, *, endpoint: tuple[str, int] = (PUBLIC_IP, 443)) -> None:
+    """Apple -tt -nn -q -k PD. No capture filter; tuples stay private.
+
+    Parse metadata BEFORE protocol bodies. Unsupported bodies/continuations may
+    belong only to positively identified other processes. Kernel receive records
+    need a reverse native flow; an absent/zero PID never identifies another process.
+    The local observer precondition uses this same parser with its owned endpoint.
     """
+    detail = capture_detail(diagnostic)
+    records: list[tuple[str, str, list[str]]] = []
+    for line in text.splitlines():
+        prefix = re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)
+        if prefix:
+            metadata, body = prefix.groups()
+            records.append((metadata, body, []))
+        elif line[:1].isspace() and records:
+            records[-1][2].append(line)
+        else:
+            capture_refusal(diagnostic, 'prefix')
+    if text and not text.endswith('\n'):
+        capture_refusal(diagnostic, 'truncated')
     rows = []
     flows = set()
-    for line in text.splitlines():
-        diagnostic['label'] = 'capture-format'
-        prefix = re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)
-        assert prefix, 'packet prefix'
-        metadata, body = prefix.groups()
+    for metadata, body, continuations in records:
         diagnostic['packet_count'] += 1
-        # ARP is not an IP transport. Keep it in completeness accounting; no
-        # capture filter may hide unattributed UDP or unread packets.
-        if body.startswith('ARP, '):
-            continue
-        match = re.fullmatch(r'(IP6?) (\S+) > (\S+): (tcp |UDP, length )([0-9]+)', body)
-        assert match, 'packet format'
-        _, source, destination, protocol, size = match.groups()
         fields = metadata.split(', ')
-        direction = [part for part in fields if part in {'in', 'out'}]
-        assert len(direction) == 1 and all(part in {'in', 'out'} or re.fullmatch(r'(?:e?proc) [0-9]+', part) for part in fields), 'metadata format'
-        identities = [int(part.split()[1]) for part in fields if part.startswith(('proc ', 'eproc '))]
-        diagnostic['label'] = 'metadata-missing'
-        assert (identities and all(identity > 0 for identity in identities)) or direction == ['in'], 'unattributed egress'
+        directions = [part for part in fields if part in {'in', 'out'}]
+        # Apple prints an empty proc/eproc value when a name/UUID exists but
+        # pid == -1 and only P was requested. Zero is also not process evidence.
+        if len(directions) != 1 or not all(part in {'in', 'out'} or re.fullmatch(r'e?proc [0-9]{0,10}', part) for part in fields):
+            capture_refusal(diagnostic, 'metadata')
+        detail['metadata_lines'] += 1
+        identity_fields = [part for part in fields if part.startswith(('proc ', 'eproc '))]
+        if len({part.split(' ', 1)[0] for part in identity_fields}) != len(identity_fields):
+            capture_refusal(diagnostic, 'metadata')
+        identities = [int(part.split(' ', 1)[1] or '0') for part in identity_fields]
         native = pid in identities
+        other = bool(identities) and all(identity > 0 and identity != pid for identity in identities)
         diagnostic['native_packet_count'] += int(native)
-        diagnostic['label'] = 'capture-format'
-        assert int(size) <= 65535, 'packet size'
-        endpoints = []
-        for endpoint in (source, destination):
-            host, port = endpoint.rsplit('.', 1)
-            endpoints.append((str(ipaddress.ip_address(host)), int(port)))
-            assert 0 < int(port) <= 65535, 'port range'
+        if other:
+            detail['other_process_packets'] += 1
+            continue
+        if continuations:
+            capture_refusal(diagnostic, 'multiline')
+        if re.search(r'\[\||truncated|\[invalid|bad (?:hdr|length)', body):
+            capture_refusal(diagnostic, 'truncated')
+        match = re.fullmatch(r'(IP6?) (\S+) > (\S+): (tcp |UDP, length )([0-9]{1,10})', body)
+        if not match:
+            capture_refusal(diagnostic, 'transport')
+        family, source, destination, protocol, size_text = match.groups()
+        detail['ipv6_packets' if family == 'IP6' else 'ipv4_packets'] += 1
+        size = int(size_text)
+        try:
+            endpoints = []
+            for value in (source, destination):
+                host, port_text = value.rsplit('.', 1)
+                host_ip, port = ipaddress.ip_address(host), int(port_text)
+                if host_ip.version != (6 if family == 'IP6' else 4) or not 0 < port <= 65535 or size > 65535:
+                    raise ValueError('endpoint bounds')
+                endpoints.append((str(host_ip), port))
+        except ValueError:
+            capture_refusal(diagnostic, 'endpoint')
         origin, target = endpoints
+        direction = directions[0]
+        diagnostic['label'] = 'metadata-missing'
+        if not native and direction != 'in':
+            detail['label'] = 'attribution'
+            detail['unparsed_attribution'] += 1
+            raise AssertionError('unattributed egress')
         if native and protocol != 'tcp ':
             diagnostic['udp_count'] += 1
-        if native and direction == ['out'] and protocol == 'tcp ':
+        if native and direction == 'out' and protocol == 'tcp ':
             diagnostic['label'] = 'relay-endpoint-unexpected'
-            assert target == (PUBLIC_IP, 443), 'unexpected native TCP destination'
+            assert target == endpoint, 'unexpected native TCP destination'
             flows.add((origin, target))
-            diagnostic['relay_tx_bytes'] += int(size)
-        rows.append((origin, target, protocol, int(size), direction[0]))
+            diagnostic['relay_tx_bytes'] += size
+        rows.append((origin, target, protocol, size, direction, native))
     diagnostic['label'] = 'udp-observed'
     assert diagnostic['udp_count'] == 0, 'native UDP observed'
-    for origin, target, protocol, size, direction in rows:
-        if direction == 'in' and protocol == 'tcp ' and (target, origin) in flows:
+    for origin, target, protocol, size, direction, native in rows:
+        if direction == 'in':
+            if protocol != 'tcp ' or (target, origin) not in flows:
+                capture_refusal(diagnostic, 'attribution')
+            diagnostic['native_packet_count'] += int(not native)
             diagnostic['relay_rx_bytes'] += size
     diagnostic['label'] = 'relay-traffic-missing'
     assert diagnostic['relay_tx_bytes'] > 0 and diagnostic['relay_rx_bytes'] > 0, 'missing bidirectional relay payload'
+    detail['label'] = 'passed'
 
 
 class PacketCapture:
@@ -226,27 +290,152 @@ print('M4_CAPTURE_END=%d:%d'%(code,int(early or not stopped)),flush=True)
             for stream in self.streams:
                 stream.close()
 
-    def evidence(self, pid: int) -> None:
+    def evidence(self, pid: int, *, endpoint: tuple[str, int] = (PUBLIC_IP, 443)) -> None:
         diagnostic = self.diagnostic
         diagnostic['label'] = 'capture-budget'
         assert all(p.stat().st_size < self.byte_limit for p in self.paths), 'capture byte budget'
-        raw, errors = [p.read_text() for p in self.paths]
+        try:
+            raw, errors = [p.read_text() for p in self.paths]
+        except UnicodeError:
+            capture_refusal(diagnostic, 'prefix')
         diagnostic['label'] = 'capture-deadline'
         assert time.monotonic() < self.started + self.seconds, 'capture deadline'
         diagnostic['label'] = 'capture-incomplete'
         assert self.process is not None and self.process.returncode == 0, 'capture did not finish cleanly'
         assert raw.endswith('M4_CAPTURE_END=0:0\n'), 'capture child not positively stopped/reaped'
         raw = raw.removesuffix('M4_CAPTURE_END=0:0\n')
-        captured = re.findall(r'^([0-9]+) packets captured$', errors, re.M)
-        received = re.findall(r'^([0-9]+) packets received by filter$', errors, re.M)
-        dropped = re.findall(r'^([0-9]+) packets dropped by kernel$', errors, re.M)
-        interface_drops = re.findall(r'^([0-9]+) packets dropped by interface$', errors, re.M)
+        detail = capture_detail(diagnostic)
+        detail['header_lines'] = len(re.findall(r'^.*listening on .*, link-type PKTAP(?: |$)', errors, re.M))
+        captured = re.findall(r'^([0-9]+) packets? captured$', errors, re.M)
+        received = re.findall(r'^([0-9]+) packets? received by filter$', errors, re.M)
+        dropped = re.findall(r'^([0-9]+) packets? dropped by kernel$', errors, re.M)
+        interface_drops = re.findall(r'^([0-9]+) packets? dropped by interface$', errors, re.M)
+        metadata_drops = re.findall(r'^([0-9]+) drops? by metadata filter$', errors, re.M)
+        counters = (captured, received, dropped, interface_drops, metadata_drops)
+        detail['counter_lines'] = sum(map(len, counters))
+        detail['stderr_other_lines'] = max(0, len(errors.splitlines()) - detail['header_lines'] - detail['counter_lines'])
+        for key, values in zip(('captured', 'received', 'kernel_drops', 'interface_drops', 'metadata_drops'), counters):
+            if len(values) == 1:
+                detail[key] = min(int(values[0]), 16_000_000)
+        detail['label'] = 'counters'
+        assert detail['header_lines'] == 1, 'capture header absent/duplicate'
+        assert len(interface_drops) <= 1 and len(metadata_drops) <= 1 and all(value == '0' for value in metadata_drops), 'filtered/duplicate capture counters'
         assert len(captured) == len(received) == len(dropped) == 1 and captured == received and dropped == ['0'] and all(value == '0' for value in interface_drops), 'missing/dropped/unread capture evidence'
         diagnostic['label'] = 'capture-budget'
         assert int(captured[0]) < self.packet_limit, 'capture packet budget'
-        packet_evidence(raw, pid, diagnostic)
+        packet_evidence(raw, pid, diagnostic, endpoint=endpoint)
         diagnostic['label'] = 'capture-incomplete'
         assert int(captured[0]) == diagnostic['packet_count'], 'partial packet stream'
+        diagnostic['label'] = 'capture-deadline'
+        assert time.monotonic() < self.started + self.seconds, 'capture parsing deadline'
+
+
+def observer_self_test(scratch: Path, diagnostic: dict) -> None:
+    """Exercise the actual observer and both lsof controls before enrollment.
+
+    A short-lived child keeps one synthetic loopback HTTP connection open until
+    after both socket observations. No bridge, credential or outside request.
+    """
+    directory = scratch / 'observer-self-test'
+    directory.mkdir(mode=0o700)
+    try:
+        observe_local_request(directory, diagnostic)
+    finally:
+        try:
+            shutil.rmtree(directory)
+        except Exception:
+            diagnostic['label'] = 'capture-cleanup'
+            raise
+
+
+def observe_local_request(directory: Path, diagnostic: dict) -> None:
+    capture = PacketCapture(directory, diagnostic)
+    child: subprocess.Popen | None = None
+    server = socket.socket()
+    connection: socket.socket | None = None
+    request = b'GET /observer-self-test HTTP/1.0\r\n\r\n'
+    response = b'HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nOK\n'
+    child_code = '''import signal,socket,sys
+signal.alarm(25)
+s=socket.create_connection(('127.0.0.1',int(sys.argv[1])),timeout=5)
+print('ready',flush=True)
+command=sys.stdin.buffer.readline(16)
+if command==b'stop\\n':
+    s.close()
+    sys.exit(0)
+assert command==b'go\\n'
+s.sendall(b'GET /observer-self-test HTTP/1.0\\r\\n\\r\\n')
+expected=b'HTTP/1.0 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nOK\\n'
+data=b''
+while len(data)<len(expected):
+    part=s.recv(len(expected)-len(data))
+    assert part
+    data+=part
+assert data==expected
+print('done',flush=True)
+assert sys.stdin.buffer.readline(16)==b'stop\\n'
+s.close()
+'''
+    try:
+        server.bind(('127.0.0.1', 0))
+        server.listen(1)
+        server.settimeout(5)
+        endpoint = ('127.0.0.1', server.getsockname()[1])
+        capture.start()
+        diagnostic['label'] = 'observer-child-start'
+        child = subprocess.Popen([sys.executable, '-I', '-c', child_code, str(endpoint[1])],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        connection, _ = server.accept()
+        connection.settimeout(5)
+        assert child.stdout is not None and child.stdin is not None
+        assert select.select([child.stdout], [], [], 5)[0] and child.stdout.readline(16) == b'ready\n', 'observer child readiness'
+        capture.sockets(child.pid)
+        diagnostic['label'] = 'observer-request'
+        child.stdin.write(b'go\n')
+        child.stdin.flush()
+        data = b''
+        while len(data) < len(request):
+            part = connection.recv(len(request) - len(data))
+            assert part, 'observer request incomplete'
+            data += part
+        assert data == request, 'observer request mismatch'
+        connection.sendall(response)
+        assert select.select([child.stdout], [], [], 5)[0] and child.stdout.readline(16) == b'done\n', 'observer response mismatch'
+        capture.sockets(child.pid)
+        assert child.poll() is None, 'observer child ended early'
+    finally:
+        try:
+            capture.stop()
+        except Exception:
+            diagnostic['label'] = 'capture-cleanup'
+            raise
+        finally:
+            try:
+                if child is not None:
+                    if child.poll() is None:
+                        assert child.stdin is not None
+                        try:
+                            child.stdin.write(b'stop\n')
+                            child.stdin.flush()
+                            child.stdin.close()
+                            child.wait(timeout=5)
+                        finally:
+                            if child.poll() is None:
+                                child.kill()
+                                child.wait(timeout=5)
+                    assert child.returncode == 0, 'observer child exit'
+                    if child.stdout is not None:
+                        child.stdout.close()
+            except Exception:
+                diagnostic['label'] = 'observer-child-cleanup'
+                raise
+            finally:
+                if connection is not None:
+                    connection.close()
+                server.close()
+    assert child is not None
+    capture.evidence(child.pid, endpoint=endpoint)
+    diagnostic['label'] = 'passed'
 
 
 def prove_packet_path(bridge: Bridge, scratch: Path, address: str, credential: str, diagnostic: dict, identity: object) -> dict:

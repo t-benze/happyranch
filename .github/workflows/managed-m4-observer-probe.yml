@@ -1,0 +1,26 @@
+name: Managed M4 observer probe
+
+# Manual observer compatibility only; no enrollment or native acceptance.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  observer-probe:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Exercise the existing observer and socket controls
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 scripts/ci/m4_tailnet_runner.py observer-probe --scratch "$RUNNER_TEMP/managed-m4-observer-private" --output "$RUNNER_TEMP/managed-m4-observer-public"
+      - name: Remove private observer scratch
+        if: always()
+        run: python3 scripts/ci/m4_tailnet_runner.py observer-cleanup --scratch "$RUNNER_TEMP/managed-m4-observer-private" --output "$RUNNER_TEMP/managed-m4-observer-public"

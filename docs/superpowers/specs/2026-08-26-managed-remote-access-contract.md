@@ -552,3 +552,43 @@ Pairing codes and device credentials are stored ONLY as sha256 digests inside th
 `tests/remote_access/test_diy_acceptance.py` (`-m integration`; skipped with an explicit reason on hosts without a non-loopback IPv4) runs a REAL away-client process (the THR-034 wire contract) over a REAL network path to the REAL shipping connector (`python -m runtime.remote_access.cli run --diy`) forwarding to a REAL loopback daemon. The customer-network address is resolved through the REAL shipping resolution path (`TailscaleCliResolver` → subprocess → strict validation) with a stub `tailscale ip -4` executable printing the host's non-loopback IPv4 (the test host has no tailnet). Proven: allowed route success (daemon receives the injected bearer on the final hop), forbidden route denial, direct remote daemon attempt refused (daemon loopback-only), daemon bearer never usable as a pairing credential, replayed code denial, re-pair invalidating old authority, revocation persisted across connector restart, removed-credential denial, network/control-plane outage fail-closed (daemon down → listener stops → client refused; daemon back → supervised listener recovers), credential/token leakage scans (credentials only in the intended client redeem output; bearer never in connector logs; digests only in trust state), and — fix-forward — a **genuine cross-process SSE negative**: a live in-flight SSE stream (the daemon holds the body open) served by the connector PROCESS is closed by a `revoke` from a SEPARATE CLI PROCESS within one `poll_seconds` interval via the connector's authoritative-registry reconciliation, and the CLI output reports the persisted epoch without any false stream-closure claim. Adapter-seam negatives (revocation and remove-device closing genuinely in-flight SSE streams, restart with persisted revocation, re-pair invalidating old authority) plus the adversarial concurrent-redemption regression (exactly one credential; no lost state) are deterministic unit tests. The second fix-forward (TASK-6045) adds the **shipping-process rotation regression**: after a separate-process `revoke` AND `remove-device` close genuinely in-flight SSE streams, a re-paired credential and an unaffected current credential BOTH open NEW SSE streams on the same connector process (the one-shot registry is rotated, not left sealing the process), while old/revoked credentials and WebSocket upgrades remain denied; and the deterministic MULTI-PROCESS ceremony races (separate OS processes over one shared file-backed store; issue/redeem/revoke/remove with a load→publication seam) prove exactly one redemption credential, no lost mutation, a consistent loadable snapshot+anchor pair, and fail-closed contention.
 
 **Honest residual gaps (reported, not fabricated):** this implementation/acceptance ran on a single Linux host (x86_64, Ubuntu) with NO macOS build host and NO Tailscale/headscale client or network, so the genuine signed-macOS-client launch/Keychain surface and the WireGuard/tailnet transport hop remain unproven here — the inherited THR-034 signed-device acceptance is NOT closed by this unit and the unit must not be labeled acceptance-complete. The exact missing environment/evidence: a macOS host with the production `app/mac` `ClientBridge` binary (unchanged by this PR — the PR diff touches no `app/` file) connecting over a real customer-owned Tailscale/headscale tailnet to a Linux home running this connector, with allowed, forbidden-route, direct-daemon/bearer, restart/persisted-revocation, re-pair/old-authority, replay/removed-credential, outage fail-closed, and leak negatives executed against that real two-host path. The connector serves the identical wire contract the macOS `ClientBridge` speaks; the same-host Python client remains a supplemental harness only. Managed persistence schema/auth/enrollment, production Headscale/DERP provisioning, tsnet defaults, telemetry, pilot/pricing/launch, and DIY-completes-hosting claims remain out of scope.
+
+
+### M4 observer compatibility amendment (TASK-15856)
+
+The [runbook](../../../scripts/ci/README-m4-tailnet.md#observer-compatibility-before-enrollment-task-15856)
+owns the source-derived macOS formats and closed diagnostic schema. The parser
+reads pktap process/direction metadata before protocol bodies. Unsupported,
+truncated or multiline records may be tolerated only if positively attributed
+exclusively to another process; native unsupported traffic and unresolved
+attribution refuse. Kernel ingress requires a known reverse native TCP flow.
+Singular/plural stderr counters are parsed; captured=received=parsed, zero
+kernel/interface/metadata-filter drops, both socket controls, native zeroUDP,
+bidirectional exclusive VM443, fresh exact daemon200, all budgets and current
+runtime relay identity remain required together. `capture_diagnostics` adds only
+closed structural labels and bounded integer counts beside unchanged packet fields.
+
+Native prepare now runs an observer self-test after the native precondition,
+before generating/publishing the recipient. A short-lived child makes one local
+synthetic HTTP request under the actual observer and both lsof controls. Complete
+parse/counters/attribution and positive bidirectional child TCP are required;
+refusal publishes closed `observer_diagnostics`, reaps owned children and removes
+private scratch without generating a recipient. This is no relay/native acceptance.
+The separate manual-only, non-required macos-15 `managed-m4-observer-probe.yml`
+runs exactly that precondition, with pinned checkout, contents:read, no secrets,
+inputs, bridge build, VM/cloud/Headscale/PR-comment operations, and always-cleanup.
+Once the workflow exists on main, an explicitly authorized manager can dispatch
+`gh workflow run managed-m4-observer-probe.yml --repo t-benze/happyranch --ref task/TASK-15856`
+(or `--ref main` for the merged code). managed-m4.yml and required CI/E2E are unchanged.
+
+Attempt7 TASK-15847/run43357856292/JOB-6690 remains failed/spent at capture-format.
+PROVEN from old parser order: rx is accumulated only after the complete first
+pass, so rx0 cannot diagnose incoming traffic. Exact failing structure and actual
+binary output remain UNKNOWN; fixtures from Apple source do not reconstruct it.
+Native acceptance stays OPEN and this source task grants no dispatch, join,
+certificate or native allowance. Linux JOB-6610/6615/6618, native1–7
+TASK-15684/15690/15691/15753/15766/15774/15847 and premerge JOB-6641/6643/6644/6647
+remain failed/spent without replenishment. Guest-driver byte parity means this
+task does not trigger VM --premerge-vm; native tool behavior remains NOT RUN.
+
+Custody boundary (engineering_manager TASK-15621): the no-raw-address/PID/tuple/payload rule applies to the packet-proof and capture-diagnostic public fields. The pre-existing reviewed pairs handoff payload synthetic tailnet address and VM service journal metadata are existing public surfaces and are outside that assertion; credentials, enrollment/pairing material and raw capture lines remain forbidden everywhere.

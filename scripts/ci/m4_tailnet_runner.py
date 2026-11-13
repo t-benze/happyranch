@@ -24,7 +24,8 @@ from datetime import datetime, timezone
 
 from m4_tailnet_client import (Bridge, EXPECTED, NATIVE_HOST, ROUTE, application_probe, build_archive, control_get,
                               exception_class, safe_join_diagnostics, safe_derp_diagnostics,
-                              prove_packet_path, safe_packet_diagnostics, PACKET_PROOF_COUNTS)
+                              prove_packet_path, safe_packet_diagnostics, PACKET_PROOF_COUNTS,
+                              observer_self_test, safe_capture_diagnostics, OBSERVER_LABELS)
 
 REPOSITORY = 't-benze/happyranch'
 COORDINATION_PR = 1449
@@ -209,6 +210,22 @@ def native_precondition(library: Path, scratch: Path, output: Path) -> None:
     print('M4 native precondition passed; expected bridge_error_class=log-dir', flush=True)
 
 
+def observer_precondition(scratch: Path, output: Path) -> None:
+    diagnostic = dict(label='unknown', **{key: 0 for key in PACKET_PROOF_COUNTS})
+    try:
+        observer_self_test(scratch, diagnostic)
+    finally:
+        label = diagnostic.get('label')
+        public = dict(label=label if isinstance(label, str) and label in OBSERVER_LABELS else 'unknown',
+                      packets=safe_packet_diagnostics(diagnostic),
+                      capture=safe_capture_diagnostics(diagnostic.get('capture_diagnostics')))
+        # Publish only closed shapes and bounded integers, including on refusal.
+        (output / 'client-summary.json').write_text(json.dumps(dict(
+            status='PASS' if public['label'] == 'passed' else 'FAIL',
+            phase='observer-self-test', observer_diagnostics=public)) + '\n')
+        print('M4 observer self-test ' + json.dumps(public), flush=True)
+
+
 def prepare(scratch: Path, output: Path) -> None:
     root, request = runner_context()
     assert request['attempt'] == 1, 'new dispatch required'
@@ -218,6 +235,7 @@ def prepare(scratch: Path, output: Path) -> None:
     # Refuse before generating/publishing the public recipient or consuming an
     # enrollment handoff. The exact same native binary is used for acceptance.
     native_precondition(library, scratch, output)
+    observer_precondition(scratch, output)
     private = openssl(['genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:3072'])
     public = openssl(['pkey', '-pubout'], private)
     # This is only the transient RSA key, never enrollment/pairing plaintext.
@@ -343,6 +361,7 @@ def run(scratch: Path, output: Path) -> None:
             record['checks'].append(dict(name='DERP-path', **prove_packet_path(bridge, scratch, str(address), paired, packet_diagnostic, identity['identity'])))
         finally:
             record['packet_diagnostics'] = safe_packet_diagnostics(packet_diagnostic)
+            record['capture_diagnostics'] = safe_capture_diagnostics(packet_diagnostic.get('capture_diagnostics'))
         allowed(paired)
         before = control_get('/health')
         assert before['status'] == 200 and control_get(ROUTE)['status'] == 404
@@ -372,6 +391,7 @@ def run(scratch: Path, output: Path) -> None:
                     print('M4 public DERP evidence ' + json.dumps(record['derp_diagnostics']), flush=True)
                 if 'packet_diagnostics' in record:
                     print('M4 public packet evidence ' + json.dumps(record['packet_diagnostics']), flush=True)
+                    print('M4 public capture evidence ' + json.dumps(record['capture_diagnostics']), flush=True)
             except Exception:
                 cleanup_errors.append('derp-evidence-publication')
         if bridge is not None:
@@ -397,7 +417,7 @@ def run(scratch: Path, output: Path) -> None:
         record['runner_return_code'] = 1 if record['status'] == 'FAIL' else 0
         (output / 'client-summary.json').write_text(json.dumps(record, indent=2) + '\n')
         print('M4 public client evidence ' + json.dumps({key: record[key] for key in
-              ('phase', 'phases', 'failure', 'join_diagnostics', 'bridge_error_class', 'derp_diagnostics', 'packet_diagnostics', 'runner_return_code',
+              ('phase', 'phases', 'failure', 'join_diagnostics', 'bridge_error_class', 'derp_diagnostics', 'packet_diagnostics', 'capture_diagnostics', 'runner_return_code',
                'worker_return_code_before_cleanup', 'worker_return_code') if key in record}), flush=True)
     assert not cleanup_errors, 'native client cleanup failed'
     print('Native client checks complete; host VM cleanup receipt still required', flush=True)
@@ -405,7 +425,7 @@ def run(scratch: Path, output: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=['prepare', 'run', 'cleanup'])
+    parser.add_argument('phase', choices=['prepare', 'run', 'cleanup', 'observer-probe', 'observer-cleanup'])
     parser.add_argument('--scratch', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
@@ -417,9 +437,25 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
     # Workflow supplies fixed RUNNER_TEMP children, never user-provided paths.
     temporary = Path(os.environ['RUNNER_TEMP']).resolve()
-    assert args.scratch.resolve() == temporary / 'managed-m4-private'
-    assert args.output.resolve() == temporary / 'managed-m4-public'
-    if args.phase == 'prepare':
+    probe = args.phase in {'observer-probe', 'observer-cleanup'}
+    prefix = 'managed-m4-observer' if probe else 'managed-m4'
+    assert args.scratch.resolve() == temporary / (prefix + '-private')
+    assert args.output.resolve() == temporary / (prefix + '-public')
+    if probe:
+        if args.phase == 'observer-probe':
+            assert __debug__ and sys.platform == 'darwin'
+            assert os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
+            assert os.environ.get('GITHUB_REPOSITORY') == REPOSITORY
+            assert os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
+            args.scratch.mkdir(mode=0o700)
+            args.output.mkdir(mode=0o700)
+            observer_precondition(args.scratch, args.output)
+        else:
+            if args.scratch.exists():
+                shutil.rmtree(args.scratch)
+            assert not args.scratch.exists()
+            print('M4 observer private scratch absent')
+    elif args.phase == 'prepare':
         prepare(args.scratch, args.output)
     elif args.phase == 'run':
         run(args.scratch, args.output)
