@@ -164,3 +164,43 @@
   secure managed GUI enrollment needs a separately scoped product change, never
   an environment key. This is only the separate-network forced-private-DERP
   slice; all five normative topology/failure rows remain required.
+
+
+### M4 observer compatibility amendment (TASK-15856)
+
+The [runbook](../../../scripts/ci/README-m4-tailnet.md#observer-compatibility-before-enrollment-task-15856)
+owns the source-derived macOS formats and closed diagnostic schema. The parser
+reads pktap process/direction metadata before protocol bodies. Unsupported,
+truncated or multiline records may be tolerated only if positively attributed
+exclusively to another process; native unsupported traffic and unresolved
+attribution refuse. Kernel ingress requires a known reverse native TCP flow.
+Singular/plural stderr counters are parsed; captured=received=parsed, zero
+kernel/interface/metadata-filter drops, both socket controls, native zeroUDP,
+bidirectional exclusive VM443, fresh exact daemon200, all budgets and current
+runtime relay identity remain required together. `capture_diagnostics` adds only
+closed structural labels and bounded integer counts beside unchanged packet fields.
+
+Native prepare now runs an observer self-test after the native precondition,
+before generating/publishing the recipient. A short-lived child makes one local
+synthetic HTTP request under the actual observer and both lsof controls. Complete
+parse/counters/attribution and positive bidirectional child TCP are required;
+refusal publishes closed `observer_diagnostics`, reaps owned children and removes
+private scratch without generating a recipient. This is no relay/native acceptance.
+The separate manual-only, non-required macos-15 `managed-m4-observer-probe.yml`
+runs exactly that precondition, with pinned checkout, contents:read, no secrets,
+inputs, bridge build, VM/cloud/Headscale/PR-comment operations, and always-cleanup.
+Once the workflow exists on main, an explicitly authorized manager can dispatch
+`gh workflow run managed-m4-observer-probe.yml --repo t-benze/happyranch --ref task/TASK-15856`
+(or `--ref main` for the merged code). managed-m4.yml and required CI/E2E are unchanged.
+
+Attempt7 TASK-15847/run43357856292/JOB-6690 remains failed/spent at capture-format.
+PROVEN from old parser order: rx is accumulated only after the complete first
+pass, so rx0 cannot diagnose incoming traffic. Exact failing structure and actual
+binary output remain UNKNOWN; fixtures from Apple source do not reconstruct it.
+Native acceptance stays OPEN and this source task grants no dispatch, join,
+certificate or native allowance. Linux JOB-6610/6615/6618, native1–7
+TASK-15684/15690/15691/15753/15766/15774/15847 and premerge JOB-6641/6643/6644/6647
+remain failed/spent without replenishment. Guest-driver byte parity means this
+task does not trigger VM --premerge-vm; native tool behavior remains NOT RUN.
+
+Custody boundary (engineering_manager TASK-15621): the no-raw-address/PID/tuple/payload rule applies to the packet-proof and capture-diagnostic public fields. The pre-existing reviewed pairs handoff payload synthetic tailnet address and VM service journal metadata are existing public surfaces and are outside that assertion; credentials, enrollment/pairing material and raw capture lines remain forbidden everywhere.

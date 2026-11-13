@@ -266,10 +266,10 @@ unchanged exposure controls:
 
 - The exact still-running native PID has positive TCP socket evidence and no
   UDP socket in both `lsof -nP -a -p PID -i -FpfP` observations.
-- Every IP transport header has known syntax/direction. Unattributed egress,
-  fragments/unsupported packets, malformed metadata and unknown formats refuse.
-  Other positively attributed processes may have traffic. ARP contributes only
-  to completeness accounting; it is not an IP transport.
+- Every native IP transport header has known syntax/direction. Unattributed
+  egress, native fragments/unsupported packets and malformed metadata refuse.
+  Unsupported background formats, including ARP, require positive attribution
+  exclusively to another process; unresolved attribution refuses.
 - Zero native UDP packets on every captured interface/address/port, not only
   UDP visible at the VM. A guest capture alone would miss packets dropped by
   the unchanged security group before reaching the VM.
@@ -419,3 +419,91 @@ Required hosted lints must be green at the exact pushed PR head. Native macOS
 execution is NOT RUN premerge. Signed GUI/founder acceptance and the other four
 normative topology/failure rows remain separate obligations; this workflow
 covers only separate-network forced private DERP.
+
+
+## Observer compatibility before enrollment (TASK-15856)
+
+Attempt7 (TASK-15847 / run43357856292 / JOB-6690) remains failed/spent at
+DERP-exposure `capture-format`. Its partial13/native13, tx935/rx0 does not
+identify the failed line. Raw macos-15 capture was never retained. PROVEN:
+the old receive-byte accumulation ran only after a complete first pass, so an
+earlier parser refusal leaves rx0 even if incoming records were present.
+Whether that happened, and the exact structural refusal, remain UNKNOWN;
+source-derived fixtures are not a reconstruction of the runner's output.
+
+Apple's [metadata printer](https://github.com/apple-oss-distributions/tcpdump/blob/58aef51e406a84d34352a0a05946770037a25360/tcpdump/print_pktap.c#L139-L218)
+prints parenthesized proc/eproc IDs and `in`/`out` for `-k PD`; an ID can be
+empty when a name/UUID exists but PID is unavailable. The normal quiet
+[IPv4](https://github.com/apple-oss-distributions/tcpdump/blob/58aef51e406a84d34352a0a05946770037a25360/tcpdump/print-ip.c#L343),
+[IPv6](https://github.com/apple-oss-distributions/tcpdump/blob/58aef51e406a84d34352a0a05946770037a25360/tcpdump/print-ip6.c#L249), and
+[TCP](https://github.com/apple-oss-distributions/tcpdump/blob/58aef51e406a84d34352a0a05946770037a25360/tcpdump/print-tcp.c#L264) printers produce IP/IP6 and `tcp N`;
+[UDP](https://github.com/apple-oss-distributions/tcpdump/blob/58aef51e406a84d34352a0a05946770037a25360/tcpdump/print-udp.c#L854) prints `UDP, length N`.
+Link/protocol printers can also emit ARP, other protocols, indented multiline
+output or truncation markers. The parser validates metadata first and counts
+one packet per timestamped record. Unsupported/multiline/truncated bodies may
+be tolerated only with positive, nonzero proc/eproc attribution exclusively to
+other processes. Empty/zero attribution never proves another process. Native
+unsupported records and all unresolved attribution refuse; kernel ingress must
+match the reverse of a known native outbound TCP flow. Native IPv6 to a different
+endpoint still refuses. Native payload in both directions exclusively with VM443,
+zero native UDP, both socket controls, exact fresh real-daemon200, full counters,
+zero drops, limits and authenticated singleton999 identity remain jointly required.
+No BPF, process, direction or endpoint capture filter is added.
+
+Apple's [stderr statistics](https://github.com/apple-oss-distributions/tcpdump/blob/58aef51e406a84d34352a0a05946770037a25360/tcpdump/tcpdump.c#L3462-L3518)
+use singular/plural `packet(s)` and omit interface drops when zero; a reported
+metadata-filter drop also refuses. One captured/received/kernel counter each,
+at most one interface/metadata-filter counter, and exactly one PKTAP startup
+header are required. Captured=received=parsed, zero reported drops, strict35s /
+2,000,000 bytes per file / fewer than4096 packets and positive child stop/reap
+remain mandatory. Compression/other stderr text is counted, never exported.
+These are source contracts; actual hosted binary compatibility remains NOT RUN.
+
+`capture_diagnostics` accompanies packet evidence in client-summary.json and
+Actions before cleanup and in the final summary. Its fixed `label` is `unknown`,
+`passed`, `prefix`, `metadata`, `multiline`, `truncated`, `transport`, `endpoint`,
+`attribution` or `counters`. Unknown input projects to `unknown`. Fixed integer
+fields count startup headers, metadata, IPv4/IPv6, other-process packets,
+counter-line presence and values, other stderr lines, and unparsed records by
+those structural classes. Values use real integers clamped to0..16,000,000;
+booleans, negative values and arbitrary fields do not pass the projection.
+The existing `packet_diagnostics.label` still names the proof refusal; format
+refusals retain `capture-format`. No raw line, name, PID, address, tuple, path,
+URL or payload enters either projection.
+
+After the existing native precondition and before RSA recipient generation or
+publication, `prepare` runs the real observer self-test. An owned short-lived
+Python child makes one exact synthetic HTTP request to an owned loopback
+listener, keeps the connection open for both actual lsof controls, and stops
+and is reaped with the capture supervisor. The same parser/counter/budget gates
+must pass with positive child-attributed bidirectional TCP. The local endpoint
+is used only by this precondition; the acceptance proof still fixes VM443.
+It publishes `observer_diagnostics` with closed stage labels, packet counts and
+capture shape counts on success or refusal, then removes private capture scratch.
+`observer-child-start`, `observer-request` and `observer-child-cleanup` distinguish
+local child failures; existing capture/socket/proof labels cover observer failures.
+A refusal produces no recipient key/request and spends no enrollment.
+This proves observer compatibility, not native relay acceptance.
+
+The separate **Managed M4 observer probe**
+(`.github/workflows/managed-m4-observer-probe.yml`) is manual-only, non-required,
+macos-15, contents:read, pinned checkout with persist-credentials:false, and
+always removes private scratch. It runs only this self-test and lsof parsing,
+with no inputs, secrets, bridge build, VM/Headscale/Aliyun or PR-comment interaction.
+After this workflow file exists on main, the manager may use an authorized branch
+ref for later parser validation:
+
+```bash
+gh workflow run managed-m4-observer-probe.yml --repo t-benze/happyranch --ref task/TASK-15856
+```
+
+Use `--ref main` to probe the merged version. No dispatch is authorized by this
+source delivery. managed-m4.yml triggers/guards, required CI and Product E2E
+are unchanged. This task changes no guest driver: m4_tailnet_aliyun.py,
+m4_tailnet.sh and m4_tailnet_control.py remain byte-identical; VM --premerge-vm
+is NOT RUN. Native acceptance remains OPEN. Linux JOB-6610/6615/6618;
+native1–7 TASK-15684/15690/15691/15753/15766/15774/15847 (attempt7 run43357856292,
+JOB-6690); premerge JOB-6641/6643/6644/6647 remain failed/spent. No allowance is
+replenished and no certificate issuance is authorized (last observed ledger3/5).
+
+Custody boundary (engineering_manager TASK-15621): the no-raw-address/PID/tuple/payload rule applies to the packet-proof and capture-diagnostic public fields. The pre-existing reviewed pairs handoff payload synthetic tailnet address and VM service journal metadata are existing public surfaces and are outside that assertion; credentials, enrollment/pairing material and raw capture lines remain forbidden everywhere.

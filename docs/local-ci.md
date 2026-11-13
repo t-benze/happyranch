@@ -2683,3 +2683,14 @@ No new CI check, trigger, Jenkins configuration or dependency is introduced.
 Frozen Mac-app acceptance and native execution remain separate evidence.
 The API declarations are unchanged; check the existing OpenAPI snapshot. The old
 web OpenAPI-coverage Vitest file was removed with THR-343 and is not restored.
+
+
+Manual M4 observer compatibility (`managed-m4-observer-probe.yml`, TASK-15856)
+runs only the pre-enrollment tcpdump/lsof loopback self-test on macos-15. It is
+workflow_dispatch-only with no inputs, contents:read, SHA-pinned checkout and
+persist-credentials:false, no secrets or VM/cloud/PR-comment operations, and
+always-cleanup of private scratch. It is non-required and adds no PR/push/schedule
+trigger or Product E2E run. After the file exists on main, an authorized manager
+can dispatch a branch ref to validate later parser changes; see the M4 runbook.
+Observer compatibility does not close native relay acceptance or replenish any
+failed/spent run allowance. Source delivery authorizes no dispatch.
