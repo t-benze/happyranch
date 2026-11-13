@@ -570,6 +570,30 @@ async def reviewer_fresh(org: OrgState, client: httpx.AsyncClient) -> None:
         finally:
             reopened.close()
 
+    # An explicit active reviewer other than code_reviewer wins at construction.
+    example = org.root.parent.parent / "configured-reviewer-example"
+    (example / "org" / "agents").mkdir(parents=True)
+    (example / "org" / "teams.yaml").write_text("teams:\n  engineering:\n    manager: keeper\n    workers: [other]\n")
+    (example / "org" / "config.yaml").write_text("reviewer_agents: [other]\n")
+    for name, role in (("keeper", "manager"), ("other", "worker")):
+        (example / "org" / "agents" / f"{name}.md").write_text(
+            f"---\nname: {name}\nteam: engineering\nrole: {role}\nexecutor: claude\n---\nSynthetic inert role.\n")
+    response = await client.post("/api/v1/orgs", json={"slug": "fresh-configured", "from_example": str(example)})
+    assert response.status_code == 200, response.text
+    response = await client.get("/api/v1/orgs/fresh-configured/settings")
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_agents"] == ["other"]
+    assert response.json()["org"]["reviewer_configuration"] == {"state": "configured", "missing_agents": []}
+    # Parse failure cannot become omission/none; original constructor rollback stays.
+    (example / "org" / "config.yaml").write_text("reviewer_agents: [\n")
+    from runtime.orchestrator.org_config import OrgConfigError
+    try:
+        await client.post("/api/v1/orgs", json={"slug": "fresh-invalid", "from_example": str(example)})
+    except OrgConfigError:
+        assert not (org.root.parent / "fresh-invalid").exists()
+    else:
+        raise AssertionError("fresh constructor accepted unreadable reviewer config")
+
 
 async def main() -> int:
     cases = [

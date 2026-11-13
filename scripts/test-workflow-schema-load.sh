@@ -140,7 +140,7 @@ def reviewer_audits(db):
         "SELECT task_id,agent,payload FROM audit_log WHERE action='org_config_write' AND task_id IN ('config:reviewer_agents','config:reviewer_agents_policy') ORDER BY id")]
 
 
-def submit_reviewer_decision(state, action):
+def submit_reviewer_decision(state, action, *, downstream=True):
     db, orch = state.db, state.orchestrator
     parent_id = db.next_task_id()
     db.insert_task(TaskRecord(id=parent_id, assigned_agent='owner', brief='Synthetic submission'))
@@ -148,6 +148,8 @@ def submit_reviewer_decision(state, action):
     db.update_task(parent_id, current_session_id='synthetic-owner')
     child = {'agent': 'code_reviewer', 'prompt': 'Synthetic review',
              'then': [{'agent': 'worker', 'prompt': 'Synthetic downstream'}]}
+    if not downstream:
+        child.pop('then')
     decision = ({'action': 'delegate', **child} if action == 'delegate' else
                 {'action': 'fanout', 'children': [child, {'agent': 'worker', 'prompt': 'Synthetic sibling'}]})
     db.insert_task_result(parent_id, 'owner', 'synthetic-owner', 'Synthetic submitted decision', 100,
@@ -209,6 +211,12 @@ for expectation, verdict, advances in ((None, None, True), ('APPROVE', 'PASS', F
             reviewer_steps._enqueue_parent_if_waiting(state.orchestrator, 'TASK-102')
             startup_expect(len(state.db.get_children('TASK-101')) == (2 if advances else 1),
                            'L3-none-'+saved+'-'+str(expectation)+'-explicit-expectations-retained')
+
+for raw, marker in (('["code_reviewer"]', None), ('[]', '{"version":2}')):
+    with literal_reviewer_fixture(raw=raw, marker=marker) as (state, original):
+        parent,before = submit_reviewer_decision(state,'delegate',downstream=False)
+        startup_expect(len(state.db.get_children(parent)) == 1,
+                       'L3-bare-single-leg-exception-'+raw)
 
 for raw, timestamp in (( '["code_reviewer"]', '2026-08-24T08:41:47.100629+00:00'),
                         ( '["senior_dev"]', '2026-11-05T11:14:11.056269+00:00'),
