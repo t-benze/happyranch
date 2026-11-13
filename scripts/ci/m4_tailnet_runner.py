@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 
 from m4_tailnet_client import (Bridge, EXPECTED, NATIVE_HOST, ROUTE, application_probe, build_archive, control_get,
                               exception_class, safe_join_diagnostics, safe_derp_diagnostics,
-                              prove_enforced_path, safe_path_diagnostics)
+                              prove_enforced_path, safe_path_diagnostics, safe_exposure_diagnostics)
 
 REPOSITORY = 't-benze/happyranch'
 COORDINATION_PR = 1449
@@ -244,6 +244,7 @@ def run(scratch: Path, output: Path) -> None:
                         outside_client='native macOS unchanged shipped C archive', status='FAIL', checks=[], phases=[],
                         bridge_error_class=None)
     bridge: Bridge | None = None
+    exposure: dict | None = None
     phase_started = time.monotonic()
 
     def set_phase(name: str) -> None:
@@ -285,8 +286,12 @@ def run(scratch: Path, output: Path) -> None:
             assert bridge is not None
             return bridge.call('request', address=str(address), method=method, path=path, credential=credential, data=data)
 
-        def allowed(credential: str) -> None:
-            assert call('GET', ROUTE, credential) == {'status': 200, 'body': EXPECTED}, 'allowed real-daemon body/status'
+        def allowed(credential: str, diagnostic: dict | None = None) -> None:
+            response = call('GET', ROUTE, credential)
+            if diagnostic is not None:
+                diagnostic.update(status=response.get('status'),
+                                  body_class='expected-teams' if response.get('body') == EXPECTED else 'other')
+            assert response == {'status': 200, 'body': EXPECTED}, 'allowed real-daemon body/status'
 
         def pair(kind: str) -> str:
             response = call('POST', '/pair', data=decrypt(private, payload[kind]))
@@ -345,13 +350,45 @@ def run(scratch: Path, output: Path) -> None:
             record['checks'].append(dict(name='DERP-path', **prove_enforced_path(bridge, str(address), paired, path_diagnostic, identity['identity'], inbox)))
         finally:
             record['path_diagnostics'] = safe_path_diagnostics(path_diagnostic)
-        allowed(paired)
+        # Each row starts failed BEFORE its operation, so transport/worker
+        # exceptions still name the exact sub-check without exporting errors.
+        exposure = {'final-aggregation': dict(outcome='failed')}
+
+        def exposure_step(label: str) -> dict:
+            row = dict(outcome='failed')
+            exposure[label] = row
+            return row
+
+        post_proof = exposure_step('post-proof-allowed-200')
+        allowed(paired, post_proof)
+        post_proof['outcome'] = 'passed'
+        health_before = exposure_step('health-before')
         before = control_get('/health')
-        assert before['status'] == 200 and control_get(ROUTE)['status'] == 404
-        probes = [application_probe(port) for port in (18765, 18443, 8765)]
+        health_before.update(before)
+        assert before['headscale_health'] and not before['daemon_shaped'], 'health-before Headscale fingerprint'
+        health_before['outcome'] = 'passed'
+        public_path = exposure_step('public-daemon-path-refusal')
+        refusal = control_get(ROUTE)
+        public_path.update(refusal)
+        assert not refusal['daemon_shaped'], 'public daemon-shaped response'
+        assert refusal['headscale_refusal'], 'public exact Headscale refusal'
+        public_path['outcome'] = 'passed'
+        probes = []
+        for port in (18765, 18443, 8765):
+            port_check = exposure_step('forbidden-port-' + str(port))
+            probe = application_probe(port)
+            port_check.update(probe)
+            port_check['outcome'] = 'failed' if probe['reachable'] else 'passed'
+            probes.append(probe)
+        health_after = exposure_step('health-after')
         after = control_get('/health')
-        assert after['status'] == 200 and all(not probe['reachable'] for probe in probes)
-        record['checks'].append(dict(name='public-exposure', control=before, control_after=after, probes=probes))
+        health_after.update(after)
+        assert after['headscale_health'] and not after['daemon_shaped'], 'health-after Headscale fingerprint'
+        health_after['outcome'] = 'passed'
+        assert all(not probe['reachable'] for probe in probes), 'public forbidden-port aggregation'
+        exposure['final-aggregation']['outcome'] = 'passed'
+        record['checks'].append(dict(name='public-exposure', control=before, daemon_path=refusal,
+                                     control_after=after, probes=probes))
         record['status'] = 'CLIENT_CHECKS_PASSED_VM_CLEANUP_PENDING'
     except Exception as error:
         label = bridge.join_error if bridge is not None and record['phase'] in ('join-call', 'native-start', 'join-wait') else 'operation-failed'
@@ -365,6 +402,8 @@ def run(scratch: Path, output: Path) -> None:
         cleanup_errors = []
         if bridge is not None and bridge.derp_diagnostics is not None:
             record['derp_diagnostics'] = safe_derp_diagnostics(bridge.derp_diagnostics)
+        if exposure is not None:
+            record['exposure_diagnostics'] = safe_exposure_diagnostics(exposure)
         if 'derp_diagnostics' in record or 'path_diagnostics' in record:
             # Land the closed evidence in both public sinks before private
             # logs/state are removed; the final summary also records cleanup.
@@ -374,6 +413,8 @@ def run(scratch: Path, output: Path) -> None:
                     print('M4 public DERP evidence ' + json.dumps(record['derp_diagnostics']), flush=True)
                 if 'path_diagnostics' in record:
                     print('M4 public enforcement evidence ' + json.dumps(record['path_diagnostics']), flush=True)
+                if 'exposure_diagnostics' in record:
+                    print('M4 public exposure evidence ' + json.dumps(record['exposure_diagnostics']), flush=True)
             except Exception:
                 cleanup_errors.append('derp-evidence-publication')
         if bridge is not None:
@@ -399,7 +440,7 @@ def run(scratch: Path, output: Path) -> None:
         record['runner_return_code'] = 1 if record['status'] == 'FAIL' else 0
         (output / 'client-summary.json').write_text(json.dumps(record, indent=2) + '\n')
         print('M4 public client evidence ' + json.dumps({key: record[key] for key in
-              ('phase', 'phases', 'failure', 'join_diagnostics', 'bridge_error_class', 'derp_diagnostics', 'path_diagnostics', 'runner_return_code',
+              ('phase', 'phases', 'failure', 'join_diagnostics', 'bridge_error_class', 'derp_diagnostics', 'path_diagnostics', 'exposure_diagnostics', 'runner_return_code',
                'worker_return_code_before_cleanup', 'worker_return_code') if key in record}), flush=True)
     assert not cleanup_errors, 'native client cleanup failed'
     print('Native client checks complete; host VM cleanup receipt still required', flush=True)

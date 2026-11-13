@@ -204,8 +204,36 @@ system Tailscale is involved. Native toolchain and archive hash are recorded.
 | revoked | Targeted device200 before revoke; same credential403 within30s, unaffected device200. |
 | forbidden routes | Six retained M2 method/path rows ->exact403 category; paired allowed200 brackets each; synthetic org survives. Forbidden routes are never allowed as controls. |
 | DERP | Joint authenticated singleton999 identity, unchanged guest UDP drop rules before/after, fresh exact native real-daemon200 within that window and unchanged client UDP disable. Missing/contradictory/stale evidence refuses before the separate allowed200 and exposure probes. See home UDP enforcement proof below. |
-| public exposure | Verified443 health200 before/after bounded application-level probes; daemon path on control443 is404; public18765/18443/8765 yield no TLS/HTTP response. Guest crosscheck requires daemon/connector loopback controls and no forbidden public listener. No response is a bounded observation, not universal reachability proof; raw TCP through a proxy is insufficient. |
+| public exposure | Verified443 exact Headscale health200 before/after bounded application-level probes; the unchanged unauthenticated daemon path on control443 must yield Headscale v0.25.1's exact401 refusal, attributed as below, and must never be daemon-shaped. Public18765/18443/8765 yield no TLS/HTTP response. Guest crosscheck requires daemon/connector loopback controls and no forbidden public listener. No response is a bounded observation, not universal reachability proof; raw TCP through a proxy is insufficient. |
 | logs/cleanup | Fresh run directory, microsecond journal boundary and shipped attribution. Installed-product purge assertions remain unchanged. Without install, assert absent product state and label not applicable. Remove transient state/CA/links/test sockets; preserve unchanged DNS hashes and only the validated cert cache. |
+
+Headscale serves public443 directly (`m4_tailnet.sh`), so its `/api/v1/`
+authentication middleware refuses before routing the daemon path. Require
+exact401, the12 bytes `Unauthorized` without a newline, exactly one
+`Content-Type: text/plain; charset=utf-8` and `Content-Length: 12`, with no
+content/transfer encoding. Attribution combines the existing pinned IP and
+verified TLS/SNI with that source fingerprint and both existing health bookends:
+exact200, the18 bytes `{"status":"pass"}\n` (final LF),
+`Content-Type: application/health+json; charset=utf-8`, `Content-Length: 18`,
+and no content/transfer encoding. See pinned Headscale
+[`app.go:377–404,490–492`](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/app.go#L377-L404)
+and [`handlers.go:154–182`](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/handlers.go#L154-L182).
+HappyRanch's same unauthenticated teams path also answers401, but with
+`application/json` and `{"detail":"missing bearer token"}`. Explicitly reject
+JSON content type or a JSON object with `detail`, `teams` or `error`; status alone
+cannot pass. No proxy, listener/configuration change, status range or new probe.
+The401 diagnosis remains an inference from source and retained journal until
+native attempt9 observes it. Attempts1–8 and five observer probes stay failed/spent.
+
+Exposure diagnostics retain fixed rows for `post-proof-allowed-200`,
+`health-before`, `public-daemon-path-refusal`, each `forbidden-port-18765/18443/8765`,
+`health-after` and `final-aggregation` in client-summary.json and Actions.
+Each row has passed/failed/not-reached, expected/observed bounded status or null,
+closed body/content-type classes and Boolean attribution/reachability only;
+no raw response/header, address or credential is copied. A started operation is
+failed until it passes; later rows stay not-reached. Caught non-gating log-proof
+errors retain DERP diagnostics but clear worker-exception attribution, so a later
+failure reports only its own worker exception. This changes no worker kill/reap.
 
 `managed-m4-logs-RUN_ID-1` contains only request.json and client-summary.json.
 Private native filch/stderr/build logs are excluded from workflow artifacts.

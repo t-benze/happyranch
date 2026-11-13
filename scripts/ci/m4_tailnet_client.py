@@ -44,6 +44,33 @@ DIAGNOSTIC_LABELS = ('dns', 'tcp-connect', 'tls-verify', 'tls-reset', 'control-u
 BRIDGE_ERROR_CLASSES = {'state-dir', 'log-dir', 'executable', 'control-url', 'already-started', 'not-initialised', 'unknown'}
 DERP_PROOF_LABELS = {'no-log-files', 'log-budget', 'no-decodable-entries', 'region-missing',
                      'region-unexpected', 'udp-disable-missing', 'unknown', 'passed'}
+EXPOSURE_CHECKS = {'post-proof-allowed-200': 200, 'health-before': 200,
+                   'public-daemon-path-refusal': 401, 'forbidden-port-18765': None,
+                   'forbidden-port-18443': None, 'forbidden-port-8765': None,
+                   'health-after': 200, 'final-aggregation': None}
+EXPOSURE_BODY_CLASSES = {'headscale-unauthorized', 'headscale-health', 'daemon-shaped',
+                         'expected-teams', 'other', 'unknown'}
+
+
+def safe_exposure_diagnostics(value: object) -> list[dict]:
+    """Fixed sub-checks only; never copy response bodies, headers or addresses."""
+    value = value if isinstance(value, dict) else {}
+    rows = []
+    for label, expected in EXPOSURE_CHECKS.items():
+        row = value.get(label)
+        row = row if isinstance(row, dict) else {}
+        status = row.get('status')
+        outcome = row.get('outcome')
+        body = row.get('body_class')
+        content_type = row.get('content_type_class')
+        rows.append(dict(label=label, expected_status=expected,
+                         observed_status=status if type(status) is int and 100 <= status <= 599 else None,
+                         outcome=outcome if type(outcome) is str and outcome in {'passed', 'failed', 'not-reached'} else 'not-reached',
+                         body_class=body if type(body) is str and body in EXPOSURE_BODY_CLASSES else 'unknown',
+                         content_type_class=content_type if type(content_type) is str and content_type in {'headscale-text', 'headscale-health', 'daemon-json', 'other'} else 'other',
+                         **{key: row[key] if type(row.get(key)) is bool else None
+                            for key in ('headscale_refusal', 'headscale_health', 'daemon_shaped', 'reachable')}))
+    return rows
 
 PATH_PROOF_LABELS = {'unknown', 'before-missing', 'before-malformed', 'after-missing',
                      'after-malformed', 'rule-identity', 'window-stale', 'request-failed',
@@ -106,7 +133,10 @@ def prove_enforced_path(bridge: Bridge, address: str, credential: str, diagnosti
     try:
         bridge.call('derp-proof')
     except RuntimeError:
-        pass
+        # This caught corroboration failure is not a later gating failure.
+        # Its closed derp_diagnostics survives; a real later worker error sets
+        # worker_exception again in _call.
+        bridge.worker_exception = 'Unknown'
     diagnostic['label'] = 'identity-log-conflict'
     log = bridge.derp_diagnostics
     assert log.get('label') != 'region-unexpected' and not set(log.get('matched_regions', [])) - {region}, 'contradictory runtime/log identity'
@@ -293,7 +323,7 @@ def join_diagnostic(state: Path, stderr: Path, elapsed: float) -> dict:
 
 
 def control_get(path: str) -> dict:
-    """Pin IP and expected SNI; normal trust verification. Status/time only."""
+    """Pin IP/SNI and verify TLS; export only a closed response fingerprint."""
     started = time.monotonic()
     connection = http.client.HTTPConnection(HOSTNAME, timeout=10)
     try:
@@ -305,8 +335,37 @@ def control_get(path: str) -> dict:
             raise
         connection.request('GET', path)
         response = connection.getresponse()
-        assert len(response.read(8193)) <= 8192, 'public response budget'
-        return dict(status=response.status, elapsed_seconds=round(time.monotonic() - started, 3))
+        body = response.read(8193)
+        assert len(body) <= 8192, 'public response budget'
+        content_types = response.headers.get_all('Content-Type', [])
+        content_type = (content_types[0].split(';', 1)[0].strip().lower()
+                        if len(content_types) == 1 else '')
+        daemon_shaped = content_type == 'application/json'
+        try:
+            parsed = json.loads(body)
+        except (ValueError, UnicodeError):
+            parsed = None
+        daemon_shaped |= isinstance(parsed, dict) and bool({'detail', 'teams', 'error'} & parsed.keys())
+        # Headscale v0.25.1 app.go:377-404,490-492 writes exactly these
+        # 12 bytes before grpc-gateway. Go net/http supplies type and length.
+        # HappyRanch auth.py:22 instead returns JSON detail=missing bearer token.
+        plain = content_types == ['text/plain; charset=utf-8']
+        health_type = content_types == ['application/health+json; charset=utf-8']
+        unencoded = not response.headers.get_all('Content-Encoding') and not response.headers.get_all('Transfer-Encoding')
+        refusal = (response.status == 401 and body == b'Unauthorized' and plain
+                   and response.headers.get_all('Content-Length') == ['12'] and unencoded and not daemon_shaped)
+        # Existing health bookends positively corroborate the same direct
+        # Headscale listener (handlers.go HealthHandler); no new probe/exposure.
+        health = (response.status == 200 and body == b'{"status":"pass"}\n' and health_type
+                  and response.headers.get_all('Content-Length') == ['18'] and unencoded and not daemon_shaped)
+        body_class = ('daemon-shaped' if daemon_shaped else
+                      'headscale-unauthorized' if body == b'Unauthorized' else
+                      'headscale-health' if body == b'{"status":"pass"}\n' else 'other')
+        return dict(status=response.status, elapsed_seconds=round(time.monotonic() - started, 3),
+                    body_class=body_class, daemon_shaped=daemon_shaped,
+                    content_type_class='headscale-text' if plain else 'headscale-health' if health_type else
+                                       'daemon-json' if content_type == 'application/json' else 'other',
+                    headscale_refusal=refusal, headscale_health=health)
     finally:
         connection.close()
 
