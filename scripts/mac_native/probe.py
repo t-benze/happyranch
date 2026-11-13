@@ -1432,7 +1432,8 @@ def main() -> int:
         signal.signal(signal.SIGINT, interrupt)
         try:
             if args.suite == 'toolchain':
-                from suite_toolchain import run as toolchain
+                sys.path.insert(0, str(ROOT))
+                from scripts.mac_native.suite_toolchain import run as toolchain
 
                 toolchain(report)
             elif args.suite == 'cleanup-helpers':

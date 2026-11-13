@@ -1,4 +1,4 @@
-"""Read-only packaging prerequisites; no build, install, daemon or app launch."""
+"""Scratch-provisioned packaging prerequisites; no daemon or app launch."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ TOOLS = {
 OUTPUT_CAP = 1024
 
 
-def command(argv: list[str], deadline: float) -> dict[str, Any]:
+def command(argv: list[str], deadline: float, env: dict[str, str] | None = None) -> dict[str, Any]:
     """Drain bounded output and always kill/reap the owned command group."""
     data = bytearray()
     result: dict[str, Any] = {"argv": argv}
@@ -29,7 +29,7 @@ def command(argv: list[str], deadline: float) -> dict[str, Any]:
         if time.monotonic() >= end:
             raise TimeoutError("read-only command deadline")
         child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, start_new_session=True)
+                                 stderr=subprocess.STDOUT, start_new_session=True, env=env)
         with selectors.DefaultSelector() as selector:
             selector.register(child.stdout, selectors.EVENT_READ)
             while selector.get_map():
@@ -77,7 +77,7 @@ def accepted(name: str, row: dict[str, Any]) -> bool:
         "uv": r"uv \d+\.\d+\.\d+\b",
         "node": r"v24\.\d+\.\d+\b",
         "npm": r"\d+\.\d+\.\d+\b",
-        "go": r"go version go\d+\.\d+(?:\.\d+)? darwin/arm64\b",
+        "go": r"go version go1\.23\.12 darwin/arm64$",
         "swift": r"Swift version (?:[6-9]|[1-9]\d+)\.",
         "xcodebuild": r"Xcode (?:1[6-9]|[2-9]\d+)\.",
         "python3": r"Python 3\.14\.\d+\b",
@@ -86,27 +86,55 @@ def accepted(name: str, row: dict[str, Any]) -> bool:
 
 
 def run(report: dict[str, Any]) -> None:
-    deadline = time.monotonic() + 90
-    section: dict[str, Any] = {"tools": {}, "build_ran": False}
+    from scripts.mac_native.toolchain import PINS, parse_pins, provision
+
+    provision_deadline = time.monotonic() + 240
+    section: dict[str, Any] = {"tools": {}, "build_ran": False, "ready": False}
     report["toolchain"] = section
     scratch = Path(os.environ.get("TMPDIR", ""))
     if not scratch.is_absolute() or not scratch.is_dir():
         raise RuntimeError("toolchain requires the job scratch TMPDIR")
+    scratch = scratch.resolve()
+    pins = parse_pins(PINS.read_text(encoding="utf-8"))
+    section["provisioning"] = {"pins": pins, "completed": False}
+    env = provision(scratch / "native-toolchain", pins, provision_deadline)
+    section["provisioning"]["completed"] = True
+    deadline = time.monotonic() + 90
     # statvfs reads free space without creating any fixture or cache.
     space = os.statvfs(scratch)
     section["scratch"] = {"path": str(scratch), "free_bytes": space.f_bavail * space.f_frsize}
     for name, flag in TOOLS.items():
-        lookup = command(["/bin/bash", "-p", "-c", 'command -v "$1"', "toolchain", name], deadline)
+        lookup = command(["/bin/bash", "-p", "-c", 'command -v "$1"', "toolchain", name], deadline, env)
         path = lookup["output"] if lookup["exit_code"] == 0 else None
         row: dict[str, Any] = {"path": path, "lookup": lookup}
         section["tools"][name] = row
         if path and Path(path).is_absolute():
-            row["version"] = command([path, flag], deadline)
-            row["file"] = command(["/usr/bin/file", "-L", path], deadline)
+            row["version"] = command([path, flag], deadline, env)
+            row["file"] = command(["/usr/bin/file", "-L", path], deadline, env)
             if name != "npm":
-                row["arch"] = command(["/usr/bin/lipo", "-archs", path], deadline)
-        row["status"] = "PASS" if accepted(name, row) else "UNAVAILABLE"
-    section["ready"] = all(row["status"] == "PASS" for row in section["tools"].values())
+                row["arch"] = command(["/usr/bin/lipo", "-archs", path], deadline, env)
+        valid = accepted(name, row)
+        if valid and name in ("uv", "node", "go"):
+            expected = f"uv {pins['uv']['version']}" if name == "uv" else f"v{pins['node']['version']}"
+            if name == "go":
+                expected = f"go version go{pins['go']['version']} darwin/arm64"
+            valid = row["version"]["output"].split(" (")[0] == expected
+        if name in ("uv", "node", "npm", "go"):
+            private = scratch / "native-toolchain"
+            expected_path = (private / "uv-aarch64-apple-darwin/uv" if name == "uv" else
+                             private / "go/bin/go" if name == "go" else
+                             private / f"node-v{pins['node']['version']}-darwin-arm64/bin" / name)
+            valid = valid and path == str(expected_path)
+        if name == "go":
+            row["packaging_requirement"] = "scratch-provisioned Go1.23.12 darwin/arm64; newer graph compatibility unestablished (app/mac/README.md)"
+        row["status"] = "PASS" if valid else "UNAVAILABLE"
+    section["packaging_commands"] = {
+        name: command(["/bin/bash", "-p", "-c", 'command -v "$1"', "toolchain", name], deadline, env)
+        for name in ("xcrun", "iconutil", "ditto", "ar", "nm", "otool", "lipo", "file")
+    }
+    section["ready"] = (all(row["status"] == "PASS" for row in section["tools"].values())
+                        and all(row["exit_code"] == 0 and row["output"]
+                                for row in section["packaging_commands"].values()))
     if not section["ready"]:
         missing = [name for name, row in section["tools"].items() if row["status"] != "PASS"]
         raise RuntimeError("packaging toolchain unavailable: " + ", ".join(missing))

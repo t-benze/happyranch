@@ -154,13 +154,20 @@ drives real Darwin Git refresh and native preparation in private scratch using
 the existing locked 18 bootstrap wheels. Linux emits skipped JSON. Native Jenkins
 and frozen-app acceptance remain separate; local lint is not native evidence.
 
-The manual [packaging toolchain preflight](../ci/jenkins/mac-native-probe/README.md#packaging-toolchain-preflight-thr-346-msg77--task-15936)
-uses `SUITE=toolchain` under the existing limits. It observes installed tools and
-scratch free space only; a missing tool blocks packaging pending a founder
-decision. Run its portable evidence-classification and output/deadline checks
-with `python3 -B -m unittest scripts.mac_native.test_toolchain -v`. This is a
-focused manual probe venue, outside the retired Python unit suite and required
-lint/static CI; native evidence still requires its separately authorized run.
+The manual [packaging toolchain preflight](../ci/jenkins/mac-native-probe/README.md#packaging-toolchain-preflight-thr-346-msg86-option-b--task-15955)
+uses `SUITE=toolchain` to provision exact SHA256-pinned uv 0.12.21/Node 24.19.0
+LTS + bundled npm and Go 1.23.12 only in job scratch, with process-local PATH and caches.
+The source pins and bounded provisioner run at SOURCE_SHA. Preflight requires
+exact scratch uv/Node/Go paths and versions. GOROOT/GOPATH/Go caches are private,
+GOTOOLCHAIN=local, GOFLAGS unchanged. The freezer hash-installs its full build-only
+backend closure before building the editable root without backend isolation;
+runtime manifests/uv.lock remain unchanged. Newer Go compatibility remains unestablished.
+The template proposes 90min/256MiB per file; live application belongs to the
+manager. Native proof is NOT RUN while the live 32MiB cap cannot admit the Node
+archive. Portable parsing/checksum/PATH and tool-evidence checks run with
+`python3 -B -m unittest scripts.mac_native.test_toolchain scripts.mac_native.test_provisioning -v`.
+This focused manual venue remains outside retired Python units and required
+lint/static CI. No packaged-app suite or app build/run is included here.
 
 Behavioral tests and builds are outside all/pre-push/required merge checks.
 Normal hooks stay enabled; never bypass hooks or the guarded worktree.
