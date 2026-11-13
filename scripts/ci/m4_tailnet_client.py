@@ -86,7 +86,7 @@ def safe_packet_diagnostics(value: object) -> dict:
 
 CAPTURE_SHAPES = {'unknown', 'passed', 'prefix', 'metadata', 'multiline', 'truncated',
                   'transport', 'endpoint', 'attribution', 'counters'}
-CAPTURE_COUNTS = ('header_lines', 'metadata_lines', 'ipv4_packets', 'ipv6_packets',
+CAPTURE_COUNTS = ('header_lines', 'terminal_separator_lines', 'metadata_lines', 'ipv4_packets', 'ipv6_packets',
                   'other_process_packets', 'counter_lines', 'captured', 'received',
                   'kernel_drops', 'interface_drops', 'metadata_drops', 'stderr_other_lines',
                   *('unparsed_' + shape for shape in sorted(CAPTURE_SHAPES - {'unknown', 'passed'})))
@@ -186,8 +186,15 @@ def packet_evidence(text: str, pid: int, diagnostic: dict, *, endpoint: tuple[st
         if len(selected) < PROBE_SKELETON_LINES:
             selected += [line for line in lines if re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)][:PROBE_SKELETON_LINES - len(selected)]
         diagnostic['_probe_skeletons'].extend(structural_skeleton(line) for line in selected)
+    # tcpdump's SIGINT exit adds one newline after the final packet newline.
+    # Only that exact terminal separator is framing, never a packet/continuation.
+    # PacketCapture.evidence still reconciles captured == received == parsed.
+    lines = text.splitlines()
+    if len(lines) > 1 and text.endswith('\n\n') and lines[-1] == '':
+        lines.pop()
+        detail['terminal_separator_lines'] += 1
     records: list[tuple[str, str, list[str]]] = []
-    for line in text.splitlines():
+    for line in lines:
         prefix = re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)
         if prefix:
             metadata, body = prefix.groups()

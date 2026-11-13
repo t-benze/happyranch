@@ -220,4 +220,12 @@ The TASK-15875 probe additionally emits at most three closed structural skeleton
 for unrecognized prefixes, filling remaining slots with recognized prefixes
 (2048-character input, 256-character output per line);
 other printable punctuation maps to fixed `W`; unknown/overlong input uses fixed
-labels. The M4 runbook owns the exact vocabulary and custody bounds. Native summaries and all proof gates remain unchanged.
+labels. The M4 runbook owns the exact vocabulary and custody bounds.
+Native summaries exclude skeletons; all packet proof gates remain required.
+
+TASK-15875 probe2 observed same-line `proc N, out` and kernel `(in)` metadata.
+The candidate parser change recognizes exactly one empty terminal tcpdump
+interrupt separator, reporting bounded `terminal_separator_lines` in capture
+diagnostics while retaining captured=received=parsed and every attribution/drop
+gate. All other empty/malformed lines refuse. The real macos-15 probe result,
+not lint or fixtures, determines compatibility; native attempt8 remains unspent.

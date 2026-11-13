@@ -525,8 +525,22 @@ not reconstruction of raw capture, process-attribution proof or native acceptanc
 Run43368317931 (TASK-15874) remains FAILED at prefix, captured18/received18/parsed0.
 Probe1 run43371075839 at719ad7b31ca35cc189bacb893381400e7844b306 also
 FAILED with skeleton `["unknown"]`. The actual rejected form remains UNKNOWN.
-The probe now includes recognized prefixes after an earlier refusal so their
-structure stays visible. This diagnostic phase changes no parser gate or flags.
+Probe2 run43372501871 at877688acd9449f196ac60ea201619287234a4008 FAILED;
+its verbatim skeletons were `["unknown", "A ( proc N , out ) IP A > A : tcp N",
+"A ( in ) IP A > A : tcp N"]`. Thus same-line positive proc/out metadata and
+kernel ingress without proc are observed with the existing `-k PD` flags.
+Ingress still requires the reverse of a positively attributed native TCP flow.
+`unknown` alone does not identify the refused line. Apple's
+[interrupt exit](https://github.com/apple-oss-distributions/tcpdump/blob/58aef51e406a84d34352a0a05946770037a25360/tcpdump/tcpdump.c#L3159-L3175)
+adds a newline. The candidate framing fix recognizes exactly one empty terminal
+line after the final packet newline; leading/internal/whitespace-only/repeated
+empty lines and all unsupported packet records still refuse. The bounded integer
+`terminal_separator_lines` reports that recognition in capture diagnostics;
+structural skeletons remain probe-only. Captured=received=parsed, zero drops,
+positive process/reverse-flow attribution, UDP silence and all existing limits
+remain required. The third and final task probe must establish real compatibility;
+source/fixtures and the first two failed probes cannot establish it. No capture
+flag or packet filter changes. No allowance is replenished.
 Native attempt8 remains unspent; JOB-6699 and all prior failed/spent runs remain
 failed/spent, with no allowance replenished.
 
