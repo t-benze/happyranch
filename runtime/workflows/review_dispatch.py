@@ -314,6 +314,25 @@ def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: s
 class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
     """The F5 adapter projects real rows; it creates no draft intent or alternate host API."""
 
+    def _dispatch_pause_owned(self, task_id: str) -> None:
+        """Refuse queued reviewers before native preparation can own effects."""
+        with self._live_lock:
+            if task_id in self._live:
+                return
+        with self.db._lock:
+            if self._intent(self.db._conn, task_id)['state'] != 'queued':
+                return
+        capture = self.org.workflow_authority.capture_admission()
+        active_sessions = tuple(self.org.sessions.iter_active())
+        with self.org.workflow_authority.admission_writer(capture) as conn:
+            intent = self._intent(conn, task_id)
+            if intent['state'] != 'queued':
+                return
+            # Preserve selected graph, authority and capacity checks before
+            # _eligible's retirement refusal. Never enter the shared author's
+            # TaskInvocation/SID/prepare path or settle an existing owner here.
+            self._eligible(conn, intent, capture, active_sessions)
+
     def reviewer_instruction(self, task_id: str, agent: str, session_id: str) -> str:
         """Render the selected F5 contract before the forthcoming session is published.
 

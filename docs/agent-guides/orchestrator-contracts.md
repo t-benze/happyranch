@@ -7,6 +7,10 @@ activation/return, staging, missing r1/r2 graph creation and reviewer claim/laun
 with `workflow_document_review_retired` (409). Findings staging and human signing
 also refuse; human replay cannot collect. Existing selected access/corruption
 checks and exact immutable operation replay precede the fresh-effect fence.
+The reviewer-only Pause dispatch entry checks queued ownership, selected graph,
+current authority and capacity before its retirement refusal, without creating
+a TaskInvocation/session or preparing native ownership. The final eligibility
+fence remains; live author drafting and existing native uncertainty are unchanged.
 Completed/discovery catches only this named error around graph creation so native
 terminal ownership drains and later records are inspected. Callback, terminal,
 cancel, handle and authentic committed-evidence receipt/collection plumbing stay;

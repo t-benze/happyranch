@@ -197,6 +197,8 @@ graphs, reviewer claims/launches, findings staging and human signing refuse with
 `workflow_document_review_retired` (HTTP 409). Do not attempt those commands or
 retry a retirement refusal. Exact immutable operation replay and authorized
 history reads remain; human signing cannot replay its collection side effect.
+Queued reviewers refuse before Pause invocation/session allocation or preparation;
+already-owned native uncertainty is retained, never cleared by that refusal.
 Native terminal/cancel ownership and authentic committed-evidence settlement
 remain. Preserve privacy, original keys/bytes, actual callback identity and the
 genuine FINAL report-completion rules. Surface any active or unfulfilled old-lane

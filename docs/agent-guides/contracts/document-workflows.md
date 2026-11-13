@@ -12,7 +12,12 @@ The existing @4 code-unavailable refusal keeps precedence.
 
 Fresh author/revision staging, r1/r2 graph creation (including cold discovery),
 reviewer claim/launch, findings staging and human signing are fenced before
-effects. Human signing refuses before collection even on a matched saved command.
+their new effects. Queued F5 reviewer Pause admission validates the selected graph,
+current authority and capacity, then refuses before TaskInvocation/session allocation
+or native preparation. The final eligibility refusal remains in place. Author
+drafting and already-owned native uncertainty retain their existing lifecycle;
+author/revision stage commands refuse before their new staging writes.
+Human signing refuses before collection even on a matched saved command.
 Native completed/discovery paths suppress only the named creation refusal;
 corruption still propagates and later rows/settlement remain reachable.
 Exact immutable activation/revision/stage replay, authorized historical/selected
