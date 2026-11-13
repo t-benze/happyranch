@@ -3765,10 +3765,20 @@ def c24():
             with patch.object(ds._Measurements, 'record', side_effect=ValueError('controlled measurement failure')):
                 failed = ds.sweep([str(f.org)], deadline, summary, **common)
         encode = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
-        assert encode(legacy) == encode(measurement_legacy(measured)), (legacy, measured)
-        assert encode(legacy) == encode(measurement_legacy(failed)), (legacy, failed)
+        # Step 3 explicitly puts a recent-root keep before dirty status. The
+        # same real-clock root is recent AND dirty: assert the exact permitted
+        # delta, then compare every remaining legacy report/audit byte.
+        assert row(legacy['orgs'][0], q)['reason'] == 'dirty_or_untracked'
+        assert row(legacy['orgs'][0], q)['dirty_paths'] == [' M source', '']
+        assert legacy['orgs'][0]['retained_reasons'] == {'changed_within_hour': 1, 'dirty_or_untracked': 1}
+        expected = json.loads(encode(legacy))
+        row(expected['orgs'][0], q)['reason'] = 'changed_within_hour'
+        del row(expected['orgs'][0], q)['dirty_paths']
+        expected['orgs'][0]['retained_reasons'] = {'changed_within_hour': 2}
+        assert encode(expected) == encode(measurement_legacy(measured)), (expected, measured)
+        assert encode(expected) == encode(measurement_legacy(failed)), (expected, failed)
         for report in (measured, failed):
-            assert encode(old._audit_payload(legacy, legacy['orgs'][0], summary)) == encode(measurement_legacy(ds._audit_payload(report, report['orgs'][0], summary)))
+            assert encode(old._audit_payload(expected, expected['orgs'][0], summary)) == encode(measurement_legacy(ds._audit_payload(report, report['orgs'][0], summary)))
         assert failed['orgs'][0]['measurements']['errors']['count'] > 0, failed
         assert candidate_contents(p, q) == before and f.git(repo, 'show-ref', '--heads') == refs
         assert measured['revision'] == 'synthetic-code-binding'
@@ -3951,7 +3961,7 @@ def c26():
         assert history['reports'] == window_reports and history['bytes_read'] == window_reports * report_bytes, history
         assert json.loads(summary.read_text())['measurement_history'] == history
         assert ds._audit_payload(report, report['orgs'][0], summary)['measurement_history'] == history
-        retained(report['orgs'][0], p, 'dirty_or_untracked')
+        retained(report['orgs'][0], p, 'changed_within_hour')
         observations.append(dict(input='32 valid production-sized reports', bytes_per_report=report_bytes, total_bytes=32 * report_bytes, history=history, kept_since=kept['measurement']['kept_since']))
         # A malformed report inside the readable window still fails visibly,
         # even after a newer valid report has contributed a date.
@@ -3960,7 +3970,7 @@ def c26():
         history = report['measurement_history']
         assert history['status'] == 'unavailable:JSONDecodeError' and history['reports'] == 1, history
         assert row(report['orgs'][0], p)['measurement']['kept_since'] == '2026-11-14', history
-        retained(report['orgs'][0], p, 'dirty_or_untracked')
+        retained(report['orgs'][0], p, 'changed_within_hour')
         observations.append(dict(input='malformed second report', history=history))
         paths[-2].write_bytes(raw)
         # The first file outside the remaining aggregate allowance is also
@@ -3971,7 +3981,7 @@ def c26():
         history = report['measurement_history']
         assert history['status'] == 'unavailable:Retain' and history['reports'] == window_reports, history
         assert row(report['orgs'][0], p)['measurement']['kept_since'] == '2026-11-14', history
-        retained(report['orgs'][0], p, 'dirty_or_untracked')
+        retained(report['orgs'][0], p, 'changed_within_hour')
         observations.append(dict(input='oversized boundary report', history=history))
     return observations
 
@@ -5292,12 +5302,105 @@ def c42():
         limits='Actual disposable SQLite/Git/filesystem; synthetic no-effect first Git refusal only for repair/retry entry; native holds are separate')
 
 
+def c43():
+    """Cheap recent roots keep before guard/dirt/full admission; age never clears."""
+    old = ownership_base()
+    observations, differences, failures = [], [], []
+    for phase in ('scratch', 'worktree'):
+        for variant in ('recent', 'active_recent', 'healed_recent', 'recent_dirty', 'recent_guard'):
+            if phase == 'scratch' and variant in ('recent_dirty', 'recent_guard'): continue
+            name = phase + '/' + variant
+            try:
+                decisions = []
+                for module in (old, ds):
+                    with fixture() as f:
+                        ownership_indexes(f)
+                        if phase == 'scratch': path, repo = f.scratch('TASK-1'), None
+                        else: repo, path = f.worktree('TASK-1')
+                        if variant == 'active_recent':
+                            f.db.execute("UPDATE tasks SET status='in_progress'"); f.db.commit()
+                        if variant == 'recent_dirty': (path / 'source').write_text('dirty content remains\n')
+                        if variant == 'recent_guard':
+                            guard = path / '.worktree-guard.json'
+                            value = json.loads(guard.read_text()); value['task_id'] = 'TASK-other'
+                            guard.write_text(json.dumps(value))
+                        stamp = path.stat()
+                        os.utime(path, (NOW, NOW))
+                        before = candidate_contents(path)
+                        refs = f.git(repo, 'show-ref') if repo else None
+                        events, actions, counts, result = [], [], dict(admit=0, snapshot=0, git_status=0), {}
+                        ready = False
+                        original_directory, original_discover = module.directory, module.discover
+                        original_admit, original_snapshot = module.admit, module.snapshot
+                        original_git, original_mutate = module.git, module.mutate
+                        def discover(*args, **kwargs):
+                            nonlocal ready
+                            value = original_discover(*args, **kwargs); ready = True
+                            return value
+                        @contextmanager
+                        def directory(root, deadline):
+                            with original_directory(root, deadline) as fd:
+                                yield fd
+                                if ready and Path(root) == path and variant == 'healed_recent' and not events:
+                                    # Heal a real mtime AFTER the root observation.
+                                    # The earlier failed age answer remains final.
+                                    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                                    events.append('healed_after_root_observation')
+                        def admit(*args, **kwargs):
+                            counts['admit'] += 1; return original_admit(*args, **kwargs)
+                        def snapshot(*args, **kwargs):
+                            if ready: counts['snapshot'] += 1
+                            return original_snapshot(*args, **kwargs)
+                        def git(root, deadline, *args):
+                            if args[0] == 'status': counts['git_status'] += 1
+                            if args[:2] == ('worktree', 'remove'): actions.append('git_remove')
+                            return original_git(root, deadline, *args)
+                        def mutate(*args, **kwargs):
+                            actions.append('tree_remove' if kwargs.get('remove') else 'repair')
+                            return original_mutate(*args, **kwargs)
+                        with patch.object(module, 'directory', directory), patch.object(module, 'discover', discover), \
+                                patch.object(module, 'admit', admit), patch.object(module, 'snapshot', snapshot), \
+                                patch.object(module, 'git', git), patch.object(module, 'mutate', mutate):
+                            report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW, result=result)
+                        target = row(report, path)
+                        expected = ('task_or_root_not_terminal:in_progress' if variant == 'active_recent' else
+                                    'dirty_or_untracked' if module is old and variant == 'recent_dirty' else
+                                    'unknown_worktree_owner' if module is old and variant == 'recent_guard' else
+                                    'changed_within_hour')
+                        if module is ds or variant != 'healed_recent':
+                            retained(report, path, expected)
+                            assert not actions and candidate_contents(path) == before, (name, actions)
+                            if repo: assert f.git(repo, 'show-ref') == refs
+                            complete = not (module is old and variant == 'recent_guard')
+                            assert report['outcome'] == ('complete' if complete else 'incomplete') and report['coverage']['complete'] is complete, report
+                        if module is ds:
+                            assert counts == dict(admit=0, snapshot=0, git_status=0), (name, counts)
+                            if variant == 'healed_recent':
+                                assert events == ['healed_after_root_observation'], events
+                                deadline = time.monotonic() + 5
+                                candidate = dict(phase=phase, path=str(path), workspace=str(f.workspace))
+                                if repo: candidate['repo'] = str(repo)
+                                module.admit(candidate, module.Evidence(f.org, deadline), deadline, now=NOW)
+                                assert row(report, path)['state'] == 'retained' and not actions
+                        decisions.append(dict(state=target['state'], reason=target.get('reason'),
+                                              outcome=report['outcome'], counts=counts, events=events, actions=actions))
+                if decisions[0]['reason'] != decisions[1]['reason'] or decisions[0]['state'] != decisions[1]['state']:
+                    differences.append(dict(variant=name, base=decisions[0], new=decisions[1],
+                        justification='Approved earliest recent-root KEEP and latch after a real observed failure; no positive age reuse.'))
+                observations.append(dict(variant=name, result='PASS', decisions=decisions))
+            except AssertionError as exc:
+                failures.append(dict(variant=name, error=str(exc)[:2000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, equivalence_differences=differences,
+                limits='Scratch base lacks the cheap-root healing boundary; no identical dynamic-history claim there. Cheap root age only; an old root still needs every current recursive admission. C40 owns later age races.')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,43))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,44))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -5329,7 +5432,8 @@ if __name__=='__main__':
             purposes += ('Literal primary common-dir proof and base removal parity', 'Fresh recursive safety after inventory and healed refusal latch',)
             purposes += ('Candidate-scoped auxiliary reads with exhaustive fresh topology',)
             purposes += ('Current ownership at final scan remove repair retry boundaries',)
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42),purposes),1):
+            purposes += ('Cheap recent-root keep ordering and healed refusal latch',)
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

@@ -1127,6 +1127,16 @@ def _worktree_location(path: Path, repo: Path, rows: _Registrations, deadline: f
         raise _RegistrationUnknown(f'unknown_git_registrations:{repo / ".git/worktrees"}: {exc}') from exc
 
 
+def _recent_root_keep(candidate: dict, deadline: float, now: float | None) -> None:
+    """A recent root is a final keep; an old root supplies no clearance."""
+    with directory(Path(candidate['path']), deadline) as fd:
+        root = os.fstat(fd)
+    check(deadline)
+    cutoff = (time.time() if now is None else now) - 3600
+    if max(root.st_mtime, root.st_ctime) > cutoff:
+        raise Retain('changed_within_hour')
+
+
 def worktree_inventory(candidate: dict, topology: dict, deadline: float) -> Exception | None:
     """Inspect cheap keeps in candidate order; success never admits deletion."""
     try:
@@ -1495,6 +1505,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     raise Retain(local[0])
                 if candidate['path'] in refusals:
                     raise refusals[candidate['path']]
+                _recent_root_keep(candidate, deadline, now)
                 if candidate['phase'] == 'worktree':
                     refusal = worktree_inventory(candidate, topology, deadline)
                     if refusal is not None: raise refusal

@@ -1934,7 +1934,13 @@ preserves refusal priority. Successful inventory answers are discarded: every
 existing delete, repair and retry admission opens an independent current read,
 including after slow work. Transaction-local task/job rows are never reused as
 delete authority. Discovery retains its once-per-clone topology inventory for
-KEEP decisions only. In existing candidate order after ownership refusals, guard,
+KEEP decisions only. In existing candidate order after ownership refusals, a
+no-follow root-directory stat first keeps a root whose mtime or ctime is within
+the existing hour. This observation is final even if the timestamp heals; an
+old root supplies no clearance and still requires every recursive age/tree and
+fresh delete check. Previously observed local/shared uncertainty keeps precedence.
+The earlier recent keep can take precedence over guard/dirt not yet inspected;
+it is a located keep under the unchanged coverage definition. Subsequent guard,
 known mapping/lock/branch and dirty-status refusals are final for the night, even
 after healing. Own directory identities and reciprocal pointer signatures are
 revalidated no-follow before status; unsafe changed locations hold the clone. A clean

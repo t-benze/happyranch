@@ -280,10 +280,17 @@ No schema, new index or migration is introduced. Unknown status/active-job linea
 still holds the org; candidate-own ancestry uncertainty still holds the item.
 
 Task/job refusal inventory removes repeated ownership work for final keeps.
+After ownership and already-known local/shared refusals, a cheap no-follow
+root-directory stat rejects a recent mtime or ctime before guard, dirty status
+or full admission. Its failed age observation is final even if the timestamp
+heals. An old root never admits deletion: every current recursive age/tree check
+still runs. Earlier recent retention can change the first reason where dirt or a
+bad guard has not yet been inspected. A located recent keep satisfies the same
+coverage definition; already observed uncertainty remains latched.
 The existing fresh delete admissions, census/tree checks, retry, classification,
-completion, policy and keys remain. Cheaper full destructive admission and
-recursive-age keep screening remain unfinished parts of the approved step 3
-package. Two-pass ordering is absent: real-night step 1 data is not yet available.
+completion, policy and keys remain. The complete safety proof for cheaper
+destructive admission remains an unfinished part of the approved step 3 package.
+Two-pass ordering is absent: real-night step 1 data is not yet available.
 These partial changes do not establish real-night speed or an under-ten-minute
 result.
 
