@@ -6,13 +6,15 @@ uv run --frozen --python 3.14 python - <<'PY'
 from pathlib import Path
 from contextvars import copy_context
 import sqlite3
+import logging
+import os
 import tempfile
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from runtime.infrastructure.database import Database
-from runtime.infrastructure.workflow_schema import install_or_recover, validate_workflow_schema
+from runtime.infrastructure.workflow_schema import install_or_recover, validate_workflow_schema, migrate_draft_schema
 from runtime.infrastructure.workflow_schema_load import org_load_validation, read_workflow_schema_for_org_load
 from runtime.infrastructure.team_move_store import install_team_move_schema, TeamMoveStore
 from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
@@ -27,6 +29,161 @@ from runtime.workflows.cutover import WorkflowCutoverStore
 from runtime.workflows import sequential_return
 from runtime.workflows.recovery import rediscover_returned
 from runtime.workflows.sequential_dispatch import SequentialDispatcher
+from runtime.infrastructure import workflow_schema_load as load_guard
+from runtime.identities.registry import Namespace, reconcile_namespace
+from runtime.daemon.org_state import OrgState
+from runtime.config import Settings
+
+# Real OrgState.load, without a listener, runners or serving-daemon access.
+with tempfile.TemporaryDirectory(prefix='org-load-timing-') as scratch:
+    root = Path(scratch) / 'orgs' / 'scratch'
+    (root / 'org' / 'agents').mkdir(parents=True)
+    (root / 'org' / 'teams.yaml').write_text('teams: {}\n')
+    messages = []
+    class Capture(logging.Handler):
+        def emit(self, record):
+            messages.append(record.getMessage())
+    log = logging.getLogger(load_guard.__name__)
+    capture = Capture()
+    prior_level = log.level
+    log.setLevel(logging.INFO)
+    log.addHandler(capture)
+    try:
+        with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': scratch}):
+            settings = Settings()
+            # Warm installation, then measure a genuine reopen of the same fixture.
+            state = OrgState.load(slug='scratch', root=root, settings=settings)
+            state.close()
+            messages.clear()
+            start = time.perf_counter()
+            state = OrgState.load(slug='scratch', root=root, settings=settings)
+            elapsed = time.perf_counter() - start
+            state.close()
+        print(f'LOCAL FIXTURE OrgState.load reopen: wall={elapsed:.6f}s; {messages[-1]}')
+        print('Empty-roster fixture; authority publication remains fenced; no serving/restart claim.')
+    finally:
+        log.removeHandler(capture)
+        log.setLevel(prior_level)
+
+# Each table row drives the actual production owner, with an actual SQLite DB.
+# Interposition only observes/perturbs the boundary AFTER the real source check.
+target_failures = []
+for site in ('cutover', 'ownership', 'naming'):
+    for scenario in ('zero-write', 'owner-write', 'unrelated-write', 'unavailable-bookend'):
+        with tempfile.TemporaryDirectory(prefix=f'load-target-{site}-') as scratch:
+            paths = OrgPaths(root=Path(scratch))
+            paths.org_dir.mkdir()
+            paths.agents_dir.mkdir()
+            db = Database(paths.db_path)
+            try:
+                install_or_recover(db, expected_org_slug='scratch')
+                with db.workflow_schema_transaction() as conn:
+                    migrate_draft_schema(conn, expected_org_slug='scratch')
+                install_team_move_schema(db, org_slug='scratch')
+                install_pause_schema(db, org_slug='scratch')
+                if site != 'ownership' or scenario != 'owner-write':
+                    install_task_ownership(db, org_slug='scratch')
+                elif scenario == 'owner-write':
+                    db.insert_task(TaskRecord(id='TASK-target', brief='ownership backfill fixture'))
+                org = SimpleNamespace(root=paths.root, db=db, slug='scratch')
+                namespace = Namespace((), ())
+                if site == 'naming':
+                    reconcile_namespace(org, namespace, install=True)
+                    if scenario == 'owner-write':
+                        namespace = Namespace((('builder', 'active'),), ())
+                cutover = WorkflowCutoverStore(db, org_slug='scratch')
+                if site == 'cutover' and scenario == 'owner-write':
+                    # Genuine event writer prepares a committed disable request.
+                    with cutover._transaction(write=True) as conn:
+                        from runtime.workflows.coding_authority_history import _Budget
+                        budget = _Budget()
+                        for _ in range(4):
+                            marker, events, _ = cutover._read(conn, budget=budget)
+                            cutover._advance(conn, marker, events, key='disable-fixture' if marker['generation'] == 4 else 'enable-fixture', budget=budget)
+                statements = []
+                db._conn.set_trace_callback(statements.append)
+                original_source = load_guard.read_workflow_schema_for_org_load
+                injected = False
+                target_results = []
+                original_target = getattr(load_guard, 'read_workflow_schema_target_for_org_load', None)
+                def target(conn, **kwargs):
+                    assert conn.in_transaction, 'target lost its caller snapshot'
+                    result = original_target(conn, **kwargs)
+                    assert conn.in_transaction, 'target ended its caller transaction'
+                    target_results.append(result)
+                    return result
+                original_advance = cutover._advance
+                def advance(conn, marker, events, **kwargs):
+                    before = sum(sql == 'PRAGMA integrity_check' for sql in statements)
+                    original_advance(conn, marker, events, **kwargs)
+                    assert sum(sql == 'PRAGMA integrity_check' for sql in statements) == before + 1, 'recovery mutation lost its full target check before COMMIT'
+                def source(conn, **kwargs):
+                    global injected
+                    result = original_source(conn, **kwargs)
+                    if kwargs.get('writer_source') and not injected:
+                        injected = True
+                        if scenario == 'unrelated-write':
+                            conn.execute("INSERT INTO org_settings(section,value_json,updated_at) VALUES ('target-probe','{}','2026-01-01T00:00:00+00:00')")
+                        elif scenario == 'unavailable-bookend':
+                            def deny(action, arg1, arg2, database, origin):
+                                return (sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_PRAGMA
+                                        and arg1 == 'data_version' else sqlite3.SQLITE_OK)
+                            conn.set_authorizer(deny)
+                    return result
+                with org_load_validation(db, org_slug='scratch'):
+                    cached = original_source(db._conn, expected_org_slug='scratch')
+                    owner = load_guard._current.get()
+                    before_full, before_hits = owner.full_runs, owner.hits
+                    changes = db._conn.total_changes
+                    before_checks = sum(sql == 'PRAGMA integrity_check' for sql in statements)
+                    with (patch.object(load_guard, 'read_workflow_schema_for_org_load', side_effect=source),
+                          patch.object(load_guard, 'read_workflow_schema_target_for_org_load', side_effect=target, create=True),
+                          patch.object(cutover, '_advance', side_effect=advance)):
+                        if site == 'cutover':
+                            projection = cutover.recover_authorized()
+                            assert projection['org_slug'] == 'scratch'
+                            if scenario == 'owner-write':
+                                assert projection['generation'] > 5, projection
+                        elif site == 'ownership':
+                            install_task_ownership(db, org_slug='scratch')
+                            assert db._task_ownership_org == 'scratch'
+                            if scenario == 'owner-write':
+                                assert tuple(db._conn.execute('SELECT task_id,kind FROM workflow_task_ownership').fetchone()) == ('TASK-target', 'legacy')
+                        else:
+                            reconcile_namespace(org, namespace, install=True)
+                            if scenario == 'owner-write':
+                                assert db._conn.execute("SELECT current_label FROM identity_name_owners WHERE canonical_id='builder'").fetchone()[0] == 'builder'
+                    db._conn.set_authorizer(None)
+                    assert injected, (site, scenario, 'source seam not reached')
+                    assert not db._conn.in_transaction, 'target changed caller transaction ownership'
+                    if scenario == 'zero-write':
+                        good = (owner.full_runs == before_full and owner.hits == before_hits + 2
+                                and db._conn.total_changes == changes
+                                and sum(sql == 'PRAGMA integrity_check' for sql in statements) == before_checks)
+                        # Reuse returns the exact complete tuple, without reconstruction.
+                        if target_results:
+                            assert len(target_results) == 1 and target_results[0] is cached
+                        assert owner.saved[1] is cached
+                        assert 'PRAGMA integrity_check' in statements
+                    else:
+                        good = sum(sql == 'PRAGMA integrity_check' for sql in statements) > before_checks
+                        if scenario in ('owner-write', 'unrelated-write'):
+                            assert db._conn.total_changes > changes, (site, scenario, 'no actual write')
+                    if not good:
+                        target_failures.append((site, scenario, owner.full_runs - before_full, owner.hits - before_hits))
+                    print('TARGET', site, scenario, 'PASS' if good else 'FAIL',
+                          f'full_delta={owner.full_runs-before_full} hits_delta={owner.hits-before_hits}')
+                if site == 'cutover' and scenario == 'zero-write':
+                    # The public read keeps its original full path even IN a load scope.
+                    with org_load_validation(db, org_slug='scratch'):
+                        original_source(db._conn, expected_org_slug='scratch')
+                        before = sum(sql == 'PRAGMA integrity_check' for sql in statements)
+                        cutover.get()
+                        assert sum(sql == 'PRAGMA integrity_check' for sql in statements) == before + 1, 'public cutover get reused within load scope'
+            finally:
+                db._conn.set_authorizer(None)
+                db.close()
+assert not target_failures, target_failures
 
 with tempfile.TemporaryDirectory(prefix='returned-storage-') as scratch:
     db = Database(Path(scratch) / 'org.db')
@@ -271,11 +428,11 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
             install_team_move_schema(db, org_slug='scratch')
             assert checks() == before, 'team-move source did not use the real load seam'
             install_task_ownership(db, org_slug='scratch')
-            assert checks() == before + 1, 'ownership target must remain full; source may reuse'
+            assert checks() == before, 'unchanged ownership target repeated the full read'
             before = checks()
             WorkflowCutoverStore(db, org_slug='scratch').recover_authorized()
-            assert checks() == before + 1, 'cutover writer source may reuse; public get stays full'
-        print('PASS unknown caller snapshot, real source owners and unconditional writer target')
+            assert checks() == before, 'unchanged cutover recovery target repeated the full read'
+        print('PASS unknown caller snapshot, real source owners and zero-write targets')
 
         assert not failures, failures
         print('PASS all named invalidation/bookend cases')

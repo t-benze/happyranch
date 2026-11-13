@@ -321,7 +321,7 @@ def reconcile_namespace(org, namespace, *, install=False):
         validate_rows(*read_rows(conn), namespace)
         if install:
             validate_naming_install_admission(
-                conn, org_slug=org.slug, expected_db_path=expected_db_path,
+                conn, org_slug=org.slug, expected_db_path=expected_db_path, load_target=True,
             )
 
 
