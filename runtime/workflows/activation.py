@@ -7,7 +7,7 @@ import base64
 import json
 import sqlite3
 from datetime import datetime, timezone
-from typing import Annotated, Literal, Any
+from typing import Annotated, Literal, Any, NoReturn
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
@@ -20,6 +20,7 @@ from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTempl
 
 
 CONTEXT_LIMIT = 1024 * 1024
+DOCUMENT_REVIEW_RETIRED = "workflow_document_review_retired"
 Role = Literal["product-lead", "founder", "implementer", "tester"]
 Action = Literal["draft-document", "submit-immutable-document", "collect-review",
                  "approve-planning-input", "return-to-author"]
@@ -38,6 +39,11 @@ class WorkflowActivationError(ValueError):
         self.owner = owner
         self.required_action = required_action
         super().__init__(code)
+
+
+def refuse_document_review() -> NoReturn:
+    raise WorkflowActivationError(DOCUMENT_REVIEW_RETIRED, owner="founder",
+        required_action="The older document-review workflow is retired; no new review can start or advance.")
 
 
 class ClosedRecord(BaseModel):
@@ -555,6 +561,7 @@ class WorkflowActivationStore:
                     if replay is not None:
                         receipt = replay
                     else:
+                        refuse_document_review()
                         cutover = conn.execute("SELECT state FROM workflow_cutover_state WHERE singleton=1").fetchone()
                         if cutover is None or cutover[0] != "enabled":
                             raise WorkflowActivationError("workflow_new_runs_disabled")

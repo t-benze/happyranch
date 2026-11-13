@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import Field, StrictInt, ValidationError
 
 from runtime.infrastructure.workflow_schema import _records, _stored_json
-from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, _id
+from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, _id, refuse_document_review
 from runtime.workflows.artifacts import document_from_submission, require_document_subject, review_family
 from runtime.workflows.draft_dispatch import canonical_bytes, digest
 from runtime.workflows.submissions import _insert, _record
@@ -395,6 +395,7 @@ class WorkflowReviewReceiptStore:
                                              code='workflow_review_receipt_storage_corrupt')
                         if not _same_value(saved['command'], command) or not _same_value(keys, existing):
                             raise WorkflowActivationError('workflow_human_review_operation_conflict')
+                        refuse_document_review()
                         from runtime.workflows.review_join import collect_in_writer
                         if not historical:
                             collect_in_writer(store, conn, row['id'], capture)
@@ -407,6 +408,7 @@ class WorkflowReviewReceiptStore:
                             or command['request_scope_digest'] != request['request_scope_digest']
                             or command['outcome'] not in scope['outcomes']):
                         raise WorkflowActivationError('workflow_human_review_invalid_request')
+                    refuse_document_review()
                     created_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
                     proof = _human_proof(request, scope, handoff, command, created_at)
                     receipt = _human_receipt_row(request, scope, proof)

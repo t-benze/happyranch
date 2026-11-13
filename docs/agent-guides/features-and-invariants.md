@@ -1,5 +1,19 @@
 # Features And Invariants
 
+## Older document-review retirement — THR-336 msg157, P1a
+
+Fresh old-lane activation/return, author/revision staging, review graph creation,
+reviewer claim/launch, findings staging and human signing now refuse with
+`workflow_document_review_retired` (409) after existing selected checks and exact
+immutable replay. This covers product-design compiler@1, document compiler@2/@3
+and artifact compiler@4 documents. Human signing cannot replay collection effects.
+Stored history, authorized reads, native settlement/cancellation and authentic
+committed-evidence collection remain; no new status, held reason or setting exists.
+The old-lane availability passages below are historical; transport/client removal
+follows in P1b/P2. Any live unfinished old-lane data needs a separate disposition
+before rollout. Sequential documents, Coding v1 and authority-policy review remain
+unchanged. See [the maintained contract](contracts/document-workflows.md).
+
 ## Built-in coding definition invariant — ROOT13509 / THR320seq304
 
 System-owned availability registers the fixed v1 definition in exactly four

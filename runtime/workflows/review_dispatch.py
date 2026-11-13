@@ -10,7 +10,10 @@ from typing import Any, Literal
 from pydantic import Field, StrictInt, ValidationError
 
 from runtime.infrastructure.workflow_schema import _records, _stored_json
-from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, author_capacity_blocked
+from runtime.workflows.activation import (
+    ClosedRecord, SHA256, Token, WorkflowActivationError, author_capacity_blocked,
+    DOCUMENT_REVIEW_RETIRED, refuse_document_review,
+)
 from runtime.workflows.draft_dispatch import DraftOwnershipError, WorkflowDraftDispatcher, canonical_bytes, digest
 from runtime.workflows.artifacts import review_family
 from runtime.workflows.submissions import _insert, _record, validate_handoff_graph
@@ -311,6 +314,25 @@ def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: s
 class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
     """The F5 adapter projects real rows; it creates no draft intent or alternate host API."""
 
+    def _dispatch_pause_owned(self, task_id: str) -> None:
+        """Refuse queued reviewers before native preparation can own effects."""
+        with self._live_lock:
+            if task_id in self._live:
+                return
+        with self.db._lock:
+            if self._intent(self.db._conn, task_id)['state'] != 'queued':
+                return
+        capture = self.org.workflow_authority.capture_admission()
+        active_sessions = tuple(self.org.sessions.iter_active())
+        with self.org.workflow_authority.admission_writer(capture) as conn:
+            intent = self._intent(conn, task_id)
+            if intent['state'] != 'queued':
+                return
+            # Preserve selected graph, authority and capacity checks before
+            # _eligible's retirement refusal. Never enter the shared author's
+            # TaskInvocation/SID/prepare path or settle an existing owner here.
+            self._eligible(conn, intent, capture, active_sessions)
+
     def reviewer_instruction(self, task_id: str, agent: str, session_id: str) -> str:
         """Render the selected F5 contract before the forthcoming session is published.
 
@@ -423,6 +445,7 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
                                 raise WorkflowActivationError('workflow_review_stage_operation_conflict')
                             event_id = stages[0]['id']
                         else:
+                            refuse_document_review()
                             self._event(conn, intent, 'review_staged', stage=dict(command=command,
                                 request_digest=digest(canonical_bytes(command)), scope=intent['scope'],
                                 outbox_id=intent['id'], session_id=session_id))
@@ -471,6 +494,7 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
             raise DraftOwnershipError('workflow_activation_authority_stale')
         if author_capacity_blocked(conn, author=intent['assigned_principal'], task_id=intent['task_id'], active_sessions=active_sessions):
             raise DraftOwnershipError('workflow_activation_author_pending')
+        raise DraftOwnershipError(DOCUMENT_REVIEW_RETIRED)
 
     def _event(self, conn: sqlite3.Connection, intent: dict, kind: str, *, changes: dict | None = None,
                terminal_evidence: dict | None = None, result: dict | None = None, stage: dict | None = None) -> None:

@@ -1,5 +1,21 @@
 # Web And CLI
 
+## Older document-review commands retired at admission — THR-336 msg157, P1a
+
+The existing activation, author/revision stage/return, review-stage and human-sign
+transports remain mounted in this slice, but selected fresh old-lane mutations
+return 409 with code `workflow_document_review_retired`, owner `founder` and
+required_action `The older document-review workflow is retired; no new review can start or advance.`
+Existing authentication/selection/parse/corruption checks and exact immutable
+operation replay retain precedence; human signing refuses before collect-on-replay.
+This covers product-design compiler@1, document compiler@2/@3 and artifact
+compiler@4 documents, preserving the existing @4 code-unavailable error.
+Authorized activation/handoff/revision/request history reads and their mirrors
+remain. Older command/route passages below preserve historical syntax, not fresh
+availability. P1b removes review mutation transports and P2 the signing client;
+no route, OpenAPI path, CLI group or native permission is removed here. Sequential
+documents and Coding v1 remain separate. See [document workflows](contracts/document-workflows.md).
+
 ## Built-in coding availability — ROOT13509 / THR320seq304
 
 Normally admitted orgs have the unchanged built-in coding v1 recipe without

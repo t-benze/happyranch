@@ -2181,3 +2181,22 @@ existing SurfaceAllowList and credential/transport policy; source inspection is
 not native execution evidence. Mounted UI is a separate serial unit. Python units
 remain retired, integration SKIPPED24342, broad behavior/proof UNEXECUTED and
 FOUNDER-WAIVED139429/430; lint/static evidence is not behavioral acceptance.
+
+
+## Supersession — older document-review admission retired (2026-11-13, THR-336 msg157, P1a)
+
+The fresh-work availability described above is superseded for legacy product-design
+compiler@1, document compiler@2/@3 and artifact compiler@4 document work. The domain
+now refuses fresh activation/return before allocation, fresh author/revision staging,
+missing r1/r2 graphs (including cold discovery), reviewer claims/launches, findings
+staging and human signing with `workflow_document_review_retired` (HTTP 409), owner
+`founder`, required_action `The older document-review workflow is retired; no new review can start or advance.`
+Existing identity/access/parse/corruption checks and exact immutable replay retain
+precedence. Human signing cannot replay its collection side effect. Native terminal,
+cancel and handle ownership, authentic committed-evidence settlement, authorized
+history reads, all schema and history validators remain. No stored state/event or
+closed held-reason interpretation changes. Active or unfulfilled old-lane data
+requires a separate disposition before rollout. P1b/P2 separately remove mutation
+transports and the signing client; their syntax above remains historical in P1a.
+The separate sequential document engine, Coding v1 and authority-policy review are
+unchanged. See `docs/agent-guides/contracts/document-workflows.md` for current status.
