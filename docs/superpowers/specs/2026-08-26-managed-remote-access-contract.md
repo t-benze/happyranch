@@ -577,11 +577,26 @@ journal requirement remains mandatory; installed-product journal requirements
 are unchanged. JOB-6727 remains failed/spent, with its original unknown UDP
 subcause and consequent journal failure; this repair does not reclassify it.
 
-Native acceptance remains OPEN/NOT RUN; attempt8 is unspent and separately
-EM-commissioned after merge. PR1472 stays draft/unmerged salvage; two unused
-TASK-15883 probes are retired. All failures remain spent: Linux JOB-6610/6615/6618;
-native1–7 TASK-15684/15690/15691/15753/15766/15774/15847; observer runs43368317931,
-43371075839,43372501871,43373949599,43377704582; premerge JOB-6641/6643/6644/6647;
-JOB-6699 and JOB-6722. No allowance is replenished.
+M4 native attempt9 **PASSED** ([run 43404266680](https://github.com/t-benze/happyranch/actions/runs/43404266680))
+on main `167307599bb6fa77a77b58757231faec57dd9ba9` (short `16730759`, PR1475).
+Independent QA TASK-15908 recorded **PASS, 42/42** acceptance rows.
+Native attempts1–8 remain failed/spent:
+
+- Attempt1 (TASK-15684): first empty-membership poll returned `null`.
+- Attempt2 (TASK-15690): no macOS capacity/steps.
+- Attempt3 (TASK-15691): failed before observed membership/install; underlying
+  decrypt/join cause remains unresolved.
+- Attempt4 (TASK-15753): C init0, immediate C start-2; address wait not reached,
+  actual cause unresolved.
+- Attempt5 (TASK-15766): init0/start-2, `executable`.
+- Attempt6 (TASK-15774): failed at derp-proof; post-proof200/exposure not reached.
+- Attempt7 (TASK-15847): failed/spent.
+- Attempt8 (TASK-15890/run43394234276): failed at DERP-exposure.
+
+All five observer probes remain failed/spent: runs43368317931,43371075839,
+43372501871,43373949599,43377704582. PR1472 stays draft/unmerged salvage; two
+unused TASK-15883 probes are retired. Other failures remain spent: Linux
+JOB-6610/6615/6618; premerge JOB-6641/6643/6644/6647; JOB-6699 and JOB-6722.
+No allowance is replenished.
 
 Custody boundary (engineering_manager TASK-15621): the no-raw-address/PID/tuple/payload rule applies to the packet-proof and capture-diagnostic public fields. The pre-existing reviewed pairs handoff payload synthetic tailnet address and VM service journal metadata are existing public surfaces and are outside that assertion; credentials, enrollment/pairing material and raw capture lines remain forbidden everywhere.

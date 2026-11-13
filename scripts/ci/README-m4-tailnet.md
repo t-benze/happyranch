@@ -222,8 +222,9 @@ HappyRanch's same unauthenticated teams path also answers401, but with
 `application/json` and `{"detail":"missing bearer token"}`. Explicitly reject
 JSON content type or a JSON object with `detail`, `teams` or `error`; status alone
 cannot pass. No proxy, listener/configuration change, status range or new probe.
-The401 diagnosis remains an inference from source and retained journal until
-native attempt9 observes it. Attempts1–8 and five observer probes stay failed/spent.
+Native attempt9 (run43404266680, main `16730759`) confirmed the exact Headscale401
+inference; independent QA TASK-15908 recorded **PASS, 42/42** acceptance rows.
+Attempts1–8 and five observer probes stay failed/spent.
 
 Exposure diagnostics retain fixed rows for `post-proof-allowed-200`,
 `health-before`, `public-daemon-path-refusal`, each `forbidden-port-18765/18443/8765`,
@@ -381,12 +382,15 @@ map or observing every native packet. It proves this bounded request, not all
 future behavior, other topologies, signed Mac.app/Swift or GUI. VM-only premerge
 controls/encryption/cleanup do not complete native acceptance.
 
-All failures remain spent: Linux JOB-6610/6615/6618; native1–7
-TASK-15684/15690/15691/15753/15766/15774/15847; observer runs43368317931,
+All failures remain spent: Linux JOB-6610/6615/6618; native1–8
+TASK-15684/15690/15691/15753/15766/15774/15847/15890 (attempt8,
+run43394234276, failed at DERP-exposure); all five observer runs43368317931,
 43371075839,43372501871,43373949599,43377704582; premerge
 JOB-6641/6643/6644/6647; JOB-6699 and JOB-6722. PR1472 remains draft/unmerged
-salvage and its two unused TASK-15883 probes are retired. Native acceptance is
-OPEN/NOT RUN; attempt8 is unspent and requires a separate post-merge EM commission.
+salvage and its two unused TASK-15883 probes are retired. M4 native attempt9
+**PASSED** ([run 43404266680](https://github.com/t-benze/happyranch/actions/runs/43404266680))
+on main `167307599bb6fa77a77b58757231faec57dd9ba9` (short `16730759`, PR1475),
+with independent QA TASK-15908 **PASS, 42/42**. No allowance is replenished.
 Certificate ledger3/5, zero issuance, SG443/tcp+3478/udp/no22, F1/R1, TLS,
 ciphertext custody, pairing/membership/refusal controls and all deadlines remain.
 
