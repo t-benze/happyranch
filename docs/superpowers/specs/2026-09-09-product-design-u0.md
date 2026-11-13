@@ -2216,3 +2216,14 @@ handling remain. The native deny entry is retained as a tombstone. No schema,
 stored bytes, startup/authority validation, Coding v1 or sequential behavior
 changes. P2 separately removes the web signing mirror. See the maintained
 `docs/agent-guides/contracts/document-workflows.md` for current status.
+
+
+## Supersession — review signing web mirror removed (2026-11-13, THR-336 msg157, P2)
+
+P2 removes `workflowReviews.signHumanReview` and its eight signing-exclusive
+TypeScript command/human-receipt wrapper types. Earlier signing-client and
+P2-pending descriptions are historical. `getWorkflowReviewRequest`, its request
+proof/scope/receipt types, internal receipt projections and `prior_review`, and
+the `workflowReviews` API namespace remain required selected-request GET mirrors.
+Activation, submission and revision clients are unchanged. See the maintained
+`docs/agent-guides/contracts/document-workflows.md` for current status.

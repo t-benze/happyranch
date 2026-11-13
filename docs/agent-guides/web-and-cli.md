@@ -7,7 +7,8 @@ P1b removes POST `/workflows/reviews/human-receipts`, POST
 `happyranch workflows reviews stage` CLI verbs. Their mutation-only route models,
 decoders, CLI helpers, service entry methods and reviewer instruction injection
 are removed. These transports no longer support replay; earlier descriptions
-below are historical. P2 separately removes the signing web mirror.
+below are historical. P2 removes the signing web mirror and its exclusive types;
+the selected-request GET client and reader types remain.
 
 P1a's `workflow_document_review_retired` (409) fences remain for fresh old-lane
 activation/return, author/revision staging, missing r1/r2 graphs and reviewer
@@ -3427,10 +3428,11 @@ Removed in P1b: CLI `happyranch workflows reviews sign --org ORG --from-file /ab
 Existing `workflows submissions request-show R --org ORG --proof-kind human`
 (or --session-id SID) prints actual status/signed/pending. Syntax/file errors
 exit2, domain/transport errors exit1, success exit0. No new automatic retry.
-Shared `workflowReviews.signHumanReview` and getWorkflowReviewRequest plus all
-command/receipt/error types export through the existing api index. client.ts
+P2 removes `workflowReviews.signHumanReview` and its signing-exclusive command
+and human-receipt wrapper types. `workflowReviews.getWorkflowReviewRequest` and
+its request/receipt/error types retain the existing api index export. client.ts
 retains the sole generic first401 refresh; 403/409/response loss cannot invent
-a new operation. Static classification includes the human POST. Reviewer staging adds only the native denial described above; direct-submit
+a new operation. Static classification no longer includes the human POST after P1b. Reviewer staging adds only the native denial described above; direct-submit
 remains deferred and no new remote reachability follows. All behavioral/proof results UNEXECUTED under
 429/430; source parity is not acceptance, and root public smoke465 remains required.
 

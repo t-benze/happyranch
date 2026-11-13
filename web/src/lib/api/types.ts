@@ -1446,20 +1446,6 @@ export interface LegacyWorkflowReviewRequestScope {
   allowed_actions: ['collect-review'];
   inputs: { pin: DocumentWorkflowActivationInput; bytes_base64: string }[];
 }
-export interface LegacyHumanReviewCommand {
-  format: 'workflow-human-review-command@1';
-  action: 'sign-review';
-  /** 1..128 characters, [A-Za-z0-9._:-]; retain the original key/body on retry. */
-  operation_key: string;
-  request_id: string;
-  expected_revision: 1;
-  request_scope_digest: string;
-  outcome: 'approved' | 'changes_requested';
-  /** Canonical base64 of 1..1048576 UTF8 bytes (4..1398104 characters). */
-  findings_bytes_base64: string;
-  /** Lowercase SHA256 of the exact decoded bytes. */
-  findings_digest: string;
-}
 export interface LegacyReviewReceiptProjection {
   format: 'workflow-review-receipt@1';
   receipt_id: string;
@@ -1473,10 +1459,6 @@ export interface LegacyReviewReceiptProjection {
   findings_digest: string;
   /** Retained original timestamp, 1..64 characters. */
   created_at: string;
-}
-export interface LegacyHumanReviewReceipt {
-  format: 'workflow-human-review-receipt@1';
-  receipt: LegacyReviewReceiptProjection;
 }
 export interface WorkflowReviewError {
   detail: { code: string; detail?: string | null; owner?: string | null; required_action?: string | null };
@@ -1583,18 +1565,10 @@ export interface ArtifactWorkflowReviewRequestScope extends Omit<LegacyWorkflowR
   repository_resolution: null;
 }
 export type WorkflowReviewRequestScope = LegacyWorkflowReviewRequestScope | ArtifactWorkflowReviewRequestScope | RevisionWorkflowReviewRequestScope;
-export interface ArtifactHumanReviewCommand extends Omit<LegacyHumanReviewCommand, 'format'> {
-  format: 'workflow-human-review-command@2';
-}
-export type HumanReviewCommand = LegacyHumanReviewCommand | ArtifactHumanReviewCommand | RevisionHumanReviewCommand;
 export interface ArtifactReviewReceiptProjection extends Omit<LegacyReviewReceiptProjection, 'format'> {
   format: 'workflow-review-receipt@2';
 }
 export type ReviewReceiptProjection = LegacyReviewReceiptProjection | ArtifactReviewReceiptProjection | RevisionReviewReceiptProjection;
-export interface ArtifactHumanReviewReceipt {
-  format: 'workflow-human-review-receipt@2'; receipt: ArtifactReviewReceiptProjection;
-}
-export type HumanReviewReceipt = LegacyHumanReviewReceipt | ArtifactHumanReviewReceipt | RevisionHumanReviewReceipt;
 export interface ArtifactWorkflowReviewRequestBase extends Omit<LegacyWorkflowReviewRequestBase, 'format' | 'scope'> {
   format: 'workflow-review-request-receipt@2'; scope: ArtifactWorkflowReviewRequestScope;
 }
@@ -1615,14 +1589,8 @@ export interface RevisionWorkflowReviewRequestScope extends Omit<ArtifactWorkflo
   artifact: Omit<WorkflowDocumentArtifact, 'revision'> & { revision: 2 };
   output: LegacyWorkflowReviewRequestScope['output'] | ArtifactWorkflowReviewRequestScope['output'];
 }
-export interface RevisionHumanReviewCommand extends Omit<LegacyHumanReviewCommand, 'format' | 'expected_revision'> {
-  format: 'workflow-human-review-command@3'; expected_revision: 2;
-}
 export interface RevisionReviewReceiptProjection extends Omit<LegacyReviewReceiptProjection, 'format' | 'assignment_generation'> {
   format: 'workflow-review-receipt@3'; assignment_generation: number;
-}
-export interface RevisionHumanReviewReceipt {
-  format: 'workflow-human-review-receipt@3'; receipt: RevisionReviewReceiptProjection;
 }
 export interface RevisionWorkflowReviewRequestBase extends Omit<LegacyWorkflowReviewRequestBase, 'format' | 'scope'> {
   format: 'workflow-review-request-receipt@3'; scope: RevisionWorkflowReviewRequestScope;
