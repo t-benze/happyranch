@@ -37,10 +37,16 @@ mechanism; headless start requires an existing user domain and explicit start.
 
 - `install` round-trips the plist through stdlib `plistlib` before writing an
   owner-only file; replacing a plist first creates an owner-only backup under
-  `LaunchAgents/backups`. Installation does not bootstrap/start the process.
+  `LaunchAgents/backups`. Backups are written to a nonselectable temporary file,
+  flushed and fsynced, then atomically renamed into the backup set; failed
+  reads/writes never publish an empty or partial candidate.
+  Installation does not bootstrap/start the process.
   `enable`/`disable` use launchctl's service-target overrides and do not stop a
   loaded process. `install --no-enable` leaves existing enablement unchanged;
   a fresh plist defaults to disabled, so it does not autostart at login.
+  Overrides match the exact label; sibling/custom/probe labels do not affect
+  it. Without an exact override, the plist's `Disabled` value applies;
+  malformed exact-label overrides refuse.
 - `start` bootstraps an unloaded agent or kickstarts a loaded agent. A manual
   start of a disabled agent temporarily enables it for bootstrap and restores
   its disabled override, preserving the absence of login autostart.
@@ -60,7 +66,9 @@ mechanism; headless start requires an existing user domain and explicit start.
 - `upgrade` backs up and replaces the plist, then bootouts/bootstraps so launchd
   rereads the new definition. Failed startup attempts restore the backup and
   verify recovery; explicit `rollback` restores the latest backup and likewise
-  verifies a running process. This is process verification, not readiness.
+  verifies a running process. The chosen backup is fully read and validated
+  before bootout; invalid candidates refuse while the live service stays
+  untouched. This is process verification, not readiness.
 
 `run` already tolerates absent `NOTIFY_SOCKET` (notification returns false and
 is not required to enter the foreground loop). Darwin-specific readiness

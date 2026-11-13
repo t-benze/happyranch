@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import plistlib
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,11 +177,12 @@ class LaunchdServiceManager:
         output = self._call("print-disabled", self.domain)
         if not re.search(r"disabled services\s*=\s*\{", output) or not output.rstrip().endswith("}"):
             raise ServiceManagerError("unrecognized launchctl print-disabled output")
-        match = re.search(r'^\s*"' + re.escape(launchd_label(name)) + r'"\s*=>\s*(true|false)\s*$', output, re.M)
-        if match:
+        entries = re.findall(r'^\s*"' + re.escape(launchd_label(name)) + r'"([^\n]*)$', output, re.M)
+        if entries:
+            match = re.fullmatch(r'\s*=>\s*(true|false)\s*', entries[0])
+            if len(entries) != 1 or match is None:
+                raise ServiceManagerError("malformed launchctl disabled override")
             return match[1] == "false"
-        if launchd_label(name) in output:
-            raise ServiceManagerError("malformed launchctl disabled override")
         path = self._path(name)
         return path.exists() and not self._validated(path.read_text(), name).get("Disabled", False)
 
@@ -226,9 +228,20 @@ class LaunchdServiceManager:
             return None
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         backup = self.backup_dir / f"{path.name}.{time.time_ns()}"
-        with backup.open("w", encoding="utf-8") as stream:
-            os.chmod(backup, 0o600)
-            stream.write(path.read_text(encoding="utf-8"))
+        temporary = None
+        try:
+            # Hidden pending files cannot match rollback's candidate glob.
+            # NamedTemporaryFile creates an exclusive owner-only inode.
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.backup_dir,
+                                             prefix=f".{path.name}.", delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(path.read_text(encoding="utf-8"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, backup)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         return backup
 
     def install(self, unit_text: str, unit_name: str, *, enable: bool = True) -> Path:
@@ -295,6 +308,7 @@ class LaunchdServiceManager:
     def _replace_and_start(self, text: str, name: str) -> None:
         # kickstart alone never rereads a changed plist: bootout/bootstrap is
         # required for upgrade and rollback, whereas restart uses kickstart -k.
+        self._validated(text, name)
         self.stop(name)
         self._write(text, name)
         self.start(name)
@@ -321,7 +335,11 @@ class LaunchdServiceManager:
         if not backups:
             raise ServiceManagerError(f"no backup available to roll back {unit_name}")
         backup = backups[-1]
-        self._replace_and_start(backup.read_text(), unit_name)
+        try:
+            text = backup.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ServiceManagerError("cannot read LaunchAgent backup") from exc
+        self._replace_and_start(text, unit_name)
         return UpgradeOutcome(ok=self._wait_running(unit_name), backup_path=backup)
 
     def _wait_running(self, name: str) -> bool:

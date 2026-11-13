@@ -185,6 +185,47 @@ class LaunchAgentFiles(unittest.TestCase):
 
 
 class LaunchdObservations(unittest.TestCase):
+    def test_disabled_overrides_use_exact_label_or_plist_fallback(self) -> None:
+        cases = []
+        for sibling in (f"{LABEL}.worker", f"{LABEL}-probe-12345678-abcd"):
+            for override in ("true", "false"):
+                for disabled in (True, False):
+                    cases.append((sibling, override, disabled, not disabled))
+        # Exact overrides take precedence over the opposite plist default.
+        cases += [(LABEL, "true", False, False), (LABEL, "false", True, True),
+                  (LABEL, "maybe", False, None), (LABEL, "", True, None)]
+        for key, override, disabled, expected in cases:
+            with self.subTest(key=key, override=override, disabled=disabled), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                path = root / f"{LABEL}.plist"
+                value = plistlib.loads(render_launch_agent(LABEL, ("/bin/sleep", "20"), logs_dir=root).encode())
+                value["Disabled"] = disabled
+                path.write_bytes(plistlib.dumps(value))
+                observation = row("print-disabled", DOMAIN, output=f'disabled services = {{\n "{key}" => {override}\n}}')
+                rows = [row("print", DOMAIN), *absent(), observation, observation]
+                if expected is not None:
+                    if not expected:
+                        rows += [row("enable", TARGET)]
+                    rows += [*absent(), row("bootstrap", DOMAIN, str(path))]
+                    if not expected:
+                        rows += [row("disable", TARGET)]
+                    rows += [row("print", TARGET, output=RUNNING), observation]
+                runner = Runner(self, rows)
+                manager = LaunchdServiceManager(unit_dir=root, run=runner)
+                if expected is None:
+                    for operation in ("status", "start"):
+                        with self.assertRaisesRegex(ServiceManagerError, "malformed launchctl disabled override"):
+                            getattr(manager, operation)(LABEL)
+                else:
+                    state = manager.status(LABEL)
+                    self.assertEqual(state.load_state, "unloaded")
+                    self.assertEqual(state.unit_file_state, "enabled" if expected else "disabled")
+                    manager.start(LABEL)
+                    state = manager.status(LABEL)
+                    self.assertTrue(state.running)
+                    self.assertEqual(state.unit_file_state, "enabled" if expected else "disabled")
+                self.assertFalse(runner.rows)
+
     def test_domain_selection_and_honest_refusal(self) -> None:
         uid = os.getuid()
         for rows, expected in (([row("print", DOMAIN)], DOMAIN), ([row("print", DOMAIN, code=125, output="Could not find domain for"), row("print", f"user/{uid}")], f"user/{uid}")):
@@ -235,6 +276,74 @@ class LaunchdObservations(unittest.TestCase):
 
 
 class LaunchdLifecycle(unittest.TestCase):
+    def test_failed_backup_publication_keeps_original_running(self) -> None:
+        for fault in ("read", "write", "fsync", "replace"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                old = render_launch_agent(LABEL, ("/bin/sleep", "20"), logs_dir=root)
+                new = render_launch_agent(LABEL, ("/bin/sleep", "30"), logs_dir=root)
+                path = root / f"{LABEL}.plist"
+                replacement = [row("print", TARGET, output=RUNNING), row("bootout", TARGET), *absent(),
+                               enabled(), *absent(), row("bootstrap", DOMAIN, str(path))]
+                runner = Runner(self, [row("print", DOMAIN), *replacement,
+                                       row("print", TARGET, output=RUNNING), enabled()])
+                manager = LaunchdServiceManager(unit_dir=root, run=runner)
+                path = manager._write(old, LABEL)
+                target = {"read": "pathlib.Path.read_text", "write": "tempfile.NamedTemporaryFile",
+                          "fsync": "runtime.remote_access.launchd_agent.os.fsync",
+                          "replace": "runtime.remote_access.launchd_agent.os.replace"}[fault]
+                original_replace = os.replace
+                original_temporary = tempfile.NamedTemporaryFile
+                def fail_backup_write(*args, **kwargs):
+                    stream = original_temporary(*args, **kwargs)
+                    original_write = stream.write
+                    def partial_write(text: str) -> None:
+                        original_write(text[:16])
+                        stream.flush()
+                        raise OSError("synthetic backup write failure")
+                    stream.write = partial_write
+                    return stream
+                def fail_backup_replace(source: Path, destination: Path) -> None:
+                    if Path(destination).parent == manager.backup_dir:
+                        raise OSError("synthetic backup replace failure")
+                    original_replace(source, destination)
+                effect = {"write": fail_backup_write, "replace": fail_backup_replace}.get(fault, OSError(f"synthetic backup {fault} failure"))
+                with patch(target, side_effect=effect):
+                    with self.assertRaisesRegex(OSError, f"synthetic backup {fault} failure"):
+                        manager.upgrade(new, LABEL)
+                self.assertEqual(list(manager.backup_dir.glob(f"{path.name}.*")), [])
+                self.assertEqual(list(manager.backup_dir.iterdir()), [])
+                self.assertEqual(path.read_text(), old)
+                self.assertFalse(runner.calls)
+                runner.rows = [row("print", DOMAIN), row("print", TARGET, output=RUNNING), enabled()]
+                self.assertTrue(manager.status(LABEL).running)
+                self.assertFalse(any(call[1] == "bootout" for call in runner.calls))
+                self.assertFalse(runner.rows)
+
+    def test_invalid_rollback_backup_refuses_before_bootout(self) -> None:
+        invalid = (b"", b"invalid", b"\xff", plistlib.dumps({"Label": "wrong.label", "ProgramArguments": ["/bin/sleep"]}))
+        for candidate in invalid:
+            with self.subTest(candidate=candidate), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                # A bootout row lets the pre-fix code reach its real validation
+                # error; the explicit argv assertion below detects disruption.
+                runner = Runner(self, [row("print", DOMAIN), row("print", TARGET, output=RUNNING),
+                                       row("bootout", TARGET), *absent()])
+                manager = LaunchdServiceManager(unit_dir=root, run=runner)
+                old = render_launch_agent(LABEL, ("/bin/sleep", "20"), logs_dir=root)
+                path = manager._write(old, LABEL)
+                manager.backup_dir.mkdir()
+                backup = manager.backup_dir / f"{path.name}.1"
+                backup.write_bytes(candidate)
+                with self.assertRaisesRegex(ServiceManagerError, "invalid LaunchAgent plist|cannot read LaunchAgent backup"):
+                    manager.rollback(LABEL)
+                self.assertFalse(any(call[1] == "bootout" for call in runner.calls), runner.calls)
+                self.assertEqual(path.read_text(), old)
+                self.assertEqual(backup.read_bytes(), candidate)
+                runner.rows = [row("print", DOMAIN), row("print", TARGET, output=RUNNING), enabled()]
+                self.assertTrue(manager.status(LABEL).running)
+                self.assertFalse(runner.rows)
+
     def test_lifecycle_argv_and_idempotent_uninstall(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

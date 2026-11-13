@@ -624,12 +624,17 @@ missing GUI-domain response; refusal of the selected domain is an error.
 Headless operation requires that user domain to exist; boot/logged-out
 persistence is unproven. Install enables login startup unless `--no-enable`
 preserves the existing setting (fresh plist disabled); it does not start.
+Disabled overrides match exact labels; sibling/custom/probe labels leave the
+plist `Disabled` fallback intact. Malformed exact-label rows refuse.
 Start bootstraps or kickstarts while preserving prior disablement, restart
 uses `kickstart -k` on a loaded service, stop bootouts, and uninstall bootouts,
 disables and removes the plist idempotently. Enable/disable alone do not stop
 an existing process. `KeepAlive=true` recovers on every exit; the ten-second
 throttle limits rapid retries. Upgrade/rollback reread replaced plists through
 bootout/bootstrap, back up owner-only files and verify process recovery.
+Backups are completely written, flushed and fsynced in a nonselectable temporary
+file before atomic publication. Rollback fully reads and validates its chosen
+backup before bootout; invalid candidates leave the running service untouched.
 
 Status reports loaded/running/PID and nullable last-exit code/signal from
 launchctl; absent, unloaded and inaccessible are distinct. Running is not
