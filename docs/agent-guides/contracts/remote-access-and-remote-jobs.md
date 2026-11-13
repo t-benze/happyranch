@@ -227,9 +227,10 @@ The connector root and state leaf must be absent or 0700. Existing shared
 Library/LaunchAgents/log ancestors keep their modes but must be current-user
 owned without group/other write permission. Literal descriptor traversal refuses
 symlinks. Existing differing config/policy/receipt/plist, unsafe/foreign/linked/
-special entries or any plist pending entry refuse before managed writes or
-lifecycle effects. State scans refuse cross-device subtrees, depth over 32 or
-more than 4096 entries. This is not a racing same-user-writer fence.
+special entries refuse before managed writes or lifecycle effects. Install and
+check-drift refuse any plist pending entry; uninstall accepts only the safe
+pending residue described below. State scans refuse cross-device subtrees, depth
+over 32 or more than 4096 entries. This is not a racing same-user-writer fence.
 
 `LaunchdServiceManager` remains the only lifecycle owner. Install writes/enables
 the plist without bootstrapping, starting or claiming READY, matching the source
@@ -248,6 +249,14 @@ state subtree and its directory. Source config, operator key, daemon token,
 unrelated logs, shared parents and lifecycle backups remain untouched. Missing/
 partial installs and repeated removal are supported. Unsafe state refuses before
 launchctl/deletion; failed stop prevents removal. The disabled override may remain.
+A pending plist left by interrupted publication is accepted only as a current-user,
+single-link regular 0600 file, validated through literal parents and an opened
+no-follow, nonblocking descriptor. After successful stop/bootout verification,
+uninstall revalidates that descriptor and the no-follow named inode before
+unlinking the pending file and syncing its parent. Both normal uninstall and
+purge remove this residue; repeated removal succeeds. Unsafe pending entries
+refuse before lifecycle effects, and failed stop/bootout retains the pending
+file, config and stored key. The existing same-user rename-race limitation applies.
 
 The standalone installer tests use temporary filesystem objects and scripted
 launchctl observations, with ZERO Mac-mini runs for C5. Native acceptance is

@@ -752,9 +752,9 @@ requiring inspection/revocation and explicit purge. Existing trust/anchors are
 never seeded or replaced. Config, copied policy, digest receipt and fixed logs
 are 0600. New directories are 0700; managed connector/state roots require 0700.
 Literal home traversal refuses unsafe, foreign or symlinked directories/files;
-safe shared ancestor modes are retained. Preflight refuses conflicting files and
-plist pending entries. State traversal refuses cross-device subtrees, >4096
-entries or depth >32, without claiming a concurrent-writer fence or transaction.
+safe shared ancestor modes are retained. Preflight refuses conflicting files;
+install and check-drift refuse every plist pending entry. State traversal refuses
+cross-device subtrees, >4096 entries or depth >32, without claiming a concurrent-writer fence or transaction.
 
 The existing `LaunchdServiceManager` writes/enables the plist; installation does
 not bootstrap/start or claim readiness. Identical plists are enabled without new
@@ -765,7 +765,13 @@ non-secret `error:`/exit 1 on refusal. Digests are observations, not authenticat
 Uninstall preflights, delegates stop/bootout/disable/plist removal, rechecks and
 removes config/policy/receipt and fixed logs. Normal uninstall retains state/key;
 purge additionally removes the validated state subtree. Partial/missing installs
-are idempotent; unsafe state or failed stop prevents file removal. No source
+are idempotent. Both removal modes accept an interrupted-publication pending
+plist only when it is a current-user single-link regular 0600 file, checked on an
+opened no-follow, nonblocking descriptor. Only after verified stop/bootout does
+uninstall revalidate the opened and no-follow named inode, unlink the pending
+file and sync its parent. Unsafe pending entries refuse before lifecycle effects;
+failed stop/bootout retains pending/config/key. Unsafe state also refuses removal.
+The same-user concurrent-rename limitation remains. No source
 input, token, unrelated log, shared parent or lifecycle backup is removed.
 The maintained contract defines exact paths and remaining limitations.
 Standalone filesystem/fake-launchctl tests add no native acceptance. C5 uses

@@ -143,7 +143,7 @@ class ManagedDarwinInstaller(unittest.TestCase):
                 self.assertFalse((p["root"] / "Library").exists())
 
     def test_layout_and_config_conflicts_refuse_before_effects(self) -> None:
-        for case in ("state-mode", "state-alias", "parent-alias", "plist-alias", "pending-alias", "config-conflict", "system-config", "frozen"):
+        for case in ("state-mode", "state-alias", "parent-alias", "plist-alias", "pending-alias", "pending", "config-conflict", "system-config", "frozen"):
             with self.subTest(case=case), self.home() as p:
                 if case == "state-mode":
                     directories(p["state"])
@@ -152,6 +152,8 @@ class ManagedDarwinInstaller(unittest.TestCase):
                     path = p["state"] if case == "state-alias" else p["root"] / "Library"
                     directories(path.parent)
                     path.symlink_to(p["root"] / "outside-missing")
+                elif case == "pending":
+                    private(p["plist"].with_suffix(".plist.pending"), b"partial plist")
                 elif case in ("plist-alias", "pending-alias"):
                     path = p["plist"] if case == "plist-alias" else p["plist"].with_suffix(".plist.pending")
                     directories(path.parent)
@@ -200,23 +202,78 @@ class ManagedDarwinInstaller(unittest.TestCase):
             self.assertFalse((p["logs"] / f"{LABEL}.stdout.log").exists())
 
     def test_purge_is_idempotent_for_full_partial_and_absent_installations(self) -> None:
-        for case in ("full", "state-only", "plist-only", "absent"):
-            with self.subTest(case=case), self.home() as p:
-                if case == "full":
+        for case, purge in (("full", True), ("state-only", True), ("plist-only", True),
+                            ("absent", True), ("pending", False), ("pending", True)):
+            with self.subTest(case=case, purge=purge), self.home() as p:
+                pending = p["plist"].with_suffix(".plist.pending")
+                if case in ("full", "pending"):
                     self.install(p)
+                    if case == "pending":
+                        p["plist"].rename(pending)
+                        private(p["state"] / "trust-state.json", b"revocations")
+                        private(p["state"] / "readiness.json", b"readiness")
                 elif case == "state-only":
                     private(p["state"] / "nested/persisted", b"state")
                     private(p["state"] / "enrollment.key", KEY)
                 elif case == "plist-only":
                     private(p["plist"], b"partial plist")
                 private(p["root"] / "Library/Application Support/HappyRanch/other-state", b"unrelated")
-                for _ in range(2):
-                    self.assertEqual(self.command(["uninstall", "--purge"], self.uninstall_rows())[0], 0)
-                    self.assertFalse(p["state"].exists())
+                for attempt in range(2):
+                    # Even without a final plist, a loaded label must be stopped.
+                    rows = self.uninstall_rows(loaded=case == "pending" and attempt == 0)
+                    self.assertEqual(self.command(["uninstall"] + (["--purge"] if purge else []), rows)[0], 0)
+                    if purge:
+                        self.assertFalse(p["state"].exists())
+                    else:
+                        self.assertEqual((p["state"] / "enrollment.key").read_bytes(), KEY)
+                        self.assertEqual((p["state"] / "trust-state.json").read_bytes(), b"revocations")
+                        self.assertEqual((p["state"] / "readiness.json").read_bytes(), b"readiness")
+                    for name in ("config.json", "policy.json", "install.json"):
+                        self.assertFalse((p["state"] / name).exists())
                     self.assertFalse(p["plist"].exists())
+                    self.assertFalse(pending.exists())
                 self.assertEqual(p["key"].read_bytes(), KEY)
                 self.assertTrue(p["source"].is_file())
                 self.assertTrue((p["root"] / "Library/Application Support/HappyRanch/other-state").is_file())
+
+    def test_unsafe_pending_refuses_before_lifecycle_and_preserves_files(self) -> None:
+        for purge in (False, True):
+            for case in ("symlink", "dangling", "hardlink", "fifo", "directory", "mode", "foreign-fd"):
+                with self.subTest(case=case, purge=purge), self.home() as p:
+                    self.install(p)
+                    pending = p["plist"].with_suffix(".plist.pending")
+                    if case in ("symlink", "dangling"):
+                        pending.symlink_to(p["key"] if case == "symlink" else p["root"] / "missing")
+                    elif case == "hardlink":
+                        os.link(p["key"], pending)
+                    elif case == "fifo":
+                        os.mkfifo(pending, 0o600)
+                    elif case == "directory":
+                        pending.mkdir(mode=0o700)
+                    else:
+                        private(pending, b"partial plist")
+                        if case == "mode":
+                            pending.chmod(0o644)
+                    identity = pending.lstat()
+                    fstat = os.fstat
+
+                    def observe(fd: int) -> os.stat_result:
+                        info = fstat(fd)
+                        if case == "foreign-fd" and (info.st_dev, info.st_ino) == (identity.st_dev, identity.st_ino):
+                            values = list(info)
+                            values[4] = info.st_uid + 1
+                            return os.stat_result(values)
+                        return info
+
+                    # The foreign owner appears only on the opened pending fd:
+                    # directory and named-file checks cannot mask this boundary.
+                    with patch("os.fstat", side_effect=observe):
+                        self.assertEqual(self.command(["uninstall"] + (["--purge"] if purge else []))[0], 1)
+                    self.assertEqual(pending.lstat(), identity)
+                    self.assertTrue(p["plist"].is_file())
+                    self.assertTrue((p["state"] / "config.json").is_file())
+                    self.assertEqual((p["state"] / "enrollment.key").read_bytes(), KEY)
+                    self.assertEqual(p["key"].read_bytes(), KEY)
 
     def test_unsafe_purge_refuses_before_lifecycle_and_never_follows_outside(self) -> None:
         for case in ("symlink", "dangling", "hardlink", "fifo", "mode", "foreign", "depth", "entries"):
@@ -256,17 +313,24 @@ class ManagedDarwinInstaller(unittest.TestCase):
                 self.assertEqual(p["state"].exists(), phase == "enable")
                 self.assertEqual(self.command(["uninstall", "--purge"], self.uninstall_rows())[0], 0)
                 self.assertFalse(p["state"].exists())
-        with self.home() as p:
-            self.install(p)
-            original = p["plist"].read_bytes()
-            code, _, _ = self.command(["uninstall", "--purge"], [
-                row("print", DOMAIN), row("print", TARGET, output=RUNNING),
-                row("bootout", TARGET, code=1, output=TOKEN.decode()),
-            ])
-            self.assertEqual(code, 1)
-            self.assertEqual(p["plist"].read_bytes(), original)
-            self.assertTrue((p["state"] / "config.json").exists())
-            self.assertEqual((p["state"] / "enrollment.key").read_bytes(), KEY)
+        for pending_only in (False, True):
+            for purge in (False, True):
+                for phase in ("bootout", "still-loaded"):
+                    with self.subTest(pending_only=pending_only, purge=purge, phase=phase), self.home() as p:
+                        self.install(p)
+                        retained = p["plist"].with_suffix(".plist.pending") if pending_only else p["plist"]
+                        if pending_only:
+                            p["plist"].rename(retained)
+                        original = retained.read_bytes()
+                        rows = [row("print", DOMAIN), row("print", TARGET, output=RUNNING)]
+                        rows += ([row("bootout", TARGET, code=1, output=TOKEN.decode())] if phase == "bootout" else [
+                            row("bootout", TARGET), row("print", TARGET, output=RUNNING),
+                        ])
+                        code, _, _ = self.command(["uninstall"] + (["--purge"] if purge else []), rows)
+                        self.assertEqual(code, 1)
+                        self.assertEqual(retained.read_bytes(), original)
+                        self.assertTrue((p["state"] / "config.json").exists())
+                        self.assertEqual((p["state"] / "enrollment.key").read_bytes(), KEY)
 
 
 @contextmanager

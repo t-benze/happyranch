@@ -133,7 +133,33 @@ class DarwinManagedInstaller:
                 if remove:
                     os.unlink(name, dir_fd=descriptor)
 
-    def _preflight(self) -> None:
+    def _pending(self, *, remove: bool = False) -> None:
+        """Validate interrupted plist publication; only unlink after verified stop."""
+        pending = self.plist.with_suffix(".plist.pending")
+        try:
+            with self._directory(self.agents) as parent:
+                named = os.stat(pending.name, dir_fd=parent, follow_symlinks=False)
+                self._file_info(named)
+                descriptor = os.open(pending.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                try:
+                    opened = os.fstat(descriptor)
+                    self._file_info(opened)
+                    if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+                        raise DarwinInstallerError("LaunchAgent pending file changed during inspection")
+                    if remove:
+                        current = os.stat(pending.name, dir_fd=parent, follow_symlinks=False)
+                        self._file_info(current)
+                        self._file_info(os.fstat(descriptor))
+                        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                            raise DarwinInstallerError("LaunchAgent pending file changed before removal")
+                        os.unlink(pending.name, dir_fd=parent)
+                        os.fsync(parent)
+                finally:
+                    os.close(descriptor)
+        except FileNotFoundError:
+            pass
+
+    def _preflight(self, *, allow_pending: bool = False) -> None:
         for path in self.directories:
             try:
                 with self._directory(path) as descriptor:
@@ -147,6 +173,9 @@ class DarwinManagedInstaller:
                     self._file_info(os.stat(path.name, dir_fd=parent, follow_symlinks=False))
             except FileNotFoundError:
                 pass
+        if allow_pending:
+            self._pending()
+            return
         try:
             with self._directory(self.agents) as parent:
                 os.stat(self.plist.with_suffix(".plist.pending").name, dir_fd=parent, follow_symlinks=False)
@@ -286,10 +315,11 @@ class DarwinManagedInstaller:
             pass
 
     def uninstall(self, *, purge: bool = False) -> None:
-        self._preflight()  # Partial/missing config must not prevent safe removal.
+        self._preflight(allow_pending=True)  # Validate partial publication before lifecycle effects.
         self.manager.uninstall(LABEL)  # stop/bootout verification, disable, plist removal
         # A stopped writer may have left new files; recheck before deleting.
-        self._preflight()
+        self._preflight(allow_pending=True)
+        self._pending(remove=True)
         for name in ("config.json", "policy.json", "install.json"):
             self._unlink(self.state / name)
         for path in self.log_files:
