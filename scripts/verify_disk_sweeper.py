@@ -5489,14 +5489,16 @@ def c43():
                             return original_mutate(*args, **kwargs)
                         with patch.object(module, 'directory', directory), patch.object(module, 'discover', discover), \
                                 patch.object(module, 'admit', admit), patch.object(module, 'snapshot', snapshot), \
-                                patch.object(module, 'git', git), patch.object(module, 'mutate', mutate):
+                                patch.object(module, 'git', git), patch.object(module, 'mutate', mutate), \
+                                patch.dict(original_snapshot.__globals__, directory=directory):
                             report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW, result=result)
                         target = row(report, path)
                         expected = ('task_or_root_not_terminal:in_progress' if variant == 'active_recent' else
                                     'dirty_or_untracked' if module is old and variant == 'recent_dirty' else
                                     'unknown_worktree_owner' if module is old and variant == 'recent_guard' else
                                     'changed_within_hour')
-                        if module is ds or variant != 'healed_recent':
+                        if variant == 'healed_recent': assert events == ['healed_after_root_observation'], (name, events)
+                        if module is ds or variant != 'healed_recent' or phase == 'scratch':
                             retained(report, path, expected)
                             assert not actions and candidate_contents(path) == before, (name, actions)
                             if repo: assert f.git(repo, 'show-ref') == refs
@@ -5521,7 +5523,7 @@ def c43():
                 failures.append(dict(variant=name, error=str(exc)[:2000]))
     assert not failures, dict(passed=observations, failures=failures)
     return dict(variants=observations, equivalence_differences=differences,
-                limits='Scratch base lacks the cheap-root healing boundary; no identical dynamic-history claim there. Cheap root age only; an old root still needs every current recursive admission. C40 owns later age races.')
+                limits='Scratch healing runs after its actual snapshot-root observation on base and cheap-root observation on new; both retain the observed recent age. Cheap root age only; an old root still needs every current recursive admission. C40 owns later age races.')
 
 
 def c44() -> dict:
