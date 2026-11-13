@@ -39,8 +39,9 @@ C6-loss also checks TCP reachability of the configured loopback `ConnectorAddr`
 every `min(1s, watchdog_interval/4)`, with dial timeout
 `min(250ms, watchdog_interval/8)` (both floored at 1ns). This avoids a dial on
 every 100ms publication tick and detects loss in at most 1.25s with the default
-30s watchdog, plus Go scheduling and publication/teardown time. For shorter
-watchdogs the combined probe budget is 3/8 interval. One failure publishes
+30s watchdog, plus Go scheduling and publication/teardown time. For interval w,
+the cap-aware combined budget is min(1s,w/4)+min(250ms,w/8), each term floored at
+1ns (w=3s gives 750ms+250ms=1s). One failure publishes
 false/`readiness-or-listener-lost` and exits 1. Successful probes close the socket
 without sending data; TCP reachability does not prove protocol health.
 Connector-loss recovery on macOS is sidecar exit + launchd KeepAlive, without a
@@ -77,6 +78,10 @@ historical library inventory byte-for-byte. Darwin adds
 `github.com/prometheus-community/pro-bing@v0.4.0` to its build inventory relative
 to Linux; both already exist in go.mod/go.sum. No new required module or sum is
 authorized. Distribution must include the matching notices; this slice makes
-no binary-distribution claim. Python sidecar handoff/launchd installation (C6b),
-app bundling/frozen entry and native acceptance remain pending. Swift's existing
+no binary-distribution claim. Python sidecar handoff/launchd installation is delivered by C6b: Darwin
+`python -m runtime.remote_access.installer install` takes explicit
+`--sidecar-binary`, `--sidecar-config` and first-use `--enrollment-key-file` inputs.
+It stages/enables two agents without starting; installer start/stop/restart/status
+operate both. See the maintained remote-access contract for paths, enrollment
+states and removal. App bundling/frozen entry and native acceptance remain pending. Swift's existing
 HomeConnector is untouched.

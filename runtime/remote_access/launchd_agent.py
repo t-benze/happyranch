@@ -308,6 +308,20 @@ class LaunchdServiceManager:
         self.disable(unit_name)
         self._path(unit_name).unlink(missing_ok=True)
 
+    def uninstall_agents(self, names: tuple[str, ...], *, before_remove: Callable[[], None]) -> None:
+        """Stop every writer before removing any plist; preserve all on stop failure.
+
+        The managed installer rechecks its private layout after the writers stop.
+        launchd has no composite target or dependency propagation of its own.
+        """
+        for name in names:
+            self.stop(name)
+        before_remove()
+        for name in names:
+            self.disable(name)
+        for name in names:
+            self._path(name).unlink(missing_ok=True)
+
     def start(self, unit_name: str, *, timeout: float = 10.0) -> None:
         enabled = self._enabled(unit_name)
         if not enabled:
