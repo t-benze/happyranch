@@ -23,7 +23,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 from m4_tailnet_client import (Bridge, EXPECTED, NATIVE_HOST, ROUTE, application_probe, build_archive, control_get,
-                              exception_class, safe_join_diagnostics)
+                              exception_class, safe_join_diagnostics, safe_derp_diagnostics)
 
 REPOSITORY = 't-benze/happyranch'
 COORDINATION_PR = 1449
@@ -354,6 +354,15 @@ def run(scratch: Path, output: Path) -> None:
     finally:
         record['phases'][-1]['elapsed_seconds'] = round(time.monotonic() - phase_started, 3)
         cleanup_errors = []
+        if bridge is not None and bridge.derp_diagnostics is not None:
+            record['derp_diagnostics'] = safe_derp_diagnostics(bridge.derp_diagnostics)
+            # Land the closed evidence in both public sinks before private
+            # logs/state are removed; the final summary also records cleanup.
+            try:
+                (output / 'client-summary.json').write_text(json.dumps(record, indent=2) + '\n')
+                print('M4 public DERP evidence ' + json.dumps(record['derp_diagnostics']), flush=True)
+            except Exception:
+                cleanup_errors.append('derp-evidence-publication')
         if bridge is not None:
             record['worker_return_code_before_cleanup'] = bridge.process.poll()
             try:
@@ -377,7 +386,7 @@ def run(scratch: Path, output: Path) -> None:
         record['runner_return_code'] = 1 if record['status'] == 'FAIL' else 0
         (output / 'client-summary.json').write_text(json.dumps(record, indent=2) + '\n')
         print('M4 public client evidence ' + json.dumps({key: record[key] for key in
-              ('phase', 'phases', 'failure', 'join_diagnostics', 'bridge_error_class', 'runner_return_code',
+              ('phase', 'phases', 'failure', 'join_diagnostics', 'bridge_error_class', 'derp_diagnostics', 'runner_return_code',
                'worker_return_code_before_cleanup', 'worker_return_code') if key in record}), flush=True)
     assert not cleanup_errors, 'native client cleanup failed'
     print('Native client checks complete; host VM cleanup receipt still required', flush=True)

@@ -41,6 +41,70 @@ JOIN_PHASES = ('join-call', 'native-start', 'join-wait')
 DIAGNOSTIC_LABELS = ('dns', 'tcp-connect', 'tls-verify', 'tls-reset', 'control-upgrade/noise',
                      'auth-key-rejected', 'register', 'netmap-wait', 'derp-connect', 'timeout')
 BRIDGE_ERROR_CLASSES = {'state-dir', 'log-dir', 'executable', 'control-url', 'already-started', 'not-initialised', 'unknown'}
+DERP_PROOF_LABELS = {'no-log-files', 'log-budget', 'no-decodable-entries', 'region-missing',
+                     'region-unexpected', 'udp-disable-missing', 'unknown', 'passed'}
+
+
+def safe_derp_diagnostics(value: object) -> dict:
+    """Closed labels and bounded integers only, including untrusted pipe input."""
+    value = value if isinstance(value, dict) else {}
+    label = value.get('label')
+    regions = value.get('matched_regions')
+    regions = regions if isinstance(regions, list) else []
+    return dict(label=label if isinstance(label, str) and label in DERP_PROOF_LABELS else 'unknown',
+                **{key: min(value[key], 16_000_000) if type(value.get(key)) is int and value[key] >= 0 else 0
+                   for key in ('file_count', 'total_bytes', 'decoded_entry_count',
+                               'derp_connected_matches', 'udp_disable_matches')},
+                matched_regions=sorted({v for v in regions if type(v) is int and 0 <= v <= 10_000_000})[:8])
+
+
+def derp_proof(state: Path) -> dict:
+    """Read private filch evidence; publish diagnostics even when proof fails."""
+    diagnostic: dict = dict(label='unknown', file_count=0, total_bytes=0, decoded_entry_count=0,
+                            derp_connected_matches=0, matched_regions=[], udp_disable_matches=0)
+    regions: set[int] = set()
+    try:
+        paths = sorted(state.rglob('tailscaled.log*.txt'))
+        diagnostic['file_count'] = len(paths)
+        if not paths:
+            diagnostic['label'] = 'no-log-files'
+        assert paths, 'missing native logs'
+        for path in paths:
+            size = path.stat().st_size
+            diagnostic['total_bytes'] += size
+            if size > 8_000_000:
+                diagnostic['label'] = 'log-budget'
+            assert size <= 8_000_000, 'native log budget'
+            for entry in path.read_text(errors='replace').splitlines():
+                try:
+                    value = json.loads(entry)
+                except ValueError:
+                    continue
+                if not isinstance(value, dict) or not isinstance(value.get('text'), str):
+                    continue
+                text = value['text']
+                diagnostic['decoded_entry_count'] += 1
+                matches = re.findall(r'magicsock: derp-([0-9]+) connected;', text)
+                diagnostic['derp_connected_matches'] += len(matches)
+                regions.update(int(region) for region in matches)
+                diagnostic['matched_regions'] = sorted(regions)
+                diagnostic['udp_disable_matches'] += len(re.findall(r'disabled udp[46]? per TS_DEBUG_ALWAYS_USE_DERP', text))
+        disabled = diagnostic['udp_disable_matches'] > 0
+        if not diagnostic['decoded_entry_count']:
+            diagnostic['label'] = 'no-decodable-entries'
+        elif regions - {999}:
+            diagnostic['label'] = 'region-unexpected'
+        elif not regions:
+            diagnostic['label'] = 'region-missing'
+        elif not disabled:
+            diagnostic['label'] = 'udp-disable-missing'
+        assert regions == {999}, 'missing/wrong selected DERP region'
+        assert disabled, 'missing client UDP-disable evidence'
+        diagnostic['label'] = 'passed'
+        return dict(selected_regions=sorted(regions), udp_disabled=disabled,
+                    source='unchanged tsnet backend filch logs; strict projection')
+    finally:
+        print(json.dumps(dict(derp_diagnostics=safe_derp_diagnostics(diagnostic))), flush=True)
 
 
 def bridge_error_text(lib: ctypes.CDLL) -> str:
@@ -285,25 +349,7 @@ def worker(library: Path, state: Path) -> None:
                 finally:
                     lib.tsnet_conn_close(handle)
             elif action == "derp-proof":
-                # The existing upstream diagnostic knob delays log upload. Read
-                # only backend log files, and export a strict non-secret subset.
-                regions: set[int] = set()
-                disabled = False
-                for p in state.rglob('tailscaled.log*.txt'):
-                    assert p.stat().st_size <= 8_000_000, 'native log budget'
-                    for entry in p.read_text(errors='replace').splitlines():
-                        try:
-                            text = json.loads(entry).get('text', '')
-                        except (ValueError, AttributeError):
-                            continue
-                        for region in re.findall(r'magicsock: derp-([0-9]+) connected;', text):
-                            regions.add(int(region))
-                        if re.search(r'disabled udp[46]? per TS_DEBUG_ALWAYS_USE_DERP', text):
-                            disabled = True
-                assert regions == {999}, 'missing/wrong selected DERP region'
-                assert disabled, 'missing client UDP-disable evidence'
-                result = {"selected_regions": sorted(regions), "udp_disabled": disabled,
-                          "source": "unchanged tsnet backend filch logs; strict projection"}
+                result = derp_proof(state)
             else:
                 raise RuntimeError("unknown worker operation")
             print(json.dumps(result), flush=True)
@@ -336,6 +382,7 @@ class Bridge:
         self.join_error = 'operation-failed'
         self.worker_exception = 'Unknown'
         self.bridge_error_class: str | None = None
+        self.derp_diagnostics: dict | None = None
         self.response_buffer = b''
         self.process = subprocess.Popen(
             [str(library), str(Path(__file__).resolve()), "--worker", str(library), "--worker-state", str(self.state)],
@@ -350,6 +397,8 @@ class Bridge:
         try:
             return self._call(action, **fields)
         finally:
+            if action == 'derp-proof' and self.derp_diagnostics is None:
+                self.derp_diagnostics = safe_derp_diagnostics({})
             if action == 'join':
                 self.join_phases[-1]['elapsed_seconds'] = round(time.monotonic() - self.phase_started, 3)
                 self.join_diagnostics = safe_join_diagnostics(join_diagnostic(self.state, self.stderr_path, time.monotonic()-started))
@@ -379,6 +428,10 @@ class Bridge:
             except ValueError:
                 self.join_error = 'worker-response-unavailable'
                 raise RuntimeError('client response unavailable') from None
+            if 'derp_diagnostics' in result:
+                assert action == 'derp-proof' and set(result) == {'derp_diagnostics'}
+                self.derp_diagnostics = safe_derp_diagnostics(result['derp_diagnostics'])
+                continue
             if 'bridge_error_class' in result:
                 assert action in {'join', 'precondition'} and set(result) == {'bridge_error_class'}
                 label = result['bridge_error_class']

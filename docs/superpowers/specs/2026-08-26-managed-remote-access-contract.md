@@ -124,6 +124,26 @@ or raw error. This proves executable/state/log access, not later logger/engine
 success. Product code/C ABI/Go/dependencies/workflow and acceptance assertions/
 deadlines are unchanged; no new native attempt or certificate is authorized.
 
+Attempt6 (TASK-15774/run43330485188/JOB-6668) remains failed/spent at derp-proof;
+post-proof200 and exposure were not reached. Source diagnosis proves v1.78.0's
+filch filenames, JSON `text`, backend logger tee and both regexes are correct.
+The fixture omits logtail.enabled; Headscale v0.25.1 defaults false and sends
+DisableLogTail. Tailscale processes it before netmap publication, discarding later
+logtail writes, including DERP-connected evidence; nil embedder Logf supplies no
+backend stderr copy. The initial drain can also consume startup UDP logs despite
+24h delay. This proves an unavailable evidence channel in that source
+configuration, while the exact native6 assertion remains unproved without its
+private logs/control response. This delivery takes diagnostics-only path(c).
+The harness adds only closed `derp_diagnostics`, written to client-summary.json
+and Actions stdout before private cleanup and retained in the final summary:
+fixed labels plus bounded integer counts and sorted/capped numeric region IDs
+(exact fields/caps in the runbook). Unknown labels reproject to `unknown`; no raw
+logs, paths, keys, addresses or URLs leave the private worker. Actual connected
+region set{999}, UDP-disable evidence, subsequent allowed200 and exposure probes
+remain mandatory, with all original deadlines. No weaker evidence is substituted.
+Any bridge/logger/C-ABI/dependency or acceptance-contract alternative is a STOP
+item for the manager; no new native/Linux join, dispatch or issuance is granted.
+
 **Execution boundary:** JOB-6610 and JOB-6615 both failed at Linux outside join;
 JOB-6615 classified tcp-connect without endpoint attribution. JOB-6618, the ONE
 report-only syscall diagnostic, also exited1 and yielded no attributable parsed
