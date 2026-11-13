@@ -280,7 +280,7 @@ for raw in ('["ghost"]', '["code_reviewer","ghost"]'):
         for action in ('delegate','fanout'):
             parent,before = submit_reviewer_decision(state,action)
             startup_expect(not state.db.get_children(parent) and state.db.next_task_id() == before
-                and 'reviewer configuration unavailable' in state.db.get_task(parent).note,
+                and 'reviewer configuration unavailable' in (state.db.get_task(parent).note or ''),
                 'L6-stale-'+action+'-zero-child-allocation-'+raw)
 for saved in ('ordinary', 'carrier'):
     for raw, marker in (('["ghost"]', '{"version":2}'), ('["code_reviewer","ghost"]', '{"version":2}'),
