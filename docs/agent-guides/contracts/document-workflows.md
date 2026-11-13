@@ -1,35 +1,27 @@
 # Workflow foundation and document-review contracts
 
-## Older document-review admission retired — THR-336 msg157 (P1a)
+## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
-This status supersedes the fresh-work availability instructions below for legacy
-product-design compiler@1, document compiler@2/@3 and artifact compiler@4 document
-work. After existing identity/access, parse, corruption and immutable replay
-checks, fresh activation and return-to-author refuse before task/instance
-allocation with `workflow_document_review_retired` (HTTP 409), owner `founder`,
-required_action `The older document-review workflow is retired; no new review can start or advance.`
-The existing @4 code-unavailable refusal keeps precedence.
+P1b removes POST `/workflows/reviews/human-receipts`, POST
+`/workflows/reviews/stages` and the `happyranch workflows reviews sign` and
+`happyranch workflows reviews stage` CLI verbs. Their mutation-only route models,
+decoders, CLI helpers, service entry methods and reviewer instruction injection
+are removed. These transports no longer support replay; earlier descriptions
+below are historical. P2 separately removes the signing web mirror.
 
-Fresh author/revision staging, r1/r2 graph creation (including cold discovery),
-reviewer claim/launch, findings staging and human signing are fenced before
-their new effects. Queued F5 reviewer Pause admission validates the selected graph,
-current authority and capacity, then refuses before TaskInvocation/session allocation
-or native preparation. The final eligibility refusal remains in place. Author
-drafting and already-owned native uncertainty retain their existing lifecycle;
-author/revision stage commands refuse before their new staging writes.
-Human signing refuses before collection even on a matched saved command.
-Native completed/discovery paths suppress only the named creation refusal;
-corruption still propagates and later rows/settlement remain reachable.
-Exact immutable activation/revision/stage replay, authorized historical/selected
-reads, authentic committed-evidence receipt/collection settlement and native
-terminal/cancel/handle ownership remain. No schema, stored status/event, closed
-held-reason enum, template/role/authority validator or startup/history reader changes.
-
-The existing route/CLI instructions remain historical syntax until P1b removes
-the review mutation transports; P2 removes the signing web mirror. An active or
-unfulfilled old-lane record is a stop-and-surface case before rollout, requiring
-a separate disposition. Sequential document visits, Coding v1 and ordinary
-independent code review remain separate and unchanged.
+P1a's `workflow_document_review_retired` (409) fences remain for fresh old-lane
+activation/return, author/revision staging, missing r1/r2 graphs and reviewer
+claim/launch, including queued Pause admission before native preparation.
+This covers product-design compiler@1, document compiler@2/@3 and artifact
+compiler@4 documents; the existing @4 code-unavailable refusal retains precedence.
+The selected-request GET and `workflows submissions request-show`, authorized
+history reads, exact retained immutable replay, authentic committed-evidence
+receipt/collection settlement and native callback/terminal/cancel ownership remain.
+Stage/human command models still validate stored history. All schema, startup,
+role/authority validators and stored status/event bytes remain unchanged, as does
+the native stage-deny tombstone. Any unfinished live old-lane data requires a
+separate disposition before rollout. Sequential document visits and Coding v1
+are unaffected.
 
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
@@ -111,9 +103,9 @@ section supersedes historical C1-pending/fresh-H checkpoint descriptions below.
 
 
 **Current reviewer staging — Founder THR139seq493/475, ROOT TASK10693.**
-POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
-`happyranch workflows reviews stage --org ORG --session-id CURRENT
---from-file /absolute/command.json [--json]` expose the existing current
+Removed in P1b (historical transport): POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
+removed CLI `happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json [--json]` formerly exposed the current
 non-recovery agent reviewer writer. Selected immutable request scope chooses
 `workflow-review-stage-command@1`, `@2` or revision2 `@3`; old families remain closed and byte-compatible.
 The five-field @1/@2/@3 acknowledgement (format, stage_event_id, request_digest,

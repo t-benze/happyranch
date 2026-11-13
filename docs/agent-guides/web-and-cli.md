@@ -1,20 +1,27 @@
 # Web And CLI
 
-## Older document-review commands retired at admission — THR-336 msg157, P1a
+## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
-The existing activation, author/revision stage/return, review-stage and human-sign
-transports remain mounted in this slice, but selected fresh old-lane mutations
-return 409 with code `workflow_document_review_retired`, owner `founder` and
-required_action `The older document-review workflow is retired; no new review can start or advance.`
-Existing authentication/selection/parse/corruption checks and exact immutable
-operation replay retain precedence; human signing refuses before collect-on-replay.
+P1b removes POST `/workflows/reviews/human-receipts`, POST
+`/workflows/reviews/stages` and the `happyranch workflows reviews sign` and
+`happyranch workflows reviews stage` CLI verbs. Their mutation-only route models,
+decoders, CLI helpers, service entry methods and reviewer instruction injection
+are removed. These transports no longer support replay; earlier descriptions
+below are historical. P2 separately removes the signing web mirror.
+
+P1a's `workflow_document_review_retired` (409) fences remain for fresh old-lane
+activation/return, author/revision staging, missing r1/r2 graphs and reviewer
+claim/launch, including queued Pause admission before native preparation.
 This covers product-design compiler@1, document compiler@2/@3 and artifact
-compiler@4 documents, preserving the existing @4 code-unavailable error.
-Authorized activation/handoff/revision/request history reads and their mirrors
-remain. Older command/route passages below preserve historical syntax, not fresh
-availability. P1b removes review mutation transports and P2 the signing client;
-no route, OpenAPI path, CLI group or native permission is removed here. Sequential
-documents and Coding v1 remain separate. See [document workflows](contracts/document-workflows.md).
+compiler@4 documents; the existing @4 code-unavailable refusal retains precedence.
+The selected-request GET and `workflows submissions request-show`, authorized
+history reads, exact retained immutable replay, authentic committed-evidence
+receipt/collection settlement and native callback/terminal/cancel ownership remain.
+Stage/human command models still validate stored history. All schema, startup,
+role/authority validators and stored status/event bytes remain unchanged, as does
+the native stage-deny tombstone. Any unfinished live old-lane data requires a
+separate disposition before rollout. Sequential document visits and Coding v1
+are unaffected.
 
 ## Built-in coding availability — ROOT13509 / THR320seq304
 
@@ -1164,9 +1171,9 @@ section supersedes historical C1-pending/fresh-H checkpoint descriptions below.
 
 
 **Current reviewer staging — Founder THR139seq493/475, ROOT TASK10693.**
-POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
-`happyranch workflows reviews stage --org ORG --session-id CURRENT
---from-file /absolute/command.json [--json]` expose the existing current
+Removed in P1b (historical transport): POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
+removed CLI `happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json [--json]` formerly exposed the current
 non-recovery agent reviewer writer. Selected immutable request scope chooses
 `workflow-review-stage-command@1`, `@2` or revision2 `@3`; old families remain closed and byte-compatible.
 The five-field @1/@2/@3 acknowledgement (format, stage_event_id, request_digest,
@@ -3380,7 +3387,7 @@ merge, live migration or deployment is established.
 
 ### U3b(d) human write and selected signed request
 
-POST `/api/v1/orgs/{slug}/workflows/reviews/human-receipts` uses the existing
+Removed in P1b (historical transport): POST `/api/v1/orgs/{slug}/workflows/reviews/human-receipts` formerly used the
 Founder bearer with no query proof or body principal. The body is exactly
 `workflow-human-review-command@1`, action `sign-review`, operation_key/request_id
 tokens (1..128 `[A-Za-z0-9._:-]`), strict integer expected_revision=1, lowercase
@@ -3415,7 +3422,7 @@ After actual selected-human/current-grant admission, missing retained template
 mapping or activation closure and malformed retained activation requests yield
 only `workflow_review_receipt_storage_corrupt`500. These dependency failures
 do not become caller422 or invisible404; current-after-wait checks still apply.
-CLI `happyranch workflows reviews sign --org ORG --from-file /absolute/command.json
+Removed in P1b: CLI `happyranch workflows reviews sign --org ORG --from-file /absolute/command.json
 [--json]` uses Founder transport and forwards the retained command once.
 Existing `workflows submissions request-show R --org ORG --proof-kind human`
 (or --session-id SID) prints actual status/signed/pending. Syntax/file errors

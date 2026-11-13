@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import Field, StrictInt, ValidationError
 
 from runtime.infrastructure.workflow_schema import _records, _stored_json
-from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, _id, refuse_document_review
+from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, _id
 from runtime.workflows.artifacts import document_from_submission, require_document_subject, review_family
 from runtime.workflows.draft_dispatch import canonical_bytes, digest
 from runtime.workflows.submissions import _insert, _record
@@ -332,94 +332,6 @@ class WorkflowReviewReceiptStore:
                 or principal.task_id is not None or principal.session_id is not None):
             raise WorkflowActivationError('role_binding_not_authorized')
         self.org.workflow_activations._principal(principal)
-
-    async def admit_human(self, *, principal: WorkflowTemplatePrincipal, command: object) -> dict:
-        """Sign only with current server bearer proof in the existing guarded writer."""
-        from runtime.infrastructure.workflow_schema import _handoff_record, require_author_handoff_schema
-        from runtime.workflows.review_dispatch import _same_value
-        from runtime.workflows.submissions import validate_handoff_graph
-        self._human_principal(principal)
-        command = parse_human_review(command)
-        store = self.org.workflow_submissions
-        selection = dict(request_id=command['request_id'], task_agent=None, session_id=None,
-                         human=True, owner=principal, include_signed=True)
-        with self.db._lock:
-            self._human_principal(principal)
-            store._select_request(self.db._conn, **selection)
-        capture = self.org.workflow_authority.capture_admission()
-        async with store._lock:
-            async with self.org.db_lock:
-                # Recheck selected scope/grant after await, before private H decode.
-                with self.db._lock:
-                    self._human_principal(principal)
-                    store._select_request(self.db._conn, **selection)
-                with self.org.workflow_authority.admission_writer(capture) as conn:
-                    self._human_principal(principal)
-                    request, row, intent = store._select_request(conn, **selection)
-                    historical = not intent['is_current'] and request['status'] != 'pending'
-                    if historical:
-                        store._selected_authority(conn, intent, capture, {'collect-review'})
-                    else:
-                        store._authority(conn, intent, capture, {'collect-review'})
-                    require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
-                    from runtime.workflows.submissions import subject_proof
-                    handoff = subject_proof(conn, row)
-                    graph = validate_handoff_graph(conn, row, handoff)
-                    if graph is None or request['id'] not in graph['request_ids']:
-                        raise ValueError('workflow_review_receipt_storage_corrupt')
-                    current = store._projection(conn, row, capture, replayed=True)['current']
-                    if not historical and (current['state'] != 'consumed' or current['reconciliation_required']):
-                        raise WorkflowActivationError('workflow_author_handoff_source_not_current')
-                    scope = _stored_json(request['request_scope_bytes'], request['request_scope_digest'],
-                                         code='workflow_review_receipt_storage_corrupt')
-                    if scope['kind'] != 'human' or scope['principal'] != principal.principal_id:
-                        raise WorkflowActivationError('workflow_review_request_not_found')
-                    # Current capture is checked by the owned writer and against the full
-                    # saved H authority closure. Historical proof never replaces this check.
-                    fields = {'dependency': ('kind', 'org_namespace', 'profile_name', 'consumer_identity', 'bound_generation', 'state'),
-                              'store': ('kind', 'profile_name', 'generation', 'profile_digest', 'state'),
-                              'registry': ('kind', 'profile_name', 'published_generation')}
-                    authority = dict(ready=dict(namespace=capture.ready.namespace, generation=capture.ready.generation,
-                        snapshot_bytes_hex=capture.ready.snapshot_bytes.hex(), snapshot_digest=capture.ready.snapshot_digest),
-                        pointer=dict(zip(('current_generation', 'journal_id', 'snapshot_digest', 'state', 'profile_fence'),
-                                         capture.pointer, strict=True)),
-                        profiles=[dict(name=name, digest=dg) for name, dg in capture.profile_digests],
-                        mirror=[dict(zip(fields[item[0]], item, strict=True)) for item in capture.profile_mirror],
-                        cutover='enabled', actions=['collect-review'])
-                    if not _same_value(authority, dict(handoff['admission_authority'], actions=['collect-review'])):
-                        raise WorkflowActivationError('workflow_activation_authority_stale')
-                    existing = _records(conn, 'SELECT * FROM workflow_review_receipts WHERE request_id=?', (request['id'],))
-                    keys = _human_receipts_for_key(conn, org_slug=self.org.slug, operation_key=command['operation_key'])
-                    if existing:
-                        saved = _stored_json(existing[0]['proof_bytes'], existing[0]['proof_digest'],
-                                             code='workflow_review_receipt_storage_corrupt')
-                        if not _same_value(saved['command'], command) or not _same_value(keys, existing):
-                            raise WorkflowActivationError('workflow_human_review_operation_conflict')
-                        refuse_document_review()
-                        from runtime.workflows.review_join import collect_in_writer
-                        if not historical:
-                            collect_in_writer(store, conn, row['id'], capture)
-                        self._human_principal(principal)
-                        return existing[0]
-                    if historical or keys or request['status'] != 'pending':
-                        raise WorkflowActivationError('workflow_human_review_operation_conflict')
-                    if (command['format'] != f'workflow-human-review-command@{review_family(scope)}'
-                                or command['expected_revision'] != scope['revision']
-                            or command['request_scope_digest'] != request['request_scope_digest']
-                            or command['outcome'] not in scope['outcomes']):
-                        raise WorkflowActivationError('workflow_human_review_invalid_request')
-                    refuse_document_review()
-                    created_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                    proof = _human_proof(request, scope, handoff, command, created_at)
-                    receipt = _human_receipt_row(request, scope, proof)
-                    _insert(conn, 'workflow_review_receipts', receipt)
-                    conn.execute('UPDATE workflow_review_requests SET status=? WHERE id=? AND status=?',
-                                 (command['outcome'], request['id'], 'pending'))
-                    validate_handoff_graph(conn, row, handoff)
-                    from runtime.workflows.review_join import collect_in_writer
-                    collect_in_writer(store, conn, row['id'], capture)
-                    self._human_principal(principal)
-                    return receipt
 
     async def admit_completed(self, task_id: str) -> str | None:
         """Consume authentic terminal proof and all-current collection in the existing writer."""

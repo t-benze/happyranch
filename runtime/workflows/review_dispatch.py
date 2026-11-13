@@ -12,7 +12,7 @@ from pydantic import Field, StrictInt, ValidationError
 from runtime.infrastructure.workflow_schema import _records, _stored_json
 from runtime.workflows.activation import (
     ClosedRecord, SHA256, Token, WorkflowActivationError, author_capacity_blocked,
-    DOCUMENT_REVIEW_RETIRED, refuse_document_review,
+    DOCUMENT_REVIEW_RETIRED,
 )
 from runtime.workflows.draft_dispatch import DraftOwnershipError, WorkflowDraftDispatcher, canonical_bytes, digest
 from runtime.workflows.artifacts import review_family
@@ -332,128 +332,6 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
             # _eligible's retirement refusal. Never enter the shared author's
             # TaskInvocation/SID/prepare path or settle an existing owner here.
             self._eligible(conn, intent, capture, active_sessions)
-
-    def reviewer_instruction(self, task_id: str, agent: str, session_id: str) -> str:
-        """Render the selected F5 contract before the forthcoming session is published.
-
-        The invocation identity labels instructions only. Relational selection
-        uses the retained bridge; CURRENT-session admission remains stage-owned.
-        No lifecycle writer, session registration or receipt effect runs here.
-        """
-        store = self.org.workflow_submissions
-
-        def selected(conn: sqlite3.Connection) -> tuple[dict, dict]:
-            bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE task_id=?', (task_id,))
-            if (len(bridges) != 1 or bridges[0]['assigned_principal'] != agent
-                    or bridges[0]['assignment_generation'] not in (1, 2)):
-                raise DraftOwnershipError('workflow_review_storage_corrupt')
-            bridge = bridges[0]
-            request, _, source = store._select_request(conn, request_id=bridge['request_id'],
-                task_agent=(task_id, agent), session_id=bridge['session_id'], human=False)
-            return request, source
-
-        with self.db._lock:
-            # Ordinary and author invocations on historical layouts stay inert.
-            if not self.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' "
-                                         "AND name='workflow_request_task_bridges'").fetchone():
-                return ''
-            if not self.db._conn.execute('SELECT 1 FROM workflow_request_task_bridges WHERE task_id=?',
-                                         (task_id,)).fetchone():
-                return ''
-            selected(self.db._conn)  # Current relational recipient/grant before private decode.
-        capture = self.org.workflow_authority.capture_admission()
-        with self.db._lock:
-            request, source = selected(self.db._conn)
-            store._authority(self.db._conn, source, capture, {'collect-review'})
-            intent = self._intent(self.db._conn, task_id)
-            task = _record(self.db._conn, 'tasks', task_id)
-            scope = intent['scope']
-            if (scope['kind'] != 'agent' or scope['principal'] != agent
-                    or scope['request_id'] != request['id'] or not intent['is_current']
-                    or intent['cancellation_requested'] or intent['final_result_id'] is not None
-                    or (intent['state'], task['status']) not in {('queued', 'pending'), ('claimed', 'in_progress')}
-                    or intent['host_launch_started'] or task['assigned_agent'] != agent
-                    or task['cancelled_at'] is not None
-                    or capture.ready.generation != intent['authority_generation']
-                    or capture.ready.snapshot_digest != intent['authority_digest']
-                    or self.db._conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled'):
-                raise DraftOwnershipError('workflow_activation_authority_stale')
-            family = review_family(scope)
-            revision = scope['revision']
-            outcomes = json.dumps(scope['outcomes'])
-            request_id, scope_digest = request['id'], request['request_scope_digest']
-        return (f'\nWorkflow current reviewer: independently assess only the selected pinned immutable '
-                f'document and recipient-filtered inputs. Read them with happyranch workflows submissions '
-                f'request-show {request_id} --org {self.org.slug} --session-id {session_id} --json. '
-                f'The selected request is {request_id}, request_scope_digest {scope_digest}, revision {revision}; '
-                f'declared outcomes are {outcomes}. Before your genuine final callback write one closed JSON '
-                f'command: format workflow-review-stage-command@{family}, action stage-review, operation_key '
-                f'(one stable original key), request_id {request_id}, expected_revision {revision}, '
-                f'request_scope_digest {scope_digest}, outcome (one declared value), findings_bytes_base64 '
-                '(canonical base64 of exact UTF8 findings) and findings_digest (SHA256 of those raw bytes). '
-                f'Call happyranch workflows reviews stage --org {self.org.slug} --session-id {session_id} '
-                '--from-file <absolute-command.json> --json before report-completion. Preserve the same '
-                'key/body after transport loss; do not retry automatically. The five-field acknowledgement '
-                'is unsigned; request, acknowledgement or callback alone supplies no signature. Only genuine '
-                'INTEGER/full callback and committed successful terminal with Boolean host_quiescent=true '
-                'under current authority can admit a receipt. Retain failure/BLOCK evidence, never invent '
-                'approval, result, session or signature. No delegation, coding, execution or merge grant '
-                'follows. Use your actual task/session report-completion as the FINAL session action.\n')
-
-    async def stage_review(self, *, session_id: str, command: dict) -> dict:
-        command = parse_stage(command)
-        store = self.org.workflow_submissions
-        task, agent = store._session(session_id)
-        selection = dict(request_id=command['request_id'], task_agent=(task, agent), session_id=session_id, human=False)
-        # Preserve selected identity/grant refusal before authority/schema decoding.
-        with self.org.sessions.binding_lease(task, agent):
-            with self.db._lock:
-                store._session(session_id)
-                store._select_request(self.db._conn, **selection)
-        capture = self.org.workflow_authority.capture_admission()
-        async with store._lock:
-            async with self.org.db_lock:
-                with self.org.sessions.binding_lease(task, agent):
-                    with self.db._lock:
-                        store._session(session_id)
-                        store._select_request(self.db._conn, **selection)
-                    with self.org.workflow_authority.admission_writer(capture) as conn:
-                        store._session(session_id)
-                        request, _, source = store._select_request(conn, **selection)
-                        store._authority(conn, source, capture, {'collect-review'})
-                        intent = self._intent(conn, task)
-                        store._fresh(conn, intent, task, agent, session_id)
-                        if (command['format'] != f"workflow-review-stage-command@{review_family(intent['scope'])}"
-                                or command['expected_revision'] != intent['scope']['revision']
-                                or command['request_scope_digest'] != request['request_scope_digest']
-                                or command['outcome'] not in intent['scope']['outcomes']):
-                            raise WorkflowActivationError('workflow_review_stage_invalid_request')
-                        if (capture.ready.generation != intent['authority_generation']
-                                or capture.ready.snapshot_digest != intent['authority_digest']):
-                            raise WorkflowActivationError('workflow_activation_authority_stale')
-                        if conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled':
-                            raise WorkflowActivationError('workflow_new_runs_disabled')
-                        keyed = _stages_for_key(conn, org_slug=self.org.slug, principal=agent,
-                                                operation_key=command['operation_key'])
-                        if keyed and (len(keyed) != 1 or keyed[0]['operation_id'] != intent['operation_id']):
-                            raise WorkflowActivationError('workflow_review_stage_operation_conflict')
-                        stages = _records(conn, "SELECT * FROM workflow_dispatch_events WHERE operation_id=? AND event_kind='review_staged'",
-                                          (intent['operation_id'],))
-                        if stages:
-                            body = _stored_json(stages[0]['event_bytes'], stages[0]['event_digest'], code='workflow_review_storage_corrupt')
-                            if not _same_value(body['stage']['command'], command) or body['stage']['session_id'] != session_id:
-                                raise WorkflowActivationError('workflow_review_stage_operation_conflict')
-                            event_id = stages[0]['id']
-                        else:
-                            refuse_document_review()
-                            self._event(conn, intent, 'review_staged', stage=dict(command=command,
-                                request_digest=digest(canonical_bytes(command)), scope=intent['scope'],
-                                outbox_id=intent['id'], session_id=session_id))
-                            event_id = conn.execute('SELECT id FROM workflow_dispatch_events WHERE operation_id=? ORDER BY event_seq DESC LIMIT 1',
-                                                    (intent['operation_id'],)).fetchone()[0]
-                        validate_review_dispatch_storage(conn, request_id=request['id'])
-                        return dict(format=f"workflow-review-stage-ack@{review_family(intent['scope'])}", stage_event_id=event_id,
-                                    request_digest=digest(canonical_bytes(command)), replayed=bool(stages), signed=False)
 
     def _intent(self, conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
         bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE task_id=?', (task_id,))

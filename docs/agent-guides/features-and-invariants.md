@@ -1,18 +1,27 @@
 # Features And Invariants
 
-## Older document-review retirement — THR-336 msg157, P1a
+## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
-Fresh old-lane activation/return, author/revision staging, review graph creation,
-reviewer claim/launch, findings staging and human signing now refuse with
-`workflow_document_review_retired` (409) after existing selected checks and exact
-immutable replay. This covers product-design compiler@1, document compiler@2/@3
-and artifact compiler@4 documents. Human signing cannot replay collection effects.
-Stored history, authorized reads, native settlement/cancellation and authentic
-committed-evidence collection remain; no new status, held reason or setting exists.
-The old-lane availability passages below are historical; transport/client removal
-follows in P1b/P2. Any live unfinished old-lane data needs a separate disposition
-before rollout. Sequential documents, Coding v1 and authority-policy review remain
-unchanged. See [the maintained contract](contracts/document-workflows.md).
+P1b removes POST `/workflows/reviews/human-receipts`, POST
+`/workflows/reviews/stages` and the `happyranch workflows reviews sign` and
+`happyranch workflows reviews stage` CLI verbs. Their mutation-only route models,
+decoders, CLI helpers, service entry methods and reviewer instruction injection
+are removed. These transports no longer support replay; earlier descriptions
+below are historical. P2 separately removes the signing web mirror.
+
+P1a's `workflow_document_review_retired` (409) fences remain for fresh old-lane
+activation/return, author/revision staging, missing r1/r2 graphs and reviewer
+claim/launch, including queued Pause admission before native preparation.
+This covers product-design compiler@1, document compiler@2/@3 and artifact
+compiler@4 documents; the existing @4 code-unavailable refusal retains precedence.
+The selected-request GET and `workflows submissions request-show`, authorized
+history reads, exact retained immutable replay, authentic committed-evidence
+receipt/collection settlement and native callback/terminal/cancel ownership remain.
+Stage/human command models still validate stored history. All schema, startup,
+role/authority validators and stored status/event bytes remain unchanged, as does
+the native stage-deny tombstone. Any unfinished live old-lane data requires a
+separate disposition before rollout. Sequential document visits and Coding v1
+are unaffected.
 
 ## Built-in coding definition invariant — ROOT13509 / THR320seq304
 
@@ -1274,9 +1283,9 @@ section supersedes historical C1-pending/fresh-H checkpoint descriptions below.
 
 
 **Current reviewer staging — Founder THR139seq493/475, ROOT TASK10693.**
-POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
-`happyranch workflows reviews stage --org ORG --session-id CURRENT
---from-file /absolute/command.json [--json]` expose the existing current
+Removed in P1b (historical transport): POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
+removed CLI `happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json [--json]` formerly exposed the current
 non-recovery agent reviewer writer. Selected immutable request scope chooses
 `workflow-review-stage-command@1`, `@2` or revision2 `@3`; old families remain closed and byte-compatible.
 The five-field @1/@2/@3 acknowledgement (format, stage_event_id, request_digest,
@@ -1417,8 +1426,8 @@ Full independent review, scoped QA and exact-head lint renew before manager merg
 
 
 **U3b(d) human public write and selected signed read — same THR139 authority.**
-POST `/api/v1/orgs/{slug}/workflows/reviews/human-receipts` mounts ONLY the
-existing `admit_human` guarded writer through the server-derived Founder-bearer
+Removed in P1b: POST `/api/v1/orgs/{slug}/workflows/reviews/human-receipts` formerly mounted the
+now-removed `admit_human` guarded writer through the server-derived Founder-bearer
 principal. The retained closed HumanReviewCommand selects one request; no query
 proof, body actor, task/session/result or agent lane is accepted. HTTP200 returns
 the original immutable receipt on an exact actor/key/full-payload retry;
@@ -1446,7 +1455,7 @@ The draft stays dependency-incomplete/unaccepted/unmerged pending manager assess
 full cumulative independent review, honest same-head QA and guarded merge.
 
 **U3b(a) internal agent checkpoint — THR139 D5/G395/generic410/H445/457/465.**
-`WorkflowReviewDispatcher.stage_review` is an internal operation; no public or
+`WorkflowReviewDispatcher.stage_review` was removed in P1b; historically it was an internal operation; no public or
 native stage surface is mounted. Its closed `workflow-review-stage-command@1`
 requires action `stage-review`, operation/request tokens using the existing
 1..128 `[A-Za-z0-9._:-]` grammar, strict integer expected_revision=1, the exact
@@ -1482,7 +1491,7 @@ two-template public scratch smoke465 remains a dependency. Collection below is i
 work; keep the draft unaccepted/unmerged.
 
 **U3b(b) internal human receipt checkpoint — same THR139 authority.**
-`WorkflowReviewReceiptStore.admit_human` takes an existing server-derived
+`WorkflowReviewReceiptStore.admit_human` was removed in P1b. Historically it took a server-derived
 `WorkflowTemplatePrincipal` separately from the body. It requires the actual
 human Founder/founder_bearer lane, no task/session, and revalidates before scope
 selection, after awaited locks, inside the existing authority writer, and before
