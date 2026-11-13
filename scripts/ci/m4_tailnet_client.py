@@ -121,7 +121,9 @@ def structural_skeleton(line: object) -> str:
         elif re.fullmatch(r'[A-Za-z0-9_.]+', token):
             tokens.append('W')
         else:
-            return 'unknown'
+            # Printable punctuation outside the structural vocabulary carries
+            # no original character into the public diagnostic.
+            tokens.append('W')
     skeleton = ' '.join(tokens)
     return skeleton if 0 < len(skeleton) <= PROBE_SKELETON_OUTPUT else 'overlong'
 
@@ -175,14 +177,15 @@ def packet_evidence(text: str, pid: int, diagnostic: dict, *, endpoint: tuple[st
     The local observer precondition uses this same parser with its owned endpoint.
     """
     detail = capture_detail(diagnostic)
-    # Only the credential-free observer probe enables this projection. Keep
-    # first unrecognized prefix shapes, never the original lines or substrings.
+    # Only the credential-free observer probe enables this projection. Include
+    # recognized prefixes too: an earlier refusal must not hide later structure.
     if type(diagnostic.get('_probe_skeletons')) is list:
-        for line in text.splitlines():
-            if not re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line):
-                diagnostic['_probe_skeletons'].append(structural_skeleton(line))
-                if len(diagnostic['_probe_skeletons']) >= PROBE_SKELETON_LINES:
-                    break
+        lines = text.splitlines()
+        unrecognized = [line for line in lines if not re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)]
+        selected = unrecognized[:PROBE_SKELETON_LINES]
+        if len(selected) < PROBE_SKELETON_LINES:
+            selected += [line for line in lines if re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)][:PROBE_SKELETON_LINES - len(selected)]
+        diagnostic['_probe_skeletons'].extend(structural_skeleton(line) for line in selected)
     records: list[tuple[str, str, list[str]]] = []
     for line in text.splitlines():
         prefix = re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)

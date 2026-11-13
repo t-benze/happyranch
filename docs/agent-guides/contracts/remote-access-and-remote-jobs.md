@@ -204,21 +204,26 @@ remain failed/spent without replenishment. Guest-driver byte parity means this
 task does not trigger VM --premerge-vm; native tool behavior remains NOT RUN.
 
 TASK-15875 adds `structural_skeletons` **only to the credential-free observer
-probe** on prefix refusal. The native prepare and acceptance summaries retain
-their existing closed labels and bounded integer fields. At most three
-unrecognized-prefix lines are projected, at most 2048 input characters and
-256 output characters per line. Only `IP`, `IP6`, `pktap`, `proc`, `eproc`,
+probe** before format validation. Native prepare and acceptance summaries
+retain their existing closed labels and bounded integer fields. The first
+unrecognized-prefix lines are projected, filling any remaining slots with the
+first recognized-prefix lines: at most three lines total, at most 2048 input
+characters and 256 output characters per line. Only `IP`, `IP6`, `pktap`,
+`proc`, `eproc`,
 `svc`, `in`, `out`, `pid`, `Flags`, `length`, `UDP`, `tcp`, `udp` and the fixed
 punctuation set `()[],:;<>.=+-/|*` survive. Decimal tokens become `N`,
 hex/address-like tokens become `A`, all other words become `W`; whitespace
 normalizes to single token separators. No raw addresses, ports, PIDs, process
-names, paths, hostnames or payload enter this field. Unsupported/control/non-ASCII
-input becomes `unknown`; overlong input or output becomes `overlong`. The public
-sink revalidates the closed vocabulary and bounds. This is structural evidence,
+names, paths, hostnames or payload enter this field. Other printable punctuation
+becomes `W`; empty/control/non-ASCII input becomes `unknown`; overlong input
+or output becomes `overlong`. The public sink revalidates the closed vocabulary
+and bounds. This is structural evidence,
 not reconstruction of raw capture, process-attribution proof or native acceptance.
 Run43368317931 (TASK-15874) remains FAILED at prefix, captured18/received18/parsed0.
-The actual rejected form is UNKNOWN until the separately authorized branch probe
-publishes its skeleton; this diagnostic phase changes no parser gate or flags.
+Probe1 run43371075839 at719ad7b31ca35cc189bacb893381400e7844b306 also
+FAILED with skeleton `["unknown"]`. The actual rejected form remains UNKNOWN.
+The probe now includes recognized prefixes after an earlier refusal so their
+structure stays visible. This diagnostic phase changes no parser gate or flags.
 Native attempt8 remains unspent; JOB-6699 and all prior failed/spent runs remain
 failed/spent, with no allowance replenished.
 
