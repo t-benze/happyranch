@@ -1042,6 +1042,27 @@ export const en = {
     'Turning the feature off halts all scheduled wakes for every agent. Eligibility and tier config are preserved; nothing runs until you turn it back on.',
   'settings.organization.disableDialog.cancel': 'Cancel',
   'settings.organization.disableDialog.confirm': 'Disable',
+  'settings.organization.reviewer.heading': 'Review',
+  'settings.organization.reviewer.label': 'Reviewer agents',
+  'settings.organization.reviewer.help':
+    'Generic chain reviewer setting: a delegation to a configured reviewer must declare its expected verdict, and only an explicit APPROVE releases later steps. This does not select Coding workflow roles and does not allow any run.',
+  'settings.organization.reviewer.none': 'No reviewer configured',
+  'settings.organization.reviewer.missing': 'Configured reviewer unavailable: {agents}',
+  'settings.organization.reviewer.missingRepair':
+    'Delegations are refused until this is repaired. Remove or replace the unavailable reviewer, then save.',
+  'settings.organization.reviewer.invalid':
+    'The saved reviewer configuration is invalid and cannot be shown. Choose reviewers or None, then save to replace it.',
+  'settings.organization.reviewer.loading': 'Loading agents…',
+  'settings.organization.reviewer.error':
+    'Could not load agents, so the reviewer choice is unavailable. The saved setting is unchanged.',
+  'settings.organization.reviewer.selected': 'Selected reviewer agents',
+  'settings.organization.reviewer.add': 'Add reviewer…',
+  'settings.organization.reviewer.noneOption': 'None — no reviewer',
+  'settings.organization.reviewer.noAgents': 'No active agents to choose from.',
+  'settings.organization.reviewer.remove': 'Remove {agent}',
+  'settings.organization.reviewer.unavailable': 'unavailable',
+  'settings.organization.reviewer.pendingClear': 'Saving will clear the reviewer setting (None).',
+  'settings.organization.reviewer.pendingSave': 'Saving will set reviewer agents to: {agents}',
   // @w2c-end:organization
 
   // --- W2c: settings/executors (anchor; keys go below) ---

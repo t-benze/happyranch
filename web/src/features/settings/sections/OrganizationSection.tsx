@@ -1,6 +1,6 @@
 import { renderThreadErrorDetail, type ThreadErrorDetail } from '@/lib/threadErrors';
 import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
-import { useIdentityOptions, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
+import { useIdentityOptions, useIdentityPresentation, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
 /**
  * OrganizationSection — editable org settings with real saves via PUT /settings/org.
  *
@@ -16,6 +16,8 @@ import { useIdentityOptions, usePreflightAddresses, namingAddressError } from '@
  * - session_timeout_seconds: re-read per session spawn → LIVE ✓
  * - dreaming.*: re-read per scheduler tick (≤60s) → LIVE ✓
  * - threads.*: re-read per request/invocation → LIVE ✓
+ * - reviewer_agents: generic chain reviewer IDs (B3). Sent ONLY when the
+ *   Founder deliberately changed the choice; never pruned against the roster.
  *
  * ALL org fields are live-apply. None require restart.
  *
@@ -60,6 +62,23 @@ interface FieldState {
   dreamExclude: string;
   threadsEnabled: boolean;
   threadsTimeout: string;
+  /** Permanent reviewer IDs in saved order (missing IDs retained); null when
+   * the saved configuration is invalid/unclassified and cannot be shown. */
+  reviewers: string[] | null;
+}
+
+type ReviewerConfiguration = OrgSettings['reviewer_configuration'];
+/** Select value for the explicit None choice; not a valid agent ID. */
+const REVIEWER_NONE = 'none:';
+
+function reviewerConfiguration(org: OrgSettings): ReviewerConfiguration {
+  // A daemon without the B1 status object is unclassified: never shown as none.
+  return org.reviewer_configuration ?? { state: 'invalid', missing_agents: [] };
+}
+
+function sameReviewers(a: string[] | null, b: string[] | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.length === b.length && a.every((id, i) => id === b[i]);
 }
 
 type SaveState =
@@ -83,6 +102,7 @@ function buildFieldState(org: OrgSettings): FieldState {
       org.threads.invocation_timeout_seconds === null
         ? ''
         : String(org.threads.invocation_timeout_seconds),
+    reviewers: reviewerConfiguration(org).state === 'invalid' ? null : [...(org.reviewer_agents ?? [])],
   };
 }
 
@@ -108,6 +128,8 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   const [fields, setFields] = useState<FieldState>(() => buildFieldState(org));
   const [lastSaved, setLastSaved] = useState<FieldState>(() => buildFieldState(org));
   const [saveState, setSaveState] = useState<SaveState>({ phase: 'idle' });
+  const [reviewerConfig, setReviewerConfig] = useState<ReviewerConfiguration>(() => reviewerConfiguration(org));
+  const reviewerPickerRef = useRef<HTMLButtonElement>(null);
   const { t, render } = useTranslation();
   const mutation = useUpdateOrgSettings();
   const agentsQuery = useAgentsList();
@@ -117,6 +139,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   );
 
   const identityOptions = useIdentityOptions(agentsList);
+  const { label: identityLabel } = useIdentityPresentation();
   const identityPreflight = usePreflightAddresses();
   const [identityError, setIdentityError] = useState<ThreadErrorDetail | null>(null);
   const savingLatch = useRef(false);
@@ -161,6 +184,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       const fresh = buildFieldState(org);
       setFields(fresh);
       setLastSaved(fresh);
+      setReviewerConfig(reviewerConfiguration(org));
       setSaveState({ phase: 'idle' });
     }
   }, [org]);
@@ -186,9 +210,43 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       filteredInclude !== savedInclude ||
       filteredExclude !== savedExclude ||
       fields.threadsEnabled !== lastSaved.threadsEnabled ||
-      fields.threadsTimeout !== lastSaved.threadsTimeout
+      fields.threadsTimeout !== lastSaved.threadsTimeout ||
+      !sameReviewers(fields.reviewers, lastSaved.reviewers)
     );
   }, [fields, lastSaved, rosterNames, identityOptions]);
+
+  // ── Generic chain reviewer (B3) ──
+  // The picker needs a known roster: loading and read failure disable it and
+  // are never presented as "none" (that state comes only from the server).
+  const rosterState: 'loading' | 'error' | 'ready' = agentsQuery.isError
+    ? 'error'
+    : agentsQuery.data ? 'ready' : 'loading';
+  const reviewerEditable = rosterState === 'ready' && saveState.phase !== 'saving';
+  const reviewerUnavailable = useCallback(
+    (id: string) => reviewerConfig.missing_agents.includes(id)
+      || (rosterState === 'ready' && !rosterNames.has(id)),
+    [reviewerConfig.missing_agents, rosterState, rosterNames],
+  );
+  const reviewerChoices = useMemo(
+    () => agentsList.filter((a) => !(fields.reviewers ?? []).includes(a.name)),
+    [agentsList, fields.reviewers],
+  );
+  const reviewerChanged = fields.reviewers !== null && !sameReviewers(fields.reviewers, lastSaved.reviewers);
+
+  const chooseReviewer = useCallback((value: string) => {
+    setFields((prev) => ({
+      ...prev,
+      reviewers: value === REVIEWER_NONE
+        ? []
+        : [...(prev.reviewers ?? []).filter((id) => id !== value), value],
+    }));
+  }, []);
+
+  const removeReviewer = useCallback((id: string) => {
+    setFields((prev) => ({ ...prev, reviewers: (prev.reviewers ?? []).filter((r) => r !== id) }));
+    // The chip's button unmounts; keep keyboard focus on the field's picker.
+    reviewerPickerRef.current?.focus();
+  }, []);
 
   const update = useCallback(
     <K extends keyof FieldState>(key: K, value: FieldState[K]) => {
@@ -227,8 +285,13 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       enabled: fields.threadsEnabled,
       invocation_timeout_seconds: parsedThreadTimeout,
     };
+    // Omitted unless deliberately changed: an unrelated save never sends,
+    // clears or prunes the reviewer setting. Missing IDs are sent verbatim.
+    if (fields.reviewers !== null && !sameReviewers(fields.reviewers, lastSaved.reviewers)) {
+      patch.reviewer_agents = [...fields.reviewers];
+    }
     return patch;
-  }, [fields, rosterNames]);
+  }, [fields, lastSaved.reviewers, rosterNames]);
 
   const handleSave = useCallback(async () => {
     if (savingLatch.current || !orgSlug) return;
@@ -248,6 +311,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       const fresh = buildFieldState(data.org);
       setFields(fresh);
       setLastSaved(fresh);
+      setReviewerConfig(reviewerConfiguration(data.org));
       setSaveState({ phase: 'saved' });
     } catch (err: unknown) {
       if (orgGeneration.current !== generation) return;
@@ -395,6 +459,110 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             className="bg-surface-sunken border-border-default text-text-primary w-28 rounded-lg border px-2 py-0.5 text-sm"
           />
         </EditableRow>
+      </div>
+
+      {/* generic chain reviewer (B3) */}
+      <h4 className="mb-2 text-sm font-medium">{t('settings.organization.reviewer.heading')}</h4>
+      <div
+        role="group"
+        aria-labelledby="reviewer-agents-label"
+        aria-describedby="reviewer-agents-help"
+        data-testid="reviewer-agents-field"
+        className="border-border mb-4 rounded-md border px-3 py-2 text-sm"
+      >
+        <span id="reviewer-agents-label" className="text-fg-muted">{t('settings.organization.reviewer.label')}</span>
+        <p id="reviewer-agents-help" className="text-text-secondary mt-1 text-xs">
+          {t('settings.organization.reviewer.help')}
+        </p>
+
+        {reviewerConfig.state === 'none' && !reviewerChanged && (
+          <p role="status" className="text-text-secondary mt-2 text-xs">
+            {t('settings.organization.reviewer.none')}
+          </p>
+        )}
+        {reviewerConfig.state === 'missing' && (
+          <div role="alert" className="border-feedback-warning/30 bg-feedback-warning/5 text-feedback-warning mt-2 rounded border p-2 text-xs">
+            <p>{t('settings.organization.reviewer.missing', { agents: reviewerConfig.missing_agents.join(', ') })}</p>
+            <p className="mt-1">{t('settings.organization.reviewer.missingRepair')}</p>
+          </div>
+        )}
+        {reviewerConfig.state === 'invalid' && (
+          <div role="alert" className="border-feedback-warning/30 bg-feedback-warning/5 text-feedback-warning mt-2 rounded border p-2 text-xs">
+            {t('settings.organization.reviewer.invalid')}
+          </div>
+        )}
+        {rosterState === 'loading' && (
+          <p role="status" className="text-text-secondary mt-2 text-xs">{t('settings.organization.reviewer.loading')}</p>
+        )}
+        {rosterState === 'error' && (
+          <div role="alert" className="border-tier-red bg-feedback-danger/10 text-tier-red mt-2 rounded border p-2 text-xs">
+            {t('settings.organization.reviewer.error')}
+          </div>
+        )}
+
+        {fields.reviewers !== null && fields.reviewers.length > 0 && (
+          <ul aria-label={t('settings.organization.reviewer.selected')} className="mt-2 flex flex-wrap gap-1.5">
+            {fields.reviewers.map((id) => {
+              const unavailable = reviewerUnavailable(id);
+              const label = identityLabel(id);
+              return (
+                <li
+                  key={id}
+                  data-reviewer-id={id}
+                  className={`flex max-w-full min-w-0 items-center gap-1 rounded border px-1.5 py-0.5 text-xs ${
+                    unavailable
+                      ? 'border-feedback-warning/40 bg-feedback-warning/5 text-feedback-warning'
+                      : 'border-border bg-bg-raised text-fg'
+                  }`}
+                >
+                  <span className="min-w-0 break-all">{label}</span>
+                  {unavailable && (
+                    <span className="shrink-0 font-medium">({t('settings.organization.reviewer.unavailable')})</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeReviewer(id)}
+                    disabled={!reviewerEditable}
+                    aria-label={t('settings.organization.reviewer.remove', { agent: label })}
+                    className="text-fg-muted hover:text-fg shrink-0 rounded px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  >
+                    ×
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        <div className="mt-2">
+          <Select value="" onValueChange={chooseReviewer} disabled={!reviewerEditable}>
+            <SelectTrigger
+              ref={reviewerPickerRef}
+              aria-labelledby="reviewer-agents-label"
+              aria-describedby="reviewer-agents-help"
+              className="w-full max-w-xs"
+            >
+              <SelectValue placeholder={t('settings.organization.reviewer.add')} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={REVIEWER_NONE}>{t('settings.organization.reviewer.noneOption')}</SelectItem>
+              {reviewerChoices.map((agent) => (
+                <SelectItem key={agent.name} value={agent.name}>{identityLabel(agent.name)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {rosterState === 'ready' && agentsList.length === 0 && (
+            <p className="text-text-secondary mt-1 text-xs">{t('settings.organization.reviewer.noAgents')}</p>
+          )}
+        </div>
+
+        {reviewerChanged && fields.reviewers !== null && (
+          <p role="status" className="text-text-secondary mt-2 text-xs">
+            {fields.reviewers.length === 0
+              ? t('settings.organization.reviewer.pendingClear')
+              : t('settings.organization.reviewer.pendingSave', { agents: fields.reviewers.join(', ') })}
+          </p>
+        )}
       </div>
 
       {/* ── Operating controls ── */}

@@ -987,6 +987,24 @@ export const zhCN: Record<MessageKey, MessageValue> = {
     '关闭此功能将停止所有智能体的全部计划唤醒。资格与层级配置会被保留；在你重新开启之前不会运行任何内容。',
   'settings.organization.disableDialog.cancel': '取消',
   'settings.organization.disableDialog.confirm': '停用',
+  'settings.organization.reviewer.heading': '审核',
+  'settings.organization.reviewer.label': '审核代理',
+  'settings.organization.reviewer.help':
+    '通用链式审核设置：委派给已配置的审核代理时必须声明预期结论，只有明确的 APPROVE 才会放行后续步骤。此设置不会选择 Coding 工作流角色，也不会允许任何运行。',
+  'settings.organization.reviewer.none': '尚未配置审核代理',
+  'settings.organization.reviewer.missing': '已配置的审核代理不可用：{agents}',
+  'settings.organization.reviewer.missingRepair': '修复之前委派会被拒绝。请移除或替换不可用的审核代理，然后保存。',
+  'settings.organization.reviewer.invalid': '已保存的审核代理配置无效，无法显示。请选择审核代理或“无”，然后保存以替换。',
+  'settings.organization.reviewer.loading': '正在加载代理…',
+  'settings.organization.reviewer.error': '无法加载代理，因此暂不能选择审核代理。已保存的设置保持不变。',
+  'settings.organization.reviewer.selected': '已选择的审核代理',
+  'settings.organization.reviewer.add': '添加审核代理…',
+  'settings.organization.reviewer.noneOption': '无 — 不配置审核代理',
+  'settings.organization.reviewer.noAgents': '没有可选择的活跃代理。',
+  'settings.organization.reviewer.remove': '移除 {agent}',
+  'settings.organization.reviewer.unavailable': '不可用',
+  'settings.organization.reviewer.pendingClear': '保存后将清除审核代理设置（无）。',
+  'settings.organization.reviewer.pendingSave': '保存后审核代理将设为：{agents}',
   // @w2c-end:organization
 
   // --- W2c: settings/executors (anchor; keys go below) ---
