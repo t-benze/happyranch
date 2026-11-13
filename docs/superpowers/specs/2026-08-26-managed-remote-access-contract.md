@@ -655,11 +655,47 @@ inactive, with PID zero and raw `sub_state` capped at 2048 characters. Missing/e
 state, duplicate observed fields, malformed numeric fields, unbalanced braces or
 quotes, and running without a valid PID refuse. Nested job/process fields do not
 replace top-level state; braces inside double-quoted values, including escaped
-quotes/backslashes, do not change depth. Running is not readiness. Existing foreground notification already degrades without systemd,
-but macOS readiness/watchdog publication is pending PR 2. Credentials and
-state layout, the per-user managed installer, Darwin sidecar and readiness,
-signing, frozen entry/bundling, Swift coexistence and packaged-app acceptance
-remain future work. No change to Swift HomeConnector is included.
+quotes/backslashes, do not change depth. Running alone is not readiness.
+
+C3 (PR 2) injects a macOS readiness sink into the unchanged shared notify loop.
+The connector owns an atomic 0600 JSON readiness record at
+`<managed-state-root>/<label>.readiness.json`, with PID, foreground-run start
+wall time, ready Boolean, last healthy wall time, increasing sequence and fixed
+non-secret reason. It writes starting/not-ready before checks, ready on first
+and subsequent healthy passes, and not-ready on readiness/listener loss and
+shutdown. Exclusive same-directory temporary files are flushed/fsynced before
+rename; failed publication retains the prior complete record and cleans up the
+temporary file. No STATUS input, bearer, key or credential content is recorded.
+
+The provisional default is
+`~/.local/state/happyranch-connector/ai.happyranch.connector.readiness.json`,
+using existing overridable `managed_dir_root`/`state_dir`; custom labels get
+separate files. This explicitly assumes the existing managed-state resolution
+until C4 settles macOS paths, without changing credential custody or migration.
+A watchdog thread begins before publication/checks and force-exits 75 after
+`watchdog_sec` without a completed healthy pass (including publication), using
+monotonic time and no main-loop/filesystem lock at expiry. Startup and shutdown
+are bounded by that same deadline. launchd KeepAlive owns restart; observed
+readiness/listener loss still closes admission and exits 1. The thread requires
+Python scheduling and cannot guarantee recovery from host sleep or a runtime-wide
+freeze. It makes no claim of OS process-birth authentication.
+
+CLI status adds readiness fields while preserving all native process fields.
+Ready requires launchd running with positive PID P, record PID P, ready=true,
+and healthy wall-time age in [0, watchdog_sec + poll_seconds]; the stated margin
+is one configured poll interval. Future wall times fail freshness. Otherwise it
+reports not-loaded, starting, running-not-ready, stale-readiness, pid-mismatch,
+record-missing/corrupt/foreign/unavailable. Process absence/startup takes
+precedence, with the file observation separately retained. Invalid/missing,
+oversized (>4096 bytes), symlink/special/foreign-owner/multiply-linked/non-0600
+or unreadable records never produce ready or crash status; raw invalid content
+is not exposed. The maintained contract lists every added JSON field.
+Linux sd_notify, systemd manager bytes, units, installer and status stay unchanged.
+
+No native proof is claimed in this PR; the existing sleep-agent suite is unchanged.
+Final credentials/state layout, the per-user managed installer, Darwin sidecar
+and readiness, signing, frozen entry/bundling, Swift coexistence and packaged-app
+acceptance remain future work. No change to Swift HomeConnector is included.
 
 Start-failure probe context records bounded plist lint, mode/owner versus current
 UID, session types and a label-filtered launchd log excerpt before cleanup.

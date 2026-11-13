@@ -89,13 +89,61 @@ and explicit start. The packaged Mac app runs in the GUI domain.
   before bootout; invalid candidates refuse while the live service stays
   untouched. This is process verification, not readiness.
 
-`run` already tolerates absent `NOTIFY_SOCKET` (notification returns false and
-is not required to enter the foreground loop). Darwin-specific readiness
-publication, startup deadlines and watchdog integration are **pending PR 2**;
-this slice claims none. macOS credential handling, managed installer, sidecar
-build/readiness, signing, app bundling, Swift coexistence and packaged-app
-acceptance also remain pending. The Swift in-app HomeConnector is untouched;
-never enable both listeners together.
+### macOS readiness, status and recovery (THR-360 C3, PR 2)
+
+The foreground connector owns `<managed-state-root>/<label>.readiness.json`.
+**Provisional path assumption:** reuse the existing `managed_dir_root` plus
+`state_dir` resolution: by default
+`~/.local/state/happyranch-connector/ai.happyranch.connector.readiness.json`.
+Both config values remain overridable and custom labels use separate files.
+C4 will settle the final macOS layout; this slice adds no credential path or
+migration. Status and supervisor construction never create the record.
+
+Each record has `pid`, `process_started_at` (wall time at foreground run entry),
+`ready`, nullable `last_healthy_wall_time`, increasing `sequence`, and a fixed
+non-secret `reason`. The process publishes false/`starting` before readiness
+checks, true/`healthy` on first readiness and every completed healthy pass,
+false on readiness/listener loss, and false on shutdown. Loss retains the
+`readiness-or-listener-lost` reason through shutdown. No arbitrary STATUS text,
+exception text, token, key or bearer is stored. Publication uses an exclusive
+0600 temporary file in the same directory, flush/fsync then atomic rename;
+failed writes retain the previous complete file and remove the pending file.
+
+A separate in-process watchdog starts before the first publication and uses
+monotonic time. Only a completed healthy pass, including publication, renews
+its deadline. Startup without readiness, a blocked readiness check, loop,
+publication or shutdown cannot renew it. At `watchdog_sec` without a healthy
+pass it calls `os._exit(75)` without acquiring a loop lock or doing filesystem
+I/O. KeepAlive then relaunches the process. Readiness/listener loss still closes
+admission and exits 1. The existing `watchdog_sec` and `poll_seconds` values
+apply; macOS requires finite positive intervals. Linux retains its sd_notify
+READY/WATCHDOG/STOPPING path, unit renderer, installer and status output.
+
+CLI `status` keeps every ServiceStatus/LaunchdStatus field and adds `ready`,
+`readiness_state`, `readiness_record_state`, `readiness_max_age_seconds`,
+`readiness_age_seconds`, `record_pid`, `process_started_at`,
+`last_healthy_wall_time`, `sequence`, and `readiness_reason`. Ready requires
+launchd running with a positive PID, the same record PID, record `ready=true`,
+and a last healthy timestamp aged from zero through
+`watchdog_sec + poll_seconds` inclusive. The margin is exactly one configured
+poll interval; future timestamps also fail freshness. Other substates are
+`not-loaded`, `starting`, `running-not-ready`, `stale-readiness`, `pid-mismatch`,
+`record-missing`, `record-corrupt`, `record-foreign`, or `record-unavailable`.
+Not-loaded/starting process state takes precedence; the independent
+`readiness_record_state` still reports the file observation. Missing, malformed,
+oversized (>4096 bytes), non-regular, symlinked, foreign-owner, multiply linked,
+non-0600 or unreadable records never claim readiness or crash status. Invalid
+record contents are never echoed. launchctl parsing itself is unchanged.
+
+These are source-level observations, not native acceptance or an authenticated
+process-birth identity. The watchdog depends on its Python thread being
+scheduled; it cannot promise recovery from host sleep or a runtime/GIL-wide
+freeze. Wall-clock discontinuity may temporarily report stale readiness; the
+restart deadline remains monotonic. No native proof is claimed in PR 2 and the
+sleep-agent native suite is unchanged. macOS credential handling, managed
+installer, sidecar build/readiness, signing, app bundling, Swift coexistence and
+packaged-app acceptance remain pending. The Swift in-app HomeConnector is
+untouched; never enable both listeners together.
 
 Native evidence is supplied by the `connector-launchd` Mac-mini suite for QA:
 a unique harmless `/bin/sleep` agent, install/start/running PID, SIGKILL/new PID,
