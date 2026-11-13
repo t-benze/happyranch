@@ -75,6 +75,7 @@ def _raise(exc: WorkflowActivationError | WorkflowAuthorityError | WorkflowTempl
                   "workflow_activation_authority_stale", "workflow_new_runs_disabled",
                   "workflow_activation_author_pending", "authority_pointer_not_ready",
                   "workflow_author_handoff_schema_required", "workflow_repository_reader_unavailable",
+                  "workflow_document_review_retired",
               } or code.startswith(("profile_", "publication_", "authority_")) else 422)
     detail = {"code": code}
     if isinstance(exc, WorkflowActivationError) and exc.owner:

@@ -1,5 +1,21 @@
 # Orchestrator Contracts
 
+## Older document-review admission retired — THR-336 msg157, P1a
+
+The compiler@1 product-design, @2/@3 document and @4 document lane refuses fresh
+activation/return, staging, missing r1/r2 graph creation and reviewer claim/launch
+with `workflow_document_review_retired` (409). Findings staging and human signing
+also refuse; human replay cannot collect. Existing selected access/corruption
+checks and exact immutable operation replay precede the fresh-effect fence.
+Completed/discovery catches only this named error around graph creation so native
+terminal ownership drains and later records are inspected. Callback, terminal,
+cancel, handle and authentic committed-evidence receipt/collection plumbing stay;
+`review_join.HOLDS`, history validators and closed projection reasons stay unchanged.
+Earlier fresh-work instructions are historical pending P1b/P2 transport/client
+removal. Unfinished live old-lane data needs a separate disposition before rollout.
+Sequential documents and Coding v1 are unaffected; see
+[document workflows](contracts/document-workflows.md).
+
 THR-308 seq403 removes the generic `audit_log` coding scan, its process-local
 watermark and collector/publication plumbing, including its scan diagnostic.
 Startup and runtime coding validation therefore no longer detect otherwise

@@ -1,5 +1,16 @@
 # Project Layout
 
+## Older document-review retirement owners — THR-336 msg157, P1a
+
+`runtime/workflows/activation.py` owns the named `workflow_document_review_retired`
+admission refusal (409). `submissions.py` and `revisions.py` fence fresh staging
+and missing r1/r2 graphs, including cold producers; `review_dispatch.py` fences
+reviewer claims/launches and findings staging, and `review_receipts.py` human signing.
+The modules/objects, native lifecycle, schema/history validators and authorized
+readers remain. Earlier old-lane availability descriptions below are historical;
+P1b/P2 remove transports/signing client later. No sequential-document or Coding v1
+owner changes. See [document workflows](contracts/document-workflows.md).
+
 `runtime/platform/process_census.py` remains the census API. Its S1 `_LibProc`,
 exceptions and checked thread-local state are re-exported from the single
 stdlib-only `runtime/skills/bundled/workspace-cleanup/scripts/darwin_process.py`

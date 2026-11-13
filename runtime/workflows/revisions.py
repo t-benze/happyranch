@@ -22,6 +22,7 @@ from runtime.infrastructure.workflow_schema import (
 from runtime.models import TaskRecord
 from runtime.workflows.activation import (
     AuthorityPin, ClosedRecord, SHA256, Token, WorkflowActivationError, _id, author_capacity_blocked,
+    DOCUMENT_REVIEW_RETIRED, refuse_document_review,
 )
 from runtime.workflows.artifacts import context_contract, review_family
 from runtime.workflows.draft_dispatch import append_event_uncommitted, canonical_bytes, digest
@@ -545,6 +546,7 @@ class WorkflowRevisionStore:
                         if len(existing) != 1 or existing[0]['request_bytes'] != raw:
                             raise WorkflowActivationError('workflow_document_revision_operation_conflict')
                         return self._projection(conn, existing[0], capture, replayed=True)
+                    refuse_document_review()
                     old, oldproof, graph, predecessor, feedback, authority = self._return_source(
                         conn, instance, first, context, capture, command)
                     opid = _id('workflow-document-revision', self.org.slug, principal.operation_principal, command['operation_key'])
@@ -664,6 +666,7 @@ class WorkflowRevisionStore:
                         if conn.execute('SELECT 1 FROM workflow_submission_operations WHERE org_slug=? AND principal=? AND operation_key=?',
                                         (self.org.slug, agent, command['operation_key'])).fetchone():
                             raise WorkflowActivationError('workflow_document_revision_operation_conflict')
+                        refuse_document_review()
                         sid = _id('workflow-submission', row['instance_id'], 2, self.org.slug, agent, command['operation_key'], 'workflow-author-revision@1')
                         submission = dict(id=sid, instance_id=row['instance_id'], revision=2, submission_bytes=content(command),
                             submission_digest=command['submission_digest'], storage_ref=None, source_task_id=task,
@@ -753,6 +756,7 @@ class WorkflowRevisionStore:
                     if conn.execute('SELECT 1 FROM workflow_submission_result_links WHERE submission_id=?', (subject['submission_id'],)).fetchone():
                         validate_handoff_graph(conn, subject, proof)
                         return []
+                    refuse_document_review()
                     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
                     raw = canonical_bytes(result)
                     _insert(conn, 'workflow_submission_result_links', dict(submission_id=subject['submission_id'], task_result_id=result['id'],
@@ -769,6 +773,7 @@ class WorkflowRevisionStore:
     def _review_graph(self, conn: sqlite3.Connection, subject: dict, proof: dict, context: dict, intent: dict, now: str) -> list[str]:
         from runtime.workflows.submissions import review_brief
         contract = context_contract(context)
+        refuse_document_review()
         round_id = _id('workflow-round', subject['instance_id'], 2, subject['submission_id'])
         _insert(conn, 'workflow_rounds', dict(id=round_id, instance_id=subject['instance_id'], submission_id=subject['submission_id'], current_revision=2, state='reviewing'))
         request_ids, task_ids = [], []
@@ -850,6 +855,10 @@ class WorkflowRevisionStore:
         for operation_id in ids:
             try:
                 tasks = await self.fulfill(operation_id)
+            except WorkflowActivationError as exc:
+                if exc.code != DOCUMENT_REVIEW_RETIRED:
+                    raise
+                continue
             except WorkflowAuthorityError as exc:
                 if exc.code != 'workflow_activation_authority_stale':
                     raise
@@ -863,7 +872,12 @@ class WorkflowRevisionStore:
                 return
             ids = [r[0] for r in self.db._conn.execute('SELECT r.id FROM workflow_document_revision_operations r JOIN workflow_draft_dispatch_intents d ON d.id=r.draft_intent_id WHERE d.task_id=?', (task_id,))]
         for operation_id in ids:
-            tasks = self.org.workflow_drafts._on_loop(self.fulfill(operation_id))
+            try:
+                tasks = self.org.workflow_drafts._on_loop(self.fulfill(operation_id))
+            except WorkflowActivationError as exc:
+                if exc.code != DOCUMENT_REVIEW_RETIRED:
+                    raise
+                continue
             queue = getattr(self.org.orchestrator, '_queue', None)
             if queue is not None:
                 for task in tasks:

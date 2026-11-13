@@ -188,6 +188,22 @@ Parameters:
 
 ## Workflow-owned document tasks
 
+**Older document-review lane retired — THR-336 msg157, P1a.** The old-lane
+paragraphs below through "Configured review tasks" preserve historical contracts
+and command syntax; they no longer authorize starting or advancing that lane.
+Fresh product-design compiler@1, document compiler@2/@3 and artifact compiler@4
+document activation, return-to-author, author/revision staging, missing review
+graphs, reviewer claims/launches, findings staging and human signing refuse with
+`workflow_document_review_retired` (HTTP 409). Do not attempt those commands or
+retry a retirement refusal. Exact immutable operation replay and authorized
+history reads remain; human signing cannot replay its collection side effect.
+Native terminal/cancel ownership and authentic committed-evidence settlement
+remain. Preserve privacy, original keys/bytes, actual callback identity and the
+genuine FINAL report-completion rules. Surface any active or unfulfilled old-lane
+record for a separately authorized disposition; never invent completion or a new
+held reason. P1b/P2 remove transports and the signing client later. The separate
+sequential visit/document instructions below and Coding v1 are unaffected.
+
 For a workflow-owned task, follow its immutable document contract and only its
 recipient-filtered inputs. Do not use generic delegation, fanout, coding, approval
 or merge actions. Historical @1/@2 tasks retain their original drafting contract.

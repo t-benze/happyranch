@@ -424,9 +424,9 @@ def raise_stage_error(exc: Exception) -> None:
         fail(code, 422)
     if code in {'workflow_review_stage_operation_conflict', 'workflow_author_handoff_source_not_current',
                 'workflow_activation_authority_stale', 'workflow_new_runs_disabled',
-                'workflow_author_handoff_schema_required'}:
+                'workflow_author_handoff_schema_required', 'workflow_document_review_retired'}:
         detail = {'code': code}
-        if code == 'workflow_author_handoff_schema_required' and getattr(exc, 'owner', None):
+        if code in {'workflow_author_handoff_schema_required', 'workflow_document_review_retired'} and getattr(exc, 'owner', None):
             detail.update(owner=exc.owner, required_action=exc.required_action)
         raise HTTPException(status_code=409, detail=detail) from exc
     if isinstance(exc, (WorkflowAuthorityError, ProfileCoordinatorError)):

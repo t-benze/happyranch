@@ -18,6 +18,7 @@ from runtime.infrastructure.workflow_schema import (
 from runtime.models import TaskRecord
 from runtime.workflows.activation import (
     ClosedRecord, SHA256, Token, WorkflowActivationError, _id,
+    DOCUMENT_REVIEW_RETIRED, refuse_document_review,
 )
 from runtime.workflows.artifacts import (
     document_from_handoff, document_from_submission, document_review_brief, document_review_scope,
@@ -511,6 +512,7 @@ class WorkflowSubmissionStore:
                                 raise WorkflowActivationError('workflow_author_handoff_operation_conflict')
                             receipt = self._projection(conn, row, capture, replayed=True)
                         else:
+                            refuse_document_review()
                             row = self._reservation(conn, intent, command, candidate, capture)
                             _insert(conn, 'workflow_author_handoffs', row)
                             validate_workflow_schema(conn, expected_org_slug=self.org.slug)
@@ -670,6 +672,7 @@ class WorkflowSubmissionStore:
                                              pins=proof['pins'], source_result_id=result['id'])
         if candidate.review_key != projected.review_key:
             raise ValueError('workflow_author_handoff_storage_corrupt')
+        refuse_document_review()
         _insert(conn, 'workflow_submissions', submission)
         operation = dict(submission_id=row['submission_id'], org_slug=self.org.slug, principal=row['principal'],
                          operation_key=row['operation_key'], request_digest=row['request_digest'], instance_id=row['instance_id'],
@@ -736,7 +739,12 @@ class WorkflowSubmissionStore:
                 return
             ids = [r[0] for r in self.db._conn.execute('SELECT id FROM workflow_author_handoffs WHERE source_task_id=?', (task_id,))]
         for handoff_id in ids:
-            tasks = self.org.workflow_drafts._on_loop(self.consume_completed_handoff(handoff_id))
+            try:
+                tasks = self.org.workflow_drafts._on_loop(self.consume_completed_handoff(handoff_id))
+            except WorkflowActivationError as exc:
+                if exc.code != DOCUMENT_REVIEW_RETIRED:
+                    raise
+                continue
             queue = getattr(self.org.orchestrator, '_queue', None)
             if queue is not None:
                 for reviewer_task in tasks:
@@ -1054,6 +1062,10 @@ class WorkflowSubmissionStore:
         for handoff_id in handoffs:
             try:
                 tasks = await self.consume_completed_handoff(handoff_id)
+            except WorkflowActivationError as exc:
+                if exc.code != DOCUMENT_REVIEW_RETIRED:
+                    raise
+                continue
             except WorkflowAuthorityError as exc:
                 if exc.code != 'workflow_activation_authority_stale':
                     raise

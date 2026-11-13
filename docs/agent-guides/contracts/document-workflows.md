@@ -1,5 +1,31 @@
 # Workflow foundation and document-review contracts
 
+## Older document-review admission retired — THR-336 msg157 (P1a)
+
+This status supersedes the fresh-work availability instructions below for legacy
+product-design compiler@1, document compiler@2/@3 and artifact compiler@4 document
+work. After existing identity/access, parse, corruption and immutable replay
+checks, fresh activation and return-to-author refuse before task/instance
+allocation with `workflow_document_review_retired` (HTTP 409), owner `founder`,
+required_action `The older document-review workflow is retired; no new review can start or advance.`
+The existing @4 code-unavailable refusal keeps precedence.
+
+Fresh author/revision staging, r1/r2 graph creation (including cold discovery),
+reviewer claim/launch, findings staging and human signing are fenced before
+effects. Human signing refuses before collection even on a matched saved command.
+Native completed/discovery paths suppress only the named creation refusal;
+corruption still propagates and later rows/settlement remain reachable.
+Exact immutable activation/revision/stage replay, authorized historical/selected
+reads, authentic committed-evidence receipt/collection settlement and native
+terminal/cancel/handle ownership remain. No schema, stored status/event, closed
+held-reason enum, template/role/authority validator or startup/history reader changes.
+
+The existing route/CLI instructions remain historical syntax until P1b removes
+the review mutation transports; P2 removes the signing web mirror. An active or
+unfulfilled old-lane record is a stop-and-surface case before rollout, requiring
+a separate disposition. Sequential document visits, Coding v1 and ordinary
+independent code review remain separate and unchanged.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked
