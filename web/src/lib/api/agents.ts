@@ -15,6 +15,7 @@ import { request } from './client';
 import type {
   AgentEnrollment,
   AgentSummary,
+  RetireAgentReceipt,
   CleanupActivity,
   MemoryEntry,
   MemoryEntrySummary,
@@ -185,3 +186,10 @@ export const setAgentSystemPrompt = (
   body: SystemPromptBody,
 ): Promise<SystemPromptReceipt> =>
   request(`/orgs/${slug}/agents/${agentName}/system-prompt`, { method: 'PUT', body });
+
+/** Founder-only preservation retirement, including an eligible empty manager team. */
+export const retireAgent = (
+  slug: string,
+  agentName: string,
+): Promise<RetireAgentReceipt> =>
+  request(`/orgs/${slug}/agents/${agentName}/retire`, { method: 'POST' });

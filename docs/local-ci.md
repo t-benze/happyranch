@@ -2683,3 +2683,17 @@ No new CI check, trigger, Jenkins configuration or dependency is introduced.
 Frozen Mac-app acceptance and native execution remain separate evidence.
 The API declarations are unchanged; check the existing OpenAPI snapshot. The old
 web OpenAPI-coverage Vitest file was removed with THR-343 and is not restored.
+
+
+Focused agent-retirement observation (TASK-15793 / THR-296): run
+`uv run --frozen --python 3.14 python scripts/test_agent_retirement.py`.
+The standalone checks drive the shipping FastAPI app through ASGI on temporary
+synthetic orgs and real SQLite/registry/authority stores, without lifespan,
+listeners, workers, executors or live roster writes. They cover Founder auth,
+archive preservation, busy/member/routing/team-task refusal, worker→manager
+removal and published authority/cache coherence, compensation on failure, and
+unchanged manager-session termination. Test-side faults isolate native cleanup
+and archive failures; they add no production seam. This is not pytest, retired
+units, general integration or Product E2E. Real daemon/CLI/UI acceptance remains
+a separate independent QA gate. Web `openapi-coverage.test.ts` was retired under
+THR-343; preserve the OpenAPI snapshot and TS client mirror, with Web static CI.

@@ -16,7 +16,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Coroutine, Literal, TypeVar
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, StrictStr, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
@@ -28,7 +28,7 @@ from runtime.identities.schema import NamingError
 from runtime.daemon.agent_config import (
     load_agent_config,
 )
-from runtime.daemon.auth import require_token
+from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.infrastructure.audit_logger import AuditLogger
@@ -68,6 +68,8 @@ from runtime.orchestrator.workspace_adapters import (
 )
 
 router = APIRouter(dependencies=[require_token()])
+# Human dependency owns the 403 envelope, including missing/invalid bearer.
+founder_router = APIRouter(dependencies=[Depends(_require_human)])
 
 
 def _executor_switch_materialize(
@@ -971,249 +973,253 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         return {"ok": True}
 
     elif body.action == ManageAgentAction.terminate:
-        existing = prompt_loader.load_agent(paths, body.name)
-        if existing is None:
-            raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
+        await _terminate_agent(
+            org, body.name, scope_id=scope_id, source=source, actor=manager_name,
+            manager_team=manager_team,
+        )
+        return {"ok": True, "status": "terminated"}
 
-        # Only non-manager workers may be terminated. Removing a manager would
-        # corrupt the team hierarchy.
-        if existing.role == "manager":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "manager_terminate_forbidden",
-                    "name": body.name,
-                    "reason": "terminating a team manager is not allowed",
-                },
+    raise HTTPException(status_code=422, detail=f"unknown action: {body.action}")
+
+
+def _validate_founder_retirement(org: OrgState, agent: AgentDef) -> None:
+    """Refuse manager removal before any archive/team/cleanup mutation."""
+    if agent.role != "manager":
+        return
+    team = org.teams.team_for_manager(agent.name)
+    if team is None or team != agent.team:
+        raise HTTPException(status_code=409, detail={
+            "code": "manager_team_incoherent", "name": agent.name, "team": agent.team,
+        })
+    manager = org.teams.manager_for_team(team)
+    if manager.kind != "agent" or manager.name != agent.name:
+        raise HTTPException(status_code=409, detail={"code": "manager_team_incoherent", "team": team})
+    if manager.workers:
+        raise HTTPException(status_code=409, detail={
+            "code": "team_not_empty", "team": team, "members": list(manager.workers),
+            "message": "Retire or resolve every worker, including pending enrollments, first.",
+        })
+    for pointer, code in (("default_team", "default_team_retire_forbidden"),
+                          ("task_default_team", "task_default_team_retire_forbidden")):
+        if getattr(org.teams, pointer) == team:
+            raise HTTPException(status_code=409, detail={
+                "code": code, "team": team,
+                "message": f"Change {pointer} through supported org configuration before retiring this team.",
+            })
+    # Query by team, independently of assigned_agent: a task may belong to a
+    # different executable owner. Limit only the diagnostic, never the predicate.
+    tasks = org.db.execute(
+        "SELECT id, status FROM tasks WHERE team = ? "
+        "AND status IN ('pending', 'in_progress', 'escalated') ORDER BY id LIMIT 100",
+        (team,),
+    ).fetchall()
+    if tasks:
+        raise HTTPException(status_code=409, detail={
+            "code": "team_has_open_tasks", "team": team,
+            "conflicts": [{"kind": "task", "id": row["id"], "status": row["status"]} for row in tasks],
+            "message": "Resolve this team's non-terminal tasks before retiring its manager.",
+        })
+
+
+async def _terminate_agent(
+    org: OrgState, name: str, *, scope_id: str, source: str, actor: str,
+    manager_team: str | None = None, founder: bool = False,
+) -> tuple[AgentDef, bool]:
+    """Shared preservation path; manager-session policy and audit stay unchanged."""
+    paths = OrgPaths(root=org.root)
+    existing = prompt_loader.load_agent(paths, name)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"agent {name!r} not found")
+
+    # Manager sessions retain the worker-only termination contract.
+    if existing.role == "manager" and not founder:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "manager_terminate_forbidden",
+                "name": name,
+                "reason": "terminating a team manager is not allowed",
+            },
+        )
+
+    # Enforce quiescence before any destructive archive step. Active work
+    # is never killed, cancelled, reassigned, or silently mutated.
+    if founder:
+        _validate_founder_retirement(org, existing)
+    conflicts = _collect_quiescence_conflicts(org, name)
+    if conflicts:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "agent_not_quiescent",
+                "name": name,
+                "conflicts": conflicts,
+            },
+        )
+
+    # Preflight archive collision and move feasibility BEFORE any state
+    # mutation. If the active AgentDef or workspace cannot be archived, we
+    # must return 409/500 with the agent still fully active: team
+    # membership, armed schedules, pending wakes/dreams, and unstarted
+    # invocations untouched.
+    active_path = paths.agents_dir / f"{name}.md"
+    terminated_agents_dir = _terminated_agents_dir(paths)
+    terminated_agents_dir.mkdir(parents=True, exist_ok=True)
+    terminated_agent_path = terminated_agents_dir / f"{name}.md"
+    if terminated_agent_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "archive_collision",
+                "name": name,
+                "reason": "a terminated agent file already exists",
+            },
+        )
+
+    workspace = paths.workspaces_dir / name
+    terminated_workspace_dir = _terminated_workspaces_dir(paths)
+    terminated_workspace_dir.mkdir(parents=True, exist_ok=True)
+    terminated_workspace = terminated_workspace_dir / name
+    workspace_exists = workspace.exists()
+    if workspace_exists and terminated_workspace.exists():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "archive_collision",
+                "name": name,
+                "reason": "a terminated workspace already exists",
+            },
+        )
+    if workspace_exists and not workspace.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "workspace_archive_failed",
+                "name": name,
+                "reason": "workspace path is not a directory",
+            },
+        )
+    if workspace_exists and not os.access(terminated_workspace_dir, os.W_OK):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "workspace_archive_failed",
+                "name": name,
+                "reason": "terminated workspace directory is not writable",
+            },
+        )
+
+    async with (
+        _consumer_writer_interval(
+            org, publisher="founder_retire" if founder else "manage_agent_terminate", consumer=name,
+        ) as authority_change,
+        org.teams_lock,
+    ):
+        with authority_change.validation():
+            # The outer checks make ordinary refusals cheap, but this await
+            # permits another accepted writer to change the canonical file,
+            # its role, or archive/workspace occupancy.  Refresh precisely
+            # those facts before this synchronous archive/cleanup segment.
+            loaded = prompt_loader.load_agent_snapshot(paths, name)
+            if loaded is None:
+                raise HTTPException(status_code=404, detail=f"agent {name!r} not found")
+            existing, _current_revision, archived_agent_bytes = loaded
+            if existing.role == "manager" and not founder:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "manager_terminate_forbidden",
+                        "name": name,
+                        "reason": "terminating a team manager is not allowed",
+                    },
+                )
+            agent_team = org.teams.team_for_agent(name) if org.teams is not None else None
+            if not founder and agent_team != manager_team:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "cross_team_forbidden",
+                        "caller_team": manager_team,
+                        "agent_team": agent_team,
+                    },
+                )
+
+            if founder:
+                _validate_founder_retirement(org, existing)
+                org.workflow_authority.capture_canonical_snapshot()
+                manager_team = agent_team
+
+            # Re-check quiescence under the lock: new live work may have been
+            # assigned between the outer check and lock acquisition.
+            conflicts = _collect_quiescence_conflicts(org, name)
+            if conflicts:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "agent_not_quiescent",
+                        "name": name,
+                        "conflicts": conflicts,
+                    },
+                )
+
+            if terminated_agent_path.exists():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "archive_collision",
+                        "name": name,
+                        "reason": "a terminated agent file already exists",
+                    },
+                )
+            workspace_exists = workspace.exists()
+            if workspace_exists and terminated_workspace.exists():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "archive_collision",
+                        "name": name,
+                        "reason": "a terminated workspace already exists",
+                    },
+                )
+            if workspace_exists and not workspace.is_dir():
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "code": "workspace_archive_failed",
+                        "name": name,
+                        "reason": "workspace path is not a directory",
+                    },
+                )
+            if workspace_exists and not os.access(terminated_workspace_dir, os.W_OK):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "code": "workspace_archive_failed",
+                        "name": name,
+                        "reason": "terminated workspace directory is not writable",
+                    },
+                )
+
+        # Archive the filesystem identity FIRST. If this fails, no DB or
+        # team mutation has occurred yet, so the agent remains fully active.
+        # POSIX rename overwrites an existing destination.  The preceding
+        # final preflight is the supported daemon guarantee here: writers
+        # that await use teams_lock, while synchronous no-await event-loop
+        # writers cannot interleave this archive/cleanup segment. It does
+        # not make a claim about external same-UID or multiprocess writers.
+        team_retired = founder and existing.role == "manager"
+        original_teams = None
+        if founder:
+            from runtime.orchestrator.teams import TeamsRegistry
+            original_teams = TeamsRegistry.from_bytes(
+                (org.root / "org" / "teams.yaml").read_bytes(), root=org.root,
             )
-
-        # Enforce quiescence before any destructive archive step. Active work
-        # is never killed, cancelled, reassigned, or silently mutated.
-        conflicts = _collect_quiescence_conflicts(org, body.name)
-        if conflicts:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "agent_not_quiescent",
-                    "name": body.name,
-                    "conflicts": conflicts,
-                },
-            )
-
-        # Preflight archive collision and move feasibility BEFORE any state
-        # mutation. If the active AgentDef or workspace cannot be archived, we
-        # must return 409/500 with the agent still fully active: team
-        # membership, armed schedules, pending wakes/dreams, and unstarted
-        # invocations untouched.
-        active_path = paths.agents_dir / f"{body.name}.md"
-        terminated_agents_dir = _terminated_agents_dir(paths)
-        terminated_agents_dir.mkdir(parents=True, exist_ok=True)
-        terminated_agent_path = terminated_agents_dir / f"{body.name}.md"
-        if terminated_agent_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "archive_collision",
-                    "name": body.name,
-                    "reason": "a terminated agent file already exists",
-                },
-            )
-
-        workspace = paths.workspaces_dir / body.name
-        terminated_workspace_dir = _terminated_workspaces_dir(paths)
-        terminated_workspace_dir.mkdir(parents=True, exist_ok=True)
-        terminated_workspace = terminated_workspace_dir / body.name
-        workspace_exists = workspace.exists()
-        if workspace_exists and terminated_workspace.exists():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "archive_collision",
-                    "name": body.name,
-                    "reason": "a terminated workspace already exists",
-                },
-            )
-        if workspace_exists and not workspace.is_dir():
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "code": "workspace_archive_failed",
-                    "name": body.name,
-                    "reason": "workspace path is not a directory",
-                },
-            )
-        if workspace_exists and not os.access(terminated_workspace_dir, os.W_OK):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "code": "workspace_archive_failed",
-                    "name": body.name,
-                    "reason": "terminated workspace directory is not writable",
-                },
-            )
-
-        async with (
-            _consumer_writer_interval(
-                org, publisher="manage_agent_terminate", consumer=body.name,
-            ) as authority_change,
-            org.teams_lock,
-        ):
-            with authority_change.validation():
-                # The outer checks make ordinary refusals cheap, but this await
-                # permits another accepted writer to change the canonical file,
-                # its role, or archive/workspace occupancy.  Refresh precisely
-                # those facts before this synchronous archive/cleanup segment.
-                loaded = prompt_loader.load_agent_snapshot(paths, body.name)
-                if loaded is None:
-                    raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
-                existing, _current_revision, archived_agent_bytes = loaded
-                if existing.role == "manager":
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail={
-                            "code": "manager_terminate_forbidden",
-                            "name": body.name,
-                            "reason": "terminating a team manager is not allowed",
-                        },
-                    )
-                agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
-                if agent_team != manager_team:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail={
-                            "code": "cross_team_forbidden",
-                            "caller_team": manager_team,
-                            "agent_team": agent_team,
-                        },
-                    )
-
-                # Re-check quiescence under the lock: new live work may have been
-                # assigned between the outer check and lock acquisition.
-                conflicts = _collect_quiescence_conflicts(org, body.name)
-                if conflicts:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail={
-                            "code": "agent_not_quiescent",
-                            "name": body.name,
-                            "conflicts": conflicts,
-                        },
-                    )
-
-                if terminated_agent_path.exists():
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail={
-                            "code": "archive_collision",
-                            "name": body.name,
-                            "reason": "a terminated agent file already exists",
-                        },
-                    )
-                workspace_exists = workspace.exists()
-                if workspace_exists and terminated_workspace.exists():
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail={
-                            "code": "archive_collision",
-                            "name": body.name,
-                            "reason": "a terminated workspace already exists",
-                        },
-                    )
-                if workspace_exists and not workspace.is_dir():
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail={
-                            "code": "workspace_archive_failed",
-                            "name": body.name,
-                            "reason": "workspace path is not a directory",
-                        },
-                    )
-                if workspace_exists and not os.access(terminated_workspace_dir, os.W_OK):
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail={
-                            "code": "workspace_archive_failed",
-                            "name": body.name,
-                            "reason": "terminated workspace directory is not writable",
-                        },
-                    )
-
-            # Archive the filesystem identity FIRST. If this fails, no DB or
-            # team mutation has occurred yet, so the agent remains fully active.
-            # POSIX rename overwrites an existing destination.  The preceding
-            # final preflight is the supported daemon guarantee here: writers
-            # that await use teams_lock, while synchronous no-await event-loop
-            # writers cannot interleave this archive/cleanup segment. It does
-            # not make a claim about external same-UID or multiprocess writers.
-            with authority_change.canonical_change():
-                os.rename(active_path, terminated_agent_path)
-                if workspace_exists:
-                    try:
-                        _move_dir_atomically(workspace, terminated_workspace)
-                    except Exception:
-                        try:
-                            if (
-                                not active_path.exists()
-                                and terminated_agent_path.exists()
-                                and terminated_agent_path.read_bytes()
-                                == archived_agent_bytes
-                            ):
-                                os.rename(terminated_agent_path, active_path)
-                            else:
-                                logging.getLogger(__name__).warning(
-                                    "terminate workspace rollback conflict for %s; "
-                                    "canonical definition changed or disappeared",
-                                    body.name,
-                                )
-                        except OSError:
-                            logging.getLogger(__name__).exception(
-                                "failed to roll back agent file archive for %s", body.name,
-                            )
-                        raise HTTPException(
-                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail={
-                                "code": "workspace_archive_failed",
-                                "name": body.name,
-                            },
-                        )
-
-                # Remove team membership while still holding the lock. If the
-                # subsequent DB cleanup fails, we roll this back together with the
-                # filesystem archive.
-                org.teams.remove_worker(manager_team, body.name)
-
-                # Atomically cancel armed schedules, skip pending wakes/dreams, and
-                # decline unstarted invocations. A failure here rolls back the team
-                # and filesystem archive so the agent stays active and consistent.
+        with authority_change.canonical_change():
+            os.rename(active_path, terminated_agent_path)
+            if workspace_exists:
                 try:
-                    org.db.terminate_agent_cleanups(
-                        body.name,
-                        audit_scope_id=scope_id,
-                        audit_agent=manager_name,
-                    )
+                    _move_dir_atomically(workspace, terminated_workspace)
                 except Exception:
-                    _logger = logging.getLogger(__name__)
-                    _logger.exception(
-                        "terminate cleanup failed for %s; rolling back archive",
-                        body.name,
-                    )
-                    # Roll back team membership first.
-                    try:
-                        org.teams.add_worker(manager_team, body.name)
-                    except Exception:
-                        _logger.exception(
-                            "failed to roll back team membership for %s",
-                            body.name,
-                        )
-                    # Roll back the filesystem archive.
-                    try:
-                        if workspace_exists and terminated_workspace.exists():
-                            _move_dir_atomically(terminated_workspace, workspace)
-                    except Exception:
-                        _logger.exception(
-                            "failed to roll back workspace archive for %s",
-                            body.name,
-                        )
                     try:
                         if (
                             not active_path.exists()
@@ -1223,34 +1229,131 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                         ):
                             os.rename(terminated_agent_path, active_path)
                         else:
-                            _logger.warning(
-                                "terminate cleanup rollback conflict for %s; "
+                            logging.getLogger(__name__).warning(
+                                "terminate workspace rollback conflict for %s; "
                                 "canonical definition changed or disappeared",
-                                body.name,
+                                name,
                             )
                     except OSError:
-                        _logger.exception(
-                            "failed to roll back agent file archive for %s",
-                            body.name,
+                        logging.getLogger(__name__).exception(
+                            "failed to roll back agent file archive for %s", name,
                         )
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail={
-                            "code": "terminate_cleanup_failed",
-                            "name": body.name,
+                            "code": "workspace_archive_failed",
+                            "name": name,
                         },
                     )
 
-        audit.log_agent_managed(
-            scope_id=scope_id,
-            action="terminate",
-            name=body.name,
-            source=source,
-            actor=manager_name,
-        )
-        return {"ok": True, "status": "terminated"}
+            # Remove team membership while still holding the lock. If the
+            # subsequent DB cleanup fails, we roll this back together with the
+            # filesystem archive.
+            if not founder:
+                org.teams.remove_worker(manager_team, name)
 
-    raise HTTPException(status_code=422, detail=f"unknown action: {body.action}")
+            # Atomically cancel armed schedules, skip pending wakes/dreams, and
+            # decline unstarted invocations. A failure here rolls back the team
+            # and filesystem archive so the agent stays active and consistent.
+            try:
+                if founder:
+                    if team_retired:
+                        org.teams.remove_team(manager_team)
+                    else:
+                        org.teams.remove_worker(manager_team, name)
+                    # Check both the canonical file and shared cache before DB
+                    # cleanup commits. Team-keyed policy/history rows stay intact.
+                    org.workflow_authority.capture_canonical_snapshot()
+                org.db.terminate_agent_cleanups(
+                    name,
+                    audit_scope_id=scope_id,
+                    audit_agent=actor,
+                )
+            except Exception:
+                _logger = logging.getLogger(__name__)
+                _logger.exception(
+                    "terminate cleanup failed for %s; rolling back archive",
+                    name,
+                )
+                # Roll back team membership first.
+                try:
+                    if original_teams is not None:
+                        original_teams.save()
+                        org.teams.adopt_canonical(original_teams)
+                    else:
+                        org.teams.add_worker(manager_team, name)
+                except Exception:
+                    _logger.exception(
+                        "failed to roll back team membership for %s",
+                        name,
+                    )
+                # Roll back the filesystem archive.
+                try:
+                    if workspace_exists and terminated_workspace.exists():
+                        _move_dir_atomically(terminated_workspace, workspace)
+                except Exception:
+                    _logger.exception(
+                        "failed to roll back workspace archive for %s",
+                        name,
+                    )
+                try:
+                    if (
+                        not active_path.exists()
+                        and terminated_agent_path.exists()
+                        and terminated_agent_path.read_bytes()
+                        == archived_agent_bytes
+                    ):
+                        os.rename(terminated_agent_path, active_path)
+                    else:
+                        _logger.warning(
+                            "terminate cleanup rollback conflict for %s; "
+                            "canonical definition changed or disappeared",
+                            name,
+                        )
+                except OSError:
+                    _logger.exception(
+                        "failed to roll back agent file archive for %s",
+                        name,
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "code": "terminate_cleanup_failed",
+                        "name": name,
+                    },
+                )
+
+    AuditLogger(org.db).log_agent_managed(
+        scope_id=scope_id,
+        action="terminate",
+        name=name,
+        source=source,
+        actor=actor,
+    )
+    return existing, team_retired
+
+
+
+class RetireAgentReceipt(BaseModel):
+    ok: Literal[True] = True
+    status: Literal["terminated"] = "terminated"
+    name: str
+    role: Literal["worker", "manager"]
+    team: str
+    team_retired: bool
+
+
+@founder_router.post("/agents/{agent_name}/retire", response_model=RetireAgentReceipt)
+async def retire_agent(slug: str, agent_name: str, org: OrgDep) -> RetireAgentReceipt:
+    """Archive an idle agent; an empty non-routing agent-managed team retires too."""
+    if not _VALID_AGENT_NAME.fullmatch(agent_name):
+        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+    agent, team_retired = await _terminate_agent(
+        org, agent_name, scope_id="founder", source="founder", actor="founder", founder=True,
+    )
+    return RetireAgentReceipt(
+        name=agent.name, role=agent.role, team=agent.team, team_retired=team_retired,
+    )
 
 
 @router.post("/agents")

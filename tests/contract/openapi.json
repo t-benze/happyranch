@@ -826,6 +826,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/retire": {
+      "POST": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/system-prompt": {
       "PUT": {
         "params": [

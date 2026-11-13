@@ -1809,3 +1809,12 @@ export interface CodingSettingsOptions {
   repository_choices: Omit<CodingConfiguration['repository_references'][number], 'object_format'>[];
   object_formats: ['sha1', 'sha256'];
 }
+
+export interface RetireAgentReceipt {
+  ok: true;
+  status: 'terminated';
+  name: string;
+  role: 'worker' | 'manager';
+  team: string;
+  team_retired: boolean;
+}
