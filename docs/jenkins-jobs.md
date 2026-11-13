@@ -26,7 +26,10 @@ The freezer separately hash-installs the editable backend closure without
 changing runtime manifests/uv.lock. A source preflight does not
 prove a packaged-app build or acceptance result. Downloads record bounded per-origin
 curl exit/stderr/timing metrics, with queries/credentials omitted. Ordered
-official origins share the same hash pin and original 240s budget; no proxy or
+official origins share the same hash pin and original 90s/artifact, 240s total
+budget. Attempts use remaining time with small fallback reserves and resume the
+same pinned partial file; a bad hash deletes it and refuses extraction. File
+byte deltas/elapsed time and available metrics survive deadline kills. No proxy or
 host/job change is permitted. Before downloads, non-gating executor CLI version
 and exit-only auth status are observed on the fixed host PATH with isolated HOME
 (host-stored login unverified); no session starts. Build 19 failed with curl 28

@@ -16,7 +16,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from scripts.mac_native.toolchain import (
-    METRICS, STDERR_CAP, PINS, curl_attempt, environment, parse_pins, provision, verify_checksum,
+    DOWNLOAD_CAP, METRICS, STDERR_CAP, PINS, curl_attempt, environment, parse_pins, provision, verify_checksum,
 )
 
 
@@ -63,7 +63,7 @@ class ProvisioningTests(unittest.TestCase):
             with patch("scripts.mac_native.toolchain.curl_attempt", side_effect=download):
                 with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
                     provision(root, parse_pins(PINS.read_text()), time.monotonic() + 5)
-            self.assertEqual([p.name for p in root.iterdir()], ["uv.tar.gz"])
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_verified_archives_enforce_member_bounds(self) -> None:
         pins = parse_pins(PINS.read_text())
@@ -84,9 +84,15 @@ class ProvisioningTests(unittest.TestCase):
 
         def download(url: str, path: Path, *_args: object) -> dict:
             if url == pins["go"]["origins"][0]:
-                path.write_bytes(b"partial")
+                path.write_bytes(payloads["go"][:20])
                 return {"curl_exit_code": 28}
-            path.write_bytes(payloads[path.name.split(".")[0]])
+            if url == pins["go"]["origins"][1]:
+                self.assertTrue(path.exists(), "fallback must retain the pinned artifact's partial")
+                self.assertEqual(path.read_bytes(), payloads["go"][:20])
+                with path.open("ab") as handle:
+                    handle.write(payloads["go"][20:])
+            else:
+                path.write_bytes(payloads[path.name.split(".")[0]])
             return {"curl_exit_code": 0}
 
         with tempfile.TemporaryDirectory() as directory:
@@ -139,12 +145,13 @@ class ProvisioningTests(unittest.TestCase):
                 attempts, calls = [], []
 
                 def download(url: str, archive: Path, seconds: float, deadline: float) -> dict:
-                    # A failed partial must not contaminate the next origin.
-                    self.assertFalse(archive.exists())
-                    self.assertLessEqual(seconds, 30)
+                    self.assertEqual(archive.read_bytes() if archive.exists() else b"",
+                                     b"synthetic untrusted archive" * len(calls))
+                    self.assertLessEqual(seconds, 5)
                     self.assertLessEqual(deadline, overall)
                     calls.append(url)
-                    archive.write_bytes(b"synthetic untrusted archive")
+                    with archive.open("ab") as handle:
+                        handle.write(b"synthetic untrusted archive")
                     code = 0 if success_on_second and len(calls) == 2 else 28
                     return {"curl_exit_code": code, "stderr_tail": "curl: (28) SSL connection timeout"}
 
@@ -161,6 +168,32 @@ class ProvisioningTests(unittest.TestCase):
                 self.assertIn("SSL connection timeout", attempts[0]["stderr_tail"])
                 tar_open.assert_not_called()
                 self.assertFalse((root / "go").exists())
+                if success_on_second:
+                    self.assertFalse((root / "go.tar.gz").exists())
+
+    def test_attempts_use_remaining_budget_with_small_fallback_reserve(self) -> None:
+        pins = parse_pins(PINS.read_text())
+        for bound, early_failure, expected in ((240, False, [80, 8, 2]),
+                                               (240, True, [80, 84.5, 5]),
+                                               (30, False, [24, 4.8, 1.2])):
+            with self.subTest(bound=bound, early_failure=early_failure), tempfile.TemporaryDirectory() as directory:
+                clock, budgets = [1000.0], []
+
+                def download(_url: str, _archive: Path, seconds: float, deadline: float) -> dict:
+                    self.assertEqual(deadline, 1000 + min(bound, 90))
+                    self.assertLessEqual(clock[0] + seconds, deadline)
+                    budgets.append(seconds)
+                    clock[0] += .5 if early_failure and len(budgets) == 1 else seconds
+                    return {"curl_exit_code": 28}
+
+                with (patch("scripts.mac_native.toolchain.time.monotonic", side_effect=lambda: clock[0]),
+                      patch("scripts.mac_native.toolchain.curl_attempt", side_effect=download)):
+                    with self.assertRaisesRegex(RuntimeError, "all official origins failed"):
+                        provision(Path(directory).resolve() / "tools", {"go": pins["go"], **{k: pins[k] for k in ("uv", "node")}},
+                                  1000 + bound)
+                self.assertEqual(len(budgets), 3)
+                for actual, wanted in zip(budgets, expected):
+                    self.assertAlmostEqual(actual, wanted)
 
     def test_curl_retains_bounded_metrics_without_secrets_and_reaps_timeout(self) -> None:
         real_popen = subprocess.Popen
@@ -171,36 +204,53 @@ class ProvisioningTests(unittest.TestCase):
                   "curl: (35) https://user:synthetic-password@example.test/?token=synthetic-token\n"
                   "curl: (28) Operation timed out after 10000 milliseconds with 123 bytes received\n")
         calls = []
-        script = "import sys; sys.stdout.write(" + repr("\n".join(values) + "\n") + "); sys.stderr.write(" + repr(stderr) + "); sys.exit(28)"
+        script = ("import pathlib,sys; p=pathlib.Path(sys.argv[sys.argv.index('--output')+1]); "
+                  "p.open('ab').write(b'x'*123); sys.stdout.write(" + repr("\n".join(values) + "\n")
+                  + "); sys.stderr.write(" + repr(stderr) + "); sys.exit(28)")
 
         def launch(argv: list[str], **kwargs: object) -> subprocess.Popen:
             calls.append(argv)
-            return real_popen([sys.executable, "-c", script], **kwargs)
+            return real_popen([sys.executable, "-c", script, *argv[1:]], **kwargs)
 
         with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "go.tar.gz"
+            archive.write_bytes(b"prefix")
             with patch("scripts.mac_native.toolchain.subprocess.Popen", side_effect=launch):
                 row = curl_attempt("https://go.dev/dl/go1.23.12.darwin-arm64.tar.gz",
-                                   Path(directory) / "go.tar.gz", 2, time.monotonic() + 3)
+                                   archive, 2, time.monotonic() + 3)
             self.assertEqual(row["curl_exit_code"], 28)
             self.assertEqual(set(row["metrics"]), set(METRICS))
             self.assertEqual(row["metrics"]["url_effective"], "https://release-assets.githubusercontent.com/[path omitted]")
             self.assertEqual(row["metrics"]["remote_ip"], "192.0.2.1")
             self.assertEqual(row["metrics"]["time_total"], "10.01")
             self.assertEqual(row["metrics"]["size_download"], "123")
+            self.assertEqual(row["resume_from_bytes"], 6)
+            self.assertEqual(row["bytes_received"], 123)
+            self.assertEqual(row["archive_bytes"], 129)
+            self.assertGreater(row["elapsed_seconds"], 0)
             self.assertIn("10000 milliseconds with 123 bytes", row["stderr_tail"])
             self.assertLessEqual(len(row["stderr_tail"].encode()), STDERR_CAP)
             self.assertNotIn("synthetic-", json.dumps(row))
             argv = calls[0]
             self.assertEqual(argv[:2], ["/usr/bin/curl", "-q"])
             for flag, value in (("--proto", "=https"), ("--proto-redir", "=https"),
-                                ("--proxy", ""), ("--connect-timeout", "10"), ("--max-time", "2")):
+                                ("--proxy", ""), ("--connect-timeout", "10"), ("--max-time", "2"),
+                                ("--max-filesize", str(DOWNLOAD_CAP - 6)),
+                                ("--continue-at", "-")):
                 self.assertEqual(argv[argv.index(flag) + 1], value)
-            script = "import time; time.sleep(10)"
+            script = ("import pathlib,sys,time; p=pathlib.Path(sys.argv[sys.argv.index('--output')+1]); "
+                      "p.write_bytes(b'partial'); sys.stdout.write('200\\nhttps://go.dev/\\n'); "
+                      "sys.stdout.flush(); time.sleep(10)")
             with patch("scripts.mac_native.toolchain.subprocess.Popen", side_effect=launch):
-                row = curl_attempt("https://go.dev/", Path(directory) / "timeout", 1, time.monotonic() + .05)
+                row = curl_attempt("https://go.dev/", Path(directory) / "timeout", 1, time.monotonic() + .3)
             self.assertEqual(row["error"], "TimeoutError")
             self.assertEqual(row["curl_exit_code"], -9)
-            self.assertTrue(all(value is None for value in row["metrics"].values()))
+            self.assertEqual(row["metrics"]["http_code"], "200")
+            self.assertIsNone(row["metrics"]["size_download"])
+            self.assertEqual(row["resume_from_bytes"], 0)
+            self.assertEqual(row["bytes_received"], 7)
+            self.assertEqual(row["archive_bytes"], 7)
+            self.assertGreaterEqual(row["elapsed_seconds"], .3)
 
 
 if __name__ == "__main__":

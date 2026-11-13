@@ -131,7 +131,10 @@ increases only timeout 30->90min and per-file cap 32->256MiB; other caps stay fi
 Build 19 reached the first Go download but failed with curl 28; readiness is
 unproven. The source preflight now records bounded per-origin curl exit/stderr
 and metrics, uses ordered official Go origins with the same SHA256 pin and
-240s provisioning budget, and records non-gating executor version/exit-only
+unchanged 90s/artifact, 240s provisioning budget. Attempts use remaining time
+with small fallback reserves and resume the same pinned partial; a bad final
+hash deletes it and refuses extraction. Deadline-kill diagnostics retain file
+byte deltas/elapsed time and available curl metrics. It records non-gating executor version/exit-only
 auth status on the fixed host PATH before downloads. Isolated HOME is preserved;
 host-stored login and a real session remain unverified. No proxy, host/job change
 or credential workaround is permitted. No app build/run occurs in that preflight. See the [probe contract](../ci/jenkins/mac-native-probe/README.md).

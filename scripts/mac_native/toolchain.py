@@ -145,14 +145,19 @@ def stderr_tail(raw: bytes) -> str:
 
 def curl_attempt(url: str, archive: Path, seconds: float, deadline: float) -> dict[str, Any]:
     """Stream bounded diagnostics without retaining headers, cookies or curl config."""
+    started = time.monotonic()
+    initial_bytes = archive.stat().st_size if archive.exists() else 0
+    if initial_bytes >= DOWNLOAD_CAP:
+        raise ValueError("toolchain download size cap")
     argv = ["/usr/bin/curl", "-q", "--fail", "--silent", "--show-error",
             "--location", "--max-redirs", "3", "--proto", "=https",
             "--proto-redir", "=https", "--noproxy", "*", "--proxy", "",
             "--connect-timeout", "10", "--max-time", str(seconds),
-            "--max-filesize", str(DOWNLOAD_CAP), "--output", str(archive),
+            "--max-filesize", str(DOWNLOAD_CAP - initial_bytes), "--continue-at", "-", "--output", str(archive),
             "--write-out", "".join(f"%{{{key}}}\n" for key in METRICS), url]
-    row: dict[str, Any] = {"url": url, "curl_exit_code": None, "max_time_seconds": seconds}
-    deadline = min(deadline, time.monotonic() + seconds + 1)
+    row: dict[str, Any] = {"url": url, "curl_exit_code": None, "max_time_seconds": seconds,
+                           "resume_from_bytes": initial_bytes}
+    deadline = min(deadline, started + seconds + 1)
     output, errors = bytearray(), bytearray()
     child = None
     try:
@@ -183,22 +188,46 @@ def curl_attempt(url: str, archive: Path, seconds: float, deadline: float) -> di
                 pass
             child.wait(timeout=2)
             row["curl_exit_code"] = child.returncode
+            # A deadline may race with curl's final write-out. Drain already
+            # available pipe bytes after reaping, without another blocking wait.
+            for stream, buffer, cap, tail in ((child.stdout, output, METRICS_CAP, False),
+                                              (child.stderr, errors, STDERR_CAP, True)):
+                os.set_blocking(stream.fileno(), False)
+                for _ in range(16):  # at most 64KiB per pipe after the kill
+                    try:
+                        block = os.read(stream.fileno(), 4096)
+                    except BlockingIOError:
+                        break
+                    if not block:
+                        break
+                    if tail:
+                        buffer.extend(block)
+                        del buffer[:-cap]
+                    else:
+                        buffer.extend(block[:max(0, cap - len(buffer))])
             child.stdout.close()
             child.stderr.close()
         row["stderr_tail"] = stderr_tail(bytes(errors))
-    values = output.decode("ascii", errors="replace").splitlines()
+        row["elapsed_seconds"] = time.monotonic() - started
+        try:
+            row["archive_bytes"] = archive.stat().st_size if archive.exists() else 0
+            row["bytes_received"] = max(0, row["archive_bytes"] - initial_bytes)
+        except OSError:
+            row.update(archive_bytes=None, bytes_received=None)
+    # Each complete line is independently useful; a killed curl may emit only
+    # a prefix. Do not fabricate absent metrics from file or clock observations.
+    values = output.decode("ascii", errors="replace").split("\n")[:-1]
     metrics: dict[str, Any] = dict.fromkeys(METRICS)
-    if len(values) == len(METRICS):
-        for key, value in zip(METRICS, values):
-            if key == "url_effective":
-                metrics[key] = safe_url(value)
-            elif key == "remote_ip":
-                try:
-                    metrics[key] = str(ipaddress.ip_address(value))
-                except ValueError:
-                    pass
-            elif re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,9})?", value):
-                metrics[key] = value
+    for key, value in zip(METRICS, values):
+        if key == "url_effective":
+            metrics[key] = safe_url(value)
+        elif key == "remote_ip":
+            try:
+                metrics[key] = str(ipaddress.ip_address(value))
+            except ValueError:
+                pass
+        elif re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,9})?", value):
+            metrics[key] = value
     row["metrics"] = metrics
     return row
 
@@ -212,20 +241,30 @@ def provision(scratch: Path, pins: dict[str, dict[str, Any]], deadline: float,
     for name, row in pins.items():
         archive = scratch / f"{name}.tar.gz"
         download_deadline = min(deadline, time.monotonic() + 90)
-        for url in row["origins"]:
-            archive.unlink(missing_ok=True)  # every origin starts with zero bytes
-            seconds = min(90 / len(row["origins"]), remaining(download_deadline))
+        for index, url in enumerate(row["origins"]):
+            budget = remaining(download_deadline)
+            # Let a healthy origin finish. Reserve at most 5s per fallback,
+            # capped at 20% of the *remaining* artifact/provisioning budget.
+            fallbacks = len(row["origins"]) - index - 1
+            seconds = budget - min(5 * fallbacks, budget * .2)
             attempt = curl_attempt(url, archive, seconds, download_deadline)
             attempt.update(artifact=name, sha256_verified=False)
             if attempts is not None:
                 attempts.append(attempt)  # survives later failure in the probe JSON
+            if archive.exists() and archive.stat().st_size > DOWNLOAD_CAP:
+                archive.unlink()
+                raise ValueError("toolchain download size cap")
             if attempt["curl_exit_code"] != 0 or attempt.get("error"):
                 continue
             if not 0 < archive.stat().st_size <= DOWNLOAD_CAP:
                 raise ValueError("toolchain download size cap")
             # Each successful transport must pass the SAME pin before tar open.
             # A mismatch stops; no fallback can hide unexpected artifact contents.
-            verify_checksum(archive, row["sha256"], deadline)
+            try:
+                verify_checksum(archive, row["sha256"], deadline)
+            except ValueError:
+                archive.unlink()  # mismatched full or resumed bytes are never reused
+                raise
             attempt["sha256_verified"] = True
             break
         else:

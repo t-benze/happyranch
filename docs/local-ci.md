@@ -164,7 +164,10 @@ backend closure before building the editable root without backend isolation;
 runtime manifests/uv.lock remain unchanged. Newer Go compatibility remains unestablished.
 The reviewed template has 90min/256MiB per file; live application belongs to the
 manager. Build 19 failed with curl 28 on Go; native readiness remains unproven.
-Per-origin curl diagnostics, same-hash official Go fallback and non-gating
+Per-origin curl diagnostics include byte deltas/elapsed time after deadline kills.
+Official Go attempts use remaining time with small fallback reserves and resume
+the same pinned partial within unchanged 90s/artifact and 240s total bounds;
+a bad final hash deletes the file and refuses extraction. These and non-gating
 executor CLI version/exit-only auth status (isolated HOME, host login unverified)
 are source probe observations, not packaged proof. Portable parsing/checksum/PATH,
 transfer-diagnostic and tool-evidence checks run with

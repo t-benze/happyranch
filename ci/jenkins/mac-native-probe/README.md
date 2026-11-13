@@ -51,9 +51,12 @@ and Go **1.23.12** from official Darwin arm64 release tarballs. The exact URLs,
 SHA256 and official checksum sources are reviewed at `SOURCE_SHA` in
 [`toolchain-pins.json`](../../../scripts/mac_native/toolchain-pins.json).
 The source-side provisioner downloads directly with curl (10s connect, at most
-90s/artifact across its origins, 128MiB/attempt) inside one 240s provisioning
-budget. Each origin gets at most 90s divided by its artifact's origin count
-(Go: 30s); the process deadline allows up to 1s to collect curl's final metrics,
+90s/artifact across its origins, 128MiB per combined archive, with the resume
+offset subtracted from curl's transfer cap) inside one 240s provisioning
+budget. Each attempt uses the remaining artifact/provisioning time, reserving
+at most 5s per later origin and at most 20% of that remaining time for fallback
+(Go's first attempt: about 80s). Unspent time stays available to later origins.
+The process deadline allows up to 1s to collect curl's final metrics,
 clipped by the original artifact/provisioning deadlines. There are no curl
 retries, ambient proxies, curl config or credentials. It verifies SHA256 **before** opening each
 archive; a mismatch refuses extraction. Safe tar extraction also limits members
@@ -61,8 +64,10 @@ archive; a mismatch refuses extraction. Safe tar extraction also limits members
 reused; the existing job EXIT trap deletes them with its private scratch.
 
 Origins are attempted in pins-file order, once each. Every origin uses the same
-artifact SHA256; failed partial files are discarded before the next origin.
-A checksum mismatch stops immediately, without trying to hide it through fallback.
+artifact SHA256; curl [resumes](https://curl.se/docs/manpage.html#-C) the same
+partial file across these listed origins for that exact pinned artifact.
+There is no cross-artifact or cross-run reuse. A checksum mismatch deletes the
+file and stops immediately, without trying to hide it through fallback.
 
 | Artifact | Ordered official origins | Official source |
 | --- | --- | --- |
@@ -77,6 +82,12 @@ exit (including signal termination), bounded stderr tail (2048 bytes), all ten
 `-w` metrics, and whether the hash passed. Metrics are `http_code`, `url_effective`,
 `num_redirects`, `remote_ip`, `time_namelookup`, `time_connect`, `time_appconnect`,
 `time_starttransfer`, `time_total`, `size_download`. Unavailable metrics are null.
+Each attempt also records `resume_from_bytes`, `archive_bytes`, `bytes_received`
+(nonnegative file growth during this attempt) and `elapsed_seconds` from the
+local monotonic clock. These independent observations remain available after a
+deadline kill where file metadata is readable; they do not invent curl metrics.
+Already available complete metric lines are retained even after a partial
+write-out; kill-time pipe draining is nonblocking and capped at 64KiB per pipe.
 Only numeric metrics and validated IPs survive; effective URLs omit userinfo,
 query, fragment and unrecognized paths, including signed GitHub asset paths.
 Only recognized curl network-error lines survive in stderr; arbitrary messages

@@ -86,7 +86,11 @@ for scratch-only uv 0.12.21/Node 24.19.0 LTS/Go 1.23.12 provisioning and 90min/2
 This changes no signing-host prerequisites or release route. Build 19 failed on
 the first Go download (curl 28), so native readiness remains unproven. Source
 diagnostics retain bounded curl exit/stderr/timing metrics per official origin;
-ordered Go fallback shares the same hash pin and 240s budget. A non-gating
+ordered Go fallback shares the same hash pin and unchanged 90s/artifact, 240s
+total budget. Each attempt uses remaining time with small fallback reserves,
+resuming the same pinned partial. A bad hash deletes it and refuses extraction;
+deadline-kill diagnostics retain file byte deltas/elapsed time and available
+curl metrics. A non-gating
 executor version/exit-only auth observation precedes downloads on the fixed host
 PATH with isolated HOME; host-stored login and a real session remain unverified.
 No proxy, host/job change or new credential workaround is authorized. Preflight requires those
