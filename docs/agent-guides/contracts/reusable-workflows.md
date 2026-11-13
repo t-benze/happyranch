@@ -487,8 +487,20 @@ With no reserved sequential object, the selector ends only its own read
 snapshot before invoking the exact original expression with its original
 arguments. Legacy values, bytes, errors, transaction exits and source-reuse
 eligibility remain with that owner; the extra read-only selector SQL is
-observable. Sequential results bypass source reuse. Writer targets always read
-fresh after mutation, on the actual original cumulative retained budget.
+observable. Sequential results bypass reuse. Writer targets always read fresh after
+mutation, on the actual original cumulative retained budget. THR308seq426
+Decision 1 permits zero-write target reuse only at cutover recovery's final
+read, task-ownership installation's final read and naming installation's final
+admission. The same active OrgState.load guard, Database._conn and org must
+match every opening/pinned/closing bookend field (data_version, total_changes,
+main/TEMP schema versions, database_list, configuration, limits, factories and
+isolation/autocommit). Cutover owns a fresh BEGIN snapshot; ownership/naming
+borrow their existing BEGIN IMMEDIATE. Reuse never begins or rolls back those
+transactions. Any write, including the site's own install/recovery, or unavailable
+or changed observation runs its original full target callable and budget. A hit
+returns the identical cached complete result and charges as a source reuse hit;
+a target miss cannot seed complete-source reuse. Other targets and ordinary
+public reads retain their complete checks.
 Retained counter deltas are charged once to C, including refusals. Advances
 remain provisional until the complete read and snapshot exit succeed; an outer
 writer still owns publication after its own successful exit.

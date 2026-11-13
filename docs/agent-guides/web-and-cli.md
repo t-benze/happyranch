@@ -73,8 +73,10 @@ generic audit scan and process-local watermark, including publication; see the
 [coding removal contract](contracts/coding-workflow.md#current-coding-storage-and-setup--root13150--thr320seq261267).
 Failed unpublished org construction closes/refuses before attachment.
 Load-only source validation reuse
-uses coherent SQLite bookends (THR308seq348/353/354); writer target and public
-checks remain complete. See [runtime configuration](runtime-and-configuration.md).
+uses coherent SQLite bookends (THR308seq348/353/354). THR308seq426 Decision 1
+extends zero-write reuse only to cutover recovery's final read, task-ownership
+installation's target and naming installation's target. Mutated targets and
+public checks remain complete. See [runtime configuration](runtime-and-configuration.md).
 
 Coding validates its canonical inventory and actual shared columns, keys, FKs,
 owner histories, template/authority/native dependencies and Pause/move/naming

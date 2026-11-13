@@ -20,8 +20,10 @@ lint-only checks, general integration and daily Product E2E.
 FIX-H8-1 provenance is frozen in manifest.json before the production edit:
 release_literals.json and naming-v1.sql are immutable fa2ef222 assets, read as
 data only; observed-eight.json contains precisely the accepted packet's eight
-DDL differences. All raw SQL hashes are asserted after construction and ordinary
-Database reopen. Fixtures use real generic/workflow/Pause setup, typed synthetic
+DDL differences. Exact raw SQL hashes are asserted after construction. After
+ordinary Database open, the frozen columns and SQL body must be preserved, with
+only additive columns from the generic constructor reference allowed (including
+those introduced by #1452). Fixtures use real generic/workflow/Pause setup, typed synthetic
 sentinels and shipping canonical renderers. They are not a production DB copy or
 a reconstruction of the complete actual upgrade chronology.
 

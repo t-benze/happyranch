@@ -177,6 +177,11 @@ It drives the production validation/reuse seam and real settings/Pause/naming
 writers on disposable SQLite files, including independent-connection movement,
 failed metadata, schema cookies and the first integrity/FK checks. The isolated
 ten-read timing is not a serving-daemon restart or production-size estimate.
+THR308seq426 Decision 1 adds actual cutover/ownership/naming target cases for
+zero writes, owner writes, unrelated same-connection writes and unavailable
+bookends. It also measures a disposable empty-roster OrgState.load reopen,
+with validation/reuse counts; authority publication remains fenced in that
+fixture, so it proves neither serving time nor production-size savings.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
