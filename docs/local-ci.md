@@ -233,15 +233,12 @@ activity and invokes no fresh E2E.
 The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
 
-Manual M4 observer compatibility (`managed-m4-observer-probe.yml`, TASK-15856)
-runs only the pre-enrollment tcpdump/lsof loopback self-test on macos-15. It is
-workflow_dispatch-only with no inputs, contents:read, SHA-pinned checkout and
-persist-credentials:false, no secrets or VM/cloud/PR-comment operations, and
-always-cleanup of private scratch. It is non-required and adds no PR/push/schedule
-trigger or Product E2E run. After the file exists on main, an authorized manager
-can dispatch a branch ref to validate later parser changes; see the M4 runbook.
-Observer compatibility does not close native relay acceptance or replenish any
-failed/spent run allowance. Source delivery authorizes no dispatch.
+The M4 macOS observer-probe workflow and pre-enrollment tcpdump/lsof gate are
+removed (TASK-15886). The manual/main-only/non-required managed-m4.yml lane now
+uses authenticated home-VM UDP enforcement and a fresh exact native-daemon200;
+see scripts/ci/README-m4-tailnet.md. VM-only premerge controls do not close native
+acceptance. Required lints, Product E2E and all spent run budgets are unchanged.
+Source delivery authorizes no dispatch.
 
 See [coverage gaps](python-test-reset.md) and [the case record](../e2e/README.md).
 
