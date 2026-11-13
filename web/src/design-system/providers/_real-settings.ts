@@ -56,8 +56,12 @@ function useUpdateOrgSettings() {
   return useMutation({
     mutationFn: (patch: OrgSettingsPatch) =>
       settingsApi.putOrgSettings(slug, patch),
-    onSuccess: (data: SettingsSnapshot) => {
-      qc.setQueryData(['settings', slug], data);
+    // Bind the cache owner when the write starts: TanStack refreshes callback
+    // options on every render, so a response settling after an org switch
+    // must still land in the org it was written to, never the current one.
+    onMutate: () => ({ slug }),
+    onSuccess: (data: SettingsSnapshot, _patch: OrgSettingsPatch, context: { slug: string } | undefined) => {
+      qc.setQueryData(['settings', context?.slug ?? slug], data);
     },
   });
 }
