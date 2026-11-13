@@ -124,7 +124,11 @@ read/compare inside the normal `BEGIN IMMEDIATE` isolation, including complete
 admission and COMMIT, may prove no writes are needed and omit native reservation
 and active/settled audits. Would-write loads use the original reserved refresh.
 Failed/unreadable/interrupted/uncertain proofs reserve and retain UNKNOWN and
-next-boot refusal. Compatibility, selector and all other writer intervals remain.
+next-boot refusal. Residual transactions after failed proof cleanup are closed by
+the native writer owner; a short-lived writer-only connection commits the original
+active reservation before the unpublished load aborts. No terminal settlement is
+inferred, and the next boot holds that active history exactly as before.
+Compatibility, selector and all other writer intervals remain.
 
 New ID creation and rename require fresh available naming. Existing same-ID
 reads/callbacks and lifecycle writes preserve original baseline guards, responses,

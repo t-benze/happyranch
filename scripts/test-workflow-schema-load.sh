@@ -98,8 +98,9 @@ with tempfile.TemporaryDirectory(prefix='org-load-timing-') as scratch:
         log.removeHandler(capture)
         log.setLevel(prior_level)
 
-# Would-write and every uncertain proof keep the original active/terminal pair.
-for scenario in ('would-write', 'unreadable', 'failed-read', 'failed-commit', 'interrupt'):
+# Would-write/uncertain proofs keep main's active plus settled/UNKNOWN history.
+# Failed cleanup retains the original active row when no terminal write is proven.
+for scenario in ('would-write', 'unreadable', 'failed-read', 'failed-commit', 'failed-commit-rollback', 'interrupt'):
     with tempfile.TemporaryDirectory(prefix='naming-load-') as scratch:
         root = Path(scratch) / 'orgs' / 'scratch'
         (root / 'org' / 'agents').mkdir(parents=True)
@@ -124,7 +125,8 @@ for scenario in ('would-write', 'unreadable', 'failed-read', 'failed-commit', 'i
                         yield conn
                         conn.set_authorizer(lambda action, arg1, *_:
                             sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_TRANSACTION
-                            and arg1 == 'COMMIT' else sqlite3.SQLITE_OK)
+                            and arg1 in (('COMMIT', 'ROLLBACK') if scenario == 'failed-commit-rollback'
+                                         else ('COMMIT',)) else sqlite3.SQLITE_OK)
                 finally:
                     db._conn.set_authorizer(None)
             error_patch = {
@@ -132,6 +134,7 @@ for scenario in ('would-write', 'unreadable', 'failed-read', 'failed-commit', 'i
                 'unreadable': patch.object(names, 'capture_namespace', side_effect=OSError('synthetic unreadable')),
                 'failed-read': patch.object(names, 'read_rows', side_effect=sqlite3.DatabaseError('synthetic read failure')),
                 'failed-commit': patch.object(names, 'transaction', commit_failure),
+                'failed-commit-rollback': patch.object(names, 'transaction', commit_failure),
                 'interrupt': patch.object(names, 'capture_namespace', side_effect=KeyboardInterrupt('synthetic interrupt')),
             }[scenario]
             reservations.clear()
@@ -141,9 +144,29 @@ for scenario in ('would-write', 'unreadable', 'failed-read', 'failed-commit', 'i
             except KeyboardInterrupt:
                 assert scenario == 'interrupt'
                 db = Database(OrgPaths(root=root).db_path)
+            except Exception:
+                if scenario != 'failed-commit-rollback':
+                    raise
+                db = Database(OrgPaths(root=root).db_path)
             else:
+                assert scenario != 'failed-commit-rollback', 'unclean proof load must abort'
                 db = state.db
             rows = naming_rows(db)
+            if scenario == 'failed-commit-rollback':
+                assert db._conn.execute('SELECT count(*) FROM identity_name_owners').fetchone()[0] == 1
+                db.close()
+                state = OrgState.load(slug='scratch', root=root, settings=settings)
+                # Main retains the original active reservation when both naming
+                # COMMIT and ROLLBACK fail; closing the failed org cannot erase it.
+                assert state._startup_publication_held, 'naming-failed-commit-rollback-next-boot: failed proof cleanup lost the original next-boot hold'
+                startup_expect([r['state'] for r in rows] == ['active', 'settled', 'active']
+                    and rows[0]['writer_id'] == rows[1]['writer_id']
+                    and rows[2]['writer_id'] != rows[0]['writer_id']
+                    and naming_rows(state.db) == rows, 'naming-failed-commit-rollback-history-and-next-boot')
+                print('NAMING failed-commit-rollback states=', [r['state'] for r in rows],
+                      'next_boot_held=', state._startup_publication_held)
+                state.close()
+                continue
             expected = 'settled' if scenario == 'would-write' else 'unknown'
             startup_expect(len(reservations) == 1 and len(rows) == 4
                 and [r['state'] for r in rows[-2:]] == ['active', expected]

@@ -354,6 +354,15 @@ def load_names(org: Any) -> bool:
         snapshot = capture_namespace(org.root, org.teams)
         current = reconcile_namespace(org, snapshot, install=True, compare_only=True)
     except BaseException as exc:
+        if org.db._conn.in_transaction:
+            # Failed cleanup cannot lend its SQL owner to a native reservation.
+            # This unpublished load must retain main's active row, then abort.
+            from runtime.orchestrator.producer_move import owner_for
+            owner = owner_for(org.db)
+            if owner is None:
+                raise
+            owner.retain_failed_naming_load()
+            raise
         with org.workflow_authority.writer_interval(publisher='identity_names_load') as interval:
             interval.native_disposition.uncertain = True
             if not isinstance(exc, Exception):

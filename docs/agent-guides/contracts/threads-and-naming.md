@@ -120,7 +120,11 @@ complete admission prove an installed namespace unchanged inside the same
 `BEGIN IMMEDIATE` isolation used by reconciliation, including successful COMMIT.
 Would-write loads reserve before the original reconciliation; failed, unreadable,
 interrupted or uncertain proofs reserve and preserve UNKNOWN history and the
-next-boot hold. No-op loads create no writer identity or epoch change. Other
+next-boot hold. If proof cleanup leaves the connection in a transaction, the native
+writer owner closes it, commits the original active reservation through a short-lived
+writer-only connection, and aborts the unpublished load without settlement. The next
+boot therefore retains the same active-history hold as a failed reserved refresh.
+No-op loads create no writer identity or epoch change. Other
 writers, including compatibility and policy-manager selectors, retain their rows.
 OrgState admits the existing generic/workflow/canonical source before installing
 an org-only, atomic three-table naming extension. Installer-only N-SAC-1 in
