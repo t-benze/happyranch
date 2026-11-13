@@ -128,8 +128,11 @@ versions and paths; GOROOT/GOPATH/Go caches are private and GOTOOLCHAIN=local,
 with GOFLAGS unchanged. This uses the same conservative Go line described below;
 newer maintained compatibility remains unestablished. The reviewed job template
 increases only timeout 30->90min and per-file cap 32->256MiB; other caps stay fixed.
-Build 19 reached the first Go download but failed with curl 28; readiness is
-unproven. The source preflight now records bounded per-origin curl exit/stderr
+Build23 at PR1485 head `5b66b30` proved source-toolchain readiness with
+uv0.12.21, Node24.19.0/npm, Go1.23.12, Swift6.3.2, Xcode26.5 and Python3.
+Build19's curl28 remains historical failure evidence. Packaged execution, signing
+and host login remain unverified; the separate `SUITE=packaged` observes a
+scratch-installed unsigned build. The source preflight records bounded per-origin curl exit/stderr
 and metrics, uses ordered official Go origins with the same SHA256 pin and
 unchanged 90s/artifact, 240s provisioning budget. Attempts use remaining time
 with small fallback reserves and resume the same pinned partial; a bad final

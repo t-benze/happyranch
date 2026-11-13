@@ -83,8 +83,12 @@ not query Apple, unlock a Keychain or change credential policy.
 The separate existing Jenkins native probe has reviewed source
 for scratch-only uv 0.12.21/Node 24.19.0 LTS/Go 1.23.12 provisioning and 90min/256MiB limits
 (THR-346 msg86); see the [probe contract](../../ci/jenkins/mac-native-probe/README.md).
-This changes no signing-host prerequisites or release route. Build 19 failed on
-the first Go download (curl 28), so native readiness remains unproven. Source
+This changes no signing-host prerequisites or release route. Build23 at PR1485
+head `5b66b30` proved source-toolchain readiness: uv0.12.21, Node24.19.0/npm,
+Go1.23.12, Swift6.3.2, Xcode26.5 and Python3. Build19's first-Go curl28 remains
+historical failure evidence; packaged execution, signing and host login remain
+unverified. The separately authorized `SUITE=packaged` records those runtime
+observations without granting signing or release authority. Source
 diagnostics retain bounded curl exit/stderr/timing metrics per official origin;
 ordered Go fallback shares the same hash pin and unchanged 90s/artifact, 240s
 total budget. Each attempt uses remaining time with small fallback reserves,

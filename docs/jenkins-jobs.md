@@ -32,8 +32,15 @@ same pinned partial file; a bad hash deletes it and refuses extraction. File
 byte deltas/elapsed time and available metrics survive deadline kills. No proxy or
 host/job change is permitted. Before downloads, non-gating executor CLI version
 and exit-only auth status are observed on the fixed host PATH with isolated HOME
-(host-stored login unverified); no session starts. Build 19 failed with curl 28
-before readiness; a separately authorized exact-head source probe is required.
+(host-stored login unverified); no session starts in that suite. Build23 at
+PR1485 head `5b66b30` proved source-toolchain readiness; packaged execution,
+signing and host login remain unverified. The separately authorized
+[`SUITE=packaged`](../ci/jenkins/mac-native-probe/README.md#packaged-app-observation)
+reuses that provisioner for one exact-SOURCE_SHA unsigned app build, private
+installation and frozen daemon/session/cleanup observations. It records eight
+individual step results and the headless GUI/real-provider limitations. Existing
+job configuration and triggers are unchanged; each submission needs explicit
+app-build and packaged-run allocation.
 After immutable checkout/identity, its stdlib-only bootstrap takes the measured
 18-package `cleanup-helpers` import set from the checkout's `uv.lock` into a
 scratch-only venv without pip. It requires macOS arm64 regular CPython 3.14,
