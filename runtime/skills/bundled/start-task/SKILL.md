@@ -205,7 +205,8 @@ remain. Preserve privacy, original keys/bytes, actual callback identity and the
 genuine FINAL report-completion rules. Surface any active or unfulfilled old-lane
 record for a separately authorized disposition; never invent completion or a new
 held reason. P1b removes the two review mutation POST routes and their CLI verbs;
-P2 removes the signing client separately. The separate
+P2 removes the signing web client and its exclusive types; the selected-request
+GET client and reader types remain. The separate
 sequential visit/document instructions below and Coding v1 are unaffected.
 
 For a workflow-owned task, follow its immutable document contract and only its

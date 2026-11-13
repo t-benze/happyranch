@@ -7,7 +7,8 @@ P1b removes POST `/workflows/reviews/human-receipts`, POST
 `happyranch workflows reviews stage` CLI verbs. Their mutation-only route models,
 decoders, CLI helpers, service entry methods and reviewer instruction injection
 are removed. These transports no longer support replay; earlier descriptions
-below are historical. P2 separately removes the signing web mirror.
+below are historical. P2 removes the signing web mirror and its exclusive types;
+the selected-request GET client and reader types remain.
 
 P1a's `workflow_document_review_retired` (409) fences remain for fresh old-lane
 activation/return, author/revision staging, missing r1/r2 graphs and reviewer

@@ -6,8 +6,8 @@ design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
 
 ## Workflow review API contracts
 
-The browser-callable request and human-signing clients in `lib/api/workflowReviews`
-and their request, receipt and command types remain required API mirrors.
+The browser-callable selected-request client in `lib/api/workflowReviews`
+and its request and receipt types remain required GET API mirrors.
 Frozen original owner-return replay uses current access, identity and authority
 admission separately from new-effect readiness. A pending genuine successor's
 held/noncurrent collection permits only explicit identical acknowledgement
