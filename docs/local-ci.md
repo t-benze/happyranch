@@ -5,6 +5,7 @@
 ```sh
 python -B -m unittest scripts.mac_native.test_connector_launchd -v
 python -B -m unittest scripts.mac_native.test_connector_installer -v
+python -B -m unittest scripts.mac_native.test_connector_bundle -v
 ```
 
 This retained native-script venue uses fake runners and temporary paths, outside
@@ -24,6 +25,17 @@ real Darwin execution with `SUITE=connector-launchd`; see the
 [Mac-native job guide](../ci/jenkins/mac-native-probe/README.md#connector-launchagent-lifecycle-suiteconnector-launchd-thr-360-c1c2).
 It adds no required check or automation trigger. Existing real-systemd
 integration remains SKIPPED under THR-243 seq42, not PASS.
+
+C7 adds frozen argv/default-or-explicit helper, missing/moved executable drift,
+and real hidden-dispatch parser coverage to the installer selection. The bundle
+selection reuses `packaging/verify_manifest_notices.py` with the existing
+verifier's SHA-checked historical resource blobs; its default current-source
+baseline checks remain intact. It checks the actual notice collector/validator,
+the portable basic bundle reader with synthetic Mach-O headers, and both
+signing scripts' actual inventory function. No codesign, app build, packaged
+execution or native launchd acceptance is implied. Current-source resource
+baseline drift is outside this focused selection and must be reconciled by the
+packaged-app owner before that acceptance.
 
 ## Frozen repository child launch regressions (THR-346 P2)
 

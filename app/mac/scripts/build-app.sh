@@ -255,6 +255,7 @@ export UV_CACHE_DIR="$OUTPUT/scratch/uv-cache"
 export npm_config_cache="$OUTPUT/scratch/npm-cache"
 export CLANG_MODULE_CACHE_PATH="$OUTPUT/scratch/clang-cache"
 export GOTOOLCHAIN=local
+[ "$(go env GOVERSION)" = go1.23.12 ] || { echo GO_TOOLCHAIN_MISMATCH >&2; exit 1; }
 export GOCACHE="$OUTPUT/scratch/go-cache" GOMODCACHE="$OUTPUT/scratch/go-modules"
 mkdir "$TMPDIR" "$UV_CACHE_DIR"
 mkdir "$GOCACHE" "$GOMODCACHE"
@@ -282,6 +283,12 @@ test -s libtsnet.a && test -s libtsnet.h
 shasum -a 256 libtsnet.a libtsnet.h go.mod go.sum > "$OUTPUT/diagnostics/go-inputs.sha256"
 ar -t libtsnet.a > "$OUTPUT/diagnostics/go-members.txt"
 nm -m libtsnet.a > "$OUTPUT/diagnostics/go-symbols.txt"
+STAGE=sidecar
+cd "$SOURCE/app/linux/tsnet-sidecar"
+# Same pinned toolchain/readonly graph as the bridge; no cgo or module edits.
+CGO_ENABLED=0 GOWORK=off go build -mod=readonly -o "$OUTPUT/scratch/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar
+test -x "$OUTPUT/scratch/happyranch-tsnet-sidecar"
+[ "$(lipo -archs "$OUTPUT/scratch/happyranch-tsnet-sidecar")" = arm64 ] || { echo SIDECAR_ARCH_MISMATCH >&2; exit 1; }
 STAGE=freeze
 cd "$SOURCE"
 bash packaging/build_daemon.sh --dist-dir "$OUTPUT/scratch/freeze-dist" --work-dir "$OUTPUT/scratch/freeze-work"
@@ -299,6 +306,9 @@ printf '%s\n' "$BIN_DIR" > "$OUTPUT/diagnostics/swift-bin-path.txt"
 test -x "$BIN_DIR/HappyRanchApp" || { echo RELEASE_BINARY_MISSING >&2; exit 1; }
 STAGE=assembly
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web" "$APP/Contents/Resources/licenses"
+mkdir "$APP/Contents/Helpers"
+cp "$OUTPUT/scratch/happyranch-tsnet-sidecar" "$APP/Contents/Helpers/happyranch-tsnet-sidecar"
+chmod 755 "$APP/Contents/Helpers/happyranch-tsnet-sidecar"
 cp "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch"
 shasum -a 256 "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch" > "$OUTPUT/diagnostics/swift-release.sha256"
 cp -R "$OUTPUT/scratch/freeze-dist/happyranch-daemon" "$APP/Contents/Resources/daemon"

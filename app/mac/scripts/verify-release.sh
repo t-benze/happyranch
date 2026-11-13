@@ -683,7 +683,7 @@ def basic(app):
     for name in required:
         notices['read'](app / name, app, notices['MAX_JSON'])
     binaries = ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
-                'Contents/Resources/daemon/happyranch')
+                'Contents/Resources/daemon/happyranch', 'Contents/Helpers/happyranch-tsnet-sidecar')
     architectures = {}
     for name in binaries:
         path = app / name

@@ -8,6 +8,7 @@ import json
 import os
 import plistlib
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -91,10 +92,13 @@ class ManagedDarwinInstaller(unittest.TestCase):
                 yield paths
                 linux.assert_not_called()
 
-    def command(self, args: list[str], rows: list | None = None) -> tuple[int, str, str]:
+    def command(self, args: list[str], rows: list | None = None, *, supply_binary: bool = True,
+                expected_code: int | None = None) -> tuple[int, str, str]:
         if args[0] == "install":
             args = list(args)
             for option, path in (("--sidecar-binary", self.paths["binary"]), ("--sidecar-config", self.paths["side_config"])):
+                if option == "--sidecar-binary" and not supply_binary:
+                    continue
                 if option not in args:
                     args += [option, str(path)]
         runner = Runner(self, rows or [])
@@ -105,6 +109,8 @@ class ManagedDarwinInstaller(unittest.TestCase):
                 code = installer.main(args)
             except SystemExit as exc:
                 code = exc.code  # argparse is the observable CLI exit boundary too.
+        if expected_code is not None:
+            self.assertEqual((code, err.getvalue()), (expected_code, ""))
         self.assertFalse(runner.rows)
         self.assertNotIn(KEY.decode(), out.getvalue() + err.getvalue())
         self.assertNotIn(TOKEN.decode(), out.getvalue() + err.getvalue())
@@ -120,7 +126,7 @@ class ManagedDarwinInstaller(unittest.TestCase):
     def install(self, p: dict[str, Path]) -> None:
         code, output, error = self.command(
             ["install", "--enrollment-key-file", str(p["key"])],
-            [row("print", DOMAIN), row("enable", TARGET), row("enable", SIDE_TARGET), *self.status_rows()],
+            [row("print", DOMAIN), row("enable", TARGET), row("enable", SIDE_TARGET), *self.status_rows()], expected_code=0,
         )
         self.assertEqual((code, error), (0, ""))
         result = json.loads(output)
@@ -164,6 +170,71 @@ class ManagedDarwinInstaller(unittest.TestCase):
             self.assertEqual(self.command(["check-drift"], [row("print", DOMAIN), *self.status_rows()])[0], 0)
             code, _, _ = self.command(["install", "--enrollment-key-file", str(p["key"])])
             self.assertEqual(code, 1)  # Stored key cannot be silently replaced.
+
+    def test_frozen_install_argv_and_default_or_explicit_sidecar(self) -> None:
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit), self.home() as p:
+                daemon = p["root"] / "HappyRanch.app/Contents/Resources/daemon/happyranch-daemon"
+                bundled = p["root"] / "HappyRanch.app/Contents/Helpers/happyranch-tsnet-sidecar"
+                for path in (daemon, bundled):
+                    private(path, b"synthetic-executable")
+                    path.chmod(0o755)
+                with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(daemon)):
+                    code, _, error = self.command(["install", "--enrollment-key-file", str(p["key"])],
+                        [row("print", DOMAIN), row("enable", TARGET), row("enable", SIDE_TARGET), *self.status_rows()],
+                        supply_binary=explicit, expected_code=0)
+                    self.assertEqual((code, error), (0, ""))
+                    self.assertEqual(plistlib.loads(p["plist"].read_bytes())["ProgramArguments"],
+                        [str(daemon), "--remote-access", "run", "--managed", "--config", str(p["state"] / "config.json")])
+                    self.assertEqual(plistlib.loads(p["side_plist"].read_bytes())["ProgramArguments"][0],
+                        str(p["binary"] if explicit else bundled))
+                    self.assertEqual(self.command(["check-drift"], [row("print", DOMAIN), *self.status_rows()])[0], 0)
+
+    def test_executable_drift_requires_reinstall_without_effects(self) -> None:
+        for frozen, case in ((False, "missing"), (True, "missing"), (True, "moved"), (True, "sidecar-missing")):
+            with self.subTest(frozen=frozen, case=case), self.home() as p:
+                original = p["root"] / "HappyRanch.app/Contents/Resources/daemon/happyranch-daemon"
+                private(original, b"synthetic-executable")
+                original.chmod(0o755)
+                with patch.object(sys, "frozen", frozen, create=True), patch.object(sys, "executable", str(original)):
+                    # Explicit binary keeps the missing connector case independent
+                    # of the frozen default-path selection test above.
+                    self.install(p)
+                    before = self.snapshot(p)
+                    if case == "missing":
+                        original.unlink()
+                    elif case == "sidecar-missing":
+                        p["binary"].unlink()
+                    else:
+                        moved = p["root"] / "Moved.app/Contents/Resources/daemon/happyranch-daemon"
+                        private(moved, b"synthetic-executable")
+                        moved.chmod(0o755)
+                        # The old bundle still exists: equality must be checked too.
+                        sys.executable = str(moved)
+                    with patch("runtime.remote_access.launchd_installer.DarwinManagedInstaller._status", return_value={}) as status, \
+                            patch("runtime.remote_access.launchd_agent.LaunchdServiceManager.start") as start:
+                        for command in ("check-drift", "start"):
+                            code, _, error = self.command([command])
+                            self.assertEqual(code, 1)
+                            self.assertIn("reinstall", error)
+                        status.assert_not_called()
+                        start.assert_not_called()
+                    self.assertEqual(self.snapshot(p), before)
+
+    def test_hidden_dispatch_routes_before_daemon_startup(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder) / "must-not-start"
+            for args, expected, text in ((["run", "--help"], 0, "--managed"),
+                                         (["installer", "--help"], 0, "--sidecar-config"),
+                                         (["run", "--config", str(Path(folder) / "missing.json")], 1, "config file not found")):
+                with self.subTest(args=args):
+                    result = subprocess.run([sys.executable, "-B", "-m", "runtime.daemon", "--remote-access", *args],
+                        cwd=root, env={**os.environ, "HAPPYRANCH_DAEMON_HOME": str(home)},
+                        capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    self.assertIn(text, result.stdout + result.stderr)
+                    self.assertFalse(home.exists())
 
     def test_enrollment_validation_is_wired_before_writes_or_launchctl(self) -> None:
         for case in ("missing-argument", "relative", "mode", "symlink", "hardlink", "fifo", "oversized", "foreign"):
