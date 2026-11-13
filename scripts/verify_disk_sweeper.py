@@ -1929,7 +1929,8 @@ def registration_arrival(seam: str, preview: bool) -> dict:
             assert not any(s['path'] == str(repo) for s in report['discovery_scopes']), report
             assert row(report, peer)['state'] == ('eligible' if preview else 'removed'), report
             if any(c['path'] == str(new) for c in report['candidates']): retained(report, new, reason)
-            assert report['discovery'] == 'partial' and report['outcome'] == 'incomplete', report
+            assert report['discovery'] == 'partial' and report['outcome'] == ('incomplete' if seam.startswith('plain') else 'complete'), report
+            if not seam.startswith('plain'): assert str(new) in report['deferred_arrivals']
             if preview:
                 after = candidate_contents(peer, repo / '.git', *([new] if seam == 'plain' else []))
                 # The injected real add owns new admin bytes; all old files stay byte/mode exact.
@@ -2480,7 +2481,7 @@ def nested_cases():
                 assert bool(r.get('first_remove_error')) == prior
                 if e: residue_scope(report, e)
                 else:
-                    assert report['discovery_scopes'] == [] and report.get('prune_retained') == [str(repo)], report
+                    assert report['discovery_scopes'] == [] and report.get('prune_retained') is None, report
                 if when != 'heal': assert preserved[-1] == candidate_contents(c, repo / '.git/worktrees' / c.name)
                 else: assert 'fixture healed' in events and not d.exists()
                 assert refs == f.git(repo, 'show-ref')
@@ -2669,8 +2670,8 @@ def c21():
                 assert expected[0]==candidate_contents(q,sibling,repo/'.git/worktrees')
                 assert f.git(repo,'show-ref','--verify','refs/heads/task/TASK-1')
                 observations.append(dict(when=when,kind=kind,remove_calls=len(removes),repair_calls=len(repairs),candidate_state=current['state'],partial_bytes='unknown; no invented attribution'))
-    # Metadata changes AFTER a completed removal must prohibit prune without
-    # erasing the real earlier effect or its measured attribution.
+    # After the last removal there is no prune or further Git action. A new
+    # alias then is not observed; the confirmed earlier effect stays recorded.
     with fixture() as f:
         repo,q=f.worktree('TASK-1');external=f.base/'late-external';external.mkdir();(external/'sentinel').write_text('keep')
         calls=[];real=ds.git;result={};changed=[False]
@@ -2682,12 +2683,12 @@ def c21():
                 admin.symlink_to(external,target_is_directory=True)
         def trace(root,deadline,*args):calls.append(args);return real(root,deadline,*args)
         with patch.object(ds,'git',trace):r=ds.sweep_org(f.org,time.monotonic()+12,mode='on',now=NOW,result=result,checkpoint=checkpoint)
-        assert changed[0] and r['discovery']=='partial' and r['outcome']=='incomplete',r
+        assert changed[0] and r['discovery']=='complete' and r['outcome']=='complete',r
         assert row(r,q)['state']=='removed' and row(r,q)['removed_attributable_bytes']>0 and not q.exists(),r
         assert not any(args[:2]==('worktree','prune') for args in calls)
         assert (external/'sentinel').read_text()=='keep'
         assert f.git(repo,'show-ref','--verify','refs/heads/task/TASK-1')
-        observations.append(dict(when='before_prune',prune_calls=0,earlier_removal='preserved with positive attribution',unknown_total=None))
+        observations.append(dict(when='after_final_removal_no_prune',prune_calls=0,earlier_removal='preserved with positive attribution',no_post_prune_census=True))
     return observations
 
 
@@ -3353,7 +3354,7 @@ def residue_scheduled():
                 report=next(x for x in batch['orgs'] if x['org']==early.org.name)
                 counted(report,2,1,m=1,partial=False)
                 retained(report,c,'possible_nested_worktree:'+str(d))
-                assert report['discovery_scopes']==[] and report.get('prune_retained')==[str(z)]
+                assert report['discovery_scopes']==[] and report.get('prune_retained') is None
                 late=next(x for x in batch['orgs'] if x['org']==later.org.name)
                 counted(late,2);residue_scope(late,e)
                 assert row(late,paths[1])['state']=='removed'
@@ -3364,6 +3365,7 @@ def residue_scheduled():
                 projection_assert(report,repo,c,q,e,d,preview=False,scratch=1)
                 assert not any(root==str(repo) and args[:2]==('worktree','prune') for root,args in calls) if q or e else True
             assert batch['outcome']==('incomplete' if e else 'complete'),batch
+            assert batch.get('night', {}).get('complete') is (not bool(e)), batch
             assert json.loads(summary.read_text())==batch and 'SIMULATED' in batch['worker_group_stop']
             # Use the actual existing audit writer with the scheduled payload;
             # this does not claim a scheduler-loop or supervision witness.
@@ -3410,7 +3412,8 @@ def correction_stop_true():
         audit_type = type(state.orgs['off'].db)
         actual_audit = audit_type.insert_audit_log
         def audit(db, *args):
-            audit_order.append(next(slug for slug, org in state.orgs.items() if org.db is db))
+            if args[2] == 'disk_sweep_summary':
+                audit_order.append(next(slug for slug, org in state.orgs.items() if org.db is db))
             return actual_audit(db, *args)
         with patch.object(audit_type, 'insert_audit_log', audit), patch.object(ds.asyncio, 'sleep', sleep), patch.object(producer_move, 'native_writer', side_effect=AssertionError('forbidden reservation')), patch.object(ds, 'run_worker', side_effect=AssertionError('forbidden worker')):
             try: asyncio.run(ds.disk_sweeper_loop(state))
@@ -3712,7 +3715,7 @@ def correction_per_org_settlement():
 
 def measurement_legacy(value):
     """Remove only the newly documented keys, preserving every legacy byte."""
-    additions = {'measurement', 'measurements', 'measurement_history', 'stop_cause', 'source_revision'}
+    additions = {'measurement', 'measurements', 'measurement_history', 'stop_cause', 'source_revision', 'coverage', 'scope_classifications', 'exclusions', 'deferred_arrivals', 'inventory_window', 'interrupted_removals', 'previous_interrupted_removals', 'night', 'policy', 'elapsed_seconds', 'unloaded_orgs_unknown'}
     if isinstance(value, dict):
         return {key: measurement_legacy(item) for key, item in value.items() if key not in additions}
     if isinstance(value, list):
@@ -3836,11 +3839,11 @@ def c25():
             metrics = candidate['measurement']
             counters = report['measurements']['clones'][str(repo)]
             assert report['measurements']['errors']['count'] == 0, report
-            assert len(calls) == counters['topology_reads'] == (3 if dirty else 10), (calls, counters)
-            assert counters['censuses'] == (9 if dirty else 30), counters
+            assert len(calls) == counters['topology_reads'] == (2 if dirty else 9), (calls, counters)
+            assert counters['censuses'] == (6 if dirty else 27), counters
             assert counters['ownership_reads'] == (1 if dirty else 4), counters
             assert counters['entries_walked'] == sum(snapshots), (counters, snapshots)
-            assert counters['git']['worktree list']['calls'] == (3 if dirty else 10), counters
+            assert counters['git']['worktree list']['calls'] == (2 if dirty else 9), counters
             assert counters['git']['status']['calls'] == (1 if dirty else 6), counters
             assert counters['git']['rev-parse']['calls'] == (3 if dirty else 18), counters
             assert ('rev-list' not in counters['git']) if dirty else counters['git']['rev-list']['calls'] == 6
@@ -3857,7 +3860,7 @@ def c25():
                 assert metrics['kept_allocated_bytes'] == 'unknown' and metrics['kept_since'], metrics
             else:
                 assert metrics['stage_reached'] == 'removal_confirmed', metrics
-                assert counters['git']['worktree prune']['calls'] == 1, counters
+                assert 'worktree prune' not in counters['git'], counters
                 assert candidate['state'] == metrics['final_reason'] == 'removed' and not p.exists(), candidate
                 assert metrics['attempted_effect'] == metrics['confirmed_effect'] == {'remove': 1}, metrics
                 assert isinstance(metrics['kept_allocated_bytes'], int), metrics
@@ -3929,8 +3932,8 @@ def c26():
         raw = json.dumps(prototype, sort_keys=True, indent=2).encode()
         # The review's ordinary 1.96 MB/report volume, not an individually
         # oversized report. JSON permits trailing whitespace for exact sizing.
-        report_bytes = 1_962_316
-        assert len(raw) <= report_bytes, len(raw)
+        report_bytes = max(1_962_316, len(raw))
+        assert report_bytes <= 8 * 1024 * 1024, report_bytes
         raw += b' ' * (report_bytes - len(raw))
         paths = [summary.parent / ((date(2026, 10, 13) + timedelta(days=n)).isoformat() + '.json') for n in range(32)]
         for path in paths:
@@ -3941,7 +3944,9 @@ def c26():
         assert kept['measurement']['kept_since'] == '2026-10-13', (kept['measurement'], report['measurement_history'])
         history = report['measurement_history']
         assert history['status'] == 'bounded_window', history
-        assert history['reports'] == 17 and history['bytes_read'] == 17 * report_bytes, history
+        window_reports = (32 * 1024 * 1024) // report_bytes
+        assert 1 < window_reports < 32
+        assert history['reports'] == window_reports and history['bytes_read'] == window_reports * report_bytes, history
         assert json.loads(summary.read_text())['measurement_history'] == history
         assert ds._audit_payload(report, report['orgs'][0], summary)['measurement_history'] == history
         retained(report['orgs'][0], p, 'dirty_or_untracked')
@@ -3958,15 +3963,186 @@ def c26():
         paths[-2].write_bytes(raw)
         # The first file outside the remaining aggregate allowance is also
         # checked against the independent single-report limit before stopping.
-        with paths[-18].open('wb') as stream:
+        with paths[-(window_reports + 1)].open('wb') as stream:
             stream.truncate(8 * 1024 * 1024 + 1)
         report = ds.sweep([str(f.org)], time.monotonic() + 12, summary, **common)
         history = report['measurement_history']
-        assert history['status'] == 'unavailable:Retain' and history['reports'] == 17, history
+        assert history['status'] == 'unavailable:Retain' and history['reports'] == window_reports, history
         assert row(report['orgs'][0], p)['measurement']['kept_since'] == '2026-11-14', history
         retained(report['orgs'][0], p, 'dirty_or_untracked')
         observations.append(dict(input='oversized boundary report', history=history))
     return observations
+
+
+def c27():
+    """Coverage distinguishes located keeps/exclusions from unknown discovery."""
+    observations = []
+    for kind in ('dirty', 'metadata', 'unknown_residue', 'unregistered', 'non_clone', 'configured_missing_git', 'aliased_git', 'unreadable_git', 'unknown_owner', 'shared', 'unknown_job'):
+        with fixture() as f:
+            repo, p = f.worktree('TASK-1')
+            _, peer = f.worktree('TASK-2')
+            if kind == 'dirty': (p / 'source').write_text('dirty\n')
+            elif kind == 'metadata': (repo / '.git/worktrees/TASK-1/index').chmod(0)
+            elif kind == 'unknown_residue': residue_input(f, repo, p, empty=True)
+            elif kind == 'unregistered':
+                p = p.with_name('TASK-3'); p.mkdir()
+            elif kind in ('non_clone', 'configured_missing_git'):
+                agents = f.org / 'org/agents'; agents.mkdir()
+                (agents / 'maker.md').write_text('---\nname: maker\nteam: engineering\nrole: worker\nexecutor: codex\nrepos: {project: "https://example.invalid/project"}\n---\nFixture agent.\n')
+                extra = f.workspace / 'repos' / ('output' if kind == 'non_clone' else 'project')
+                if kind == 'non_clone': extra.mkdir()
+                else: (repo / '.git').rename(repo / 'held-git')
+            elif kind == 'aliased_git':
+                held = f.base / 'held-git'; (repo / '.git').rename(held); (repo / '.git').symlink_to(held)
+            elif kind == 'unreadable_git': (repo / '.git').chmod(0)
+            elif kind == 'unknown_owner': (f.workspace / 'repos/output').mkdir()
+            elif kind == 'shared': (repo / '.git/worktrees/TASK-1/gitdir').write_text(str(peer / '.git') + '\n')
+            elif kind == 'unknown_job':
+                f.db.execute("INSERT INTO jobs VALUES('TASK-1','mystery')"); f.db.commit()
+            calls = []; realgit = ds.git
+            def git(root, deadline, *args):
+                calls.append(args); return realgit(root, deadline, *args)
+            with patch.object(ds, 'git', git): report = f.sweep()
+            complete = kind in ('dirty', 'metadata', 'non_clone')
+            assert report.get('coverage', {}).get('complete') is complete, (kind, report)
+            assert report['outcome'] == ('complete' if complete else 'incomplete'), (kind, report)
+            assert not any(a[:2] == ('worktree', 'prune') for a in calls), calls
+            if kind == 'non_clone':
+                assert report['exclusions'] == [dict(path=str(extra), reason='ordinary_non_clone')]
+            if kind == 'unknown_residue':
+                assert report['unreached'] is None and report['coverage']['unknown_discovery']
+                assert row(report, peer)['state'] == 'removed'
+            if kind in ('shared', 'unknown_job'): assert peer.exists()
+            if complete: assert row(report, peer)['state'] == 'removed'
+            observations.append(dict(kind=kind, coverage=report['coverage']))
+    return observations
+
+
+def c28():
+    """A uniquely located absent folder is retained, never repaired; peers progress."""
+    observations = []
+    for kind in ('missing', 'alias_parent', 'denied_parent', 'conflict', 'reappeared', 'repointed', 'descendant'):
+        with fixture() as f:
+            repo, p = f.worktree('TASK-1')
+            _, peer = f.worktree('TASK-2')
+            if kind == 'descendant':
+                p = peer / 'ignored/missing'; p.parent.mkdir(parents=True)
+                f.git(repo, 'worktree', 'add', '--detach', str(p), 'HEAD')
+                entry = repo / '.git/worktrees/missing'
+            else: entry = repo / '.git/worktrees/TASK-1'
+            shutil.rmtree(p)
+            before = candidate_contents(entry); refs = f.git(repo, 'show-ref')
+            if kind == 'alias_parent':
+                original = p.parent; held = f.base / 'held-prefix'
+                original.rename(held); original.symlink_to(held)
+            if kind == 'denied_parent': p.parent.chmod(0)
+            if kind == 'conflict': (repo / '.git/worktrees/TASK-2/gitdir').write_text(str(p / '.git') + '\n')
+            realmeta = ds._registration_metadata; events = []
+            def metadata(root, deadline):
+                value = realmeta(root, deadline)
+                if kind in ('reappeared', 'repointed') and root == repo and not events:
+                    if kind == 'reappeared': p.mkdir()
+                    else: (entry / 'gitdir').write_text(str(peer / '.git') + '\n')
+                    events.append(kind)
+                return value
+            with patch.object(ds, '_registration_metadata', metadata): report = f.sweep()
+            if kind != 'repointed': assert before == candidate_contents(entry)
+            assert refs == f.git(repo, 'show-ref')
+            if kind == 'missing':
+                assert any(c['path'] == str(peer) and c['state'] == 'removed' for c in report['candidates']), report
+                missing = row(report, p)
+                assert missing['state'] == 'retained' and missing['reason'].startswith('missing_worktree_folder:'), report
+                assert not p.exists() and report['coverage']['complete'], report
+            elif kind == 'descendant':
+                retained(report, peer, 'linked_descendant:' + str(p))
+                assert not p.exists()
+            else:
+                assert not any(c['state'] == 'removed' for c in report['candidates']), report
+                assert report['outcome'] == 'incomplete'
+            observations.append(dict(kind=kind, report=report))
+    return observations
+
+
+def c29():
+    """Actual scheduler startup and pre-night checks write one durable org record."""
+    from datetime import datetime, timezone
+    observations = []
+    class FixedDate(datetime):
+        @classmethod
+        def now(cls, tz=None): return cls(2026, 11, 14, 12, tzinfo=timezone.utc).astimezone(tz)
+    for kind in ('missing', 'incomplete', 'complete', 'suspended', 'malformed'):
+        with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+            for g in orgs: g.db.row_factory = sqlite3.Row
+            # At startup the last expected night is the current local date.
+            expected = FixedDate.now().astimezone().date().isoformat()
+            source = stop.with_name(expected + '.json')
+            if kind == 'malformed':
+                source.write_text('{')
+            elif kind != 'missing':
+                if kind == 'suspended':
+                    stop.write_text('{"stop":true}')
+                    report, _ = scheduled_attempt(state, source, forbidden=True)
+                else: report, _ = scheduled_attempt(state, source)
+                report['scheduled_date'] = expected
+                if kind == 'complete': assert report['night']['complete'] is True
+                if kind == 'incomplete': report['unreached_orgs'] = ['/fixture/unreached']
+                ds.atomic_json(source, report)
+            preserved = [path for path in paths if path.exists()]
+            snapshot = candidate_contents(*preserved)
+            for attempt in range(2):
+                async def sleep(_): raise asyncio.CancelledError
+                with patch.object(ds, 'datetime', FixedDate), patch.object(ds.asyncio, 'sleep', sleep), patch.object(ds, '_run_scheduled_worker', side_effect=AssertionError('no catch-up worker')):
+                    try: asyncio.run(ds.disk_sweeper_loop(state))
+                    except asyncio.CancelledError: pass
+            for g in orgs:
+                saved = g.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='disk_sweep_night_notice'").fetchall()
+                assert len(saved) == (0 if kind == 'complete' else 1), (kind, saved)
+                if saved:
+                    assert saved[0][:2] == ('', 'daemon')
+                    payload = json.loads(saved[0][2])
+                    assert payload['scheduled_date'] == expected and payload['status'] == ('missing' if kind == 'missing' else 'incomplete'), payload
+                    assert payload['reasons'] and payload['summary_path'] == (None if kind == 'missing' else str(source))
+                    if kind == 'suspended': assert 'scheduled_suspension' in payload['reasons']
+            assert not stop.with_name('last-scheduled.json').exists() and snapshot == candidate_contents(*preserved)
+            # Drive the pre-night hook too, with the same affected night and no retry.
+            sleeps = []
+            async def sleep_once(_):
+                sleeps.append(1)
+                if len(sleeps) > 1: raise asyncio.CancelledError
+            stop.write_text('{"stop":true}')
+            with patch.object(ds, 'datetime', FixedDate), patch.object(ds.asyncio, 'sleep', sleep_once):
+                try: asyncio.run(ds.disk_sweeper_loop(state))
+                except asyncio.CancelledError: pass
+            for g in orgs:
+                assert g.db.execute("SELECT COUNT(*) FROM audit_log WHERE action='disk_sweep_night_notice'").fetchone()[0] == (0 if kind == 'complete' else 1)
+            observations.append(dict(kind=kind, checks='startup/restart/pre-night', records_per_org=0 if kind == 'complete' else 1))
+    return observations
+
+
+def c30():
+    """Interrupted-removal provenance survives in JSON/history without recovery."""
+    with fixture() as f:
+        p = f.scratch('TASK-1')
+        summary = f.base / 'daemon/disk-sweep/2026-11-13.json'
+        def interrupted(path, tree, deadline, **kwargs):
+            (p / 'nested/payload').unlink()
+            raise ds.Expired('total sweep deadline')
+        with patch.object(ds, 'mutate', interrupted), patch.object(time, 'time', return_value=NOW):
+            report = ds.sweep([str(f.org)], time.monotonic() + 12, summary, dry_run=False, scheduled_date='2026-11-13', revision='interruption-fixture')
+        saved = json.loads(summary.read_text())
+        records = saved['orgs'][0].get('interrupted_removals', [])
+        assert len(records) == 1 and records[0]['path'] == str(p), saved
+        assert records[0]['effect'] == 'unknown' and records[0]['automatic_recovery'] is False
+        assert not saved.get('night', {}).get('complete', False) and p.exists()
+        before = candidate_contents(p)
+        later = summary.with_name('2026-11-14.json')
+        with patch.object(ds, 'mutate', side_effect=AssertionError('record cannot authorize recovery')):
+            preview = ds.sweep([str(f.org)], time.monotonic() + 12, later, dry_run=True, scheduled_date='2026-11-14', revision='later-fixture')
+        prior = preview.get('previous_interrupted_removals', [])
+        assert len(prior) == 1 and prior[0]['summary_path'] == str(summary) and prior[0]['source_revision'] == 'interruption-fixture', preview
+        assert prior[0]['path'] == str(p) and before == candidate_contents(p)
+        assert ds._audit_payload(report, report['orgs'][0], summary)['org']['interrupted_removals'] == records
+        return dict(current=records, previous=prior, automatic_recovery=False)
 
 
 if __name__=='__main__':
@@ -3974,7 +4150,7 @@ if __name__=='__main__':
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,27))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,31))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -3997,7 +4173,8 @@ if __name__=='__main__':
             purposes += ('Additive TASK registration arrivals and shared mapping changes',)
             purposes += ('Measurement compatibility with pinned pre-instrumentation source', 'Known measurement counts, effects, history and failure isolation')
             purposes += ('Production-sized bounded history and invalid-report visibility',)
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26),purposes),1):
+            purposes += ('Coverage and uncertainty classification', 'Located missing-folder residue', 'Durable previous-night records', 'Reporting-only interrupted removals')
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

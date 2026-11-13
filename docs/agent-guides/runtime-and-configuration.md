@@ -1922,6 +1922,29 @@ machine-local time — host-local night, as intended.)
 
 ## Independent nightly disk sweep (THR307)
 
+THR307 seq337 package step 2 uses the review revision 3 coverage definition.
+The authoritative classification table is `_CLASSIFICATION` in `disk_sweeper.py`.
+A uniquely recorded missing worktree folder is retained locally only after the
+full existing no-follow census/pointer/ancestor proof; its recorded location
+protects containing candidates and it is never repaired. Unknown-location admin
+residue ALWAYS prevents a complete night. Located inspected keeps and proven
+listed TASK arrivals can satisfy coverage; unknown discovery/shared holds,
+unreached/in-flight/partial effects, operational errors or an unpublished report
+cannot. Positively classified ordinary non-clone folders are listed exclusions;
+a configured clone with missing `.git` or unsafe/unavailable evidence stays unknown.
+The empty-scope Git prune is removed; admission/census frequency is unchanged.
+JSON and matching org audits carry `coverage`, `night`, policy, inventory windows,
+exclusions and deferred arrivals. Interrupted-removal intents and bounded prior
+report provenance are reporting only, never authority to finish, repair or retry.
+At startup and before each existing night, the daemon records the previous
+expected missing/incomplete night once per loaded org in existing audit rows
+(empty task id, `daemon`, action `disk_sweep_night_notice`) and the daemon log.
+This is a record, not delivery to the founder; delivery awaits the founder's
+choice. A daemon that stays down cannot record. A suspended stop-file night is
+not complete, with explicit reason `scheduled_suspension`. There is no new timer,
+catch-up, retry or marker reset. See the maintained nightly sweeper spec's
+“Coverage and classification” section for fields, limits and assumptions.
+
 THR307 seq337 package step 1 adds observation-only candidate `measurement`,
 org/clone `measurements`, run/org `stop_cause` and bounded once-per-run retained
 report history. A report-count or aggregate-byte boundary preserves validated
@@ -3450,7 +3473,7 @@ no removed whole-release naming fingerprint is restored.
 The scheduled daemon disk worker reserves a global native writer per admitted
 org before spawn, through supervision/reap/report. Held/unowned orgs defer with
 bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
-child admission and prune re-read the actual parent's active global writer ID
+child admission re-reads the actual parent's active global writer ID
 through strict append-only history and validate the optional move layout/hold.
 An installed layout with missing/unknown ownership refuses before mutation; absent
 layout preserves native behavior. Missing/incomplete effect closure, interruption

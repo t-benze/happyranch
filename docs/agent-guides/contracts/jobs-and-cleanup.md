@@ -49,6 +49,30 @@ no requests. A terminal hint alone never verifies [done]. Source publication is 
 from deployment or historical recovery.
 
 **Independent THR307 nightly disk sweeper — Founder seq117/134, ROOT TASK12353 recovery.**
+
+THR307 seq337 package step 2 uses the review revision 3 coverage definition.
+The authoritative classification table is `_CLASSIFICATION` in `disk_sweeper.py`.
+A uniquely recorded missing worktree folder is retained locally only after the
+full existing no-follow census/pointer/ancestor proof; its recorded location
+protects containing candidates and it is never repaired. Unknown-location admin
+residue ALWAYS prevents a complete night. Located inspected keeps and proven
+listed TASK arrivals can satisfy coverage; unknown discovery/shared holds,
+unreached/in-flight/partial effects, operational errors or an unpublished report
+cannot. Positively classified ordinary non-clone folders are listed exclusions;
+a configured clone with missing `.git` or unsafe/unavailable evidence stays unknown.
+The empty-scope Git prune is removed; admission/census frequency is unchanged.
+JSON and matching org audits carry `coverage`, `night`, policy, inventory windows,
+exclusions and deferred arrivals. Interrupted-removal intents and bounded prior
+report provenance are reporting only, never authority to finish, repair or retry.
+At startup and before each existing night, the daemon records the previous
+expected missing/incomplete night once per loaded org in existing audit rows
+(empty task id, `daemon`, action `disk_sweep_night_notice`) and the daemon log.
+This is a record, not delivery to the founder; delivery awaits the founder's
+choice. A daemon that stays down cannot record. A suspended stop-file night is
+not complete, with explicit reason `scheduled_suspension`. There is no new timer,
+catch-up, retry or marker reset. See the maintained nightly sweeper spec's
+“Coverage and classification” section for fields, limits and assumptions.
+
 THR307 seq337 package step 1 adds observation-only candidate `measurement`,
 org/clone `measurements`, run/org `stop_cause` and bounded once-per-run retained
 report history. A report-count or aggregate-byte boundary preserves validated
@@ -191,7 +215,7 @@ retains only that path as `unknown_unregistered_task_worktree:<exact path>`.
 Across censuses and Git listing, additive TASK roots and new canonical reciprocal
 TASK-folder/admin-entry pairs retain only the arriving task with that same reason;
 existing identities/pointers must remain exact, and a new pair's admin name must
-also be a TASK name. The arrival latches partial discovery and prohibits prune.
+also be a TASK name. The arrival latches partial discovery; a proven, listed arrival does not block coverage.
 Other missing or changed mapping/enumeration/entry, non-TASK additions, unsafe
 alias/hardlink/special objects, conflicting backlinks and unknown descendant
 locations still retain the shared scope.
@@ -210,7 +234,7 @@ All proven paths, including locally uncertain non-task descendants, protect
 containing trees at every final remove/repair/retry boundary. Retention is latched
 for the attempt, never clearance; own metadata and shared topology stay fresh.
 Reports keep local discovery partial, known-only counts and unknown allocation;
-any partial/unknown scope or remaining registration prohibits repository-wide prune.
+repository-wide prune is removed for every scope.
 Local `metadata_changed:<exact native path>` reasons append bounded
 `;signature_change=` JSON for `snapshot_to_read`, `pre_git_censuses` or
 `post_git_census`, using only already compared differing old/new integer pairs

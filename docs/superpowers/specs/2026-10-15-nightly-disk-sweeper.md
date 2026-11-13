@@ -81,7 +81,8 @@ scope is preserved and named literally in `discovery_scopes` (also under
 `unknown_scope`), with its actual reason and `candidate_count: null`. It does
 not become an empty inventory. Only an immediate repository with a no-follow
 primary `.git` directory is queried; arbitrary children such as `repos/output`
-and `repos/.happyranch` are reported uncertain without walking their contents.
+and `repos/.happyranch` may be listed as ordinary non-clone exclusions only after
+positive classification (below), without walking their contents.
 Workspace/repository/metadata aliases are not followed. Before trusting Git's
 list, a complete no-follow linked-admin census reconciles each registration
 and its reciprocal worktree pointer; Git exit0 can silently omit unreadable or
@@ -105,7 +106,8 @@ identities and pointers remain exact. Missing/changed existing entries or mappin
 non-TASK additions, ancestor loss, non-ENOENT, unsafe aliases/hardlinks/special
 objects, conflicting backlinks and unknown descendant locations still refuse
 the shared scope. These local paths protect containing trees at every final
-remove/repair/retry boundary and make discovery partial, prohibiting prune.
+remove/repair/retry boundary and make discovery partial. Coverage below distinguishes
+located keeps and proven arrivals from unknown discovery. No prune runs.
 The unmapped admin residue
 scope is its literal admin path with candidate_count=0 and the exact native
 `unknown_git_metadata:<gitdir>: <ENOENT>` cause. No W, candidate, HEAD, branch,
@@ -122,8 +124,8 @@ Missing optional
 are absent; inaccessible or invalid ones are unknown.
 
 Independent known scopes continue within the SAME deadline. Completed traversal
-with any uncertain scope is `discovery: partial`; org and batch outcomes remain
-incomplete. Known candidates retain phase/oldest/path ordering and pass all
+with any uncertain scope is `discovery: partial`; unknown discovery keeps org
+and batch outcomes incomplete. Located keeps and proven listed arrivals can satisfy coverage. Known candidates retain phase/oldest/path ordering and pass all
 current action-time gates. Partial discovery never permits Git prune. On
 expiry/shutdown, discovery stops globally: captured candidates remain explicitly
 unreached, discovery is unknown, and `unfinished_discovery_root` names the extent
@@ -152,7 +154,7 @@ Scheduled deletion is enabled for **every normally admitted org**. Missing confi
 files, absent blocks, old off/dry_run/on and newly discovered/admitted orgs all
 use the same policy. The obsolete `disk_sweep` key is ignored in every YAML
 shape/value; it cannot strand startup or veto fresh admission, contained repair,
-the single Git retry or prune. No replacement opt-in, config rewrite or migration
+the single Git retry. No replacement opt-in, config rewrite or migration
 is required. Unrelated configuration validation still refuses invalid settings.
 Org discovery/admission, native writer/team-move gates and complete fresh
 task/job/Git/age/containment checks remain controlling; refused/broken/unloaded/
@@ -354,7 +356,7 @@ are disposable. “Re-creatable” refers to committed contents only.
 Use `git worktree remove` without `--force`; keep branches. After ordinary failure
 there is at most one contained permission repair and retry, each with full fresh
 eligibility. Registration and containment identities are refreshed immediately
-before removal, repair, retry and prune, including after the first Git failure.
+before removal, repair and retry, including after the first Git failure.
 The descendant guard consumes each existing final complete-census result before
 first remove (before mutation starts), contained repair and single retry, even
 when a complete admission just succeeded. There is no alias resolution or new
@@ -381,12 +383,10 @@ that partial/unregistered root fails fresh admission and is retained, with no
 re-registration, generic rm or stronger retry. Timeout aborts the entire worker,
 so potentially surviving descendants are stopped by its supervisor.
 
-Git prune has no exact-entry option. The implementation allows only a proven
-empty linked-worktree admin scope (primary-only registration, no admin entries).
-Any linked/unrelated/prunable/unknown registration retains the entire prune scope.
-Normal successful removal already removes its own registration. Prune is on-mode
-only, not a missing-directory reclamation claim. No unrelated record is blindly
-pruned, and missing/prunable directories contribute no removed bytes.
+Review decision 2 removes empty-scope clone-wide Git prune entirely. Normal
+successful removal still removes its own registration. Missing-folder and
+unknown-location residues are retained, never repaired or pruned; neither
+contributes removed bytes. No replacement housekeeping runs.
 
 ## Reports and operational acceptance
 
@@ -399,9 +399,102 @@ zone/window/date, discovery status, outcome, retained reasons/paths, dirty paths
 known eligible leftovers, unreached counts/orgs and errors. In-flight checkpoint
 survives ordinary worker interruption; report failure is never fabricated success.
 
+### Coverage and classification (THR-307 seq337 package step 2)
+
+This is the approved behavior change after the measurement-only baseline:
+outcome labels use coverage and empty-scope prune no longer runs. The three
+censuses per topology call, candidate admission, final ownership, nested `.git`,
+containment, non-force removal, retry, timeout and stop policy are unchanged.
+Removing prune also removes its one final topology call; no admission proof is
+removed. `.worktree-guard.json` ignore and cost reduction remain later steps.
+
+`_CLASSIFICATION` is the authoritative scope/coverage table:
+
+| Finding | Hold | Coverage |
+| --- | --- | --- |
+| Proven mapped ordinary index/HEAD/auxiliary read/change error (including sibling churn) | Owner only | Located inspected keep |
+| Fully proven arriving TASK mapping | Arrival only | Listed deferred arrival |
+| Safe admin entry with missing `gitdir` | Entry only, never repaired | Unknown location ALWAYS blocks complete |
+| Unique recorded mapping with genuinely absent final folder | Entry/location only, never repaired | Located keep after full proof |
+| Unregistered TASK folder | That path | Conservatively unknown coverage |
+| Positively classified ordinary non-clone folder | Excluded | Listed exclusion |
+| Unknown/conflicting mapping, enumeration or ancestry | Whole clone | Not complete |
+| Unknown job status/lineage | Whole org | Not complete |
+| DB/native-writer failure, Git timeout | Org/run | Not complete |
+| Known dirty/active/recent/hardlink/mount/nested/descendant keep | Item | Located inspected keep |
+| Other unclassified observation | Existing conservative retention | Not complete |
+
+A missing folder qualifies only for final-name ENOENT through a readable literal
+parent, with canonical unique recorded `gitdir`, valid `commondir`, safe remaining
+metadata, all existing censuses, Git-list reconciliation and stable ancestry.
+Its location stays in the linked-path descendant guard even outside conventional
+TASK roots. Aliases, conflicts, unreadable parents, reappearance or re-pointing
+refuse shared scope and cannot clear its latch that night. Its absent backlink
+is not fabricated. No repair/prune/re-registration is attempted.
+
+Ordinary non-clone exclusion requires a plain no-follow directory, final `.git`
+absence, a readable valid owner agent definition showing it is not configured,
+and no `.claude` residue suggesting a former clone. Missing/malformed agent
+metadata conservatively leaves it unknown. Unreadable/aliased/special `.git` and
+a configured clone whose `.git` disappeared never become exclusions. These are
+sampled observations under the existing same-user model, not a rename fence.
+
+Each org records `inventory_window` and `coverage` (`complete`, reasons,
+`unknown_discovery`, candidate count and unreached count, null when unknown),
+`scope_classifications`, exclusions and deferred arrivals. Legacy `discovery`
+remains partial for local errors; legacy counts remain known-only/null. Coverage
+states when the scope is fully located despite such a legacy partial label.
+The date JSON and matching org audit carry `night` with definition
+`thr307-review3-coverage`, Boolean complete and explicit reasons, policy, source
+revision and elapsed seconds. A complete scheduled night requires every selected
+and admitted org reached, mode on, completed inventory/window, every candidate
+removed or a final located inspected keep, and no unknown discovery/shared hold,
+unreached/in-flight/partial effect, operational error, deferred/unloaded org or
+unconfirmed removal. Stop/reap are within the original 1,800 seconds; a late or
+unproven closure is not complete. A failed publication is never claimed complete;
+only a safely published value can establish the record. Preview is not a complete
+scheduled night. Legacy summaries without these facts remain unproven.
+
+Existing checkpoints persist `interrupted_removals` for in-flight/partial intents:
+path, phase, state, reason, unknown effect and `automatic_recovery:false`. An
+intent may precede actual mutation; it proves no removal. The existing bounded
+history pass carries at most 256 direct interrupted candidate records from the
+reports already read into `previous_interrupted_removals`, with source report,
+night date and source revision. Exceeding that limit makes history unavailable;
+it does not grant clearance. History/report publication uses existing no-follow
+safety and byte/count limits. These fields only report provenance; they never
+feed admission, repair, finishing or retry. Kills between checkpoints retain
+unknown effects, not a complete operation log or data-loss audit.
+
+At daemon startup the last expected machine-local 03:00 is today's date at/after
+03:00, yesterday before it. Before each existing scheduled night, the check uses
+the preceding date. Only that previous expected date is checked; there is no
+historical missing-night scan or extra timer. Missing/incomplete summaries produce
+one durable `disk_sweep_night_notice` per affected night per loaded org through
+the existing audit interface (`task_id:''`, actor `daemon`), plus a daemon warning.
+Existing committed notice rows deduplicate restarts/repeated checks under the
+single daemon scheduler. Failed audit publication logs failure, never success;
+an unavailable org cannot persist a row until loaded. The payload gives date,
+missing/incomplete, reasons, and source report path when present. This is a
+**record, not delivery to the founder**. Delivery is pending a founder choice at
+THR-307 seq342; no thread, UI, identity, route, schedule or monitor is added.
+A daemon that stays down cannot record. Assumption: stop-file suspension is not
+complete because no coverage occurred; `scheduled_suspension` is its own reason.
+No catch-up, retry, marker reset, stop-control or run-admission change follows.
+
+Disposable driver C27–C30 cover coverage/table boundaries, missing-folder peer
+progress and containing-tree protection, startup/restart/pre-night persistence
+and deduplication, and interrupted-removal reporting without recovery. C26 sizes
+valid reports from their actual serialized bytes (still >32 MiB aggregate),
+retaining bounded-window/kept-since and malformed/oversized boundary assertions.
+C23 expectations distinguish proven arrivals from unregistered paths. C21/C25
+expect no prune or its final census; earlier removal attribution remains required.
+Real-night speed, under-ten-minute target, job liveness, absence of data loss,
+Darwin and seven scheduled complete nights remain unproven by these fixtures.
+
 ### Measurement-only additions (THR-307 seq337, package step 1)
 
-Eligibility, ordering, reasons, outcome labels, holds, latches, prune, 15-second
+At step 1, eligibility, ordering, reasons, outcome labels, holds, latches, prune, 15-second
 Git timeout, shared 1800-second budget, schedule, stop control, native writers,
 publication safety and existing report/audit keys keep their meanings. No
 candidate filesystem/Git/DB observation is added. The existing `revision`
