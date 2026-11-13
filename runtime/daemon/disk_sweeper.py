@@ -965,12 +965,12 @@ class Evidence:
         try:
             conn.execute('BEGIN')
             self._move_writer(conn)
+            # The existing primary-key index makes each ancestry lookup local.
+            # SQLite permits multiple NULLs in a TEXT PRIMARY KEY: preserve the
+            # old full-table reader's duplicate-key refusal for that case too.
+            if len(conn.execute('SELECT id FROM tasks WHERE id IS NULL LIMIT 2').fetchall()) > 1:
+                raise _LineageUnknown('unknown_conflicting_lineage', 'org_unavailable')
             tasks = {}
-            for row in conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks'):
-                check(self.deadline)
-                if row['id'] in tasks:
-                    raise _LineageUnknown('unknown_conflicting_lineage', 'org_unavailable')
-                tasks[row['id']] = dict(row)
 
             def ancestry(owner, finding):
                 seen = set()
@@ -978,8 +978,13 @@ class Evidence:
                     check(self.deadline)
                     if not isinstance(owner, str) or not owner:
                         raise _LineageUnknown('unknown_malformed_job_or_task_lineage', finding)
-                    if owner in seen or owner not in tasks:
+                    if owner in seen:
                         raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
+                    if owner not in tasks:
+                        row = conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks WHERE id=?', (owner,)).fetchone()
+                        if row is None:
+                            raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
+                        tasks[owner] = dict(row)
                     seen.add(owner)
                     row = tasks[owner]
                     parent = row['parent_task_id']
@@ -1006,13 +1011,23 @@ class Evidence:
                 observed.append(payload['workspace'])
             if not observed or set(observed) != {str(workspace)}:
                 raise Retain('unknown_missing_or_conflicting_workspace_evidence')
-            # A task/root scope includes all structurally related job owners.
-            for row in conn.execute('SELECT task_id,status FROM jobs'):
+            # Enumerate ALL statuses, including unknown/NULL values, through
+            # the existing status index. Only unfinished rows need owner reads.
+            # Preserve the old table traversal's rowid order: an earlier active
+            # job refusal must not be replaced by a later unknown-job refusal.
+            jobs = []
+            for status, in conn.execute('SELECT DISTINCT status FROM jobs'):
                 check(self.deadline)
-                # Finished native jobs cannot keep historical owner lineage
-                # live. Skip them BEFORE resolving their (possibly gone) owner.
-                if row['status'] in ('completed', 'failed', 'rejected'):
-                    continue
+                if status not in ('completed', 'failed', 'rejected'):
+                    for row in conn.execute('SELECT rowid,task_id,status FROM jobs WHERE status IS ?', (status,)):
+                        check(self.deadline)
+                        jobs.append(row)
+            jobs.sort(key=lambda row: row['rowid'])
+            # Task rows above are memoized within this transaction only. Every
+            # ownership call opens a new current read, including after scans,
+            # before removal, and on the existing repair/retry admissions.
+            for row in jobs:
+                check(self.deadline)
                 if row['status'] not in ('pending', 'queued', 'running'):
                     raise Retain('unknown_job_status')
                 job_root = ancestry(row['task_id'], 'job_lineage_unknown')

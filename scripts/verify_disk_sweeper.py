@@ -4247,12 +4247,245 @@ def c30():
         return dict(current=records, previous=prior, automatic_recovery=False)
 
 
+OWNERSHIP_BASE = '2b61f5c480974b494ccdbabd591c878a48b7d8f5'
+
+
+def ownership_base():
+    """C24 pattern: execute pinned production source, not a policy oracle mock."""
+    def source(path):
+        return subprocess.run(['git', 'show', f'{OWNERSHIP_BASE}:{path}'], check=True, capture_output=True).stdout
+    old_fs = ModuleType('ownership_base_fs')
+    exec(compile(source('runtime/daemon/_disk_sweep_fs.py'), '<ownership base fs>', 'exec'), old_fs.__dict__)
+    old = ModuleType('ownership_base_sweeper')
+    with patch.dict(sys.modules, {'runtime.daemon._disk_sweep_fs': old_fs}):
+        exec(compile(source('runtime/daemon/disk_sweeper.py'), '<ownership base sweeper>', 'exec'), old.__dict__)
+    return old
+
+
+def ownership_indexes(f):
+    """Copies of EXISTING production indexes, only on this disposable database."""
+    f.db.executescript('''
+    CREATE INDEX jobs_status_idx ON jobs(status);
+    CREATE INDEX jobs_task_id_idx ON jobs(task_id);
+    CREATE INDEX idx_audit_log_task_id ON audit_log(task_id);
+    ''')
+
+
+def ownership_decisions(report, base):
+    """Compare policy outputs, excluding clocks, inode allocation and counters."""
+    return dict(outcome=report['outcome'], coverage=report['coverage'],
+                candidates=[{key: str(c[key]).replace(str(base), '<fixture>') for key in
+                             ('phase', 'path', 'state', 'reason') if key in c}
+                            for c in report['candidates']])
+
+
+def c31():
+    """Identical-input base/current ownership and whole-org decision parity."""
+    old = ownership_base()
+    # Literal expected reasons are independent of either implementation.
+    table = [
+        ('ended', '', None),
+        ('open_intermediate', "INSERT INTO tasks VALUES('TASK-5','TASK-1','in_progress','maker'); UPDATE tasks SET parent_task_id='TASK-5' WHERE id='TASK-2';", None),
+        ('terminal_orphans', "INSERT INTO jobs VALUES('gone','completed'),('gone','failed'),('gone','rejected');", None),
+        ('unrelated_active', "INSERT INTO jobs VALUES('TASK-4','running');", None),
+        ('pending_sibling', "INSERT INTO jobs VALUES('TASK-3','pending');", 'active_job:pending'),
+        ('queued_sibling', "INSERT INTO jobs VALUES('TASK-3','queued');", 'active_job:queued'),
+        ('running_sibling', "INSERT INTO jobs VALUES('TASK-3','running');", 'active_job:running'),
+        ('unknown_status', "INSERT INTO jobs VALUES('TASK-4','unrecognised');", 'unknown_job_status'),
+        ('null_status', "INSERT INTO jobs VALUES('TASK-4',NULL);", 'unknown_job_status'),
+        ('missing_job_owner', "INSERT INTO jobs VALUES('missing','running');", 'unknown_missing_or_cyclic_lineage'),
+        ('malformed_job_owner', "INSERT INTO jobs VALUES('','running');", 'unknown_malformed_job_or_task_lineage'),
+        ('null_job_owner', "INSERT INTO jobs VALUES(NULL,'running');", 'unknown_malformed_job_or_task_lineage'),
+        ('job_cycle', "UPDATE tasks SET parent_task_id='TASK-4' WHERE id='TASK-4'; INSERT INTO jobs VALUES('TASK-4','running');", 'unknown_missing_or_cyclic_lineage'),
+        ('missing_task', "DELETE FROM tasks WHERE id='TASK-2';", 'unknown_missing_or_cyclic_lineage'),
+        ('candidate_cycle', "UPDATE tasks SET parent_task_id='TASK-2' WHERE id='TASK-1';", 'unknown_missing_or_cyclic_lineage'),
+        ('malformed_parent', "UPDATE tasks SET parent_task_id='' WHERE id='TASK-1';", 'unknown_conflicting_lineage'),
+        ('open_root', "UPDATE tasks SET status='in_progress' WHERE id='TASK-1';", 'task_or_root_not_terminal:in_progress'),
+        ('open_task', "UPDATE tasks SET status='pending' WHERE id='TASK-2';", 'task_or_root_not_terminal:pending'),
+        ('wrong_workspace', "UPDATE tasks SET assigned_agent='other' WHERE id='TASK-2';", 'unknown_owner_workspace'),
+        ('missing_workspace', "DELETE FROM audit_log WHERE task_id='TASK-2';", 'unknown_missing_or_conflicting_workspace_evidence'),
+        ('malformed_workspace', "UPDATE audit_log SET payload='[]' WHERE task_id='TASK-2';", 'unknown_workspace_evidence'),
+        ('conflicting_workspace', "INSERT INTO audit_log(task_id,action,payload) VALUES('TASK-2','session_start','{\"workspace\":\"/other\"}');", 'unknown_missing_or_conflicting_workspace_evidence'),
+        ('single_null_task', "INSERT INTO tasks VALUES(NULL,NULL,'completed','maker');", None),
+        ('duplicate_null_tasks', "INSERT INTO tasks VALUES(NULL,NULL,'completed','maker'),(NULL,NULL,'completed','maker');", 'unknown_conflicting_lineage'),
+        ('active_before_unknown', "INSERT INTO jobs VALUES('TASK-3','running'),('TASK-4','unrecognised');", 'active_job:running'),
+        ('unknown_before_active', "INSERT INTO jobs VALUES('TASK-4','unrecognised'),('TASK-3','running');", 'unknown_job_status'),
+    ]
+    observations = []
+    for label, sql, expected in table:
+        with fixture() as f:
+            ownership_indexes(f)
+            f.task('TASK-1')
+            path = f.scratch('TASK-2', parent='TASK-1')
+            f.task('TASK-3', parent='TASK-1'); f.task('TASK-4')
+            f.db.executescript(sql)
+            before = candidate_contents(path)
+            answers = []
+            for module in (old, ds):
+                try:
+                    module.Evidence(f.org, time.monotonic() + 10).ownership(path, f.workspace, path.name)
+                    answers.append((None, None))
+                except Exception as exc:
+                    answers.append((str(exc), getattr(exc, 'finding', None)))
+            assert answers[0] == answers[1] and answers[1][0] == expected, (label, expected, answers)
+            reports = [module.sweep_org(f.org, time.monotonic() + 15, mode='dry_run', now=NOW) for module in (old, ds)]
+            decisions = [ownership_decisions(report, f.base) for report in reports]
+            assert decisions[0] == decisions[1], (label, decisions)
+            actual = row(reports[1], path)
+            assert actual['state'] == ('retained' if expected else 'eligible'), (label, actual)
+            assert actual.get('reason') == expected, (label, actual)
+            assert candidate_contents(path) == before, label
+            observations.append(dict(variant=label, reason=expected, finding=answers[1][1], result='PASS'))
+    return dict(base=OWNERSHIP_BASE, variants=observations, equivalence_differences=[],
+                limits='same-input real SQLite/scratch preview; large actual removal equivalence is C33')
+
+
+def c32():
+    """Ownership changes after eligible inventory must refuse final removal."""
+    variants = {
+        'task_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'", "UPDATE tasks SET status='completed' WHERE id='TASK-2'", 'task_or_root_not_terminal:in_progress'),
+        'root_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-1'", "UPDATE tasks SET status='completed' WHERE id='TASK-1'", 'task_or_root_not_terminal:in_progress'),
+        'root_reparented': ("UPDATE tasks SET parent_task_id='TASK-4' WHERE id='TASK-1'", "UPDATE tasks SET parent_task_id=NULL WHERE id='TASK-1'", 'task_or_root_not_terminal:in_progress'),
+        'new_sibling_job': ("INSERT INTO jobs VALUES('TASK-3','pending')", "DELETE FROM jobs WHERE status='pending'", 'active_job:pending'),
+        'job_status_unknown': ("UPDATE jobs SET status='unrecognised'", "UPDATE jobs SET status='completed'", 'unknown_job_status'),
+        'job_ancestry_unknown': ("INSERT INTO jobs VALUES('missing','running')", "DELETE FROM jobs WHERE status='running'", 'unknown_missing_or_cyclic_lineage'),
+    }
+    observations, failures = [], []
+    for phase in ('scratch', 'worktree'):
+        for label, (change, heal, expected) in variants.items():
+            try:
+                with fixture() as f:
+                    ownership_indexes(f)
+                    f.task('TASK-1'); f.task('TASK-3', parent='TASK-1'); f.task('TASK-4', status='in_progress')
+                    if phase == 'scratch':
+                        path = f.scratch('TASK-2', parent='TASK-1')
+                        peer = f.scratch('TASK-9')
+                        repo = None
+                    else:
+                        repo, path = f.worktree('TASK-2')
+                        _, peer = f.worktree('TASK-9')
+                        f.db.execute("UPDATE tasks SET parent_task_id='TASK-1' WHERE id='TASK-2'")
+                    f.db.execute("INSERT INTO jobs VALUES('TASK-3','completed')"); f.db.commit()
+                    before = candidate_contents(path)
+                    refs = f.git(repo, 'show-ref') if repo else None
+                    result, events, actions = {}, [], []
+                    real_git = ds.git
+                    def git(root, deadline, *args):
+                        if args[:2] == ('worktree', 'remove'): actions.append(args[2])
+                        return real_git(root, deadline, *args)
+                    def checkpoint():
+                        target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                        if target and target['state'] == 'eligible' and not events:
+                            f.db.execute(change); f.db.commit(); events.append('changed_after_inventory')
+                        elif target and target['state'] == 'retained' and events == ['changed_after_inventory']:
+                            assert target.get('reason') == expected, (phase, label, target)
+                            f.db.execute(heal); f.db.commit()
+                            # A fresh read really passes now; the night's failed
+                            # observation must still retain the original item.
+                            ds.Evidence(f.org, time.monotonic() + 10).ownership(path, f.workspace, path.name)
+                            events.append('healed_after_refusal')
+                    with patch.object(ds, 'git', git):
+                        report = ds.sweep_org(f.org, time.monotonic() + 30, mode='on', now=NOW, result=result, checkpoint=checkpoint)
+                    assert events == ['changed_after_inventory', 'healed_after_refusal'], (phase, label, events, row(report, path))
+                    retained(report, path, expected)
+                    assert candidate_contents(path) == before and str(path) not in actions, (phase, label, actions)
+                    if repo: assert f.git(repo, 'show-ref') == refs
+                    org_held = label in ('job_status_unknown', 'job_ancestry_unknown')
+                    assert row(report, peer)['state'] == ('retained' if org_held else 'removed'), (phase, label, row(report, peer))
+                    if org_held: assert report['org_hold'] == expected
+                    observations.append(dict(phase=phase, race=label, result='PASS', reason=expected, events=events))
+            except AssertionError as exc:
+                failures.append(dict(phase=phase, race=label, result='FAIL', error=str(exc)[:2000]))
+    # Keep all rows attributable in the intended-fail mutation run.
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, limits='ownership races only; complete non-ownership Step3 race table remains required')
+
+
+def c33():
+    """Full-size synthetic fixture, actual base/new sweeps, no live data reads."""
+    import hashlib
+    scratch_root = Path(os.environ['TMPDIR']).resolve()
+    assert 'task-tmp' in scratch_root.parts, 'C33 requires TMPDIR in runtime task-tmp, never output/'
+    old = ownership_base()
+    measurements, decisions = {}, {}
+    for label, module in (('base', old), ('new', ds)):
+        with patch.object(tempfile, 'tempdir', str(scratch_root)), fixture() as first:
+            orgs = [first]
+            other_base = first.base / 'second'; other_base.mkdir()
+            second = Fixture(other_base); orgs.append(second)
+            # Same runtime, distinct orgs, two clones per org. All data/content
+            # is generated here; no live DB rows or worktree contents are read.
+            second.db.close()
+            old_org = second.org
+            second.org = first.org.with_name('second')
+            old_org.rename(second.org)
+            second.workspace = second.org / 'workspaces/maker'
+            second.db = sqlite3.connect(second.org / 'happyranch.db')
+            try:
+                for f in orgs:
+                    ownership_indexes(f)
+                    f.task('TASK-9000')
+                    for index in range(370):
+                        f.scratch(f'TASK-{index + 1}', status='completed' if index < 4 else 'in_progress', parent='TASK-9000')
+                    for clone in range(2):
+                        for index in range(215):
+                            name = f'TASK-{1000 + clone * 215 + index}'
+                            _, path = f.worktree(name, project=f'project-{clone}')
+                            f.db.execute("UPDATE tasks SET parent_task_id='TASK-9000' WHERE id=?", (name,))
+                            if index >= 2:
+                                if index % 2:
+                                    (path / 'source').write_text('uncommitted synthetic fixture\n')
+                                else:
+                                    f.db.execute('UPDATE tasks SET status=? WHERE id=?', ('in_progress', name))
+                    remaining = 7950 - f.db.execute('SELECT count(*) FROM tasks').fetchone()[0]
+                    f.db.executemany('INSERT INTO tasks VALUES(?,NULL,?,?)',
+                                     ((f'TASK-{10000 + n}', 'completed', 'maker') for n in range(remaining)))
+                    f.db.executemany('INSERT INTO jobs VALUES(?,?)', (('historical-orphan', ('completed', 'failed', 'rejected')[n % 3]) for n in range(3349)))
+                    f.db.execute("INSERT INTO jobs VALUES('TASK-10000','running')")
+                    f.db.commit()
+                summary = first.base / 'daemon/disk-sweep' / (label + '.json')
+                started = time.monotonic()
+                with patch.object(time, 'time', return_value=NOW):
+                    report = module.sweep([str(f.org) for f in orgs], started + 1800, summary,
+                                          dry_run=False, scheduled_date='fixture-date', revision='synthetic-step3-fixture',
+                                          runtime_root=first.base / 'runtime')
+                elapsed = time.monotonic() - started
+                combined = dict(wall_seconds=elapsed, git={}, censuses=0, topology_reads=0, ownership_reads=0, report_writes=0,
+                                candidates=0, removed=0, retained=0, outcome=report['outcome'], orgs=[])
+                projected = []
+                for item in report['orgs']:
+                    counters = item['measurements']['counters']
+                    for key in ('censuses', 'topology_reads', 'ownership_reads', 'report_writes'):
+                        combined[key] += counters[key]
+                    for command, counts in counters['git'].items():
+                        combined['git'][command] = combined['git'].get(command, 0) + counts['calls']
+                    combined['candidates'] += len(item['candidates'])
+                    combined['removed'] += sum(c['state'] == 'removed' for c in item['candidates'])
+                    combined['retained'] += sum(c['state'] == 'retained' for c in item['candidates'])
+                    combined['orgs'].append(dict(org=item['org'], outcome=item['outcome'], coverage=item['coverage']))
+                    projected.append(ownership_decisions(item, first.base))
+                raw = json.dumps(projected, sort_keys=True, separators=(',', ':')).encode()
+                combined['decision_sha256'] = hashlib.sha256(raw).hexdigest()
+                measurements[label], decisions[label] = combined, projected
+                # Flush bounded metrics as each side finishes, even if later
+                # measurement/equivalence fails. Full trees stay only task-tmp.
+                print(json.dumps(dict(production_fixture_side=label, measurement=combined)), flush=True)
+            finally:
+                second.db.close()
+    assert measurements['base']['candidates'] == measurements['new']['candidates'] == 1600, measurements
+    assert measurements['base']['removed'] == measurements['new']['removed'] == 16, measurements
+    assert decisions['base'] == decisions['new'], measurements
+    return dict(base=OWNERSHIP_BASE, shape=dict(orgs=2, clones=4, linked_registrations=860, primary_registrations=4,
+                candidates=1600, tasks=15900, jobs=6700), measurements=measurements, equivalence_differences=[],
+                limits='disposable Linux fixture only; no real-night timing, under-ten-minute target, Darwin or absence-of-loss proof')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,31))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,34))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -4276,7 +4509,8 @@ if __name__=='__main__':
             purposes += ('Measurement compatibility with pinned pre-instrumentation source', 'Known measurement counts, effects, history and failure isolation')
             purposes += ('Production-sized bounded history and invalid-report visibility',)
             purposes += ('Coverage and uncertainty classification', 'Located missing-folder residue', 'Durable previous-night records', 'Reporting-only interrupted removals')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30),purposes),1):
+            purposes += ('Indexed ownership equivalence with pinned base', 'Fresh ownership after inventory and latched refusals', 'Production-sized base/new disposable measurement')
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

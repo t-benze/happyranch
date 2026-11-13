@@ -211,6 +211,28 @@ Every admission, including permission repair and the one Git retry, requires:
   chmod mode/ctime changes may be recognized on Git retry, with all other gates
   refreshed; unknown changes never receive that exception.
 
+### Indexed current ownership reads (THR307 seq337 step 3, reader portion)
+
+Every existing `Evidence.ownership` call opens its own `mode=ro` connection and
+read transaction, checks the actual native writer/optional hold, and then reads
+current ownership. Candidate and unfinished-job ancestry use `tasks.id` primary-key
+lookups. The row cache exists only within that transaction. SQLite's duplicate
+NULL primary-key case keeps the old org-wide conflicting-lineage refusal.
+The existing `jobs_status_idx` supports exhaustive distinct-status enumeration
+and indexed reads of every unfinished or unknown/NULL-status row. Rows retain
+original rowid encounter order, including active-before-unknown refusal priority.
+Finished completed/failed/rejected rows never need their historical owner resolved.
+The existing audit task-id index supports the unchanged complete workspace check.
+No schema, new index or migration is introduced. Unknown status/active-job lineage
+still holds the org; candidate-own ancestry uncertainty still holds the item.
+
+This portion does not reduce admission/census frequency or change report
+publication, tree checks, retry, classification, completion, policy or keys.
+Inventory-only keeps, reduced topology work and batched checkpoints remain the
+rest of the approved step 3 package. Two-pass ordering is absent: real-night step 1
+data is not yet available. The reader alone does not establish a real-night speed
+or under-ten-minute result.
+
 Admission takes two complete no-follow snapshots with intervening ownership/Git
 refresh and final root/Git validation. On-mode mutation repeats the entire
 admission, then compares the two admitted trees again. Both comparisons use

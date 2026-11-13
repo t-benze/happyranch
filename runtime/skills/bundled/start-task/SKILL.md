@@ -58,6 +58,16 @@ sweeper spec, “Measurement-only additions”, for exact counter/history bounds
 write-confirmation lag and measurement-failure behavior. This grants no cleanup
 or configuration authority.
 
+THR307 seq337 step 3 ownership reads use a new read-only transaction at every
+existing admission boundary. Task and active-job ancestry use the existing task
+primary-key index; all job statuses (including unknown/NULL) are enumerated through
+the existing status index before unfinished rows are fetched in original rowid
+order. Finished orphan jobs still skip lineage. Workspace evidence, terminal
+owner/root and native writer/hold checks keep their meanings. Task-row reuse is
+limited to one transaction, never a later scan, remove, repair or retry. No schema,
+index, classification, census frequency or checkpoint change is made by this
+reader change. There is no two-pass ordering without real-night step 1 data.
+
 THR307 seq337 package step 2 uses the review revision 3 coverage definition.
 The authoritative classification table is `_CLASSIFICATION` in `disk_sweeper.py`.
 Candidate-own missing, cyclic or malformed task ancestry retains that candidate
