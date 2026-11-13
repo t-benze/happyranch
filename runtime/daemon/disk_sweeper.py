@@ -547,6 +547,41 @@ class _Registrations(dict):
         entry = self.linked[path]
         return str(entry), self.topology[str(entry)], self.topology[path]
 
+    def after_removal(self, path: Path) -> _Registrations:
+        """Expected inventory minus ONLY our candidate, for effect confirmation.
+
+        This is not observed success. The caller must prove folder/registration
+        absence and retained branch before adopting it for subsequent items.
+        Other initial identities and HEAD/branch rows remain pinned.
+        """
+        result = _Registrations()
+        result.update(self)
+        for name, value in vars(self).items():
+            setattr(result, name, value.copy())
+        entry = self.linked[str(path)]
+        result.pop(str(path))
+        for values in (result.linked, result.metadata, result.errors, result.residues,
+                       result.missing_folders, result.findings):
+            values.pop(str(path), None)
+        for values in (result.unregistered, result.missing_heads, result.arrivals):
+            values.discard(str(path))
+        for key in (path, path / '.git', entry, entry / 'gitdir', entry / 'commondir'):
+            result.topology.pop(str(key), None)
+        result.topology['entries'] = tuple(name for name in self.topology['entries'] if name != entry.name)
+        if not result.topology['entries']:
+            # Git can remove its now-empty admin container with the last entry.
+            # There are no surviving original entries in this container. Bind
+            # its post-effect observation; the full confirmation must still
+            # validate every newly present entry, never remove or infer one.
+            try:
+                result.topology[str(entry.parent)] = identity(os.lstat(entry.parent))
+            except FileNotFoundError:
+                result.topology[str(entry.parent)] = None
+        roots = self.topology['task_roots']
+        if roots is not None:
+            result.topology['task_roots'] = tuple(name for name in roots if name != path.name)
+        return result
+
     def require(self, path: Path, deadline: float) -> None:
         _retain_linked_descendants(path, self, deadline)
         if str(path) in self.missing_folders:
@@ -783,7 +818,7 @@ def _registration_metadata(repo: Path, deadline: float, *, metadata_path: Path |
         raise _RegistrationUnknown(f'unknown_git_registrations:{admin}: {exc}') from exc
 
 
-def _registration_additions(before: _Registrations, after: _Registrations, repo: Path, deadline: float) -> set[str]:
+def _registration_additions(before: _Registrations, after: _Registrations, repo: Path, deadline: float, *, allow_new_residues: bool = False) -> set[str]:
     """Allow only additive, fully attributed conventional TASK roots/pairs.
 
     Existing identities/pointers/residues must remain exact. A new unmapped
@@ -799,6 +834,17 @@ def _registration_additions(before: _Registrations, after: _Registrations, repo:
     additions = set()
     allowed_keys = set()
     entries = set()
+    # Across separate admissions a newly observed, fully validated gitdir-gone
+    # residue remains the existing local unknown-location KEEP. Within one
+    # three-census proof additions retain the original stricter TASK-only rule.
+    residues = (set(after.residues) - set(before.residues) - after.unregistered) if allow_new_residues else set()
+    for residue in residues:
+        check(deadline)
+        entry = Path(residue)
+        if entry.parent != admin or entry.name in old_entries:
+            raise _RegistrationUnknown(failure)
+        entries.add(entry.name)
+        allowed_keys.add(residue)
     for name in new_roots - old_roots:
         check(deadline)
         path = str(prefix / name)
@@ -818,7 +864,7 @@ def _registration_additions(before: _Registrations, after: _Registrations, repo:
         raise _RegistrationUnknown(failure)
     if {p: e for p, e in after.linked.items() if p not in additions} != before.linked:
         raise _RegistrationUnknown(failure)
-    if set(after.residues) - additions != set(before.residues):
+    if set(after.residues) - additions - residues != set(before.residues):
         raise _RegistrationUnknown(failure)
     if after.unregistered - additions != before.unregistered:
         raise _RegistrationUnknown(failure)
@@ -826,14 +872,15 @@ def _registration_additions(before: _Registrations, after: _Registrations, repo:
     # replacement of an existing parent remains a shared refusal.
     for parent in (prefix, admin):
         key = str(parent)
-        if additions and before.topology.get(key) is None and after.topology.get(key) is not None:
+        if (additions or residues) and before.topology.get(key) is None and after.topology.get(key) is not None:
             allowed_keys.add(key)
     for key in before.topology.keys() | after.topology.keys():
         check(deadline)
         if key in ('entries', 'task_roots'):
-            if not additions and before.topology[key] != after.topology[key]:
+            if not (additions or residues) and before.topology[key] != after.topology[key]:
                 raise _RegistrationUnknown(failure)
-        elif key in allowed_keys:
+        elif key in allowed_keys or (residues and key.startswith(str(admin) + '/')
+                                    and str(admin / key[len(str(admin)) + 1:].split('/', 1)[0]) in residues):
             if key in before.topology and before.topology[key] is not None:
                 raise _RegistrationUnknown(failure)
         elif before.topology.get(key) != after.topology.get(key):
@@ -848,6 +895,17 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None, 
     # ordinary reads. Local churn protects its owner without poisoning peers.
     after = _registration_metadata(repo, deadline, metadata_path=metadata_path, metadata_inventory=metadata_inventory)
     additions = _registration_additions(before, after, repo, deadline)
+    protected_descendant = metadata_path is not None and any(
+        metadata_path in Path(path).parents for path in before.linked.keys() | before.residues.keys()
+    )
+    if metadata_inventory is not None and not protected_descendant:
+        # Discovery can veto drift, never supply successful current proof.
+        # Bind recorded shared/pointer-parent identities and literal membership, including
+        # disjoint non-task registrations, across the slow inventory interval.
+        additions |= _registration_additions(metadata_inventory, before, repo, deadline, allow_new_residues=True)
+    # A proven descendant already forces require() to KEEP. Preserve that
+    # existing reason/precedence; the inventory comparison can grant nothing
+    # here. Every peer's own later admission still compares the full inventory.
     errors = dict(before.errors)
     for path, error in after.errors.items():
         errors.setdefault(path, error)
@@ -1557,7 +1615,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         evidence.ownership(path, Path(candidate['workspace']), path.name)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
-                    if str(path) in registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]):
+                    remaining_inventory = topology[str(repo)].after_removal(path)
+                    if str(path) in registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=remaining_inventory):
                         raise Retain('registration_remains_after_remove')
                 try:
                     os.lstat(candidate['path'])
@@ -1570,6 +1629,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     # missing/refused resolution is an unconfirmed effect,
                     # even when the folder and registration are already gone.
                     git(repo, deadline, 'rev-parse', '--verify', admitted_branch + '^{commit}')
+                if candidate['phase'] == 'worktree':
+                    topology[str(repo)] = remaining_inventory
                 _, attributable = allocated(fresh, removed_inodes)
                 phase['removed_attributable_bytes'] += attributable
                 candidate.update(state='removed', removed_attributable_bytes=attributable)

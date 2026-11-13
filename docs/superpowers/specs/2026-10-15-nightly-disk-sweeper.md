@@ -233,6 +233,23 @@ mapping/clean-status observations are discarded; every deletion still performs
 all existing fresh admissions. Inventory cannot supply successful delete authority.
 This partial implementation does not yet reduce destructive census frequency.
 
+The fresh census also compares recorded shared-directory, reciprocal-pointer and
+pointer-parent identities and literal membership with discovery through the existing
+additive-TASK comparison. A stable replacement between admissions cannot become a
+new baseline. A proven descendant still forces its existing KEEP reason before
+that comparison can matter. Newly proven TASK arrivals remain deferred and locally
+latched. After a successful Git removal, confirmation compares against a copy of
+the original inventory excluding only that candidate's exact root/admin/pointer
+keys and literal names. If no original entries remain, the final admin container
+observation is bound for the fresh confirmation; newly present entries must still
+pass the complete existing proof. A newly observed safe gitdir-gone residue across
+admissions keeps its existing local unknown-location classification and latch,
+never deletion authority; within one three-census proof the TASK-only addition
+rule is unchanged. The reduced inventory is adopted only after fresh unregistration,
+folder absence and named-branch resolution all succeed. Every other original
+HEAD/branch and topology identity stays pinned. Any failed confirmation remains
+partial/unknown. This adds no repair, retry, housekeeping or clearance authority.
+
 Each full worktree admission also revalidates its own directory/pointer identities
 against discovery and compares freshly read HEAD/branch with that inventory.
 The saved identity is a veto on drift, never a successful deletion answer; every
