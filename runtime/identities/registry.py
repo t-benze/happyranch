@@ -271,7 +271,14 @@ def _desired(owner_rows, claim_rows, namespace):
     return owners, claims
 
 
-def reconcile_namespace(org, namespace, *, install=False):
+def reconcile_namespace(org: Any, namespace: Namespace, *, install: bool = False,
+                        compare_only: bool = False) -> bool | None:
+    """Reconcile, or prove an installed namespace needs no write in the same fence.
+
+    compare_only is the cold loader's read-before-reservation proof. False
+    means the caller must take its ordinary writer interval and reconcile again.
+    Exceptions, including COMMIT uncertainty, are never a no-op result.
+    """
     # Selected-root association and all filesystem resolution precede locking.
     expected_db_path = None
     if install:
@@ -289,6 +296,8 @@ def reconcile_namespace(org, namespace, *, install=False):
             conn, org_slug=org.slug, expected_db_path=expected_db_path, load_source=True,
         ) if install else validate_names(conn, org_slug=org.slug))
         if not version:
+            if compare_only:
+                return False
             if not install:
                 raise NamingError('naming_not_installed')
             execute_literal(conn, NAMING_DDL)
@@ -299,6 +308,11 @@ def reconcile_namespace(org, namespace, *, install=False):
                          ('founder', 'founder', 'founder', 1, 0))
         before_owners, before_claims = read_rows(conn)
         owners, claims = _desired(before_owners, before_claims, namespace)
+        if compare_only and (
+            owners != {(r[0], r[1]): r for r in before_owners}
+            or claims != {r[0]: r for r in before_claims}
+        ):
+            return False
         # Keep retained row identities; do not rewrite or replace unchanged rows.
         for row in before_claims:
             if row[0] not in claims:
@@ -321,8 +335,49 @@ def reconcile_namespace(org, namespace, *, install=False):
         validate_rows(*read_rows(conn), namespace)
         if install:
             validate_naming_install_admission(
-                conn, org_slug=org.slug, expected_db_path=expected_db_path,
+                conn, org_slug=org.slug, expected_db_path=expected_db_path, load_target=True,
             )
+    if compare_only:
+        return True
+
+
+def load_names(org: Any) -> bool:
+    """Omit only the identity_names_load reservation for a proven no-op.
+
+    The proof commits its unchanged BEGIN IMMEDIATE snapshot before returning.
+    Would-write uses the original reserved refresh. Failed/unreadable/uncertain
+    proofs reserve and retain the same failure/UNKNOWN evidence as that refresh.
+    """
+    org.naming_readiness = 'unavailable'
+    org.naming_install_diagnostic = None
+    try:
+        snapshot = capture_namespace(org.root, org.teams)
+        current = reconcile_namespace(org, snapshot, install=True, compare_only=True)
+    except BaseException as exc:
+        if org.db._conn.in_transaction:
+            # Failed cleanup cannot lend its SQL owner to a native reservation.
+            # This unpublished load must retain main's active row, then abort.
+            from runtime.orchestrator.producer_move import owner_for
+            owner = owner_for(org.db)
+            if owner is None:
+                raise
+            owner.retain_failed_naming_load()
+            raise
+        with org.workflow_authority.writer_interval(publisher='identity_names_load') as interval:
+            interval.native_disposition.uncertain = True
+            if not isinstance(exc, Exception):
+                raise
+            diagnostic = (getattr(exc, 'code', 'naming_canonical_unavailable')
+                          if isinstance(exc, (ValueError, OSError, UnicodeError))
+                          else 'naming_database_unavailable')
+            _record_refresh_failure(org, diagnostic, install=True)
+            return False
+    if current:
+        org.naming_diagnostic = None
+        org.naming_readiness = 'ready'
+        return True
+    with org.workflow_authority.writer_interval(publisher='identity_names_load') as interval:
+        return refresh_names(org, install=True, writer=interval.native_disposition)
 
 
 def _record_refresh_failure(org: Any, diagnostic: Any, *, install: bool) -> None:

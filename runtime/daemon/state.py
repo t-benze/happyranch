@@ -51,6 +51,8 @@ class DaemonState:
     metrics_store: MetricsStore | None = None
     # Throttle for periodic snapshot writes — monotonic timestamp of last write.
     _last_metrics_snapshot_at: float = 0.0
+    # Telemetry starts only after actual ASGI/listener startup returns.
+    _metrics_serving: bool = False
     # Daemon-wide HostSessionSupervisor (THR-207 real-caller wiring): task,
     # schedule, thread, dream, and wake producers run through it; the app
     # lifespan drain calls its ``shutdown()`` before producer workers are

@@ -10,6 +10,12 @@ from __future__ import annotations
 import argparse
 import sys
 
+# The frozen CLI shares the daemon's helper protocol when it is the parent.
+# Keep repository children ahead of CLI/product imports and daemon discovery.
+if __name__ == '__main__' and sys.argv[1:2] == ['--cleanup-helper']:
+    from runtime.daemon.cleanup_helpers import main as helper_main
+    raise SystemExit(helper_main(sys.argv[2:]))
+
 from cli._shared import (  # noqa: F401  (re-export for back-compat / patch targets)
     _fetch_available_orgs,
     _fmt_ts,
@@ -182,6 +188,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    if sys.argv[1:2] == ['--cleanup-helper']:
+        from runtime.daemon.cleanup_helpers import main as helper_main
+        sys.exit(helper_main(sys.argv[2:]))
     parser = build_parser()
     args = parser.parse_args()
     if not args.command:

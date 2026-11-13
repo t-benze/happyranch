@@ -13,14 +13,31 @@ This source change grants no restart, deploy or historical-row repair.
 
 ## Frozen cleanup helpers (THR-346 S3)
 
-The daemon's hidden `--cleanup-helper` entry dispatches only `disk-sweep`,
-`worktree-safety` and `check-path-use`, before daemon-home initialization or
-serving. `happyranch-daemon --cleanup-helper disk-sweep --help` reaches the sweep
+The hidden `--cleanup-helper` entry dispatches only `disk-sweep`,
+`worktree-safety`, `check-path-use`, `repository-git` and `repository-reader`,
+before daemon-home initialization or serving.
+`happyranch-daemon --cleanup-helper disk-sweep --help` reaches the sweep
 parser; manual preview is `--cleanup-helper disk-sweep --dry-run --runtime-root
 ABSOLUTE_RUNTIME`. This does not start a daemon. Source/uv helper subprocess argv
 is unchanged. Loader code supplies the `code-sha256:` revision; unavailable code
 still prevents launch. See [cleanup contracts](contracts/jobs-and-cleanup.md)
 for the identity, packaging and unchanged fail-closed scanner limits.
+
+Both frozen executables (`happyranch-daemon` and `happyranch`) enter this same
+closed dispatcher before heavyweight product imports. `repository-git` takes
+exactly DIRECTORY OBJECT_FORMAT MODE (`sha1`/`sha256`, `check`/`body`);
+`repository-reader` takes exactly PRIVATE_DIRECTORY DEADLINE. They run the fixed
+shipped repository object helper's existing `--git-child`/`--reader-child` entries,
+including their original resource limits, restricted Git environment and reader
+deadline. No caller-selected module or script can run. Source launches retain
+exactly `python -I <repository_artifact_objects.py> --git-child/--reader-child ...`.
+The spec retains that module as `pyz+py` in both Analysis lanes so fixed-path
+execution can apply limits before product imports. The frozen PyInstaller
+[isolated interpreter](https://pyinstaller.org/en/stable/advanced-topics.html#environment-variables-used-by-frozen-applications)
+ignores Python environment and user-site imports, preserving source
+`-I` isolation without passing Python flags to an application parser.
+Source/simulated-frozen regressions are separate from manager-owned packaged-app
+proof; no existing native probe suite exercises these repository child paths.
 
 ## Authority terminal recovery and connection custody (THR-328)
 
@@ -101,21 +118,34 @@ THR308seq348/353/354 permits explicit source reads later in the SAME unpublished
 bookends: local `total_changes`, main AND TEMP schema cookies, `data_version`,
 connection/database and configuration identity. Every load's first validation
 is complete, including unchanged `integrity_check` and `foreign_key_check`.
-Known settings seed/backfill, Pause journal UPDATEs and naming reservation audit
-writes invalidate reuse. Unknown, failed or changed metadata forces a full read.
+Known settings seed/backfill, actual Pause journal UPDATEs and naming reservation
+audit writes invalidate reuse. Pause restore, including the sweep's repeated
+restore, keeps its existing transaction/recovery decisions but skips UPDATE when
+canonical serialized journal bytes already equal the stored value; any difference
+still writes. The cold naming loader omits its reservation/active/settled pair
+only after a successful unchanged read/compare under `BEGIN IMMEDIATE` and COMMIT
+(THR308seq426 Decision 4). Would-write reserves before reconciliation; failed,
+unreadable, interrupted and uncertain proofs still reserve/retain UNKNOWN exactly
+as before, including next-boot refusal. Compatibility/selector/other writer rows
+stay unchanged. Unknown, failed or changed metadata forces a full read.
 Autocommit reuse brackets a pinned read snapshot with outside observations;
 fresh BEGIN IMMEDIATE source reads compare under their existing writer fence.
-Arbitrary caller-owned read snapshots, public reads outside load and writer
-target validation remain uncached. No cross-load or persisted reuse exists.
+Only cutover recovery's final read, task-ownership installation's target and
+naming installation's target may also reuse that complete result with zero-write
+bookends (THR308seq426 Decision 1). Cutover owns a fresh read snapshot; the other
+two borrow their writer's BEGIN IMMEDIATE without ending it. Any write, changed
+or unavailable bookend uses the exact original target reader and budget.
+Arbitrary caller-owned read snapshots and public reads remain uncached.
+No cross-load or persisted reuse exists.
 Before any workflow DDL, the entire reserved coding family is observed. Partial,
 extra, case-changed, wrong-kind or malformed objects and real shared dependency
 failures refuse without repair or adoption. Body/interruption
 and COMMIT failures preserve the primary cause and secondary cleanup errors;
 uncertain COMMIT is not success or proof of absence. Failed unpublished org
-construction closes/refuses before attachment; later writer targets stay complete.
-The additive `startup_workflow_validation` log reports guarded-source full-run
+construction closes/refuses before attachment; changed writer targets stay complete.
+The additive `startup_workflow_validation` log reports guarded source/target full-run
 count/time and reuse count; existing startup timing/partition meanings stay unchanged.
-Those counters exclude unchanged direct writer-target and public-reader checks.
+Those counters exclude other direct writer-target and public-reader checks.
 
 THR-308 seq403 removes the generic `audit_log` coding scan, its process-local
 watermark and collector/publication plumbing, including its scan diagnostic.
@@ -1180,7 +1210,8 @@ preserve lifecycle-owned uncertainty. The unused move-only C3 causal census is r
 history readers remain; terminal rows or missing trackers never prove cleanup. Native profile/workflow,
 roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
 membership, keeping their original synchronization and journals without a move-hold
-check. The nightly disk sweeper retains its separate native hold gate.
+check. Only a proven no-op cold naming load omits its interval under Decision 4
+above. The nightly disk sweeper retains its separate native hold gate.
 Strict bounded version1 producer/writer audits append in existing audit_log;
 earlier uncertainty survives later clean outcomes. No extra table, permission
 or auth change. The online move/reset/publication service is removed;
@@ -1621,6 +1652,14 @@ The daemon persists runtime metrics as a time-series of full snapshots in a
 | Retention | 30 days (pruned on each write; module constant `_RETENTION_DAYS`) |
 | Pattern | Append-only — same durable pattern as `audit_log`, but a separate store (no `audit_log` overload) |
 
+The first snapshot is queued on the event loop after successful ASGI/listener
+startup returns and the serving observation has been emitted. Earlier scheduler
+ticks keep all recovery/scheduling work but skip telemetry persistence. The
+initial write and later ticks share the same composer, ~55s throttle, content
+and pruning rules. Neither readiness nor the live metrics route depends on a
+persisted row; the history route already supports an empty store. This is no
+serving-latency claim and moves no recovery after serving.
+
 The snapshot payload is the same dict returned by `GET /api/v1/metrics`:
 `MetricsRegistry.snapshot()` plus live pull-gauges (`tasks`, `jobs_in_flight`,
 `executor_sessions_active`, `run_step_queue_depth`). Both the route and the
@@ -1921,6 +1960,103 @@ machine-local time — host-local night, as intended.)
 
 
 ## Independent nightly disk sweep (THR307)
+
+THR307 seq337 step 3 ownership reads use a new read-only transaction at every
+existing admission boundary. Task and active-job ancestry use the existing task
+primary-key index; all job statuses (including unknown/NULL) are enumerated through
+the existing status index before unfinished rows are fetched in original rowid
+order. Finished orphan jobs still skip lineage. Workspace evidence, terminal
+owner/root and native writer/hold checks keep their meanings. After discovery,
+one read transaction inventories org tasks and job states for final KEEP answers
+only; a failed observation stays kept even if it later heals. The same evaluator
+preserves refusal priority. Successful inventory answers are discarded: every
+existing delete, repair and retry admission opens an independent current read,
+including after slow work. Transaction-local task/job rows are never reused as
+delete authority. Discovery retains its once-per-clone topology inventory for
+KEEP decisions only. In existing candidate order after ownership refusals, a
+no-follow root-directory stat first keeps a root whose mtime or ctime is within
+the existing hour. This observation is final even if the timestamp heals; an
+old root supplies no clearance and still requires every recursive age/tree and
+fresh delete check. Previously observed local/shared uncertainty keeps precedence.
+The earlier recent keep can take precedence over guard/dirt not yet inspected;
+it is a located keep under the unchanged coverage definition. Subsequent guard,
+known mapping/lock/branch and dirty-status refusals are final for the night, even
+after healing. Own directory identities and reciprocal pointer signatures are
+revalidated no-follow before status; unsafe changed locations hold the clone. A clean
+status or successful mapping check is discarded. Kept items perform no later
+admission; deletion still repeats every existing fresh topology, ownership and
+tree gate. There is no schema, index or classification change. Every original destructive
+admission census pass remains in this slice. There is no two-pass
+ordering without real-night step 1 data.
+
+The fresh census also compares recorded shared-directory, reciprocal-pointer and
+pointer-parent identities and literal membership with discovery through the existing
+additive-TASK comparison. A stable replacement between admissions cannot become a
+new baseline. A proven descendant still forces its existing KEEP reason before
+that comparison can matter. Newly proven TASK arrivals remain deferred and locally
+latched. After a successful Git removal, confirmation compares against a copy of
+the original inventory excluding only that candidate's exact root/admin/pointer
+keys and literal names. If no original entries remain, the final admin container
+observation is bound for the fresh confirmation; newly present entries must still
+pass the complete existing proof. A newly observed safe gitdir-gone residue across
+admissions keeps its existing local unknown-location classification and latch,
+never deletion authority; within one three-census proof the TASK-only addition
+rule is unchanged. The reduced inventory is adopted only after fresh unregistration,
+folder absence and named-branch resolution all succeed. Every other original
+HEAD/branch and topology identity stays pinned. Any failed confirmation remains
+partial/unknown. This adds no repair, retry, housekeeping or clearance authority.
+
+The census records every literal ancestor of reciprocal worktree pointers,
+including ancestors above the immediate parent. A replacement that preserves
+its descendant directory inodes still vetoes admission against inventory.
+After the final topology census at remove, permission-repair and retry boundaries,
+a fresh recursive tree snapshot must equal the admitted tree before the existing
+final ownership transaction and effect. New mount evidence or any changed tree
+therefore retains; after a prior attempted effect it remains partial/unknown.
+No original census pass, fresh gate or refusal latch is removed. These remain
+sampled observations, not a racing-rename fence.
+
+Each full worktree admission also revalidates its own directory/pointer identities
+against discovery and compares freshly read HEAD/branch with that inventory.
+The saved identity is a veto on drift, never a successful deletion answer; every
+current topology, ownership, preservation and recursive-tree check still runs.
+After non-force removal, the folder must be absent, the registration gone, and
+the admitted named branch must freshly resolve as a commit. Detached worktrees
+have no named branch to resolve. Failed post-effect resolution keeps the effect
+partial/unknown and coverage incomplete under the existing error classification.
+The exhaustive literal census proves the primary common directory as repo/.git.
+Each gate still resolves the candidate's current common directory and top-level
+through Git and checks the literal directory no-follow; it omits only the
+redundant Git lookup of that primary common directory. No census is omitted.
+
+Ownership is read again after each admission's last recursive snapshot and Git
+gate. The final tree comparison or complete registration census is followed by
+another current ownership/native-writer/hold transaction immediately before
+scratch removal, Git removal, permission repair and retry. Inventory clearance
+never crosses those slow observations. Refusal before an attempted effect retains;
+a refusal after an attempted Git removal remains partial/unknown under the
+existing classification, and no later repair or retry proceeds that night.
+These are sampled observations, not a lock against later same-user writes.
+
+During candidate admission, final removal/repair/retry checks and post-removal
+confirmation, the census skips repeated reads of a disjoint sibling's ordinary
+index/auxiliary file only when its current full stat signature equals discovery.
+Changed or arriving files are fully read. Discovery reads them all. Every census
+still stats every admin object, checks unsafe types/hardlinks, reads all HEADs
+and reciprocal pointers, validates unique locations/ancestry and literal roots,
+and reconciles Git's complete list. Candidate/overlapping registration metadata
+and unknown-location residue validation remain fully read; siblings' stat signatures
+still latch observed changes to their owner. No successful inventory answer is
+reused, and no census, containment or fresh admission boundary is removed.
+
+Worker report publication batches up to 32 nonmutating checkpoint requests.
+The initial report, first initialized org state, outer run boundaries, every org
+exit/error/expiry and each removal intent still flush through the unchanged
+exclusive-pending, no-follow,
+descriptor-relative atomic writer. Intent is published before fresh destructive
+admission; publication refusal prevents that deletion. A crash may leave older
+keep progress, never a completed-night claim or a confirmed unpublished effect.
+The parent still must prove stop/reap and publish closure before night.complete.
 
 THR307 seq337 package step 2 uses the review revision 3 coverage definition.
 The authoritative classification table is `_CLASSIFICATION` in `disk_sweeper.py`.

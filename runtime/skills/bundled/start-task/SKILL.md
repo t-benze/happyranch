@@ -58,6 +58,103 @@ sweeper spec, “Measurement-only additions”, for exact counter/history bounds
 write-confirmation lag and measurement-failure behavior. This grants no cleanup
 or configuration authority.
 
+THR307 seq337 step 3 ownership reads use a new read-only transaction at every
+existing admission boundary. Task and active-job ancestry use the existing task
+primary-key index; all job statuses (including unknown/NULL) are enumerated through
+the existing status index before unfinished rows are fetched in original rowid
+order. Finished orphan jobs still skip lineage. Workspace evidence, terminal
+owner/root and native writer/hold checks keep their meanings. After discovery,
+one read transaction inventories org tasks and job states for final KEEP answers
+only; a failed observation stays kept even if it later heals. The same evaluator
+preserves refusal priority. Successful inventory answers are discarded: every
+existing delete, repair and retry admission opens an independent current read,
+including after slow work. Transaction-local task/job rows are never reused as
+delete authority. Discovery retains its once-per-clone topology inventory for
+KEEP decisions only. In existing candidate order after ownership refusals, a
+no-follow root-directory stat first keeps a root whose mtime or ctime is within
+the existing hour. This observation is final even if the timestamp heals; an
+old root supplies no clearance and still requires every recursive age/tree and
+fresh delete check. Previously observed local/shared uncertainty keeps precedence.
+The earlier recent keep can take precedence over guard/dirt not yet inspected;
+it is a located keep under the unchanged coverage definition. Subsequent guard,
+known mapping/lock/branch and dirty-status refusals are final for the night, even
+after healing. Own directory identities and reciprocal pointer signatures are
+revalidated no-follow before status; unsafe changed locations hold the clone. A clean
+status or successful mapping check is discarded. Kept items perform no later
+admission; deletion still repeats every existing fresh topology, ownership and
+tree gate. There is no schema, index or classification change. Every original destructive
+admission census pass remains in this slice. There is no two-pass
+ordering without real-night step 1 data.
+
+The fresh census also compares recorded shared-directory, reciprocal-pointer and
+pointer-parent identities and literal membership with discovery through the existing
+additive-TASK comparison. A stable replacement between admissions cannot become a
+new baseline. A proven descendant still forces its existing KEEP reason before
+that comparison can matter. Newly proven TASK arrivals remain deferred and locally
+latched. After a successful Git removal, confirmation compares against a copy of
+the original inventory excluding only that candidate's exact root/admin/pointer
+keys and literal names. If no original entries remain, the final admin container
+observation is bound for the fresh confirmation; newly present entries must still
+pass the complete existing proof. A newly observed safe gitdir-gone residue across
+admissions keeps its existing local unknown-location classification and latch,
+never deletion authority; within one three-census proof the TASK-only addition
+rule is unchanged. The reduced inventory is adopted only after fresh unregistration,
+folder absence and named-branch resolution all succeed. Every other original
+HEAD/branch and topology identity stays pinned. Any failed confirmation remains
+partial/unknown. This adds no repair, retry, housekeeping or clearance authority.
+
+The census records every literal ancestor of reciprocal worktree pointers,
+including ancestors above the immediate parent. A replacement that preserves
+its descendant directory inodes still vetoes admission against inventory.
+After the final topology census at remove, permission-repair and retry boundaries,
+a fresh recursive tree snapshot must equal the admitted tree before the existing
+final ownership transaction and effect. New mount evidence or any changed tree
+therefore retains; after a prior attempted effect it remains partial/unknown.
+No original census pass, fresh gate or refusal latch is removed. These remain
+sampled observations, not a racing-rename fence.
+
+Each full worktree admission also revalidates its own directory/pointer identities
+against discovery and compares freshly read HEAD/branch with that inventory.
+The saved identity is a veto on drift, never a successful deletion answer; every
+current topology, ownership, preservation and recursive-tree check still runs.
+After non-force removal, the folder must be absent, the registration gone, and
+the admitted named branch must freshly resolve as a commit. Detached worktrees
+have no named branch to resolve. Failed post-effect resolution keeps the effect
+partial/unknown and coverage incomplete under the existing error classification.
+The exhaustive literal census proves the primary common directory as repo/.git.
+Each gate still resolves the candidate's current common directory and top-level
+through Git and checks the literal directory no-follow; it omits only the
+redundant Git lookup of that primary common directory. No census is omitted.
+
+Ownership is read again after each admission's last recursive snapshot and Git
+gate. The final tree comparison or complete registration census is followed by
+another current ownership/native-writer/hold transaction immediately before
+scratch removal, Git removal, permission repair and retry. Inventory clearance
+never crosses those slow observations. Refusal before an attempted effect retains;
+a refusal after an attempted Git removal remains partial/unknown under the
+existing classification, and no later repair or retry proceeds that night.
+These are sampled observations, not a lock against later same-user writes.
+
+During candidate admission, final removal/repair/retry checks and post-removal
+confirmation, the census skips repeated reads of a disjoint sibling's ordinary
+index/auxiliary file only when its current full stat signature equals discovery.
+Changed or arriving files are fully read. Discovery reads them all. Every census
+still stats every admin object, checks unsafe types/hardlinks, reads all HEADs
+and reciprocal pointers, validates unique locations/ancestry and literal roots,
+and reconciles Git's complete list. Candidate/overlapping registration metadata
+and unknown-location residue validation remain fully read; siblings' stat signatures
+still latch observed changes to their owner. No successful inventory answer is
+reused, and no census, containment or fresh admission boundary is removed.
+
+Worker report publication batches up to 32 nonmutating checkpoint requests.
+The initial report, first initialized org state, outer run boundaries, every org
+exit/error/expiry and each removal intent still flush through the unchanged
+exclusive-pending, no-follow,
+descriptor-relative atomic writer. Intent is published before fresh destructive
+admission; publication refusal prevents that deletion. A crash may leave older
+keep progress, never a completed-night claim or a confirmed unpublished effect.
+The parent still must prove stop/reap and publish closure before night.complete.
+
 THR307 seq337 package step 2 uses the review revision 3 coverage definition.
 The authoritative classification table is `_CLASSIFICATION` in `disk_sweeper.py`.
 Candidate-own missing, cyclic or malformed task ancestry retains that candidate
@@ -205,6 +302,8 @@ restart, or use a manual cleanup fallback on this note's authority.
 
 Frozen Mac daemon cleanup helpers enter the fixed hidden `--cleanup-helper`
 dispatch (`disk-sweep`, `worktree-safety`, `check-path-use`) before daemon startup.
+The same closed entry also supports `repository-git`/`repository-reader` in both
+frozen daemon and CLI; source repository children retain Python `-I` script argv.
 Source helper argv stays Python `-m`/script-based. The sweep revision hashes
 loader code (`code-sha256:`), with no loose-source requirement or fabricated
 fallback; unavailable code prevents worker launch. This grants agents no new

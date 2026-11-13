@@ -9,6 +9,7 @@ import uuid
 import logging
 import hashlib
 import json
+import sqlite3
 import time
 from datetime import datetime, timezone
 from contextlib import contextmanager, nullcontext
@@ -414,6 +415,35 @@ class ProducerMoveAdmission:
         except BaseException:
             self.db._conn.rollback()
             raise
+
+    def retain_failed_naming_load(self) -> None:
+        """Retain the original active evidence before an unclean cold load aborts.
+
+        Only the unpublished naming loader calls this after failed SQL cleanup.
+        Discard its poisoned connection, lend the DB facade a writer-only
+        connection under the native locks, and restore the closed original.
+        The caller must rethrow: no store or serving caller may use this DB.
+        """
+        with self.move.gate, self.db._lock:
+            failed = self.db._conn
+            if not failed.in_transaction:
+                raise DeferredTeamMove('team_move_writer_sql_owner_unavailable')
+            failed.close()
+            conn = sqlite3.connect(self.db.db_path.resolve().as_uri() + '?mode=rw', uri=True)
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute('PRAGMA foreign_keys=ON')
+                self.db._conn = conn
+                key = uuid.uuid4().hex
+                state = NativeWriterLifecycle(org_slug=self.move.store.org_slug,
+                    writer_id=key, publisher='identity_names_load', agents=(), teams=())
+                self.write_writer(state)
+                self.writer_epoch += 1
+                self.writers[key] = dict(owner_id=key, publisher=state.publisher, agents=(), teams=())
+                # No terminal evidence: closing a failed proof is not settlement.
+            finally:
+                self.db._conn = failed
+                conn.close()
 
     def check_uncommitted(self, *, agents=(), teams=(), global_write=False):
         row = self.move.active_uncommitted()

@@ -1471,10 +1471,10 @@ def registration_signature_diagnostic(kind: str) -> dict:
                 change('complete snapshot -> ordinary read')
             return tree
 
-        def metadata(root: Path, limit: float) -> ds._Registrations:
+        def metadata(root: Path, limit: float, **kwargs) -> ds._Registrations:
             nonlocal census_count
             assert limit == deadline
-            observed = real_metadata(root, limit)
+            observed = real_metadata(root, limit, **kwargs)
             census_count += 1
             if census_count == 1 and kind in ('pre_git', 'appeared', 'disappeared', 'first_cause'):
                 before = raw(note)
@@ -1780,8 +1780,8 @@ def residue_cases(*, unsafe=False):
                     before = residue_bytes() if kind in positive else None
                     refs = f.git(repo, 'show-ref'); calls = []; events = []
                     realgit, realmeta, realsnap, realfile = ds.git, ds._registration_metadata, ds.snapshot, ds._metadata_file
-                    def metadata(root, deadline):
-                        value = realmeta(root, deadline)
+                    def metadata(root, deadline, **kwargs):
+                        value = realmeta(root, deadline, **kwargs)
                         if root == repo:
                             events.append('census')
                             if kind == 'entry_race' and events.count('census') == 1:
@@ -1902,8 +1902,8 @@ def registration_arrival(seam: str, preview: bool) -> dict:
         if seam == 'plain': introduce()
         before = candidate_contents(peer, repo / '.git', *([new] if new.exists() else []))
         census = []
-        def metadata(root, deadline):
-            value = realmeta(root, deadline)
+        def metadata(root, deadline, **kwargs):
+            value = realmeta(root, deadline, **kwargs)
             if root == repo:
                 census.append(True)
                 if len(census) == 1 and seam in ('pre_git', 'plain_pre_git', 'non_task', 'existing'): introduce()
@@ -2528,8 +2528,8 @@ def residue_topology_transitions():
                     else:
                         e.rename(e.with_name('held'));e.mkdir()
                     events.append(kind)
-                def metadata(root,deadline):
-                    value=realmeta(root,deadline)
+                def metadata(root,deadline,**kwargs):
+                    value=realmeta(root,deadline,**kwargs)
                     if root==repo and not events and when=='pre_git': change()
                     return value
                 def git(root,deadline,*args):
@@ -3335,8 +3335,8 @@ def residue_scheduled():
                 q=None; repo=z
             else: repo,c,q,e,d=projection_input(later,kind,paths[1])
             events=[];calls=[]; realmeta,realgit=ds._registration_metadata,ds.git
-            def metadata(root,deadline):
-                value=realmeta(root,deadline)
+            def metadata(root,deadline,**kwargs):
+                value=realmeta(root,deadline,**kwargs)
                 if kind=='earlier_org' and root==p and getattr(value, 'residues', {}):
                     events.append('later residue census')
                 return value
@@ -3765,10 +3765,20 @@ def c24():
             with patch.object(ds._Measurements, 'record', side_effect=ValueError('controlled measurement failure')):
                 failed = ds.sweep([str(f.org)], deadline, summary, **common)
         encode = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
-        assert encode(legacy) == encode(measurement_legacy(measured)), (legacy, measured)
-        assert encode(legacy) == encode(measurement_legacy(failed)), (legacy, failed)
+        # Step 3 explicitly puts a recent-root keep before dirty status. The
+        # same real-clock root is recent AND dirty: assert the exact permitted
+        # delta, then compare every remaining legacy report/audit byte.
+        assert row(legacy['orgs'][0], q)['reason'] == 'dirty_or_untracked'
+        assert row(legacy['orgs'][0], q)['dirty_paths'] == [' M source', '']
+        assert legacy['orgs'][0]['retained_reasons'] == {'changed_within_hour': 1, 'dirty_or_untracked': 1}
+        expected = json.loads(encode(legacy))
+        row(expected['orgs'][0], q)['reason'] = 'changed_within_hour'
+        del row(expected['orgs'][0], q)['dirty_paths']
+        expected['orgs'][0]['retained_reasons'] = {'changed_within_hour': 2}
+        assert encode(expected) == encode(measurement_legacy(measured)), (expected, measured)
+        assert encode(expected) == encode(measurement_legacy(failed)), (expected, failed)
         for report in (measured, failed):
-            assert encode(old._audit_payload(legacy, legacy['orgs'][0], summary)) == encode(measurement_legacy(ds._audit_payload(report, report['orgs'][0], summary)))
+            assert encode(old._audit_payload(expected, expected['orgs'][0], summary)) == encode(measurement_legacy(ds._audit_payload(report, report['orgs'][0], summary)))
         assert failed['orgs'][0]['measurements']['errors']['count'] > 0, failed
         assert candidate_contents(p, q) == before and f.git(repo, 'show-ref', '--heads') == refs
         assert measured['revision'] == 'synthetic-code-binding'
@@ -3841,13 +3851,13 @@ def c25():
             metrics = candidate['measurement']
             counters = report['measurements']['clones'][str(repo)]
             assert report['measurements']['errors']['count'] == 0, report
-            assert len(calls) == counters['topology_reads'] == (2 if dirty else 9), (calls, counters)
-            assert counters['censuses'] == (6 if dirty else 27), counters
-            assert counters['ownership_reads'] == (1 if dirty else 4), counters
+            assert len(calls) == counters['topology_reads'] == (1 if dirty else 9), (calls, counters)
+            assert counters['censuses'] == (3 if dirty else 27), counters
+            assert counters['ownership_reads'] == (0 if dirty else 7), counters
             assert counters['entries_walked'] == sum(snapshots), (counters, snapshots)
-            assert counters['git']['worktree list']['calls'] == (2 if dirty else 9), counters
-            assert counters['git']['status']['calls'] == (1 if dirty else 6), counters
-            assert counters['git']['rev-parse']['calls'] == (3 if dirty else 18), counters
+            assert counters['git']['worktree list']['calls'] == (1 if dirty else 9), counters
+            assert counters['git']['status']['calls'] == (1 if dirty else 7), counters
+            assert counters['git'].get('rev-parse', {}).get('calls', 0) == (0 if dirty else 13), counters
             assert ('rev-list' not in counters['git']) if dirty else counters['git']['rev-list']['calls'] == 6
             assert counters['gitdir_gone_count'] == 0, counters
             for value in counters['git'].values():
@@ -3951,7 +3961,7 @@ def c26():
         assert history['reports'] == window_reports and history['bytes_read'] == window_reports * report_bytes, history
         assert json.loads(summary.read_text())['measurement_history'] == history
         assert ds._audit_payload(report, report['orgs'][0], summary)['measurement_history'] == history
-        retained(report['orgs'][0], p, 'dirty_or_untracked')
+        retained(report['orgs'][0], p, 'changed_within_hour')
         observations.append(dict(input='32 valid production-sized reports', bytes_per_report=report_bytes, total_bytes=32 * report_bytes, history=history, kept_since=kept['measurement']['kept_since']))
         # A malformed report inside the readable window still fails visibly,
         # even after a newer valid report has contributed a date.
@@ -3960,7 +3970,7 @@ def c26():
         history = report['measurement_history']
         assert history['status'] == 'unavailable:JSONDecodeError' and history['reports'] == 1, history
         assert row(report['orgs'][0], p)['measurement']['kept_since'] == '2026-11-14', history
-        retained(report['orgs'][0], p, 'dirty_or_untracked')
+        retained(report['orgs'][0], p, 'changed_within_hour')
         observations.append(dict(input='malformed second report', history=history))
         paths[-2].write_bytes(raw)
         # The first file outside the remaining aggregate allowance is also
@@ -3971,7 +3981,7 @@ def c26():
         history = report['measurement_history']
         assert history['status'] == 'unavailable:Retain' and history['reports'] == window_reports, history
         assert row(report['orgs'][0], p)['measurement']['kept_since'] == '2026-11-14', history
-        retained(report['orgs'][0], p, 'dirty_or_untracked')
+        retained(report['orgs'][0], p, 'changed_within_hour')
         observations.append(dict(input='oversized boundary report', history=history))
     return observations
 
@@ -4061,8 +4071,8 @@ def c28():
             if kind == 'denied_parent': p.parent.chmod(0)
             if kind == 'conflict': (repo / '.git/worktrees/TASK-2/gitdir').write_text(str(p / '.git') + '\n')
             realmeta = ds._registration_metadata; events = []
-            def metadata(root, deadline):
-                value = realmeta(root, deadline)
+            def metadata(root, deadline, **kwargs):
+                value = realmeta(root, deadline, **kwargs)
                 if kind in ('reappeared', 'repointed') and root == repo and not events:
                     if kind == 'reappeared': p.mkdir()
                     else: (entry / 'gitdir').write_text(str(peer / '.git') + '\n')
@@ -4247,12 +4257,1695 @@ def c30():
         return dict(current=records, previous=prior, automatic_recovery=False)
 
 
+OWNERSHIP_BASE = '2b61f5c480974b494ccdbabd591c878a48b7d8f5'
+
+
+def ownership_base():
+    """C24 pattern: execute pinned production source, not a policy oracle mock."""
+    def source(path):
+        return subprocess.run(['git', 'show', f'{OWNERSHIP_BASE}:{path}'], check=True, capture_output=True).stdout
+    old_fs = ModuleType('ownership_base_fs')
+    exec(compile(source('runtime/daemon/_disk_sweep_fs.py'), '<ownership base fs>', 'exec'), old_fs.__dict__)
+    old = ModuleType('ownership_base_sweeper')
+    with patch.dict(sys.modules, {'runtime.daemon._disk_sweep_fs': old_fs}):
+        exec(compile(source('runtime/daemon/disk_sweeper.py'), '<ownership base sweeper>', 'exec'), old.__dict__)
+    return old
+
+
+def ownership_indexes(f):
+    """Copies of EXISTING production indexes, only on this disposable database."""
+    f.db.executescript('''
+    CREATE INDEX jobs_status_idx ON jobs(status);
+    CREATE INDEX jobs_task_id_idx ON jobs(task_id);
+    CREATE INDEX idx_audit_log_task_id ON audit_log(task_id);
+    ''')
+
+
+def ownership_decisions(report, base):
+    """Compare policy outputs, excluding clocks, inode allocation and counters."""
+    return dict(outcome=report['outcome'], coverage=report['coverage'],
+                candidates=[{key: str(c[key]).replace(str(base), '<fixture>') for key in
+                             ('phase', 'path', 'state', 'reason') if key in c}
+                            for c in report['candidates']])
+
+
+def c31():
+    """Identical-input base/current ownership and whole-org decision parity."""
+    old = ownership_base()
+    # Literal expected reasons are independent of either implementation.
+    table = [
+        ('ended', '', None),
+        ('open_intermediate', "INSERT INTO tasks VALUES('TASK-5','TASK-1','in_progress','maker'); UPDATE tasks SET parent_task_id='TASK-5' WHERE id='TASK-2';", None),
+        ('terminal_orphans', "INSERT INTO jobs VALUES('gone','completed'),('gone','failed'),('gone','rejected');", None),
+        ('unrelated_active', "INSERT INTO jobs VALUES('TASK-4','running');", None),
+        ('pending_sibling', "INSERT INTO jobs VALUES('TASK-3','pending');", 'active_job:pending'),
+        ('queued_sibling', "INSERT INTO jobs VALUES('TASK-3','queued');", 'active_job:queued'),
+        ('running_sibling', "INSERT INTO jobs VALUES('TASK-3','running');", 'active_job:running'),
+        ('unknown_status', "INSERT INTO jobs VALUES('TASK-4','unrecognised');", 'unknown_job_status'),
+        ('null_status', "INSERT INTO jobs VALUES('TASK-4',NULL);", 'unknown_job_status'),
+        ('missing_job_owner', "INSERT INTO jobs VALUES('missing','running');", 'unknown_missing_or_cyclic_lineage'),
+        ('malformed_job_owner', "INSERT INTO jobs VALUES('','running');", 'unknown_malformed_job_or_task_lineage'),
+        ('null_job_owner', "INSERT INTO jobs VALUES(NULL,'running');", 'unknown_malformed_job_or_task_lineage'),
+        ('job_cycle', "UPDATE tasks SET parent_task_id='TASK-4' WHERE id='TASK-4'; INSERT INTO jobs VALUES('TASK-4','running');", 'unknown_missing_or_cyclic_lineage'),
+        ('missing_task', "DELETE FROM tasks WHERE id='TASK-2';", 'unknown_missing_or_cyclic_lineage'),
+        ('candidate_cycle', "UPDATE tasks SET parent_task_id='TASK-2' WHERE id='TASK-1';", 'unknown_missing_or_cyclic_lineage'),
+        ('malformed_parent', "UPDATE tasks SET parent_task_id='' WHERE id='TASK-1';", 'unknown_conflicting_lineage'),
+        ('open_root', "UPDATE tasks SET status='in_progress' WHERE id='TASK-1';", 'task_or_root_not_terminal:in_progress'),
+        ('open_task', "UPDATE tasks SET status='pending' WHERE id='TASK-2';", 'task_or_root_not_terminal:pending'),
+        ('wrong_workspace', "UPDATE tasks SET assigned_agent='other' WHERE id='TASK-2';", 'unknown_owner_workspace'),
+        ('missing_workspace', "DELETE FROM audit_log WHERE task_id='TASK-2';", 'unknown_missing_or_conflicting_workspace_evidence'),
+        ('malformed_workspace', "UPDATE audit_log SET payload='[]' WHERE task_id='TASK-2';", 'unknown_workspace_evidence'),
+        ('conflicting_workspace', "INSERT INTO audit_log(task_id,action,payload) VALUES('TASK-2','session_start','{\"workspace\":\"/other\"}');", 'unknown_missing_or_conflicting_workspace_evidence'),
+        ('single_null_task', "INSERT INTO tasks VALUES(NULL,NULL,'completed','maker');", None),
+        ('duplicate_null_tasks', "INSERT INTO tasks VALUES(NULL,NULL,'completed','maker'),(NULL,NULL,'completed','maker');", 'unknown_conflicting_lineage'),
+        ('active_before_unknown', "INSERT INTO jobs VALUES('TASK-3','running'),('TASK-4','unrecognised');", 'active_job:running'),
+        ('unknown_before_active', "INSERT INTO jobs VALUES('TASK-4','unrecognised'),('TASK-3','running');", 'unknown_job_status'),
+    ]
+    observations = []
+    for label, sql, expected in table:
+        with fixture() as f:
+            ownership_indexes(f)
+            f.task('TASK-1')
+            path = f.scratch('TASK-2', parent='TASK-1')
+            f.task('TASK-3', parent='TASK-1'); f.task('TASK-4')
+            f.db.executescript(sql)
+            before = candidate_contents(path)
+            answers = []
+            for module in (old, ds):
+                try:
+                    module.Evidence(f.org, time.monotonic() + 10).ownership(path, f.workspace, path.name)
+                    answers.append((None, None))
+                except Exception as exc:
+                    answers.append((str(exc), getattr(exc, 'finding', None)))
+            assert answers[0] == answers[1] and answers[1][0] == expected, (label, expected, answers)
+            reports = [module.sweep_org(f.org, time.monotonic() + 15, mode='dry_run', now=NOW) for module in (old, ds)]
+            decisions = [ownership_decisions(report, f.base) for report in reports]
+            assert decisions[0] == decisions[1], (label, decisions)
+            actual = row(reports[1], path)
+            assert actual['state'] == ('retained' if expected else 'eligible'), (label, actual)
+            assert actual.get('reason') == expected, (label, actual)
+            assert candidate_contents(path) == before, label
+            observations.append(dict(variant=label, reason=expected, finding=answers[1][1], result='PASS'))
+    return dict(base=OWNERSHIP_BASE, variants=observations, equivalence_differences=[],
+                limits='same-input real SQLite/scratch preview; large actual removal equivalence is C33')
+
+
+def c32():
+    """Ownership changes after eligible inventory must refuse final removal."""
+    variants = {
+        'task_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'", "UPDATE tasks SET status='completed' WHERE id='TASK-2'", 'task_or_root_not_terminal:in_progress'),
+        'root_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-1'", "UPDATE tasks SET status='completed' WHERE id='TASK-1'", 'task_or_root_not_terminal:in_progress'),
+        'root_reparented': ("UPDATE tasks SET parent_task_id='TASK-4' WHERE id='TASK-1'", "UPDATE tasks SET parent_task_id=NULL WHERE id='TASK-1'", 'task_or_root_not_terminal:in_progress'),
+        'new_sibling_job': ("INSERT INTO jobs VALUES('TASK-3','pending')", "DELETE FROM jobs WHERE status='pending'", 'active_job:pending'),
+        'job_status_unknown': ("UPDATE jobs SET status='unrecognised'", "UPDATE jobs SET status='completed'", 'unknown_job_status'),
+        'job_ancestry_unknown': ("INSERT INTO jobs VALUES('missing','running')", "DELETE FROM jobs WHERE status='running'", 'unknown_missing_or_cyclic_lineage'),
+    }
+    observations, failures = [], []
+    old = ownership_base()
+    for phase in ('scratch', 'worktree'):
+        for label, (change, heal, expected) in variants.items():
+            for module in (old, ds):
+                try:
+                    with fixture() as f:
+                        ownership_indexes(f)
+                        f.task('TASK-1'); f.task('TASK-3', parent='TASK-1'); f.task('TASK-4', status='in_progress')
+                        if phase == 'scratch':
+                            path = f.scratch('TASK-2', parent='TASK-1')
+                            peer = f.scratch('TASK-9')
+                            repo = None
+                        else:
+                            repo, path = f.worktree('TASK-2')
+                            _, peer = f.worktree('TASK-9')
+                            f.db.execute("UPDATE tasks SET parent_task_id='TASK-1' WHERE id='TASK-2'")
+                        f.db.execute("INSERT INTO jobs VALUES('TASK-3','completed')"); f.db.commit()
+                        before = candidate_contents(path)
+                        refs = f.git(repo, 'show-ref') if repo else None
+                        result, events, actions = {}, [], []
+                        real_git = module.git
+                        def git(root, deadline, *args):
+                            if args[:2] == ('worktree', 'remove'): actions.append(args[2])
+                            return real_git(root, deadline, *args)
+                        def checkpoint():
+                            target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                            if target and target['state'] == 'eligible' and not events:
+                                f.db.execute(change); f.db.commit(); events.append('changed_after_inventory')
+                            elif target and target['state'] == 'retained' and events == ['changed_after_inventory']:
+                                assert target.get('reason') == expected, (phase, label, target)
+                                f.db.execute(heal); f.db.commit()
+                                # A fresh read really passes now; the night's failed
+                                # observation must still retain the original item.
+                                module.Evidence(f.org, time.monotonic() + 10).ownership(path, f.workspace, path.name)
+                                events.append('healed_after_refusal')
+                        with patch.object(module, 'git', git):
+                            report = module.sweep_org(f.org, time.monotonic() + 30, mode='on', now=NOW, result=result, checkpoint=checkpoint)
+                        assert events == ['changed_after_inventory', 'healed_after_refusal'], (phase, label, events, row(report, path))
+                        retained(report, path, expected)
+                        assert candidate_contents(path) == before and str(path) not in actions, (phase, label, actions)
+                        if repo: assert f.git(repo, 'show-ref') == refs
+                        org_held = label in ('job_status_unknown', 'job_ancestry_unknown')
+                        assert row(report, peer)['state'] == ('retained' if org_held else 'removed'), (phase, label, row(report, peer))
+                        if org_held and module is ds: assert report['org_hold'] == expected
+                        observations.append(dict(module='base' if module is old else 'new', phase=phase, race=label, result='PASS', reason=expected, events=events))
+                except AssertionError as exc:
+                    failures.append(dict(phase=phase, race=label, result='FAIL', error=str(exc)[:2000]))
+    # Keep all rows attributable in the intended-fail mutation run.
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, limits='ownership races only; complete non-ownership Step3 race table remains required')
+
+
+
+def c33():
+    """Full-size synthetic fixture, actual base/new sweeps, no live data reads."""
+    import hashlib
+    scratch_root = Path(os.environ['TMPDIR']).resolve()
+    assert 'task-tmp' in scratch_root.parts, 'C33 requires TMPDIR in runtime task-tmp, never output/'
+    old = ownership_base()
+    measurements, decisions = {}, {}
+    for label, module in (('base', old), ('new', ds)):
+        with patch.object(tempfile, 'tempdir', str(scratch_root)), fixture() as first:
+            orgs = [first]
+            other_base = first.base / 'second'; other_base.mkdir()
+            second = Fixture(other_base); orgs.append(second)
+            # Same runtime, distinct orgs, two clones per org. All data/content
+            # is generated here; no live DB rows or worktree contents are read.
+            second.db.close()
+            old_org = second.org
+            second.org = first.org.with_name('second')
+            old_org.rename(second.org)
+            second.workspace = second.org / 'workspaces/maker'
+            second.db = sqlite3.connect(second.org / 'happyranch.db')
+            try:
+                for f in orgs:
+                    ownership_indexes(f)
+                    f.task('TASK-9000')
+                    for index in range(370):
+                        f.scratch(f'TASK-{index + 1}', status='completed' if index < 4 else 'in_progress', parent='TASK-9000')
+                    for clone in range(2):
+                        for index in range(215):
+                            name = f'TASK-{1000 + clone * 215 + index}'
+                            _, path = f.worktree(name, project=f'project-{clone}')
+                            f.db.execute("UPDATE tasks SET parent_task_id='TASK-9000' WHERE id=?", (name,))
+                            if index >= 2:
+                                if index % 2:
+                                    (path / 'source').write_text('uncommitted synthetic fixture\n')
+                                else:
+                                    f.db.execute('UPDATE tasks SET status=? WHERE id=?', ('in_progress', name))
+                    remaining = 7950 - f.db.execute('SELECT count(*) FROM tasks').fetchone()[0]
+                    f.db.executemany('INSERT INTO tasks VALUES(?,NULL,?,?)',
+                                     ((f'TASK-{10000 + n}', 'completed', 'maker') for n in range(remaining)))
+                    f.db.executemany('INSERT INTO jobs VALUES(?,?)', (('historical-orphan', ('completed', 'failed', 'rejected')[n % 3]) for n in range(3349)))
+                    f.db.execute("INSERT INTO jobs VALUES('TASK-10000','running')")
+                    f.db.commit()
+                summary = first.base / 'daemon/disk-sweep' / (label + '.json')
+                started = time.monotonic()
+                with patch.object(time, 'time', return_value=NOW):
+                    report = module.sweep([str(f.org) for f in orgs], started + 1800, summary,
+                                          dry_run=False, scheduled_date='fixture-date', revision='synthetic-step3-fixture',
+                                          runtime_root=first.base / 'runtime')
+                elapsed = time.monotonic() - started
+                combined = dict(wall_seconds=elapsed, git={}, censuses=0, topology_reads=0, ownership_reads=0, report_writes=0,
+                                candidates=0, removed=0, retained=0, outcome=report['outcome'], orgs=[])
+                projected = []
+                for item in report['orgs']:
+                    counters = item['measurements']['counters']
+                    for key in ('censuses', 'topology_reads', 'ownership_reads', 'report_writes'):
+                        combined[key] += counters[key]
+                    for command, counts in counters['git'].items():
+                        combined['git'][command] = combined['git'].get(command, 0) + counts['calls']
+                    combined['candidates'] += len(item['candidates'])
+                    combined['removed'] += sum(c['state'] == 'removed' for c in item['candidates'])
+                    combined['retained'] += sum(c['state'] == 'retained' for c in item['candidates'])
+                    combined['orgs'].append(dict(org=item['org'], outcome=item['outcome'], coverage=item['coverage']))
+                    projected.append(ownership_decisions(item, first.base))
+                raw = json.dumps(projected, sort_keys=True, separators=(',', ':')).encode()
+                combined['decision_sha256'] = hashlib.sha256(raw).hexdigest()
+                measurements[label], decisions[label] = combined, projected
+                # Flush bounded metrics as each side finishes, even if later
+                # measurement/equivalence fails. Full trees stay only task-tmp.
+                print(json.dumps(dict(production_fixture_side=label, measurement=combined)), flush=True)
+            finally:
+                second.db.close()
+    assert measurements['base']['candidates'] == measurements['new']['candidates'] == 1600, measurements
+    assert measurements['base']['removed'] == measurements['new']['removed'] == 16, measurements
+    assert decisions['base'] == decisions['new'], measurements
+    return dict(base=OWNERSHIP_BASE, shape=dict(orgs=2, clones=4, linked_registrations=860, primary_registrations=4,
+                candidates=1600, tasks=15900, jobs=6700), measurements=measurements, equivalence_differences=[],
+                limits='disposable Linux fixture only; no real-night timing, under-ten-minute target, Darwin or absence-of-loss proof')
+
+
+def c34():
+    """Batched real publication retains crash intent and refuses unsafe paths."""
+    observations, failures = [], []
+    old = ownership_base()
+    with fixture() as f:
+        for index in range(40): f.scratch(f'TASK-{index + 1}', status='in_progress')
+        before = candidate_contents(*(f.workspace / '.happyranch/task-tmp').iterdir())
+        reports, writes = [], []
+        for label, module in (('base', old), ('new', ds)):
+            summary = f.base / 'daemon/disk-sweep' / (label + '.json')
+            real_publication, published = module.atomic_json, []
+            def publication(path, value):
+                real_publication(path, value)
+                published.append(json.loads(path.read_text()))
+            with patch.object(module, 'atomic_json', publication):
+                reports.append(module.sweep([str(f.org)], time.monotonic() + 20, summary,
+                    dry_run=False, scheduled_date='2026-11-13', revision='checkpoint-fixture'))
+            writes.append(len(published))
+            assert all(not p.get('night', {}).get('complete', False) for p in published), label
+            for item in reports[-1]['orgs'][0]['candidates']:
+                assert item['state'] == 'retained' and item['reason'] == 'task_or_root_not_terminal:in_progress', item
+        assert ownership_decisions(reports[0]['orgs'][0], f.base) == ownership_decisions(reports[1]['orgs'][0], f.base)
+        assert writes[1] < writes[0] / 4, writes
+        assert candidate_contents(*(f.workspace / '.happyranch/task-tmp').iterdir()) == before
+        assert reports[1]['night']['reasons'] == ['supervisor_closure_unproven'], reports[1]['night']
+        observations.append(dict(variant='forty_located_keeps', base_writes=writes[0], new_writes=writes[1], decision_differences=[]))
+        # Abrupt process death while unpublished keep progress is in memory.
+        original, calls = ds._summarize_org, []
+        def interrupted(value):
+            original(value)
+            finished = [c['path'] for c in value.get('candidates', []) if c['state'] == 'retained']
+            calls[:] = finished
+            if len(finished) == 3: raise KeyboardInterrupt('synthetic abrupt stop between batches')
+        summary = f.base / 'daemon/disk-sweep/crash-keeps.json'
+        try:
+            with patch.object(ds, '_summarize_org', interrupted):
+                ds.sweep([str(f.org)], time.monotonic() + 20, summary,
+                    dry_run=False, scheduled_date='2026-11-13', revision='checkpoint-fixture')
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError('crash was not reached')
+        saved = ds._read_json(summary)
+        assert saved['outcome'] == 'incomplete' and 'finished_at' not in saved, saved
+        assert not saved.get('night', {}).get('complete', False)
+        assert not any(c['state'] in ('removed', 'eligible') for o in saved['orgs'] for c in o.get('candidates', []))
+        observations.append(dict(variant='crash_between_keep_batches', calls=len(calls), persisted_outcome=saved['outcome']))
+
+    for phase in ('scratch', 'worktree'):
+        try:
+            with fixture() as f:
+                if phase == 'scratch': path = f.scratch('TASK-1')
+                else: _, path = f.worktree('TASK-1')
+                before = candidate_contents(path)
+                summary = f.base / 'daemon/disk-sweep/crash-intent.json'
+                reached = []
+                def crash():
+                    saved = ds._read_json(summary)
+                    target = row(saved['orgs'][0], path)
+                    assert target['state'] == 'mutation_in_flight', (phase, target)
+                    records = saved['orgs'][0]['interrupted_removals']
+                    assert len(records) == 1 and records[0]['path'] == str(path) and records[0]['effect'] == 'unknown', records
+                    assert not saved.get('night', {}).get('complete', False) and saved['outcome'] == 'incomplete'
+                    reached.append('persisted_before_effect')
+                    raise KeyboardInterrupt('synthetic abrupt stop before removal')
+                original_git = ds.git
+                def git(repo, deadline, *args):
+                    if args[:2] == ('worktree', 'remove'): crash()
+                    return original_git(repo, deadline, *args)
+                def mutate(*args, **kwargs): crash()
+                try:
+                    with patch.object(time, 'time', return_value=NOW), patch.object(ds, 'git', git), patch.object(ds, 'mutate', mutate):
+                        ds.sweep([str(f.org)], time.monotonic() + 20, summary,
+                            dry_run=False, scheduled_date='2026-11-13', revision='checkpoint-fixture')
+                except KeyboardInterrupt:
+                    pass
+                assert reached == ['persisted_before_effect'] and candidate_contents(path) == before, (phase, reached)
+                observations.append(dict(variant='crash_before_' + phase + '_remove', persisted_intent=True, effects=False))
+        except AssertionError as exc:
+            failures.append(dict(variant=phase, error=str(exc)[:2000]))
+
+    for variant in ('pending_file', 'pending_symlink', 'pending_hardlink', 'final_hardlink', 'parent_symlink'):
+        try:
+            with fixture() as f:
+                path = f.scratch('TASK-1')
+                before = candidate_contents(path)
+                summary = f.base / 'daemon/disk-sweep/refused.json'
+                sentinel = f.base / 'sentinel'; sentinel.write_bytes(b'protected publication sentinel\n')
+                original, changes = ds.admit, []
+                saved_path = summary
+                pending = summary.with_name(summary.name + '.pending')
+                def admit(*args, **kwargs):
+                    nonlocal saved_path
+                    tree = original(*args, **kwargs)
+                    if not changes:
+                        changes.append('after_inventory_before_delete')
+                        if variant == 'pending_file': pending.write_bytes(b'unowned pending\n')
+                        elif variant == 'pending_symlink': pending.symlink_to(sentinel)
+                        elif variant == 'pending_hardlink': os.link(sentinel, pending)
+                        elif variant == 'final_hardlink': os.link(summary, f.base / 'other-report-link')
+                        else:
+                            held = f.base / 'held-reports'
+                            summary.parent.rename(held); summary.parent.symlink_to(held, target_is_directory=True)
+                            saved_path = held / summary.name
+                    return tree
+                refused = None
+                try:
+                    with patch.object(ds, 'admit', admit), patch.object(time, 'time', return_value=NOW):
+                        ds.sweep([str(f.org)], time.monotonic() + 20, summary,
+                            dry_run=False, scheduled_date='2026-11-13', revision='checkpoint-fixture')
+                except (OSError, ds.Retain) as exc:
+                    refused = str(exc)
+                assert changes == ['after_inventory_before_delete'] and refused, (variant, changes, refused)
+                assert path.exists(), (variant, 'candidate removed before safe intent publication')
+                assert candidate_contents(path) == before and sentinel.read_bytes() == b'protected publication sentinel\n', variant
+                # The hardlinked-target variant intentionally makes the
+                # production reader refuse too; inspect our fixture bytes.
+                saved = json.loads(saved_path.read_text())
+                assert saved['outcome'] == 'incomplete' and not saved.get('night', {}).get('complete', False), (variant, saved)
+                if variant == 'pending_file': assert pending.read_bytes() == b'unowned pending\n'
+                observations.append(dict(variant=variant, refusal=refused, effects=False, sentinel='unchanged'))
+        except AssertionError as exc:
+            failures.append(dict(variant=variant, error=str(exc)[:2000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, limits='sampled disposable publication/crash boundaries; no physical power-loss durability or real-night performance claim')
+
+
+def c35():
+    """Org refusal inventory is final; successful observations never authorize."""
+    observations, failures = [], []
+    old = ownership_base()
+    positive = {
+        'task_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'", "UPDATE tasks SET status='completed' WHERE id='TASK-2'", 'task_or_root_not_terminal:in_progress'),
+        'root_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-1'", "UPDATE tasks SET status='completed' WHERE id='TASK-1'", 'task_or_root_not_terminal:in_progress'),
+        'root_reparented': ("UPDATE tasks SET parent_task_id='TASK-4' WHERE id='TASK-1'", "UPDATE tasks SET parent_task_id=NULL WHERE id='TASK-1'", 'task_or_root_not_terminal:in_progress'),
+        'new_sibling_job': ("INSERT INTO jobs VALUES('TASK-3','pending')", "DELETE FROM jobs WHERE status='pending'", 'active_job:pending'),
+        'job_status_unknown': ("UPDATE jobs SET status='unrecognised'", "UPDATE jobs SET status='completed'", 'unknown_job_status'),
+        'job_ancestry_unknown': ("INSERT INTO jobs VALUES('missing','running')", "DELETE FROM jobs WHERE status='running'", 'unknown_missing_or_cyclic_lineage'),
+    }
+    negative = {key: positive[key] for key in ('task_reopened', 'root_reopened', 'new_sibling_job', 'job_status_unknown')}
+    for phase in ('scratch', 'worktree'):
+        for direction, variants in (('negative_heals', negative), ('positive_changes', positive)):
+            for label, (change, heal, expected) in variants.items():
+                for module in (old, ds):
+                    try:
+                        with fixture() as f:
+                            ownership_indexes(f)
+                            f.task('TASK-1'); f.task('TASK-3', parent='TASK-1'); f.task('TASK-4', status='in_progress')
+                            if phase == 'scratch': path = f.scratch('TASK-2', parent='TASK-1'); repo = None
+                            else:
+                                repo, path = f.worktree('TASK-2')
+                                f.db.execute("UPDATE tasks SET parent_task_id='TASK-1' WHERE id='TASK-2'")
+                            f.db.execute("INSERT INTO jobs VALUES('TASK-3','completed')"); f.db.commit()
+                            if direction == 'negative_heals': f.db.execute(change); f.db.commit()
+                            before = candidate_contents(path)
+                            result, events, current_reads = {}, [], []
+                            original_inventory, original_read = getattr(module.Evidence, 'inventory', None), module.Evidence.ownership
+                            def inventory(self, candidates):
+                                refused = original_inventory(self, candidates)
+                                if direction == 'negative_heals':
+                                    assert str(path) in refused and str(refused[str(path)]) == expected, (label, refused)
+                                    f.db.execute(heal)
+                                else:
+                                    assert str(path) not in refused, (label, refused)
+                                    f.db.execute(change)
+                                f.db.commit(); events.append('changed_after_org_inventory')
+                                return refused
+                            def ownership(self, *args):
+                                current_reads.append(args[0])
+                                if module is old and not events:
+                                    if direction == 'positive_changes':
+                                        f.db.execute(change); f.db.commit(); events.append('changed_after_org_inventory')
+                                    else:
+                                        try: original_read(self, *args)
+                                        except module.Retain as exc:
+                                            assert str(exc) == expected, (label, exc)
+                                            f.db.execute(heal); f.db.commit(); events.append('changed_after_org_inventory')
+                                            raise
+                                        raise AssertionError('base negative did not refuse')
+                                return original_read(self, *args)
+                            def checkpoint():
+                                target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                                if direction == 'positive_changes' and target and target['state'] == 'retained' and len(events) == 1:
+                                    assert target.get('reason') == expected, (label, target)
+                                    f.db.execute(heal); f.db.commit(); events.append('healed_after_refusal')
+                            with patch.object(module.Evidence, 'inventory', inventory, create=True), patch.object(module.Evidence, 'ownership', ownership):
+                                report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW, result=result, checkpoint=checkpoint)
+                            retained(report, path, expected)
+                            assert candidate_contents(path) == before, (direction, phase, label)
+                            assert events == (['changed_after_org_inventory'] if direction == 'negative_heals' else
+                                              ['changed_after_org_inventory', 'healed_after_refusal']), events
+                            assert bool(current_reads) == (module is old or direction == 'positive_changes'), (direction, phase, label, current_reads)
+                            if repo: assert f.git(repo, 'rev-parse', f'refs/heads/task/{path.name}').strip()
+                            module.Evidence(f.org, time.monotonic() + 10).ownership(path, f.workspace, path.name)
+                            if module is ds and label in ('job_status_unknown', 'job_ancestry_unknown'): assert report['org_hold'] == expected
+                            observations.append(dict(module='base' if module is old else 'new', phase=phase, direction=direction, variant=label, result='PASS', reason=expected,
+                                                     current_reads=len(current_reads), events=events))
+                    except AssertionError as exc:
+                        failures.append(dict(phase=phase, direction=direction, variant=label, error=str(exc)[:2000]))
+    # Production SQL is observed, never substituted. Forty job-held candidates
+    # need one task/job inventory, no current ownership reads or Git/tree work.
+    old = ownership_base()
+    with fixture() as f:
+        ownership_indexes(f); f.task('TASK-900'); f.task('TASK-901', parent='TASK-900')
+        for index in range(40): f.scratch(f'TASK-{index + 1}', parent='TASK-900')
+        f.db.execute("INSERT INTO jobs VALUES('TASK-901','pending')"); f.db.commit()
+        reports = [old.sweep_org(f.org, time.monotonic() + 15, mode='on', now=NOW)]
+        original_connect, original_read = sqlite3.connect, ds.Evidence.ownership
+        queries, reads = [], []
+        def connect(*args, **kwargs):
+            conn = original_connect(*args, **kwargs); conn.set_trace_callback(queries.append); return conn
+        def ownership(self, *args):
+            reads.append(args[0]); return original_read(self, *args)
+        with patch.object(sqlite3, 'connect', connect), patch.object(ds.Evidence, 'ownership', ownership):
+            reports.append(ds.sweep_org(f.org, time.monotonic() + 15, mode='on', now=NOW))
+        assert ownership_decisions(reports[0], f.base) == ownership_decisions(reports[1], f.base), reports
+        counts = dict(current_reads=len(reads), task_inventories=queries.count('SELECT id,parent_task_id,status,assigned_agent FROM tasks'),
+                      job_inventories=queries.count('SELECT DISTINCT status FROM jobs'))
+        if counts != dict(current_reads=0, task_inventories=1, job_inventories=1):
+            failures.append(dict(variant='forty_job_keeps_one_inventory', counts=counts))
+        for item in reports[1]['candidates']:
+            assert item['state'] == 'retained' and item['reason'] == 'active_job:pending', item
+        observations.append(dict(variant='forty_job_keeps_one_inventory', task_inventories=1, job_inventories=1,
+                                 fresh_reads=len(reads), decision_differences=[]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, limits='ownership inventory only; topology/candidate race proof remains required')
+
+
+def c36():
+    """Same-input keep decisions, negative healing latch and one clone census."""
+    observations, failures = [], []
+    old = ownership_base()
+    expected = dict(tracked='dirty_or_untracked', untracked='dirty_or_untracked',
+                    guard='unknown_worktree_owner', locked='git_unregistered_locked_or_prunable',
+                    branch='unknown_worktree_branch_owner', active='task_or_root_not_terminal:in_progress')
+    for label in (*expected, 'clean'):
+        with fixture() as f:
+            ownership_indexes(f); repo, path = f.worktree('TASK-1')
+            if label in ('tracked', 'active'): (path / 'source').write_text('changed\n')
+            if label == 'untracked': (path / 'new-file').write_text('new\n')
+            if label == 'guard': (path / '.worktree-guard.json').write_text('{}')
+            if label == 'locked': f.git(repo, 'worktree', 'lock', str(path))
+            if label == 'branch':
+                f.git(repo, 'branch', 'other', 'HEAD'); f.git(path, 'symbolic-ref', 'HEAD', 'refs/heads/other')
+            if label == 'active':
+                f.db.execute("UPDATE tasks SET status='in_progress'"); f.db.commit()
+            reports = [module.sweep_org(f.org, time.monotonic() + 20, mode='dry_run', now=NOW) for module in (old, ds)]
+            assert ownership_decisions(reports[0], f.base) == ownership_decisions(reports[1], f.base), (label, reports)
+            target = reports[1]['candidates'][0]
+            assert target['state'] == ('eligible' if label == 'clean' else 'retained'), (label, target)
+            if label in expected: assert target['reason'] == expected[label], (label, target)
+            observations.append(dict(variant='base_equivalence/' + label, decision=target['state'], reason=target.get('reason')))
+    for direction in ('negative_heals', 'positive_changes'):
+        for label in ('tracked', 'untracked', 'guard', 'locked'):
+            for module in (old, ds):
+                try:
+                    with fixture() as f:
+                        ownership_indexes(f); repo, path = f.worktree('TASK-1')
+                        guard = (path / '.worktree-guard.json').read_bytes()
+                        original_inventory, original_admit = getattr(module, 'worktree_inventory', None), module.admit
+                        events, admissions, result = [], [], {}
+                        def change():
+                            if label == 'tracked': (path / 'source').write_text('changed\n')
+                            if label == 'untracked': (path / 'new-file').write_text('new\n')
+                            if label == 'guard': (path / '.worktree-guard.json').write_text('{}')
+                            if label == 'locked': f.git(repo, 'worktree', 'lock', str(path))
+                        def heal():
+                            if label == 'tracked': (path / 'source').write_text('committed\n')
+                            if label == 'untracked': (path / 'new-file').unlink()
+                            if label == 'guard': (path / '.worktree-guard.json').write_bytes(guard)
+                            if label == 'locked': f.git(repo, 'worktree', 'unlock', str(path))
+                        if direction == 'negative_heals': change()
+                        def inventory(*args, **kwargs):
+                            refused = original_inventory(*args, **kwargs)
+                            if direction == 'negative_heals':
+                                assert str(refused) == expected[label], (label, refused)
+                                heal()
+                            else:
+                                assert refused is None, (label, refused)
+                                change()
+                            events.append('changed_after_worktree_inventory')
+                            return refused
+                        def admit(*args, **kwargs):
+                            admissions.append(args[0]['path'])
+                            if module is old and not events:
+                                if direction == 'positive_changes':
+                                    change(); events.append('changed_after_worktree_inventory')
+                                else:
+                                    try: original_admit(*args, **kwargs)
+                                    except module.Retain as exc:
+                                        assert str(exc) == expected[label], (label, exc)
+                                        heal(); events.append('changed_after_worktree_inventory')
+                                        raise
+                                    raise AssertionError('base negative did not refuse')
+                            return original_admit(*args, **kwargs)
+                        def checkpoint():
+                            target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                            if direction == 'positive_changes' and target and target['state'] == 'retained' and len(events) == 1:
+                                assert target['reason'] == expected[label], (label, target)
+                                heal(); events.append('healed_after_refusal')
+                        with patch.object(module, 'worktree_inventory', inventory, create=True), patch.object(module, 'admit', admit):
+                            report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW, result=result, checkpoint=checkpoint)
+                        retained(report, path, expected[label])
+                        assert (path / 'source').read_text() == 'committed\n' and not (path / 'new-file').exists()
+                        assert (path / '.worktree-guard.json').read_bytes() == guard
+                        assert f.git(repo, 'rev-parse', 'refs/heads/task/TASK-1').strip()
+                        assert bool(admissions) == (module is old or direction == 'positive_changes'), (direction, label, admissions)
+                        assert events == (['changed_after_worktree_inventory'] if direction == 'negative_heals' else
+                                          ['changed_after_worktree_inventory', 'healed_after_refusal']), events
+                        # Healing is real; it cannot grant this night a second try.
+                        module.admit(dict(phase='worktree', path=str(path), workspace=str(f.workspace), repo=str(repo)),
+                                 module.Evidence(f.org, time.monotonic() + 10), time.monotonic() + 10, now=NOW)
+                        observations.append(dict(variant=('base/' if module is old else 'new/') + direction + '/' + label, result='PASS', reason=expected[label], admissions=len(admissions)))
+                except AssertionError as exc:
+                    failures.append(dict(variant=('base/' if module is old else 'new/') + direction + '/' + label, error=str(exc)[:2000]))
+    with fixture() as f:
+        ownership_indexes(f)
+        for index in range(40):
+            repo, path = f.worktree(f'TASK-{index + 1}'); (path / 'source').write_text('changed\n')
+        reports = [module.sweep_org(f.org, time.monotonic() + 30, mode='on', now=NOW) for module in (old, ds)]
+        assert ownership_decisions(reports[0], f.base) == ownership_decisions(reports[1], f.base), reports
+        before, after = [r['measurements']['counters'] for r in reports]
+        if after['topology_reads'] != 1 or after['censuses'] != 3 or not after['censuses'] < before['censuses']:
+            failures.append(dict(variant='forty_dirty_keeps_one_clone_inventory', base=before, new=after))
+        assert all(c['state'] == 'retained' and c['reason'] == 'dirty_or_untracked' for c in reports[1]['candidates'])
+        observations.append(dict(variant='forty_dirty_keeps_one_clone_inventory', base_censuses=before['censuses'],
+                                 new_censuses=after['censuses'], new_topology_reads=after['topology_reads'], decision_differences=[]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, limits='Keep-only topology/guard/status inventory; destructive topology path remains unchanged')
+
+
+def c37():
+    """Post-remove named refs are freshly resolved before confirmed success."""
+    old = ownership_base()
+    observations = []
+    for label in ('named', 'detached', 'branch_lost_after_remove'):
+        decisions = []
+        for module in (old, ds):
+            with fixture() as f:
+                ownership_indexes(f); repo, path = f.worktree('TASK-1')
+                branch = 'refs/heads/task/TASK-1'
+                head = f.git(repo, 'rev-parse', branch).strip()
+                if label == 'detached': f.git(path, 'checkout', '--detach', '-q', head)
+                real_git = module.git
+                removed = []
+                def git(root, deadline, *args):
+                    answer = real_git(root, deadline, *args)
+                    if args[:2] == ('worktree', 'remove'):
+                        removed.append(str(path))
+                        if label == 'branch_lost_after_remove':
+                            f.git(repo, 'update-ref', '-d', branch)
+                    return answer
+                with patch.object(module, 'git', git):
+                    report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW)
+                target = row(report, path)
+                assert removed == [str(path)] and not path.exists(), (label, removed, target)
+                assert str(path) not in module.registrations(repo, time.monotonic() + 5)
+                if label == 'branch_lost_after_remove' and module is ds:
+                    assert target['state'] == 'partial_or_unknown', target
+                    assert target['reason'].startswith('git_failed:'), target
+                    assert report['phases']['worktree']['attribution_unknown'], report
+                    assert not report['coverage']['complete'] and report['outcome'] == 'error', report
+                    assert 'removed_attributable_bytes' not in target, target
+                else:
+                    assert target['state'] == 'removed' and report['coverage']['complete'], report
+                    if label != 'branch_lost_after_remove':
+                        assert f.git(repo, 'rev-parse', '--verify', branch + '^{commit}').strip() == head
+                decisions.append(ownership_decisions(report, f.base))
+        if label != 'branch_lost_after_remove':
+            assert decisions[0] == decisions[1], (label, decisions)
+        else:
+            assert decisions[0]['candidates'][0]['state'] == 'removed', decisions
+        observations.append(dict(variant=label, base=decisions[0], new=decisions[1]))
+    return dict(variants=observations, equivalence_differences=[
+        'branch_lost_after_remove: base records removed; new records partial_or_unknown and incomplete, as required by section5.2 post-removal branch proof'])
+
+
+def c38():
+    """Git identities and current preserving refs cannot reuse inventory clearance."""
+    observations, failures = [], []
+    old = ownership_base()
+    expected = dict(head_moved='git_identity_changed_since_inventory',
+                    branch_moved='git_identity_changed_since_inventory',
+                    new_unpreserved_commit='unique_head_commit',
+                    last_preserving_ref_lost='unique_head_commit',
+                    entry_identity='unknown_git_registrations:',
+                    pointer_identity='unknown_git_registrations:')
+    for boundary in ('keep_inventory', 'eligible_checkpoint'):
+        for label, reason in expected.items():
+            for module in (old, ds):
+                name = ('base/' if module is old else 'new/') + boundary + '/' + label
+                try:
+                    with fixture() as f:
+                        ownership_indexes(f); repo, path = f.worktree('TASK-1')
+                        branch = 'refs/heads/task/TASK-1'
+                        head = f.git(repo, 'rev-parse', branch).strip()
+                        tree = f.git(repo, 'rev-parse', head + '^{tree}').strip()
+                        changed_head = f.git(repo, 'commit-tree', tree, '-p', head, '-m', 'synthetic racing commit').strip()
+                        if label == 'last_preserving_ref_lost':
+                            f.git(repo, 'update-ref', 'refs/heads/fixture-preserve', changed_head)
+                            f.git(path, 'checkout', '--detach', '-q', changed_head)
+                        entry = repo / '.git/worktrees/TASK-1'
+                        held = f.base / 'held-original-metadata'
+                        events, removes, result = [], [], {}
+                        def change():
+                            if label == 'head_moved': f.git(repo, 'update-ref', branch, changed_head)
+                            elif label == 'branch_moved': f.git(path, 'checkout', '--detach', '-q', head)
+                            elif label == 'new_unpreserved_commit': f.git(path, 'checkout', '--detach', '-q', changed_head)
+                            elif label == 'last_preserving_ref_lost': f.git(repo, 'update-ref', '-d', 'refs/heads/fixture-preserve')
+                            elif label == 'entry_identity':
+                                entry.rename(held); shutil.copytree(held, entry)
+                            elif label == 'pointer_identity':
+                                pointer = entry / 'gitdir'; pointer.rename(held); pointer.write_bytes(held.read_bytes())
+                            events.append('changed_after_' + boundary)
+                        def heal():
+                            if label == 'head_moved': f.git(repo, 'update-ref', branch, head)
+                            elif label in ('branch_moved', 'new_unpreserved_commit'):
+                                f.git(path, 'symbolic-ref', 'HEAD', branch)
+                            elif label == 'last_preserving_ref_lost':
+                                f.git(repo, 'update-ref', 'refs/heads/fixture-preserve', changed_head)
+                            elif label == 'entry_identity':
+                                shutil.rmtree(entry); held.rename(entry)
+                            elif label == 'pointer_identity':
+                                (entry / 'gitdir').unlink(); held.rename(entry / 'gitdir')
+                            events.append('healed_after_refusal')
+                        original_inventory, original_git = getattr(module, 'worktree_inventory', None), module.git
+                        original_admit = module.admit
+                        def inventory(*args, **kwargs):
+                            refusal = original_inventory(*args, **kwargs)
+                            assert refusal is None, (label, refusal)
+                            if boundary == 'keep_inventory': change()
+                            return refusal
+                        def admit(*args, **kwargs):
+                            if module is old and boundary == 'keep_inventory' and not events: change()
+                            return original_admit(*args, **kwargs)
+                        def checkpoint():
+                            target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                            if not target: return
+                            if boundary == 'eligible_checkpoint' and target['state'] == 'eligible' and not events: change()
+                            if target['state'] in ('retained', 'partial_or_unknown') and len(events) == 1:
+                                if module is ds: assert reason in target['reason'], (label, target)
+                                heal()
+                        def git(root, deadline, *args):
+                            if args[:2] == ('worktree', 'remove'):
+                                removes.append(args)
+                                raise module.Retain('fixture_observed_prohibited_mutation')
+                            return original_git(root, deadline, *args)
+                        with patch.object(module, 'worktree_inventory', inventory, create=True), patch.object(module, 'git', git), patch.object(module, 'admit', admit):
+                            report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW,
+                                                  result=result, checkpoint=checkpoint)
+                        target = row(report, path)
+                        if module is ds:
+                            retained(report, path, reason)
+                            assert not removes, removes
+                        assert events == ['changed_after_' + boundary, 'healed_after_refusal'], events
+                        assert (path / 'source').read_text() == 'committed\n'
+                        assert f.git(repo, 'rev-parse', '--verify', branch).strip() == head
+                        # Real healed current state passes; the completed decision
+                        # remains retained and no same-night retry/removal occurred.
+                        deadline = time.monotonic() + 10
+                        module.admit(dict(phase='worktree', path=str(path), workspace=str(f.workspace), repo=str(repo)),
+                                 module.Evidence(f.org, deadline), deadline, now=NOW)
+                        assert row(report, path)['state'] == target['state']
+                        observations.append(dict(variant=name, result='PASS', state=target['state'], reason=target['reason'].replace(str(f.base), '<fixture>'), actions=removes, events=events, coverage=report['coverage'], outcome=report['outcome']))
+                except Exception as exc:
+                    failures.append(dict(variant=name, error=str(exc)[:2000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(base=OWNERSHIP_BASE, variants=observations, limits='Pinned base keep boundary is after discovery, new boundary after its keep inventory; eligible boundary identical. Prohibited base removal attempts intercepted; no policy mock.')
+
+
+
+def c39():
+    """Literal primary proof saves Git calls without changing removal policy."""
+    old = ownership_base()
+    observations = []
+    for detached in (False, True):
+        decisions, counts = [], []
+        for module in (old, ds):
+            with fixture() as f:
+                ownership_indexes(f); repo, path = f.worktree('TASK-1')
+                branch = 'refs/heads/task/TASK-1'
+                head = f.git(repo, 'rev-parse', branch).strip()
+                if detached: f.git(path, 'checkout', '--detach', '-q', head)
+                calls = []
+                original_git = module.git
+                def git(root, deadline, *args):
+                    calls.append((str(root), args))
+                    return original_git(root, deadline, *args)
+                with patch.object(module, 'git', git):
+                    report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW)
+                assert row(report, path)['state'] == 'removed' and report['coverage']['complete'], report
+                assert not path.exists() and str(path) not in f.git(repo, 'worktree', 'list', '--porcelain')
+                assert f.git(repo, 'rev-parse', '--verify', branch + '^{commit}').strip() == head
+                common_args = ('rev-parse', '--path-format=absolute', '--git-common-dir')
+                primary = sum(root == str(repo) and args == common_args for root, args in calls)
+                candidate = sum(root == str(path) and args == common_args for root, args in calls)
+                assert primary == (6 if module is old else 0) and candidate == 6, (primary, candidate, calls)
+                decisions.append(ownership_decisions(report, f.base))
+                counts.append(dict(primary_common_dir=primary, candidate_common_dir=candidate))
+        assert decisions[0] == decisions[1], decisions
+        observations.append(dict(detached=detached, decisions=decisions, calls=counts))
+    return dict(variants=observations, equivalence_differences=[])
+
+
+def c40():
+    """Recursive safety is fresh after inventory; a healed refusal stays kept."""
+    old = ownership_base()
+    observations, failures = [], []
+    for phase in ('scratch', 'worktree'):
+        variants = ('outside_hardlink', 'recent_descendant', 'recent_root')
+        if phase == 'worktree': variants += ('nested_file', 'nested_dir', 'nested_live', 'nested_dangling')
+        for boundary in ('base_equivalence', 'keep_inventory', 'eligible_checkpoint'):
+            for label in variants:
+                for module in ((ds,) if boundary == 'base_equivalence' else (old, ds)):
+                    name = ('base/' if module is old else 'new/') + phase + '/' + boundary + '/' + label
+                    try:
+                        with fixture() as f:
+                            ownership_indexes(f)
+                            if phase == 'scratch':
+                                path = f.scratch('TASK-1'); repo = None
+                                payload = path / 'nested/payload'
+                            else:
+                                repo, path = f.worktree('TASK-1')
+                                payload = path / 'ignored/a/deep/payload'
+                                payload.parent.mkdir(parents=True); payload.write_bytes(b'preserved payload')
+                            link = f.base / 'outside-link'
+                            nested = path / 'ignored/a/deep/.git'
+                            timed = path if label == 'recent_root' else payload
+                            original_times = timed.stat()
+                            before = candidate_contents(path)
+                            refs = f.git(repo, 'show-ref') if repo else None
+                            expected = ('possible_nested_worktree:' + str(nested) if label.startswith('nested_') else
+                                        'unknown_external_hardlinks' if label == 'outside_hardlink' else 'changed_within_hour')
+                            events, actions, result = [], [], {}
+                            def change():
+                                if label.startswith('nested_'): nested_input(f, repo, path, label.removeprefix('nested_'))
+                                elif label == 'outside_hardlink': os.link(payload, link)
+                                else: os.utime(timed, (NOW, NOW))
+                                events.append('changed_after_' + boundary)
+                            def heal():
+                                if label == 'nested_dir': shutil.rmtree(nested)
+                                elif label.startswith('nested_'): nested.unlink()
+                                elif label == 'outside_hardlink': link.unlink()
+                                else: os.utime(timed, ns=(original_times.st_atime_ns, original_times.st_mtime_ns))
+                                events.append('healed_after_refusal')
+                            if boundary == 'base_equivalence':
+                                change()
+                                reports = [module.sweep_org(f.org, time.monotonic() + 20, mode='dry_run', now=NOW)
+                                           for module in (old, ds)]
+                                decisions = [ownership_decisions(report, f.base) for report in reports]
+                                assert decisions[0] == decisions[1], (name, decisions)
+                                for report in reports: retained(report, path, expected)
+                                heal()
+                            else:
+                                original_inventory = getattr(module.Evidence, 'inventory', None)
+                                original_worktree = getattr(module, 'worktree_inventory', None)
+                                original_admit = module.admit
+                                original_git, original_mutate = module.git, module.mutate
+                                def inventory(self, candidates):
+                                    refused = original_inventory(self, candidates)
+                                    if phase == 'scratch' and boundary == 'keep_inventory':
+                                        assert str(path) not in refused, refused
+                                        change()
+                                    return refused
+                                def worktree_inventory(*args, **kwargs):
+                                    refusal = original_worktree(*args, **kwargs)
+                                    assert refusal is None, refusal
+                                    if boundary == 'keep_inventory': change()
+                                    return refusal
+                                def admit(*args, **kwargs):
+                                    if module is old and boundary == 'keep_inventory' and not events: change()
+                                    return original_admit(*args, **kwargs)
+                                def checkpoint():
+                                    target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                                    if target is None: return
+                                    if boundary == 'eligible_checkpoint' and target['state'] == 'eligible' and not events: change()
+                                    if target['state'] == 'retained' and len(events) == 1:
+                                        assert target.get('reason') == expected, (name, target)
+                                        heal()
+                                def git(root, deadline, *args):
+                                    if args[:2] == ('worktree', 'remove'): actions.append('git remove')
+                                    return original_git(root, deadline, *args)
+                                def mutate(*args, **kwargs):
+                                    actions.append('filesystem mutation')
+                                    return original_mutate(*args, **kwargs)
+                                with patch.object(module.Evidence, 'inventory', inventory, create=True), patch.object(module, 'worktree_inventory', worktree_inventory, create=True), \
+                                        patch.object(module, 'git', git), patch.object(module, 'mutate', mutate), patch.object(module, 'admit', admit):
+                                    report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW,
+                                                          result=result, checkpoint=checkpoint)
+                                retained(report, path, expected)
+                                assert events == ['changed_after_' + boundary, 'healed_after_refusal'], (name, events)
+                                assert actions == [], (name, actions)
+                                deadline = time.monotonic() + 10
+                                candidate = dict(phase=phase, path=str(path), workspace=str(f.workspace))
+                                if repo: candidate['repo'] = str(repo)
+                                module.admit(candidate, module.Evidence(f.org, deadline), deadline, now=NOW)
+                                assert row(report, path)['state'] == 'retained'
+                            assert candidate_contents(path) == before, name
+                            if repo: assert f.git(repo, 'show-ref') == refs
+                        observations.append(dict(variant=name, result='PASS', reason=expected, events=events))
+                    except Exception as exc:
+                        failures.append(dict(variant=name, error=type(exc).__name__ + ': ' + str(exc)[:2000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, equivalence_differences=[],
+                limits='Real disposable files/links and synthetic age clock; no mount, Darwin or full cheaper-census proof')
+
+
+
+def c41():
+    """Candidate census saves sibling reads, never topology or own-file proof."""
+    old = ownership_base()
+    observations, failures = [], []
+    for label in ('clean', 'unreadable_index', 'missing_head', 'malformed_head',
+                  'index_hardlink', 'admin_alias', 'conflicting_backlink', 'duplicate_target'):
+        with fixture() as f, ExitStack() as damage:
+            ownership_indexes(f)
+            repo, path = f.worktree('TASK-1'); _, peer = f.worktree('TASK-2')
+            if label != 'clean': damage.enter_context(damaged_registration(f, repo, peer, label))
+            before = candidate_contents(path, peer)
+            refs = f.git(repo, 'show-ref')
+            reports = [module.sweep_org(f.org, time.monotonic() + 20, mode='dry_run', now=NOW)
+                       for module in (old, ds)]
+            decisions = [ownership_decisions(report, f.base) for report in reports]
+            assert decisions[0] == decisions[1], (label, decisions)
+            if label in ('clean', 'unreadable_index', 'missing_head'):
+                assert row(reports[1], path)['state'] == 'eligible', (label, reports[1])
+            if label == 'clean': assert row(reports[1], peer)['state'] == 'eligible'
+            assert candidate_contents(path, peer) == before and f.git(repo, 'show-ref') == refs
+            observations.append(dict(variant='same_input/' + label, decisions=decisions, result='PASS'))
+
+    decisions, counts = [], []
+    for module in (old, ds):
+        with fixture() as f:
+            ownership_indexes(f)
+            repo, path = f.worktree('TASK-1'); _, peer = f.worktree('TASK-2')
+            f.db.execute("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'"); f.db.commit()
+            admin = repo / '.git/worktrees'
+            for target in (path, peer):
+                (admin / target.name / 'fixture-note').write_text('ordinary auxiliary metadata\n')
+            before, refs = candidate_contents(peer), f.git(repo, 'show-ref')
+            reads = []
+            original_file = module._metadata_file
+            def metadata_file(target, deadline, **kwargs):
+                reads.append(str(target.relative_to(admin)) if admin in target.parents else str(target))
+                return original_file(target, deadline, **kwargs)
+            with patch.object(module, '_metadata_file', metadata_file):
+                report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW)
+            assert row(report, path)['state'] == 'removed' and not path.exists(), report
+            retained(report, peer, 'task_or_root_not_terminal:in_progress')
+            assert candidate_contents(peer) == before and f.git(repo, 'show-ref') == refs
+            actual = {name: reads.count(name) for name in
+                      ('TASK-1/index', 'TASK-1/fixture-note', 'TASK-2/index', 'TASK-2/fixture-note',
+                       'TASK-2/gitdir', 'TASK-2/commondir', 'TASK-2/HEAD')}
+            # Independent literal cost oracles. Own files still read at every
+            # live-candidate census; all peer pointers and HEAD stay current.
+            assert actual['TASK-1/index'] == actual['TASK-1/fixture-note'] == 24, actual
+            assert actual['TASK-2/index'] == actual['TASK-2/fixture-note'] == (27 if module is old else 3), actual
+            assert actual['TASK-2/gitdir'] == actual['TASK-2/commondir'] == 54, actual
+            assert actual['TASK-2/HEAD'] == 27, actual
+            decisions.append(ownership_decisions(report, f.base)); counts.append(actual)
+    assert decisions[0] == decisions[1], decisions
+    observations.append(dict(variant='on_mode_sibling_read_cost', decisions=decisions, reads=counts, result='PASS'))
+
+    for label in ('own_auxiliary_change', 'sibling_auxiliary_change', 'sibling_unsafe_auxiliary'):
+        for module in (old, ds):
+            try:
+                with fixture() as f:
+                    ownership_indexes(f)
+                    repo, path = f.worktree('TASK-1'); _, peer = f.worktree('TASK-2')
+                    f.db.execute("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'"); f.db.commit()
+                    admin = repo / '.git/worktrees'
+                    note = admin / (path.name if label == 'own_auxiliary_change' else peer.name) / 'fixture-note'
+                    note.write_text('original ordinary metadata\n'); original = note.read_bytes()
+                    before = candidate_contents(path, peer); refs = f.git(repo, 'show-ref')
+                    events, removes, result = [], [], {}
+                    original_snapshot, original_metadata, original_git = module.snapshot, module._registration_metadata, module.git
+                    selected, ready = False, False
+                    original_discover = module.discover
+                    def discover(*args, **kwargs):
+                        nonlocal ready
+                        value = original_discover(*args, **kwargs); ready = True
+                        return value
+                    def metadata(root, deadline, **kwargs):
+                        nonlocal selected
+                        previous, selected = selected, ready and (module is old or kwargs.get('metadata_path') == path)
+                        try: return original_metadata(root, deadline, **kwargs)
+                        finally: selected = previous
+                    def snapshot(root, deadline, **kwargs):
+                        value = original_snapshot(root, deadline, **kwargs)
+                        if Path(root) == admin and selected and not events:
+                            if label == 'sibling_unsafe_auxiliary':
+                                note.unlink(); note.symlink_to(f.base / 'unread-target')
+                            else: note.write_bytes(original + b'racing write\n')
+                            events.append('changed_after_fresh_stat')
+                        return value
+                    def checkpoint():
+                        target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                        if target and target['state'] == 'retained' and len(events) == 1:
+                            if note.is_symlink(): note.unlink()
+                            note.write_bytes(original); events.append('healed_after_refusal')
+                    def git(root, deadline, *args):
+                        if args[:2] == ('worktree', 'remove'): removes.append(args[2])
+                        return original_git(root, deadline, *args)
+                    with patch.object(module, '_registration_metadata', metadata), patch.object(module, 'snapshot', snapshot), \
+                            patch.object(module, 'git', git), patch.object(module, 'discover', discover):
+                        report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW,
+                                              result=result, checkpoint=checkpoint)
+                    if label == 'sibling_auxiliary_change':
+                        assert events == ['changed_after_fresh_stat'], events
+                        assert row(report, path)['state'] == 'removed' and removes == [str(path)], report
+                        assert any(scope['path'] == str(peer) and 'metadata_changed:' + str(note) in scope['reason']
+                                   for scope in report['discovery_scopes']), report
+                        # Successful unrelated removal never repairs a sibling.
+                        assert note.read_bytes() == original + b'racing write\n'
+                        note.write_bytes(original)
+                    else:
+                        retained(report, path, ('metadata_changed:' if label == 'own_auxiliary_change' else
+                                                'unknown_git_metadata:' if module is old else 'aliased_or_special_metadata:') + str(note))
+                        assert events == ['changed_after_fresh_stat', 'healed_after_refusal'] and not removes, (events, removes)
+                        if label == 'own_auxiliary_change':
+                            assert 'snapshot_to_read' in row(report, path)['reason'], report
+                        else:
+                            assert report['discovery'] == 'partial' and not report['coverage']['complete'], report
+                        assert candidate_contents(path, peer) == before
+                        deadline = time.monotonic() + 10
+                        module.admit(dict(phase='worktree', path=str(path), workspace=str(f.workspace), repo=str(repo)),
+                                 module.Evidence(f.org, deadline), deadline, now=NOW)
+                        assert row(report, path)['state'] == 'retained'
+                    assert candidate_contents(peer) == {k: v for k, v in before.items() if k.startswith(str(peer))}
+                    assert f.git(repo, 'show-ref') == refs
+                    observations.append(dict(variant=('base/' if module is old else 'new/') + label, events=events, result='PASS', target=row(report, path)['state'], reason=row(report, path).get('reason', '').replace(str(f.base), '<fixture>')))
+            except AssertionError as exc:
+                failures.append(dict(variant=('base/' if module is old else 'new/') + label, error=str(exc)[:2000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, equivalence_differences=[],
+                limits='Pointers, HEAD and all stat censuses retained; full Step3 topology/native/mount race proof unfinished')
+
+
+def c42(*, native: bool = False) -> dict:
+    """Current ownership after the last scan/comparison/remove/repair census."""
+    variants = {
+        'task_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'", "UPDATE tasks SET status='completed' WHERE id='TASK-2'", 'task_or_root_not_terminal:in_progress'),
+        'root_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-1'", "UPDATE tasks SET status='completed' WHERE id='TASK-1'", 'task_or_root_not_terminal:in_progress'),
+        'root_reparented': ("UPDATE tasks SET parent_task_id='TASK-4' WHERE id='TASK-1'", "UPDATE tasks SET parent_task_id=NULL WHERE id='TASK-1'", 'task_or_root_not_terminal:in_progress'),
+        'new_sibling_job': ("INSERT INTO jobs VALUES('TASK-3','pending')", "DELETE FROM jobs WHERE status='pending'", 'active_job:pending'),
+        'job_status_unknown': ("UPDATE jobs SET status='unrecognised'", "UPDATE jobs SET status='completed'", 'unknown_job_status'),
+        'job_ancestry_unknown': ("INSERT INTO jobs VALUES('missing','running')", "DELETE FROM jobs WHERE status='running'", 'unknown_missing_or_cyclic_lineage'),
+    }
+    if native:
+        variants = {label: (None, None, reason) for label, reason in (
+            ('writer_settled', 'team_move_cleanup_owner_unavailable'),
+            ('writer_unknown', 'team_move_cleanup_owner_unavailable'),
+            ('writer_replaced', 'team_move_cleanup_owner_unavailable'),
+            ('native_hold', 'team_move_native_held'))}
+
+    def native_state(f: Fixture, label: str) -> tuple:
+        # Canonical shipping schema and actual persistent native readers/writers.
+        # All identities/admission below are synthetic validator data; no route,
+        # runtime owner, service or live org is invoked or authorized.
+        import hashlib
+        import threading
+        import runtime.infrastructure.database  # noqa: F401
+        from runtime.infrastructure.db.audit import AuditMixin
+        from runtime.infrastructure.producer_admission import NativeWriterLifecycle, NativeWriterStore
+        from runtime.infrastructure.team_move_store import (TEAM_MOVE_SCHEMA_SQL, Diagnostic, FounderAdmission,
+                                                            Phase, TeamMoveStore, validate_team_move_schema)
+        f.db.row_factory = sqlite3.Row
+        f.db.execute(TEAM_MOVE_SCHEMA_SQL); f.db.commit()
+        class Audit(AuditMixin):
+            def __init__(self) -> None:
+                self._conn, self._lock = f.db, threading.RLock()
+        db = Audit()
+        store = NativeWriterStore(db, f.org.name)
+        initial = NativeWriterLifecycle(org_slug=f.org.name, writer_id='synthetic-disk-sweep', publisher='disk_sweep')
+        store.save_uncommitted(initial); f.db.commit()
+        saved_audit = [tuple(row) for row in f.db.execute("SELECT * FROM audit_log WHERE action='team_move_native_writer' ORDER BY id")]
+        hold = {}
+        def change() -> None:
+            if label == 'native_hold':
+                z = '0' * 64
+                expected = {n + '_digest': z for n in ('canonical', 'roster', 'naming', 'profile', 'dependency', 'policy', 'skill_selection', 'permission')}
+                expected.update(authority_namespace='synthetic', authority_generation=1, authority_digest=z, agent_revisions=[z, z])
+                identity = dict(device=0, inode=1, mode=448)
+                empty_digest = hashlib.sha256(b'').hexdigest()
+                request = dict(version=1, org_slug=f.org.name, source_team='consultant', target_team='default',
+                    target_principal='founder', affected_agents=['consultant_codex', 'consultant_head'], demote='consultant_head',
+                    retire_source=True, drain_threads=False, expected=expected,
+                    files=[dict(path=p, identity=identity, before_base64='', before_digest=empty_digest,
+                                after_base64='', after_digest=empty_digest) for p in
+                           ('org/agents/consultant_codex.md', 'org/agents/consultant_head.md', 'org/teams.yaml')],
+                    workspaces=[dict(agent_id=a, path=str(f.base / 'synthetic-workspaces' / a), identity=identity)
+                                for a in ('consultant_codex', 'consultant_head')])
+                hold.update(TeamMoveStore(db, f.org.name).reserve(operation_key='synthetic-only',
+                    request_bytes=json.dumps(request, sort_keys=True, separators=(',', ':')).encode(),
+                    admission=FounderAdmission(principal='founder', boundary='_require_human', org_slug=f.org.name,
+                                               admission_id='synthetic-validator-data', admitted_at='2026-11-13T00:00:00+00:00')))
+            elif label == 'writer_replaced':
+                f.db.execute("DELETE FROM audit_log WHERE action='team_move_native_writer'")
+                store.save_uncommitted(initial.model_copy(update={'writer_id': 'synthetic-replacement'})); f.db.commit()
+            else:
+                store.save_uncommitted(initial.model_copy(update={'state': 'settled' if label == 'writer_settled' else 'unknown'}))
+                f.db.commit()
+            assert validate_team_move_schema(f.db, org_slug=f.org.name)
+            current = store.history_uncommitted()
+            if label == 'writer_replaced': assert initial.writer_id not in current and 'synthetic-replacement' in current
+            elif label != 'native_hold': assert current[initial.writer_id].state == ('settled' if label == 'writer_settled' else 'unknown')
+        def heal() -> None:
+            if label == 'native_hold':
+                TeamMoveStore(db, f.org.name).transition(hold['operation_id'], expected_revision=1,
+                    phase=Phase.ABANDONED, diagnostic=Diagnostic(code='synthetic-release'))
+            else:
+                # Fixture-only snapshot restoration. An ended native writer
+                # cannot reopen; this grants no production settlement/recovery.
+                f.db.execute("DELETE FROM audit_log WHERE action='team_move_native_writer'")
+                f.db.executemany('INSERT INTO audit_log(id,task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?,?)', saved_audit)
+                f.db.commit()
+                assert [tuple(row) for row in f.db.execute("SELECT * FROM audit_log WHERE action='team_move_native_writer' ORDER BY id")] == saved_audit
+            assert validate_team_move_schema(f.db, org_slug=f.org.name)
+            assert store.history_uncommitted()[initial.writer_id] == initial
+        return initial.writer_id, change, heal
+
+    old = ownership_base()
+    observations, failures = [], []
+    for phase in ('scratch', 'worktree'):
+        boundaries = ('last_snapshot', 'final_comparison')
+        if phase == 'worktree': boundaries += ('remove_census', 'repair_census', 'retry_census')
+        for boundary in boundaries:
+            for label, (sql, heal, expected) in variants.items():
+                name = phase + '/' + boundary + '/' + label
+                try:
+                    decisions = []
+                    for module in (old, ds):
+                        with fixture() as f:
+                            ownership_indexes(f)
+                            f.task('TASK-1'); f.task('TASK-3', parent='TASK-1'); f.task('TASK-4', status='in_progress')
+                            if phase == 'scratch':
+                                path = f.scratch('TASK-2', parent='TASK-1'); repo = None
+                            else:
+                                repo, path = f.worktree('TASK-2')
+                                f.db.execute("UPDATE tasks SET parent_task_id='TASK-1' WHERE id='TASK-2'")
+                            f.db.execute("INSERT INTO jobs VALUES('TASK-3','completed')"); f.db.commit()
+                            writer_id, change_native, heal_native = native_state(f, label) if native else (None, None, None)
+                            before = candidate_contents(path)
+                            refs = f.git(repo, 'show-ref') if repo else None
+                            events, actions, result = [], [], {}
+                            counts = dict(snapshots=0, comparisons=0, admissions=0, removes=0)
+                            original_snapshot, original_equal = module.snapshot, module.trees_equal
+                            original_admit, original_rows = module.admit, module.registrations
+                            original_git, original_mutate = module.git, module.mutate
+                            def change():
+                                if native: change_native()
+                                else: f.db.execute(sql); f.db.commit()
+                                events.append('changed_after_' + boundary)
+                            def snapshot(root, deadline, **kwargs):
+                                tree = original_snapshot(root, deadline, **kwargs)
+                                if Path(root) == path:
+                                    counts['snapshots'] += 1
+                                    if boundary == 'last_snapshot' and counts['snapshots'] == 4: change()
+                                return tree
+                            def equal(*args):
+                                same = original_equal(*args)
+                                counts['comparisons'] += 1
+                                if boundary == 'final_comparison' and counts['comparisons'] == 3: change()
+                                return same
+                            def admit(*args, **kwargs):
+                                tree = original_admit(*args, **kwargs)
+                                counts['admissions'] += 1
+                                return tree
+                            def registrations(*args, **kwargs):
+                                rows = original_rows(*args, **kwargs)
+                                trigger = dict(remove_census=2, repair_census=3, retry_census=4).get(boundary)
+                                if trigger is not None and counts['admissions'] == trigger and not events: change()
+                                return rows
+                            def git(root, deadline, *args):
+                                if args[:2] == ('worktree', 'remove'):
+                                    counts['removes'] += 1
+                                    actions.append('git_remove')
+                                    if boundary in ('repair_census', 'retry_census') and counts['removes'] == 1:
+                                        # Existing error path, no policy substitute: the
+                                        # first command has no filesystem effect.
+                                        raise module.Retain('synthetic no-effect first Git refusal')
+                                return original_git(root, deadline, *args)
+                            def mutate(*args, **kwargs):
+                                actions.append('scratch_remove' if kwargs.get('remove') else 'permission_repair')
+                                return original_mutate(*args, **kwargs)
+                            def checkpoint():
+                                target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                                if (module is ds and target and target['state'] in ('retained', 'partial_or_unknown')
+                                        and len(events) == 1):
+                                    assert target.get('reason') == expected, (name, target)
+                                    # Heal the real synthetic row. A new current read
+                                    # passes, but the night's decision cannot retry.
+                                    if native: heal_native()
+                                    else: f.db.execute(heal); f.db.commit()
+                                    module.Evidence(f.org, time.monotonic() + 5, writer_id=writer_id, writing=native).ownership(path, f.workspace, path.name)
+                                    events.append('healed_after_refusal')
+                            with patch.object(module, 'snapshot', snapshot), patch.object(module, 'trees_equal', equal), \
+                                    patch.object(module, 'admit', admit), patch.object(module, 'registrations', registrations), \
+                                    patch.object(module, 'git', git), patch.object(module, 'mutate', mutate):
+                                report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW,
+                                                          result=result, checkpoint=checkpoint, writer_id=writer_id)
+                            target = row(report, path)
+                            if module is old:
+                                if boundary == 'repair_census':
+                                    assert target['state'] == 'partial_or_unknown' and path.exists(), (name, target)
+                                    assert actions == ['git_remove', 'permission_repair'], (name, actions)
+                                else:
+                                    assert target['state'] == 'removed' and not path.exists(), (name, target, actions, events)
+                            else:
+                                prior_effect = boundary in ('repair_census', 'retry_census')
+                                assert target['state'] == ('partial_or_unknown' if prior_effect else 'retained'), (name, target)
+                                assert target['reason'] == expected, (name, target)
+                                assert events == ['changed_after_' + boundary, 'healed_after_refusal'], (name, events)
+                                expected_actions = (['git_remove', 'permission_repair'] if boundary == 'retry_census' else
+                                                    ['git_remove'] if boundary == 'repair_census' else [])
+                                assert actions == expected_actions, (name, actions)
+                                assert candidate_contents(path) == before, name
+                                if repo: assert f.git(repo, 'show-ref') == refs
+                                assert 'removed_attributable_bytes' not in target, target
+                                if prior_effect:
+                                    assert report['outcome'] == 'error' and not report['coverage']['complete'], report
+                                deadline = time.monotonic() + 10
+                                candidate = dict(phase=phase, path=str(path), workspace=str(f.workspace))
+                                if repo: candidate['repo'] = str(repo)
+                                module.admit(candidate, module.Evidence(f.org, deadline, writer_id=writer_id, writing=native), deadline, now=NOW)
+                                assert row(report, path)['state'] == target['state']
+                            decisions.append(dict(state=target['state'], reason=target.get('reason'), actions=actions, events=events))
+                    observations.append(dict(variant=name, result='PASS', base=decisions[0], new=decisions[1]))
+                except AssertionError as exc:
+                    failures.append(dict(variant=name, error=str(exc)[:2000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, equivalence_differences=[
+        ('Late native writer/hold races: ' if native else 'Late task/job ownership races: ') +
+        'base removes, or attempts permission repair at repair_census; current refuses after last observations. '
+        'Before any remove it is retained; after first attempted Git remove it remains partial_or_unknown under existing classification.'],
+        limits='Actual disposable SQLite/Git/filesystem/native records; synthetic no-effect first Git refusal only for repair/retry entry. Native audit snapshot restoration is fixture-only, never reopening authority.')
+
+
+def c43():
+    """Cheap recent roots keep before guard/dirt/full admission; age never clears."""
+    old = ownership_base()
+    observations, differences, failures = [], [], []
+    for phase in ('scratch', 'worktree'):
+        for variant in ('recent', 'active_recent', 'healed_recent', 'recent_dirty', 'recent_guard'):
+            if phase == 'scratch' and variant in ('recent_dirty', 'recent_guard'): continue
+            name = phase + '/' + variant
+            try:
+                decisions = []
+                for module in (old, ds):
+                    with fixture() as f:
+                        ownership_indexes(f)
+                        if phase == 'scratch': path, repo = f.scratch('TASK-1'), None
+                        else: repo, path = f.worktree('TASK-1')
+                        if variant == 'active_recent':
+                            f.db.execute("UPDATE tasks SET status='in_progress'"); f.db.commit()
+                        if variant == 'recent_dirty': (path / 'source').write_text('dirty content remains\n')
+                        if variant == 'recent_guard':
+                            guard = path / '.worktree-guard.json'
+                            value = json.loads(guard.read_text()); value['task_id'] = 'TASK-other'
+                            guard.write_text(json.dumps(value))
+                        stamp = path.stat()
+                        os.utime(path, (NOW, NOW))
+                        before = candidate_contents(path)
+                        refs = f.git(repo, 'show-ref') if repo else None
+                        events, actions, counts, result = [], [], dict(admit=0, snapshot=0, git_status=0), {}
+                        ready = False
+                        original_directory, original_discover = module.directory, module.discover
+                        original_admit, original_snapshot = module.admit, module.snapshot
+                        original_git, original_mutate = module.git, module.mutate
+                        def discover(*args, **kwargs):
+                            nonlocal ready
+                            value = original_discover(*args, **kwargs); ready = True
+                            return value
+                        @contextmanager
+                        def directory(root, deadline):
+                            with original_directory(root, deadline) as fd:
+                                yield fd
+                                if ready and Path(root) == path and variant == 'healed_recent' and not events:
+                                    # Heal a real mtime AFTER the root observation.
+                                    # The earlier failed age answer remains final.
+                                    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                                    events.append('healed_after_root_observation')
+                        def admit(*args, **kwargs):
+                            counts['admit'] += 1; return original_admit(*args, **kwargs)
+                        def snapshot(*args, **kwargs):
+                            if ready: counts['snapshot'] += 1
+                            return original_snapshot(*args, **kwargs)
+                        def git(root, deadline, *args):
+                            if args[0] == 'status': counts['git_status'] += 1
+                            if args[:2] == ('worktree', 'remove'): actions.append('git_remove')
+                            return original_git(root, deadline, *args)
+                        def mutate(*args, **kwargs):
+                            actions.append('tree_remove' if kwargs.get('remove') else 'repair')
+                            return original_mutate(*args, **kwargs)
+                        with patch.object(module, 'directory', directory), patch.object(module, 'discover', discover), \
+                                patch.object(module, 'admit', admit), patch.object(module, 'snapshot', snapshot), \
+                                patch.object(module, 'git', git), patch.object(module, 'mutate', mutate), \
+                                patch.dict(original_snapshot.__globals__, directory=directory):
+                            report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW, result=result)
+                        target = row(report, path)
+                        expected = ('task_or_root_not_terminal:in_progress' if variant == 'active_recent' else
+                                    'dirty_or_untracked' if module is old and variant == 'recent_dirty' else
+                                    'unknown_worktree_owner' if module is old and variant == 'recent_guard' else
+                                    'changed_within_hour')
+                        if variant == 'healed_recent': assert events == ['healed_after_root_observation'], (name, events)
+                        if module is ds or variant != 'healed_recent' or phase == 'scratch':
+                            retained(report, path, expected)
+                            assert not actions and candidate_contents(path) == before, (name, actions)
+                            if repo: assert f.git(repo, 'show-ref') == refs
+                            complete = not (module is old and variant == 'recent_guard')
+                            assert report['outcome'] == ('complete' if complete else 'incomplete') and report['coverage']['complete'] is complete, report
+                        if module is ds:
+                            assert counts == dict(admit=0, snapshot=0, git_status=0), (name, counts)
+                            if variant == 'healed_recent':
+                                assert events == ['healed_after_root_observation'], events
+                                deadline = time.monotonic() + 5
+                                candidate = dict(phase=phase, path=str(path), workspace=str(f.workspace))
+                                if repo: candidate['repo'] = str(repo)
+                                module.admit(candidate, module.Evidence(f.org, deadline), deadline, now=NOW)
+                                assert row(report, path)['state'] == 'retained' and not actions
+                        decisions.append(dict(state=target['state'], reason=target.get('reason'),
+                                              outcome=report['outcome'], counts=counts, events=events, actions=actions))
+                if decisions[0]['reason'] != decisions[1]['reason'] or decisions[0]['state'] != decisions[1]['state']:
+                    differences.append(dict(variant=name, base=decisions[0], new=decisions[1],
+                        justification='Approved earliest recent-root KEEP and latch after a real observed failure; no positive age reuse.'))
+                observations.append(dict(variant=name, result='PASS', decisions=decisions))
+            except AssertionError as exc:
+                failures.append(dict(variant=name, error=str(exc)[:2000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, equivalence_differences=differences,
+                limits='Scratch healing runs after its actual snapshot-root observation on base and cheap-root observation on new; both retain the observed recent age. Cheap root age only; an old root still needs every current recursive admission. C40 owns later age races.')
+
+
+def c44() -> dict:
+    """Installed native writer and hold changes after slow work stay latched."""
+    return c42(native=True)
+
+
+def c45():
+    """Topology changes after an eligible checkpoint never reuse that proof."""
+    variants = ('new_inside', 'moved_inside', 'repointed_inside', 'non_task_inside',
+                'uncertain_inside', 'duplicate_pointer', 'conflicting_pointer',
+                'common_identity', 'admin_identity', 'entry_identity', 'prefix_identity',
+                'pointer_ancestor_identity', 'pointer_depth2_identity', 'pointer_depth3_identity', 'unsafe_unknown', 'unenumerable_unknown',
+                'unreadable_gitdir', 'git_list_omission', 'literal_root_omission')
+    observations, failures = [], []
+    old = ownership_base()
+    for boundary in ('eligible_checkpoint', 'remove_census', 'repair_census', 'retry_census'):
+        for label in variants:
+            for module in (old, ds):
+                name = ('base/' if module is old else 'new/') + boundary + '/' + label
+                try:
+                    with fixture() as f, ExitStack() as changes:
+                        ownership_indexes(f)
+                        repo, path = f.worktree('TASK-1')
+                        _, peer = f.worktree('TASK-2')
+                        admin = repo / '.git/worktrees'
+                        entry = admin / path.name
+                        peer_entry = admin / peer.name
+                        # Make the independently retained peer run after TASK-1.
+                        os.utime(path, (time.time() - 60, time.time() - 60))
+                        os.utime(peer, (time.time(), time.time()))
+                        f.db.execute("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'")
+                        f.db.commit()
+                        if label in ('pointer_ancestor_identity', 'pointer_depth2_identity', 'pointer_depth3_identity'):
+                            ancestor = f.base / 'pointer-chain/a/b'
+                            ancestor.mkdir(parents=True)
+                            remote = ancestor / 'non-task'
+                            f.git(repo, 'worktree', 'move', str(peer), str(remote))
+                            peer = remote
+                        before = candidate_contents(path, peer, repo / '.git')
+                        refs = f.git(repo, 'show-ref')
+                        events, actions, result = [], [], {}
+                        real_git, real_admit, real_rows, real_mutate = module.git, module.admit, module.registrations, module.mutate
+                        counts = dict(admissions=0, removes=0)
+
+                        def replace_directory(target):
+                            held = f.base / ('held-' + label)
+                            target.rename(held)
+                            if label.startswith('pointer_depth'):
+                                # Replace only this ancestor; retain its descendant and
+                                # immediate pointer-parent inode, bytes and reciprocal map.
+                                target.mkdir()
+                                child = next(held.iterdir()).name
+                                (held / child).rename(target / child)
+                                changes.callback(lambda: ((target / child).rename(held / child), target.rmdir(), held.rename(target)))
+                            else:
+                                shutil.copytree(held, target)
+                                changes.callback(lambda: (shutil.rmtree(target), held.rename(target)))
+
+                        def change():
+                            if label in ('new_inside', 'non_task_inside'):
+                                nested = path / 'ignored' / ('TASK-3' if label == 'new_inside' else 'non-task')
+                                nested.parent.mkdir(exist_ok=True)
+                                f.git(repo, 'worktree', 'add', '--detach', str(nested), 'HEAD')
+                                nested_entry = Path((nested / '.git').read_text().strip().removeprefix('gitdir: '))
+                                changes.callback(lambda: (shutil.rmtree(nested), shutil.rmtree(nested_entry)))
+                            elif label in ('moved_inside', 'repointed_inside', 'uncertain_inside'):
+                                nested = path / 'ignored/non-task'
+                                nested.parent.mkdir(exist_ok=True)
+                                if label == 'repointed_inside':
+                                    pointer = peer_entry / 'gitdir'
+                                    original = pointer.read_bytes()
+                                    peer.rename(nested)
+                                    pointer.write_text(str(nested / '.git') + '\n')
+                                    changes.callback(lambda: (pointer.write_bytes(original), nested.rename(peer)))
+                                else:
+                                    f.git(repo, 'worktree', 'move', str(peer), str(nested))
+                                    changes.callback(lambda: f.git(repo, 'worktree', 'move', str(nested), str(peer)))
+                                if label == 'uncertain_inside':
+                                    index = peer_entry / 'index'
+                                    mode = stat.S_IMODE(index.stat().st_mode)
+                                    index.chmod(0)
+                                    changes.callback(lambda: index.chmod(mode))
+                            elif label == 'duplicate_pointer':
+                                duplicate = admin / 'duplicate'
+                                shutil.copytree(peer_entry, duplicate)
+                                changes.callback(lambda: shutil.rmtree(duplicate))
+                            elif label == 'conflicting_pointer':
+                                pointer = peer_entry / 'gitdir'
+                                original = pointer.read_bytes()
+                                pointer.write_text(str(path / '.git') + '\n')
+                                changes.callback(lambda: pointer.write_bytes(original))
+                            elif label.endswith('_identity'):
+                                target = dict(common_identity=repo / '.git', admin_identity=admin,
+                                              entry_identity=entry, prefix_identity=path.parent,
+                                              pointer_ancestor_identity=peer.parent, pointer_depth2_identity=peer.parent.parent,
+                                              pointer_depth3_identity=peer.parent.parent.parent)[label]
+                                replace_directory(target)
+                            elif label in ('unsafe_unknown', 'unenumerable_unknown', 'unreadable_gitdir'):
+                                kind = dict(unsafe_unknown='gitdir_alias', unenumerable_unknown='unreadable_entry',
+                                            unreadable_gitdir='unreadable_gitdir')[label]
+                                changes.enter_context(damaged_registration(f, repo, peer, kind))
+                            # Omission rows alter only the external observation below.
+                            events.append('changed_at_' + boundary)
+
+                        def checkpoint():
+                            target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                            if boundary == 'eligible_checkpoint' and target and target['state'] == 'eligible' and not events:
+                                change()
+                            if target and target['state'] in ('retained', 'partial_or_unknown') and len(events) == 1:
+                                changes.close()
+                                events.append('healed_after_refusal')
+
+                        def git(root, deadline, *args):
+                            if args[:2] in (('worktree', 'remove'), ('worktree', 'prune')):
+                                if boundary in ('repair_census', 'retry_census') and not events and not counts['removes']:
+                                    counts['removes'] += 1
+                                    actions.append('initial_remove')
+                                    raise module.Retain('synthetic no-effect first Git refusal')
+                                actions.append(args[:2])
+                                # A regression must be attributable without letting the
+                                # test remove its deliberately damaged fixture.
+                                raise module.Retain('fixture_observed_prohibited_mutation')
+                            value = real_git(root, deadline, *args)
+                            if label == 'git_list_omission' and events == ['changed_at_' + boundary] and args[:2] == ('worktree', 'list'):
+                                value = '\0\0'.join(block for block in value.split('\0\0')
+                                                     if not block.startswith('worktree ' + str(peer) + '\0'))
+                            return value
+
+                        def mutate(*args, **kwargs):
+                            if not events and boundary == 'retry_census':
+                                actions.append('initial_repair')
+                                return real_mutate(*args, **kwargs)
+                            actions.append(('filesystem', 'mutation'))
+                            raise module.Retain('fixture_observed_prohibited_mutation')
+
+                        real_names = module.names
+                        def names(fd, deadline):
+                            value = real_names(fd, deadline)
+                            if label == 'literal_root_omission' and events == ['changed_at_' + boundary]:
+                                if fs.identity(os.fstat(fd)) == fs.identity(path.parent.stat()):
+                                    return [name for name in value if name != peer.name]
+                            return value
+
+                        def admit(*args, **kwargs):
+                            tree = real_admit(*args, **kwargs)
+                            counts['admissions'] += 1
+                            return tree
+
+                        def registrations(*args, **kwargs):
+                            trigger = dict(remove_census=2, repair_census=3, retry_census=4).get(boundary)
+                            if trigger is not None and counts['admissions'] == trigger and not events:
+                                change()
+                            return real_rows(*args, **kwargs)
+
+                        with patch.object(module, 'git', git), patch.object(module, 'mutate', mutate), patch.object(module, 'names', names), \
+                                patch.object(module, 'admit', admit), patch.object(module, 'registrations', registrations):
+                            report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW,
+                                                  result=result, checkpoint=checkpoint)
+                        target = row(report, path)
+                        prior = (['initial_remove', 'initial_repair'] if boundary == 'retry_census' else
+                                 ['initial_remove'] if boundary == 'repair_census' else [])
+                        if module is ds:
+                            assert actions == prior, ('C45 stale inventory reached mutation', name, actions, target)
+                            assert target['state'] == ('partial_or_unknown' if prior else 'retained'), (name, target)
+                            reason = ('linked_descendant:' if label.endswith('inside') else
+                                      'git_mapping_changed_during_inventory:' if label in
+                                      ('pointer_ancestor_identity', 'pointer_depth2_identity', 'pointer_depth3_identity', 'literal_root_omission')
+                                      else 'git_mapping_changed_during_inventory:' if boundary != 'eligible_checkpoint' and label in
+                                      ('common_identity', 'admin_identity', 'entry_identity', 'prefix_identity')
+                                      else 'unknown_git_registration')
+                            assert reason in target['reason'], (name, target)
+                            if prior: assert not report['coverage']['complete'] and report['outcome'] == 'error', report
+                        assert events == ['changed_at_' + boundary, 'healed_after_refusal'], (label, events)
+                        assert target.get('removed_attributable_bytes') is None
+                        assert report['phases']['worktree']['removed_attributable_bytes'] == 0
+                        changes.close()
+                        # The parent ignored directory is fixture-created, not an effect.
+                        ignored = path / 'ignored'
+                        if ignored.exists() and not any(ignored.iterdir()): ignored.rmdir()
+                        assert candidate_contents(path, peer, repo / '.git') == before, label
+                        assert f.git(repo, 'show-ref') == refs
+                        deadline = time.monotonic() + 10
+                        module.admit(dict(phase='worktree', path=str(path), workspace=str(f.workspace), repo=str(repo)),
+                                 module.Evidence(f.org, deadline), deadline, now=NOW)
+                        assert row(report, path)['state'] == target['state']
+                        observations.append(dict(variant=name, result='PASS', state=target['state'], reason=target['reason'].replace(str(f.base), '<fixture>'),
+                                                 coverage=report['coverage'], outcome=report['outcome'], actions=actions,
+                                                 events=events, preservation='bytes/modes/refs'))
+                except Exception as exc:
+                    failures.append(dict(variant=name, error=type(exc).__name__ + ': ' + str(exc)[:3000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(base=OWNERSHIP_BASE, variants=observations, limits='Actual pinned base and new production; prohibited next effects intercepted. Initial no-effect Git refusal enters repair/retry. Real ancestor-preserving renames; omission rows inject incomplete external observations.')
+
+
+
+def c46():
+    """A mount observed after eligibility refuses deletion and stays latched."""
+    observations, failures = [], []
+    old = ownership_base()
+    for phase in ('scratch', 'worktree'):
+        boundaries = ('eligible_checkpoint', 'final_snapshot')
+        if phase == 'worktree': boundaries += ('remove_census', 'repair_census', 'retry_census')
+        for boundary in boundaries:
+            for module in (old, ds):
+                name = ('base/' if module is old else 'new/') + phase + '/' + boundary
+                try:
+                    with fixture() as f:
+                        ownership_indexes(f)
+                        repo = None
+                        if phase == 'scratch':
+                            path = f.scratch('TASK-1')
+                            mountpoint = path / 'nested'
+                        else:
+                            repo, path = f.worktree('TASK-1')
+                            mountpoint = path / 'ignored/mountpoint'
+                            mountpoint.mkdir(parents=True)
+                            (mountpoint / 'payload').write_bytes(b'preserved same-device bytes')
+                        before = candidate_contents(path)
+                        refs = f.git(repo, 'show-ref') if repo else None
+                        events, actions, result = [], [], {}
+                        active = False
+                        real_snapshot = module.snapshot
+                        real_mounts = real_snapshot.__globals__['mounts']
+                        real_git, real_admit, real_rows, real_mutate = module.git, module.admit, module.registrations, module.mutate
+                        counts = dict(admissions=0, removes=0)
+                        snapshots = 0
+                        def mounts(deadline):
+                            value = real_mounts(deadline)
+                            return value | {str(mountpoint)} if active else value
+                        def snapshot(root, deadline, **kwargs):
+                            nonlocal snapshots, active
+                            if Path(root) == path:
+                                snapshots += 1
+                                if boundary == 'final_snapshot' and snapshots == 3:
+                                    active = True
+                                    events.append('mount_arrived_after_inventory')
+                            return real_snapshot(root, deadline, **kwargs)
+                        def checkpoint():
+                            nonlocal active
+                            target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                            if not target: return
+                            if boundary == 'eligible_checkpoint' and target['state'] == 'eligible' and not events:
+                                active = True
+                                events.append('mount_arrived_after_inventory')
+                            if target['state'] in ('retained', 'partial_or_unknown') and active:
+                                if module is ds: assert target['reason'] == 'filesystem_boundary', target
+                                active = False
+                                events.append('mount_healed_after_refusal')
+                        def git(root, deadline, *args):
+                            if args[:2] in (('worktree', 'remove'), ('worktree', 'prune')):
+                                if boundary in ('repair_census', 'retry_census') and not active and not counts['removes']:
+                                    counts['removes'] += 1
+                                    actions.append('initial_remove')
+                                    raise module.Retain('synthetic no-effect first Git refusal')
+                                actions.append(args[:2])
+                                raise module.Retain('fixture_observed_prohibited_mutation')
+                            return real_git(root, deadline, *args)
+                        def mutate(*args, **kwargs):
+                            if not active and boundary == 'retry_census':
+                                actions.append('initial_repair')
+                                return real_mutate(*args, **kwargs)
+                            actions.append(('filesystem', 'mutation'))
+                            raise module.Retain('fixture_observed_prohibited_mutation')
+                        def admit(*args, **kwargs):
+                            tree = real_admit(*args, **kwargs)
+                            counts['admissions'] += 1
+                            return tree
+                        def registrations(*args, **kwargs):
+                            nonlocal active
+                            trigger = dict(remove_census=2, repair_census=3, retry_census=4).get(boundary)
+                            if trigger is not None and counts['admissions'] == trigger and not events:
+                                active = True
+                                events.append('mount_arrived_after_inventory')
+                            return real_rows(*args, **kwargs)
+                        with patch.dict(real_snapshot.__globals__, mounts=mounts), patch.object(module, 'snapshot', snapshot), \
+                                patch.object(module, 'git', git), patch.object(module, 'mutate', mutate), \
+                                patch.object(module, 'admit', admit), patch.object(module, 'registrations', registrations):
+                            report = module.sweep_org(f.org, time.monotonic() + 15, mode='on', now=NOW,
+                                                  result=result, checkpoint=checkpoint)
+                        target = row(report, path)
+                        prior = (['initial_remove', 'initial_repair'] if boundary == 'retry_census' else
+                                 ['initial_remove'] if boundary == 'repair_census' else [])
+                        if module is ds:
+                            assert actions == prior, ('C46 stale inventory reached mutation', name, actions)
+                            assert target['state'] == ('partial_or_unknown' if prior else 'retained'), (name, target)
+                            assert target['reason'] == 'filesystem_boundary', (name, target)
+                        if prior: assert not report['coverage']['complete'] and report['outcome'] == 'error', report
+                        assert events == ['mount_arrived_after_inventory', 'mount_healed_after_refusal'], (name, events)
+                        assert candidate_contents(path) == before
+                        assert row(report, path).get('removed_attributable_bytes') is None
+                        assert report['phases'][phase]['removed_attributable_bytes'] == 0
+                        if repo: assert f.git(repo, 'show-ref') == refs
+                        candidate = dict(phase=phase, path=str(path), workspace=str(f.workspace))
+                        if repo: candidate['repo'] = str(repo)
+                        deadline = time.monotonic() + 10
+                        module.admit(candidate, module.Evidence(f.org, deadline), deadline, now=NOW)
+                        assert row(report, path)['state'] == target['state']
+                        observations.append(dict(variant=name, result='PASS', reason=target['reason'], state=target['state'],
+                                                 outcome=report['outcome'], coverage=report['coverage'], events=events, actions=actions))
+                except Exception as exc:
+                    failures.append(dict(variant=name, error=type(exc).__name__ + ': ' + str(exc)[:3000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(base=OWNERSHIP_BASE, variants=observations, limits='Existing production mounts() seam supplies one same-device mountpoint; actual native mount creation/enumeration and Darwin NOT VERIFIED. No mount/namespace/config operation.')
+
+
+
+def c47():
+    """Arrivals/churn in final censuses preserve local keeps and peer progress."""
+    old = ownership_base()
+    observations, failures = [], []
+    for label in ('new_task_pair', 'new_task_root', 'candidate_note', 'sibling_note',
+                  'candidate_index_lock', 'sibling_index_lock'):
+        decisions = []
+        for module in (old, ds):
+            name = ('base/' if module is old else 'new/') + label
+            try:
+                with fixture() as f:
+                    ownership_indexes(f)
+                    repo, path = f.worktree('TASK-1'); _, peer = f.worktree('TASK-2')
+                    f.db.execute("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'"); f.db.commit()
+                    os.utime(path, (time.time() - 60, time.time() - 60))
+                    entry = repo / '.git/worktrees' / (peer.name if label.startswith('sibling') else path.name)
+                    note = entry / ('index.lock' if label.endswith('index_lock') else 'fixture-note')
+                    if label.endswith('note'): note.write_bytes(b'initial ordinary bytes\n')
+                    initial_peer = candidate_contents(peer, repo / '.git/worktrees' / peer.name)
+                    initial_path = candidate_contents(path, repo / '.git/worktrees' / path.name)
+                    refs = set(f.git(repo, 'show-ref').splitlines())
+                    events, actions, result = [], [], {}
+                    armed = False
+                    arrival = path.with_name('TASK-3')
+                    real_meta, real_git = module._registration_metadata, module.git
+
+                    def change():
+                        if label == 'new_task_pair':
+                            _, created = f.worktree('TASK-3'); assert created == arrival
+                        elif label == 'new_task_root':
+                            arrival.mkdir(); (arrival / 'payload').write_bytes(b'unknown preserved bytes')
+                        else: note.write_bytes(b'new ordinary bytes; no writer identity inferred\n')
+                        events.append('changed_between_final_censuses')
+
+                    def heal():
+                        if label.endswith('note'): note.write_bytes(b'initial ordinary bytes\n')
+                        else: note.unlink()  # Only the synthetic lock created above.
+                        events.append('healed_after_latched_observation')
+
+                    def metadata(root, deadline, **kwargs):
+                        value = real_meta(root, deadline, **kwargs)
+                        if armed and not events: change()
+                        return value
+
+                    def checkpoint():
+                        nonlocal armed
+                        target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                        if target and target['state'] == 'eligible': armed = True
+                        if len(events) == 1 and not label.startswith('new_task'):
+                            owner = peer if label.startswith('sibling') else path
+                            scopes = result.get('discovery_scopes', [])
+                            if any(scope['path'] == str(owner) and 'metadata_changed:' in scope['reason'] for scope in scopes):
+                                heal()
+
+                    def git(root, deadline, *args):
+                        if args[:2] in (('worktree', 'remove'), ('worktree', 'prune')):
+                            actions.append(args)
+                            if label.startswith('candidate') or args[-1] == str(peer) or args[:2] == ('worktree', 'prune'):
+                                raise module.Retain('fixture_observed_prohibited_mutation')
+                        return real_git(root, deadline, *args)
+
+                    with patch.object(module, '_registration_metadata', metadata), patch.object(module, 'git', git):
+                        report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW,
+                                                  result=result, checkpoint=checkpoint)
+                    assert events, (name, report)
+                    target = row(report, path)
+                    if label.startswith('candidate'):
+                        assert not actions, ('C47 stale census missed local keep', name, actions)
+                        retained(report, path, 'metadata_changed:' + str(note))
+                        assert candidate_contents(path, repo / '.git/worktrees' / path.name) == initial_path
+                    else:
+                        assert target['state'] == 'removed' and not path.exists(), (name, target)
+                        assert len(actions) == 1 and actions[0][:2] == ('worktree', 'remove'), (name, actions)
+                        assert target['removed_attributable_bytes'] > 0
+                    if label.startswith('sibling'):
+                        retained(report, peer, 'metadata_changed:' + str(note))
+                    if label.startswith('new_task'):
+                        assert arrival.exists() and any(scope['path'] == str(arrival) for scope in report['discovery_scopes']), (name, report)
+                        if label == 'new_task_pair':
+                            assert str(arrival) in report['deferred_arrivals'] and report['coverage']['complete'], report
+                        else: assert not report['coverage']['complete'], report
+                    else:
+                        assert events == ['changed_between_final_censuses', 'healed_after_latched_observation'], (name, events)
+                        # Healed ordinary metadata currently passes; the run's
+                        # retained reason cannot be cleared by that later fact.
+                        module.registrations(repo, time.monotonic() + 5).require(peer if label.startswith('sibling') else path, time.monotonic() + 5)
+                    assert candidate_contents(peer, repo / '.git/worktrees' / peer.name) == initial_peer
+                    assert refs <= set(f.git(repo, 'show-ref').splitlines())
+                    decision = ownership_decisions(report, f.base)
+                    decision = json.loads(json.dumps(decision).replace(str(f.base), '<fixture>'))
+                    for candidate in decision['candidates']:
+                        reason = candidate.get('reason', '')
+                        if ';signature_change=' in reason:
+                            native, diagnostic = reason.split(';signature_change=', 1)
+                            assert json.loads(diagnostic)['comparison'] == 'pre_git_censuses', reason
+                            # Separate fixtures have different inode/time pairs;
+                            # policy equivalence retains the exact native cause.
+                            candidate['reason'] = native
+                    decisions.append(decision)
+                    observations.append(dict(variant=name, result='PASS', events=events, decision=decision))
+            except Exception as exc:
+                failures.append(dict(variant=name, error=type(exc).__name__ + ': ' + str(exc)[:3000]))
+        if len(decisions) == 2 and decisions[0] != decisions[1]:
+            failures.append(dict(variant=label + '/equivalence', error=str(decisions)))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(base=OWNERSHIP_BASE, variants=observations, equivalence_differences=[],
+                limits='Real disposable Git/files and existing census seam; synthetic index.lock created/healed only by this fixture, never a host lock or writer-liveness inference')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,31))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,48))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -4276,7 +5969,19 @@ if __name__=='__main__':
             purposes += ('Measurement compatibility with pinned pre-instrumentation source', 'Known measurement counts, effects, history and failure isolation')
             purposes += ('Production-sized bounded history and invalid-report visibility',)
             purposes += ('Coverage and uncertainty classification', 'Located missing-folder residue', 'Durable previous-night records', 'Reporting-only interrupted removals')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30),purposes),1):
+            purposes += ('Indexed ownership equivalence with pinned base', 'Fresh ownership after inventory and latched refusals', 'Production-sized base/new disposable measurement')
+            purposes += ('Batched checkpoint equivalence, crash honesty and safe publication',)
+            purposes += ('Org ownership inventory, refusal latch and fresh positive invalidation',)
+            purposes += ('Clone keep inventory, dirty cost and healed-refusal latch',)
+            purposes += ('Post-removal branch resolution and incomplete lost refs', 'Fresh HEAD branch refs and mapping identities after inventory',)
+            purposes += ('Literal primary common-dir proof and base removal parity', 'Fresh recursive safety after inventory and healed refusal latch',)
+            purposes += ('Candidate-scoped auxiliary reads with exhaustive fresh topology',)
+            purposes += ('Current ownership at final scan remove repair retry boundaries',)
+            purposes += ('Cheap recent-root keep ordering and healed refusal latch',)
+            purposes += ('Fresh native writer and hold at final effect boundaries',)
+            purposes += ('Fresh topology after eligible inventory and healed-refusal latch', 'Mount arrival through production detection seam after inventory',)
+            purposes += ('Dynamic base equivalence for final-census TASK arrivals and local churn',)
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

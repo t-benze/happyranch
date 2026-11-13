@@ -1,5 +1,24 @@
 # Local CI
 
+## Frozen repository child launch regressions (THR-346 P2)
+
+Run the focused standalone unit selection outside the retired Python suite:
+
+```sh
+python -B -m unittest scripts.test_repository_helpers -v
+python -c "import runpy; runpy.run_path('packaging/verify_manifest_notices.py')['python_spec_sources']()"
+```
+
+The first observes both real Popen argv boundaries in source/simulated-frozen
+mode, executes both fixed child entries through daemon and CLI source launches,
+rejects unknown names/paths and malformed child arguments, and checks source
+Python import isolation plus stdlib-only Git dispatch and its exact resource
+limits. The second runs the existing packaging assertion over
+both shipping Analysis inputs. Neither freezes an app or proves packaged Mac
+execution. No existing native probe suite exercises repository object children;
+that proof remains with the manager's packaged-app check. Required CI remains
+lint/static only; no test/build trigger is added.
+
 Founder THR-291 seq659 slice 3 uses standard per-case JUnit and explicit
 failure-only trace/screenshot/log artifacts with GitHub default retention.
 Both lanes must report the exact69 once each, both launcher diagnostics and all
@@ -162,10 +181,22 @@ restore the retired Python unit selection or execute general integration/E2E.
 
 Focused schema-load observation (THR308seq348/353/354): run
 `bash scripts/test-workflow-schema-load.sh` locally with frozen Python3.14.
+THR308 PR4 extends that same script with actual OrgState naming reservation/audit
+observations (no-op, would-write, unreadable, failed read/COMMIT, COMMIT plus
+ROLLBACK failure with main-equivalent durable active history, interruption and
+next-boot holds), canonical Pause restore/sweep no-writes and real constructor
+status normalization. The timing script also drives the real metrics store and
+composer before/after the serving endpoint, with ASGI/listener creation isolated,
+including unchanged throttle/content and incomplete-startup refusal.
 It drives the production validation/reuse seam and real settings/Pause/naming
 writers on disposable SQLite files, including independent-connection movement,
 failed metadata, schema cookies and the first integrity/FK checks. The isolated
 ten-read timing is not a serving-daemon restart or production-size estimate.
+THR308seq426 Decision 1 adds actual cutover/ownership/naming target cases for
+zero writes, owner writes, unrelated same-connection writes and unavailable
+bookends. It also measures a disposable empty-roster OrgState.load reopen,
+with validation/reuse counts; authority publication remains fenced in that
+fixture, so it proves neither serving time nor production-size savings.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 

@@ -4,15 +4,19 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 uv run --frozen --python 3.14 python - <<'PY'
 from pathlib import Path
+from contextlib import contextmanager
 from contextvars import copy_context
+import json
 import sqlite3
+import logging
+import os
 import tempfile
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from runtime.infrastructure.database import Database
-from runtime.infrastructure.workflow_schema import install_or_recover, validate_workflow_schema
+from runtime.infrastructure.workflow_schema import install_or_recover, validate_workflow_schema, migrate_draft_schema
 from runtime.infrastructure.workflow_schema_load import org_load_validation, read_workflow_schema_for_org_load
 from runtime.infrastructure.team_move_store import install_team_move_schema, TeamMoveStore
 from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
@@ -27,6 +31,311 @@ from runtime.workflows.cutover import WorkflowCutoverStore
 from runtime.workflows import sequential_return
 from runtime.workflows.recovery import rediscover_returned
 from runtime.workflows.sequential_dispatch import SequentialDispatcher
+from runtime.infrastructure import workflow_schema_load as load_guard
+from runtime.identities.registry import Namespace, reconcile_namespace
+from runtime.daemon.org_state import OrgState
+from runtime.config import Settings
+from runtime.identities import registry as names
+from runtime.orchestrator import producer_move
+from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+
+startup_failures = []
+def startup_expect(condition, case):
+    print('STARTUP', case, 'PASS' if condition else 'FAIL')
+    if not condition:
+        startup_failures.append(case)
+
+# Observe real load reservations as well as persisted audit history. The spy
+# delegates to the shipping writer; no fixture supplies its disposition/rows.
+real_writer = producer_move.native_writer
+reservations = []
+@contextmanager
+def observe_writer(db, **kwargs):
+    if kwargs['publisher'] == 'identity_names_load':
+        reservations.append(db._conn.total_changes)
+    with real_writer(db, **kwargs) as disposition:
+        if kwargs['publisher'] == 'identity_names_load':
+            assert naming_rows(db)[-1]['state'] == 'active', 'naming entered before durable reservation'
+        yield disposition
+
+def naming_rows(db):
+    return [json.loads(row[0]) for row in db._conn.execute(
+        "SELECT payload FROM audit_log WHERE action='team_move_native_writer' ORDER BY id")
+        if json.loads(row[0])['publisher'] == 'identity_names_load']
+
+# Real OrgState.load, without a listener, runners or serving-daemon access.
+with tempfile.TemporaryDirectory(prefix='org-load-timing-') as scratch:
+    root = Path(scratch) / 'orgs' / 'scratch'
+    (root / 'org' / 'agents').mkdir(parents=True)
+    (root / 'org' / 'teams.yaml').write_text('teams: {}\n')
+    messages = []
+    class Capture(logging.Handler):
+        def emit(self, record):
+            messages.append(record.getMessage())
+    log = logging.getLogger(load_guard.__name__)
+    capture = Capture()
+    prior_level = log.level
+    log.setLevel(logging.INFO)
+    log.addHandler(capture)
+    try:
+        with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': scratch}):
+            settings = Settings()
+            # Warm installation, then measure a genuine reopen of the same fixture.
+            state = OrgState.load(slug='scratch', root=root, settings=settings)
+            state.close()
+            messages.clear()
+            reservations.clear()
+            start = time.perf_counter()
+            with patch('runtime.workflows.authority.native_writer', observe_writer):
+                state = OrgState.load(slug='scratch', root=root, settings=settings)
+            elapsed = time.perf_counter() - start
+            startup_expect(not reservations and len(naming_rows(state.db)) == 2
+                           and state.naming_readiness == 'ready', 'naming-noop-zero-rows-and-reservations')
+            state.close()
+        print(f'LOCAL FIXTURE OrgState.load reopen: wall={elapsed:.6f}s; {messages[-1]}')
+        print('Empty-roster fixture; authority publication remains fenced; no serving/restart claim.')
+    finally:
+        log.removeHandler(capture)
+        log.setLevel(prior_level)
+
+# Would-write/uncertain proofs keep main's active plus settled/UNKNOWN history.
+# Failed cleanup retains the original active row when no terminal write is proven.
+for scenario in ('would-write', 'unreadable', 'failed-read', 'failed-commit', 'failed-commit-rollback', 'interrupt'):
+    with tempfile.TemporaryDirectory(prefix='naming-load-') as scratch:
+        root = Path(scratch) / 'orgs' / 'scratch'
+        (root / 'org' / 'agents').mkdir(parents=True)
+        (root / 'org' / 'teams.yaml').write_text('teams: {}\n')
+        with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': scratch}):
+            settings = Settings()
+            state = OrgState.load(slug='scratch', root=root, settings=settings)
+            state.close()
+            if scenario == 'would-write':
+                directory = root / 'org/agents/_terminated'
+                directory.mkdir()
+                definition = AgentDef(name='retired', team='engineering', role='worker',
+                    executor='synthetic_unregistered', allow_rules=('happyranch',), repos={},
+                    enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+                    system_prompt='Inert synthetic definition.')
+                (directory / 'retired.md').write_text(render_agent_text(definition))
+            real_transaction = names.transaction
+            @contextmanager
+            def commit_failure(db):
+                try:
+                    with real_transaction(db) as conn:
+                        yield conn
+                        conn.set_authorizer(lambda action, arg1, *_:
+                            sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_TRANSACTION
+                            and arg1 in (('COMMIT', 'ROLLBACK') if scenario == 'failed-commit-rollback'
+                                         else ('COMMIT',)) else sqlite3.SQLITE_OK)
+                finally:
+                    db._conn.set_authorizer(None)
+            error_patch = {
+                'would-write': patch.object(names, 'capture_namespace', wraps=names.capture_namespace),
+                'unreadable': patch.object(names, 'capture_namespace', side_effect=OSError('synthetic unreadable')),
+                'failed-read': patch.object(names, 'read_rows', side_effect=sqlite3.DatabaseError('synthetic read failure')),
+                'failed-commit': patch.object(names, 'transaction', commit_failure),
+                'failed-commit-rollback': patch.object(names, 'transaction', commit_failure),
+                'interrupt': patch.object(names, 'capture_namespace', side_effect=KeyboardInterrupt('synthetic interrupt')),
+            }[scenario]
+            reservations.clear()
+            try:
+                with patch('runtime.workflows.authority.native_writer', observe_writer), error_patch:
+                    state = OrgState.load(slug='scratch', root=root, settings=settings)
+            except KeyboardInterrupt:
+                assert scenario == 'interrupt'
+                db = Database(OrgPaths(root=root).db_path)
+            except Exception:
+                if scenario != 'failed-commit-rollback':
+                    raise
+                db = Database(OrgPaths(root=root).db_path)
+            else:
+                assert scenario != 'failed-commit-rollback', 'unclean proof load must abort'
+                db = state.db
+            rows = naming_rows(db)
+            if scenario == 'failed-commit-rollback':
+                assert db._conn.execute('SELECT count(*) FROM identity_name_owners').fetchone()[0] == 1
+                db.close()
+                state = OrgState.load(slug='scratch', root=root, settings=settings)
+                # Main retains the original active reservation when both naming
+                # COMMIT and ROLLBACK fail; closing the failed org cannot erase it.
+                assert state._startup_publication_held, 'naming-failed-commit-rollback-next-boot: failed proof cleanup lost the original next-boot hold'
+                startup_expect([r['state'] for r in rows] == ['active', 'settled', 'active']
+                    and rows[0]['writer_id'] == rows[1]['writer_id']
+                    and rows[2]['writer_id'] != rows[0]['writer_id']
+                    and naming_rows(state.db) == rows, 'naming-failed-commit-rollback-history-and-next-boot')
+                print('NAMING failed-commit-rollback states=', [r['state'] for r in rows],
+                      'next_boot_held=', state._startup_publication_held)
+                state.close()
+                continue
+            expected = 'settled' if scenario == 'would-write' else 'unknown'
+            startup_expect(len(reservations) == 1 and len(rows) == 4
+                and [r['state'] for r in rows[-2:]] == ['active', expected]
+                and rows[-1]['writer_id'] == rows[-2]['writer_id'], 'naming-' + scenario + '-ownership')
+            if scenario == 'would-write':
+                assert tuple(db._conn.execute("SELECT lifecycle,current_label FROM identity_name_owners WHERE canonical_id='retired'").fetchone()) == ('terminated', 'retired')
+            else:
+                assert db._conn.execute("SELECT count(*) FROM identity_name_owners").fetchone()[0] == 1
+            if scenario == 'interrupt':
+                db.close()
+            else:
+                assert state.naming_readiness == ('ready' if scenario == 'would-write' else 'unavailable')
+                state.close()
+            state = OrgState.load(slug='scratch', root=root, settings=settings)
+            startup_expect(state._startup_publication_held == (scenario != 'would-write')
+                and len(naming_rows(state.db)) == 4, 'naming-' + scenario + '-next-boot')
+            state.close()
+
+with tempfile.TemporaryDirectory(prefix='status-normalize-') as scratch:
+    db = Database(Path(scratch) / 'org.db')
+    try:
+        cases = (
+            ('valid', 'escalated', None, 'escalated', None, 0),
+            ('dirty', 'escalated', 'delegated', 'escalated', None, 1),
+            ('legacy', 'blocked', 'escalated', 'escalated', None, 1),
+            ('delegate', 'blocked', 'delegated', 'in_progress', 'delegated', 1),
+            ('job', 'blocked', 'blocked_on_job', 'in_progress', 'blocked_on_job', 1),
+            ('approved', 'approved', None, 'completed', None, 1),
+            ('rejected', 'rejected', None, 'failed', None, 1),
+            ('review', 'in_review', None, 'failed', None, 1),
+            ('superseded', 'resolved_superseded', None, 'superseded', None, 1),
+        )
+        for key, status, reason, *_ in cases:
+            db.insert_task(TaskRecord(id=key, brief='synthetic migration'))
+            db._conn.execute('UPDATE tasks SET status=?,block_kind=? WHERE id=?', (status, reason, key))
+        db._conn.execute('CREATE TEMP TABLE status_updates (task_id TEXT)')
+        db._conn.execute('CREATE TEMP TRIGGER observe_status AFTER UPDATE OF status,block_kind ON main.tasks BEGIN INSERT INTO status_updates VALUES (new.id); END')
+        db._conn.commit()
+        db._create_tables()
+        for key, _, _, status, reason, updates in cases:
+            assert tuple(db._conn.execute('SELECT status,block_kind FROM tasks WHERE id=?', (key,)).fetchone()) == (status, reason), key
+            count = db._conn.execute('SELECT count(*) FROM status_updates WHERE task_id=?', (key,)).fetchone()[0]
+            startup_expect(count == updates, 'status-' + key + '-writes')
+        db._conn.execute('DELETE FROM status_updates')
+        db._conn.commit()
+        db._create_tables()
+        startup_expect(db._conn.execute('SELECT count(*) FROM status_updates').fetchone()[0] == 0, 'status-second-pass-no-writes')
+    finally:
+        db.close()
+
+# Each table row drives the actual production owner, with an actual SQLite DB.
+# Interposition only observes/perturbs the boundary AFTER the real source check.
+target_failures = []
+for site in ('cutover', 'ownership', 'naming'):
+    for scenario in ('zero-write', 'owner-write', 'unrelated-write', 'unavailable-bookend'):
+        with tempfile.TemporaryDirectory(prefix=f'load-target-{site}-') as scratch:
+            paths = OrgPaths(root=Path(scratch))
+            paths.org_dir.mkdir()
+            paths.agents_dir.mkdir()
+            db = Database(paths.db_path)
+            try:
+                install_or_recover(db, expected_org_slug='scratch')
+                with db.workflow_schema_transaction() as conn:
+                    migrate_draft_schema(conn, expected_org_slug='scratch')
+                install_team_move_schema(db, org_slug='scratch')
+                install_pause_schema(db, org_slug='scratch')
+                if site != 'ownership' or scenario != 'owner-write':
+                    install_task_ownership(db, org_slug='scratch')
+                elif scenario == 'owner-write':
+                    db.insert_task(TaskRecord(id='TASK-target', brief='ownership backfill fixture'))
+                org = SimpleNamespace(root=paths.root, db=db, slug='scratch')
+                namespace = Namespace((), ())
+                if site == 'naming':
+                    reconcile_namespace(org, namespace, install=True)
+                    if scenario == 'owner-write':
+                        namespace = Namespace((('builder', 'active'),), ())
+                cutover = WorkflowCutoverStore(db, org_slug='scratch')
+                if site == 'cutover' and scenario == 'owner-write':
+                    # Genuine event writer prepares a committed disable request.
+                    with cutover._transaction(write=True) as conn:
+                        from runtime.workflows.coding_authority_history import _Budget
+                        budget = _Budget()
+                        for _ in range(4):
+                            marker, events, _ = cutover._read(conn, budget=budget)
+                            cutover._advance(conn, marker, events, key='disable-fixture' if marker['generation'] == 4 else 'enable-fixture', budget=budget)
+                statements = []
+                db._conn.set_trace_callback(statements.append)
+                original_source = load_guard.read_workflow_schema_for_org_load
+                injected = False
+                target_results = []
+                original_target = getattr(load_guard, 'read_workflow_schema_target_for_org_load', None)
+                def target(conn, **kwargs):
+                    assert conn.in_transaction, 'target lost its caller snapshot'
+                    result = original_target(conn, **kwargs)
+                    assert conn.in_transaction, 'target ended its caller transaction'
+                    target_results.append(result)
+                    return result
+                original_advance = cutover._advance
+                def advance(conn, marker, events, **kwargs):
+                    before = sum(sql == 'PRAGMA integrity_check' for sql in statements)
+                    original_advance(conn, marker, events, **kwargs)
+                    assert sum(sql == 'PRAGMA integrity_check' for sql in statements) == before + 1, 'recovery mutation lost its full target check before COMMIT'
+                def source(conn, **kwargs):
+                    global injected
+                    result = original_source(conn, **kwargs)
+                    if kwargs.get('writer_source') and not injected:
+                        injected = True
+                        if scenario == 'unrelated-write':
+                            conn.execute("INSERT INTO org_settings(section,value_json,updated_at) VALUES ('target-probe','{}','2026-01-01T00:00:00+00:00')")
+                        elif scenario == 'unavailable-bookend':
+                            def deny(action, arg1, arg2, database, origin):
+                                return (sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_PRAGMA
+                                        and arg1 == 'data_version' else sqlite3.SQLITE_OK)
+                            conn.set_authorizer(deny)
+                    return result
+                with org_load_validation(db, org_slug='scratch'):
+                    cached = original_source(db._conn, expected_org_slug='scratch')
+                    owner = load_guard._current.get()
+                    before_full, before_hits = owner.full_runs, owner.hits
+                    changes = db._conn.total_changes
+                    before_checks = sum(sql == 'PRAGMA integrity_check' for sql in statements)
+                    with (patch.object(load_guard, 'read_workflow_schema_for_org_load', side_effect=source),
+                          patch.object(load_guard, 'read_workflow_schema_target_for_org_load', side_effect=target, create=True),
+                          patch.object(cutover, '_advance', side_effect=advance)):
+                        if site == 'cutover':
+                            projection = cutover.recover_authorized()
+                            assert projection['org_slug'] == 'scratch'
+                            if scenario == 'owner-write':
+                                assert projection['generation'] > 5, projection
+                        elif site == 'ownership':
+                            install_task_ownership(db, org_slug='scratch')
+                            assert db._task_ownership_org == 'scratch'
+                            if scenario == 'owner-write':
+                                assert tuple(db._conn.execute('SELECT task_id,kind FROM workflow_task_ownership').fetchone()) == ('TASK-target', 'legacy')
+                        else:
+                            reconcile_namespace(org, namespace, install=True)
+                            if scenario == 'owner-write':
+                                assert db._conn.execute("SELECT current_label FROM identity_name_owners WHERE canonical_id='builder'").fetchone()[0] == 'builder'
+                    db._conn.set_authorizer(None)
+                    assert injected, (site, scenario, 'source seam not reached')
+                    assert not db._conn.in_transaction, 'target changed caller transaction ownership'
+                    if scenario == 'zero-write':
+                        good = (owner.full_runs == before_full and owner.hits == before_hits + 2
+                                and db._conn.total_changes == changes
+                                and sum(sql == 'PRAGMA integrity_check' for sql in statements) == before_checks)
+                        # Reuse returns the exact complete tuple, without reconstruction.
+                        if target_results:
+                            assert len(target_results) == 1 and target_results[0] is cached
+                        assert owner.saved[1] is cached
+                        assert 'PRAGMA integrity_check' in statements
+                    else:
+                        good = sum(sql == 'PRAGMA integrity_check' for sql in statements) > before_checks
+                        if scenario in ('owner-write', 'unrelated-write'):
+                            assert db._conn.total_changes > changes, (site, scenario, 'no actual write')
+                    if not good:
+                        target_failures.append((site, scenario, owner.full_runs - before_full, owner.hits - before_hits))
+                    print('TARGET', site, scenario, 'PASS' if good else 'FAIL',
+                          f'full_delta={owner.full_runs-before_full} hits_delta={owner.hits-before_hits}')
+                if site == 'cutover' and scenario == 'zero-write':
+                    # The public read keeps its original full path even IN a load scope.
+                    with org_load_validation(db, org_slug='scratch'):
+                        original_source(db._conn, expected_org_slug='scratch')
+                        before = sum(sql == 'PRAGMA integrity_check' for sql in statements)
+                        cutover.get()
+                        assert sum(sql == 'PRAGMA integrity_check' for sql in statements) == before + 1, 'public cutover get reused within load scope'
+            finally:
+                db._conn.set_authorizer(None)
+                db.close()
+assert not target_failures, target_failures
 
 with tempfile.TemporaryDirectory(prefix='returned-storage-') as scratch:
     db = Database(Path(scratch) / 'org.db')
@@ -137,6 +446,12 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
             assert db._conn.execute("SELECT count(*) FROM audit_log WHERE action='team_move_native_writer'").fetchone()[0] == 2
 
         for name, action in actions.items():
+            if name.startswith('Pause '):
+                # A byte-different journal still exercises invalidation. The
+                # canonical no-op is covered separately below.
+                db._conn.execute("UPDATE task_pause_controls SET admission_journal_json=? WHERE root_task_id='TASK-1'",
+                                 ('{ "version": 1, "entries": [] }',))
+                db._conn.commit()
             if name == 'settings reviewer backfill':
                 db._conn.execute("DELETE FROM org_settings WHERE section='reviewer_agents'")
                 db._conn.commit()
@@ -155,6 +470,39 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
                 read()
                 expect(checks() == before + 1, name + ' did not establish a fresh reusable result')
             print('CASE invalidation:', name)
+
+        before = db._conn.total_changes
+        journal_before = db._conn.execute("SELECT admission_journal_json FROM task_pause_controls WHERE root_task_id='TASK-1'").fetchone()[0]
+        restore_pause_preparations(SimpleNamespace(_db=db))
+        restore_pause_preparations(SimpleNamespace(_db=db))  # actual sweep re-run
+        startup_expect(db._conn.total_changes == before, 'pause-identical-restore-and-sweep-zero-writes')
+        assert db._conn.execute("SELECT admission_journal_json FROM task_pause_controls WHERE root_task_id='TASK-1'").fetchone()[0] == journal_before
+
+        # Real recovery changes still persist once; the sweep then preserves
+        # exact bytes and uncertainty. A job-owned prepared entry stays owned.
+        fingerprint = dict(status='pending', block_kind=None, count=0,
+            session_id=None, agent=None, fanout=None, jobs=None, parent=None,
+            brief_digest='0' * 64)
+        entry = dict(id='ordinary', org='scratch', root_task_id='TASK-1',
+            task_id='TASK-1', agent='builder', session_id='synthetic-session',
+            owner='ordinary', owner_identity={}, fingerprint=fingerprint,
+            generation=0, phase='prepared', retry={}, context={},
+            started_at=None, captured_generation=None)
+        job = dict(entry, id='job', owner='job', session_id=None)
+        with store.writer('TASK-1') as (_, row):
+            row['journal']['entries'] = [entry, job]
+            store.save_journal_uncommitted(row)
+        before = db._conn.total_changes
+        restore_pause_preparations(SimpleNamespace(_db=db))
+        assert db._conn.total_changes == before + 1
+        actual = store.row_uncommitted('TASK-1')['journal']['entries']
+        assert actual == [dict(entry, phase='unknown', context={'execution_unknown': True}), job], actual
+        before = db._conn.total_changes
+        restored_bytes = store.row_uncommitted('TASK-1')['admission_journal_json']
+        restore_pause_preparations(SimpleNamespace(_db=db))
+        startup_expect(db._conn.total_changes == before
+            and store.row_uncommitted('TASK-1')['admission_journal_json'] == restored_bytes,
+            'pause-recovered-unknown-and-job-sweep-zero-writes')
 
         other = sqlite3.connect(paths.db_path)
         try:
@@ -271,11 +619,11 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
             install_team_move_schema(db, org_slug='scratch')
             assert checks() == before, 'team-move source did not use the real load seam'
             install_task_ownership(db, org_slug='scratch')
-            assert checks() == before + 1, 'ownership target must remain full; source may reuse'
+            assert checks() == before, 'unchanged ownership target repeated the full read'
             before = checks()
             WorkflowCutoverStore(db, org_slug='scratch').recover_authorized()
-            assert checks() == before + 1, 'cutover writer source may reuse; public get stays full'
-        print('PASS unknown caller snapshot, real source owners and unconditional writer target')
+            assert checks() == before, 'unchanged cutover recovery target repeated the full read'
+        print('PASS unknown caller snapshot, real source owners and zero-write targets')
 
         assert not failures, failures
         print('PASS all named invalidation/bookend cases')
@@ -293,4 +641,5 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
         print('Synthetic local SQLite; not a serving-daemon restart or production-size estimate.')
     finally:
         db.close()
+assert not startup_failures, startup_failures
 PY

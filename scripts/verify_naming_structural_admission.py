@@ -219,6 +219,34 @@ def assert_eight(conn: sqlite3.Connection) -> None:
         assert digest(sql.encode()) == hashes['live'], table
 
 
+def assert_eight_after_open(conn: sqlite3.Connection, reference_columns: dict[str, list[tuple]]) -> None:
+    """Keep frozen bodies exact while allowing generic constructor ADD COLUMNs."""
+    _, obs = frozen()
+    with sqlite3.connect(':memory:') as historical, sqlite3.connect(':memory:') as stripped:
+        for table, change in obs['changed'].items():
+            live = change['live']
+            historical.execute(live)
+            columns = [tuple(r) for r in historical.execute(f'PRAGMA table_xinfo({qi(table)})')]
+            actual = [tuple(r) for r in conn.execute(f'PRAGMA table_xinfo({qi(table)})')]
+            assert actual[:len(columns)] == columns, (table, 'frozen columns changed')
+            frozen_names = {r[1] for r in columns}
+            allowed = {r[1]: r[1:] for r in reference_columns[table] if r[1] not in frozen_names}
+            extra = actual[len(columns):]
+            assert all(r[1] in allowed and r[1:] == allowed[r[1]] for r in extra), (table, 'unexpected constructor column')
+            sql = conn.execute('SELECT sql FROM main.sqlite_schema WHERE name=?', (table,)).fetchone()[0]
+            # SQLite places ADD COLUMNs before any existing table constraints.
+            # Remove only those definitions in a disposable parser copy, never
+            # on the observed connection; every remaining SQL byte must match.
+            try:
+                stripped.execute(sql)
+                for column in reversed(extra):
+                    stripped.execute(f'ALTER TABLE {qi(table)} DROP COLUMN {qi(column[1])}')
+            except sqlite3.Error as exc:
+                raise AssertionError((table, 'cannot strip constructor columns')) from exc
+            restored = stripped.execute('SELECT sql FROM sqlite_schema WHERE name=?', (table,)).fetchone()[0]
+            assert restored == live, (table, 'frozen SQL body changed')
+
+
 def canonical(root: Path) -> object:
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from runtime.orchestrator.teams import TeamManager, TeamsRegistry
@@ -269,6 +297,8 @@ def fixture(base: Path, name: str, *, historical: bool = True, pause: bool = Tru
     c.execute('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES (\'founder\',\'founder\',\'synthetic_sentinel\',\'{"v":1}\',?)', (STAMP,))
     c.commit()
     inventory = [tuple(r) for r in c.execute('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY rowid')]
+    reference_columns = {table: [tuple(r) for r in c.execute(f'PRAGMA table_xinfo({qi(table)})')]
+                         for kind, table, _, _ in inventory if kind == 'table'}
     target = root / 'happyranch.db'
     dest = sqlite3.connect(target)
     dest.set_trace_callback(lambda sql: trace_setup(str(target),sql))
@@ -280,7 +310,9 @@ def fixture(base: Path, name: str, *, historical: bool = True, pause: bool = Tru
     for kind, table, _, _ in inventory:
         if kind != 'table':
             continue
-        cols = [r[1] for r in c.execute(f'PRAGMA table_xinfo({qi(table)})') if r[6] == 0]
+        # Frozen historical tables omit columns added by later generic migrations.
+        destination_cols = {r[1] for r in dest.execute(f'PRAGMA table_xinfo({qi(table)})') if r[6] == 0}
+        cols = [r[1] for r in c.execute(f'PRAGMA table_xinfo({qi(table)})') if r[6] == 0 and r[1] in destination_cols]
         names = ','.join(qi(n) for n in cols)
         rows = c.execute(f'SELECT rowid,{names} FROM {qi(table)}').fetchall()
         if table == 'sqlite_sequence':
@@ -307,8 +339,9 @@ def fixture(base: Path, name: str, *, historical: bool = True, pause: bool = Tru
     db = Database(target)
     db._conn.set_trace_callback(lambda sql: trace_setup(str(target),sql))
     if historical:
-        assert_eight(db._conn)
-    org = SimpleNamespace(root=root, slug=SLUG, db=db, teams=teams, naming_ready=False, naming_diagnostic=None, naming_install_diagnostic=None)
+        assert_eight_after_open(db._conn, reference_columns)
+    org = SimpleNamespace(root=root, slug=SLUG, db=db, teams=teams, naming_ready=False, naming_diagnostic=None, naming_install_diagnostic=None,
+                          reference_columns=reference_columns)
     save(name + '-S1', observe(org))
     return org
 
@@ -343,7 +376,7 @@ def case01(base: Path) -> None:
     from runtime.identities.registry import refresh_names
     org = fixture(base, 'h8-direct')
     attempt(org, 'h8-positive-contract')
-    assert_eight(org.db._conn)
+    assert_eight_after_open(org.db._conn, org.reference_columns)
     owners = [tuple(r) for r in org.db._conn.execute('SELECT * FROM identity_name_owners ORDER BY canonical_id')]
     assert owners == [('founder', 'founder', 'founder', 'founder', 1), ('agent', 'maker', 'active', 'maker', 1),
                       ('agent', 'manager', 'active', 'manager', 1), ('agent', 'pending_one', 'pending', 'pending_one', 1), ('agent', 'retired_one', 'terminated', 'retired_one', 1)]
@@ -863,6 +896,7 @@ def case07(base: Path) -> None:
 def case08(base: Path) -> None:
     from runtime.identities.registry import refresh_names
     org = fixture(base, 'public-h8')
+    reference_columns = org.reference_columns
     assert refresh_names(org, install=True)
     org = reopen(org, 'public-first')
     asyncio.run(public(org, rename=True))
@@ -870,7 +904,7 @@ def case08(base: Path) -> None:
     before = observe(org)
     asyncio.run(public(org, rename=False))
     assert before == observe(org)
-    assert_eight(org.db._conn)
+    assert_eight_after_open(org.db._conn, reference_columns)
     org.db.close()
 
 

@@ -437,6 +437,20 @@ def measure_storage_telemetry(
 # prune old rows after each successful append.
 # ------------------------------------------------------------------
 
+def start_metrics_persistence(state: DaemonState) -> None:
+    """Queue the first telemetry snapshot after successful server startup.
+
+    Scheduler recovery remains before serving. Its early metrics calls do
+    nothing; the same composer/throttle owns this and subsequent snapshots.
+    """
+    import asyncio
+
+    state._metrics_serving = True
+    asyncio.get_running_loop().call_soon(
+        maybe_persist_metrics_snapshot, state, datetime.now(timezone.utc),
+    )
+
+
 def maybe_persist_metrics_snapshot(
     state: DaemonState, now: datetime
 ) -> None:
@@ -445,7 +459,7 @@ def maybe_persist_metrics_snapshot(
     Errors are logged but never propagate — a persistence failure must
     NOT crash the hosting scheduler loop.
     """
-    if state.metrics_store is None:
+    if state.metrics_store is None or not state._metrics_serving:
         return
 
     import time as _time

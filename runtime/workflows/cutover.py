@@ -59,12 +59,19 @@ class WorkflowCutoverStore:
                 conn.rollback()
                 raise
 
-    def _read(self, conn: sqlite3.Connection, *, budget: _Budget | None = None, load_source: bool = False) -> tuple:
+    def _read(self, conn: sqlite3.Connection, *, budget: _Budget | None = None,
+              load_source: bool = False, load_target: bool = False) -> tuple:
         """Return local validation with marker/history for this unchanged snapshot."""
         try:
             if load_source:
                 from runtime.infrastructure.workflow_schema_load import read_installed_for_org_load
                 validated = read_installed_for_org_load(conn, expected_org_slug=self._org_slug, budget=budget)
+            elif load_target:
+                from runtime.infrastructure.workflow_schema_load import read_workflow_schema_target_for_org_load
+                validated = read_workflow_schema_target_for_org_load(
+                    conn, expected_org_slug=self._org_slug, budget=budget,
+                    legacy=lambda: _read_installed(conn, expected_org_slug=self._org_slug,
+                                                   validate_data=False, budget=budget))
             else:
                 validated = read_org_layout(conn, expected_org_slug=self._org_slug, budget=budget,
                     legacy=lambda: _read_installed(conn, expected_org_slug=self._org_slug,
@@ -172,12 +179,12 @@ class WorkflowCutoverStore:
             ))
             projection["reconciliation_required"] = True
             return projection
-        return self.get()
+        return self.get(_load_target=True)
 
-    def get(self) -> dict:
+    def get(self, *, _load_target: bool = False) -> dict:
         try:
             with self._transaction(write=False) as conn:
-                marker, events, validated = self._read(conn)
+                marker, events, validated = self._read(conn, load_target=_load_target)
                 return self._projection(conn, marker, events, _validated=validated)
         except sqlite3.DatabaseError as exc:
             raise WorkflowCutoverError("cutover_operation_failed") from exc

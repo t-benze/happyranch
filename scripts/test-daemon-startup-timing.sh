@@ -18,6 +18,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
+from datetime import datetime, timezone
 
 
 class ImportObservation(importlib.abc.MetaPathFinder):
@@ -87,6 +88,7 @@ for org_slug in ('alpha', 'beta'):
 
 app = SimpleNamespace(state=SimpleNamespace(daemon=SimpleNamespace(
     _cleanup_diagnostics=None, _thread_release_service=None,
+    metrics_store=None, _metrics_serving=False,
 )))
 
 
@@ -144,6 +146,57 @@ for name, value in cases.items():
     print(f"PASS: {name} launcher input; additive logs/partition; backend unchanged")
     if name == "present":
         print(f"Controlled-clock helper output: {partition_line}")
+
+# Drive the real persistence/composer/store through the actual server endpoint.
+# Only ASGI/listener creation is isolated; no daemon or worker is started.
+from runtime.daemon.metrics_store import maybe_persist_metrics_snapshot, compose_metrics_snapshot
+from runtime.daemon.routes.metrics import metrics, metrics_history
+state = entry.DaemonState.idle(entry.Settings())
+metrics_app = SimpleNamespace(state=SimpleNamespace(daemon=state))
+request = SimpleNamespace(app=metrics_app)
+metrics_failures = []
+def metrics_expect(condition, case):
+    print('METRICS', case, 'PASS' if condition else 'FAIL')
+    if not condition:
+        metrics_failures.append(case)
+
+async def snapshot_startup():
+    now = datetime.now(timezone.utc)
+    maybe_persist_metrics_snapshot(state, now)
+    metrics_expect(state.metrics_store.row_count() == 0 and state._last_metrics_snapshot_at == 0,
+                   'no-pre-serving-write')
+    # Live route composes its own content; history supports an empty store.
+    assert metrics(request)['tasks'] == {'pending_and_in_flight': 0}
+    metrics_expect(metrics_history(request, since=None, until=None, limit=500)['snapshots'] == [],
+                   'pre-serving-history-empty')
+    refused = entry._DiagnosticServer(entry.uvicorn.Config(metrics_app), metrics_app)
+    refused.should_exit = True
+    with patch.object(entry.uvicorn.Server, 'startup', listener_return):
+        await refused.startup()
+    await asyncio.sleep(0)
+    metrics_expect(state.metrics_store.row_count() == 0, 'incomplete-startup-keeps-persistence-dormant')
+    server = entry._DiagnosticServer(entry.uvicorn.Config(metrics_app), metrics_app)
+    with patch.object(entry.uvicorn.Server, 'startup', listener_return):
+        await server.startup()
+    metrics_expect(state.metrics_store.row_count() == 0, 'first-write-scheduled-after-startup-return')
+    await asyncio.sleep(0)
+    metrics_expect(state.metrics_store.row_count() == 1, 'first-write-after-serving')
+    # Freeze only the registry clock while comparing the two real consumers.
+    with patch('time.monotonic', return_value=state._last_metrics_snapshot_at + 56):
+        expected = compose_metrics_snapshot(state)
+        maybe_persist_metrics_snapshot(state, now)
+        rows = state.metrics_store.query(limit=500)
+        assert len(rows) == 2 and json.loads(max(rows, key=lambda r: r['id'])['snapshot_json']) == expected, rows
+        maybe_persist_metrics_snapshot(state, now)
+        assert state.metrics_store.row_count() == 2, '55-second throttle changed'
+    print('METRICS unchanged-composer-and-throttle PASS')
+
+try:
+    asyncio.run(snapshot_startup())
+finally:
+    state.metrics_store.close()
+    state.direct_connect_authority_store.close()
+assert not metrics_failures, metrics_failures
 
 with tempfile.TemporaryDirectory(prefix="happyranch-launcher-timing-") as scratch:
     root = Path(scratch)

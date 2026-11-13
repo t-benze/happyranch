@@ -30,6 +30,12 @@ from datetime import datetime, timezone
 from types import FrameType
 from typing import Iterator
 
+# Frozen repository children must reach their resource limits/Git exec before
+# importing the daemon. This is the existing fixed helper dispatch, not serve.
+if __name__ == '__main__' and sys.argv[1:2] == ['--cleanup-helper']:
+    from runtime.daemon.cleanup_helpers import main as helper_main
+    raise SystemExit(helper_main(sys.argv[2:]))
+
 import uvicorn
 
 from runtime.config import Settings
@@ -1006,6 +1012,11 @@ class _DiagnosticServer(uvicorn.Server):
             except Exception:
                 pass  # C stays unavailable, never substitutes readiness success
 
+        # Pure telemetry runs on the next event-loop turn, after this actual
+        # ASGI/listener startup endpoint returns. It grants no readiness.
+        from runtime.daemon.metrics_store import start_metrics_persistence
+        start_metrics_persistence(self._diagnostic_app.state.daemon)
+
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
@@ -1018,8 +1029,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     if args.cleanup_helper is not None:
-        from runtime.daemon.cleanup_helpers import HELPERS, dispatch
-        if args.maintenance or not args.cleanup_helper or args.cleanup_helper[0] not in HELPERS:
+        from runtime.daemon.cleanup_helpers import DISPATCH_HELPERS, dispatch
+        if args.maintenance or not args.cleanup_helper or args.cleanup_helper[0] not in DISPATCH_HELPERS:
             _build_parser().error('cleanup helper requires one known helper and cannot use maintenance')
         return dispatch(args.cleanup_helper)
 
