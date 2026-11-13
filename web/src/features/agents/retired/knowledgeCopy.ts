@@ -118,7 +118,6 @@ export const DISPOSITION_LABEL: Record<string, MessageKey> = {
 export const SOURCE_ERROR: Record<string, MessageKey> = {
   unknown_retired_source: 'knowledge.sourceError.unknown',
   source_not_retired: 'knowledge.sourceError.notRetired',
-  source_not_retired_worker: 'knowledge.sourceError.notWorker',
   retained_workspace_missing: 'knowledge.sourceError.workspaceMissing',
   retained_identity_unreadable_or_invalid: 'knowledge.sourceError.identityUnreadable',
 };

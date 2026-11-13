@@ -32,6 +32,9 @@ except Exception:
     raise SystemExit('M4 runtime relay identity refused; private details withheld') from None
 PY_RELAY
 }
+udp_condition() {
+  /usr/bin/python3 scripts/ci/m4_tailnet_udp.py "$1"
+}
 certificate_cache() {
   /usr/bin/python3 - "$cert_cache" "$1" <<'PY_CACHE'
 import json, os, stat, subprocess, sys
@@ -84,6 +87,7 @@ while True:
 PY_MEMORY
   start_fixture "${fixtures[1]}" /usr/bin/python3 "$M2_BUILD/memory.py" "$M2_LOGS/memory.json"
   certificate_cache prepare
+  udp_condition controls | tee "$M2_LOGS/udp-controls.json"
   provision_payload
   install -m 0644 "$M2_BUILD/fixture_daemon_probe.py" "$M2_WORK/fixture_daemon_probe.py"
   echo "d2cda0a5d748587f77c920a76cd1bf1ab429e5299ba5bc6b3dda90712721b45b  $MANAGED_DOWNLOADS/headscale" | sha256sum --check
@@ -141,6 +145,7 @@ EOF
   # Explicit direction and one TCP port; no allow-all default or client tags.
   printf '%s\n' '{"acls":[{"action":"accept","proto":"tcp","src":["m4client"],"dst":["m4home:443"]}]}' > "$M2_WORK/acl.json"
   relay_observation snapshot
+  touch "$M2_LOGS/fixture-start-attempted"
   start_fixture "${fixtures[0]}" "$M2_WORK/headscale" serve --config "$M2_WORK/config.yaml"
   # Static cached combined PEM certificate/key: no ACME manager or issuance.
   wait_for curl -q --silent --fail --connect-timeout 2 --max-time 4 --output /dev/null https://47-238-219-200.sslip.io/health
@@ -264,8 +269,11 @@ for p in files:
         else:
             raise AssertionError(f'unrecognized journal: {p.name}:{number}')
     report['journals'].append(dict(file=p.name, entries=len(stamps)))
-required = ['happyranch-m4-headscale.service']
+started = root.joinpath('fixture-start-attempted').exists()
+report['state'] = 'current-run-only' if started else 'not applicable: fixture not started'
+required = ['happyranch-m4-headscale.service'] if started else []
 if Path(sys.argv[2]).exists():
+    assert started, 'product install without fixture start'
     required += ['happyranch-tsnet-sidecar.service', 'happyranch-connector.service']
 assert all(any(r['file'] == unit+'.journal.txt' and r['entries'] for r in report['journals']) for unit in required)
 print(json.dumps(report, indent=2))
@@ -309,6 +317,7 @@ purge() {
   fi
 }
 teardown_vm() {
+  udp_condition remove
   # Partial prepares can be cleaned, but a surviving installed product refuses.
   local unit
   for unit in "${services[@]}" "$target"; do
@@ -332,6 +341,7 @@ teardown_vm() {
   rm -f "$base/owned-sha"
 }
 clean_state() {
+  udp_condition clean
   local path unit
   for unit in "${services[@]}" "$target" "${fixtures[@]}"; do
     absent "/etc/systemd/system/$unit"
@@ -366,6 +376,8 @@ case ${1:-} in
   enroll|pair-main|pair-revoked|pair-ready) handoff "$1" ;;
   handoff-check) handoff_check ;;
   relay-identity) relay_observation current ;;
+  udp-before) udp_condition before ;;
+  udp-after) udp_condition after ;;
   exposure-sockets) exposure_sockets ;;
   devices) sudo -u happyranch "$python" -m runtime.remote_access.cli list-devices --config /etc/happyranch/connector.json ;;
   nodes) nodes ;;
@@ -376,5 +388,5 @@ case ${1:-} in
   teardown) teardown_vm ;;
   clean-state) clean_state ;;
   remove-cert-cache) clean_state; certificate_cache remove ;;
-  *) fail 'expected prepare|install|enroll|pair-main|pair-revoked|pair-ready|handoff-check|relay-identity|exposure-sockets|devices|nodes|revoke|logs|attribution|purge|teardown|clean-state|remove-cert-cache' ;;
+  *) fail 'expected prepare|install|enroll|pair-main|pair-revoked|pair-ready|handoff-check|relay-identity|udp-before|udp-after|exposure-sockets|devices|nodes|revoke|logs|attribution|purge|teardown|clean-state|remove-cert-cache' ;;
 esac

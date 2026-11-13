@@ -263,7 +263,10 @@ retain their own process gates.
 S3 frozen cleanup dispatch uses the hidden daemon entry
 `happyranch-daemon --cleanup-helper disk-sweep ...`; root worktree helpers use
 `--cleanup-helper worktree-safety ...` and `--cleanup-helper check-path-use ...`.
-Only these fixed names are accepted, before daemon-home initialization, listener
+These are the cleanup names; the same closed dispatch also accepts the fixed
+`repository-git` and `repository-reader` children in both frozen daemon and CLI
+(see [runtime configuration](../runtime-and-configuration.md#frozen-cleanup-helpers-thr-346-s3)).
+Dispatch precedes daemon-home initialization, listener
 binding or lifespan startup. Source/uv installs keep Python `-m` for the sweep
 worker and Python script paths for the worktree helpers. The two worktree scripts
 are release data in the existing bundled-skill inventory; the dispatcher and

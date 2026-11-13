@@ -73,8 +73,10 @@ generic audit scan and process-local watermark, including publication; see the
 [coding removal contract](contracts/coding-workflow.md#current-coding-storage-and-setup--root13150--thr320seq261267).
 Failed unpublished org construction closes/refuses before attachment.
 Load-only source validation reuse
-uses coherent SQLite bookends (THR308seq348/353/354); writer target and public
-checks remain complete. See [runtime configuration](runtime-and-configuration.md).
+uses coherent SQLite bookends (THR308seq348/353/354). THR308seq426 Decision 1
+extends zero-write reuse only to cutover recovery's final read, task-ownership
+installation's target and naming installation's target. Mutated targets and
+public checks remain complete. See [runtime configuration](runtime-and-configuration.md).
 
 Coding validates its canonical inventory and actual shared columns, keys, FKs,
 owner histories, template/authority/native dependencies and Pause/move/naming
@@ -1681,6 +1683,8 @@ language defaulting; W5b supersedes the unset/invalid-English default.
 
 **W4c** translated the mounted Agents (`features/agents/**`: roster list, agent detail pane/drawer, pending enrollments, AddAgentDialog, TeamEscalationPolicyPage/Card) and Skills (`features/skills/**`: catalog, validation, skill detail + assignment panel, custom-skill list/create/detail) route families. User/daemon values (agent names, roles and team identifiers without translation or title-casing, team-policy bodies, contract ids, digests, skill names/slugs/descriptions/SKILL.md bodies, versions, provenance values) stay verbatim; visible dates/times, including policy release/activation history and custom-skill purge completion, use named shapes in `lib/i18n/format.ts` (`dateTime` for those timestamps; historical en/zh-CN rendered-state regressions complemented the source scan, which rejected direct locale-formatting calls before the THR-343 test retirement; current web behavior evidence belongs to Product E2E), count-bearing copy uses plural objects, in-scope dialogs pass `closeLabel={t('common.close')}`, and error sites use the F1 boundary through `classifyAgentError` / `classifySkillError`. Below `md` the Agents roster stacks above the detail pane (height-capped, internally scrolling) instead of a fixed 244px rail, so the detail is not squeezed at 390px. The detail main pane uses `max-md:min-h-0` only below `md`; at `md` and up its base computed min-height remains `auto`. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
 
+**Agent retirement (THR-296):** the active agent detail pane (`features/agents/AgentDetailPane.tsx`) ends with a **Retire agent** section that opens `RetireAgentDialog`. The dialog lists the consequences, requires an explicit destructive confirm, and calls `POST /agents/{agent_name}/retire` once through `useRetireAgent` with the existing Founder bearer; the confirm is disabled while the request runs. The daemon is the only eligibility authority: a refusal stays in the open dialog with the server's code, message, blocking work and team members verbatim (only `agent_not_quiescent` and `team_not_empty` get an en/zh-CN headline) and the agent stays active. A refusal is a 4xx answer other than 404; a lost response, a 5xx or a 404 leaves the outcome unknown, so the dialog re-reads the roster: an agent that is gone is treated as retired, one still listed is reported as such, and if that read fails the dialog says the outcome is unconfirmed instead of claiming the agent is active. Settlement (success or failure) first cancels every in-flight read of the active roster, teams, enrollments, identities and the retained retired source, including first loads, then invalidates them, so a read that began before the retirement cannot be stored as fresh; success navigates to `?view=terminated&source=<agent>` for every role, and that retained knowledge detail offers Distill (a retired manager is a Distill source since TASK-15902). For a manager, decided from the roster role, the dialog additionally says its definition is preserved and that its now-empty team is also removed. The UI adds no eligibility rule for this.
+
 **W4d-1** translates KB and Artifacts chrome, including list/detail/candidates,
 search/filter/breadcrumb/empty/loading/error/Retry, gated KB Compose labels and
 its supported DialogContent close control, and artifact upload/download/delete
@@ -2168,7 +2172,12 @@ The bearer-authenticated same-org routes are
 `GET /api/v1/orgs/{slug}/knowledge/retired-agents/{source_id}/sources/{reference_id}`.
 Use existing terminated enrollments for navigation. Detail reports retained
 source identity, team/provider, unknown retirement date, coverage, capture
-availability/consistency and validated records. Unknown IDs return 404; active,
+availability/consistency, validated records and additive `former_manager` (the
+single recorded actor of the source's `terminate` audit row, `founder` for a
+Founder retirement, else null; a display hint for the curator picker, never
+authority; mirrored as optional in `web/src/lib/api/knowledge.ts`; the OpenAPI
+snapshot pins routes and parameters only and is unchanged). Retired workers
+and retired managers are both sources. Unknown IDs return 404; active,
 pending and invalid retained identities refuse with 409. References are opaque,
 content-bound IDs returned by detail, never paths. Malformed reference IDs refuse
 with 422; missing/changed references return `available:false` and coverage.
@@ -2192,7 +2201,7 @@ Source availability and consistency rules live in
 
 The existing bearer-authenticated same-org knowledge router also serves:
 
-- `POST /api/v1/orgs/{slug}/knowledge/distill`: `{ "submission_id": "original-key", "source_id": "retired_id", "confirmed": true }`, optionally with `processor_id` naming an existing active executable owner.
+- `POST /api/v1/orgs/{slug}/knowledge/distill`: `{ "submission_id": "original-key", "source_id": "retired_id", "confirmed": true }`, optionally with `processor_id` naming an existing active executable owner. The web confirmation always sends the Founder-chosen curator as `processor_id` ([curator choice](features-and-invariants.md#retired-knowledge-sources-s1-thr-296)); without it the server falls back to the recorded former manager.
 - `GET /api/v1/orgs/{slug}/knowledge/distill/{operation_id}`: Queued/Processing/Ready/Failed, observed phase, cutoff/last-update, closed failure cause, actual processor/task/session/result and archive/version references. Both POST and GET include the fixed capture's category/state/reason/count-or-unknown/cutoff/errors coverage, preserving unavailable/error reasons through failure, replay and reopen. Internal capture, confirmation JSON and corpus bodies are excluded.
 - `GET /api/v1/orgs/{slug}/knowledge/archives`: Ready selection metadata, coverage and item counts.
 - `GET /api/v1/orgs/{slug}/knowledge/archives/{archive_id}`: immutable manifest and curated items with opaque S1 source references; no arbitrary source paths or raw snapshot read.

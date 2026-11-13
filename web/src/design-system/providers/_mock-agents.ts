@@ -117,4 +117,11 @@ export const mockAgentsApi: AgentsApi = {
     useMutation({
       mutationFn: async () => ({ ok: true as const }),
     }),
+
+  useRetireAgent: () => useMutation({
+    mutationFn: async (): Promise<import('./DataContext').RetireAgentResult> => {
+      throw new Error('Agent retirement is unavailable in the prototype.');
+    },
+    retry: false,
+  }),
 };

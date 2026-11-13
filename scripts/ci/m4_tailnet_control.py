@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Callable, Iterator
 
 from m4_tailnet_runner import COORDINATION_PR, OPERATOR_ID, PREFIX, REPOSITORY, binding
-from m4_tailnet_client import IDENTITY_COUNTS, exception_class, require_relay_identity
+from m4_tailnet_client import IDENTITY_COUNTS, exception_class, require_relay_identity, require_udp_evidence, UDP_IDENTITY
 
 
 def relay_file(path: Path) -> dict:
@@ -229,6 +229,10 @@ class HostedRun:
             assert set(payload) == {'address', 'pair-main', 'pair-revoked', 'pair-ready'}
             assert ipaddress.ip_address(payload['address']) in ipaddress.ip_network('100.64.0.0/10')
             secrets = ['pair-main', 'pair-revoked', 'pair-ready']
+        elif phase in {'udp-before', 'udp-after'}:
+            assert set(payload) == {'enforcement'}
+            require_udp_evidence(payload['enforcement'], phase.removeprefix('udp-'), {})
+            secrets = []
         elif phase == 'relay-identity':
             assert set(payload) == {'identity'}
             require_relay_identity(payload['identity'], {})
@@ -285,6 +289,14 @@ class HostedRun:
         identity = relay_identity_receipt(json.loads(phase('relay-identity', private=True)), self.sha, self.request['key_sha256'])
         self.publish('relay-identity', {'identity': identity})
         record['relay_identity'] = {key: identity[key] for key in ('label', *IDENTITY_COUNTS)}
+        before = json.loads(phase('udp-before', private=True))
+        require_udp_evidence(before, 'before', {})
+        self.publish('udp-before', {'enforcement': before})
+        after = json.loads(phase('udp-after', private=True))
+        require_udp_evidence(after, 'after', {})
+        assert all(before[key] == after[key] for key in UDP_IDENTITY), 'UDP rule identity changed'
+        self.publish('udp-after', {'enforcement': after})
+        record['udp_enforcement'] = dict(before=before, after=after)
         phase('exposure-sockets')
         with control_wait(self.waits, 'native-completion') as wait:
             deadline = time.monotonic() + 240

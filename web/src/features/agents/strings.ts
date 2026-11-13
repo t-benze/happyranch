@@ -67,3 +67,65 @@ export function classifySystemPromptError(err: unknown): MessageKey {
   if (code === 'system_prompt_audit_failed') return 'agents.prompt.auditFailed';
   return 'agents.prompt.verifyFailed';
 }
+
+/** Server refusals the retire dialog owns a headline for; every other code stays verbatim. */
+const RETIRE_REFUSAL_KEYS: Record<string, MessageKey> = {
+  agent_not_quiescent: 'agents.retire.refusal.notQuiescent',
+  team_not_empty: 'agents.retire.refusal.teamNotEmpty',
+};
+
+/**
+ * Locale-neutral view of a retire failure. The daemon is the only eligibility
+ * authority: its code, message/reason, blocking work and team members are
+ * carried verbatim; only the two headline codes above get catalog copy.
+ */
+export interface RetireErrorView {
+  headline: AgentErrorView;
+  /** Server `message`/`reason`, shown under a catalog headline. */
+  serverMessage: string | null;
+  /** `<kind> <id>` per blocking item, in server order. */
+  conflicts: string[];
+  members: string[];
+  /** Server code, when the headline does not already show it. */
+  code: string | null;
+  /**
+   * `refused`: the server answered and declined, so the agent is unchanged.
+   * `unknown`: no answer, a server fault, or 404 (the agent may already be
+   * retired) — only a fresh roster read says whether the agent is still active.
+   */
+  outcome: 'refused' | 'unknown';
+}
+
+const text = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() !== '' ? value : null;
+
+export function classifyRetireError(err: unknown): RetireErrorView {
+  const source = (err ?? {}) as { code?: unknown; detail?: unknown; status?: unknown };
+  const status = typeof source.status === 'number' ? source.status : null;
+  const detail = (source.detail !== null && typeof source.detail === 'object' ? source.detail : {}) as {
+    message?: unknown; reason?: unknown; conflicts?: unknown; members?: unknown;
+  };
+  const code = text(source.code);
+  const message = text(detail.message) ?? text(detail.reason);
+  const known = code !== null && Object.prototype.hasOwnProperty.call(RETIRE_REFUSAL_KEYS, code);
+  const conflicts = Array.isArray(detail.conflicts)
+    ? detail.conflicts.flatMap((item: unknown) => {
+      const entry = (item ?? {}) as { kind?: unknown; id?: unknown };
+      const id = typeof entry.id === 'number' ? String(entry.id) : text(entry.id);
+      return id === null ? [] : [[text(entry.kind), id].filter(Boolean).join(' ')];
+    })
+    : [];
+  const members = Array.isArray(detail.members)
+    ? detail.members.flatMap((item: unknown) => (text(item) === null ? [] : [item as string]))
+    : [];
+  return {
+    headline: known ? { kind: 'message', key: RETIRE_REFUSAL_KEYS[code] }
+      : message !== null ? { kind: 'raw', text: message }
+      : classifyAgentError(err, 'agents.retire.failed'),
+    serverMessage: known ? message : null,
+    conflicts,
+    members,
+    code: known || message !== null ? code : null,
+    outcome: status !== null && status >= 400 && status < 500 && status !== 404 ? 'refused' : 'unknown',
+  };
+}

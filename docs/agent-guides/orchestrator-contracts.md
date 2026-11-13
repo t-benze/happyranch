@@ -2259,6 +2259,8 @@ Frozen daemons invoke the fixed hidden `--cleanup-helper worktree-safety` and
 post-action checks. Source installs keep the existing Python script argv. The
 dispatch executes the same bundled scripts before daemon startup; unavailable
 scanner evidence still retains and never grants removal (Darwin scanner is S4).
+The same closed dispatcher supports `repository-git`/`repository-reader` in daemon
+and CLI (see [runtime configuration](runtime-and-configuration.md#frozen-cleanup-helpers-thr-346-s3)).
 
 The release-bundled `workspace-cleanup/scripts/worktree_safety.py` is the shared
 Git preservation, recursive snapshot and protected-identity owner for the root
@@ -2477,6 +2479,16 @@ It shares the archive, quiescence, future-work cleanup and rollback path above.
 Historic tasks/results, memory, thread history and team-keyed authority/policy
 rows remain. The `agent_managed` audit uses scope/actor/source `founder` and
 payload action `terminate`; no task identity is fabricated.
+In the web UI the Founder finds this as **Retire agent** at the bottom of an
+active agent's detail pane (Agents ▸ Active). It confirms the consequences,
+sends this one route, shows a refusal as the server returned it, and on success
+opens the agent's retained knowledge detail under Terminated agents, for a
+worker and a manager alike; both can be Distill sources. Because this audit
+row's actor is `founder`, Distill after a Founder retirement has no usable
+recorded former manager: the web confirmation makes the Founder choose an
+existing active curator, sent as `processor_id`. When no refusal came back (lost
+response, 5xx, 404) it re-reads the roster before saying anything about the
+agent's state. The UI adds no eligibility rule.
 
 Only Founder retirement may remove a manager and its now-empty agent-managed
 team, in the same canonical writer interval. Nonempty teams (including pending

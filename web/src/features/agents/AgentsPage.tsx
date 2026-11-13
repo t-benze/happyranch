@@ -280,6 +280,8 @@ export function AgentsPage(): JSX.Element {
             <AgentDetailPane
               agentName={selectedAgent}
               onClose={() => navigate(routes.inbox())}
+              onRetired={(name) =>
+                navigate(`${routes.inbox()}?view=terminated&source=${encodeURIComponent(name)}`)}
               onStartThread={
                 agents.find((a) => a.name === selectedAgent)
                   ? () => handleStartThread(agents.find((a) => a.name === selectedAgent)!)

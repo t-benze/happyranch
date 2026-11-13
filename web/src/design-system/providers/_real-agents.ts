@@ -219,4 +219,36 @@ export const realAgentsApi: AgentsApi = {
       },
     });
   },
+
+  useRetireAgent: () => {
+    const slug = useRealOrgSlug();
+    const qc = useQueryClient();
+    return useMutation({
+      mutationFn: ({ agentName }: { agentName: string }): Promise<import('./DataContext').RetireAgentResult> =>
+        agentsApi.retireAgent(slug, agentName),
+      // A refusal is the server's answer, never a transient to repeat.
+      retry: false,
+      // Settled, not success-only: a refusal changes nothing server-side, and
+      // after a lost response only a fresh read shows what the server did.
+      onSettled: (_receipt, _error, { agentName }) => {
+        // Active roster, teams (an emptied manager team is removed), the
+        // identity list behind the Terminated tab, and the retained source.
+        const affected = [
+          ['agents', slug],
+          ['teams', slug],
+          ['agent-enrollments', slug],
+          ['identities', slug],
+          ['knowledge', slug, 'retired', agentName],
+        ];
+        for (const queryKey of affected) {
+          // A read still in flight may have captured the registry before the
+          // retirement. invalidateQueries alone would join a first load (no
+          // cached data yet) and store its late result as fresh, so drop every
+          // in-flight read first; the invalidation then starts a new one.
+          void qc.cancelQueries({ queryKey });
+          void qc.invalidateQueries({ queryKey });
+        }
+      },
+    });
+  },
 };

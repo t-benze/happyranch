@@ -547,8 +547,9 @@ def _run_git(directory: Path, object_format: str, oid: str, mode: str,
     output = bytearray()
     error_size = 0
     try:
-        process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).absolute()),
-            '--git-child', str(directory), object_format, mode], cwd=directory,
+        from runtime.daemon.cleanup_helpers import helper_argv
+        process = subprocess.Popen([*helper_argv('repository-git'),
+            str(directory), object_format, mode], cwd=directory,
             env=_git_environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, close_fds=True)
         process.stdin.write(oid.encode('ascii') + b'\n')
@@ -860,8 +861,9 @@ def _resolve_objects(*, paths: OrgPaths, binding: RepositoryBinding,
         private = Path(tempfile.mkdtemp(prefix='workflow-object-only-'))
         budget.check()
         launch_reserved = True
-        process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).absolute()),
-            '--reader-child', str(private), str(budget.deadline)], cwd=private,
+        from runtime.daemon.cleanup_helpers import helper_argv
+        process = subprocess.Popen([*helper_argv('repository-reader'),
+            str(private), str(budget.deadline)], cwd=private,
             env=_git_environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, close_fds=True, start_new_session=True)
         # Nonblocking input prevents a child stuck in startup from blocking D5s.

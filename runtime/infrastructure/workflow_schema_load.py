@@ -1,6 +1,8 @@
 """Explicit source-validation reuse, confined to one unpublished org load.
 
-Sequential layouts use complete validation; writer targets never reuse sources.
+Sequential layouts use complete validation. Only cutover recovery's final read,
+ownership installation's target and naming installation's target may reuse a
+complete source with the unchanged zero-write proof; mutated targets read fresh.
 """
 from __future__ import annotations
 
@@ -72,32 +74,36 @@ class _LoadValidation:
         self.hits = 0
         self.full_seconds = 0.0
 
-    def full(self, conn: sqlite3.Connection, **kwargs: Any) -> tuple:
+    def full(self, conn: sqlite3.Connection, *, fallback: Callable[[], Any] | None = None, **kwargs: Any) -> Any:
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
         start = time.monotonic()
         self.full_runs += 1
         try:
-            return _read_workflow_schema(conn, **kwargs)
+            return fallback() if fallback is not None else _read_workflow_schema(conn, **kwargs)
         finally:
             self.full_seconds += time.monotonic() - start
 
-    def read(self, conn: sqlite3.Connection, *, writer_source: bool, **kwargs: Any) -> tuple:
+    def read(self, conn: sqlite3.Connection, *, writer_source: bool = False,
+             load_target: bool = False, fallback: Callable[[], Any] | None = None,
+             **kwargs: Any) -> Any:
         with self.database._lock:
             if (not self.active or conn is not self.database._conn or kwargs['expected_org_slug'] != self.org_slug
-                    or (conn.in_transaction and not writer_source)):
+                    or (conn.in_transaction and not (writer_source or load_target))):
                 self.saved = None
-                return self.full(conn, **kwargs)
+                return self.full(conn, fallback=fallback, **kwargs)
             opening = _bookend(conn)
             if opening is None:
                 self.saved = None
-                return self.full(conn, **kwargs)
+                return self.full(conn, fallback=fallback, **kwargs)
             if self.saved is None or self.saved[0] != opening:
                 self.saved = None
                 # Keep the original reader's snapshot ownership on a miss.
                 # Equal outside bookends bracket the entire coherent full read,
                 # including its transaction exit.
-                result = self.full(conn, **kwargs)
-                if _bookend(conn) == opening:
+                result = self.full(conn, fallback=fallback, **kwargs)
+                # A target fallback can be a metadata-only legacy reader. Never
+                # promote it into a reusable complete-source validation.
+                if fallback is None and _bookend(conn) == opening:
                     self.saved = (opening, result)
                 return result
             owned = not conn.in_transaction
@@ -121,7 +127,7 @@ class _LoadValidation:
                 self.saved = None
                 # A moved/unknown closure never returns speculative reuse.
                 # One ordinary complete check, no retry loop or new budget.
-                return self.full(conn, **kwargs)
+                return self.full(conn, fallback=fallback, **kwargs)
             except BaseException:
                 self.saved = None
                 raise
@@ -208,6 +214,24 @@ def read_workflow_schema_for_org_load(
     return read_org_layout(conn, expected_org_slug=expected_org_slug, budget=budget,
         legacy=lambda: (_read_workflow_schema(conn, **kwargs) if owner is None else
                         owner.read(conn, writer_source=writer_source, **kwargs)))
+
+
+def read_workflow_schema_target_for_org_load(
+    conn: sqlite3.Connection, *, expected_org_slug: str,
+    legacy: Callable[[], Any], budget: Any = None,
+) -> Any:
+    """Three explicit startup targets only; preserve their exact full fallback.
+
+    Cutover owns a fresh BEGIN snapshot; ownership/naming own BEGIN IMMEDIATE.
+    The selector pins that snapshot before bookends. Never admit an arbitrary
+    pre-existing reader transaction here, or end the caller's transaction.
+    A hit returns the identical complete tuple with the existing source charge.
+    """
+    owner = _current.get()
+    return read_org_layout(conn, expected_org_slug=expected_org_slug, budget=budget,
+        legacy=lambda: (legacy() if owner is None else owner.read(
+            conn, expected_org_slug=expected_org_slug, budget=budget,
+            load_target=True, fallback=legacy)))
 
 
 def read_installed_for_org_load(conn: sqlite3.Connection, *, expected_org_slug: str, budget: Any) -> tuple:

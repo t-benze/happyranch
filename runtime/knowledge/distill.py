@@ -24,6 +24,20 @@ if TYPE_CHECKING:
     from runtime.daemon.state import DaemonState
 
 
+def recorded_former_manager(db, source_id: str) -> str | None:
+    """The single recorded actor of the source's terminate audit row, else None.
+
+    The retirement owner recorded its authenticated actor as agent ('founder'
+    for a Founder retirement). Do not silently replace it with today's manager
+    of a historical team.
+    """
+    rows = db.get_audit_logs_by_action('agent_managed')
+    actors = {row['agent'] for row in rows if isinstance(row['payload'], dict)
+              and row['payload'].get('action') == 'terminate'
+              and row['payload'].get('name') == source_id}
+    return next(iter(actors)) if len(actors) == 1 else None
+
+
 class DistillLifecycle:
     def __init__(self, org: OrgState, state: DaemonState) -> None:
         self.org = org
@@ -58,13 +72,7 @@ class DistillLifecycle:
                 self._reconcile(operation['operation_id'])
 
     def _former_manager(self, source_id: str) -> str | None:
-        # The retirement owner recorded its authenticated manager as agent.
-        # Do not silently replace it with today's manager of a historical team.
-        rows = self.org.db.get_audit_logs_by_action('agent_managed')
-        actors = {row['agent'] for row in rows if isinstance(row['payload'], dict)
-                  and row['payload'].get('action') == 'terminate'
-                  and row['payload'].get('name') == source_id}
-        return next(iter(actors)) if len(actors) == 1 else None
+        return recorded_former_manager(self.org.db, source_id)
 
     def _dispatch(self, operation: dict) -> None:
         from runtime.daemon.routes.tasks import SubmitTask, persist_root_task

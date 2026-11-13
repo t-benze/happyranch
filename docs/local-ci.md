@@ -1,5 +1,24 @@
 # Local CI
 
+## Frozen repository child launch regressions (THR-346 P2)
+
+Run the focused standalone unit selection outside the retired Python suite:
+
+```sh
+python -B -m unittest scripts.test_repository_helpers -v
+python -c "import runpy; runpy.run_path('packaging/verify_manifest_notices.py')['python_spec_sources']()"
+```
+
+The first observes both real Popen argv boundaries in source/simulated-frozen
+mode, executes both fixed child entries through daemon and CLI source launches,
+rejects unknown names/paths and malformed child arguments, and checks source
+Python import isolation plus stdlib-only Git dispatch and its exact resource
+limits. The second runs the existing packaging assertion over
+both shipping Analysis inputs. Neither freezes an app or proves packaged Mac
+execution. No existing native probe suite exercises repository object children;
+that proof remains with the manager's packaged-app check. Required CI remains
+lint/static only; no test/build trigger is added.
+
 Founder THR-291 seq659 slice 3 uses standard per-case JUnit and explicit
 failure-only trace/screenshot/log artifacts with GitHub default retention.
 Both lanes must report the exact69 once each, both launcher diagnostics and all
@@ -158,6 +177,11 @@ It drives the production validation/reuse seam and real settings/Pause/naming
 writers on disposable SQLite files, including independent-connection movement,
 failed metadata, schema cookies and the first integrity/FK checks. The isolated
 ten-read timing is not a serving-daemon restart or production-size estimate.
+THR308seq426 Decision 1 adds actual cutover/ownership/naming target cases for
+zero writes, owner writes, unrelated same-connection writes and unavailable
+bookends. It also measures a disposable empty-roster OrgState.load reopen,
+with validation/reuse counts; authority publication remains fenced in that
+fixture, so it proves neither serving time nor production-size savings.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
@@ -233,15 +257,12 @@ activity and invokes no fresh E2E.
 The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
 
-Manual M4 observer compatibility (`managed-m4-observer-probe.yml`, TASK-15856)
-runs only the pre-enrollment tcpdump/lsof loopback self-test on macos-15. It is
-workflow_dispatch-only with no inputs, contents:read, SHA-pinned checkout and
-persist-credentials:false, no secrets or VM/cloud/PR-comment operations, and
-always-cleanup of private scratch. It is non-required and adds no PR/push/schedule
-trigger or Product E2E run. After the file exists on main, an authorized manager
-can dispatch a branch ref to validate later parser changes; see the M4 runbook.
-Observer compatibility does not close native relay acceptance or replenish any
-failed/spent run allowance. Source delivery authorizes no dispatch.
+The M4 macOS observer-probe workflow and pre-enrollment tcpdump/lsof gate are
+removed (TASK-15886). The manual/main-only/non-required managed-m4.yml lane now
+uses authenticated home-VM UDP enforcement and a fresh exact native-daemon200;
+see scripts/ci/README-m4-tailnet.md. VM-only premerge controls do not close native
+acceptance. Required lints, Product E2E and all spent run budgets are unchanged.
+Source delivery authorizes no dispatch.
 
 See [coverage gaps](python-test-reset.md) and [the case record](../e2e/README.md).
 

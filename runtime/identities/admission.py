@@ -142,7 +142,7 @@ def _interaction_scan(conn: sqlite3.Connection) -> list[tuple]:
 
 def validate_naming_install_admission(
     conn: sqlite3.Connection, *, org_slug: str, expected_db_path: str,
-    load_source: bool = False,
+    load_source: bool = False, load_target: bool = False,
 ) -> int:
     """Validate NS1–NS4 under the caller's transaction; return absent/v1."""
     try:
@@ -165,6 +165,10 @@ def validate_naming_install_admission(
         if load_source:
             from runtime.infrastructure.workflow_schema_load import read_workflow_schema_for_org_load
             read_workflow_schema_for_org_load(conn, expected_org_slug=org_slug, writer_source=True)
+        elif load_target:
+            from runtime.infrastructure.workflow_schema_load import read_workflow_schema_target_for_org_load
+            read_workflow_schema_target_for_org_load(conn, expected_org_slug=org_slug,
+                            legacy=lambda: validate_workflow_schema(conn, expected_org_slug=org_slug))
         else:
             from runtime.infrastructure.workflow_schema_load import read_org_layout
             read_org_layout(conn, expected_org_slug=org_slug,

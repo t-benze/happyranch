@@ -13,14 +13,31 @@ This source change grants no restart, deploy or historical-row repair.
 
 ## Frozen cleanup helpers (THR-346 S3)
 
-The daemon's hidden `--cleanup-helper` entry dispatches only `disk-sweep`,
-`worktree-safety` and `check-path-use`, before daemon-home initialization or
-serving. `happyranch-daemon --cleanup-helper disk-sweep --help` reaches the sweep
+The hidden `--cleanup-helper` entry dispatches only `disk-sweep`,
+`worktree-safety`, `check-path-use`, `repository-git` and `repository-reader`,
+before daemon-home initialization or serving.
+`happyranch-daemon --cleanup-helper disk-sweep --help` reaches the sweep
 parser; manual preview is `--cleanup-helper disk-sweep --dry-run --runtime-root
 ABSOLUTE_RUNTIME`. This does not start a daemon. Source/uv helper subprocess argv
 is unchanged. Loader code supplies the `code-sha256:` revision; unavailable code
 still prevents launch. See [cleanup contracts](contracts/jobs-and-cleanup.md)
 for the identity, packaging and unchanged fail-closed scanner limits.
+
+Both frozen executables (`happyranch-daemon` and `happyranch`) enter this same
+closed dispatcher before heavyweight product imports. `repository-git` takes
+exactly DIRECTORY OBJECT_FORMAT MODE (`sha1`/`sha256`, `check`/`body`);
+`repository-reader` takes exactly PRIVATE_DIRECTORY DEADLINE. They run the fixed
+shipped repository object helper's existing `--git-child`/`--reader-child` entries,
+including their original resource limits, restricted Git environment and reader
+deadline. No caller-selected module or script can run. Source launches retain
+exactly `python -I <repository_artifact_objects.py> --git-child/--reader-child ...`.
+The spec retains that module as `pyz+py` in both Analysis lanes so fixed-path
+execution can apply limits before product imports. The frozen PyInstaller
+[isolated interpreter](https://pyinstaller.org/en/stable/advanced-topics.html#environment-variables-used-by-frozen-applications)
+ignores Python environment and user-site imports, preserving source
+`-I` isolation without passing Python flags to an application parser.
+Source/simulated-frozen regressions are separate from manager-owned packaged-app
+proof; no existing native probe suite exercises these repository child paths.
 
 ## Authority terminal recovery and connection custody (THR-328)
 
@@ -105,17 +122,22 @@ Known settings seed/backfill, Pause journal UPDATEs and naming reservation audit
 writes invalidate reuse. Unknown, failed or changed metadata forces a full read.
 Autocommit reuse brackets a pinned read snapshot with outside observations;
 fresh BEGIN IMMEDIATE source reads compare under their existing writer fence.
-Arbitrary caller-owned read snapshots, public reads outside load and writer
-target validation remain uncached. No cross-load or persisted reuse exists.
+Only cutover recovery's final read, task-ownership installation's target and
+naming installation's target may also reuse that complete result with zero-write
+bookends (THR308seq426 Decision 1). Cutover owns a fresh read snapshot; the other
+two borrow their writer's BEGIN IMMEDIATE without ending it. Any write, changed
+or unavailable bookend uses the exact original target reader and budget.
+Arbitrary caller-owned read snapshots and public reads remain uncached.
+No cross-load or persisted reuse exists.
 Before any workflow DDL, the entire reserved coding family is observed. Partial,
 extra, case-changed, wrong-kind or malformed objects and real shared dependency
 failures refuse without repair or adoption. Body/interruption
 and COMMIT failures preserve the primary cause and secondary cleanup errors;
 uncertain COMMIT is not success or proof of absence. Failed unpublished org
-construction closes/refuses before attachment; later writer targets stay complete.
-The additive `startup_workflow_validation` log reports guarded-source full-run
+construction closes/refuses before attachment; changed writer targets stay complete.
+The additive `startup_workflow_validation` log reports guarded source/target full-run
 count/time and reuse count; existing startup timing/partition meanings stay unchanged.
-Those counters exclude unchanged direct writer-target and public-reader checks.
+Those counters exclude other direct writer-target and public-reader checks.
 
 THR-308 seq403 removes the generic `audit_log` coding scan, its process-local
 watermark and collector/publication plumbing, including its scan diagnostic.

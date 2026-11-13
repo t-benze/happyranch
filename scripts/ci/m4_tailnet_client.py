@@ -44,17 +44,44 @@ DIAGNOSTIC_LABELS = ('dns', 'tcp-connect', 'tls-verify', 'tls-reset', 'control-u
 BRIDGE_ERROR_CLASSES = {'state-dir', 'log-dir', 'executable', 'control-url', 'already-started', 'not-initialised', 'unknown'}
 DERP_PROOF_LABELS = {'no-log-files', 'log-budget', 'no-decodable-entries', 'region-missing',
                      'region-unexpected', 'udp-disable-missing', 'unknown', 'passed'}
+EXPOSURE_CHECKS = {'post-proof-allowed-200': 200, 'health-before': 200,
+                   'public-daemon-path-refusal': 401, 'forbidden-port-18765': None,
+                   'forbidden-port-18443': None, 'forbidden-port-8765': None,
+                   'health-after': 200, 'final-aggregation': None}
+EXPOSURE_BODY_CLASSES = {'headscale-unauthorized', 'headscale-health', 'daemon-shaped',
+                         'expected-teams', 'other', 'unknown'}
 
-PACKET_PROOF_LABELS = {'unknown', 'capture-unavailable', 'capture-start', 'capture-budget',
-                       'capture-deadline', 'capture-cleanup', 'capture-incomplete', 'capture-format',
-                       'metadata-missing', 'udp-observed', 'udp-socket-observed', 'socket-evidence',
-                       'relay-endpoint-unexpected', 'relay-traffic-missing', 'request-failed', 'passed'}
-PACKET_PROOF_LABELS.update({'identity-missing', 'identity-malformed', 'identity-stale',
-                            'identity-region', 'identity-endpoint', 'identity-upstream', 'identity-log-conflict'})
+
+def safe_exposure_diagnostics(value: object) -> list[dict]:
+    """Fixed sub-checks only; never copy response bodies, headers or addresses."""
+    value = value if isinstance(value, dict) else {}
+    rows = []
+    for label, expected in EXPOSURE_CHECKS.items():
+        row = value.get(label)
+        row = row if isinstance(row, dict) else {}
+        status = row.get('status')
+        outcome = row.get('outcome')
+        body = row.get('body_class')
+        content_type = row.get('content_type_class')
+        rows.append(dict(label=label, expected_status=expected,
+                         observed_status=status if type(status) is int and 100 <= status <= 599 else None,
+                         outcome=outcome if type(outcome) is str and outcome in {'passed', 'failed', 'not-reached'} else 'not-reached',
+                         body_class=body if type(body) is str and body in EXPOSURE_BODY_CLASSES else 'unknown',
+                         content_type_class=content_type if type(content_type) is str and content_type in {'headscale-text', 'headscale-health', 'daemon-json', 'other'} else 'other',
+                         **{key: row[key] if type(row.get(key)) is bool else None
+                            for key in ('headscale_refusal', 'headscale_health', 'daemon_shaped', 'reachable')}))
+    return rows
+
+PATH_PROOF_LABELS = {'unknown', 'before-missing', 'before-malformed', 'after-missing',
+                     'after-malformed', 'rule-identity', 'window-stale', 'request-failed',
+                     'identity-missing', 'identity-malformed', 'identity-stale', 'identity-region',
+                     'identity-endpoint', 'identity-upstream', 'identity-log-conflict', 'passed'}
+UDP_IDENTITY = ('rule_version', 'uid', 'cgroup_id', 'table_handle', 'input_handle', 'output_handle')
+UDP_COUNTERS = ('input_packets', 'input_bytes', 'output_packets', 'output_bytes')
+
+
 IDENTITY_COUNTS = dict(region_count=1, region=999, node_count=1, endpoint_matches=1,
                        upstream_count=0, auto_update=0, mesh_count=0)
-PACKET_PROOF_COUNTS = ('packet_count', 'native_packet_count', 'udp_count', 'udp_socket_count',
-                       'tcp_socket_observations', 'relay_tx_bytes', 'relay_rx_bytes')
 
 
 def require_relay_identity(value: object, diagnostic: dict) -> int:
@@ -76,399 +103,69 @@ def require_relay_identity(value: object, diagnostic: dict) -> int:
     return value['region']
 
 
-def safe_packet_diagnostics(value: object) -> dict:
+def require_udp_evidence(value: object, stage: str, diagnostic: dict) -> dict:
+    diagnostic['label'] = stage + '-missing'
+    assert isinstance(value, dict) and value, 'missing UDP enforcement evidence'
+    diagnostic['label'] = stage + '-malformed'
+    assert set(value) == {'label', 'observed_us', *UDP_IDENTITY, *UDP_COUNTERS}, 'UDP evidence shape'
+    assert value['label'] == stage, 'UDP evidence stage'
+    assert all(type(value[key]) is int and 0 <= value[key] < 2**64
+               for key in ('observed_us', *UDP_IDENTITY, *UDP_COUNTERS)), 'UDP evidence types/bounds'
+    assert value['rule_version'] == 1 and all(value[key] > 0 for key in UDP_IDENTITY), 'UDP identity absent'
+    diagnostic['label'] = 'window-stale'
+    assert 0 <= time.time_ns() // 1000 - value['observed_us'] < 35_000_000, 'UDP evidence freshness'
+    return value
+
+
+def safe_path_diagnostics(value: object) -> dict:
     value = value if isinstance(value, dict) else {}
     label = value.get('label')
-    return dict(label=label if isinstance(label, str) and label in PACKET_PROOF_LABELS else 'unknown',
-                **{key: min(value[key], 16_000_000) if type(value.get(key)) is int and value[key] >= 0 else 0
-                   for key in PACKET_PROOF_COUNTS})
+    return dict(label=label if type(label) is str and label in PATH_PROOF_LABELS else 'unknown',
+                **{key: min(value[key], 2**64 - 1) if type(value.get(key)) is int and value[key] >= 0 else 0
+                   for key in ('before_present', 'after_present', 'request_200', *UDP_COUNTERS)})
 
 
-CAPTURE_SHAPES = {'unknown', 'passed', 'prefix', 'metadata', 'multiline', 'truncated',
-                  'transport', 'endpoint', 'attribution', 'counters'}
-CAPTURE_COUNTS = ('header_lines', 'metadata_lines', 'ipv4_packets', 'ipv6_packets',
-                  'other_process_packets', 'counter_lines', 'captured', 'received',
-                  'kernel_drops', 'interface_drops', 'metadata_drops', 'stderr_other_lines',
-                  *('unparsed_' + shape for shape in sorted(CAPTURE_SHAPES - {'unknown', 'passed'})))
-OBSERVER_LABELS = PACKET_PROOF_LABELS | {'observer-child-start', 'observer-request', 'observer-child-cleanup'}
-
-
-def safe_capture_diagnostics(value: object) -> dict:
-    value = value if isinstance(value, dict) else {}
-    label = value.get('label')
-    return dict(label=label if isinstance(label, str) and label in CAPTURE_SHAPES else 'unknown',
-                **{key: min(value[key], 16_000_000) if type(value.get(key)) is int and value[key] >= 0 else 0
-                   for key in CAPTURE_COUNTS})
-
-
-def capture_detail(diagnostic: dict) -> dict:
-    return diagnostic.setdefault('capture_diagnostics', safe_capture_diagnostics(None))
-
-
-def capture_refusal(diagnostic: dict, shape: str) -> None:
-    detail = capture_detail(diagnostic)
-    detail['label'] = shape
-    detail['unparsed_' + shape] += 1
-    diagnostic['label'] = 'capture-format'
-    raise AssertionError('unsupported capture structure')
-
-
-def packet_evidence(text: str, pid: int, diagnostic: dict, *, endpoint: tuple[str, int] = (PUBLIC_IP, 443)) -> None:
-    """Apple -tt -nn -q -k PD. No capture filter; tuples stay private.
-
-    Parse metadata BEFORE protocol bodies. Unsupported bodies/continuations may
-    belong only to positively identified other processes. Kernel receive records
-    need a reverse native flow; an absent/zero PID never identifies another process.
-    The local observer precondition uses this same parser with its owned endpoint.
-    """
-    detail = capture_detail(diagnostic)
-    records: list[tuple[str, str, list[str]]] = []
-    for line in text.splitlines():
-        prefix = re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)
-        if prefix:
-            metadata, body = prefix.groups()
-            records.append((metadata, body, []))
-        elif line[:1].isspace() and records:
-            records[-1][2].append(line)
-        else:
-            capture_refusal(diagnostic, 'prefix')
-    if text and not text.endswith('\n'):
-        capture_refusal(diagnostic, 'truncated')
-    rows = []
-    flows = set()
-    for metadata, body, continuations in records:
-        diagnostic['packet_count'] += 1
-        fields = metadata.split(', ')
-        directions = [part for part in fields if part in {'in', 'out'}]
-        # Apple prints an empty proc/eproc value when a name/UUID exists but
-        # pid == -1 and only P was requested. Zero is also not process evidence.
-        if len(directions) != 1 or not all(part in {'in', 'out'} or re.fullmatch(r'e?proc [0-9]{0,10}', part) for part in fields):
-            capture_refusal(diagnostic, 'metadata')
-        detail['metadata_lines'] += 1
-        identity_fields = [part for part in fields if part.startswith(('proc ', 'eproc '))]
-        if len({part.split(' ', 1)[0] for part in identity_fields}) != len(identity_fields):
-            capture_refusal(diagnostic, 'metadata')
-        identities = [int(part.split(' ', 1)[1] or '0') for part in identity_fields]
-        native = pid in identities
-        other = bool(identities) and all(identity > 0 and identity != pid for identity in identities)
-        diagnostic['native_packet_count'] += int(native)
-        if other:
-            detail['other_process_packets'] += 1
-            continue
-        if continuations:
-            capture_refusal(diagnostic, 'multiline')
-        if re.search(r'\[\||truncated|\[invalid|bad (?:hdr|length)', body):
-            capture_refusal(diagnostic, 'truncated')
-        match = re.fullmatch(r'(IP6?) (\S+) > (\S+): (tcp |UDP, length )([0-9]{1,10})', body)
-        if not match:
-            capture_refusal(diagnostic, 'transport')
-        family, source, destination, protocol, size_text = match.groups()
-        detail['ipv6_packets' if family == 'IP6' else 'ipv4_packets'] += 1
-        size = int(size_text)
-        try:
-            endpoints = []
-            for value in (source, destination):
-                host, port_text = value.rsplit('.', 1)
-                host_ip, port = ipaddress.ip_address(host), int(port_text)
-                if host_ip.version != (6 if family == 'IP6' else 4) or not 0 < port <= 65535 or size > 65535:
-                    raise ValueError('endpoint bounds')
-                endpoints.append((str(host_ip), port))
-        except ValueError:
-            capture_refusal(diagnostic, 'endpoint')
-        origin, target = endpoints
-        direction = directions[0]
-        diagnostic['label'] = 'metadata-missing'
-        if not native and direction != 'in':
-            detail['label'] = 'attribution'
-            detail['unparsed_attribution'] += 1
-            raise AssertionError('unattributed egress')
-        if native and protocol != 'tcp ':
-            diagnostic['udp_count'] += 1
-        if native and direction == 'out' and protocol == 'tcp ':
-            diagnostic['label'] = 'relay-endpoint-unexpected'
-            assert target == endpoint, 'unexpected native TCP destination'
-            flows.add((origin, target))
-            diagnostic['relay_tx_bytes'] += size
-        rows.append((origin, target, protocol, size, direction, native))
-    diagnostic['label'] = 'udp-observed'
-    assert diagnostic['udp_count'] == 0, 'native UDP observed'
-    for origin, target, protocol, size, direction, native in rows:
-        if direction == 'in':
-            if protocol != 'tcp ' or (target, origin) not in flows:
-                capture_refusal(diagnostic, 'attribution')
-            diagnostic['native_packet_count'] += int(not native)
-            diagnostic['relay_rx_bytes'] += size
-    diagnostic['label'] = 'relay-traffic-missing'
-    assert diagnostic['relay_tx_bytes'] > 0 and diagnostic['relay_rx_bytes'] > 0, 'missing bidirectional relay payload'
-    detail['label'] = 'passed'
-
-
-class PacketCapture:
-    """One private macOS capture, with OS-enforced lifetime and file limits."""
-
-    seconds = 35
-    byte_limit = 2_000_000
-    packet_limit = 4096
-
-    def __init__(self, scratch: Path, diagnostic: dict) -> None:
-        self.diagnostic = diagnostic
-        self.process: subprocess.Popen | None = None
-        self.started = time.monotonic()
-        self.paths = [scratch / 'packet-private.txt', scratch / 'packet-private.stderr']
-        self.streams = []
-
-    def start(self) -> None:
-        self.diagnostic['label'] = 'capture-unavailable'
-        assert sys.platform == 'darwin' and Path('/usr/sbin/tcpdump').is_file() and Path('/usr/sbin/lsof').is_file(), 'native capture tools required'
-        for path in self.paths:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            self.streams.append(os.fdopen(fd, 'wb'))
-        # Existing Python/OS tools only. Limits are set AFTER sudo's policy and
-        # survive exec; no setting, dependency, routing or firewall is changed.
-        launcher = '''import resource,select,signal,subprocess,sys
-signal.signal(signal.SIGALRM,signal.SIG_DFL)
-signal.alarm(45)
-def limits():
-    resource.setrlimit(resource.RLIMIT_FSIZE,(2000000,2000000))
-    signal.alarm(35)
-child=subprocess.Popen(sys.argv[1:],stdin=subprocess.DEVNULL,preexec_fn=limits)
-ready=select.select([sys.stdin],[],[],35)[0]
-stopped=bool(ready) and sys.stdin.buffer.readline(16)==b'stop\\n'
-early=child.poll() is not None
-if not early:
-    child.send_signal(signal.SIGINT)
-try:
-    code=child.wait(timeout=5)
-except subprocess.TimeoutExpired:
-    child.kill()
-    child.wait(timeout=5)
-    code=125
-print('M4_CAPTURE_END=%d:%d'%(code,int(early or not stopped)),flush=True)
-'''
-        self.process = subprocess.Popen(
-            ['/usr/bin/sudo', '-n', sys.executable, '-I', '-c', launcher,
-             '/usr/sbin/tcpdump', '-i', 'pktap,all', '-nn', '-tt', '-q', '-k', 'PD',
-             '--immediate-mode', '-K', '-s', '512', '-B', '4096', '-c', str(self.packet_limit)],
-            stdin=subprocess.PIPE, stdout=self.streams[0], stderr=self.streams[1])
-        self.diagnostic['label'] = 'capture-start'
-        deadline = min(self.started + self.seconds, time.monotonic() + 5)
-        while time.monotonic() < deadline:
-            raw = self.paths[1].read_bytes()
-            assert len(raw) < 65536 and self.process.poll() is None, 'capture startup failed'
-            if b'listening on' in raw and b'PKTAP' in raw:
-                return
-            time.sleep(0.05)
-        raise RuntimeError('capture startup deadline')
-
-    def sockets(self, pid: int) -> None:
-        self.diagnostic['label'] = 'socket-evidence'
-        result = subprocess.run(['/usr/sbin/lsof', '-nP', '-a', '-p', str(pid), '-i', '-FpfP'],
-                                capture_output=True, timeout=5, check=False)
-        assert result.returncode == 0 and not result.stderr and len(result.stdout) < 65536, 'socket observation unavailable'
-        lines = result.stdout.decode('ascii').splitlines()
-        assert lines and lines[0] == 'p' + str(pid), 'socket identity'
-        assert all(re.fullmatch(r'p[0-9]+|f[0-9]+|P(?:TCP|UDP)', line) for line in lines), 'socket format'
-        self.diagnostic['udp_socket_count'] += lines.count('PUDP')
-        self.diagnostic['label'] = 'udp-socket-observed'
-        assert 'PUDP' not in lines, 'native UDP socket observed'
-        self.diagnostic['label'] = 'socket-evidence'
-        assert 'PTCP' in lines, 'missing positive native TCP socket control'
-        self.diagnostic['tcp_socket_observations'] += 1
-
-    def stop(self) -> None:
-        try:
-            if self.process is not None:
-                if self.process.poll() is None:
-                    assert self.process.stdin is not None
-                    self.process.stdin.write(b'stop\n')
-                    self.process.stdin.flush()
-                    self.process.stdin.close()
-                # The root supervisor owns and waits for its exact child. No
-                # process-name search, PID inference or broad signal is needed.
-                self.process.wait(timeout=max(1, self.started + 50 - time.monotonic()))
-        finally:
-            for stream in self.streams:
-                stream.close()
-
-    def evidence(self, pid: int, *, endpoint: tuple[str, int] = (PUBLIC_IP, 443)) -> None:
-        diagnostic = self.diagnostic
-        diagnostic['label'] = 'capture-budget'
-        assert all(p.stat().st_size < self.byte_limit for p in self.paths), 'capture byte budget'
-        try:
-            raw, errors = [p.read_text() for p in self.paths]
-        except UnicodeError:
-            capture_refusal(diagnostic, 'prefix')
-        diagnostic['label'] = 'capture-deadline'
-        assert time.monotonic() < self.started + self.seconds, 'capture deadline'
-        diagnostic['label'] = 'capture-incomplete'
-        assert self.process is not None and self.process.returncode == 0, 'capture did not finish cleanly'
-        assert raw.endswith('M4_CAPTURE_END=0:0\n'), 'capture child not positively stopped/reaped'
-        raw = raw.removesuffix('M4_CAPTURE_END=0:0\n')
-        detail = capture_detail(diagnostic)
-        detail['header_lines'] = len(re.findall(r'^.*listening on .*, link-type PKTAP(?: |$)', errors, re.M))
-        captured = re.findall(r'^([0-9]+) packets? captured$', errors, re.M)
-        received = re.findall(r'^([0-9]+) packets? received by filter$', errors, re.M)
-        dropped = re.findall(r'^([0-9]+) packets? dropped by kernel$', errors, re.M)
-        interface_drops = re.findall(r'^([0-9]+) packets? dropped by interface$', errors, re.M)
-        metadata_drops = re.findall(r'^([0-9]+) drops? by metadata filter$', errors, re.M)
-        counters = (captured, received, dropped, interface_drops, metadata_drops)
-        detail['counter_lines'] = sum(map(len, counters))
-        detail['stderr_other_lines'] = max(0, len(errors.splitlines()) - detail['header_lines'] - detail['counter_lines'])
-        for key, values in zip(('captured', 'received', 'kernel_drops', 'interface_drops', 'metadata_drops'), counters):
-            if len(values) == 1:
-                detail[key] = min(int(values[0]), 16_000_000)
-        detail['label'] = 'counters'
-        assert detail['header_lines'] == 1, 'capture header absent/duplicate'
-        assert len(interface_drops) <= 1 and len(metadata_drops) <= 1 and all(value == '0' for value in metadata_drops), 'filtered/duplicate capture counters'
-        assert len(captured) == len(received) == len(dropped) == 1 and captured == received and dropped == ['0'] and all(value == '0' for value in interface_drops), 'missing/dropped/unread capture evidence'
-        diagnostic['label'] = 'capture-budget'
-        assert int(captured[0]) < self.packet_limit, 'capture packet budget'
-        packet_evidence(raw, pid, diagnostic, endpoint=endpoint)
-        diagnostic['label'] = 'capture-incomplete'
-        assert int(captured[0]) == diagnostic['packet_count'], 'partial packet stream'
-        diagnostic['label'] = 'capture-deadline'
-        assert time.monotonic() < self.started + self.seconds, 'capture parsing deadline'
-
-
-def observer_self_test(scratch: Path, diagnostic: dict) -> None:
-    """Exercise the actual observer and both lsof controls before enrollment.
-
-    A short-lived child keeps one synthetic loopback HTTP connection open until
-    after both socket observations. No bridge, credential or outside request.
-    """
-    directory = scratch / 'observer-self-test'
-    directory.mkdir(mode=0o700)
-    try:
-        observe_local_request(directory, diagnostic)
-    finally:
-        try:
-            shutil.rmtree(directory)
-        except Exception:
-            diagnostic['label'] = 'capture-cleanup'
-            raise
-
-
-def observe_local_request(directory: Path, diagnostic: dict) -> None:
-    capture = PacketCapture(directory, diagnostic)
-    child: subprocess.Popen | None = None
-    server = socket.socket()
-    connection: socket.socket | None = None
-    request = b'GET /observer-self-test HTTP/1.0\r\n\r\n'
-    response = b'HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nOK\n'
-    child_code = '''import signal,socket,sys
-signal.alarm(25)
-s=socket.create_connection(('127.0.0.1',int(sys.argv[1])),timeout=5)
-print('ready',flush=True)
-command=sys.stdin.buffer.readline(16)
-if command==b'stop\\n':
-    s.close()
-    sys.exit(0)
-assert command==b'go\\n'
-s.sendall(b'GET /observer-self-test HTTP/1.0\\r\\n\\r\\n')
-expected=b'HTTP/1.0 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nOK\\n'
-data=b''
-while len(data)<len(expected):
-    part=s.recv(len(expected)-len(data))
-    assert part
-    data+=part
-assert data==expected
-print('done',flush=True)
-assert sys.stdin.buffer.readline(16)==b'stop\\n'
-s.close()
-'''
-    try:
-        server.bind(('127.0.0.1', 0))
-        server.listen(1)
-        server.settimeout(5)
-        endpoint = ('127.0.0.1', server.getsockname()[1])
-        capture.start()
-        diagnostic['label'] = 'observer-child-start'
-        child = subprocess.Popen([sys.executable, '-I', '-c', child_code, str(endpoint[1])],
-                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        connection, _ = server.accept()
-        connection.settimeout(5)
-        assert child.stdout is not None and child.stdin is not None
-        assert select.select([child.stdout], [], [], 5)[0] and child.stdout.readline(16) == b'ready\n', 'observer child readiness'
-        capture.sockets(child.pid)
-        diagnostic['label'] = 'observer-request'
-        child.stdin.write(b'go\n')
-        child.stdin.flush()
-        data = b''
-        while len(data) < len(request):
-            part = connection.recv(len(request) - len(data))
-            assert part, 'observer request incomplete'
-            data += part
-        assert data == request, 'observer request mismatch'
-        connection.sendall(response)
-        assert select.select([child.stdout], [], [], 5)[0] and child.stdout.readline(16) == b'done\n', 'observer response mismatch'
-        capture.sockets(child.pid)
-        assert child.poll() is None, 'observer child ended early'
-    finally:
-        try:
-            capture.stop()
-        except Exception:
-            diagnostic['label'] = 'capture-cleanup'
-            raise
-        finally:
-            try:
-                if child is not None:
-                    if child.poll() is None:
-                        assert child.stdin is not None
-                        try:
-                            child.stdin.write(b'stop\n')
-                            child.stdin.flush()
-                            child.stdin.close()
-                            child.wait(timeout=5)
-                        finally:
-                            if child.poll() is None:
-                                child.kill()
-                                child.wait(timeout=5)
-                    assert child.returncode == 0, 'observer child exit'
-                    if child.stdout is not None:
-                        child.stdout.close()
-            except Exception:
-                diagnostic['label'] = 'observer-child-cleanup'
-                raise
-            finally:
-                if connection is not None:
-                    connection.close()
-                server.close()
-    assert child is not None
-    capture.evidence(child.pid, endpoint=endpoint)
-    diagnostic['label'] = 'passed'
-
-
-def prove_packet_path(bridge: Bridge, scratch: Path, address: str, credential: str, diagnostic: dict, identity: object) -> dict:
-    """Observe the real native peer request; old filch data is corroboration only."""
-    capture = PacketCapture(scratch, diagnostic)
-    try:
-        capture.start()
-        # Preserve PR1459's useful closed log diagnostic. Missing log evidence
-        # alone cannot establish or refute the packet/sockets proof; a
-        # contradictory observed region still vetoes success below.
-        try:
-            bridge.call('derp-proof')
-        except RuntimeError:
-            pass
-        assert bridge.process.poll() is None, 'native process unavailable'
-        capture.sockets(bridge.process.pid)
-        diagnostic['label'] = 'request-failed'
-        assert bridge.call('request', address=address, method='GET', path=ROUTE, credential=credential) == {'status': 200, 'body': EXPECTED}, 'proof real-daemon response'
-        capture.sockets(bridge.process.pid)
-        assert bridge.process.poll() is None, 'native process ended during proof'
-    finally:
-        try:
-            capture.stop()
-        except Exception:
-            diagnostic['label'] = 'capture-cleanup'
-            raise
-    capture.evidence(bridge.process.pid)
+def prove_enforced_path(bridge: Bridge, address: str, credential: str, diagnostic: dict,
+                        identity: object, inbox: object) -> dict:
+    """Authenticated identity AND unchanged home UDP drop rules AND a fresh200."""
     region = require_relay_identity(identity, diagnostic)
+    # PR1459 closed logs are corroboration; missing logs do not refuse.
+    try:
+        bridge.call('derp-proof')
+    except RuntimeError:
+        # This caught corroboration failure is not a later gating failure.
+        # Its closed derp_diagnostics survives; a real later worker error sets
+        # worker_exception again in _call.
+        bridge.worker_exception = 'Unknown'
     diagnostic['label'] = 'identity-log-conflict'
     log = bridge.derp_diagnostics
     assert log.get('label') != 'region-unexpected' and not set(log.get('matched_regions', [])) - {region}, 'contradictory runtime/log identity'
-    diagnostic['label'] = 'passed'
-    return dict(region=region, **safe_packet_diagnostics(diagnostic))
+    envelope = inbox.wait('udp-before', 60)
+    assert set(envelope) == {'enforcement'}, 'UDP before envelope shape'
+    before = require_udp_evidence(envelope['enforcement'], 'before', diagnostic)
+    diagnostic['before_present'] = 1
+    request_started = time.time_ns() // 1000
+    diagnostic['label'] = 'request-failed'
+    assert bridge.process.poll() is None, 'native process unavailable'
+    assert bridge.call('request', address=address, method='GET', path=ROUTE, credential=credential) == {'status': 200, 'body': EXPECTED}, 'proof real-daemon response'
+    request_finished = time.time_ns() // 1000
+    diagnostic['request_200'] = 1
+    # The existing allowed org route acknowledges completed response consumption.
+    acknowledgement = bridge.call('request', address=address, method='GET', path='/api/v1/orgs', credential=credential)
+    assert acknowledgement['status'] == 200 and [org['slug'] for org in acknowledgement['body']['orgs']] == ['m2-synthetic'], 'proof completion acknowledgement'
+    envelope = inbox.wait('udp-after', 35)
+    assert set(envelope) == {'enforcement'}, 'UDP after envelope shape'
+    after = require_udp_evidence(envelope['enforcement'], 'after', diagnostic)
+    diagnostic['label'] = 'rule-identity'
+    assert all(before[key] == after[key] for key in UDP_IDENTITY), 'UDP rule identity changed'
+    assert all(after[key] >= before[key] for key in UDP_COUNTERS), 'UDP counters decreased'
+    diagnostic['label'] = 'window-stale'
+    assert before['observed_us'] <= request_started <= request_finished <= after['observed_us'], 'request outside enforced window'
+    assert after['observed_us'] - before['observed_us'] < 35_000_000, 'UDP proof window deadline'
+    assert 0 <= time.time_ns() // 1000 - before['observed_us'] < 35_000_000, 'UDP proof completion deadline'
+    assert bridge.process.poll() is None, 'native process ended during proof'
+    diagnostic.update(label='passed', after_present=1, **{key: after[key] for key in UDP_COUNTERS})
+    return dict(region=region, **safe_path_diagnostics(diagnostic))
 
 
 def safe_derp_diagnostics(value: object) -> dict:
@@ -626,7 +323,7 @@ def join_diagnostic(state: Path, stderr: Path, elapsed: float) -> dict:
 
 
 def control_get(path: str) -> dict:
-    """Pin IP and expected SNI; normal trust verification. Status/time only."""
+    """Pin IP/SNI and verify TLS; export only a closed response fingerprint."""
     started = time.monotonic()
     connection = http.client.HTTPConnection(HOSTNAME, timeout=10)
     try:
@@ -638,8 +335,37 @@ def control_get(path: str) -> dict:
             raise
         connection.request('GET', path)
         response = connection.getresponse()
-        assert len(response.read(8193)) <= 8192, 'public response budget'
-        return dict(status=response.status, elapsed_seconds=round(time.monotonic() - started, 3))
+        body = response.read(8193)
+        assert len(body) <= 8192, 'public response budget'
+        content_types = response.headers.get_all('Content-Type', [])
+        content_type = (content_types[0].split(';', 1)[0].strip().lower()
+                        if len(content_types) == 1 else '')
+        daemon_shaped = content_type == 'application/json'
+        try:
+            parsed = json.loads(body)
+        except (ValueError, UnicodeError):
+            parsed = None
+        daemon_shaped |= isinstance(parsed, dict) and bool({'detail', 'teams', 'error'} & parsed.keys())
+        # Headscale v0.25.1 app.go:377-404,490-492 writes exactly these
+        # 12 bytes before grpc-gateway. Go net/http supplies type and length.
+        # HappyRanch auth.py:22 instead returns JSON detail=missing bearer token.
+        plain = content_types == ['text/plain; charset=utf-8']
+        health_type = content_types == ['application/health+json; charset=utf-8']
+        unencoded = not response.headers.get_all('Content-Encoding') and not response.headers.get_all('Transfer-Encoding')
+        refusal = (response.status == 401 and body == b'Unauthorized' and plain
+                   and response.headers.get_all('Content-Length') == ['12'] and unencoded and not daemon_shaped)
+        # Existing health bookends positively corroborate the same direct
+        # Headscale listener (handlers.go HealthHandler); no new probe/exposure.
+        health = (response.status == 200 and body == b'{"status":"pass"}\n' and health_type
+                  and response.headers.get_all('Content-Length') == ['18'] and unencoded and not daemon_shaped)
+        body_class = ('daemon-shaped' if daemon_shaped else
+                      'headscale-unauthorized' if body == b'Unauthorized' else
+                      'headscale-health' if body == b'{"status":"pass"}\n' else 'other')
+        return dict(status=response.status, elapsed_seconds=round(time.monotonic() - started, 3),
+                    body_class=body_class, daemon_shaped=daemon_shaped,
+                    content_type_class='headscale-text' if plain else 'headscale-health' if health_type else
+                                       'daemon-json' if content_type == 'application/json' else 'other',
+                    headscale_refusal=refusal, headscale_health=health)
     finally:
         connection.close()
 
