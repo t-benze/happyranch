@@ -547,6 +547,41 @@ class _Registrations(dict):
         entry = self.linked[path]
         return str(entry), self.topology[str(entry)], self.topology[path]
 
+    def after_removal(self, path: Path) -> _Registrations:
+        """Expected inventory minus ONLY our candidate, for effect confirmation.
+
+        This is not observed success. The caller must prove folder/registration
+        absence and retained branch before adopting it for subsequent items.
+        Other initial identities and HEAD/branch rows remain pinned.
+        """
+        result = _Registrations()
+        result.update(self)
+        for name, value in vars(self).items():
+            setattr(result, name, value.copy())
+        entry = self.linked[str(path)]
+        result.pop(str(path))
+        for values in (result.linked, result.metadata, result.errors, result.residues,
+                       result.missing_folders, result.findings):
+            values.pop(str(path), None)
+        for values in (result.unregistered, result.missing_heads, result.arrivals):
+            values.discard(str(path))
+        for key in (path, path / '.git', entry, entry / 'gitdir', entry / 'commondir'):
+            result.topology.pop(str(key), None)
+        result.topology['entries'] = tuple(name for name in self.topology['entries'] if name != entry.name)
+        if not result.topology['entries']:
+            # Git can remove its now-empty admin container with the last entry.
+            # There are no surviving original entries in this container. Bind
+            # its post-effect observation; the full confirmation must still
+            # validate every newly present entry, never remove or infer one.
+            try:
+                result.topology[str(entry.parent)] = identity(os.lstat(entry.parent))
+            except FileNotFoundError:
+                result.topology[str(entry.parent)] = None
+        roots = self.topology['task_roots']
+        if roots is not None:
+            result.topology['task_roots'] = tuple(name for name in roots if name != path.name)
+        return result
+
     def require(self, path: Path, deadline: float) -> None:
         _retain_linked_descendants(path, self, deadline)
         if str(path) in self.missing_folders:
@@ -561,13 +596,16 @@ class _Registrations(dict):
 
 
 @observed('census')
-def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
+def _registration_metadata(repo: Path, deadline: float, *, metadata_path: Path | None = None, metadata_inventory: _Registrations | None = None) -> _Registrations:
     """Prove the entire literal mapping and safe file census BEFORE Git.
 
     Ordinary I/O/change errors after that proof can be registration-local.
     Only a final missing gitdir in an otherwise safe entry can be an unmapped
     residue. Literal unregistered TASK directories are protected local paths;
     unsafe objects, conflicting pointers and unknown locations stay shared.
+    A candidate-scoped read still stats every object and reads every pointer
+    and HEAD. Only siblings' ordinary auxiliary file reads are redundant;
+    their fresh stat signatures still detect changes between censuses.
     """
     common = repo / '.git'
     admin = common / 'worktrees'
@@ -576,6 +614,11 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
     by_entry = {}
     mapped_inodes = set()
     try:
+        # Shared ancestors remain recorded even after the last linked entry
+        # is removed, so post-effect confirmation keeps the same identity set.
+        for ancestor in reversed(repo.parents):
+            with directory(ancestor, deadline) as fd:
+                topology[str(ancestor)] = identity(os.fstat(fd))
         with directory(repo, deadline) as fd:
             topology[str(repo)] = identity(os.fstat(fd))
             mapped_inodes.add(topology[str(repo)])
@@ -661,6 +704,14 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
                 raise Retain(f'conflicting_gitdir:{entry / "gitdir"}')
             if commondir not in ('../..\n', str(common) + '\n'):
                 raise Retain(f'redirected_commondir:{entry / "commondir"}')
+            # Pin every literal pointer ancestor, including those above the
+            # immediate parent. Preserving a descendant inode while replacing
+            # an outer ancestor must not create a new inventory baseline.
+            for ancestor in reversed(path.parents):
+                key = str(ancestor)
+                if key not in topology:
+                    with directory(ancestor, deadline) as ancestor_fd:
+                        topology[key] = identity(os.fstat(ancestor_fd))
             # Only final-folder ENOENT through a proven literal parent qualifies.
             # Every ancestor, entry/pointer, name and unique mapping is still
             # reconciled by all three existing censuses and Git's captured list.
@@ -686,6 +737,7 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
         prefix = repo / '.claude/worktrees'
         try:
             with directory(repo / '.claude', deadline) as fd:
+                topology[str(repo / '.claude')] = identity(os.fstat(fd))
                 try:
                     os.stat('worktrees', dir_fd=fd, follow_symlinks=False)
                 except FileNotFoundError:
@@ -735,6 +787,12 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
                         raise Retain(f'nonregular_registration_metadata:{target}')
                     observed_files[str(target)] = signature(observed)
                     continue
+                if (metadata_path is not None and metadata_inventory is not None and path != str(metadata_path)
+                        and metadata_path not in Path(path).parents and Path(path) not in metadata_path.parents
+                        and relative not in ('HEAD', 'gitdir', 'commondir')
+                        and metadata_inventory.metadata.get(path, {}).get(str(target)) == signature(observed)):
+                    observed_files[str(target)] = signature(observed)
+                    continue
                 try:
                     seen, head = _metadata_file(target, deadline, text=relative == 'HEAD')
                 except Retain as exc:
@@ -774,7 +832,7 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
         raise _RegistrationUnknown(f'unknown_git_registrations:{admin}: {exc}') from exc
 
 
-def _registration_additions(before: _Registrations, after: _Registrations, repo: Path, deadline: float) -> set[str]:
+def _registration_additions(before: _Registrations, after: _Registrations, repo: Path, deadline: float, *, allow_new_residues: bool = False) -> set[str]:
     """Allow only additive, fully attributed conventional TASK roots/pairs.
 
     Existing identities/pointers/residues must remain exact. A new unmapped
@@ -790,6 +848,17 @@ def _registration_additions(before: _Registrations, after: _Registrations, repo:
     additions = set()
     allowed_keys = set()
     entries = set()
+    # Across separate admissions a newly observed, fully validated gitdir-gone
+    # residue remains the existing local unknown-location KEEP. Within one
+    # three-census proof additions retain the original stricter TASK-only rule.
+    residues = (set(after.residues) - set(before.residues) - after.unregistered) if allow_new_residues else set()
+    for residue in residues:
+        check(deadline)
+        entry = Path(residue)
+        if entry.parent != admin or entry.name in old_entries:
+            raise _RegistrationUnknown(failure)
+        entries.add(entry.name)
+        allowed_keys.add(residue)
     for name in new_roots - old_roots:
         check(deadline)
         path = str(prefix / name)
@@ -809,7 +878,7 @@ def _registration_additions(before: _Registrations, after: _Registrations, repo:
         raise _RegistrationUnknown(failure)
     if {p: e for p, e in after.linked.items() if p not in additions} != before.linked:
         raise _RegistrationUnknown(failure)
-    if set(after.residues) - additions != set(before.residues):
+    if set(after.residues) - additions - residues != set(before.residues):
         raise _RegistrationUnknown(failure)
     if after.unregistered - additions != before.unregistered:
         raise _RegistrationUnknown(failure)
@@ -817,14 +886,15 @@ def _registration_additions(before: _Registrations, after: _Registrations, repo:
     # replacement of an existing parent remains a shared refusal.
     for parent in (prefix, admin):
         key = str(parent)
-        if additions and before.topology.get(key) is None and after.topology.get(key) is not None:
+        if (additions or residues) and before.topology.get(key) is None and after.topology.get(key) is not None:
             allowed_keys.add(key)
     for key in before.topology.keys() | after.topology.keys():
         check(deadline)
         if key in ('entries', 'task_roots'):
-            if not additions and before.topology[key] != after.topology[key]:
+            if not (additions or residues) and before.topology[key] != after.topology[key]:
                 raise _RegistrationUnknown(failure)
-        elif key in allowed_keys:
+        elif key in allowed_keys or (residues and key.startswith(str(admin) + '/')
+                                    and str(admin / key[len(str(admin)) + 1:].split('/', 1)[0]) in residues):
             if key in before.topology and before.topology[key] is not None:
                 raise _RegistrationUnknown(failure)
         elif before.topology.get(key) != after.topology.get(key):
@@ -833,12 +903,23 @@ def _registration_additions(before: _Registrations, after: _Registrations, repo:
 
 
 @observed('topology')
-def registrations(repo: Path, deadline: float, *, retained: dict | None = None) -> _Registrations:
-    before = _registration_metadata(repo, deadline)
+def registrations(repo: Path, deadline: float, *, retained: dict | None = None, metadata_path: Path | None = None, metadata_inventory: _Registrations | None = None) -> _Registrations:
+    before = _registration_metadata(repo, deadline, metadata_path=metadata_path, metadata_inventory=metadata_inventory)
     # A second literal census before Git catches mapping/type changes during
     # ordinary reads. Local churn protects its owner without poisoning peers.
-    after = _registration_metadata(repo, deadline)
+    after = _registration_metadata(repo, deadline, metadata_path=metadata_path, metadata_inventory=metadata_inventory)
     additions = _registration_additions(before, after, repo, deadline)
+    protected_descendant = metadata_path is not None and any(
+        metadata_path in Path(path).parents for path in before.linked.keys() | before.residues.keys()
+    )
+    if metadata_inventory is not None and not protected_descendant:
+        # Discovery can veto drift, never supply successful current proof.
+        # Bind recorded shared/pointer-parent identities and literal membership, including
+        # disjoint non-task registrations, across the slow inventory interval.
+        additions |= _registration_additions(metadata_inventory, before, repo, deadline, allow_new_residues=True)
+    # A proven descendant already forces require() to KEEP. Preserve that
+    # existing reason/precedence; the inventory comparison can grant nothing
+    # here. Every peer's own later admission still compares the full inventory.
     errors = dict(before.errors)
     for path, error in after.errors.items():
         errors.setdefault(path, error)
@@ -871,7 +952,7 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None) 
         if not path or path in after:
             raise _RegistrationUnknown(f'unknown_git_registration:{repo}')
         after[path] = row
-    final = _registration_metadata(repo, deadline)
+    final = _registration_metadata(repo, deadline, metadata_path=metadata_path, metadata_inventory=metadata_inventory)
     additions |= _registration_additions(after, final, repo, deadline)
     # Git's list can precede or follow an additive TASK arrival. Only those
     # newly proven paths may be absent from the captured list; every extra row
@@ -955,8 +1036,9 @@ class Evidence:
         if conn.execute('SELECT 1 FROM team_move_operations WHERE active_slot=1').fetchone():
             raise Retain('team_move_native_held')
 
-    @observed('ownership')
-    def ownership(self, path: Path, workspace: Path, task_id: str) -> None:
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """One consistent read; caller never carries it across filesystem work."""
         check(self.deadline)
         # Opening mode=ro cannot create/upgrade a production database.
         conn = sqlite3.connect((self.org / 'happyranch.db').as_uri() + '?mode=ro', uri=True, timeout=.1)
@@ -965,61 +1047,117 @@ class Evidence:
         try:
             conn.execute('BEGIN')
             self._move_writer(conn)
-            tasks = {}
-            for row in conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks'):
-                check(self.deadline)
-                if row['id'] in tasks:
-                    raise _LineageUnknown('unknown_conflicting_lineage', 'org_unavailable')
-                tasks[row['id']] = dict(row)
-
-            def ancestry(owner, finding):
-                seen = set()
-                while True:
-                    check(self.deadline)
-                    if not isinstance(owner, str) or not owner:
-                        raise _LineageUnknown('unknown_malformed_job_or_task_lineage', finding)
-                    if owner in seen or owner not in tasks:
-                        raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
-                    seen.add(owner)
-                    row = tasks[owner]
-                    parent = row['parent_task_id']
-                    if parent is None:
-                        return owner
-                    if not isinstance(parent, str) or not parent:
-                        raise _LineageUnknown('unknown_conflicting_lineage', finding)
-                    owner = parent
-
-            root = ancestry(task_id, 'candidate_lineage_unknown')
-            owner = tasks[task_id]
-            if owner['assigned_agent'] != workspace.name:
-                raise Retain('unknown_owner_workspace')
-            for row in (owner, tasks[root]):
-                if row['status'] not in TERMINAL:
-                    raise Retain('task_or_root_not_terminal:' + str(row['status']))
-            # Actual recorded workspace evidence, not TASK-like basename alone.
-            observed = []
-            for row in conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='session_start'", (task_id,)):
-                check(self.deadline)
-                payload = json.loads(row[0])
-                if not isinstance(payload, dict) or not isinstance(payload.get('workspace'), str):
-                    raise Retain('unknown_workspace_evidence')
-                observed.append(payload['workspace'])
-            if not observed or set(observed) != {str(workspace)}:
-                raise Retain('unknown_missing_or_conflicting_workspace_evidence')
-            # A task/root scope includes all structurally related job owners.
-            for row in conn.execute('SELECT task_id,status FROM jobs'):
-                check(self.deadline)
-                # Finished native jobs cannot keep historical owner lineage
-                # live. Skip them BEFORE resolving their (possibly gone) owner.
-                if row['status'] in ('completed', 'failed', 'rejected'):
-                    continue
-                if row['status'] not in ('pending', 'queued', 'running'):
-                    raise Retain('unknown_job_status')
-                job_root = ancestry(row['task_id'], 'job_lineage_unknown')
-                if job_root == root:
-                    raise Retain('active_job:' + row['status'])
+            # The existing primary-key index makes each ancestry lookup local.
+            # SQLite permits multiple NULLs in a TEXT PRIMARY KEY: preserve the
+            # old full-table reader's duplicate-key refusal for that case too.
+            if len(conn.execute('SELECT id FROM tasks WHERE id IS NULL LIMIT 2').fetchall()) > 1:
+                raise _LineageUnknown('unknown_conflicting_lineage', 'org_unavailable')
+            yield conn
         finally:
             conn.close()
+
+    def _ownership(self, conn: sqlite3.Connection, workspace: Path, task_id: str, records: dict) -> None:
+        """Same evaluator for refusal inventory and fresh, independent admission."""
+        tasks = records.setdefault('tasks', {})
+
+        def ancestry(owner, finding):
+            seen = set()
+            while True:
+                check(self.deadline)
+                if not isinstance(owner, str) or not owner:
+                    raise _LineageUnknown('unknown_malformed_job_or_task_lineage', finding)
+                if owner in seen:
+                    raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
+                if owner not in tasks:
+                    row = conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks WHERE id=?', (owner,)).fetchone()
+                    if row is None:
+                        raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
+                    tasks[owner] = dict(row)
+                seen.add(owner)
+                row = tasks[owner]
+                parent = row['parent_task_id']
+                if parent is None:
+                    return owner
+                if not isinstance(parent, str) or not parent:
+                    raise _LineageUnknown('unknown_conflicting_lineage', finding)
+                owner = parent
+
+        root = ancestry(task_id, 'candidate_lineage_unknown')
+        owner = tasks[task_id]
+        if owner['assigned_agent'] != workspace.name:
+            raise Retain('unknown_owner_workspace')
+        for row in (owner, tasks[root]):
+            if row['status'] not in TERMINAL:
+                raise Retain('task_or_root_not_terminal:' + str(row['status']))
+        # Actual recorded workspace evidence, not TASK-like basename alone.
+        observed = []
+        for row in conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='session_start'", (task_id,)):
+            check(self.deadline)
+            payload = json.loads(row[0])
+            if not isinstance(payload, dict) or not isinstance(payload.get('workspace'), str):
+                raise Retain('unknown_workspace_evidence')
+            observed.append(payload['workspace'])
+        if not observed or set(observed) != {str(workspace)}:
+            raise Retain('unknown_missing_or_conflicting_workspace_evidence')
+        # Enumerate ALL statuses, including unknown/NULL values, through
+        # the existing status index. Only unfinished rows need owner reads.
+        # Preserve the old table traversal's rowid order: an earlier active
+        # job refusal must not be replaced by a later unknown-job refusal.
+        if 'jobs' not in records:
+            jobs = []
+            for status, in conn.execute('SELECT DISTINCT status FROM jobs'):
+                check(self.deadline)
+                if status not in ('completed', 'failed', 'rejected'):
+                    for row in conn.execute('SELECT rowid,task_id,status FROM jobs WHERE status IS ?', (status,)):
+                        check(self.deadline)
+                        jobs.append(row)
+            jobs.sort(key=lambda row: row['rowid'])
+            records['jobs'] = jobs
+        jobs = records['jobs']
+        # Task rows above are memoized within this transaction only. Every
+        # ownership call opens a new current read, including after scans,
+        # before removal, and on the existing repair/retry admissions.
+        for row in jobs:
+            check(self.deadline)
+            if row['status'] not in ('pending', 'queued', 'running'):
+                raise Retain('unknown_job_status')
+            job_root = ancestry(row['task_id'], 'job_lineage_unknown')
+            if job_root == root:
+                raise Retain('active_job:' + row['status'])
+
+    @observed('ownership')
+    def ownership(self, path: Path, workspace: Path, task_id: str) -> None:
+        with self._connection() as conn:
+            self._ownership(conn, workspace, task_id, {})
+
+    @observed('ownership')
+    def inventory(self, candidates: list[dict]) -> dict[str, Exception]:
+        """Read task/job inventory once. Return failures only, never clearance."""
+        refused = {}
+        if not candidates:
+            return refused
+        try:
+            with self._connection() as conn:
+                tasks = {}
+                for row in conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks'):
+                    check(self.deadline)
+                    tasks[row['id']] = dict(row)
+                records = dict(tasks=tasks)
+                for candidate in candidates:
+                    check(self.deadline)
+                    try:
+                        self._ownership(conn, Path(candidate['workspace']), Path(candidate['path']).name, records)
+                    except Expired:
+                        raise
+                    except Exception as exc:
+                        refused[candidate['path']] = exc.with_traceback(None)
+        except Expired:
+            raise
+        except Exception as exc:
+            # An unavailable inventory is uncertainty, never an empty success.
+            return {candidate['path']: exc.with_traceback(None) for candidate in candidates}
+        return refused
+
 
 
 
@@ -1033,7 +1171,7 @@ def _retain_linked_descendants(path: Path, rows: dict[str, dict], deadline: floa
     check(deadline)
 
 
-def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = None) -> tuple:
+def _worktree_guard(candidate: dict, deadline: float) -> None:
     path = Path(candidate["path"])
     task_id = path.name
     guard = read_json(path / '.worktree-guard.json', deadline, 4 * 1024 * 1024)
@@ -1041,8 +1179,61 @@ def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = Non
             or guard.get('worktree_root') != str(path)
             or guard.get('primary_root') != candidate['repo']):
         raise Retain('unknown_worktree_owner')
+
+
+def _worktree_location(path: Path, repo: Path, rows: _Registrations, deadline: float) -> None:
+    """Never send Git through an own mapping changed since discovery."""
+    try:
+        entry = rows.linked[str(path)]
+        for parent in (repo, repo / '.git', repo / '.git/worktrees', entry, path.parent, path):
+            with directory(parent, deadline) as fd:
+                if identity(os.fstat(fd)) != rows.topology[str(parent)]:
+                    raise Retain(f'changed_registration_entry:{parent}')
+        for pointer in (entry / 'gitdir', entry / 'commondir', path / '.git'):
+            seen, _ = _metadata_file(pointer, deadline)
+            if seen != rows.topology[str(pointer)]:
+                raise Retain(f'metadata_changed:{pointer}')
+    except Expired:
+        raise
+    except Exception as exc:
+        raise _RegistrationUnknown(f'unknown_git_registrations:{repo / ".git/worktrees"}: {exc}') from exc
+
+
+def _recent_root_keep(candidate: dict, deadline: float, now: float | None) -> None:
+    """A recent root is a final keep; an old root supplies no clearance."""
+    with directory(Path(candidate['path']), deadline) as fd:
+        root = os.fstat(fd)
+    check(deadline)
+    cutoff = (time.time() if now is None else now) - 3600
+    if max(root.st_mtime, root.st_ctime) > cutoff:
+        raise Retain('changed_within_hour')
+
+
+def worktree_inventory(candidate: dict, topology: dict, deadline: float) -> Exception | None:
+    """Inspect cheap keeps in candidate order; success never admits deletion."""
+    try:
+        path = Path(candidate['path'])
+        _worktree_guard(candidate, deadline)
+        rows = topology[candidate['repo']]
+        rows.require(path, deadline)
+        _worktree_location(path, Path(candidate['repo']), rows, deadline)
+        dirty = git(path, deadline, 'status', '--porcelain=v1', '-z', '--untracked-files=all')
+        if dirty:
+            candidate['dirty_paths'] = dirty.split('\0')
+            raise Retain('dirty_or_untracked')
+    except Expired:
+        raise
+    except Exception as exc:
+        return exc.with_traceback(None)
+    return None
+
+
+def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = None, inventory: _Registrations | None = None) -> tuple:
+    path = Path(candidate['path'])
+    task_id = path.name
+    _worktree_guard(candidate, deadline)
     repo = Path(candidate['repo'])
-    rows = registrations(repo, deadline, retained=retained)
+    rows = registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=inventory)
     rows.require(path, deadline)
     row = rows.get(str(path))
     if row is None or 'locked' in row or 'prunable' in row:
@@ -1051,8 +1242,10 @@ def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = Non
     if branch is not None and branch != f'refs/heads/task/{task_id}':
         raise Retain('unknown_worktree_branch_owner')
     common = git(path, deadline, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip()
-    primary = git(repo, deadline, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip()
-    if common != primary or primary != str(repo / '.git') or git(path, deadline, 'rev-parse', '--show-toplevel').strip() != str(path):
+    # The complete literal census above already proved this primary .git and
+    # rejected redirected primary pointers. Resolve the candidate afresh, but
+    # do not ask Git to rediscover the same primary common directory each gate.
+    if common != str(repo / '.git') or git(path, deadline, 'rev-parse', '--show-toplevel').strip() != str(path):
         raise Retain('unknown_git_ownership')
     with directory(Path(common), deadline):
         pass
@@ -1064,7 +1257,7 @@ def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = Non
         raise Retain('unique_head_commit')
     return row.get("HEAD"), row.get("branch"), common, rows.topology, rows.metadata[str(path)]
 
-def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None, retained: dict | None = None) -> dict:
+def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None, retained: dict | None = None, topology: dict | None = None) -> dict:
     """Fresh common gates before each candidate mutation/retry admission."""
     path, workspace = Path(candidate['path']), Path(candidate['workspace'])
     task_id = path.name
@@ -1081,7 +1274,14 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
             pass
         validate_task_scratch_manifest(read_json(manifest, deadline), expected_task_id=task_id, expected_root=path)
     else:
-        git_identity = _worktree_gate(candidate, deadline, retained)
+        if topology is not None:
+            _worktree_location(path, Path(candidate['repo']), topology[candidate['repo']], deadline)
+        inventory = topology[candidate['repo']] if topology is not None else None
+        git_identity = _worktree_gate(candidate, deadline, retained, inventory)
+        if topology is not None:
+            inventoried = topology[candidate['repo']][str(path)]
+            if git_identity[:2] != (inventoried.get('HEAD'), inventoried.get('branch')):
+                raise Retain('git_identity_changed_since_inventory')
     tree = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
     if candidate['phase'] == 'worktree':
         for relative in sorted(tree):
@@ -1106,7 +1306,7 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
             raise Retain('changed_within_hour')
     # Re-read durable state after slow filesystem/Git observations.
     evidence.ownership(path, workspace, task_id)
-    if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained) != git_identity:
+    if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained, inventory) != git_identity:
         raise Retain('git_identity_changed_during_admission')
     latest = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
     if candidate['phase'] == 'worktree':
@@ -1121,8 +1321,11 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     with directory(path, deadline) as fd:
         if signature(os.fstat(fd)) != signature(tree['']):
             raise Retain('identity_changed')
-    if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained) != git_identity:
+    if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained, inventory) != git_identity:
         raise Retain('git_identity_changed_before_action')
+    # Both the final recursive snapshot and Git gate can be slow. Their
+    # successful observations cannot carry an earlier ownership answer forward.
+    evidence.ownership(path, workspace, task_id)
     return tree
 
 
@@ -1151,7 +1354,7 @@ def _discovery_scope(path: Path, inventory: dict, deadline: float, checkpoint: C
             raise Expired('discovery checkpoint failed; global stop: ' + str(exc)) from exc
 
 
-def discover(org: Path, deadline: float, *, inventory: dict | None = None, checkpoint: Callable[[], None] = lambda: None, retained: dict | None = None) -> list[dict]:
+def discover(org: Path, deadline: float, *, inventory: dict | None = None, checkpoint: Callable[[], None] = lambda: None, retained: dict | None = None, topology: dict | None = None) -> list[dict]:
     """Stable ordering of known candidates; uncertain scopes are never empty."""
     inventory = inventory if inventory is not None else {}
     inventory.update(candidates=[], discovery_scopes=[], scope_classifications={}, exclusions=[], deferred_arrivals=[], discovery='unknown', discovery_root=str(org / 'workspaces'),
@@ -1218,6 +1421,8 @@ def discover(org: Path, deadline: float, *, inventory: dict | None = None, check
                                 if finding == 'arrival': inventory['deferred_arrivals'].append(path)
                             if str(repo) not in rows:
                                 raise Retain('unknown_git_primary_registration')
+                            if topology is not None:
+                                topology[str(repo)] = rows
                             prefix = repo / '.claude/worktrees'
                             for literal in rows.linked.keys() | rows.residues.keys():
                                 check(deadline)
@@ -1351,7 +1556,9 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     uncertain_repos = set()
 
     try:
-        candidates = discover(org, deadline, inventory=result, checkpoint=report_checkpoint, retained=retained)
+        topology = {}
+        candidates = discover(org, deadline, inventory=result, checkpoint=report_checkpoint, retained=retained, topology=topology)
+        refusals = evidence.inventory(candidates)
         report_checkpoint()
         for candidate in candidates:
             check(deadline)
@@ -1368,7 +1575,13 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 local = retained.get(candidate.get('repo'), {}).get(candidate['path'])
                 if local:
                     raise Retain(local[0])
-                tree = admit(candidate, evidence, deadline, now=now, retained=retained)
+                if candidate['path'] in refusals:
+                    raise refusals[candidate['path']]
+                _recent_root_keep(candidate, deadline, now)
+                if candidate['phase'] == 'worktree':
+                    refusal = worktree_inventory(candidate, topology, deadline)
+                    if refusal is not None: raise refusal
+                tree = admit(candidate, evidence, deadline, now=now, retained=retained, topology=topology)
                 amount, _ = allocated(tree, measured_inodes)
                 phase['measured_allocated_bytes'] += amount
                 candidate['allocated_bytes'] = amount
@@ -1383,17 +1596,26 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 candidate['state'] = 'mutation_in_flight'
                 phase['attribution_unknown'] = True
                 report_checkpoint()
-                fresh = admit(candidate, evidence, deadline, now=now, retained=retained)
+                fresh = admit(candidate, evidence, deadline, now=now, retained=retained, topology=topology)
                 if not trees_equal(tree, fresh, deadline):
                     raise Retain('tree_changed_before_mutation')
                 if candidate['phase'] == 'scratch':
+                    evidence.ownership(Path(candidate['path']), Path(candidate['workspace']), Path(candidate['path']).name)
                     mutation_started = True
                     mutate(Path(candidate['path']), fresh, deadline, remove=True, scratch=True)
                 else:
                     repo, path = Path(candidate['repo']), Path(candidate['path'])
                     # Last local metadata check after fresh tree comparisons;
                     # Git must never consume a known redirected registration.
-                    registrations(repo, deadline, retained=retained).require(path, deadline)
+                    rows = registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)])
+                    rows.require(path, deadline)
+                    admitted_branch = rows[str(path)].get('branch')
+                    # Topology enumeration can be slow and mount evidence may
+                    # arrive during it. Refresh the recursive tree afterwards,
+                    # then ownership, before each actual effect boundary.
+                    if not trees_equal(fresh, snapshot(path, deadline), deadline):
+                        raise Retain('tree_changed_before_mutation')
+                    evidence.ownership(path, Path(candidate['workspace']), path.name)
                     mutation_started = True
                     try:
                         git(repo, deadline, 'worktree', 'remove', str(path))
@@ -1403,14 +1625,21 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # contained repair AND again before Git retry. Own
                         # permission/partial changes count as recent and may
                         # conservatively refuse that retry.
-                        retry_tree = admit(candidate, evidence, deadline, now=now, retained=retained)
-                        registrations(repo, deadline, retained=retained).require(path, deadline)
+                        retry_tree = admit(candidate, evidence, deadline, now=now, retained=retained, topology=topology)
+                        registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]).require(path, deadline)
+                        if not trees_equal(retry_tree, snapshot(path, deadline), deadline):
+                            raise Retain('tree_changed_before_mutation')
+                        evidence.ownership(path, Path(candidate['workspace']), path.name)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
-                        admit(candidate, evidence, deadline, now=now, repairs=repairs, retained=retained)
-                        registrations(repo, deadline, retained=retained).require(path, deadline)
+                        retry_tree = admit(candidate, evidence, deadline, now=now, repairs=repairs, retained=retained, topology=topology)
+                        registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]).require(path, deadline)
+                        if not trees_equal(retry_tree, snapshot(path, deadline), deadline):
+                            raise Retain('tree_changed_before_mutation')
+                        evidence.ownership(path, Path(candidate['workspace']), path.name)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
-                    if str(path) in registrations(repo, deadline, retained=retained):
+                    remaining_inventory = topology[str(repo)].after_removal(path)
+                    if str(path) in registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=remaining_inventory):
                         raise Retain('registration_remains_after_remove')
                 try:
                     os.lstat(candidate['path'])
@@ -1418,6 +1647,13 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     pass
                 else:
                     raise Retain('root_remains_after_remove')
+                if candidate['phase'] == 'worktree' and admitted_branch is not None:
+                    # Removing a worktree must preserve its named branch. A
+                    # missing/refused resolution is an unconfirmed effect,
+                    # even when the folder and registration are already gone.
+                    git(repo, deadline, 'rev-parse', '--verify', admitted_branch + '^{commit}')
+                if candidate['phase'] == 'worktree':
+                    topology[str(repo)] = remaining_inventory
                 _, attributable = allocated(fresh, removed_inodes)
                 phase['removed_attributable_bytes'] += attributable
                 candidate.update(state='removed', removed_attributable_bytes=attributable)
@@ -1482,30 +1718,46 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                   policy='thr307-ended-root-one-hour-all-orgs',
                   previous_interrupted_removals=(_history.get() or {}).get('interrupted_removals', []),
                   measurement_history={k: v for k, v in (_history.get() or {}).items() if k not in ('paths', 'interrupted_removals')})
-    def checkpoint():
+    pending_checkpoints = 0
+    initialized_org = None
+    def checkpoint(*, force: bool = False) -> None:
+        nonlocal pending_checkpoints, initialized_org
+        pending_checkpoints += 1
+        current = report['orgs'][-1] if report['orgs'] else {}
+        # Nonmutating progress may lag by a bounded batch. The last published
+        # run stays incomplete; it cannot claim unpublished keeps or effects.
+        # Always persist mutation intent BEFORE the final fresh admission, and
+        # flush each org exit (including expiry/error) under its observer.
+        if (not force and pending_checkpoints < 32 and 'stop_cause' not in current
+                and not ('phases' in current and current is not initialized_org)
+                and not any(c.get('state') == 'mutation_in_flight' for c in current.get('candidates', []))):
+            return
         atomic_json(summary, report)
-    checkpoint()
+        pending_checkpoints = 0
+        if 'phases' in current:
+            initialized_org = current
+    checkpoint(force=True)
     measurement_seen, removal_seen = set(), set()
     if runtime_root is not None:
         report['runtime_discovery'] = 'unknown'
-        checkpoint()
+        checkpoint(force=True)
         try:
             with directory(runtime_root / 'orgs', deadline) as fd:
                 roots = [str(runtime_root / 'orgs' / name) for name in names(fd, deadline) if name not in ('_pending', '_archive')]
             report.update(runtime_discovery='complete', unreached_orgs=roots.copy())
         except Exception as exc:
             report.update(error=str(exc), unreached_orgs=None, stop_cause=_stop_cause(exc))
-            checkpoint()
+            checkpoint(force=True)
             return report
     report['selected_org_roots'] = roots.copy()
-    checkpoint()
+    checkpoint(force=True)
     try:
         for root in sorted(roots):
             check(deadline)
             item = dict(org=Path(root).name, outcome='incomplete')
             report['orgs'].append(item)
             report['unreached_orgs'].remove(root)
-            checkpoint()
+            checkpoint(force=True)
             try:
                 config_path = Path(root) / 'org/config.yaml'
                 load_org_config(OrgPaths(Path(root)))
@@ -1519,7 +1771,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                 raise
             except Exception as exc:
                 item.update(outcome='error', error=str(exc) or type(exc).__name__, stop_cause='error')
-            checkpoint()
+            checkpoint(force=True)
         report['outcome'] = 'complete' if all(o['outcome'] == 'complete' for o in report['orgs']) else 'incomplete'
         report['stop_cause'] = 'error' if any(o.get('error') or o.get('outcome') == 'error' for o in report['orgs']) else 'finished'
     except Expired as exc:
@@ -1534,7 +1786,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
     except OSError:
         report['disk_free_percent_context_only'] = None
     _finalize_night(report)
-    checkpoint()
+    checkpoint(force=True)
     return report
 
 

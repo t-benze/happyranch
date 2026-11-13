@@ -211,6 +211,129 @@ Every admission, including permission repair and the one Git retry, requires:
   chmod mode/ctime changes may be recognized on Git retry, with all other gates
   refreshed; unknown changes never receive that exception.
 
+### Indexed current ownership reads (THR307 seq337 step 3, reader portion)
+
+Every existing `Evidence.ownership` call opens its own `mode=ro` connection and
+read transaction, checks the actual native writer/optional hold, and then reads
+current ownership. Candidate and unfinished-job ancestry use `tasks.id` primary-key
+lookups. The row cache exists only within that transaction. SQLite's duplicate
+NULL primary-key case keeps the old org-wide conflicting-lineage refusal.
+The existing `jobs_status_idx` supports exhaustive distinct-status enumeration
+and indexed reads of every unfinished or unknown/NULL-status row. Rows retain
+original rowid encounter order, including active-before-unknown refusal priority.
+Finished completed/failed/rejected rows never need their historical owner resolved.
+The existing audit task-id index supports the unchanged complete workspace check.
+Discovery's once-per-clone topology census is also retained privately for KEEP
+answers. In existing candidate order after ownership refusals, worktree guard,
+known mapping/lock/branch and dirty-status failures are final for the night,
+including after healing. Own directory identities and reciprocal pointer
+signatures are revalidated no-follow before status; changed/unsafe locations
+hold the clone. Positive
+mapping/clean-status observations are discarded; every deletion still performs
+all existing fresh admissions. Inventory cannot supply successful delete authority.
+This partial implementation does not yet reduce destructive census frequency.
+
+The fresh census also compares recorded shared-directory, reciprocal-pointer and
+pointer-parent identities and literal membership with discovery through the existing
+additive-TASK comparison. A stable replacement between admissions cannot become a
+new baseline. A proven descendant still forces its existing KEEP reason before
+that comparison can matter. Newly proven TASK arrivals remain deferred and locally
+latched. After a successful Git removal, confirmation compares against a copy of
+the original inventory excluding only that candidate's exact root/admin/pointer
+keys and literal names. If no original entries remain, the final admin container
+observation is bound for the fresh confirmation; newly present entries must still
+pass the complete existing proof. A newly observed safe gitdir-gone residue across
+admissions keeps its existing local unknown-location classification and latch,
+never deletion authority; within one three-census proof the TASK-only addition
+rule is unchanged. The reduced inventory is adopted only after fresh unregistration,
+folder absence and named-branch resolution all succeed. Every other original
+HEAD/branch and topology identity stays pinned. Any failed confirmation remains
+partial/unknown. This adds no repair, retry, housekeeping or clearance authority.
+
+The census records every literal ancestor of reciprocal worktree pointers,
+including ancestors above the immediate parent. A replacement that preserves
+its descendant directory inodes still vetoes admission against inventory.
+After the final topology census at remove, permission-repair and retry boundaries,
+a fresh recursive tree snapshot must equal the admitted tree before the existing
+final ownership transaction and effect. New mount evidence or any changed tree
+therefore retains; after a prior attempted effect it remains partial/unknown.
+No original census pass, fresh gate or refusal latch is removed. These remain
+sampled observations, not a racing-rename fence.
+
+Each full worktree admission also revalidates its own directory/pointer identities
+against discovery and compares freshly read HEAD/branch with that inventory.
+The saved identity is a veto on drift, never a successful deletion answer; every
+current topology, ownership, preservation and recursive-tree check still runs.
+After non-force removal, the folder must be absent, the registration gone, and
+the admitted named branch must freshly resolve as a commit. Detached worktrees
+have no named branch to resolve. Failed post-effect resolution keeps the effect
+partial/unknown and coverage incomplete under the existing error classification.
+The exhaustive literal census proves the primary common directory as repo/.git.
+Each gate still resolves the candidate's current common directory and top-level
+through Git and checks the literal directory no-follow; it omits only the
+redundant Git lookup of that primary common directory. No census is omitted.
+
+Ownership is read again after each admission's last recursive snapshot and Git
+gate. The final tree comparison or complete registration census is followed by
+another current ownership/native-writer/hold transaction immediately before
+scratch removal, Git removal, permission repair and retry. Inventory clearance
+never crosses those slow observations. Refusal before an attempted effect retains;
+a refusal after an attempted Git removal remains partial/unknown under the
+existing classification, and no later repair or retry proceeds that night.
+These are sampled observations, not a lock against later same-user writes.
+
+During candidate admission, final removal/repair/retry checks and post-removal
+confirmation, the census skips repeated reads of a disjoint sibling's ordinary
+index/auxiliary file only when its current full stat signature equals discovery.
+Changed or arriving files are fully read. Discovery reads them all. Every census
+still stats every admin object, checks unsafe types/hardlinks, reads all HEADs
+and reciprocal pointers, validates unique locations/ancestry and literal roots,
+and reconciles Git's complete list. Candidate/overlapping registration metadata
+and unknown-location residue validation remain fully read; siblings' stat signatures
+still latch observed changes to their owner. No successful inventory answer is
+reused, and no census, containment or fresh admission boundary is removed.
+
+After discovery, one consistent org inventory reads tasks and unfinished/unknown
+job states once, with the same workspace/lineage evaluator and refusal priority.
+Only its failed answers survive: they are final KEEP decisions even if the
+underlying condition later heals. Successful answers are discarded. Every
+existing admission still opens its own fresh connection and transaction; neither
+task/job inventory nor its earlier native-writer observation authorizes removal,
+repair or retry. Inventory failure retains uncertainty rather than implying an
+empty census. Destructive pointer/topology admission frequency is unchanged in
+this partial implementation; reducing it still requires the complete section 5.2
+proof. Final dirty/guard/mapping keeps do not repeat those admissions.
+No schema, new index or migration is introduced. Unknown status/active-job lineage
+still holds the org; candidate-own ancestry uncertainty still holds the item.
+
+Task/job refusal inventory removes repeated ownership work for final keeps.
+After ownership and already-known local/shared refusals, a cheap no-follow
+root-directory stat rejects a recent mtime or ctime before guard, dirty status
+or full admission. Its failed age observation is final even if the timestamp
+heals. An old root never admits deletion: every current recursive age/tree check
+still runs. Earlier recent retention can change the first reason where dirt or a
+bad guard has not yet been inspected. A located recent keep satisfies the same
+coverage definition; already observed uncertainty remains latched.
+The existing fresh delete admissions, census/tree checks, retry, classification,
+completion, policy and keys remain. The complete safety proof for cheaper
+destructive admission remains an unfinished part of the approved step 3 package.
+Two-pass ordering is absent: real-night step 1 data is not yet available.
+These partial changes do not establish real-night speed or an under-ten-minute
+result.
+
+Worker publication batches up to 32 nonmutating checkpoint requests. The initial
+report, first initialized org state, outer run boundaries, every org exit/error/expiry
+and every mutation-in-flight
+intent flush immediately through the unchanged atomic writer (exclusive pending
+inode, literal no-follow parents, descriptor-relative replacement). A removal
+intent is persisted before its final fresh admission, so a failed publication
+prevents deletion. Suppressed progress writes confer no admission authority;
+all ownership, topology, tree, remove/repair/retry and post-effect checks remain.
+An interrupted batch may leave older keep/removal progress in an incomplete
+report; an unconfirmed intent remains unknown, never a confirmed effect. Only
+the existing parent's actual stop/reap proof and safe final publication can make
+night.complete true. Reports, org audits and their keys remain compatible.
+
 Admission takes two complete no-follow snapshots with intervening ownership/Git
 refresh and final root/Git validation. On-mode mutation repeats the entire
 admission, then compares the two admitted trees again. Both comparisons use
