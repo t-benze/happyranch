@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ from pathlib import Path
 import pwd
 import re
 import subprocess
+import tempfile
 import time
 
 ROOT = Path('/var/lib/happyranch-m4')
@@ -21,10 +23,45 @@ PROBE_USER = 'happyranch-m4-udp'
 NS = 'happyranch-m4-udp'
 LINK = 'm4udp0'
 PEER = 'm4udp1'
+CAUSE = 'unknown'
+COUNTS: dict = {}
+PRIVATE: Path | None = None
+CAUSES = frozenset(('unknown', 'precondition', 'identity-create', 'unit-start',
+                   'unit-identity', 'network-create', 'table-install', 'table-snapshot',
+                   'present-table', 'receiver-ready', 'sender', 'receiver-result',
+                   'counter', 'rule-identity', 'cleanup', 'window'))
+COUNT_KEYS = ('output_positive', 'output_negative', 'input_positive', 'input_negative',
+              'table_present', 'rule_unchanged', 'present_table_refused', 'removed', 'nft_present', 'ip_present',
+              'cgroupv2', 'selector_level', 'send_errno', 'command_exit')
+UDP_SENDER = '''import errno, socket
+try:
+    socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"M4", ("{address}", 3478))
+except OSError as error:
+    print(error.errno if type(error.errno) is int else -1)
+else:
+    print(0)
+'''
+
+
+def safe_controls(value: object) -> dict:
+    """Closed producer AND coordinator projection; never stringify native input."""
+    value = value if type(value) is dict else {}
+    label = value.get('label')
+    cause = value.get('subcause')
+    result = dict(label=label if type(label) is str and label in ('passed', 'refused') else 'unknown',
+                  subcause=cause if type(cause) is str and cause in CAUSES else 'unknown')
+    for key in COUNT_KEYS:
+        number = value.get(key)
+        result[key] = number if type(number) is int and 0 <= number <= 65535 else 0
+    return result
 
 
 def command(*argv: str, data: str | None = None) -> str:
     result = subprocess.run(argv, input=data, text=True, capture_output=True, timeout=10)
+    if result.returncode:
+        COUNTS['command_exit'] = result.returncode
+    if PRIVATE is not None and (result.returncode or result.stderr):
+        PRIVATE.joinpath('command.txt').write_text((result.stdout + result.stderr)[:65536])
     assert result.returncode == 0, 'UDP condition operation refused'
     assert len(result.stdout) < 1_000_000 and not result.stderr, 'UDP condition output refused'
     return result.stdout
@@ -170,17 +207,27 @@ def after() -> dict:
 
 def controls() -> dict:
     """Real packets on a private veth; existing UDP3478 only, no public listener."""
+    global CAUSE
+    CAUSE = 'precondition'
+    import shutil
+    COUNTS.update(nft_present=int(shutil.which('nft') is not None),
+                  ip_present=int(shutil.which('ip') is not None),
+                  cgroupv2=int(Path('/sys/fs/cgroup/cgroup.controllers').is_file()), selector_level=2)
     absent()
     assert not subprocess.run(['getent', 'passwd', PROBE_USER], capture_output=True).stdout
     assert not Path('/run/netns', NS).exists() and not Path('/sys/class/net', LINK).exists()
     user_created = unit_created = net_created = link_created = False
     try:
+        CAUSE = 'identity-create'
         command('useradd', '--system', '--no-create-home', '--shell', '/usr/sbin/nologin', PROBE_USER)
         user_created = True
+        CAUSE = 'unit-start'
         command('systemd-run', '--quiet', '--unit=' + PROBE_UNIT, '--property=User=' + PROBE_USER,
                 '/usr/bin/python3', '-c', 'import time; time.sleep(120)')
         unit_created = True
+        CAUSE = 'unit-identity'
         identity = unit_identity(PROBE_UNIT)
+        CAUSE = 'network-create'
         command('ip', 'netns', 'add', NS)
         net_created = True
         command('ip', 'link', 'add', LINK, 'type', 'veth', 'peer', 'name', PEER)
@@ -190,18 +237,21 @@ def controls() -> dict:
         command('ip', 'link', 'set', LINK, 'up')
         command('ip', '-n', NS, 'address', 'add', '198.18.254.2/30', 'dev', PEER)
         command('ip', '-n', NS, 'link', 'set', PEER, 'up')
+        CAUSE = 'table-install'
         initial = install(identity)
+        COUNTS['table_present'] = 1
+        CAUSE = 'present-table'
         try:
             clean()
         except AssertionError as error:
             assert str(error) == 'test UDP table remains', 'wrong clean-state refusal'
         else:
             raise AssertionError('clean-state accepted a surviving UDP table')
+        COUNTS['present_table_refused'] = 1
         receiver = ('import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); '
                     's.bind(("{address}",3478)); s.settimeout(1); print("ready",flush=True)\n'
                     'try: print(int(s.recv(8)==b"M4"))\nexcept TimeoutError: print(0)')
-        sender = ('import socket; socket.socket(socket.AF_INET,socket.SOCK_DGRAM)'
-                  '.sendto(b"M4",("{address}",3478))')
+        sender = UDP_SENDER
 
         def enter() -> None:
             Path(identity['group'], 'cgroup.procs').write_text(str(os.getpid()))
@@ -210,37 +260,54 @@ def controls() -> dict:
 
         for direction in ('output', 'input'):
             for selected in (True, False):
+                CAUSE = 'table-snapshot'
                 before_count = snapshot()[direction + '_packets']
                 receive_argv = ['/usr/bin/python3', '-u', '-c', receiver.format(
                     address='198.18.254.2' if direction == 'output' else '198.18.254.1')]
                 if direction == 'output':
                     receive_argv = ['ip', 'netns', 'exec', NS, *receive_argv]
+                CAUSE = 'receiver-ready'
                 child = subprocess.Popen(receive_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                          text=True, preexec_fn=enter if direction == 'input' and selected else None)
                 try:
                     # A short owned receive process; readiness read has an OS lifetime bound.
                     import select
+                    CAUSE = 'receiver-ready'
                     assert select.select([child.stdout], [], [], 5)[0], 'UDP control readiness deadline'
                     assert child.stdout.readline() == 'ready\n', 'UDP control not listening'
                     send_argv = ['/usr/bin/python3', '-c', sender.format(
                         address='198.18.254.2' if direction == 'output' else '198.18.254.1')]
                     if direction == 'input':
                         send_argv = ['ip', 'netns', 'exec', NS, *send_argv]
+                    CAUSE = 'sender'
                     sent = subprocess.run(send_argv, capture_output=True, timeout=5,
                                           preexec_fn=enter if direction == 'output' and selected else None)
                     assert sent.returncode == 0 and not sent.stderr
+                    assert sent.stdout in (b'0\n', b'1\n'), 'unexpected send errno'
+                    send_errno = int(sent.stdout)
+                    COUNTS['send_errno'] = send_errno
+                    # Local NF_DROP returns EPERM; it is evidence only jointly
+                    # with receiver timeout and the exact matching drop delta.
+                    assert send_errno == 0 or (direction == 'output' and selected and send_errno == errno.EPERM), 'UDP send refused'
+                    CAUSE = 'receiver-result'
                     out, err = child.communicate(timeout=5)
                     assert child.returncode == 0 and not err and out == ('0\n' if selected else '1\n'), 'UDP selection control failed'
+                    CAUSE = 'counter'
                     delta = snapshot()[direction + '_packets'] - before_count
                     assert delta == int(selected), 'UDP drop counter control failed'
+                    COUNTS[direction + ('_positive' if selected else '_negative')] = 1
                 finally:
                     if child.poll() is None:
                         child.kill()
                     child.wait(timeout=5)
+        CAUSE = 'rule-identity'
         assert snapshot()['shape'] == initial['shape']
-        return dict(label='passed', output_positive=1, output_negative=1, input_positive=1,
-                    input_negative=1, present_table_refused=1, removed=1)
+        COUNTS['rule_unchanged'] = 1
     finally:
+        # Preserve the original failing stage if cleanup succeeds. Cleanup
+        # failure takes precedence; neither outcome grants cleanup clearance.
+        failed_cause = CAUSE
+        CAUSE = 'cleanup'
         remove()
         if link_created:
             command('ip', 'link', 'delete', LINK)
@@ -250,19 +317,33 @@ def controls() -> dict:
             command('systemctl', 'stop', PROBE_UNIT)
         if user_created:
             command('userdel', PROBE_USER)
+        clean()
+        COUNTS['removed'] = 1
+        CAUSE = failed_cause
+    return safe_controls(dict(label='passed', subcause='unknown', **COUNTS))
 
 
 def main() -> None:
+    global CAUSE, PRIVATE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('phase', choices=('before', 'after', 'remove', 'absent', 'clean', 'controls'))
     args = parser.parse_args()
     assert os.geteuid() == 0 and os.environ.get('M4_AUTHORIZED_VM') == 'yes'
-    try:
-        result = globals()[args.phase]()
-        if result is not None:
-            print(json.dumps(result))
-    except Exception:
-        raise SystemExit('M4 UDP condition refused; private details withheld') from None
+    ROOT.joinpath('build').mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='udp-private-', dir=ROOT / 'build') as private:
+        PRIVATE = Path(private)
+        CAUSE = 'precondition' if args.phase == 'controls' else 'window'
+        try:
+            result = globals()[args.phase]()
+            if result is not None:
+                print(json.dumps(safe_controls(result) if args.phase == 'controls' else result))
+        except Exception as error:
+            PRIVATE.joinpath('failure.txt').write_text(repr(error)[:65536])
+            if args.phase == 'controls':
+                print(json.dumps(safe_controls(dict(label='refused', subcause=CAUSE, **COUNTS))), flush=True)
+            raise SystemExit('M4 UDP condition refused; private details withheld') from None
+        finally:
+            PRIVATE = None
 
 
 if __name__ == '__main__':

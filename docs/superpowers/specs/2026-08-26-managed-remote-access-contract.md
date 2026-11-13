@@ -555,6 +555,28 @@ credential/billing, TLS, binding, pairing or forbidden/refused-route change.
 managed-m4.yml remains manual/main-only/non-required;
 required CI and Product E2E are unchanged. Certificate ledger stays3/5, zero issuance.
 
+
+TASK-15887 repairs the local-output control: Linux NF_DROP can return EPERM to
+sendto. Only selected output sends may report that errno, and they still require
+receiver timeout plus exactly one matching drop; every negative control must
+arrive with zero drop increment. Other errors refuse. No package installation
+was needed by the source repair; the initial retained clean-state had already
+executed nft successfully. Distro nftables/iproute2 packages, if explicitly
+installed on a disposable VM, are documented allowed package residue; this never
+permits a leftover test table, account, unit, namespace or veth.
+
+The guest and coordinator project UDP control diagnostics to fixed labels
+(`passed`, `refused`, `unknown`), a closed stage subcause (unknown values become
+`unknown`) and bounded non-Boolean integers only. The coordinator records this
+as `udp_control` in summary.json. Raw exceptions/nft stderr stay in a temporary
+0700 guest scratch directory and are erased before return, outside log archives.
+An early prepare failure before any Headscale start attempt records journal
+state `not applicable: fixture not started`; all collected entries still must
+be current-run-only. Once fixture start is attempted, the nonempty Headscale
+journal requirement remains mandatory; installed-product journal requirements
+are unchanged. JOB-6727 remains failed/spent, with its original unknown UDP
+subcause and consequent journal failure; this repair does not reclassify it.
+
 Native acceptance remains OPEN/NOT RUN; attempt8 is unspent and separately
 EM-commissioned after merge. PR1472 stays draft/unmerged salvage; two unused
 TASK-15883 probes are retired. All failures remain spent: Linux JOB-6610/6615/6618;

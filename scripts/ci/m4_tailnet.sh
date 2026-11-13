@@ -145,6 +145,7 @@ EOF
   # Explicit direction and one TCP port; no allow-all default or client tags.
   printf '%s\n' '{"acls":[{"action":"accept","proto":"tcp","src":["m4client"],"dst":["m4home:443"]}]}' > "$M2_WORK/acl.json"
   relay_observation snapshot
+  touch "$M2_LOGS/fixture-start-attempted"
   start_fixture "${fixtures[0]}" "$M2_WORK/headscale" serve --config "$M2_WORK/config.yaml"
   # Static cached combined PEM certificate/key: no ACME manager or issuance.
   wait_for curl -q --silent --fail --connect-timeout 2 --max-time 4 --output /dev/null https://47-238-219-200.sslip.io/health
@@ -268,8 +269,11 @@ for p in files:
         else:
             raise AssertionError(f'unrecognized journal: {p.name}:{number}')
     report['journals'].append(dict(file=p.name, entries=len(stamps)))
-required = ['happyranch-m4-headscale.service']
+started = root.joinpath('fixture-start-attempted').exists()
+report['state'] = 'current-run-only' if started else 'not applicable: fixture not started'
+required = ['happyranch-m4-headscale.service'] if started else []
 if Path(sys.argv[2]).exists():
+    assert started, 'product install without fixture start'
     required += ['happyranch-tsnet-sidecar.service', 'happyranch-connector.service']
 assert all(any(r['file'] == unit+'.journal.txt' and r['entries'] for r in report['journals']) for unit in required)
 print(json.dumps(report, indent=2))
