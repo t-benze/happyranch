@@ -1,15 +1,27 @@
 # Project Layout
 
-## Older document-review retirement owners — THR-336 msg157, P1a
+## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
-`runtime/workflows/activation.py` owns the named `workflow_document_review_retired`
-admission refusal (409). `submissions.py` and `revisions.py` fence fresh staging
-and missing r1/r2 graphs, including cold producers; `review_dispatch.py` fences
-reviewer claims/launches and findings staging, and `review_receipts.py` human signing.
-The modules/objects, native lifecycle, schema/history validators and authorized
-readers remain. Earlier old-lane availability descriptions below are historical;
-P1b/P2 remove transports/signing client later. No sequential-document or Coding v1
-owner changes. See [document workflows](contracts/document-workflows.md).
+P1b removes POST `/workflows/reviews/human-receipts`, POST
+`/workflows/reviews/stages` and the `happyranch workflows reviews sign` and
+`happyranch workflows reviews stage` CLI verbs. Their mutation-only route models,
+decoders, CLI helpers, service entry methods and reviewer instruction injection
+are removed. These transports no longer support replay; earlier descriptions
+below are historical. P2 separately removes the signing web mirror.
+
+P1a's `workflow_document_review_retired` (409) fences remain for fresh old-lane
+activation/return, author/revision staging, missing r1/r2 graphs and reviewer
+claim/launch, including queued Pause admission before native preparation.
+This covers product-design compiler@1, document compiler@2/@3 and artifact
+compiler@4 documents; the existing @4 code-unavailable refusal retains precedence.
+The selected-request GET and `workflows submissions request-show`, authorized
+history reads, exact retained immutable replay, authentic committed-evidence
+receipt/collection settlement and native callback/terminal/cancel ownership remain.
+Stage/human command models still validate stored history. All schema, startup,
+role/authority validators and stored status/event bytes remain unchanged, as does
+the native stage-deny tombstone. Any unfinished live old-lane data requires a
+separate disposition before rollout. Sequential document visits and Coding v1
+are unaffected.
 
 `runtime/platform/process_census.py` remains the census API. Its S1 `_LibProc`,
 exceptions and checked thread-local state are re-exported from the single

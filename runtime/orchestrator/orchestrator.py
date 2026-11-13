@@ -1248,9 +1248,6 @@ class Orchestrator:
         submissions = getattr(self, "_workflow_submissions", None)
         if submissions is not None and not recovery:
             brief += submissions.author_instruction(task_id, session_id)
-        reviews = getattr(self, "_workflow_reviews", None)
-        if reviews is not None and not recovery:
-            brief += reviews.reviewer_instruction(task_id, agent_name, session_id)
         coding = getattr(self, "_workflow_coding_dispatch", None)
         if coding is not None and pause_invocation is not None and pause_invocation.owner == 'coding' and not recovery:
             brief += coding.development_instruction(task_id, agent_name, session_id)

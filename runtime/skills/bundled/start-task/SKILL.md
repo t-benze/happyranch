@@ -188,22 +188,24 @@ Parameters:
 
 ## Workflow-owned document tasks
 
-**Older document-review lane retired — THR-336 msg157, P1a.** The old-lane
+**Older document-review lane retired — THR-336 msg157, P1a/P1b.** The old-lane
 paragraphs below through "Configured review tasks" preserve historical contracts
 and command syntax; they no longer authorize starting or advancing that lane.
 Fresh product-design compiler@1, document compiler@2/@3 and artifact compiler@4
 document activation, return-to-author, author/revision staging, missing review
-graphs, reviewer claims/launches, findings staging and human signing refuse with
+graphs and reviewer claims/launches refuse with
 `workflow_document_review_retired` (HTTP 409). Do not attempt those commands or
 retry a retirement refusal. Exact immutable operation replay and authorized
-history reads remain; human signing cannot replay its collection side effect.
+history reads remain. The human-signing and reviewer-staging transports are removed;
+no mutation replay is available through them.
 Queued reviewers refuse before Pause invocation/session allocation or preparation;
 already-owned native uncertainty is retained, never cleared by that refusal.
 Native terminal/cancel ownership and authentic committed-evidence settlement
 remain. Preserve privacy, original keys/bytes, actual callback identity and the
 genuine FINAL report-completion rules. Surface any active or unfulfilled old-lane
 record for a separately authorized disposition; never invent completion or a new
-held reason. P1b/P2 remove transports and the signing client later. The separate
+held reason. P1b removes the two review mutation POST routes and their CLI verbs;
+P2 removes the signing client separately. The separate
 sequential visit/document instructions below and Coding v1 are unaffected.
 
 For a workflow-owned task, follow its immutable document contract and only its
@@ -225,17 +227,15 @@ kind. B1 admits documents only; code activation refuses before allocation.
 Follow the actual bound supplement and use workflow-author-handoff-command@2
 with artifact_kind document, never the historical @1 command for @4. The
 repository_binding/resolution slots are null and grant no repository capability.
-A current configured agent reviewer follows its bound launch supplement: read
-only the selected pinned request/inputs, then stage exact UTF8 findings with
-`happyranch workflows reviews stage --org ORG --session-id CURRENT
---from-file /absolute/command.json --json` before the genuine final callback.
-Use workflow-review-stage-command@1 for an @1 request scope and @2 for an @2
-scope or @3 for a revision2 @3 scope, the selected request/digest/revision/declared outcome and one stable key.
-Staging returns an unsigned five-field acknowledgement; it is not a receipt.
-Keep the same key/body after transport loss, without automatic retry. Only the
-actual INTEGER/full callback plus successful Boolean-quiescent terminal and
-current authority can admit a receipt. Report unavailable dependencies and
-failure/BLOCK evidence honestly. No execution/merge authority follows.
+The `happyranch workflows reviews stage` and `happyranch workflows reviews sign`
+CLI verbs and POST `/workflows/reviews/stages` and
+`/workflows/reviews/human-receipts` are removed in P1b; do not call them.
+The selected-request GET and `happyranch workflows submissions request-show`
+remain under their existing selected-recipient access checks. Stored stage,
+command, proof and receipt formats remain historical validation contracts.
+Authentic already-committed evidence may still settle through genuine native
+callback/terminal handling. Report unavailable dependencies and failure/BLOCK
+evidence honestly. No execution/merge authority follows.
 
 A genuine new revision author follows the bound return brief and all collected
 r1 feedback, with only originally author-addressed inputs. Stage literal r2 using

@@ -2200,3 +2200,19 @@ requires a separate disposition before rollout. P1b/P2 separately remove mutatio
 transports and the signing client; their syntax above remains historical in P1a.
 The separate sequential document engine, Coding v1 and authority-policy review are
 unchanged. See `docs/agent-guides/contracts/document-workflows.md` for current status.
+
+
+## Supersession — review mutation transports removed (2026-11-13, THR-336 msg157, P1b)
+
+P1b removes POST `/workflows/reviews/human-receipts`, POST
+`/workflows/reviews/stages`, the `happyranch workflows reviews sign` and
+`happyranch workflows reviews stage` CLI verbs, their mutation-only route/CLI
+closure, human-admission/stage service entry points and reviewer-instruction
+injection. Earlier command/route descriptions are historical, not available
+transports or replay paths. P1a admission/producer/launch fences remain. The
+selected-request GET/request-show, stored command/proof/receipt validators,
+authentic committed-evidence settlement and native callback/terminal/cancel
+handling remain. The native deny entry is retained as a tombstone. No schema,
+stored bytes, startup/authority validation, Coding v1 or sequential behavior
+changes. P2 separately removes the web signing mirror. See the maintained
+`docs/agent-guides/contracts/document-workflows.md` for current status.

@@ -1,24 +1,27 @@
 # Orchestrator Contracts
 
-## Older document-review admission retired — THR-336 msg157, P1a
+## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
-The compiler@1 product-design, @2/@3 document and @4 document lane refuses fresh
-activation/return, staging, missing r1/r2 graph creation and reviewer claim/launch
-with `workflow_document_review_retired` (409). Findings staging and human signing
-also refuse; human replay cannot collect. Existing selected access/corruption
-checks and exact immutable operation replay precede the fresh-effect fence.
-The reviewer-only Pause dispatch entry checks queued ownership, selected graph,
-current authority and capacity before its retirement refusal, without creating
-a TaskInvocation/session or preparing native ownership. The final eligibility
-fence remains; live author drafting and existing native uncertainty are unchanged.
-Completed/discovery catches only this named error around graph creation so native
-terminal ownership drains and later records are inspected. Callback, terminal,
-cancel, handle and authentic committed-evidence receipt/collection plumbing stay;
-`review_join.HOLDS`, history validators and closed projection reasons stay unchanged.
-Earlier fresh-work instructions are historical pending P1b/P2 transport/client
-removal. Unfinished live old-lane data needs a separate disposition before rollout.
-Sequential documents and Coding v1 are unaffected; see
-[document workflows](contracts/document-workflows.md).
+P1b removes POST `/workflows/reviews/human-receipts`, POST
+`/workflows/reviews/stages` and the `happyranch workflows reviews sign` and
+`happyranch workflows reviews stage` CLI verbs. Their mutation-only route models,
+decoders, CLI helpers, service entry methods and reviewer instruction injection
+are removed. These transports no longer support replay; earlier descriptions
+below are historical. P2 separately removes the signing web mirror.
+
+P1a's `workflow_document_review_retired` (409) fences remain for fresh old-lane
+activation/return, author/revision staging, missing r1/r2 graphs and reviewer
+claim/launch, including queued Pause admission before native preparation.
+This covers product-design compiler@1, document compiler@2/@3 and artifact
+compiler@4 documents; the existing @4 code-unavailable refusal retains precedence.
+The selected-request GET and `workflows submissions request-show`, authorized
+history reads, exact retained immutable replay, authentic committed-evidence
+receipt/collection settlement and native callback/terminal/cancel ownership remain.
+Stage/human command models still validate stored history. All schema, startup,
+role/authority validators and stored status/event bytes remain unchanged, as does
+the native stage-deny tombstone. Any unfinished live old-lane data requires a
+separate disposition before rollout. Sequential document visits and Coding v1
+are unaffected.
 
 THR-308 seq403 removes the generic `audit_log` coding scan, its process-local
 watermark and collector/publication plumbing, including its scan diagnostic.
@@ -1330,9 +1333,9 @@ section supersedes historical C1-pending/fresh-H checkpoint descriptions below.
 
 
 **Current reviewer staging — Founder THR139seq493/475, ROOT TASK10693.**
-POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
-`happyranch workflows reviews stage --org ORG --session-id CURRENT
---from-file /absolute/command.json [--json]` expose the existing current
+Removed in P1b (historical transport): POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
+removed CLI `happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json [--json]` formerly exposed the current
 non-recovery agent reviewer writer. Selected immutable request scope chooses
 `workflow-review-stage-command@1`, `@2` or revision2 `@3`; old families remain closed and byte-compatible.
 The five-field @1/@2/@3 acknowledgement (format, stage_event_id, request_digest,
@@ -1473,8 +1476,8 @@ Full independent review, scoped QA and exact-head lint renew before manager merg
 
 
 **U3b(d) human public write and selected signed read — same THR139 authority.**
-POST `/api/v1/orgs/{slug}/workflows/reviews/human-receipts` mounts ONLY the
-existing `admit_human` guarded writer through the server-derived Founder-bearer
+Removed in P1b: POST `/api/v1/orgs/{slug}/workflows/reviews/human-receipts` formerly mounted the
+now-removed `admit_human` guarded writer through the server-derived Founder-bearer
 principal. The retained closed HumanReviewCommand selects one request; no query
 proof, body actor, task/session/result or agent lane is accepted. HTTP200 returns
 the original immutable receipt on an exact actor/key/full-payload retry;
@@ -4780,20 +4783,13 @@ remains deferred; root public smoke465 and
 later owner/revision/recovery/UI acceptance remain dependencies; keep the draft unaccepted/unmerged. See the
 exact internal grammar in [Features And Invariants](features-and-invariants.md).
 
-### Current F5 reviewer launch supplement (seq475/493)
+### Historical F5 reviewer launch supplement (seq475/493; removed in P1b)
 
-WorkflowReviewDispatcher.reviewer_instruction renders only a relationally owned
-pending agent-kind F5 request. It checks the actual bridge/task/principal,
-current activation/grant before decoding private immutable closure, then current
-authority, pins/generation and independence. Queued pre-commit Pause admission
-and already-claimed pre-publication launches both use the selected request.
-Ordinary/author tasks receive no supplement; invalid identified F5 ownership
-fails closed. Its forthcoming session ID labels instructions, without calling
-_session/_fresh or registering a session. _run_agent_impl adds the supplement
-to its local brief before binding publication, and Pause _final_prompt rebuild
-consumes that same augmented brief. Stored briefs/scopes and old pins stay intact.
-Actual launch admission and stage CURRENT checks retain ownership after waits;
-no renderer write, fake session, receipt insertion or new host API is involved.
+`WorkflowReviewDispatcher.reviewer_instruction` and its orchestrator injection
+were removed with the review mutation transports. No fresh reviewer supplement
+is rendered. Stored briefs/scopes and their history validators remain intact;
+the P1a `_eligible` and `_dispatch_pause_owned` admission fences, selected GET,
+and native session/callback/terminal/cancel ownership are retained.
 
 ## Exact failed-continuation reconciliation (THR299)
 

@@ -102,14 +102,23 @@ struct SurfaceAllowListDriftGuardTests {
 
     // MARK: - Tests
 
-    @Test("removed owner review discovery is absent from daemon route classification")
+    @Test("retired review transports are absent and selected-request GET remains classified")
     func ownerReviewSelectionClassification() throws {
         let (included, excluded) = try Self.loadClassification()
-        let route = "GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection"
-        #expect(!included.contains(route))
-        #expect(!excluded.contains(route))
         let routes = try Self.loadOpenAPIRoutes()
-        #expect(!routes.contains(route))
+        for route in [
+            "GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection",
+            "POST /api/v1/orgs/{slug}/workflows/reviews/human-receipts",
+            "POST /api/v1/orgs/{slug}/workflows/reviews/stages",
+        ] {
+            #expect(!included.contains(route))
+            #expect(!excluded.contains(route))
+            #expect(!routes.contains(route))
+        }
+        let selected = "GET /api/v1/orgs/{slug}/workflows/reviews/requests/{request_id}"
+        #expect(included.contains(selected))
+        #expect(!excluded.contains(selected))
+        #expect(routes.contains(selected))
     }
 
     @Test("THR299 agent-only writer and advisory reader mirror classification in both forms")
