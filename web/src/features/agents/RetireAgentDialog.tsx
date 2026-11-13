@@ -33,12 +33,14 @@ interface RetireAgentDialogProps {
   role: string | null | undefined;
   team: string | null | undefined;
   onClose: () => void;
+  /** Where focus goes when the dialog closes; the opener is outside this root. */
+  onCloseAutoFocus?: (event: Event) => void;
   /** Called once the server confirmed the retirement. */
   onRetired: (agentName: string) => void;
 }
 
 export function RetireAgentDialog({
-  agentName, displayName, role, team, onClose, onRetired,
+  agentName, displayName, role, team, onClose, onCloseAutoFocus, onRetired,
 }: RetireAgentDialogProps): JSX.Element {
   const { t } = useTranslation();
   const retire = useRetireAgent();
@@ -91,7 +93,7 @@ export function RetireAgentDialog({
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
-      <DialogContent closeLabel={t('common.close')}>
+      <DialogContent closeLabel={t('common.close')} onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>{t('agents.retire.title', { name: displayName })}</DialogTitle>
           <DialogDescription>{t('agents.retire.intro')}</DialogDescription>

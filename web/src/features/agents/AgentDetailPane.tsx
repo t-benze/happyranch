@@ -131,6 +131,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
   const [repoAddUrl, setRepoAddUrl] = useState('');
   const [showRepoAdd, setShowRepoAdd] = useState(false);
   const [retireOpen, setRetireOpen] = useState(false);
+  const retireOpenerRef = useRef<HTMLButtonElement>(null);
 
   // Reset dirty state when agent changes
   useEffect(() => {
@@ -775,7 +776,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
               {t('agents.retire.action')}
             </h3>
             <p className="text-text-secondary mb-3 text-sm leading-relaxed">{t('agents.retire.sectionBody')}</p>
-            <Button variant="destructiveOutline" size="sm" onClick={() => setRetireOpen(true)}>
+            <Button ref={retireOpenerRef} variant="destructiveOutline" size="sm" onClick={() => setRetireOpen(true)}>
               {t('agents.retire.open')}
             </Button>
           </section>
@@ -789,6 +790,11 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
           role={agent.role}
           team={agent.team}
           onClose={() => setRetireOpen(false)}
+          onCloseAutoFocus={(event) => {
+            // The opener is not a Radix trigger; without this, focus drops to <body>.
+            event.preventDefault();
+            retireOpenerRef.current?.focus();
+          }}
           onRetired={(name) => {
             setRetireOpen(false);
             (onRetired ?? onClose)(name);
