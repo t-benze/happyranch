@@ -2568,6 +2568,10 @@ exactly `{section, tiers, before, after}`. Its initial audit is `{}` to
 `{"version":2}`, tiers `["version"]`. Legacy-empty conversion uses actor
 `orchestrator` and a reviewer audit `{value:[]}` to
 `{value:["code_reviewer"]}`, tiers `["value"]`, before the marker audit.
+Deliberate repair of a malformed reviewer value records
+`before={"value":{"invalid":true}}`, without copying stored bytes; an absent
+reviewer row still records `before={}`. Both use `tiers=["value"]` and the
+existing `config:reviewer_agents` scope, actor and four-key payload.
 No schema, audit prefix meaning or historical snapshot changes.
 
 The proven fresh org constructor initializes omitted reviewer config or explicit

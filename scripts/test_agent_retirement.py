@@ -537,6 +537,21 @@ async def reviewer_settings(org: OrgState, client: httpx.AsyncClient) -> None:
     response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": []})
     assert response.status_code == 200, response.text
     assert response.json()["org"]["reviewer_configuration"]["state"] == "none"
+    repair_audit = org.db.execute("SELECT id,agent,payload FROM audit_log WHERE task_id='config:reviewer_agents' AND action='org_config_write' ORDER BY id DESC LIMIT 1").fetchone()
+    assert repair_audit["agent"] == "founder" and json.loads(repair_audit["payload"]) == {
+        "section": "reviewer_agents", "tiers": ["value"],
+        "before": {"value": {"invalid": True}}, "after": {"value": []}}, "malformed repair lost safe before-state"
+    # An absent-row control must retain its distinct empty before snapshot.
+    org.db._conn.execute("DELETE FROM org_settings WHERE section IN ('reviewer_agents','reviewer_agents_policy')")
+    org.db._conn.commit()
+    response = await client.put(f"{PREFIX}/settings/org", json={"reviewer_agents": []})
+    assert response.status_code == 200, response.text
+    assert response.json()["org"]["reviewer_configuration"]["state"] == "none"
+    absent_audit = org.db.execute("SELECT id,agent,payload FROM audit_log WHERE task_id='config:reviewer_agents' AND action='org_config_write' ORDER BY id DESC LIMIT 1").fetchone()
+    assert absent_audit["id"] > repair_audit["id"]
+    assert absent_audit["agent"] == "founder" and json.loads(absent_audit["payload"]) == {
+        "section": "reviewer_agents", "tiers": ["value"],
+        "before": {}, "after": {"value": []}}, "absent reviewer row gained a before-state"
     org.db._conn.execute("UPDATE org_settings SET value_json=? WHERE section='reviewer_agents_policy'", ('{"version":true}',))
     org.db._conn.commit()
     before = org.db.get_reviewer_agents_pair()

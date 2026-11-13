@@ -162,6 +162,8 @@ class KnowledgeMixin:
                 except ReviewerPolicyError:
                     if mode != "replace":
                         raise
+                    # Preserve repair provenance without copying invalid stored bytes.
+                    before = {"invalid": True}
             if mode == "legacy":
                 if marker is not None:
                     if raw is None:
