@@ -1900,16 +1900,13 @@ mutation; retry selects afresh after ownership releases. Known-target live
 contention remains 409 `profile_coordinator_busy`. No-target approval still
 succeeds without a profile, and no new lease is taken under the writer lock.
 
-A genuinely empty default org remains attached with no agents and `teams=[]`
-when its initial authority publication is fenced by the missing default reviewer.
-Attachment proves absence of active and pending definitions and canonical/in-memory
-teams outside leases and transactions, brackets that discovery with the durable
-revision, and validates it under profile-then-org ownership. It preserves the
-initial fenced generation and publication journal; `verify_admission_ready()`
-still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
-operation evidence, unfinished canonical writers, and stale captures refuse this
-exception before synchronization. Reviewer policy and snapshot validation do not
-change; subsequent coherent canonical setup uses ordinary publication/recovery.
+A genuinely fresh org with no agents and a classified empty reviewer setting
+publishes an ordinary coherent authority snapshot and attaches through normal
+profile synchronization. No implicit reviewer identity or reviewer-error-based
+empty-skeleton exemption is required. Default-team normalization and existing
+operation, dependency, native-writer, lease and revision checks still apply;
+empty files cannot discharge retained publication ownership. See the maintained
+[empty-org contract](contracts/document-workflows.md).
 
 ## Org Config: Timezone and `current_time` Prompt Injection
 
@@ -2515,8 +2512,9 @@ Every consumer site resolves through a **single documented precedence ladder**:
 never a value parsed from `config.yaml`.  This is critical: after the one-shot
 seed, `config.yaml` is **not** the read source for these 4 knobs — stale
 seed-file values must never become observable.  The `resolve_org_setting_*`
-helpers accept a `code_default` parameter that every call site MUST pass as
-the true dataclass default.
+helpers for those four knobs accept a `code_default` parameter that every call
+site MUST pass as the true dataclass default. The reviewer resolver has no
+`code_default` escape hatch: it requires a classified durable pair.
 
 No site special-cases storage; every reader uses the appropriate
 `resolve_org_setting_*` helper from `runtime/orchestrator/org_config.py`.
@@ -2583,10 +2581,13 @@ stamp intent. A valid explicit replacement can repair an unmarked or valid-v2
 reviewer value in a loaded org; it cannot downgrade a corrupt/unknown marker.
 Cold-held-org repair remains separately scoped.
 
-B1 is staged: the global dataclass and omitted YAML parser default remains
-`("code_reviewer",)` until B2. The fresh constructor explicitly establishes
-none; restored roots without that construction proof retain legacy treatment.
-Readers never use the remaining parser default to mask stale or invalid rows.
+The dataclass and omitted YAML parser default is `()` (no reviewers). The fresh
+constructor establishes v2 plus `[]` for omitted reviewer config, with or without
+agents; a valid explicit reviewer selection wins. Restored roots without that
+construction proof retain legacy treatment: missing rows and unmarked `[]` pin
+the old effective reviewer using the isolated `["code_reviewer"]` compatibility
+constant, independent of the empty new-org default. Readers never use defaults
+to mask stale or invalid rows.
 Settings returns configured syntactically valid IDs (including missing IDs) and
 `reviewer_configuration={state, missing_agents}`; the list alone does not prove
 validity. None invents no reviewer leg; explicit saved verdict expectations and
@@ -2950,8 +2951,9 @@ Direct integration collection without that parent refuses. Never run integration
 on the live Linux daemon host, including through jobs. See `docs/local-ci.md`.
 The disposable default roster exists before startup/registration so the real
 lifecycle initializes eligible manager selectors. Example-based two-org creation
-likewise supplies the declared roster, including the default `code_reviewer`,
-before POST so canonical reviewer discovery is coherent; the Codex bootstrap case uses
+likewise supplies its declared roster, including `code_reviewer`, before POST.
+Reviewer-behavior fixtures explicitly configure their active reviewer; roster
+membership alone does not select one. The Codex bootstrap case uses
 the supported pending-manager approval path. Explicit task plans write bound JSON
 payloads and invoke the tested-source CLI on one line with an absolute `--from-file`.
 Registered shell stubs restore their own temporary bin directory before identity

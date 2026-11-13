@@ -71,10 +71,24 @@ from runtime.daemon.queue import TaskQueue
 from runtime.orchestrator import run_step as reviewer_steps
 from runtime.orchestrator.org_config import (
     OrgConfigError, resolve_reviewer_configuration, resolve_known_agent_names,
-    establish_reviewer_agents_policy, write_org_setting_to_db,
+    establish_reviewer_agents_policy, write_org_setting_to_db, OrgConfig, load_org_config,
 )
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.infrastructure.db.knowledge import ReviewerPolicyError
+
+# B2 parser/dataclass defaults are independent of the legacy startup pin.
+startup_expect(OrgConfig().reviewer_agents == (), 'B2-dataclass-default-none')
+with tempfile.TemporaryDirectory(prefix='reviewer-default-') as scratch:
+    paths = OrgPaths(Path(scratch))
+    paths.org_config_path.parent.mkdir(parents=True)
+    for label, config, expected in (
+            ('missing-file', None, ()), ('empty-yaml', '', ()),
+            ('omitted-yaml', 'threads: {enabled: true}\n', ()),
+            ('explicit-none', 'reviewer_agents: []\n', ()),
+            ('explicit-other', 'reviewer_agents: [other]\n', ('other',))):
+        if config is not None:
+            paths.org_config_path.write_text(config)
+        startup_expect(load_org_config(paths).reviewer_agents == expected, 'B2-parser-'+label)
 
 @contextmanager
 def literal_reviewer_fixture(*, raw='[]', marker=None, sentinel=False, config='', saved=None,
@@ -90,7 +104,8 @@ def literal_reviewer_fixture(*, raw='[]', marker=None, sentinel=False, config=''
             (root / 'org' / 'agents' / f'{name}.md').write_text(
                 f'---\nname: {name}\nteam: engineering\nrole: {role}\nexecutor: claude\n---\nSynthetic inert role.\n')
             (root / 'workspaces' / name).mkdir(parents=True)
-        (root / 'org' / 'config.yaml').write_text(config)
+        if config is not None:
+            (root / 'org' / 'config.yaml').write_text(config)
         if sentinel:
             (root / '.org_settings_seeded').write_text('')
         paths = OrgPaths(root)
@@ -237,28 +252,41 @@ with literal_reviewer_fixture(raw='[]', marker='{"version":2}') as (state, origi
         startup_expect(bool(state.db.get_children(parent)) and state.db.next_task_id() != before,
                        'L3-none-'+action+'-omitted-expectation-admitted')
 
-for raw, timestamp in (( '["code_reviewer"]', '2026-08-24T08:41:47.100629+00:00'),
-                        ( '["senior_dev"]', '2026-11-05T11:14:11.056269+00:00'),
-                        ( '["family_manager"]', '2026-11-05T11:14:16.517155+00:00')):
+for slug, raw, timestamp in (( 'happyranch', '["code_reviewer"]', '2026-08-24T08:41:47.100629+00:00'),
+                        ( 'danze', '["senior_dev"]', '2026-11-05T11:14:11.056269+00:00'),
+                        ( 'family', '["family_manager"]', '2026-11-05T11:14:16.517155+00:00')):
     for sentinel in (False, True):
         with literal_reviewer_fixture(raw=raw, sentinel=sentinel, metadata=(timestamp,'founder')) as (state, original):
             db = state.db
             startup_expect(tuple(db._conn.execute("SELECT * FROM org_settings WHERE section='reviewer_agents'").fetchone()) == original,
-                           'L4-'+raw+'-'+str(sentinel)+'-all-columns-unchanged')
-            startup_expect([row[0] for row in reviewer_audits(db)] == ['config:reviewer_agents_policy'],
-                           'L4-'+raw+'-'+str(sentinel)+'-marker-audit-only')
+                           'L4-'+slug+'-'+raw+'-'+str(sentinel)+'-all-columns-unchanged')
+            startup_expect(reviewer_audits(db) == [
+                ('config:reviewer_agents_policy', 'orchestrator', {
+                    'section': 'reviewer_agents_policy', 'tiers': ['version'],
+                    'before': {}, 'after': {'version': 2}})],
+                           'L4-'+slug+'-'+raw+'-'+str(sentinel)+'-marker-audit-only')
             for action in ('delegate', 'fanout'):
                 parent, before = submit_reviewer_decision(state, action, reviewer=json.loads(raw)[0])
                 startup_expect(not db.get_children(parent) and db.next_task_id() == before
                     and any('HARD REJECT' in row['output_summary'] for row in db.get_task_results(parent)),
-                    'L4-'+raw+'-'+str(sentinel)+'-'+action+'-omission-preserved')
+                    'L4-'+slug+'-'+raw+'-'+str(sentinel)+'-'+action+'-omission-preserved')
 
 for sentinel in (False, True):
-    for config, expected in (('', ['code_reviewer']), ('reviewer_agents: [other]\n', ['other']),
-                             ('reviewer_agents: [ghost]\n', ['code_reviewer']), ('reviewer_agents: []\n', ['code_reviewer'])):
+    for config, expected in ((None, ['code_reviewer']), ('', ['code_reviewer']), ('reviewer_agents: [other]\n', ['other']),
+                             ('reviewer_agents: [ghost]\n', ['code_reviewer']),
+                             ('reviewer_agents: [other, ghost]\n', ['code_reviewer']),
+                             ('reviewer_agents: []\n', ['code_reviewer'])):
         with literal_reviewer_fixture(raw=None, sentinel=sentinel, config=config) as (state, original):
-            startup_expect(json.loads(state.db.get_org_setting('reviewer_agents')) == expected,
-                           'L6-missing-'+str(sentinel)+'-'+repr(config))
+            db = state.db
+            tag = 'L6-missing-'+str(sentinel)+'-'+repr(config)
+            startup_expect(original is None and json.loads(db.get_org_setting('reviewer_agents')) == expected,
+                           tag)
+            startup_expect(reviewer_audits(db) == [
+                ('config:reviewer_agents', 'orchestrator', {'section': 'reviewer_agents',
+                    'tiers': ['value'], 'before': {}, 'after': {'value': expected}}),
+                ('config:reviewer_agents_policy', 'orchestrator', {'section': 'reviewer_agents_policy',
+                    'tiers': ['version'], 'before': {}, 'after': {'version': 2}})],
+                tag+'-exact-once-audits-reopen')
 for raw, marker in (('broken',None), ('[]','{"version":true}'), ('[]','{"version":3}'),
                     ('[]','{"version":2,"extra":0}'), ('[]','{"version":2,"version":2}'),
                     (None,'{"version":2}'), (b'[]',None), ('[]',b'{"version":2}')):

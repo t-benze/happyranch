@@ -32,11 +32,10 @@ class OrgConfigError(ValueError):
     """Raised when org/config.yaml is malformed or fails validation."""
 
 
-# THR-175: the reviewer identity is configured per-org. This is the HappyRanch
-# code default — an org that never sets ``reviewer_agents`` treats only
-# ``code_reviewer`` as a reviewer leg for inline-chain auto-advance gating.
-DEFAULT_REVIEWER_AGENTS: tuple[str, ...] = ("code_reviewer",)
-# Isolated compatibility pin: B2 must not change old missing/empty semantics.
+# THR-175: reviewer identities are configured per-org; new orgs default to none.
+# Startup compatibility uses the isolated legacy pin below, never this default.
+DEFAULT_REVIEWER_AGENTS: tuple[str, ...] = ()
+# Isolated compatibility pin preserves old missing/empty semantics.
 _LEGACY_REVIEWER_AGENTS = LEGACY_REVIEWER_AGENTS
 
 
@@ -850,8 +849,7 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
             f"{path}: max_revise_rounds must be >= 0, got {max_revise}"
         )
 
-    # B1: explicit [] is valid; omitted parser default stays until B2.
-    # Omitted -> DEFAULT_REVIEWER_AGENTS (code_reviewer).
+    # Omitted or explicit [] means no reviewers for newly supplied config.
     reviewer_agents = data.get("reviewer_agents")
     reviewer_agents_tuple = DEFAULT_REVIEWER_AGENTS
     if "reviewer_agents" in data:
@@ -1512,14 +1510,10 @@ def resolve_reviewer_configuration(
 
 
 def resolve_org_setting_reviewer_agents(
-    db, *, code_default: tuple[str, ...] = DEFAULT_REVIEWER_AGENTS,
+    db, *,
     known_agents: frozenset[str] | set[str],
 ) -> tuple[str, ...]:
-    """Valid-state tuple adapter. Unavailable policy never becomes an empty set.
-
-    B1 retains the parser default and legacy keyword; neither authorizes a
-    fallback at this durable reader.
-    """
+    """Valid-state tuple adapter. Unavailable policy never becomes an empty set."""
     return resolve_reviewer_configuration(db, known_agents=known_agents).require_available()
 
 

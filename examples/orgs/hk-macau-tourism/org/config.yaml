@@ -1,7 +1,7 @@
 # Optional org-level overrides. Missing file = global defaults.
 # session_timeout_seconds: 1800   # uncomment to override
 
-# THR-175: configured reviewer identities (default [code_reviewer]). These are
+# THR-175: configured reviewer identities (default []: no reviewer). These are
 # the chain-leg agents whose verdicts gate downstream auto-advance. Every
 # configured reviewer leg MUST declare expect_verdict: "APPROVE".
 # reviewer_agents: [senior_dev]
