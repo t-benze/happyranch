@@ -17,6 +17,8 @@ HOST_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 DOWNLOAD_CAP = 128 * 1024 * 1024
 FILE_CAP = 256 * 1024 * 1024
 TOTAL_CAP = 768 * 1024 * 1024
+ARCHIVE_MEMBER_CAP = 20000
+MEMBER_CAP = 30000
 
 
 def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -115,12 +117,15 @@ def provision(scratch: Path, pins: dict[str, dict[str, str]], deadline: float) -
         verify_checksum(archive, row["sha256"], deadline)
         root = ("uv-aarch64-apple-darwin" if name == "uv" else
                 "go" if name == "go" else f"node-v{row['version']}-darwin-arm64")
+        archive_members = 0
         with tarfile.open(archive, "r:gz") as bundle:
             for member in bundle:
                 remaining(deadline)
                 members += 1
+                archive_members += 1
                 total += member.size
-                if (members > 20000 or total > TOTAL_CAP or member.size > FILE_CAP
+                if (members > MEMBER_CAP or archive_members > ARCHIVE_MEMBER_CAP
+                        or total > TOTAL_CAP or member.size > FILE_CAP
                         or member.size < 0 or member.name.split("/")[0] != root):
                     raise ValueError("toolchain archive bounds/root")
                 bundle.extract(member, scratch, filter="data")

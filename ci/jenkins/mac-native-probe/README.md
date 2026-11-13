@@ -53,7 +53,7 @@ SHA256 and official checksum sources are reviewed at `SOURCE_SHA` in
 The source-side provisioner downloads with curl (10s connect, at most 90s/file,
 128MiB/file) inside one 240s budget. It verifies SHA256 **before** opening each
 archive; a mismatch refuses extraction. Safe tar extraction also limits members
-(20,000), each file (256MiB) and total payload (768MiB). Partial trees are never
+(20,000 per archive, 30,000 aggregate), each file (256MiB) and total payload (768MiB). Partial trees are never
 reused; the existing job EXIT trap deletes them with its private scratch.
 
 Only this suite's child processes receive the three scratch bin directories

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import io
+import tarfile
 import json
 import tempfile
 import time
@@ -54,6 +57,43 @@ class ProvisioningTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
                     provision(root, parse_pins(PINS.read_text()), time.monotonic() + 5)
             self.assertEqual([p.name for p in root.iterdir()], ["uv.tar.gz"])
+
+    def test_verified_archives_enforce_member_bounds(self) -> None:
+        pins = parse_pins(PINS.read_text())
+        payloads = {}
+        for name, files in {
+            "uv": ["uv-aarch64-apple-darwin/uv"],
+            "node": ["node-v24.19.0-darwin-arm64/bin/node", "node-v24.19.0-darwin-arm64/bin/npm"],
+            "go": ["go/bin/go"],
+        }.items():
+            data = io.BytesIO()
+            with tarfile.open(fileobj=data, mode="w:gz") as bundle:
+                for filename in files:
+                    member = tarfile.TarInfo(filename)
+                    member.size, member.mode = 3, 0o755
+                    bundle.addfile(member, io.BytesIO(b"abc"))
+            payloads[name] = data.getvalue()
+            pins[name]["sha256"] = hashlib.sha256(payloads[name]).hexdigest()
+
+        def download(argv: list[str], **_kwargs: object) -> None:
+            path = Path(argv[argv.index("--output") + 1])
+            path.write_bytes(payloads[path.name.split(".")[0]])
+
+        with tempfile.TemporaryDirectory() as directory:
+            for aggregate, per_archive, succeeds in ((4, 2, True), (3, 2, False), (4, 1, False)):
+                with self.subTest(aggregate=aggregate, per_archive=per_archive):
+                    root = Path(directory).resolve() / f"tools-{aggregate}-{per_archive}"
+                    with (patch("scripts.mac_native.toolchain.subprocess.run", side_effect=download),
+                          patch("scripts.mac_native.toolchain.MEMBER_CAP", aggregate),
+                          patch("scripts.mac_native.toolchain.ARCHIVE_MEMBER_CAP", per_archive)):
+                        if succeeds:
+                            env = provision(root, pins, time.monotonic() + 5)
+                            self.assertEqual(env["GOROOT"], str(root / "go"))
+                            self.assertEqual((root / "go/bin/go").read_bytes(), b"abc")
+                            self.assertEqual(list(root.glob("*.tar.gz")), [])
+                        else:
+                            with self.assertRaisesRegex(ValueError, "archive bounds/root"):
+                                provision(root, pins, time.monotonic() + 5)
 
     def test_path_additions_and_caches_are_private(self) -> None:
         pins = parse_pins(PINS.read_text())
