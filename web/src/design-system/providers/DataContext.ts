@@ -379,6 +379,8 @@ export type SetAgentModelResult = Awaited<ReturnType<typeof agentsApi.setAgentMo
 export type ManageAgentRepoArgs = Parameters<typeof agentsApi.manageAgentRepo>[2];
 export type ManageAgentRepoResult = Awaited<ReturnType<typeof agentsApi.manageAgentRepo>>;
 
+export type RetireAgentResult = Awaited<ReturnType<typeof agentsApi.retireAgent>>;
+
 export interface AgentsApi {
   useSetAgentSystemPrompt: () => MutationLike<
     { slug: string; agentName: string; body: import('@/lib/api/types').SystemPromptBody },
@@ -389,7 +391,11 @@ export interface AgentsApi {
     { slug: string; agentName: string }, import('@/lib/api/types').AgentSummary | undefined
   >;
   useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }> & {
-    refetch: () => Promise<unknown>;
+    /** Resolves with the settled read: `isError` is true when this read failed. */
+    refetch: () => Promise<{
+      data: { agents: import('@/lib/api/agents').AgentSummary[] } | undefined;
+      isError: boolean;
+    }>;
   };
   /** Pending enrollments — `status` filter narrows the file scan. */
   useEnrollmentsList: (
@@ -425,6 +431,8 @@ export interface AgentsApi {
     { agentName: string; body: ManageAgentRepoArgs },
     ManageAgentRepoResult
   >;
+  /** Founder-only retirement; the daemon alone decides eligibility. */
+  useRetireAgent: () => MutationLike<{ agentName: string }, RetireAgentResult>;
 }
 
 export interface AuthorityPolicyApi {

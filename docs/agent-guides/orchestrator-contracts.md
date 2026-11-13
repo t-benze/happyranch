@@ -2380,6 +2380,14 @@ It shares the archive, quiescence, future-work cleanup and rollback path above.
 Historic tasks/results, memory, thread history and team-keyed authority/policy
 rows remain. The `agent_managed` audit uses scope/actor/source `founder` and
 payload action `terminate`; no task identity is fabricated.
+In the web UI the Founder finds this as **Retire agent** at the bottom of an
+active agent's detail pane (Agents ▸ Active). It confirms the consequences,
+sends this one route, shows a refusal as the server returned it, and on success
+opens a worker's retained knowledge detail under Terminated agents. A retired
+manager lands on the Terminated list with nothing selected, and its dialog says
+knowledge Distill is not yet available for retired managers. When no refusal came back (lost
+response, 5xx, 404) it re-reads the roster before saying anything about the
+agent's state. The UI adds no eligibility rule.
 
 Only Founder retirement may remove a manager and its now-empty agent-managed
 team, in the same canonical writer interval. Nonempty teams (including pending
