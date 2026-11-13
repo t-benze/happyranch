@@ -41,6 +41,17 @@ history or claiming a fresh-task bypass. No deploy/restart or live reconciliatio
 is required to adopt this operating rule.
 
 
+THR307 seq337 package step 1 adds observation-only candidate `measurement`,
+org/clone `measurements`, run/org `stop_cause` and bounded once-per-run retained
+report history. The existing loader-code `revision`, report/audit keys and
+empty-task/daemon envelope keep their meanings; the audit retains the same org
+projection. No extra candidate observation or measurement-only publication is
+added. Kept size is `unknown` without an existing complete snapshot; interrupted
+effects after the last checkpoint remain unknown. See the maintained nightly
+sweeper spec, “Measurement-only additions”, for exact counter/history bounds,
+write-confirmation lag and measurement-failure behavior. This grants no cleanup
+or configuration authority.
+
 One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
 Its only supported content is a JSON object containing exactly `stop` with a
 real Boolean: `{"stop":true}` suspends scheduled deletion for all orgs;

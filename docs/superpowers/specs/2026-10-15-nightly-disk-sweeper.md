@@ -399,6 +399,102 @@ zone/window/date, discovery status, outcome, retained reasons/paths, dirty paths
 known eligible leftovers, unreached counts/orgs and errors. In-flight checkpoint
 survives ordinary worker interruption; report failure is never fabricated success.
 
+### Measurement-only additions (THR-307 seq337, package step 1)
+
+Eligibility, ordering, reasons, outcome labels, holds, latches, prune, 15-second
+Git timeout, shared 1800-second budget, schedule, stop control, native writers,
+publication safety and existing report/audit keys keep their meanings. No
+candidate filesystem/Git/DB observation is added. The existing `revision`
+remains the executing loader-code binding, including frozen helpers. Additive
+`source_revision` carries that same binding in reports/audits; it is not a release
+Git SHA. No Git revision lookup or loose-source fallback is introduced.
+
+Each candidate has an additive `measurement`: `stage_reached`, monotonic
+`duration_seconds`, `final_reason` (at most 1024 characters, with
+`final_reason_truncated`; the full existing `reason` remains),
+`attempted_effect` and `confirmed_effect`. Removal attempts count actual scratch
+mutation/Git remove entries; confirmed removal requires the existing absence
+and unregistration checks. A repair attempt counts entry to contained repair;
+confirmed repair counts returned repaired directories. These counts do not grant
+clearance. Eligible preview has no attempted mutation. Unreached detail stays
+at `discovered`/zero time with no effect claim. A started item carries
+`started_monotonic` so supervision can finish elapsed timing on interruption.
+The saved stage/effect counts are checkpoint observations: a killed worker may
+have progressed since then. Supervision marks `effects_after_checkpoint:
+unknown`, never invents an attempt, removal or successful repair, and retains
+the existing candidate state and partial-mutation uncertainty.
+
+Each org has `measurements` with elapsed time, bounded error count/eight error
+type samples, history status, `counters` and a path-keyed `clones` aggregate.
+Counters cover `topology_reads` (registrations calls), `censuses` (literal metadata
+census calls), `ownership_reads`, `entries_walked`, and `report_writes` plus
+`report_writes_confirmed`. Entry counts are snapshot root/child visits and
+mutation visits, including visits before a refusal; metadata-file reads and
+ancestor traversals are not claimed as tree entries. `git` groups actual process
+calls by subcommand (`worktree list/remove/prune`, `rev-parse`, `rev-list`,
+`status`), with count, monotonic duration and timeout count; no argv or call log
+is added. `durations_seconds` groups the existing call boundaries, including
+failed calls. Nested timings overlap and must not be summed as exclusive time.
+Clone counters attribute candidate operations and topology calls to that clone,
+including primary-only prune. Scratch and shared checkpoints without an active
+clone contribute only to org counters. Org timing/counters cover `sweep_org`,
+not supervisor reservation/reap or outer run-level publications. Call counts
+include failed entries; Git counts begin immediately before the existing process
+invocation, after its original deadline check.
+
+`gitdir_gone_count` is the latest successfully completed census's count of
+unknown-location admin residues, excluding located unregistered TASK folders.
+It is never multiplied by repeated censuses. Without a completed census the
+count is the literal `unknown`; org totals are unknown if any observed clone
+count is unknown. This is sampled evidence, not a claim about unenumerated
+clones or current state after that census.
+
+`stop_cause` is additive at run/org level: `finished`, `budget`, `git_timeout`,
+`error`, or supervisor `shutdown_signal`; `in_progress` describes an unfinished
+checkpoint and `stop_control` describes scheduled suspension. Existing
+`outcome`, `error`, `interruption` and audit envelope/keys remain authoritative
+and unchanged. A finished traversal may still have an incomplete discovery or
+retained candidates. Instrumentation errors are reported and cannot authorize,
+refuse or fail an operation. Timings use a separate monotonic performance clock
+and do not modify the original deadline checks.
+
+`kept_since` is the earliest recorded retained date for the exact path, not an
+inode identity or proof of continuous retention. History is reduced once per
+worker run, before discovery, through literal no-follow report parents/files:
+at most 512 directory entries, 32 preceding date reports, 8 MiB per report,
+32 MiB total and 8192 paths. Safe carried earlier dates are retained. The current
+run date is the first observation when no prior date is available; history
+status exposes a bounded window or failure. Manual filenames are excluded.
+History failure discards the partial lookup and never changes a sweep decision.
+`kept_allocated_bytes` comes only from an already completed candidate snapshot,
+inode-deduplicated from its existing stat objects; otherwise it is the literal
+`unknown`. Partial walks cannot establish a size. This does not change the
+legacy eligible-only allocation counters or claim physical freed bytes.
+
+No measurement-only checkpoint is added. Counters are published as value
+snapshots: write attempts include the publishing call, while confirmation and
+write duration end at the previous completed checkpoint. A write cannot record
+its own completion without another write. Worker death can lose observations
+since the last checkpoint, which remain unknown. Candidate detail lives in the
+date/manual report and in the unchanged audit `org` projection. The direct
+`AuditMixin.insert_audit_log` writer has no payload cap, so no existing key is
+removed or reinterpreted. Output adds constant detail per item and aggregate
+subcommand counters rather than a per-call/event stream. C24 measures a real
+fixture shape expanded to 1600 dirty-kept items/12 clone aggregates (about
+1.95 MB date JSON and 1.52 MB audit JSON; exact bytes recorded in PR evidence).
+This is a synthetic size measurement, not a production run or runtime forecast.
+
+The existing disposable driver owns cases 24 (byte-equivalent legacy report/
+audit projection against pinned pre-instrumentation source, including eligible
+preview) and 25 (known call counts, effects, kept size/date, report alias refusal
+and forced recorder failure). Case 12 adds budget/shutdown cause and interrupted
+measurement assertions to its existing actual worker/process tests. Focused:
+`.venv/bin/python scripts/verify_disk_sweeper.py --cases 12 24 25` with task-owned
+`TMPDIR`; full driver and lint/static verification use durable jobs. No retired
+Python units or ad-hoc Product E2E are introduced. Darwin native/frozen-binary
+execution still requires its own venue; source dispatch and helper argv are
+unchanged.
+
 The three local `metadata_changed:<exact native path>` comparisons append compact
 `;signature_change={"comparison":...,"changes":...}` JSON. Fixed comparison labels
 are `snapshot_to_read`, `pre_git_censuses` and `post_git_census`; `changes` contains

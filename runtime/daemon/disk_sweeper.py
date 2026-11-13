@@ -30,15 +30,20 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, closing, contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from types import CodeType
+from typing import Any
 
 from runtime.daemon.cleanup_helpers import helper_argv
 
 from runtime.daemon._disk_sweep_fs import (
     Expired, Retain, allocated, check, directory, identity, mutate, names,
     signature, snapshot, trees_equal,
+    _observer, measurement_clock, measurement_elapsed, observe, observed, observing,
 )
 
 LOG = logging.getLogger(__name__)
@@ -52,6 +57,272 @@ WORKER_INCOMPLETE_EXIT = 3
 _OPEN_MUTATION_STATES = ('inspecting', 'mutation_in_flight', 'partial_or_unknown')
 TERMINAL = {'completed', 'failed', 'cancelled', 'superseded'}
 TASK = re.compile(r'TASK-[0-9]+\Z')
+_history = ContextVar('disk_sweep_kept_history', default=None)
+
+
+class _Measurements:
+    """Bounded aggregates of existing calls; never consulted by policy code."""
+    _counter_keys = dict(topology='topology_reads', census='censuses', ownership='ownership_reads',
+                         entry='entries_walked', report_write='report_writes')
+
+    def __init__(self, result: dict) -> None:
+        self.result = result
+        self.errors = dict(count=0, types=[])
+        self.data = result['measurements'] = dict(
+            counters=self.counters(), clones={}, errors=self.errors,
+            history=(_history.get() or {}).get('status', 'not_available'),
+        )
+        self.candidate = None
+        self.started = None
+        self.clone = None
+        self.clone_stack = []
+        self.org_started = measurement_clock()
+        self.data['started_monotonic'] = self.org_started
+
+    @staticmethod
+    def counters() -> dict:
+        return dict(topology_reads=0, censuses=0, ownership_reads=0,
+                    entries_walked=0, report_writes=0, report_writes_confirmed=0,
+                    git={}, durations_seconds={}, gitdir_gone_count='unknown')
+
+    def targets(self) -> list[dict]:
+        values = [self.data['counters']]
+        if self.clone is not None:
+            target = self.data['clones'].get(self.clone)
+            if target is None:
+                target = self.data['clones'][self.clone] = self.counters()
+            values.append(target)
+        return values
+
+    def item(self, candidate: dict) -> dict:
+        item = candidate.get('measurement')
+        if item is None:
+            item = candidate['measurement'] = dict(
+                stage_reached='discovered', duration_seconds=0.0,
+                final_reason='unreached', attempted_effect={}, confirmed_effect={},
+                kept_since=None, kept_allocated_bytes='unknown',
+            )
+        return item
+
+    def refresh(self, candidate: dict) -> None:
+        item = self.item(candidate)
+        state = candidate['state']
+        reason = item.get('interruption', candidate.get('reason', state))
+        item['final_reason'] = reason[:1024]
+        item['final_reason_truncated'] = len(reason) > 1024
+        if self.candidate is candidate and self.started is not None:
+            ended = measurement_clock()
+            if ended is not None:
+                item['duration_seconds'] = round(max(0, ended - self.started), 6)
+        if state == 'retained':
+            history = _history.get() or {}
+            item['kept_since'] = history.get('paths', {}).get(candidate['path'], history.get('date') or datetime.now().astimezone().date().isoformat())
+        else:
+            item['kept_since'] = None
+        if state == 'removed':
+            item['stage_reached'] = 'removal_confirmed'
+            item['confirmed_effect']['remove'] = 1
+
+    def record(self, event: str, phase: str, **values: Any) -> None:
+        if event == 'org_checkpoint':
+            self.data['duration_seconds'] = measurement_elapsed(self.org_started)
+            return
+        if event == 'measurement_error':
+            self.errors['count'] += 1
+            if len(self.errors['types']) < 8:
+                self.errors['types'].append(values['error'][:64])
+            return
+        if event == 'item':
+            candidate = values['candidate']
+            if phase == 'interrupted':
+                self.item(candidate)['interruption'] = values['reason'][:1024]
+            if phase == 'start':
+                self.candidate, self.clone = candidate, candidate.get('repo')
+                self.started = measurement_clock()
+                self.item(candidate)['stage_reached'] = 'inspection'
+                self.item(candidate)['started_monotonic'] = self.started
+            self.refresh(candidate)
+            if phase == 'finish':
+                self.candidate, self.clone, self.started = None, None, None
+            return
+        args, kwargs = values.get('args', ()), values.get('kwargs', {})
+        if event in ('topology', 'census', 'git') and phase == 'start':
+            self.clone_stack.append(self.clone)
+            if event != 'git' or self.clone is None and str(args[0]) in self.data['clones']:
+                self.clone = str(args[0])
+        if self.candidate is not None and phase == 'start' and event != 'report_write':
+            self.item(self.candidate)['stage_reached'] = event + (':' + ' '.join(args[2:4] if args[2] == 'worktree' else args[2:3]) if event == 'git' else '')
+        key = self._counter_keys.get(event)
+        for target in self.targets():
+            if key and (phase == 'start' or event == 'entry'):
+                target[key] += 1
+            if phase == 'finish':
+                duration = values.get('duration')
+                if duration is not None:
+                    durations = target['durations_seconds']
+                    durations[event] = round(durations.get(event, 0) + duration, 6)
+                if event == 'report_write' and values['error'] is None:
+                    target['report_writes_confirmed'] += 1
+            if event == 'git':
+                # Fixed subcommands only: no argv/path/error strings or call log.
+                subcommand = args[2]
+                if subcommand == 'worktree':
+                    subcommand += ' ' + (args[3] if args[3] in ('list', 'remove', 'prune') else 'other')
+                elif subcommand not in ('rev-parse', 'rev-list', 'status'):
+                    subcommand = 'other'
+                command = target['git'].setdefault(subcommand, dict(calls=0, duration_seconds=0.0, timeouts=0))
+                if phase == 'start':
+                    command['calls'] += 1
+                elif phase == 'finish':
+                    if values.get('duration') is not None:
+                        command['duration_seconds'] = round(command['duration_seconds'] + values['duration'], 6)
+                    if isinstance(values['error'], Expired) and 'git subprocess deadline' in str(values['error']):
+                        command['timeouts'] += 1
+        if self.candidate is not None:
+            item = self.item(self.candidate)
+            if phase == 'start' and (event == 'mutation' or event == 'git' and args[2:4] == ('worktree', 'remove')):
+                effect = 'repair' if event == 'mutation' and not kwargs['remove'] else 'remove'
+                item['attempted_effect'][effect] = item['attempted_effect'].get(effect, 0) + 1
+            if phase == 'finish' and values.get('error') is None:
+                if event == 'snapshot' and str(args[0]) == self.candidate['path']:
+                    item['kept_allocated_bytes'] = allocated(values['value'], set())[0]
+                if event == 'mutation' and not kwargs['remove']:
+                    item['confirmed_effect']['repair'] = len(values['value'])
+        if event == 'census' and phase == 'finish' and values['value'] is not None:
+            rows = values['value']
+            # A census already distinguishes unknown-location admin residue
+            # from unregistered, located TASK folders. Report the latest count,
+            # not a sum that multiplies residue by repeated topology proofs.
+            count = len(rows.residues.keys() - rows.unregistered)
+            self.data['clones'][str(args[0])]['gitdir_gone_count'] = count
+            counts = [c['gitdir_gone_count'] for c in self.data['clones'].values()]
+            self.data['counters']['gitdir_gone_count'] = sum(counts) if all(isinstance(c, int) for c in counts) else 'unknown'
+        if event in ('topology', 'census', 'git') and phase == 'finish':
+            self.clone = self.clone_stack.pop()
+        if event == 'report_write' and phase == 'start':
+            # Publish a value snapshot. Its own completed write/duration can
+            # only be included at a later existing checkpoint; never add a
+            # measurement-only write or mutate the published value afterward.
+            self.result['measurements'] = deepcopy(self.data)
+
+
+def _measure_org(function: Callable) -> Callable:
+    @wraps(function)
+    def call(*args: Any, **kwargs: Any) -> dict:
+        result = kwargs.get('result')
+        if result is None:
+            result = kwargs['result'] = {}
+        token = None
+        collector = None
+        try:
+            collector = _Measurements(result)
+            token = _observer.set(collector)
+        except Exception as exc:
+            result['measurement_error'] = type(exc).__name__
+        try:
+            return function(*args, **kwargs)
+        finally:
+            if token is not None:
+                _observer.reset(token)
+    return call
+
+
+def _kept_history(summary: Path, deadline: float, date: str) -> dict:
+    """One bounded, no-follow pass of reports; no candidate-state I/O."""
+    result = dict(date=date, paths={}, status='complete', reports=0)
+    try:
+        # Bound enumeration, total bytes and path count, including legacy files.
+        with directory(summary.parent, deadline) as parent:
+            with os.scandir(parent) as entries:
+                filenames = []
+                for index, entry in enumerate(entries):
+                    if index >= 512:
+                        raise Retain('history_directory_limit')
+                    if re.fullmatch(r'\d{4}-\d{2}-\d{2}\.json', entry.name) and entry.name < date + '.json':
+                        filenames.append(entry.name)
+            remaining = 32 * 1024 * 1024
+            selected = sorted(filenames, reverse=True)[:32]
+            if len(filenames) > len(selected):
+                result['status'] = 'bounded_window'
+            for name in selected:
+                check(deadline)
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                try:
+                    before = os.fstat(fd)
+                    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > min(8 * 1024 * 1024, remaining):
+                        raise Retain('history_file_limit_or_type')
+                    raw = os.read(fd, before.st_size + 1)
+                    remaining -= len(raw)
+                    if len(raw) != before.st_size or signature(os.fstat(fd)) != signature(before) or signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != signature(before):
+                        raise Retain('history_changed')
+                    with directory(summary.parent, deadline) as current:
+                        if identity(os.fstat(current)) != identity(os.fstat(parent)):
+                            raise Retain('history_parent_changed')
+                    report = json.loads(raw)
+                    for org in report.get('orgs', []):
+                        for candidate in org.get('candidates', []):
+                            if candidate.get('state') == 'retained':
+                                path = candidate['path']
+                                since = candidate.get('measurement', {}).get('kept_since') or name[:-5]
+                                if not isinstance(since, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', since) or since > name[:-5]:
+                                    raise Retain('history_date_invalid')
+                                result['paths'][path] = min(since, result['paths'].get(path, since))
+                                if len(result['paths']) > 8192:
+                                    raise Retain('history_path_limit')
+                    result['reports'] += 1
+                finally:
+                    os.close(fd)
+    except Exception as exc:
+        result.update(status='unavailable:' + type(exc).__name__, paths={})
+    return result
+
+
+def _measure_run(function: Callable) -> Callable:
+    @wraps(function)
+    def call(*args: Any, **kwargs: Any) -> dict:
+        token = None
+        try:
+            summary = args[2] if len(args) > 2 else kwargs['summary']
+            deadline = args[1] if len(args) > 1 else kwargs['deadline']
+            history = _kept_history(summary, deadline, kwargs.get('scheduled_date') or datetime.now().astimezone().date().isoformat())
+            token = _history.set(history)
+        except Exception:
+            pass
+        try:
+            return function(*args, **kwargs)
+        finally:
+            if token is not None:
+                _history.reset(token)
+    return call
+
+
+def _stop_cause(error: BaseException) -> str:
+    if 'git subprocess deadline' in str(error):
+        return 'git_timeout'
+    return 'budget' if str(error) == 'total sweep deadline' else 'error'
+
+
+def _interrupted_measurements(report: dict, cause: str) -> None:
+    """Complete timing from the saved start; never infer unreported effects."""
+    try:
+        for org in report.get('orgs', []):
+            data = org.get('measurements')
+            if data is not None and org.get('stop_cause') is None:
+                duration = measurement_elapsed(data.get('started_monotonic'))
+                if duration is not None:
+                    data['duration_seconds'] = round(duration, 6)
+                org['stop_cause'] = cause
+            for candidate in org.get('candidates', []):
+                if candidate.get('state') not in ('inspecting', 'mutation_in_flight'):
+                    continue
+                item = candidate.get('measurement')
+                if item is not None:
+                    duration = measurement_elapsed(item.get('started_monotonic'))
+                    if duration is not None:
+                        item['duration_seconds'] = round(duration, 6)
+                    item.update(final_reason=cause, effects_after_checkpoint='unknown')
+    except Exception as exc:
+        report['measurement_error'] = type(exc).__name__
 
 
 class _RegistrationUnknown(Retain):
@@ -81,15 +352,16 @@ def git(repo: Path, deadline: float, *args: str) -> str:
     env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
     env.update(GIT_OPTIONAL_LOCKS='0', GIT_TERMINAL_PROMPT='0', LC_ALL='C')
     # Child remains in worker's process group, killed/reaped by supervisor.
-    try:
-        result = subprocess.run(
-            ['git', '-c', 'core.fsmonitor=false', '-C', str(repo), *args], env=env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=max(.001, min(15, deadline - time.monotonic())),
-        )
-    except subprocess.TimeoutExpired as exc:
-        # Abort the whole worker, so its supervisor kills any Git descendants.
-        raise Expired("git subprocess deadline; descendant state unknown") from exc
+    with observing('git', repo, deadline, *args):
+        try:
+            result = subprocess.run(
+                ['git', '-c', 'core.fsmonitor=false', '-C', str(repo), *args], env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=max(.001, min(15, deadline - time.monotonic())),
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Abort the whole worker, so its supervisor kills any Git descendants.
+            raise Expired("git subprocess deadline; descendant state unknown") from exc
     check(deadline)
     if result.returncode:
         raise Retain('git_failed:' + result.stderr.decode(errors='replace')[:1000])
@@ -156,6 +428,7 @@ class _Registrations(dict):
             raise Retain('unknown_worktree_branch_owner')
 
 
+@observed('census')
 def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
     """Prove the entire literal mapping and safe file census BEFORE Git.
 
@@ -415,6 +688,7 @@ def _registration_additions(before: _Registrations, after: _Registrations, repo:
     return additions
 
 
+@observed('topology')
 def registrations(repo: Path, deadline: float, *, retained: dict | None = None) -> _Registrations:
     before = _registration_metadata(repo, deadline)
     # A second literal census before Git catches mapping/type changes during
@@ -530,6 +804,7 @@ class Evidence:
         if conn.execute('SELECT 1 FROM team_move_operations WHERE active_slot=1').fetchone():
             raise Retain('team_move_native_held')
 
+    @observed('ownership')
     def ownership(self, path: Path, workspace: Path, task_id: str) -> None:
         check(self.deadline)
         # Opening mode=ro cannot create/upgrade a production database.
@@ -802,6 +1077,7 @@ def _read_json(path: Path) -> dict:
             return value
 
 
+@observed('report_write')
 def atomic_json(path: Path, value: dict) -> None:
     # Every caller, including the schedule marker, uses literal parents. Never
     # create a missing scheduled control parent or truncate an unowned pending
@@ -860,12 +1136,14 @@ def _summarize_org(result: dict) -> None:
     }
 
 
+@_measure_org
 def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None, now: float | None = None, result: dict | None = None, measurement_seen: set | None = None, removal_seen: set | None = None, writer_id: str | None = None) -> dict:
     result = result if result is not None else {}
     result.update(org=org.name, mode=mode, outcome='incomplete', discovery='unknown', candidates=[], unreached=None,
                   phases={p: dict(measured_allocated_bytes=0, removed_attributable_bytes=0, attribution_unknown=False) for p in ('scratch', 'worktree')})
     retained = {}
     def report_checkpoint() -> None:
+        observe('org_checkpoint')
         for errors in retained.values():
             for path, (error, owner) in errors.items():
                 if not any(scope['path'] == path for scope in result.get('discovery_scopes', [])):
@@ -876,6 +1154,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
             local = retained.get(candidate.get('repo'), {}).get(candidate['path'])
             if local and candidate.get('state') == 'eligible':
                 candidate.update(state='retained', reason=local[0])
+            observe('item', 'checkpoint', candidate=candidate)
         _summarize_org(result)
         checkpoint()
 
@@ -889,6 +1168,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
         report_checkpoint()
         for candidate in candidates:
             check(deadline)
+            observe('item', 'start', candidate=candidate)
             candidate['state'] = 'inspecting'
             report_checkpoint()
             phase = result['phases'][candidate['phase']]
@@ -954,7 +1234,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 candidate.update(state='removed', removed_attributable_bytes=attributable)
                 # Earlier partial operations remain unknown.
                 phase['attribution_unknown'] = any(c.get('state') in ('partial_or_unknown', 'mutation_in_flight') for c in result['candidates'] if c['phase'] == candidate['phase'])
-            except Expired:
+            except Expired as exc:
+                observe('item', 'interrupted', candidate=candidate, reason=str(exc))
                 raise
             except Exception as exc:
                 if isinstance(exc, _RegistrationUnknown):
@@ -968,6 +1249,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 else:
                     candidate['state'] = 'retained'
                 candidate['reason'] = str(exc) or type(exc).__name__
+            finally:
+                observe('item', 'finish', candidate=candidate)
             report_checkpoint()
         result['outcome'] = ('error' if any(c['state'] == 'partial_or_unknown' for c in candidates)
                              else 'complete' if result['discovery'] == 'complete' else 'incomplete')
@@ -1004,26 +1287,33 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     check(deadline)
                 git(Path(repo), deadline, 'worktree', 'prune', '--expire=now')
     except Expired as exc:
+        result['stop_cause'] = _stop_cause(exc)
         result.update(outcome='incomplete', error=str(exc))
         result['candidates'].sort(key=lambda c: (c['phase'] != 'scratch', c['oldest'], c['path']))
         report_checkpoint()
         raise
     except Exception as exc:
+        result['stop_cause'] = 'error'
         result.update(outcome='incomplete', error=str(exc) or type(exc).__name__)
+    result.setdefault('stop_cause', 'finished')
+    observe('org_checkpoint')
     _summarize_org(result)
     checkpoint()
     return result
 
 
+@_measure_run
 def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, scheduled_date: str | None, revision: str, started_monotonic: float | None = None, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None) -> dict:
     from runtime.orchestrator.org_config import load_org_config
     from runtime.orchestrator._paths import OrgPaths
-    report = dict(format='disk-sweep@1', revision=revision, scheduled_date=scheduled_date,
+    report = dict(format='disk-sweep@1', revision=revision, source_revision=revision, scheduled_date=scheduled_date,
                   timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
                   started_at=datetime.now().astimezone().isoformat(), deadline_monotonic=deadline,
                   budget_seconds=deadline - started_monotonic if started_monotonic is not None else BUDGET_SECONDS,
                   process_scope=PROCESS_SCOPE,
-                  outcome='incomplete', orgs=[], unreached_orgs=list(sorted(roots)))
+                  outcome='incomplete', orgs=[], unreached_orgs=list(sorted(roots)),
+                  stop_cause='in_progress',
+                  measurement_history={k: v for k, v in (_history.get() or {}).items() if k != 'paths'})
     def checkpoint():
         atomic_json(summary, report)
     checkpoint()
@@ -1036,7 +1326,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                 roots = [str(runtime_root / 'orgs' / name) for name in names(fd, deadline) if name not in ('_pending', '_archive')]
             report.update(runtime_discovery='complete', unreached_orgs=roots.copy())
         except Exception as exc:
-            report.update(error=str(exc), unreached_orgs=None)
+            report.update(error=str(exc), unreached_orgs=None, stop_cause=_stop_cause(exc))
             checkpoint()
             return report
     report['selected_org_roots'] = roots.copy()
@@ -1063,7 +1353,9 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                 item.update(outcome='error', error=str(exc) or type(exc).__name__)
             checkpoint()
         report['outcome'] = 'complete' if all(o['outcome'] == 'complete' for o in report['orgs']) else 'incomplete'
+        report['stop_cause'] = 'finished'
     except Expired as exc:
+        report['stop_cause'] = _stop_cause(exc)
         report['error'] = str(exc)
     report['finished_at'] = datetime.now().astimezone().isoformat()
     try:
@@ -1098,7 +1390,7 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
         argv.append('--dry-run')
     if scheduled_date:
         argv += ['--scheduled-date', scheduled_date]
-    initial = dict(format='disk-sweep@1', revision=revision, orgs=[], unreached_orgs=roots,
+    initial = dict(format='disk-sweep@1', revision=revision, source_revision=revision, orgs=[], unreached_orgs=roots,
                    runtime_discovery='unknown' if runtime_root else 'selected_daemon_orgs',
                    outcome='incomplete', scheduled_date=scheduled_date, budget_seconds=budget,
                    started_at=datetime.now().astimezone().isoformat(),
@@ -1133,7 +1425,7 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
         process = await spawn
         cause, cancelled = 'shutdown', True
     except Exception as exc:
-        initial.update(error='worker_spawn:' + type(exc).__name__)
+        initial.update(error='worker_spawn:' + type(exc).__name__, stop_cause='error')
         await asyncio.to_thread(atomic_json, summary, initial)
         return initial
     try:
@@ -1156,11 +1448,13 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
         try:
             report = _read_json(summary)
         except Exception:
-            report = dict(format='disk-sweep@1', orgs=[], unreached_orgs=roots, revision=revision)
+            report = dict(format='disk-sweep@1', orgs=[], unreached_orgs=roots, revision=revision, source_revision=revision)
         for item in report.get('orgs', []):
             _summarize_org(item)
         report.update(worker_pid=process.pid, worker_returncode=process.returncode, worker_group_stop='owned group signalled SIGKILL when present; leader reaped; uninterruptible kernel I/O remains an OS limitation')
         if cause:
+            report['stop_cause'] = 'budget' if cause == 'deadline' else 'shutdown_signal' if cause == 'shutdown' else 'error'
+            _interrupted_measurements(report, report['stop_cause'])
             report.update(outcome='incomplete', interruption=cause, partial_mutation='unknown', finished_at=datetime.now().astimezone().isoformat())
         atomic_json(summary, report)
         return report
@@ -1240,8 +1534,9 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
                   process_scope=PROCESS_SCOPE, outcome='incomplete', orgs=[],
                   unreached_orgs=[str(org.root) for _, org in sorted(state.orgs_snapshot().items())],
                   scheduled_admission=admission)
+    report['source_revision'] = report['revision']
     if admission['state'] == 'suspended':
-        report.update(outcome='suspended', finished_at=datetime.now().astimezone().isoformat())
+        report.update(outcome='suspended', stop_cause='stop_control', finished_at=datetime.now().astimezone().isoformat())
         LOG.warning('Disk sweep globally suspended: %s', admission)
     # Publish the actual initial summary before ANY durable native reservation.
     # An unsafe target/pending inode must refuse while all orgs are unstarted.
@@ -1400,6 +1695,8 @@ async def disk_sweeper_loop(state) -> None:
 def _audit_payload(report: dict, item: dict | None, summary: Path) -> dict:
     return {
         'summary_path': str(summary), 'revision': report.get('revision'),
+        'source_revision': report.get('source_revision'),
+        'stop_cause': report.get('stop_cause'), 'measurement_history': report.get('measurement_history'),
         'scheduled_date': report.get('scheduled_date'),
         'timezone': report.get('timezone'), 'timezone_offset': report.get('timezone_offset'),
         'started_at': report.get('started_at'), 'finished_at': report.get('finished_at'),

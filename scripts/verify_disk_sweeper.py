@@ -29,7 +29,7 @@ import tempfile
 import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -931,6 +931,7 @@ def c12():
                     except asyncio.CancelledError:pass
             assert time.monotonic()-started<3 and ticks>=2
             report=json.loads(summary.read_text());assert report['outcome']=='incomplete' and report['interruption']==('shutdown' if cancel else 'deadline'),report
+            assert report['stop_cause'] == ('shutdown_signal' if cancel else 'budget'), report
             assert str(second) in report['unreached_orgs'],report
             assert report['budget_seconds']==budget and report['deadline_monotonic']==deadline,report
             assert cancel or time.monotonic()>=deadline,'deadline supervisor returned before ORIGINAL deadline'
@@ -984,7 +985,11 @@ ds.sweep_org(Path({str(g.org)!r}),time.monotonic()+10,mode='on',now={NOW!r},resu
                     except asyncio.CancelledError:pass
                 report=json.loads(summary.read_text())
                 assert report['interruption']=='shutdown' and report['outcome']=='incomplete'
+                assert report['stop_cause'] == 'shutdown_signal', report
                 assert report['orgs'][0]['candidates'][0]['state']=='mutation_in_flight',report
+                detail = report['orgs'][0]['candidates'][0]['measurement']
+                assert detail['final_reason'] == 'shutdown_signal' and detail['effects_after_checkpoint'] == 'unknown', detail
+                assert detail['duration_seconds'] > 0 and not detail['confirmed_effect'], detail
                 assert not (target/'nested/a').exists() and (target/'nested/payload').exists()
                 pid=int(marker.read_text());assert not Path(f'/proc/{pid}').exists(),'mutating worker survived'
             asyncio.run(stop_mutation())
@@ -3705,12 +3710,201 @@ def correction_per_org_settlement():
     return dict(table=len(table), worker_exit=report['worker_returncode'], limits='uncaught worker exception path (exit 1) not exercised; C12 owns deadline/shutdown supervision')
 
 
+def measurement_legacy(value):
+    """Remove only the newly documented keys, preserving every legacy byte."""
+    additions = {'measurement', 'measurements', 'measurement_history', 'stop_cause', 'source_revision'}
+    if isinstance(value, dict):
+        return {key: measurement_legacy(item) for key, item in value.items() if key not in additions}
+    if isinstance(value, list):
+        return [measurement_legacy(item) for item in value]
+    return value
+
+
+def c24():
+    """Compare actual pinned pre-instrumentation code on the SAME fixture."""
+    from datetime import datetime, timezone
+    class FixedDate(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 13, 0, 0, tzinfo=timezone.utc)
+
+    baseline = '76fd6d6076370471a3634ca94ef15b3effc11232'
+    def source(path):
+        return subprocess.run(['git', 'show', f'{baseline}:{path}'], check=True, capture_output=True).stdout
+    old_fs = ModuleType('baseline_disk_sweep_fs')
+    exec(compile(source('runtime/daemon/_disk_sweep_fs.py'), '<baseline fs>', 'exec'), old_fs.__dict__)
+    old = ModuleType('baseline_disk_sweeper')
+    with patch.dict(sys.modules, {'runtime.daemon._disk_sweep_fs': old_fs}):
+        exec(compile(source('runtime/daemon/disk_sweeper.py'), '<baseline sweeper>', 'exec'), old.__dict__)
+    with fixture() as f:
+        p = f.scratch('TASK-1')
+        repo, q = f.worktree('TASK-2')
+        (q / 'source').write_text('dirty\n')
+        before = candidate_contents(p, q)
+        refs = f.git(repo, 'show-ref', '--heads')
+        summary = f.base / 'daemon/disk-sweep/2026-11-13.json'
+        deadline = time.monotonic() + 30
+        common = dict(dry_run=True, scheduled_date='2026-11-13', revision='synthetic-code-binding')
+        # Fix presentation inputs only; Git, filesystem gates and DB are real.
+        real_publication, publications = ds.atomic_json, []
+        def publication(path, report):
+            observer = fs._observer.get()
+            publications.append(observer.clone if observer is not None else False)
+            return real_publication(path, report)
+        with patch.object(ds, 'datetime', FixedDate), patch.object(old, 'datetime', FixedDate), \
+                patch.object(os, 'statvfs', return_value=SimpleNamespace(f_bavail=50, f_blocks=100)):
+            legacy = old.sweep([str(f.org)], deadline, summary, **common)
+            with patch.object(ds, 'atomic_json', publication):
+                measured = ds.sweep([str(f.org)], deadline, summary, **common)
+            failed = None
+            with patch.object(ds._Measurements, 'record', side_effect=ValueError('controlled measurement failure')):
+                failed = ds.sweep([str(f.org)], deadline, summary, **common)
+        encode = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        assert encode(legacy) == encode(measurement_legacy(measured)), (legacy, measured)
+        assert encode(legacy) == encode(measurement_legacy(failed)), (legacy, failed)
+        for report in (measured, failed):
+            assert encode(old._audit_payload(legacy, legacy['orgs'][0], summary)) == encode(measurement_legacy(ds._audit_payload(report, report['orgs'][0], summary)))
+        assert failed['orgs'][0]['measurements']['errors']['count'] > 0, failed
+        assert candidate_contents(p, q) == before and f.git(repo, 'show-ref', '--heads') == refs
+        assert measured['revision'] == 'synthetic-code-binding'
+        assert measured['source_revision'] == measured['revision']
+        assert measured['stop_cause'] == 'finished'
+        writes = measured['orgs'][0]['measurements']
+        assert writes['counters']['report_writes'] == sum(value is not False for value in publications), (writes, publications)
+        assert writes['clones'][str(repo)]['report_writes'] == publications.count(str(repo)), (writes, publications)
+        assert writes['counters']['report_writes_confirmed'] == writes['counters']['report_writes'] - 1
+        assert json.loads(summary.read_text()) == failed
+        # Existing eligible-preview fixture, using its established advanced
+        # wall clock, also preserves every legacy org byte (including size).
+        legacy_preview = old.sweep_org(f.org, deadline, mode='dry_run', now=NOW)
+        measured_preview = ds.sweep_org(f.org, deadline, mode='dry_run', now=NOW)
+        assert row(legacy_preview, p)['state'] == 'eligible'
+        assert encode(legacy_preview) == encode(measurement_legacy(measured_preview))
+        # Production-shaped output: real measured dirty row and real org/counter
+        # shape, 1,600 distinct paths of normal production length, 12 clones.
+        prototype = json.loads(json.dumps(measured))
+        org = prototype['orgs'][0]
+        dirty = row(org, q)
+        org['candidates'] = [dict(dirty, path=f'/home/fixture/.happyranch/runtime/orgs/happyranch/workspaces/dev_agent/repos/happyranch/.claude/worktrees/TASK-{n:06d}') for n in range(1600)]
+        original = org['measurements']['clones'][str(repo)]
+        org['measurements']['clones'] = {f'/home/fixture/workspaces/maker/repos/project-{n}': original for n in range(12)}
+        ds._summarize_org(org)
+        size = len(json.dumps(prototype, sort_keys=True, indent=2).encode())
+        audit_size = len(json.dumps(ds._audit_payload(prototype, org, summary)).encode())
+        assert size < 4 * 1024 * 1024 and audit_size < 2 * 1024 * 1024, (size, audit_size)
+        return dict(base=baseline, legacy_report_and_audit='byte-identical after removing additive keys', failure_errors=failed['orgs'][0]['measurements']['errors']['count'], candidates=1600, clones=12, date_report_bytes=size, audit_payload_bytes=audit_size)
+
+
+def c25():
+    """Independent known counts, real effects, already-walked size and history."""
+    observations = []
+    for dirty in (True, False):
+        with fixture() as f:
+            repo, p = f.worktree('TASK-1')
+            if dirty:
+                (p / 'source').write_text('dirty\n')
+            branch = f.git(repo, 'rev-parse', 'refs/heads/task/TASK-1')
+            real = ds.registrations
+            calls = []
+            def topology(root, deadline, **kwargs):
+                calls.append(str(root))
+                return real(root, deadline, **kwargs)
+            # Walk oracle consumes only the test-side returned snapshots; no
+            # mock implements measurement or the sweep decision.
+            snapshots = []
+            real_snapshot = ds.snapshot
+            def snapshot(path, deadline, **kwargs):
+                tree = real_snapshot(path, deadline, **kwargs)
+                snapshots.append(len(tree))
+                return tree
+            with patch.object(ds, 'registrations', topology), patch.object(ds, 'snapshot', snapshot):
+                started = time.perf_counter()
+                report = f.sweep()
+                elapsed = time.perf_counter() - started
+            candidate = row(report, p)
+            assert 'measurement' in candidate, 'per-item measurement missing from actual sweep report'
+            metrics = candidate['measurement']
+            counters = report['measurements']['clones'][str(repo)]
+            assert report['measurements']['errors']['count'] == 0, report
+            assert len(calls) == counters['topology_reads'] == (3 if dirty else 10), (calls, counters)
+            assert counters['censuses'] == (9 if dirty else 30), counters
+            assert counters['ownership_reads'] == (1 if dirty else 4), counters
+            assert counters['entries_walked'] == sum(snapshots), (counters, snapshots)
+            assert counters['git']['worktree list']['calls'] == (3 if dirty else 10), counters
+            assert counters['git']['status']['calls'] == (1 if dirty else 6), counters
+            assert counters['git']['rev-parse']['calls'] == (3 if dirty else 18), counters
+            assert ('rev-list' not in counters['git']) if dirty else counters['git']['rev-list']['calls'] == 6
+            assert counters['gitdir_gone_count'] == 0, counters
+            for value in counters['git'].values():
+                assert 0 < value['duration_seconds'] <= elapsed and value['timeouts'] == 0, value
+            assert 0 < metrics['duration_seconds'] <= elapsed, metrics
+            assert 0 < report['measurements']['duration_seconds'] <= elapsed, report
+            assert sum(value['duration_seconds'] for value in counters['git'].values()) <= elapsed, counters
+            if dirty:
+                assert metrics['stage_reached'] == 'git:status', metrics
+                assert candidate['reason'] == metrics['final_reason'] == 'dirty_or_untracked'
+                assert metrics['attempted_effect'] == metrics['confirmed_effect'] == {}
+                assert metrics['kept_allocated_bytes'] == 'unknown' and metrics['kept_since'], metrics
+            else:
+                assert metrics['stage_reached'] == 'removal_confirmed', metrics
+                assert counters['git']['worktree prune']['calls'] == 1, counters
+                assert candidate['state'] == metrics['final_reason'] == 'removed' and not p.exists(), candidate
+                assert metrics['attempted_effect'] == metrics['confirmed_effect'] == {'remove': 1}, metrics
+                assert isinstance(metrics['kept_allocated_bytes'], int), metrics
+                assert f.git(repo, 'rev-parse', 'refs/heads/task/TASK-1') == branch
+            observations.append(dict(dirty=dirty, counters=counters, item=metrics))
+    with fixture() as f:
+        p = f.scratch('TASK-1')
+        # First existing snapshot completes before the recent-age gate refuses.
+        os.utime(p / 'nested/payload', (NOW, NOW))
+        oracle = sum({(s.st_dev, s.st_ino): s.st_blocks * 512 for x in (p, *p.rglob('*')) for s in (x.lstat(),)}.values())
+        report = f.sweep()
+        assert row(report, p)['measurement']['kept_allocated_bytes'] == oracle
+    with fixture() as f:
+        repo, p = f.worktree('TASK-1')
+        entry = repo / '.git/worktrees/residue'
+        entry.mkdir()  # A real, safe, empty unknown-location gitdir-gone entry.
+        (p / 'source').write_text('dirty\n')
+        report = f.sweep()
+        assert report['measurements']['clones'][str(repo)]['gitdir_gone_count'] == 1, report
+        assert report['discovery'] == 'partial' and report['outcome'] == 'incomplete'
+    with fixture() as f:
+        p = f.scratch('TASK-1')
+        with patch.object(ds._Measurements, 'record', side_effect=ValueError('controlled measurement failure')):
+            report = f.sweep()
+        assert row(report, p)['state'] == 'removed' and not p.exists(), report
+        assert report['measurements']['errors']['count'] > 0, report
+    with fixture() as f:
+        p = f.scratch('TASK-1', status='in_progress')
+        directory = f.base / 'daemon/disk-sweep'
+        history = dict(orgs=[dict(candidates=[dict(path=str(p), state='retained')])])
+        ds.atomic_json(directory / '2026-11-10.json', history)
+        ds.atomic_json(directory / '2026-11-11.json', history)
+        real_history, calls = ds._kept_history, []
+        def counted(*args):
+            calls.append(args)
+            return real_history(*args)
+        summary = directory / '2026-11-13.json'
+        with patch.object(ds, '_kept_history', counted):
+            report = ds.sweep([str(f.org)], time.monotonic() + 12, summary, dry_run=True, scheduled_date='2026-11-13', revision='synthetic')
+        assert len(calls) == 1, calls
+        assert row(report['orgs'][0], p)['measurement']['kept_since'] == '2026-11-10', report
+        # A report alias cannot be followed; the measurement failure is visible
+        # and does not turn an active owner into deletion authority.
+        (directory / '2026-11-11.json').unlink()
+        (directory / '2026-11-11.json').symlink_to(directory / '2026-11-10.json')
+        report = ds.sweep([str(f.org)], time.monotonic() + 12, summary, dry_run=True, scheduled_date='2026-11-13', revision='synthetic')
+        assert report['measurement_history']['status'].startswith('unavailable:'), report
+        retained(report['orgs'][0], p, 'task_or_root_not_terminal')
+    return dict(counts=observations, kept_size='existing complete snapshot only', residue=1, history='one pass, earliest observed date, no-follow refusal', failure='real scratch removal still succeeds')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,24))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,26))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -3731,7 +3925,8 @@ if __name__=='__main__':
             config_checks()
             purposes=('Terminal owned root and attribution','Nonterminal and invalid lineage','Real process cwd/root/exe/fd','Real TMPDIR/TMP/TEMP and alias','Readonly handling and bounded Git retry','Link/ancestor and actual mounted boundaries','Dirty/untracked and ignored Git contents','Nonmutating function and public CLI dry run','Missing/denied evidence and all job lineage','Jobs both phases and fresh retry change','Nested recent writes','Partial removal, deadline, shutdown and event loop','Detached commit retained refs','Same-night progress after refusals and exhaustion','Partial discovery with protected non-Git siblings','Narrow unreadable/broken/alias discovery scopes','Global deadline during partial discovery','Progress after many uncertain subtrees','Complete unreadable/missing registration census','No metadata alias or conflicting backlink traversal','Fresh registration gates and truthful partial effects','Primary-only control and metadata enumeration deadline')
             purposes += ('Additive TASK registration arrivals and shared mapping changes',)
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23),purposes),1):
+            purposes += ('Measurement compatibility with pinned pre-instrumentation source', 'Known measurement counts, effects, history and failure isolation')
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))
