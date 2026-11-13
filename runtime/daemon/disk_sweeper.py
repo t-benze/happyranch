@@ -1295,7 +1295,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     except Exception as exc:
         result['stop_cause'] = 'error'
         result.update(outcome='incomplete', error=str(exc) or type(exc).__name__)
-    result.setdefault('stop_cause', 'finished')
+    result.setdefault('stop_cause', 'error' if result.get('error') or result.get('outcome') == 'error' else 'finished')
     observe('org_checkpoint')
     _summarize_org(result)
     checkpoint()
@@ -1350,10 +1350,10 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
             except Expired:
                 raise
             except Exception as exc:
-                item.update(outcome='error', error=str(exc) or type(exc).__name__)
+                item.update(outcome='error', error=str(exc) or type(exc).__name__, stop_cause='error')
             checkpoint()
         report['outcome'] = 'complete' if all(o['outcome'] == 'complete' for o in report['orgs']) else 'incomplete'
-        report['stop_cause'] = 'finished'
+        report['stop_cause'] = 'error' if any(o.get('error') or o.get('outcome') == 'error' for o in report['orgs']) else 'finished'
     except Expired as exc:
         report['stop_cause'] = _stop_cause(exc)
         report['error'] = str(exc)

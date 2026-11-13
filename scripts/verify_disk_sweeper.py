@@ -3792,6 +3792,16 @@ def c24():
         size = len(json.dumps(prototype, sort_keys=True, indent=2).encode())
         audit_size = len(json.dumps(ds._audit_payload(prototype, org, summary)).encode())
         assert size < 4 * 1024 * 1024 and audit_size < 2 * 1024 * 1024, (size, audit_size)
+        # A caught configuration error ends the traversal without changing its
+        # legacy outcome; the additive cause must still describe that error.
+        (f.org / 'org/config.yaml').write_text('[')
+        with patch.object(ds, 'datetime', FixedDate), patch.object(old, 'datetime', FixedDate), \
+                patch.object(os, 'statvfs', return_value=SimpleNamespace(f_bavail=50, f_blocks=100)):
+            legacy_error = old.sweep([str(f.org)], deadline, summary, **common)
+            measured_error = ds.sweep([str(f.org)], deadline, summary, **common)
+        assert measured_error['stop_cause'] == 'error', measured_error
+        assert measured_error['orgs'][0]['stop_cause'] == 'error', measured_error
+        assert encode(legacy_error) == encode(measurement_legacy(measured_error))
         return dict(base=baseline, legacy_report_and_audit='byte-identical after removing additive keys', failure_errors=failed['orgs'][0]['measurements']['errors']['count'], candidates=1600, clones=12, date_report_bytes=size, audit_payload_bytes=audit_size)
 
 

@@ -454,7 +454,9 @@ clones or current state after that census.
 checkpoint and `stop_control` describes scheduled suspension. Existing
 `outcome`, `error`, `interruption` and audit envelope/keys remain authoritative
 and unchanged. A finished traversal may still have an incomplete discovery or
-retained candidates. Instrumentation errors are reported and cannot authorize,
+retained candidates. A caught operational/configuration error records `error`
+even when traversal returns normally; ordinary partial discovery alone does not.
+Instrumentation errors are reported and cannot authorize,
 refuse or fail an operation. Timings use a separate monotonic performance clock
 and do not modify the original deadline checks.
 
@@ -486,8 +488,9 @@ This is a synthetic size measurement, not a production run or runtime forecast.
 
 The existing disposable driver owns cases 24 (byte-equivalent legacy report/
 audit projection against pinned pre-instrumentation source, including eligible
-preview) and 25 (known call counts, effects, kept size/date, report alias refusal
-and forced recorder failure). Case 12 adds budget/shutdown cause and interrupted
+preview and caught configuration errors) and 25 (known call counts, effects,
+kept size/date, report alias refusal and forced recorder failure). Case 12 adds
+budget/shutdown cause and interrupted
 measurement assertions to its existing actual worker/process tests. Focused:
 `.venv/bin/python scripts/verify_disk_sweeper.py --cases 12 24 25` with task-owned
 `TMPDIR`; full driver and lint/static verification use durable jobs. No retired
