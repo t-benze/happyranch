@@ -84,23 +84,36 @@
   observations require positive native TCP and no UDP socket. A fresh exact
   real-daemon200 during capture, zero native UDP and bidirectional native TCP
   payload only with the VM443 endpoint establish the observed peer relay path:
-  pinned Tailscale sends peer data over UDP or DERP, and the exact-SHA fixture
-  has only region999, no upstream DERP URLs/paths/auto-update/mesh. Configuration
-  or control-connection counts alone cannot pass. The original separate
-  allowed200 and exposure controls follow only after proof success.
+  pinned Tailscale sends peer data over UDP or DERP. A current-run guest identity
+  check observes the effective embedded region/node in the exact live Headscale
+  invocation's startup journal. It requires singleton999, the VM hostname/443,
+  IPv4 and STUN3478, the pinned live binary/argv, unchanged pre-launch config
+  fingerprint and process identity, and no HEADSCALE_*/DERP_*/TS_* environment
+  overrides or upstream URLs/paths/auto-update/mesh/unknown config keys. Pinned
+  composition then fixes the singleton map; this is runtime-validated config
+  inference, not an in-memory map dump. The authenticated Cloud Assistant result
+  binds source SHA and fresh recipient digest before the existing operator/run/
+  attempt/SHA/key/expiry-bound handoff. Identity older than120s or missing,
+  malformed, foreign-run, wrong/multiple-region or wrong-endpoint evidence
+  refuses. Contradictory filch regions veto even passing packets. Missing logs
+  alone remain nonfatal. Configuration or control-connection counts alone cannot
+  pass. The original separate allowed200 and exposure controls follow only after proof success.
   `packet_diagnostics` adds closed labels/bounded integer counts only, beside
   existing `derp_diagnostics`, in pre-cleanup and final summary/Actions output.
   No addresses, PIDs, URLs, tuples, raw headers or payloads are public; private
   capture files are removed with runner scratch. The runbook owns exact limits,
   labels and sensitivity cases. This observes only this native process/request
   window, relies on OS attribution/counters and the authenticated unchanged
-  fixture/bridge, and does not certify future UDP behavior or signed-app/GUI.
+  fixture/bridge and guest root, and assumes the pinned process loaded the
+  unchanged snapshotted inputs without hostile root memory tampering. It does
+  not certify future UDP behavior or signed-app/GUI.
   Actual native observer/transport acceptance remains NOT RUN premerge.
   Headscale's default DisableLogTail still discards later filch writes; no
   logtail or product change follows. Attempt6 TASK-15774/run43330485188/JOB-6668
-  remains failed/spent; post-proof200/exposure were not reached. Host/guest/
-  control drivers are unchanged; no conditional VM pass, join, dispatch or
-  issuance allowance is added. All historical budgets remain unchanged.
+  remains failed/spent; post-proof200/exposure were not reached. The identity
+  repair changes guest/control drivers and requires one conditional VM-only
+  premerge pass; no native join, dispatch or issuance allowance is added. All
+  historical budgets remain unchanged.
   C init/start failures also retain the allowlisted `bridge_error_class` from
   the existing C error accessor, with raw text withheld and unknown patterns
   mapped to `unknown`. The native runner exclusively creates the0700 target

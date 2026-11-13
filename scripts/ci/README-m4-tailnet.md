@@ -202,7 +202,7 @@ system Tailscale is involved. Native toolchain and archive hash are recorded.
 | absent/never-paired | Same transport GET ->403 identity_denied; paired200 before/after each. |
 | revoked | Targeted device200 before revoke; same credential403 within30s, unaffected device200. |
 | forbidden routes | Six retained M2 method/path rows ->exact403 category; paired allowed200 brackets each; synthetic org survives. Forbidden routes are never allowed as controls. |
-| DERP | Bounded all-interface native packet observation plus native socket controls and a fresh exact real-daemon200 prove the private VM relay path with no native UDP; only region999 exists in the unchanged fixture. Missing/partial evidence refuses. The existing separate allowed200 follows, then exposure probes. |
+| DERP | Bounded all-interface native packet observation plus native socket controls and a fresh exact real-daemon200 prove relay traffic with no native UDP; current-run authenticated effective identity must establish only region999 at the expected VM endpoint with no upstream map/mesh. Missing/partial evidence refuses. The existing separate allowed200 follows, then exposure probes. |
 | public exposure | Verified443 health200 before/after bounded application-level probes; daemon path on control443 is404; public18765/18443/8765 yield no TLS/HTTP response. Guest crosscheck requires daemon/connector loopback controls and no forbidden public listener. No response is a bounded observation, not universal reachability proof; raw TCP through a proxy is insufficient. |
 | logs/cleanup | Fresh run directory, microsecond journal boundary and shipped attribution. Installed-product purge assertions remain unchanged. Without install, assert absent product state and label not applicable. Remove transient state/CA/links/test sockets; preserve unchanged DNS hashes and only the validated cert cache. |
 
@@ -284,22 +284,47 @@ unchanged exposure controls:
 Source basis: [Apple tcpdump metadata/all-interface API](https://github.com/apple-oss-distributions/tcpdump/blob/main/tcpdump/tcpdump.1),
 [pinned peer transport](https://github.com/tailscale/tailscale/blob/v1.78.0/wgengine/magicsock/endpoint.go),
 [pinned UDP/DERP dispatch](https://github.com/tailscale/tailscale/blob/v1.78.0/wgengine/magicsock/magicsock.go),
-and [Headscale map composition](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/derp/derp.go).
+[Headscale map composition](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/derp/derp.go),
+[effective node observation](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/derp/server/derp_server.go),
+and [environment/config resolution](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/types/config.go).
 
-Strength argument: pinned Tailscale `endpoint.send`/`sendAddr` transport peer
-WireGuard data by UDP or DERP. A fresh unmocked daemon response while this native
-process sends no UDP, has no observed UDP sockets, and exchanges TCP payload
-only with the VM443 endpoint establishes the observed relay path, rather than
-merely a Headscale control connection or a configured preference. The exact-SHA
-fresh fixture has only embedded region999, empty upstream DERP URLs/paths,
-no auto-update and no relay mesh configuration. Those configuration facts name
-the observed endpoint; configuration alone never passes the gate. The unchanged
-C ABI exposes no independent peer-path status; no new product readout is added.
+Before packet success can publish region999, the host obtains a current-run
+`relay-identity` observation from the running guest. Existing Headscale0.25.1
+`GenerateRegion`/`DERP Nodes[0]` startup journal records must belong to the exact
+live systemd invocation/PID and name exactly one region999 and one node at the
+VM hostname/443, IPv4 and STUN3478. Before launch, the harness snapshots the
+pinned binary and config's digest/inode/timestamps. The observer checks the live
+executable, exact argv, boot/start identity and unchanged inputs, and refuses
+all HEADSCALE_*, DERP_* or TS_* process environment overrides. Unknown config
+keys, upstream URLs/paths, auto-update, mesh, changed process/config or missing/
+multiple/contradictory records refuse. Pinned Headscale composes an empty map
+from empty sources, adds this observed embedded node, and has no mesh setup.
+This establishes the singleton map under the trusted guest/input assumptions;
+it does not read the client's or server's in-memory map. No debug setting or
+raw config/environment/journal dump is published.
+
+The authenticated Cloud Assistant response is checked against this source SHA
+and fresh recipient key digest, then its closed label/integer projection travels
+in a separate operator-authenticated, run/attempt/SHA/key/expiry-bound envelope.
+The runner refuses an absent, malformed, wrong-run or older-than120s identity;
+wrong/multiple regions, wrong endpoint and any upstream/auto-update/mesh refuse.
+Contradictory client log regions (including [123,999]) veto otherwise-passing
+packets; missing filch logs alone still do not reject the independent proof.
+
+Strength argument: pinned Tailscale transports peer WireGuard data by UDP or
+DERP. A fresh exact real-daemon200 with zero native UDP, no observed UDP sockets,
+and bidirectional native TCP payload only to VM443 establishes relay traffic.
+The runtime identity observation names that relay as999. Neither configuration,
+join nor connection counts alone can pass. Original separate allowed200 and
+exposure controls execute only after both proofs succeed.
 
 Limits: this is a bounded observation of this process/request and relies on the
 OS's packet/process metadata and counters, the unchanged authenticated fixture
-and bridge, and the trusted disposable runner. It does not certify all future
-UDP behavior, all network topologies, or signed-app/Swift/GUI behavior. Socket
+and bridge, and the trusted disposable runner. It also trusts guest root and
+the pinned process loading the unchanged snapshotted inputs; no hostile root
+memory tampering is covered. Startup identity remains valid only while that
+process and its fixed no-upstream/no-update inputs remain unchanged. It does
+not certify all future UDP behavior, all network topologies, or signed-app/Swift/GUI behavior. Socket
 snapshots alone would not prove the path. Native tool/metadata/counter behavior
 and actual acceptance are NOT RUN premerge; conservative refusal is intentional
 if this runner cannot supply complete evidence. The next separately authorized
@@ -311,7 +336,9 @@ cleanup and remains in the final summary. Its closed labels are `unknown`,
 `capture-unavailable`, `capture-start`, `capture-budget`, `capture-deadline`,
 `capture-cleanup`, `capture-incomplete`, `capture-format`, `metadata-missing`,
 `udp-observed`, `udp-socket-observed`, `socket-evidence`,
-`relay-endpoint-unexpected`, `relay-traffic-missing`, `request-failed`, `passed`.
+`relay-endpoint-unexpected`, `relay-traffic-missing`, `request-failed`,
+`identity-missing`, `identity-malformed`, `identity-stale`, `identity-region`,
+`identity-endpoint`, `identity-upstream`, `identity-log-conflict`, `passed`.
 Only packet/native/UDP/socket counts, TCP socket observation count and relay
 transmit/receive byte counts accompany it, clamped to0..16,000,000 with real
 integer types only. Unknown labels map to `unknown`; no PID, tuple, address,
@@ -320,8 +347,9 @@ in private runner scratch and existing finally/always-cleanup removes them.
 The offline UDP sensitivity fixture must refuse with `udp-observed`; enabled
 UDP sockets, unexpected endpoints, partial captures and absent positive request
 controls have separate failures. All earlier failure/issuance budgets remain
-spent. Host/guest/control drivers are unchanged, so this client-only change does
-not trigger another conditional VM premerge pass.
+spent. This repair extends the guest/control drivers; its ONE conditional VM
+premerge pass observes real guest identity and cleanup without a native join.
+That pass does not prove native transport or close native acceptance.
 
 For corroborating log evidence the worker emits `derp_diagnostics`, reprojected
 by Bridge and again by the runner. Before private cleanup the runner writes it to

@@ -24,7 +24,7 @@ import time
 from m3_reboot_aliyun import CloudAssistant
 
 from m4_tailnet_client import Bridge, DiagnosticComplete, build_archive, control_get, exception_class, worker
-from m4_tailnet_control import HostedRun
+from m4_tailnet_control import HostedRun, relay_identity_receipt
 from m4_tailnet_runner import decrypt
 
 BASE = "/var/lib/happyranch-m4"
@@ -267,6 +267,9 @@ echo exact-source={args.sha}
         if args.premerge_vm:
             assert json.loads(phase('nodes')) == [], 'premerge cell has unexpected membership'
             record['checks'].append(dict(name='VM-empty-membership', nodes=[]))
+            identity = relay_identity_receipt(json.loads(phase('relay-identity', private=True)), args.sha,
+                                               hashlib.sha256(public_bytes).hexdigest())
+            record['checks'].append(dict(name='VM-runtime-relay-identity', **{key: value for key, value in identity.items() if key != 'observed_at'}))
             payload = json.loads(phase('handoff-check', private=True))
             assert set(payload) == {'enroll', 'pair-test'}
             private = private_key.read_bytes()

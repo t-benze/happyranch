@@ -146,9 +146,19 @@ still-running native PID require positive TCP sockets and no UDP socket.
 A fresh unmocked real-daemon200 during capture, zero native UDP packets on all
 interfaces and bidirectional native TCP payload exclusively with VM443 establish
 the observed relay route: pinned Tailscale's peer transport is UDP or DERP; the
-exact-SHA fresh fixture has only region999 with no upstream DERP URLs/paths,
-auto-update or relay mesh. Those config facts identify the observed endpoint,
-but configuration/join/control connection counts alone never pass. A guest
+current-run guest identity check observes the effective region/node from the
+exact live Headscale invocation's startup journal, requiring singleton999 and
+the VM hostname/443, IPv4 and STUN3478. Pinned live executable/argv, boot/start
+identity and unchanged pre-launch config fingerprints must match; all
+HEADSCALE_*/DERP_*/TS_* environment overrides, upstream URLs/paths, auto-update,
+mesh and unknown config keys refuse. Pinned empty-map-plus-embedded composition
+fixes the map under these runtime-validated input assumptions, rather than
+reading an in-memory client/server map. The authenticated Cloud Assistant result
+binds SHA and fresh recipient digest before the existing operator/run/attempt/
+SHA/key/expiry-bound identity envelope. Missing/malformed/foreign-run/stale
+(older than120s) identity, wrong/multiple regions or wrong endpoints refuse;
+contradictory log regions veto passing packets. Missing logs alone remain
+nonfatal. Configuration/join/control connection counts alone never pass. A guest
 capture alone misses UDP dropped by the unchanged security group.
 The original separate allowed200 and live exposure probes follow only after
 this gate; their order and existing worker deadlines stay unchanged.
@@ -158,10 +168,13 @@ headers/payloads. Raw capture text stays in private runner scratch and existing
 finally/always-cleanup removes it. The runbook defines exact labels, limits,
 strength argument and UDP sensitivity control. This is an observation of one
 process/request window, relying on OS metadata/counters and the authenticated
-unchanged fixture/bridge; it is no universal future-UDP/topology or signed-app/
-Swift/GUI claim. Native observer/transport acceptance remains NOT RUN premerge.
-No product/C ABI/bridge/C host/dependency/logtail/host/guest/control/workflow
-change or new native/Linux join, dispatch, VM pass or issuance allowance follows.
+unchanged fixture/bridge and guest root, with the pinned process loading the
+unchanged snapshotted inputs and no hostile root memory tampering; it is no
+universal future-UDP/topology or signed-app/Swift/GUI claim. Native observer/transport acceptance remains NOT RUN premerge.
+The identity repair extends guest/control harness drivers and requires one
+conditional VM-only premerge observation/cleanup pass. No product/C ABI/bridge/
+C host/dependency/logtail/workflow change or new native/Linux join, dispatch or
+issuance allowance follows.
 All failed/spent history remains unchanged.
 
 **Execution boundary:** JOB-6610 and JOB-6615 both failed at Linux outside join;

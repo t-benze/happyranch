@@ -338,7 +338,9 @@ def run(scratch: Path, output: Path) -> None:
         set_phase('DERP-exposure')
         packet_diagnostic = dict(label='unknown', **{key: 0 for key in PACKET_PROOF_COUNTS})
         try:
-            record['checks'].append(dict(name='DERP-path', **prove_packet_path(bridge, scratch, str(address), paired, packet_diagnostic)))
+            identity = inbox.wait('relay-identity', 60)
+            assert set(identity) == {'identity'}, 'runtime identity handoff shape'
+            record['checks'].append(dict(name='DERP-path', **prove_packet_path(bridge, scratch, str(address), paired, packet_diagnostic, identity['identity'])))
         finally:
             record['packet_diagnostics'] = safe_packet_diagnostics(packet_diagnostic)
         allowed(paired)

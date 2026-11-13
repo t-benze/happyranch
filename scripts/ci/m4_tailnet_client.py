@@ -49,8 +49,31 @@ PACKET_PROOF_LABELS = {'unknown', 'capture-unavailable', 'capture-start', 'captu
                        'capture-deadline', 'capture-cleanup', 'capture-incomplete', 'capture-format',
                        'metadata-missing', 'udp-observed', 'udp-socket-observed', 'socket-evidence',
                        'relay-endpoint-unexpected', 'relay-traffic-missing', 'request-failed', 'passed'}
+PACKET_PROOF_LABELS.update({'identity-missing', 'identity-malformed', 'identity-stale',
+                            'identity-region', 'identity-endpoint', 'identity-upstream', 'identity-log-conflict'})
+IDENTITY_COUNTS = dict(region_count=1, region=999, node_count=1, endpoint_matches=1,
+                       upstream_count=0, auto_update=0, mesh_count=0)
 PACKET_PROOF_COUNTS = ('packet_count', 'native_packet_count', 'udp_count', 'udp_socket_count',
                        'tcp_socket_observations', 'relay_tx_bytes', 'relay_rx_bytes')
+
+
+def require_relay_identity(value: object, diagnostic: dict) -> int:
+    """Only an authenticated, current envelope may supply this projection."""
+    diagnostic['label'] = 'identity-missing'
+    assert isinstance(value, dict) and value, 'missing runtime relay identity'
+    diagnostic['label'] = 'identity-malformed'
+    assert set(value) == {'label', 'observed_at', *IDENTITY_COUNTS}, 'runtime identity shape'
+    assert value['label'] == 'passed' and all(type(value[key]) is int for key in ('observed_at', *IDENTITY_COUNTS)), 'runtime identity types/status'
+    assert all(0 <= value[key] <= 16_000_000 for key in IDENTITY_COUNTS), 'runtime identity bounds'
+    diagnostic['label'] = 'identity-stale'
+    assert 0 <= int(time.time()) - value['observed_at'] <= 120, 'runtime identity freshness'
+    diagnostic['label'] = 'identity-region'
+    assert value['region_count'] == value['node_count'] == 1 and value['region'] == 999, 'runtime region identity'
+    diagnostic['label'] = 'identity-endpoint'
+    assert value['endpoint_matches'] == 1, 'runtime relay endpoint'
+    diagnostic['label'] = 'identity-upstream'
+    assert value['upstream_count'] == value['auto_update'] == value['mesh_count'] == 0, 'runtime relay sources'
+    return value['region']
 
 
 def safe_packet_diagnostics(value: object) -> dict:
@@ -226,13 +249,14 @@ print('M4_CAPTURE_END=%d:%d'%(code,int(early or not stopped)),flush=True)
         assert int(captured[0]) == diagnostic['packet_count'], 'partial packet stream'
 
 
-def prove_packet_path(bridge: Bridge, scratch: Path, address: str, credential: str, diagnostic: dict) -> dict:
+def prove_packet_path(bridge: Bridge, scratch: Path, address: str, credential: str, diagnostic: dict, identity: object) -> dict:
     """Observe the real native peer request; old filch data is corroboration only."""
     capture = PacketCapture(scratch, diagnostic)
     try:
         capture.start()
         # Preserve PR1459's useful closed log diagnostic. Missing log evidence
-        # cannot establish or refute the independent packet/sockets proof.
+        # alone cannot establish or refute the packet/sockets proof; a
+        # contradictory observed region still vetoes success below.
         try:
             bridge.call('derp-proof')
         except RuntimeError:
@@ -250,8 +274,12 @@ def prove_packet_path(bridge: Bridge, scratch: Path, address: str, credential: s
             diagnostic['label'] = 'capture-cleanup'
             raise
     capture.evidence(bridge.process.pid)
+    region = require_relay_identity(identity, diagnostic)
+    diagnostic['label'] = 'identity-log-conflict'
+    log = bridge.derp_diagnostics
+    assert log.get('label') != 'region-unexpected' and not set(log.get('matched_regions', [])) - {region}, 'contradictory runtime/log identity'
     diagnostic['label'] = 'passed'
-    return dict(region=999, **safe_packet_diagnostics(diagnostic))
+    return dict(region=region, **safe_packet_diagnostics(diagnostic))
 
 
 def safe_derp_diagnostics(value: object) -> dict:
