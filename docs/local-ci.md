@@ -1663,13 +1663,18 @@ same-root callback failures stay failures, with no shared auth/session repair.
 
 The artifact callback skeleton defines `engineering_head`, `dev_agent` and
 `code_reviewer` with coherent engineering membership before supported CLI
-`orgs init`. The default reviewer remains `code_reviewer`; these callback
-plans launch only the manager and delegated `dev_agent`. Actual run37857635882
+`orgs init`. New orgs now default to no reviewer (`[]`); this callback fixture
+retains its real `code_reviewer` roster member. Fixtures that test reviewer
+behavior must explicitly configure an active reviewer; roster membership alone
+no longer selects one. Keep those reviewer fixtures rather than replacing them
+with no-reviewer fixtures. These callback plans
+launch only the manager and delegated `dev_agent`. Historical run37857635882
 retained org-init HTTP500 on both wheel/frozen origins and both source roles:
-its two-agent skeleton omitted the required reviewer, producing
+its two-agent skeleton omitted the then-required default reviewer, producing
 `authority_reviewer_incoherent` followed by `profile_dependency_incoherent`.
-Adding the missing static definition requires new native-admitted artifact
-execution before any callback, nonrunning ownership or durable-tail PASS.
+The new default does not establish artifact execution evidence: new
+native-admitted execution is still required before any callback, nonrunning
+ownership or durable-tail PASS.
 The frozen logs also retain a caught memory-observer source-inspection warning;
 fixture repair does not establish that observation subsystem's health.
 

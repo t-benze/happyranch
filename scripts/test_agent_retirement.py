@@ -561,7 +561,7 @@ async def reviewer_settings(org: OrgState, client: httpx.AsyncClient) -> None:
 
 
 async def reviewer_fresh(org: OrgState, client: httpx.AsyncClient) -> None:
-    """B1 L3a: real fresh constructor, ordinary empty publication and reopen."""
+    """B1/B2 L3a: real fresh constructor, empty/named policy and reopen."""
     for slug, example_text in (("fresh-omitted", None), ("fresh-empty", "reviewer_agents: []\n")):
         payload = {"slug": slug}
         if example_text is not None:
@@ -592,20 +592,36 @@ async def reviewer_fresh(org: OrgState, client: httpx.AsyncClient) -> None:
         finally:
             reopened.close()
 
-    # An explicit active reviewer other than code_reviewer wins at construction.
+    # A non-code_reviewer roster stays unset unless configuration selects it.
     example = org.root.parent.parent / "configured-reviewer-example"
     (example / "org" / "agents").mkdir(parents=True)
     (example / "org" / "teams.yaml").write_text("teams:\n  engineering:\n    manager: keeper\n    workers: [other]\n")
-    (example / "org" / "config.yaml").write_text("reviewer_agents: [other]\n")
     for name, role in (("keeper", "manager"), ("other", "worker")):
         (example / "org" / "agents" / f"{name}.md").write_text(
             f"---\nname: {name}\nteam: engineering\nrole: {role}\nexecutor: claude\n---\nSynthetic inert role.\n")
-    response = await client.post("/api/v1/orgs", json={"slug": "fresh-configured", "from_example": str(example)})
-    assert response.status_code == 200, response.text
-    response = await client.get("/api/v1/orgs/fresh-configured/settings")
-    assert response.status_code == 200, response.text
-    assert response.json()["org"]["reviewer_agents"] == ["other"]
-    assert response.json()["org"]["reviewer_configuration"] == {"state": "configured", "missing_agents": []}
+    for slug, config, expected in (
+            ("fresh-named-omitted", "threads: {enabled: true}\n", []),
+            ("fresh-configured", "reviewer_agents: [other]\n", ["other"])):
+        (example / "org" / "config.yaml").write_text(config)
+        response = await client.post("/api/v1/orgs", json={"slug": slug, "from_example": str(example)})
+        assert response.status_code == 200, response.text
+        response = await client.get(f"/api/v1/orgs/{slug}/settings")
+        assert response.status_code == 200, response.text
+        assert response.json()["org"]["reviewer_agents"] == expected, slug
+        assert response.json()["org"]["reviewer_configuration"] == {
+            "state": "configured" if expected else "none", "missing_agents": []}, slug
+        loaded = org._profile_coordinator.orgs[slug]
+        before = rows(loaded, "org_settings")
+        audits_before = [tuple(row) for row in loaded.db.execute("SELECT * FROM audit_log WHERE action='org_config_write' ORDER BY id").fetchall()]
+        reopened = OrgState.load(slug=slug, root=loaded.root, settings=Settings())
+        try:
+            snapshot = json.loads(reopened.workflow_authority.verify_admission_ready().snapshot_bytes)
+            assert snapshot["reviewer_agents"] == expected, slug
+            assert {agent["name"] for agent in snapshot["agents"]} == {"keeper", "other"}, slug
+            assert rows(reopened, "org_settings") == before, slug
+            assert [tuple(row) for row in reopened.db.execute("SELECT * FROM audit_log WHERE action='org_config_write' ORDER BY id").fetchall()] == audits_before, slug
+        finally:
+            reopened.close()
     # Parse failure cannot become omission/none; original constructor rollback stays.
     (example / "org" / "config.yaml").write_text("reviewer_agents: [\n")
     from runtime.orchestrator.org_config import OrgConfigError
