@@ -2318,10 +2318,15 @@ enrollments) refuse409 `team_not_empty` with members. Routing teams refuse409
 `default_team_retire_forbidden` or `task_default_team_retire_forbidden`;
 non-terminal team tasks, regardless of assignee, refuse409 `team_has_open_tasks`.
 Managers must also be quiescent (`agent_not_quiescent`). Checks run before
-archiving and again under the teams lock. Human-managed teams have no agent
+archiving and again under the teams lock. Live-state predicates precede any
+diagnostic limit, so retained completed history cannot conceal a blocker in
+either retirement or manager-session termination. Human-managed teams have no agent
 manager and cannot be retired through this endpoint. Successful removal checks
-the canonical authority snapshot against the shared registry before cleanup;
-failed cleanup restores the complete registry and archived files. Other teams
+the canonical authority snapshot against the shared registry before cleanup,
+outside durable publication/profile leases. Bounded identity and team inputs
+are revalidated under the mutation lease; the writer interval and teams lock
+span discovery and cleanup, with a separate leased segment for compensation.
+Failed cleanup restores the complete registry and archived files. Other teams
 and routing pointers are preserved. Manager-session `manage-agent terminate`
 remains worker-only, including `manager_terminate_forbidden`, team scoping,
 its existing audit and its `{ok: true, status: terminated}` response.

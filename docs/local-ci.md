@@ -2693,7 +2693,12 @@ listeners, workers, executors or live roster writes. They cover Founder auth,
 archive preservation, busy/member/routing/team-task refusal, worker→manager
 removal and published authority/cache coherence, compensation on failure, and
 unchanged manager-session termination. Test-side faults isolate native cleanup
-and archive failures; they add no production seam. This is not pytest, retired
+and archive failures; they add no production seam. History-boundary cases put
+live tasks behind 10,001 completed tasks and running dreams/wakes behind 501
+completed rows. Task cases cover both HTTP entry points, including parked
+`in_progress`/`blocked_on_job` work. Native lease observers cover success and
+compensation, legacy omitted routing pointers/string managers, and an arriving
+team change at the lease boundary. This is not pytest, retired
 units, general integration or Product E2E. Real daemon/CLI/UI acceptance remains
 a separate independent QA gate. Web `openapi-coverage.test.ts` was retired under
 THR-343; preserve the OpenAPI snapshot and TS client mirror, with Web static CI.

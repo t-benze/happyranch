@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -25,8 +25,8 @@ from runtime.daemon.app import create_app
 from runtime.daemon.state import DaemonState
 from runtime.daemon.org_state import OrgState
 from runtime.daemon import paths as daemon_paths
-from runtime.models import (DreamRecord, ScheduleKind, ScheduleRecord, TaskRecord,
-                            TaskStatus, WorkHourMode, WorkHourRecord)
+from runtime.models import (BlockKind, DreamRecord, DreamStatus, ScheduleKind, ScheduleRecord, TaskRecord,
+                            TaskStatus, WorkHourMode, WorkHourRecord, WorkHourStatus)
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.runtime import RuntimeDir
@@ -66,7 +66,8 @@ def seed_future(org: OrgState, name: str = "worker") -> None:
 
 @asynccontextmanager
 async def fixture(scratch: Path, *, workers: tuple[str, ...] = ("worker",), pending: bool = False,
-                  default: str = "default", task_default: str = "engineering") -> AsyncIterator[tuple[OrgState, httpx.AsyncClient]]:
+                  default: str = "default", task_default: str = "engineering",
+                  legacy: bool = False) -> AsyncIterator[tuple[OrgState, httpx.AsyncClient]]:
     scratch.mkdir()
     home = scratch / "home"
     home.mkdir()
@@ -83,6 +84,12 @@ async def fixture(scratch: Path, *, workers: tuple[str, ...] = ("worker",), pend
                       "engineering": {"manager": "keeper", "workers": ["other"]},
                       "retiring": {"manager": {"kind": "agent", "principal": "manager"},
                                    "workers": list(workers)}}}))
+        if legacy:
+            team_path = root / "org" / "teams.yaml"
+            candidate = yaml.safe_load(team_path.read_text())
+            del candidate["default_team"], candidate["task_default_team"]
+            candidate["teams"]["retiring"]["manager"] = "manager"
+            team_path.write_text(yaml.safe_dump(candidate))
         (root / "org" / "config.yaml").write_text("reviewer_agents: [other]\n")
         roster = [("keeper", "engineering", "manager"), ("other", "engineering", "worker"),
                   ("manager", "retiring", "manager")]
@@ -201,6 +208,100 @@ async def busy(org: OrgState, client: httpx.AsyncClient, name: str) -> None:
     org.db.insert_task(TaskRecord(id="TASK-busy", assigned_agent=name, team="engineering", brief="Synthetic busy"))
     detail = await expect_refusal(org, client, name, "agent_not_quiescent")
     assert {"kind": "task", "id": "TASK-busy"} in detail["conflicts"]
+
+
+async def historical_blocker(org: OrgState, client: httpx.AsyncClient, kind: str,
+                             state: str = "running", manager_session: bool = False) -> None:
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    if kind == "task":
+        blocked = state == "blocked"
+        org.db.insert_task(TaskRecord(
+            id="TASK-live", assigned_agent="worker", team="retiring", brief="Synthetic live task",
+            status=TaskStatus.IN_PROGRESS if blocked else TaskStatus(state),
+            block_kind=BlockKind.BLOCKED_ON_JOB if blocked else None, created_at=old))
+        org.db.execute(
+            "WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<10001) "
+            "INSERT INTO tasks(id, assigned_agent, team, brief, status, created_at, updated_at) "
+            "SELECT 'TASK-history-' || n, 'worker', 'retiring', 'Synthetic history', 'completed', ?, ? FROM history",
+            (old.replace(year=2021).isoformat(), old.replace(year=2021).isoformat()))
+        live_id, table = "TASK-live", "tasks"
+    else:
+        seed_future(org)
+        table, live_id = ("dreams", "DRM-001") if kind == "dream" else ("work_hours", "WH-001")
+        if kind == "dream":
+            org.db.update_dream(live_id, status=DreamStatus.RUNNING)
+        else:
+            org.db.work_hours.update(live_id, status=WorkHourStatus.RUNNING)
+        org.db.execute(f"UPDATE {table} SET scheduled_for=? WHERE id=?", (old.isoformat(), live_id))
+        columns = [row["name"] for row in org.db.execute(f"PRAGMA table_info({table})").fetchall()]
+        expressions = ["'history-' || n" if c == "id" else "'completed'" if c == "status"
+                       else "'2021-01-01T00:00:00+00:00'" if c == "scheduled_for"
+                       else "'history-' || n" if c == "local_date" else c for c in columns]
+        org.db.execute(
+            "WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<501) "
+            f"INSERT INTO {table}({','.join(columns)}) SELECT {','.join(expressions)} "
+            f"FROM {table} CROSS JOIN history WHERE id=?", (live_id,))
+    with org.db._lock:
+        org.db._conn.commit()
+    # Prove that the real retained history exceeds the old presentation cap.
+    assert org.db.execute(f"SELECT count(*) FROM {table} WHERE status='completed'").fetchone()[0] > (
+        10000 if kind == "task" else 500)
+    before = persistent(org), rows(org, "audit_log")
+    if manager_session:
+        org.sessions.set_active("TASK-owner", "manager", "sess-synthetic")
+        response = await client.post(f"{PREFIX}/agents/manage", json={
+            "action": "terminate", "name": "worker", "task_id": "TASK-owner", "session_id": "sess-synthetic"})
+    else:
+        response = await retire(client)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "agent_not_quiescent", response.text
+    assert {"kind": kind, "id": live_id} in response.json()["detail"]["conflicts"]
+    assert (persistent(org), rows(org, "audit_log")) == before
+
+
+async def lease_scope(org: OrgState, client: httpx.AsyncClient, name: str, rollback: bool) -> None:
+    capture = org.workflow_authority.capture_canonical_snapshot
+    observations = []
+    def observed_capture() -> bytes:
+        leases = org.db.execute("SELECT count(*) FROM workflow_publication_leases").fetchone()[0]
+        observations.append(leases)
+        return capture()
+    with patch.object(org.workflow_authority, "capture_canonical_snapshot", side_effect=observed_capture):
+        if rollback:
+            await cleanup_rollback(org, client, name)
+        else:
+            response = await retire(client, name)
+            assert response.status_code == 200, response.text
+            assert capture() == org.workflow_authority.verify_admission_ready().snapshot_bytes
+    assert observations and not any(observations), f"discovery publication lease counts: {observations}"
+
+
+async def leased_revalidation(org: OrgState, client: httpx.AsyncClient) -> None:
+    from runtime.workflows.authority import _SupportedWriterInterval
+    canonical_change = _SupportedWriterInterval.canonical_change
+    changed = False
+    expected = None
+    @contextmanager
+    def arriving_change(interval):
+        nonlocal changed, expected
+        if not changed:
+            changed = True
+            path = org.root / "org/teams.yaml"
+            candidate = yaml.safe_load(path.read_text())
+            candidate["default_team"] = "engineering"
+            path.write_text(yaml.safe_dump(candidate))
+            org.teams.adopt_canonical(TeamsRegistry.load(org.root))
+            expected = persistent(org)
+        with canonical_change(interval):
+            yield
+    # Inject an arriving canonical change at the native lease boundary, while
+    # keeping the real lease/fence, HTTP route and authority publication intact.
+    with patch.object(_SupportedWriterInterval, "canonical_change", arriving_change):
+        response = await retire(client)
+    assert changed and response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "retirement_state_changed", response.text
+    assert persistent(org) == expected
+    assert org.workflow_authority.capture_canonical_snapshot() == org.workflow_authority.verify_admission_ready().snapshot_bytes
 
 
 async def members(org: OrgState, client: httpx.AsyncClient) -> None:
@@ -326,6 +427,14 @@ async def main() -> int:
               for status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.ESCALATED)]
     cases += [("locked-recheck-" + kind, {} if kind == "busy" else {"workers": ()}, locked_recheck, (kind,))
               for kind in ("busy", "team-task", "member", "pointer")]
+    cases += [("history-task-" + state + suffix, {}, historical_blocker, ("task", state, manager_session))
+              for state in ("pending", "escalated", "in_progress", "blocked")
+              for suffix, manager_session in (("", False), ("-manage", True))]
+    cases += [("history-" + kind, {}, historical_blocker, (kind,)) for kind in ("dream", "work_hour")]
+    cases += [("lease-" + name + ("-rollback" if rollback else "-success"),
+               {} if name == "worker" else {"workers": (), "legacy": True}, lease_scope, (name, rollback))
+              for name in ("worker", "manager") for rollback in (False, True)]
+    cases += [("lease-revalidate-arriving-team", {}, leased_revalidation, ())]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", action="append", choices=[case[0] for case in cases])
     selected = parser.parse_args().case

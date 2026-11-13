@@ -95,6 +95,7 @@
     "GET /api/v1/orgs/{slug}/agents/enrollments",
     "POST /api/v1/orgs/{slug}/agents/{agent_name}/approve",
     "POST /api/v1/orgs/{slug}/agents/{agent_name}/reject",
+    "POST /api/v1/orgs/{slug}/agents/{agent_name}/retire",
     "GET /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/",
     "GET /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/{id_or_slug}",
     "POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/search",

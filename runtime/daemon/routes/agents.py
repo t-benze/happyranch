@@ -399,14 +399,14 @@ def _collect_quiescence_conflicts(org: OrgState, agent_name: str) -> list[dict]:
     db = org.db
 
     # Non-terminal tasks assigned to this agent.
-    non_terminal_statuses = {
-        TaskStatus.PENDING.value,
-        TaskStatus.IN_PROGRESS.value,
-        TaskStatus.ESCALATED.value,
-    }
-    for task in db.list_tasks(assigned_agent=agent_name, limit=10000):
-        if task.status.value in non_terminal_statuses:
-            conflicts.append({"kind": "task", "id": task.id})
+    # Filter live states in SQL BEFORE bounding diagnostics. Presentation lists
+    # can hide an old blocker behind arbitrarily many completed history rows.
+    tasks = db.execute(
+        "SELECT id FROM tasks WHERE assigned_agent = ? "
+        "AND status IN (?, ?, ?) ORDER BY created_at DESC, id DESC LIMIT 10000",
+        (agent_name, TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value, TaskStatus.ESCALATED.value),
+    ).fetchall()
+    conflicts.extend({"kind": "task", "id": row["id"]} for row in tasks)
 
     # Already-started (but not yet consumed/declined) thread invocations.
     for token, _thread_id in db.list_started_invocations_for_agent(agent_name):
@@ -417,14 +417,20 @@ def _collect_quiescence_conflicts(org: OrgState, agent_name: str) -> list[dict]:
         conflicts.append({"kind": "schedule", "id": sched.id})
 
     # Running work-hours wakes.
-    for wh in db.work_hours.list(agent=agent_name, limit=500):
-        if wh.status == WorkHourStatus.RUNNING:
-            conflicts.append({"kind": "work_hour", "id": wh.id})
+    wakes = db.execute(
+        "SELECT id FROM work_hours WHERE agent_name = ? AND status = ? "
+        "ORDER BY scheduled_for DESC, id DESC LIMIT 500",
+        (agent_name, WorkHourStatus.RUNNING.value),
+    ).fetchall()
+    conflicts.extend({"kind": "work_hour", "id": row["id"]} for row in wakes)
 
     # Running dreams.
-    for dream in db.list_dreams(agent=agent_name, limit=500):
-        if dream.status == DreamStatus.RUNNING:
-            conflicts.append({"kind": "dream", "id": dream.id})
+    dreams = db.execute(
+        "SELECT id FROM dreams WHERE agent_name = ? AND status = ? "
+        "ORDER BY scheduled_for DESC, id DESC LIMIT 500",
+        (agent_name, DreamStatus.RUNNING.value),
+    ).fetchall()
+    conflicts.extend({"kind": "dream", "id": row["id"]} for row in dreams)
 
     # Pending/running jobs attributable to the worker.
     for job in db.list_jobs_db(agent=agent_name, status=["pending", "running"], limit=500):
@@ -1115,6 +1121,8 @@ async def _terminate_agent(
         ) as authority_change,
         org.teams_lock,
     ):
+        original_teams = None
+        original_teams_bytes = None
         with authority_change.validation():
             # The outer checks make ordinary refusals cheap, but this await
             # permits another accepted writer to change the canonical file,
@@ -1145,6 +1153,9 @@ async def _terminate_agent(
                 )
 
             if founder:
+                from runtime.orchestrator.teams import TeamsRegistry
+                original_teams_bytes = (org.root / "org" / "teams.yaml").read_bytes()
+                original_teams = TeamsRegistry.from_bytes(original_teams_bytes, root=org.root)
                 _validate_founder_retirement(org, existing)
                 org.workflow_authority.capture_canonical_snapshot()
                 manager_team = agent_team
@@ -1208,68 +1219,72 @@ async def _terminate_agent(
         # writers cannot interleave this archive/cleanup segment. It does
         # not make a claim about external same-UID or multiprocess writers.
         team_retired = founder and existing.role == "manager"
-        original_teams = None
-        if founder:
-            from runtime.orchestrator.teams import TeamsRegistry
-            original_teams = TeamsRegistry.from_bytes(
-                (org.root / "org" / "teams.yaml").read_bytes(), root=org.root,
-            )
-        with authority_change.canonical_change():
-            os.rename(active_path, terminated_agent_path)
-            if workspace_exists:
-                try:
-                    _move_dir_atomically(workspace, terminated_workspace)
-                except Exception:
+        archive_complete = False
+        try:
+            with authority_change.canonical_change():
+                if founder:
+                    current = prompt_loader.load_agent_snapshot(paths, name)
+                    if (current is None or current[2] != archived_agent_bytes
+                            or (org.root / "org" / "teams.yaml").read_bytes() != original_teams_bytes
+                            or [(team, org.teams.team_row(team)) for team in org.teams.teams()]
+                            != [(team, original_teams.team_row(team)) for team in original_teams.teams()]
+                            or org.teams.default_team != original_teams.default_team
+                            or org.teams.task_default_team != original_teams.task_default_team):
+                        raise HTTPException(status_code=409, detail={"code": "retirement_state_changed", "name": name})
+                os.rename(active_path, terminated_agent_path)
+                if workspace_exists:
                     try:
-                        if (
-                            not active_path.exists()
-                            and terminated_agent_path.exists()
-                            and terminated_agent_path.read_bytes()
-                            == archived_agent_bytes
-                        ):
-                            os.rename(terminated_agent_path, active_path)
-                        else:
-                            logging.getLogger(__name__).warning(
-                                "terminate workspace rollback conflict for %s; "
-                                "canonical definition changed or disappeared",
-                                name,
+                        _move_dir_atomically(workspace, terminated_workspace)
+                    except Exception:
+                        try:
+                            if (
+                                not active_path.exists()
+                                and terminated_agent_path.exists()
+                                and terminated_agent_path.read_bytes()
+                                == archived_agent_bytes
+                            ):
+                                os.rename(terminated_agent_path, active_path)
+                            else:
+                                logging.getLogger(__name__).warning(
+                                    "terminate workspace rollback conflict for %s; "
+                                    "canonical definition changed or disappeared",
+                                    name,
+                                )
+                        except OSError:
+                            logging.getLogger(__name__).exception(
+                                "failed to roll back agent file archive for %s", name,
                             )
-                    except OSError:
-                        logging.getLogger(__name__).exception(
-                            "failed to roll back agent file archive for %s", name,
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail={
+                                "code": "workspace_archive_failed",
+                                "name": name,
+                            },
                         )
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail={
-                            "code": "workspace_archive_failed",
-                            "name": name,
-                        },
-                    )
-
-            # Remove team membership while still holding the lock. If the
-            # subsequent DB cleanup fails, we roll this back together with the
-            # filesystem archive.
-            if not founder:
-                org.teams.remove_worker(manager_team, name)
-
-            # Atomically cancel armed schedules, skip pending wakes/dreams, and
-            # decline unstarted invocations. A failure here rolls back the team
-            # and filesystem archive so the agent stays active and consistent.
-            try:
+                archive_complete = True
                 if founder:
                     if team_retired:
                         org.teams.remove_team(manager_team)
                     else:
                         org.teams.remove_worker(manager_team, name)
-                    # Check both the canonical file and shared cache before DB
-                    # cleanup commits. Team-keyed policy/history rows stay intact.
+                else:
+                    org.teams.remove_worker(manager_team, name)
+            # The async writer interval and teams lock still serialize the whole
+            # operation. Never hold durable publication/profile leases over the
+            # full-org scan. The publisher gate serializes discovery through SQL
+            # cleanup; compensation takes its own short canonical segment.
+            with org.workflow_authority._publisher_lock:
+                if founder:
                     org.workflow_authority.capture_canonical_snapshot()
                 org.db.terminate_agent_cleanups(
                     name,
                     audit_scope_id=scope_id,
                     audit_agent=actor,
                 )
-            except Exception:
+        except Exception:
+            if not archive_complete:
+                raise
+            with authority_change.canonical_change():
                 _logger = logging.getLogger(__name__)
                 _logger.exception(
                     "terminate cleanup failed for %s; rolling back archive",
