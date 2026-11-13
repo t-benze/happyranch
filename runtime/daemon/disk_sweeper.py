@@ -1241,6 +1241,9 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
             raise Retain('identity_changed')
     if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained, inventory) != git_identity:
         raise Retain('git_identity_changed_before_action')
+    # Both the final recursive snapshot and Git gate can be slow. Their
+    # successful observations cannot carry an earlier ownership answer forward.
+    evidence.ownership(path, workspace, task_id)
     return tree
 
 
@@ -1514,6 +1517,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 if not trees_equal(tree, fresh, deadline):
                     raise Retain('tree_changed_before_mutation')
                 if candidate['phase'] == 'scratch':
+                    evidence.ownership(Path(candidate['path']), Path(candidate['workspace']), Path(candidate['path']).name)
                     mutation_started = True
                     mutate(Path(candidate['path']), fresh, deadline, remove=True, scratch=True)
                 else:
@@ -1523,6 +1527,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     rows = registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)])
                     rows.require(path, deadline)
                     admitted_branch = rows[str(path)].get('branch')
+                    evidence.ownership(path, Path(candidate['workspace']), path.name)
                     mutation_started = True
                     try:
                         git(repo, deadline, 'worktree', 'remove', str(path))
@@ -1534,9 +1539,11 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # conservatively refuse that retry.
                         retry_tree = admit(candidate, evidence, deadline, now=now, retained=retained, topology=topology)
                         registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]).require(path, deadline)
+                        evidence.ownership(path, Path(candidate['workspace']), path.name)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
                         admit(candidate, evidence, deadline, now=now, repairs=repairs, retained=retained, topology=topology)
                         registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]).require(path, deadline)
+                        evidence.ownership(path, Path(candidate['workspace']), path.name)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
                     if str(path) in registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]):

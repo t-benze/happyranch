@@ -3843,7 +3843,7 @@ def c25():
             assert report['measurements']['errors']['count'] == 0, report
             assert len(calls) == counters['topology_reads'] == (1 if dirty else 9), (calls, counters)
             assert counters['censuses'] == (3 if dirty else 27), counters
-            assert counters['ownership_reads'] == (0 if dirty else 4), counters
+            assert counters['ownership_reads'] == (0 if dirty else 7), counters
             assert counters['entries_walked'] == sum(snapshots), (counters, snapshots)
             assert counters['git']['worktree list']['calls'] == (1 if dirty else 9), counters
             assert counters['git']['status']['calls'] == (1 if dirty else 7), counters
@@ -5170,12 +5170,134 @@ def c41():
                 limits='Pointers, HEAD and all stat censuses retained; full Step3 topology/native/mount race proof unfinished')
 
 
+def c42():
+    """Current ownership after the last scan/comparison/remove/repair census."""
+    variants = {
+        'task_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'", "UPDATE tasks SET status='completed' WHERE id='TASK-2'", 'task_or_root_not_terminal:in_progress'),
+        'root_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-1'", "UPDATE tasks SET status='completed' WHERE id='TASK-1'", 'task_or_root_not_terminal:in_progress'),
+        'root_reparented': ("UPDATE tasks SET parent_task_id='TASK-4' WHERE id='TASK-1'", "UPDATE tasks SET parent_task_id=NULL WHERE id='TASK-1'", 'task_or_root_not_terminal:in_progress'),
+        'new_sibling_job': ("INSERT INTO jobs VALUES('TASK-3','pending')", "DELETE FROM jobs WHERE status='pending'", 'active_job:pending'),
+        'job_status_unknown': ("UPDATE jobs SET status='unrecognised'", "UPDATE jobs SET status='completed'", 'unknown_job_status'),
+        'job_ancestry_unknown': ("INSERT INTO jobs VALUES('missing','running')", "DELETE FROM jobs WHERE status='running'", 'unknown_missing_or_cyclic_lineage'),
+    }
+    old = ownership_base()
+    observations, failures = [], []
+    for phase in ('scratch', 'worktree'):
+        boundaries = ('last_snapshot', 'final_comparison')
+        if phase == 'worktree': boundaries += ('remove_census', 'repair_census', 'retry_census')
+        for boundary in boundaries:
+            for label, (sql, heal, expected) in variants.items():
+                name = phase + '/' + boundary + '/' + label
+                try:
+                    decisions = []
+                    for module in (old, ds):
+                        with fixture() as f:
+                            ownership_indexes(f)
+                            f.task('TASK-1'); f.task('TASK-3', parent='TASK-1'); f.task('TASK-4', status='in_progress')
+                            if phase == 'scratch':
+                                path = f.scratch('TASK-2', parent='TASK-1'); repo = None
+                            else:
+                                repo, path = f.worktree('TASK-2')
+                                f.db.execute("UPDATE tasks SET parent_task_id='TASK-1' WHERE id='TASK-2'")
+                            f.db.execute("INSERT INTO jobs VALUES('TASK-3','completed')"); f.db.commit()
+                            before = candidate_contents(path)
+                            refs = f.git(repo, 'show-ref') if repo else None
+                            events, actions, result = [], [], {}
+                            counts = dict(snapshots=0, comparisons=0, admissions=0, removes=0)
+                            original_snapshot, original_equal = module.snapshot, module.trees_equal
+                            original_admit, original_rows = module.admit, module.registrations
+                            original_git, original_mutate = module.git, module.mutate
+                            def change():
+                                f.db.execute(sql); f.db.commit(); events.append('changed_after_' + boundary)
+                            def snapshot(root, deadline, **kwargs):
+                                tree = original_snapshot(root, deadline, **kwargs)
+                                if Path(root) == path:
+                                    counts['snapshots'] += 1
+                                    if boundary == 'last_snapshot' and counts['snapshots'] == 4: change()
+                                return tree
+                            def equal(*args):
+                                same = original_equal(*args)
+                                counts['comparisons'] += 1
+                                if boundary == 'final_comparison' and counts['comparisons'] == 3: change()
+                                return same
+                            def admit(*args, **kwargs):
+                                tree = original_admit(*args, **kwargs)
+                                counts['admissions'] += 1
+                                return tree
+                            def registrations(*args, **kwargs):
+                                rows = original_rows(*args, **kwargs)
+                                trigger = dict(remove_census=2, repair_census=3, retry_census=4).get(boundary)
+                                if trigger is not None and counts['admissions'] == trigger and not events: change()
+                                return rows
+                            def git(root, deadline, *args):
+                                if args[:2] == ('worktree', 'remove'):
+                                    counts['removes'] += 1
+                                    actions.append('git_remove')
+                                    if boundary in ('repair_census', 'retry_census') and counts['removes'] == 1:
+                                        # Existing error path, no policy substitute: the
+                                        # first command has no filesystem effect.
+                                        raise module.Retain('synthetic no-effect first Git refusal')
+                                return original_git(root, deadline, *args)
+                            def mutate(*args, **kwargs):
+                                actions.append('scratch_remove' if kwargs.get('remove') else 'permission_repair')
+                                return original_mutate(*args, **kwargs)
+                            def checkpoint():
+                                target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                                if (module is ds and target and target['state'] in ('retained', 'partial_or_unknown')
+                                        and len(events) == 1):
+                                    assert target.get('reason') == expected, (name, target)
+                                    # Heal the real synthetic row. A new current read
+                                    # passes, but the night's decision cannot retry.
+                                    f.db.execute(heal); f.db.commit()
+                                    module.Evidence(f.org, time.monotonic() + 5).ownership(path, f.workspace, path.name)
+                                    events.append('healed_after_refusal')
+                            with patch.object(module, 'snapshot', snapshot), patch.object(module, 'trees_equal', equal), \
+                                    patch.object(module, 'admit', admit), patch.object(module, 'registrations', registrations), \
+                                    patch.object(module, 'git', git), patch.object(module, 'mutate', mutate):
+                                report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW,
+                                                          result=result, checkpoint=checkpoint)
+                            target = row(report, path)
+                            if module is old:
+                                if boundary == 'repair_census':
+                                    assert target['state'] == 'partial_or_unknown' and path.exists(), (name, target)
+                                    assert actions == ['git_remove', 'permission_repair'], (name, actions)
+                                else:
+                                    assert target['state'] == 'removed' and not path.exists(), (name, target, actions, events)
+                            else:
+                                prior_effect = boundary in ('repair_census', 'retry_census')
+                                assert target['state'] == ('partial_or_unknown' if prior_effect else 'retained'), (name, target)
+                                assert target['reason'] == expected, (name, target)
+                                assert events == ['changed_after_' + boundary, 'healed_after_refusal'], (name, events)
+                                expected_actions = (['git_remove', 'permission_repair'] if boundary == 'retry_census' else
+                                                    ['git_remove'] if boundary == 'repair_census' else [])
+                                assert actions == expected_actions, (name, actions)
+                                assert candidate_contents(path) == before, name
+                                if repo: assert f.git(repo, 'show-ref') == refs
+                                assert 'removed_attributable_bytes' not in target, target
+                                if prior_effect:
+                                    assert report['outcome'] == 'error' and not report['coverage']['complete'], report
+                                deadline = time.monotonic() + 10
+                                candidate = dict(phase=phase, path=str(path), workspace=str(f.workspace))
+                                if repo: candidate['repo'] = str(repo)
+                                module.admit(candidate, module.Evidence(f.org, deadline), deadline, now=NOW)
+                                assert row(report, path)['state'] == target['state']
+                            decisions.append(dict(state=target['state'], reason=target.get('reason'), actions=actions, events=events))
+                    observations.append(dict(variant=name, result='PASS', base=decisions[0], new=decisions[1]))
+                except AssertionError as exc:
+                    failures.append(dict(variant=name, error=str(exc)[:2000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, equivalence_differences=[
+        'Late ownership races: base removes, or attempts permission repair at repair_census; current refuses after last observations. '
+        'Before any remove it is retained; after first attempted Git remove it remains partial_or_unknown under existing classification.'],
+        limits='Actual disposable SQLite/Git/filesystem; synthetic no-effect first Git refusal only for repair/retry entry; native holds are separate')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,42))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,43))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -5206,7 +5328,8 @@ if __name__=='__main__':
             purposes += ('Post-removal branch resolution and incomplete lost refs', 'Fresh HEAD branch refs and mapping identities after inventory',)
             purposes += ('Literal primary common-dir proof and base removal parity', 'Fresh recursive safety after inventory and healed refusal latch',)
             purposes += ('Candidate-scoped auxiliary reads with exhaustive fresh topology',)
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41),purposes),1):
+            purposes += ('Current ownership at final scan remove repair retry boundaries',)
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

@@ -246,6 +246,15 @@ Each gate still resolves the candidate's current common directory and top-level
 through Git and checks the literal directory no-follow; it omits only the
 redundant Git lookup of that primary common directory. No census is omitted.
 
+Ownership is read again after each admission's last recursive snapshot and Git
+gate. The final tree comparison or complete registration census is followed by
+another current ownership/native-writer/hold transaction immediately before
+scratch removal, Git removal, permission repair and retry. Inventory clearance
+never crosses those slow observations. Refusal before an attempted effect retains;
+a refusal after an attempted Git removal remains partial/unknown under the
+existing classification, and no later repair or retry proceeds that night.
+These are sampled observations, not a lock against later same-user writes.
+
 During candidate admission, final removal/repair/retry checks and post-removal
 confirmation, the census skips repeated reads of a disjoint sibling's ordinary
 index/auxiliary file only when its current full stat signature equals discovery.
