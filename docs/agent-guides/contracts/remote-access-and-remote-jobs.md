@@ -76,44 +76,10 @@
   Public failure evidence separates handoff/decrypt/native-process/C-init/C-start/
   join-wait timings, allowlisted exception classes, return codes and fixed-label
   join diagnostics before scratch removal.
-  DERP acceptance now uses a bounded all-interface native packet/socket proof,
-  retaining PR1459's closed filch diagnostic as corroboration. The runner's
-  existing tcpdump observes pktap,all without PID/endpoint/BPF filters; unknown
-  egress attribution, malformed/unsupported packets, drops, unread/partial data,
-  tool/start/cleanup errors and time/byte/count limits all fail closed. Two lsof
-  observations require positive native TCP and no UDP socket. A fresh exact
-  real-daemon200 during capture, zero native UDP and bidirectional native TCP
-  payload only with the VM443 endpoint establish the observed peer relay path:
-  pinned Tailscale sends peer data over UDP or DERP. A current-run guest identity
-  check observes the effective embedded region/node in the exact live Headscale
-  invocation's startup journal. It requires singleton999, the VM hostname/443,
-  IPv4 and STUN3478, the pinned live binary/argv, unchanged pre-launch config
-  fingerprint and process identity, and no HEADSCALE_*/DERP_*/TS_* environment
-  overrides or upstream URLs/paths/auto-update/mesh/unknown config keys. Pinned
-  composition then fixes the singleton map; this is runtime-validated config
-  inference, not an in-memory map dump. The authenticated Cloud Assistant result
-  binds source SHA and fresh recipient digest before the existing operator/run/
-  attempt/SHA/key/expiry-bound handoff. Identity older than120s or missing,
-  malformed, foreign-run, wrong/multiple-region or wrong-endpoint evidence
-  refuses. Contradictory filch regions veto even passing packets. Missing logs
-  alone remain nonfatal. Configuration or control-connection counts alone cannot
-  pass. The original separate allowed200 and exposure controls follow only after proof success.
-  `packet_diagnostics` adds closed labels/bounded integer counts only, beside
-  existing `derp_diagnostics`, in pre-cleanup and final summary/Actions output.
-  No addresses, PIDs, URLs, tuples, raw headers or payloads are public; private
-  capture files are removed with runner scratch. The runbook owns exact limits,
-  labels and sensitivity cases. This observes only this native process/request
-  window, relies on OS attribution/counters and the authenticated unchanged
-  fixture/bridge and guest root, and assumes the pinned process loaded the
-  unchanged snapshotted inputs without hostile root memory tampering. It does
-  not certify future UDP behavior or signed-app/GUI.
-  Actual native observer/transport acceptance remains NOT RUN premerge.
-  Headscale's default DisableLogTail still discards later filch writes; no
-  logtail or product change follows. Attempt6 TASK-15774/run43330485188/JOB-6668
-  remains failed/spent; post-proof200/exposure were not reached. The identity
-  repair changes guest/control drivers and requires one conditional VM-only
-  premerge pass; no native join, dispatch or issuance allowance is added. All
-  historical budgets remain unchanged.
+  The DERP gate now uses home UDP enforcement; see the TASK-15886 amendment
+  below. Authenticated singleton identity and exact real-daemon200 remain jointly
+  required. Missing log evidence alone remains non-gating; contradictory region
+  evidence vetoes. Native acceptance remains OPEN/NOT RUN.
   C init/start failures also retain the allowlisted `bridge_error_class` from
   the existing C error accessor, with raw text withheld and unknown patterns
   mapped to `unknown`. The native runner exclusively creates the0700 target
@@ -166,41 +132,69 @@
   slice; all five normative topology/failure rows remain required.
 
 
-### M4 observer compatibility amendment (TASK-15856)
+### M4 home UDP enforcement amendment (TASK-15886)
 
-The [runbook](../../../scripts/ci/README-m4-tailnet.md#observer-compatibility-before-enrollment-task-15856)
-owns the source-derived macOS formats and closed diagnostic schema. The parser
-reads pktap process/direction metadata before protocol bodies. Unsupported,
-truncated or multiline records may be tolerated only if positively attributed
-exclusively to another process; native unsupported traffic and unresolved
-attribution refuse. Kernel ingress requires a known reverse native TCP flow.
-Singular/plural stderr counters are parsed; captured=received=parsed, zero
-kernel/interface/metadata-filter drops, both socket controls, native zeroUDP,
-bidirectional exclusive VM443, fresh exact daemon200, all budgets and current
-runtime relay identity remain required together. `capture_diagnostics` adds only
-closed structural labels and bounded integer counts beside unchanged packet fields.
+The [runbook](../../../scripts/ci/README-m4-tailnet.md#home-udp-enforcement-proof-task-15886)
+owns the exact gate and controls. The pktap/tcpdump parser, observer self-test,
+socket observations and manual observer-probe workflow are removed. PR1459
+closed log diagnostics remain corroboration; contradictory regions still veto.
 
-Native prepare now runs an observer self-test after the native precondition,
-before generating/publishing the recipient. A short-lived child makes one local
-synthetic HTTP request under the actual observer and both lsof controls. Complete
-parse/counters/attribution and positive bidirectional child TCP are required;
-refusal publishes closed `observer_diagnostics`, reaps owned children and removes
-private scratch without generating a recipient. This is no relay/native acceptance.
-The separate manual-only, non-required macos-15 `managed-m4-observer-probe.yml`
-runs exactly that precondition, with pinned checkout, contents:read, no secrets,
-inputs, bridge build, VM/cloud/Headscale/PR-comment operations, and always-cleanup.
-Once the workflow exists on main, an explicitly authorized manager can dispatch
-`gh workflow run managed-m4-observer-probe.yml --repo t-benze/happyranch --ref task/TASK-15856`
-(or `--ref main` for the merged code). managed-m4.yml and required CI/E2E are unchanged.
+Acceptance jointly requires, in order: unchanged authenticated current-run
+singleton999/expected endpoint/no-upstream/no-auto-update/no-mesh identity;
+test-owned guest nft UDP DROP rules present under the same identity before and
+after the window; a fresh native bridge GET with the exact real-daemon200 body
+inside that window; and the unchanged client UDP-disable setting. Output matches
+the service UID, input the socket's service cgroupv2; non-loopback IPv4/IPv6 UDP
+is blocked without changing product code/units. The client acknowledges completed
+response consumption over the existing orgs route/credential before the host's
+after snapshot. Existing operator/run/attempt/SHA/key/expiry envelopes bind both
+receipts. Closed labels and bounded integers only are public. Missing, stale,
+contradictory or changed evidence refuses before separate post-proof200/exposure.
+The original35s window and all existing deadlines remain; counters are informational.
 
-Attempt7 TASK-15847/run43357856292/JOB-6690 remains failed/spent at capture-format.
-PROVEN from old parser order: rx is accumulated only after the complete first
-pass, so rx0 cannot diagnose incoming traffic. Exact failing structure and actual
-binary output remain UNKNOWN; fixtures from Apple source do not reconstruct it.
-Native acceptance stays OPEN and this source task grants no dispatch, join,
-certificate or native allowance. Linux JOB-6610/6615/6618, native1–7
-TASK-15684/15690/15691/15753/15766/15774/15847 and premerge JOB-6641/6643/6644/6647
-remain failed/spent without replenishment. Guest-driver byte parity means this
-task does not trigger VM --premerge-vm; native tool behavior remains NOT RUN.
+Pinned Tailscale1.78.0 explicitly falls back to DERP when UDP/STUN fails and uses
+TCP443 for DERP; a direct WireGuard path needs bidirectional UDP. Thus the working
+peer request under home UDP enforcement used DERP, under the singleton identity.
+This trusts home VM root/kernel and pinned process/config inputs; it is not an
+in-memory map dump, an all-native-packet observation, signed-app or GUI proof.
+
+Prepare/premerge exercises real ingress/egress positive+negative UDP controls
+under a throwaway stand-in UID/cgroup on a private veth/namespace, using3478
+without public ingress changes. It proves selector/counter behavior, not the
+installed sidecar/native path. Controls remove their resources; teardown removes
+the acceptance nft table and clean-state fails on residue. Unsettled F1 writers
+still prevent cleanup. No product/bridge/ABI/dependency/auth/permission, SG/SSH,
+credential/billing, TLS, binding, pairing or forbidden/refused-route change.
+managed-m4.yml remains manual/main-only/non-required;
+required CI and Product E2E are unchanged. Certificate ledger stays3/5, zero issuance.
+
+
+TASK-15887 repairs the local-output control: Linux NF_DROP can return EPERM to
+sendto. Only selected output sends may report that errno, and they still require
+receiver timeout plus exactly one matching drop; every negative control must
+arrive with zero drop increment. Other errors refuse. No package installation
+was needed by the source repair; the initial retained clean-state had already
+executed nft successfully. Distro nftables/iproute2 packages, if explicitly
+installed on a disposable VM, are documented allowed package residue; this never
+permits a leftover test table, account, unit, namespace or veth.
+
+The guest and coordinator project UDP control diagnostics to fixed labels
+(`passed`, `refused`, `unknown`), a closed stage subcause (unknown values become
+`unknown`) and bounded non-Boolean integers only. The coordinator records this
+as `udp_control` in summary.json. Raw exceptions/nft stderr stay in a temporary
+0700 guest scratch directory and are erased before return, outside log archives.
+An early prepare failure before any Headscale start attempt records journal
+state `not applicable: fixture not started`; all collected entries still must
+be current-run-only. Once fixture start is attempted, the nonempty Headscale
+journal requirement remains mandatory; installed-product journal requirements
+are unchanged. JOB-6727 remains failed/spent, with its original unknown UDP
+subcause and consequent journal failure; this repair does not reclassify it.
+
+Native acceptance remains OPEN/NOT RUN; attempt8 is unspent and separately
+EM-commissioned after merge. PR1472 stays draft/unmerged salvage; two unused
+TASK-15883 probes are retired. All failures remain spent: Linux JOB-6610/6615/6618;
+native1–7 TASK-15684/15690/15691/15753/15766/15774/15847; observer runs43368317931,
+43371075839,43372501871,43373949599,43377704582; premerge JOB-6641/6643/6644/6647;
+JOB-6699 and JOB-6722. No allowance is replenished.
 
 Custody boundary (engineering_manager TASK-15621): the no-raw-address/PID/tuple/payload rule applies to the packet-proof and capture-diagnostic public fields. The pre-existing reviewed pairs handoff payload synthetic tailnet address and VM service journal metadata are existing public surfaces and are outside that assertion; credentials, enrollment/pairing material and raw capture lines remain forbidden everywhere.

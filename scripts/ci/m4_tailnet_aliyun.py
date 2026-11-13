@@ -26,6 +26,7 @@ from m3_reboot_aliyun import CloudAssistant
 from m4_tailnet_client import Bridge, DiagnosticComplete, build_archive, control_get, exception_class, worker
 from m4_tailnet_control import HostedRun, relay_identity_receipt
 from m4_tailnet_runner import decrypt
+from m4_tailnet_udp import safe_controls
 
 BASE = "/var/lib/happyranch-m4"
 INSTANCE = "i-j6c1pwjqygzrccal4mzh"
@@ -193,7 +194,15 @@ def main() -> None:
                     raise RuntimeError('expanded log budget exceeded')
                 stream = bundle.extractfile(member)
                 assert stream is not None
-                save('vm-' + name, stream.read())
+                data = stream.read()
+                if name == 'udp-controls.json':
+                    try:
+                        control = json.loads(data) if len(data) <= 16384 else None
+                    except (ValueError, UnicodeError):
+                        control = None
+                    record['udp_control'] = safe_controls(control)
+                    data = (json.dumps(record['udp_control']) + '\n').encode()
+                save('vm-' + name, data)
 
     if args.clean_state_only or args.remove_cert_cache:
         security_group()
