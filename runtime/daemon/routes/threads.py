@@ -1867,10 +1867,13 @@ async def dispatch_from_thread_endpoint(
             assert_origin_unheld(org, resolves)
         from runtime.daemon.routes.tasks import _validated_task_overrides, _task_selection_view
 
+        definitions = None
         def dispatch_selection() -> tuple[dict, dict]:
-            selection = _validated_task_overrides(org, effective_target, body.model, body.reasoning_effort, "manager")
+            selection = _validated_task_overrides(
+                org, effective_target, body.model, body.reasoning_effort, "manager", definitions=definitions,
+            )
             selected = TaskRecord(id="pending", brief=brief, assigned_agent=effective_target, **selection)
-            applied = _task_selection_view(selected, org) if body.model is not None or body.reasoning_effort is not None else {}
+            applied = _task_selection_view(selected, org, definitions) if body.model is not None or body.reasoning_effort is not None else {}
             return selection, applied
 
         digest_parts = [brief, effective_team, effective_target, resolves or "", inv.purpose.value]
@@ -1927,6 +1930,9 @@ async def dispatch_from_thread_endpoint(
             task_id = result["task_id"]
         else:
             async with org.db_lock:
+                # Load outside synchronous DB ownership; validation stays after
+                # the locked token/replay and predecessor/origin refusals.
+                definitions = {effective_target: prompt_loader.load_agent(org_paths, effective_target)}
                 from runtime.orchestrator.task_pause import origin_guard
                 with origin_guard(org, resolves), org.db.thread_continuation_transaction():
                     if org.db.get_pending_invocation(body.invocation_token) is None:
