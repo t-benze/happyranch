@@ -210,6 +210,7 @@ export async function runReviewerSettingsCases(h, { org, fixture, selected = 'al
     check('dirty bar shown', s.dirty, true);
     check('pending save copy names the ID', s.notices, [tr('en', 'settings.organization.reviewer.pendingSave', { agents: 'senior_dev' })]);
     check('no request before Save', puts(from), []);
+    await evaluate(page, `${FIELD}.scrollIntoView({ block: 'center' }); true`);
     await capture(page, 'rv-pick-dirty-en-1440', { locale: 'en', viewport: '1440x900', state: 'picked Senior, dirty' });
     const saveFrom = await save(page);
     const written = puts(saveFrom);
@@ -252,6 +253,7 @@ export async function runReviewerSettingsCases(h, { org, fixture, selected = 'al
     s = await state(page, 'en');
     check('keyboard remove', s.ids, ['dev_agent']);
     check('focus moved to picker after chip unmount', await evaluate(page, `document.activeElement === ${TRIGGER}`), true);
+    await evaluate(page, `${FIELD}.scrollIntoView({ block: 'center' }); true`);
     await capture(page, 'rv-keyboard-draft-en-390', { locale: 'en', viewport: '390x844', state: 'keyboard draft, picker focused' });
     await clickSrc(page, button(tr('en', 'settings.organization.saveBar.discard'))); await pause(300);
     s = await state(page, 'en');
@@ -268,6 +270,7 @@ export async function runReviewerSettingsCases(h, { org, fixture, selected = 'al
     check('picked None', await pick(page, tr('en', 'settings.organization.reviewer.noneOption')), true);
     let s = await state(page, 'en');
     check('draft is empty with pending clear copy', [s.ids, s.notices, s.dirty], [[], [tr('en', 'settings.organization.reviewer.pendingClear')], true]);
+    await evaluate(page, `${FIELD}.scrollIntoView({ block: 'center' }); true`);
     await capture(page, 'rv-clear-dirty-en-1440', { locale: 'en', viewport: '1440x900', state: 'None chosen, dirty' });
     const written = puts(await save(page));
     check('PUT sends explicit []', written.map((w) => w.body?.reviewer_agents), [[]]);
@@ -339,7 +342,11 @@ export async function runReviewerSettingsCases(h, { org, fixture, selected = 'al
     let s = await state(page, 'en');
     check('draft and dirty kept after failure', [s.ids, s.dirty], [['senior_dev'], true]);
     check('failure banner shown', await evaluate(page, `document.body.textContent.includes(${quote(tr('en', 'settings.organization.saveFailed', { detail: '' }).trim())})`), true);
+    await evaluate(page, `${FIELD}.scrollIntoView({ block: 'center' }); true`);
     await capture(page, 'rv-save-failed-en-1440', { locale: 'en', viewport: '1440x900', state: 'save failed, draft kept' });
+    // The shared save-failure banner is the subject of this second capture.
+    await evaluate(page, `[...document.querySelectorAll('section > div')].find((d) => d.textContent.startsWith(${quote(tr('en', 'settings.organization.saveFailed', { detail: '' }).trim())}))?.scrollIntoView({ block: 'start' }); true`);
+    await capture(page, 'rv-save-failed-banner-en-1440', { locale: 'en', viewport: '1440x900', state: 'save failed banner' });
     fixture.setPut('ok');
     written = puts(await save(page));
     s = await state(page, 'en');
@@ -403,6 +410,7 @@ export async function runReviewerSettingsCases(h, { org, fixture, selected = 'al
     s = await state(page, 'en');
     check('B field unaffected by A late response', [s.ids, s.dirty, s.notices], [['lead'], false, []]);
     check('A PUT went to A only', puts(saveFrom).map((w) => [w.path, w.body?.reviewer_agents]), [[`/api/v1/orgs/${org}/settings/org`, ['senior_dev']]]);
+    await evaluate(page, `${FIELD}.scrollIntoView({ block: 'center' }); true`);
     await capture(page, 'rv-org-switch-other-en-1440', { locale: 'en', viewport: '1440x900', state: 'other org after A late save' });
     await go(page, org);
     s = await state(page, 'en');
