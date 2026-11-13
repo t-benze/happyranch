@@ -61,7 +61,7 @@ from runtime.orchestrator.task_pause import assert_origin_unheld, origin_guard
 from runtime.orchestrator.task_wait_readers import ChildWaitBudget, derive_child_wait
 
 if TYPE_CHECKING:
-    from runtime.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator.agent_def import AgentDef, AgentParseError
 
 logger = logging.getLogger(__name__)
 
@@ -546,7 +546,7 @@ MAX_OUTPUT_BYTES = 200 * 1024
 def _task_selection_view(
     task: TaskRecord, org: OrgState, definitions: dict[str, AgentDef | None] | None = None,
 ) -> dict:
-    """Read current agent defaults without DB ownership; cache per response only."""
+    """Use cached definitions, or load current defaults without DB ownership."""
     from runtime.orchestrator.task_selection import selection_view
     assigned = task.assigned_agent
     # Retained tasks may outlive their team in the current roster.
@@ -564,9 +564,13 @@ def _task_selection_view(
 
 def _validated_task_overrides(
     org: OrgState, assigned: str | None, model: str | None, effort: str | None, source: str | None,
+    *, definitions: dict[str, AgentDef | None] | None = None,
 ) -> dict:
     from runtime.orchestrator.task_selection import TaskSelectionError, resolve_task_selection
-    definition = prompt_loader.load_agent(OrgPaths(root=org.root), assigned) if assigned else None
+    if definitions is not None and assigned in definitions:
+        definition = definitions[assigned]
+    else:
+        definition = prompt_loader.load_agent(OrgPaths(root=org.root), assigned) if assigned else None
     if definition is None:
         raise HTTPException(status_code=422, detail={"code": "unknown_owner", "owner": assigned})
     try:
@@ -586,7 +590,10 @@ class SubmitTask(BaseModel):
     attachments: list[TaskAttachmentRef] | None = None
 
 
-def resolve_task_owner(body: SubmitTask, org: OrgState) -> tuple[str, str]:
+def resolve_task_owner(
+    body: SubmitTask, org: OrgState,
+    *, active_agents: dict[str, AgentDef] | AgentParseError | None = None,
+) -> tuple[str, str]:
     registry = org.teams
     if registry is None:
         raise HTTPException(
@@ -603,7 +610,10 @@ def resolve_task_owner(body: SubmitTask, org: OrgState) -> tuple[str, str]:
 
     from runtime.orchestrator.agent_def import AgentParseError
     try:
-        active = {agent.name: agent for agent in prompt_loader.list_agents(OrgPaths(root=org.root))}
+        if isinstance(active_agents, AgentParseError):
+            raise active_agents
+        active = (active_agents if active_agents is not None else
+                  {agent.name: agent for agent in prompt_loader.list_agents(OrgPaths(root=org.root))})
     except AgentParseError:
         # Canonical drift after attachment is still an admission refusal;
         # do not allocate a task or claim an otherwise valid attachment.
@@ -658,13 +668,37 @@ def persist_root_task(
     A failed binding rolls back the task too. Queue delivery follows commit.
     """
     db = org.db
+    # Preserve the own-transaction refusal before any canonical roster read,
+    # then recheck at the unchanged writer boundary below.
+    with db._lock:
+        if db._conn.in_transaction:
+            raise RuntimeError('root submission requires its own transaction')
+    from runtime.orchestrator.agent_def import AgentParseError
+    active_agents = None
+    if org.teams is not None:
+        try:
+            active_agents = {agent.name: agent for agent in prompt_loader.list_agents(OrgPaths(root=org.root))}
+        except AgentParseError as exc:
+            active_agents = exc  # Raise the native refusal only at owner validation.
+    candidate_owner = body.owner
+    if candidate_owner is None and org.teams is not None:
+        candidate_team = body.team or org.teams.task_default_team
+        if candidate_team in org.teams.teams():
+            candidate_owner = org.teams.executable_manager_for_team(candidate_team)
+    definitions = {}
+    if candidate_owner is not None and isinstance(active_agents, dict):
+        # list_agents already parsed this definition; reuse the same snapshot.
+        definitions[candidate_owner] = active_agents.get(candidate_owner)
     move = getattr(db, '_team_move_coordinator', None)
     with move.gate if move is not None else nullcontext():
         with db._lock:
             if db._conn.in_transaction:
                 raise RuntimeError('root submission requires its own transaction')
-            team, assigned = resolve_task_owner(body, org)
-            selection = _validated_task_overrides(org, assigned, body.model, body.reasoning_effort, 'founder')
+            team, assigned = resolve_task_owner(body, org, active_agents=active_agents)
+            selection = _validated_task_overrides(
+                org, assigned, body.model, body.reasoning_effort, 'founder',
+                definitions=definitions if assigned == candidate_owner else None,
+            )
             db._conn.execute('BEGIN IMMEDIATE')
             try:
                 task = TaskRecord(id=db.next_task_id(), brief=body.brief, team=team, assigned_agent=assigned, **selection)

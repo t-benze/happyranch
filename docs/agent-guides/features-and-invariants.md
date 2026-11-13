@@ -3073,6 +3073,26 @@ after the DB read. Retained tasks without an assigned agent still use the team's
 executable manager; a missing definition leaves unoverridden effective fields
 null. The selection keys and per-field source rules are unchanged.
 
+Root creation through `persist_root_task` preloads active agent definitions
+outside the move gate and synchronous DB lock, caching the candidate owner's
+definition from that snapshot. Owner/registry and selection validation stay
+inside the original locks, before `BEGIN IMMEDIATE`. The own-transaction refusal
+is checked before preloading and again at the writer boundary. If the locked
+resolution differs from the candidate, definition validation retains its old
+in-lock load as a rare residual; supported on-loop lifecycle writers cannot
+interleave the synchronous, no-await preload-to-COMMIT segment.
+Ordinary thread dispatch likewise preloads its target definition before the
+origin guard and continuation transaction. Its operation-local cache includes
+missing definitions and serves both validation and applied settings. Validation
+still follows the locked token/replay and predecessor/origin/eligibility checks;
+TASK_FOLLOWUP and replay reads retain their existing behavior. Adapter/executor
+reads do not acquire the canonical-roster fence and stay at their old points.
+These preloads widen the window in which out-of-band file-only removal/drift
+can admit an owner whose in-memory registry membership remains, where the former
+later locked read would have refused. This is an accepted engineering trade-off:
+the DB/move locks never fenced external edits through COMMIT, and launch-time
+validation still applies. Transaction, binding and audit-row ordering are unchanged.
+
 Ordinary manager handoffs accept optional `model` and `reasoning_effort` on
 `delegate`, each `then` leg, and each `fanout`/`parallel` child, including
 pipeline-carrier nested legs. PR1's resolver validates the whole decision
