@@ -93,6 +93,34 @@ sweeper spec, “Measurement-only additions”, for exact counter/history bounds
 write-confirmation lag and measurement-failure behavior. This grants no cleanup
 or configuration authority.
 
+THR307 seq337 package step 2 uses the review revision 3 coverage definition.
+The authoritative classification table is `_CLASSIFICATION` in `disk_sweeper.py`.
+Candidate-own missing, cyclic or malformed task ancestry retains that candidate
+only; unknown job status or active-job ancestry still holds the whole org.
+A uniquely recorded missing worktree folder is retained locally only after the
+full existing no-follow census/pointer/ancestor proof; its recorded location
+protects containing candidates and it is never repaired. Unknown-location admin
+residue ALWAYS prevents a complete night. Located inspected keeps and proven
+listed TASK arrivals can satisfy coverage; unknown discovery/shared holds,
+unreached/in-flight/partial effects, operational errors or an unpublished report
+cannot. Positively classified ordinary non-clone folders are listed exclusions;
+a configured clone with missing `.git` or unsafe/unavailable evidence stays unknown.
+The empty-scope Git prune is removed; admission/census frequency is unchanged.
+JSON and matching org audits carry `coverage`, `night`, policy, inventory windows,
+exclusions and deferred arrivals. Worker-only JSON is unproven until the parent
+records stop/reap and a successful worker return code within the original budget;
+the prior-night check also requires matching summary audits for loaded orgs.
+Interrupted-removal intents and bounded prior
+report provenance are reporting only, never authority to finish, repair or retry.
+At startup and before each existing night, the daemon records the previous
+expected missing/incomplete night once per loaded org in existing audit rows
+(empty task id, `daemon`, action `disk_sweep_night_notice`) and the daemon log.
+This is a record, not delivery to the founder; delivery awaits the founder's
+choice. A daemon that stays down cannot record. A suspended stop-file night is
+not complete, with explicit reason `scheduled_suspension`. There is no new timer,
+catch-up, retry or marker reset. See the maintained nightly sweeper spec's
+“Coverage and classification” section for fields, limits and assumptions.
+
 One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
 Its only supported content is a JSON object containing exactly `stop` with a
 real Boolean: `{"stop":true}` suspends scheduled deletion for all orgs;
@@ -170,7 +198,7 @@ pointer retains only that path as `unknown_unregistered_task_worktree:<exact pat
 Additive TASK roots and new canonical reciprocal TASK-folder/admin-entry pairs
 across censuses or Git listing retain only the arriving task with that same reason;
 existing identities/pointers stay exact and new admin names are TASK names.
-These paths protect containing trees and latch partial discovery with no prune.
+These paths protect containing trees and latch partial discovery; only proven, listed arrivals satisfy coverage.
 Other missing or changed mapping/enumeration/entry, non-TASK additions, unsafe
 alias/hardlink/special objects, conflict or unknown descendant location retains
 the shared scope.
@@ -178,7 +206,7 @@ All proven paths, including locally uncertain non-task descendants, protect
 containing trees at every final remove/repair/retry boundary. Retention is latched
 for the attempt, never clearance; own metadata and shared topology stay fresh.
 Reports keep local discovery partial, known-only counts and unknown allocation;
-any partial/unknown scope or remaining registration prohibits repository-wide prune.
+repository-wide prune is removed for every scope.
 This changes none of this skill's legacy gates or agent cleanup authority.
 Durable output and sibling task-scratch manifests/locks stay excluded. Put
 regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
@@ -944,7 +972,7 @@ no removed whole-release naming fingerprint is restored.
 The scheduled daemon disk worker reserves a global native writer per admitted
 org before spawn, through supervision/reap/report. Held/unowned orgs defer with
 bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
-child admission and prune re-read the actual parent's active global writer ID
+child admission re-reads the actual parent's active global writer ID
 through strict append-only history and validate the optional move layout/hold.
 An installed layout with missing/unknown ownership refuses before mutation; absent
 layout preserves native behavior. Missing/incomplete effect closure, interruption

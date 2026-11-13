@@ -60,6 +60,120 @@ TASK = re.compile(r'TASK-[0-9]+\Z')
 _history = ContextVar('disk_sweep_kept_history', default=None)
 
 
+# Review revision 3 section 5.3: the sole scope/coverage classification table.
+# Context rows require the full existing mapping proof, never just a reason label.
+# Unknown findings keep their item and veto completeness; they grant no clearance.
+_CLASSIFICATION = {
+    'mapped_metadata': ('item', True),
+    'arrival': ('item', True),
+    'unknown_location_residue': ('entry', False),
+    'missing_folder': ('item', True),
+    'unregistered_task': ('item', False),
+    'non_clone': ('none', True),
+    'registration_unknown': ('clone', False),
+    'candidate_lineage_unknown': ('item', False),
+    'job_lineage_unknown': ('org', False),
+    'org_unavailable': ('org', False),
+    'run_error': ('run', False),
+    'preservation': ('item', True),
+    'item_unknown': ('item', False),
+}
+_PRESERVATION_REASONS = {
+    'task_or_root_not_terminal', 'active_job', 'dirty_or_untracked', 'unique_head_commit',
+    'changed_within_hour', 'unknown_external_hardlinks', 'filesystem_boundary',
+    'possible_nested_worktree', 'linked_descendant', 'git_unregistered_locked_or_prunable',
+}
+_ORG_REASONS = {
+    'unknown_job_status', 'team_move_cleanup_owner_unavailable', 'team_move_native_held',
+}
+
+
+class _LineageUnknown(Retain):
+    """Keep the ancestry observation's candidate/job context with its reason."""
+    def __init__(self, reason: str, finding: str) -> None:
+        super().__init__(reason)
+        self.finding = finding
+
+
+def _classification(reason: str, finding: str | None = None) -> dict:
+    code = reason.split(':', 1)[0]
+    if finding is None:
+        finding = ('job_lineage_unknown' if code in _ORG_REASONS else
+                   'missing_folder' if code == 'missing_worktree_folder' else
+                   'unregistered_task' if code == 'unknown_unregistered_task_worktree' else
+                   'preservation' if code in _PRESERVATION_REASONS else 'item_unknown')
+    hold, located = _CLASSIFICATION[finding]
+    return dict(finding=finding, hold=hold, located_inspected=located)
+
+
+def _scope(inventory: dict, path: str, reason: str, finding: str, count: int | None = None) -> None:
+    if not any(scope['path'] == path for scope in inventory.setdefault('discovery_scopes', [])):
+        inventory['discovery_scopes'].append(dict(path=path, reason=reason, candidate_count=count))
+    inventory.setdefault('scope_classifications', {})[path] = _classification(reason, finding)
+
+
+def _coverage(result: dict) -> dict:
+    reasons = []
+    scopes = result.get('discovery_scopes', [])
+    classified = result.get('scope_classifications', {})
+    unknown = result.get('discovery', 'unknown') == 'unknown' or any(
+        not classified.get(scope['path'], {}).get('located_inspected', False) for scope in scopes)
+    if unknown: reasons.append('unknown_discovery')
+    for scope in scopes:
+        if not classified.get(scope['path'], {}).get('located_inspected', False):
+            reasons.append(scope['reason'])
+    for c in result.get('candidates', []):
+        if c.get('state') == 'removed' or c.get('state') == 'eligible' and result.get('mode') == 'dry_run':
+            continue
+        if c.get('state') != 'retained':
+            reasons.append(c.get('state', 'unknown_candidate_state') + ':' + c['path'])
+        elif not classified.get(c['path'], _classification(c.get('reason', 'unknown'))).get('located_inspected'):
+            reasons.append(c.get('reason', 'unknown_keep') + ':' + c['path'])
+    if result.get('error'): reasons.append(result['error'])
+    if result.get('org_hold'): reasons.append('org_hold:' + result['org_hold'])
+    candidates = result.get('candidates', [])
+    return dict(complete=not reasons, reasons=list(dict.fromkeys(reasons)), unknown_discovery=unknown,
+                candidate_count=None if unknown else len(candidates),
+                unreached=None if unknown else sum(c.get('state') == 'unreached' for c in candidates))
+
+
+def _finalize_night(report: dict) -> None:
+    """Coverage record, never deletion/recovery authority; legacy reports stay unproven."""
+    reasons = []
+    if report.get('scheduled_admission', {}).get('state') == 'suspended': reasons.append('scheduled_suspension')
+    if report.get('outcome') != 'complete': reasons.append('outcome:' + str(report.get('outcome', 'unknown')))
+    if not report.get('scheduled_date'): reasons.append('not_scheduled')
+    if not report.get('source_revision'): reasons.append('source_revision_missing')
+    if report.get('policy') != 'thr307-ended-root-one-hour-all-orgs': reasons.append('policy_missing_or_unknown')
+    if not report.get('timezone') or not report.get('timezone_offset'): reasons.append('timezone_missing')
+    roots = report.get('selected_org_roots')
+    if not isinstance(roots, list):
+        reasons.append('admitted_org_inventory_missing')
+    elif sorted(Path(root).name for root in roots) != sorted(org.get('org', '') for org in report.get('orgs', [])):
+        reasons.append('admitted_org_coverage_mismatch')
+    if not report.get('started_at') or not report.get('finished_at'): reasons.append('inventory_window_unfinished')
+    if report.get('unreached_orgs') != []: reasons.append('unreached_orgs')
+    if report.get('runtime_discovery') == 'unknown': reasons.append('runtime_discovery_unknown')
+    for key in ('error', 'interruption', 'partial_mutation', 'move_deferred_orgs', 'unloaded_orgs_unknown'):
+        if report.get(key): reasons.append(key + ':' + str(report[key]))
+    for org in report.get('orgs', []):
+        if org.get('mode') != 'on': reasons.append('not_deletion_mode:' + str(org.get('org')))
+        if not org.get('inventory_window', {}).get('finished_at'): reasons.append('inventory_unfinished:' + str(org.get('org')))
+        coverage = _coverage(org)
+        if not coverage['complete']: reasons.extend(str(org.get('org')) + ':' + reason for reason in coverage['reasons'])
+    elapsed = report.get('elapsed_seconds')
+    if not isinstance(elapsed, (int, float)) or isinstance(elapsed, bool) or not 0 <= elapsed <= BUDGET_SECONDS:
+        reasons.append('budget_closure_unproven')
+    if reasons and report.get('scheduled_date') and report.get('outcome') == 'complete' and all(o.get('mode') == 'on' for o in report.get('orgs', [])):
+        report['outcome'] = 'incomplete'
+    # Worker outcome describes completed coverage, allowing its normal exit.
+    # Only the parent's post-stop/reap publication can complete the night.
+    if (not isinstance(report.get('worker_group_stop'), str) or not report['worker_group_stop']
+            or type(report.get('worker_returncode')) is not int or report['worker_returncode'] != 0):
+        reasons.append('supervisor_closure_unproven')
+    report['night'] = dict(definition='thr307-review3-coverage', complete=not reasons, reasons=list(dict.fromkeys(reasons)))
+
+
 class _Measurements:
     """Bounded aggregates of existing calls; never consulted by policy code."""
     _counter_keys = dict(topology='topology_reads', census='censuses', ownership='ownership_reads',
@@ -229,7 +343,7 @@ def _measure_org(function: Callable) -> Callable:
 
 def _kept_history(summary: Path, deadline: float, date: str) -> dict:
     """One bounded, no-follow pass of reports; no candidate-state I/O."""
-    result = dict(date=date, paths={}, status='complete', reports=0, bytes_read=0)
+    result = dict(date=date, paths={}, interrupted_removals=[], status='complete', reports=0, bytes_read=0)
     try:
         # Bound enumeration, total bytes and path count, including legacy files.
         with directory(summary.parent, deadline) as parent:
@@ -267,6 +381,13 @@ def _kept_history(summary: Path, deadline: float, date: str) -> dict:
                     report = json.loads(raw)
                     for org in report.get('orgs', []):
                         for candidate in org.get('candidates', []):
+                            if candidate.get('state') in ('mutation_in_flight', 'partial_or_unknown'):
+                                if len(result['interrupted_removals']) >= 256:
+                                    raise Retain('history_interrupted_removal_limit')
+                                result['interrupted_removals'].append(dict(
+                                    path=candidate['path'], phase=candidate.get('phase'), effect='unknown',
+                                    summary_path=str(summary.parent / name), source_revision=report.get('source_revision'),
+                                    scheduled_date=report.get('scheduled_date'), automatic_recovery=False))
                             if candidate.get('state') == 'retained':
                                 path = candidate['path']
                                 since = candidate.get('measurement', {}).get('kept_since') or name[:-5]
@@ -279,7 +400,7 @@ def _kept_history(summary: Path, deadline: float, date: str) -> dict:
                 finally:
                     os.close(fd)
     except Exception as exc:
-        result.update(status='unavailable:' + type(exc).__name__, paths={})
+        result.update(status='unavailable:' + type(exc).__name__, paths={}, interrupted_removals=[])
     return result
 
 
@@ -416,6 +537,9 @@ class _Registrations(dict):
         self.residues = {}
         self.unregistered = set()
         self.missing_heads = set()
+        self.missing_folders = {}
+        self.arrivals = set()
+        self.findings = {}
 
     def owner(self, path: str) -> tuple:
         if path in self.residues:
@@ -425,6 +549,8 @@ class _Registrations(dict):
 
     def require(self, path: Path, deadline: float) -> None:
         _retain_linked_descendants(path, self, deadline)
+        if str(path) in self.missing_folders:
+            raise Retain(self.missing_folders[str(path)])
         if str(path) in self.errors or str(path) in self.residues:
             raise Retain((self.errors | self.residues)[str(path)])
         row = self.get(str(path))
@@ -535,6 +661,18 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
                 raise Retain(f'conflicting_gitdir:{entry / "gitdir"}')
             if commondir not in ('../..\n', str(common) + '\n'):
                 raise Retain(f'redirected_commondir:{entry / "commondir"}')
+            # Only final-folder ENOENT through a proven literal parent qualifies.
+            # Every ancestor, entry/pointer, name and unique mapping is still
+            # reconciled by all three existing censuses and Git's captured list.
+            with directory(path.parent, deadline) as parent:
+                topology[str(path.parent)] = identity(os.fstat(parent))
+                try:
+                    os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    topology[str(path)] = None
+                    result.linked[str(path)] = entry
+                    result.missing_folders[str(path)] = f'missing_worktree_folder:{path}'
+                    continue
             with directory(path, deadline) as fd:
                 topology[str(path)] = identity(os.fstat(fd))
                 if topology[str(path)] in mapped_inodes:
@@ -714,7 +852,7 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None) 
                 ))
     if retained is not None:
         latched = retained.setdefault(str(repo), {})
-        for path, (_, owner) in latched.items():
+        for path, (_, owner, _) in latched.items():
             check(deadline)
             if (path not in before.linked and path not in before.residues) or before.owner(path) != owner:
                 raise _RegistrationUnknown(f'local_registration_attribution_lost:{repo}:{path}')
@@ -761,13 +899,20 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None) 
         if path in final.linked:
             errors.setdefault(path, f'unknown_unregistered_task_worktree:{path}')
     errors.update({p: e for p, e in final.errors.items() if p not in errors})
+    errors.update(final.missing_folders)
     if retained is not None:
         for path, error in (errors | before.residues | after.residues | final.residues).items():
-            latched.setdefault(path, (error, final.owner(path)))
+            finding = ('missing_folder' if path in final.missing_folders else
+                       'unknown_location_residue' if path in final.residues and path not in final.unregistered else
+                       'arrival' if path in additions and path in final.linked else
+                       'unregistered_task' if path in final.unregistered else 'mapped_metadata')
+            latched.setdefault(path, (error, final.owner(path), finding))
+        final.findings = {path: value[2] for path, value in latched.items()}
         errors = {path: value[0] for path, value in latched.items() if path in final.linked}
         final.residues = {path: latched[path][0] for path in final.residues}
     final.update(after)
-    final.errors = errors
+    final.arrivals = additions
+    final.errors = errors | final.missing_folders
     return final
 
 
@@ -824,27 +969,27 @@ class Evidence:
             for row in conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks'):
                 check(self.deadline)
                 if row['id'] in tasks:
-                    raise Retain('unknown_conflicting_lineage')
+                    raise _LineageUnknown('unknown_conflicting_lineage', 'org_unavailable')
                 tasks[row['id']] = dict(row)
 
-            def ancestry(owner):
+            def ancestry(owner, finding):
                 seen = set()
                 while True:
                     check(self.deadline)
                     if not isinstance(owner, str) or not owner:
-                        raise Retain('unknown_malformed_job_or_task_lineage')
+                        raise _LineageUnknown('unknown_malformed_job_or_task_lineage', finding)
                     if owner in seen or owner not in tasks:
-                        raise Retain('unknown_missing_or_cyclic_lineage')
+                        raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
                     seen.add(owner)
                     row = tasks[owner]
                     parent = row['parent_task_id']
                     if parent is None:
                         return owner
                     if not isinstance(parent, str) or not parent:
-                        raise Retain('unknown_conflicting_lineage')
+                        raise _LineageUnknown('unknown_conflicting_lineage', finding)
                     owner = parent
 
-            root = ancestry(task_id)
+            root = ancestry(task_id, 'candidate_lineage_unknown')
             owner = tasks[task_id]
             if owner['assigned_agent'] != workspace.name:
                 raise Retain('unknown_owner_workspace')
@@ -870,7 +1015,7 @@ class Evidence:
                     continue
                 if row['status'] not in ('pending', 'queued', 'running'):
                     raise Retain('unknown_job_status')
-                job_root = ancestry(row['task_id'])
+                job_root = ancestry(row['task_id'], 'job_lineage_unknown')
                 if job_root == root:
                     raise Retain('active_job:' + row['status'])
         finally:
@@ -990,13 +1135,15 @@ def _discovery_scope(path: Path, inventory: dict, deadline: float, checkpoint: C
     except Expired as exc:
         # Nested scopes unwind; retain the narrowest interrupted path once.
         if not inventory['discovery_scopes'] or not inventory['discovery_scopes'][-1].get('interrupted'):
-            inventory['discovery_scopes'].append(dict(path=str(path), reason=str(exc), candidate_count=None, interrupted=True))
+            _scope(inventory, str(path), str(exc), 'run_error')
+            next(scope for scope in inventory['discovery_scopes'] if scope['path'] == str(path))['interrupted'] = True
         raise
     except FileNotFoundError as exc:
         if not missing_ok:
-            inventory['discovery_scopes'].append(dict(path=str(path), reason=str(exc), candidate_count=None))
+            _scope(inventory, str(path), str(exc), 'item_unknown')
     except Exception as exc:
-        inventory['discovery_scopes'].append(dict(path=str(path), reason=str(exc) or type(exc).__name__, candidate_count=None))
+        _scope(inventory, str(path), str(exc) or type(exc).__name__,
+               'registration_unknown' if isinstance(exc, _RegistrationUnknown) else 'item_unknown')
     finally:
         try:
             checkpoint()
@@ -1007,7 +1154,8 @@ def _discovery_scope(path: Path, inventory: dict, deadline: float, checkpoint: C
 def discover(org: Path, deadline: float, *, inventory: dict | None = None, checkpoint: Callable[[], None] = lambda: None, retained: dict | None = None) -> list[dict]:
     """Stable ordering of known candidates; uncertain scopes are never empty."""
     inventory = inventory if inventory is not None else {}
-    inventory.update(candidates=[], discovery_scopes=[], discovery='unknown', discovery_root=str(org / 'workspaces'))
+    inventory.update(candidates=[], discovery_scopes=[], scope_classifications={}, exclusions=[], deferred_arrivals=[], discovery='unknown', discovery_root=str(org / 'workspaces'),
+                     inventory_window=dict(started_at=datetime.now().astimezone().isoformat()))
     candidates = inventory['candidates']
     workspaces = org / 'workspaces'
     with _discovery_scope(workspaces, inventory, deadline, checkpoint):
@@ -1037,13 +1185,37 @@ def discover(org: Path, deadline: float, *, inventory: dict | None = None, check
                                 pass
                             # Never walk arbitrary children or let Git find an
                             # ancestor repository. Only literal primary .git.
+                            with directory(repo, deadline) as rfd:
+                                try:
+                                    os.stat('.git', dir_fd=rfd, follow_symlinks=False)
+                                except FileNotFoundError:
+                                    # Absence from an existing configured clone is
+                                    # not an exclusion. Missing/malformed agent
+                                    # definitions fail conservatively in this scope.
+                                    from runtime.orchestrator.agent_def import parse_agent_text
+                                    _, text = _metadata_file(org / 'org/agents' / (owner + '.md'), deadline, text=True)
+                                    agent = parse_agent_text(text, expected_name=owner)
+                                    if name in agent.repos:
+                                        raise Retain('configured_clone_git_missing:' + str(repo))
+                                    try:
+                                        os.stat('.claude', dir_fd=rfd, follow_symlinks=False)
+                                    except FileNotFoundError:
+                                        pass
+                                    else:
+                                        raise Retain('possible_former_clone:' + str(repo))
+                                    classification = _classification('ordinary_non_clone', 'non_clone')
+                                    if classification['hold'] == 'none':
+                                        inventory['exclusions'].append(dict(path=str(repo), reason='ordinary_non_clone'))
+                                    continue
                             with directory(repo / '.git', deadline):
                                 pass
                             rows = registrations(repo, deadline, retained=retained)
                             for path, error in rows.residues.items():
-                                inventory['discovery_scopes'].append(dict(path=path, reason=error, candidate_count=None if path in rows.unregistered else 0))
+                                _scope(inventory, path, error, rows.findings.get(path, 'unregistered_task' if path in rows.unregistered else 'unknown_location_residue'), None if path in rows.unregistered else 0)
                             for path, error in rows.errors.items():
-                                inventory['discovery_scopes'].append(dict(path=path, reason=error, candidate_count=None))
+                                finding = rows.findings.get(path, 'missing_folder' if path in rows.missing_folders else 'arrival' if path in rows.arrivals else 'mapped_metadata')
+                                _scope(inventory, path, error, finding)
+                                if finding == 'arrival': inventory['deferred_arrivals'].append(path)
                             if str(repo) not in rows:
                                 raise Retain('unknown_git_primary_registration')
                             prefix = repo / '.claude/worktrees'
@@ -1062,6 +1234,7 @@ def discover(org: Path, deadline: float, *, inventory: dict | None = None, check
     check(deadline)
     candidates.sort(key=lambda c: (c['phase'] != 'scratch', c['oldest'], c['path']))
     inventory['discovery'] = 'partial' if inventory['discovery_scopes'] else 'complete'
+    inventory['inventory_window']['finished_at'] = datetime.now().astimezone().isoformat()
     return candidates
 
 
@@ -1117,6 +1290,13 @@ def atomic_json(path: Path, value: dict) -> None:
 
 def _summarize_org(result: dict) -> None:
     candidates = result.get('candidates', [])
+    result['coverage'] = _coverage(result)
+    # Existing pre-mutation checkpoints persist an intent, not proof of any
+    # effect. Interrupted intents remain reporting-only, including next night.
+    result['interrupted_removals'] = [dict(path=c['path'], phase=c['phase'],
+        state=c['state'], effect='unknown', automatic_recovery=False,
+        reason=c.get('reason', 'interrupted_or_unconfirmed_intent'))
+        for c in candidates if c.get('state') in ('mutation_in_flight', 'partial_or_unknown')]
     result['measurement_scope'] = 'eligible scanned inodes only; retained/unreached allocation is unknown; removed allocation is not physical freed space'
     result['physical_freed_bytes'] = None
     result['process_scope'] = PROCESS_SCOPE
@@ -1151,9 +1331,10 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     def report_checkpoint() -> None:
         observe('org_checkpoint')
         for errors in retained.values():
-            for path, (error, owner) in errors.items():
+            for path, (error, owner, finding) in errors.items():
                 if not any(scope['path'] == path for scope in result.get('discovery_scopes', [])):
-                    result.setdefault('discovery_scopes', []).append(dict(path=path, reason=error, candidate_count=0 if owner[2] is None else None))
+                    _scope(result, path, error, finding, 0 if owner[2] is None and finding == 'unknown_location_residue' else None)
+                    if finding == 'arrival': result.setdefault('deferred_arrivals', []).append(path)
                     if result.get('discovery') == 'complete':
                         result['discovery'] = 'partial'
         for candidate in result.get('candidates', []):
@@ -1180,6 +1361,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
             phase = result['phases'][candidate['phase']]
             mutation_started = False
             try:
+                if result.get('org_hold'):
+                    raise Retain(result['org_hold'])
                 if candidate.get('repo') in uncertain_repos:
                     raise _RegistrationUnknown('unknown_repository_registration_scope')
                 local = retained.get(candidate.get('repo'), {}).get(candidate['path'])
@@ -1244,10 +1427,16 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 observe('item', 'interrupted', candidate=candidate, reason=str(exc))
                 raise
             except Exception as exc:
-                if isinstance(exc, _RegistrationUnknown):
+                classification = _classification(str(exc), 'registration_unknown' if isinstance(exc, _RegistrationUnknown) else
+                                                 exc.finding if isinstance(exc, _LineageUnknown) else
+                                                 'org_unavailable' if isinstance(exc, sqlite3.Error) else None)
+                if isinstance(exc, _LineageUnknown):
+                    result.setdefault('scope_classifications', {})[candidate['path']] = classification
+                if classification['hold'] == 'org': result['org_hold'] = str(exc)
+                if classification['hold'] == 'clone':
                     repo = candidate['repo']
                     if repo not in uncertain_repos:
-                        result['discovery_scopes'].append(dict(path=repo, reason=str(exc), candidate_count=None))
+                        _scope(result, repo, str(exc), 'registration_unknown')
                         uncertain_repos.add(repo)
                     result['discovery'] = 'partial'
                 if mutation_started:
@@ -1259,39 +1448,10 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 observe('item', 'finish', candidate=candidate)
             report_checkpoint()
         result['outcome'] = ('error' if any(c['state'] == 'partial_or_unknown' for c in candidates)
-                             else 'complete' if result['discovery'] == 'complete' else 'incomplete')
-        # Git prune has repo-wide scope, with no exact-entry option. Never
-        # prune if ANY missing/prunable/unknown registration could be affected.
-        # No reclaimed-byte claim is made for registration maintenance.
-        if mode == 'on' and result['discovery'] == 'complete':
-            for repo in sorted({c['repo'] for c in candidates if 'repo' in c}):
-                try:
-                    rows = registrations(Path(repo), deadline, retained=retained)
-                except _RegistrationUnknown as exc:
-                    result['discovery_scopes'].append(dict(path=repo, reason=str(exc), candidate_count=None))
-                    result.update(discovery='partial', outcome='incomplete')
-                    break
-                # There is no path-selective Git prune. Only run its harmless
-                # empty-admin form; ANY linked/unrelated/unknown record keeps
-                # the whole repository's prune scope untouched.
-                # The reconciled no-follow census proves there are no admin
-                # entries as well as no linked rows when only primary remains.
-                if rows.errors or rows.residues:
-                    report_checkpoint()
-                    result['outcome'] = 'incomplete'
-                    break
-                if set(rows) != {repo}:
-                    result.setdefault('prune_retained', []).append(repo)
-                    continue
-                # Prune also writes agent repository metadata; primary-only
-                # registration does not waive native move writer ownership.
-                with closing(sqlite3.connect((org / 'happyranch.db').as_uri() + '?mode=ro', uri=True, timeout=.1)) as conn:
-                    conn.row_factory = sqlite3.Row
-                    conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
-                    conn.execute('BEGIN')
-                    evidence._move_writer(conn)
-                    check(deadline)
-                git(Path(repo), deadline, 'worktree', 'prune', '--expire=now')
+                             else 'complete' if _coverage(result)['complete'] else 'incomplete')
+        # Review decision 2 removes empty-scope repository-wide prune entirely.
+        # No registration repair or metadata housekeeping replaces it.
+
     except Expired as exc:
         result['stop_cause'] = _stop_cause(exc)
         result.update(outcome='incomplete', error=str(exc))
@@ -1319,7 +1479,9 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                   process_scope=PROCESS_SCOPE,
                   outcome='incomplete', orgs=[], unreached_orgs=list(sorted(roots)),
                   stop_cause='in_progress',
-                  measurement_history={k: v for k, v in (_history.get() or {}).items() if k != 'paths'})
+                  policy='thr307-ended-root-one-hour-all-orgs',
+                  previous_interrupted_removals=(_history.get() or {}).get('interrupted_removals', []),
+                  measurement_history={k: v for k, v in (_history.get() or {}).items() if k not in ('paths', 'interrupted_removals')})
     def checkpoint():
         atomic_json(summary, report)
     checkpoint()
@@ -1364,12 +1526,14 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
         report['stop_cause'] = _stop_cause(exc)
         report['error'] = str(exc)
     report['finished_at'] = datetime.now().astimezone().isoformat()
+    report['elapsed_seconds'] = max(0, time.monotonic() - (started_monotonic if started_monotonic is not None else deadline - BUDGET_SECONDS))
     try:
         space = os.statvfs(summary.parent)
         report['disk_free_percent_context_only'] = 100 * space.f_bavail / space.f_blocks if space.f_blocks else None
         report['low_disk_below_20_percent'] = report['disk_free_percent_context_only'] is not None and report['disk_free_percent_context_only'] < 20
     except OSError:
         report['disk_free_percent_context_only'] = None
+    _finalize_night(report)
     checkpoint()
     return report
 
@@ -1462,6 +1626,8 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
             report['stop_cause'] = 'budget' if cause == 'deadline' else 'shutdown_signal' if cause == 'shutdown' else 'error'
             _interrupted_measurements(report, report['stop_cause'])
             report.update(outcome='incomplete', interruption=cause, partial_mutation='unknown', finished_at=datetime.now().astimezone().isoformat())
+        report['elapsed_seconds'] = max(0, time.monotonic() - started_monotonic)
+        _finalize_night(report)
         atomic_json(summary, report)
         return report
     report = await asyncio.to_thread(finish)
@@ -1550,6 +1716,8 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
     # genuine reservation uncertainty rather than claiming this check fences it.
     await asyncio.to_thread(atomic_json, summary, report)
     if admission['state'] == 'suspended':
+        _finalize_night(report)
+        await asyncio.to_thread(atomic_json, summary, report)
         return report
     # Reservations span filesystem/process work; their short gate/transaction
     # does not. Retain active evidence on process loss; D reads the same history.
@@ -1577,6 +1745,8 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
         report['scheduled_admission'] = admission
         if deferred:
             report.update(outcome='incomplete', move_deferred_orgs=deferred)
+        report['elapsed_seconds'] = max(0, time.monotonic() - started)
+        _finalize_night(report)
         await asyncio.to_thread(atomic_json, summary, report)
         for slug, disposition in dispositions.items():
             if _org_effects_known(report, slug):
@@ -1637,13 +1807,80 @@ def next_night(now: datetime) -> datetime:
     return datetime.combine(date, datetime.min.time()).replace(hour=3).astimezone()
 
 
+def _record_previous_night(state, date: str) -> None:
+    """Record only. Founder delivery awaits THR307's open surface choice.
+
+    Single daemon scheduler, existing org audit envelope; committed rows are
+    the restart/repeat deduplication authority. No marker reset or catch-up.
+    A daemon that stays down cannot record anything.
+    """
+    from runtime.runtime import daemon_home
+    summary = daemon_home() / 'disk-sweep' / (date + '.json')
+    try:
+        report = _read_json(summary)
+        _finalize_night(report)
+    except FileNotFoundError:
+        # A missing parent is not evidence that just this date file is absent.
+        try:
+            with directory(summary.parent, float('inf')):
+                pass
+        except Exception as exc:
+            payload = dict(scheduled_date=date, status='incomplete', reasons=['summary_parent_unavailable:' + str(exc)], summary_path=None)
+        else:
+            payload = dict(scheduled_date=date, status='missing', reasons=['date_summary_missing'], summary_path=None)
+    except Exception as exc:
+        payload = dict(scheduled_date=date, status='incomplete', reasons=['summary_unreadable:' + str(exc)], summary_path=str(summary))
+    else:
+        if report.get('scheduled_date') != date:
+            report['night']['reasons'].append('scheduled_date_mismatch')
+            report['night']['complete'] = False
+        if report['night']['complete']:
+            # A parent JSON publication can itself precede an interrupted audit
+            # loop. Complete records require the matching existing org audits.
+            audit_reasons = []
+            for slug, org in sorted(state.orgs_snapshot().items()):
+                item = next((o for o in report.get('orgs', []) if o.get('org') == slug), None)
+                try:
+                    expected = _audit_payload(report, item, summary)
+                    rows = org.db.get_audit_logs_by_action('disk_sweep_summary')
+                    if not any(row['task_id'] == '' and row['agent'] == 'daemon' and row['payload'] == expected for row in rows):
+                        audit_reasons.append('summary_audit_missing_or_mismatched:' + slug)
+                except Exception as exc:
+                    audit_reasons.append('summary_audit_unavailable:' + slug + ':' + type(exc).__name__)
+            if not audit_reasons:
+                return
+            report['night']['reasons'].extend(audit_reasons)
+            report['night']['complete'] = False
+        payload = dict(scheduled_date=date, status='incomplete', reasons=report['night']['reasons'], summary_path=str(summary))
+    payload['delivery'] = 'record_only_founder_delivery_pending'
+    for slug, org in sorted(state.orgs_snapshot().items()):
+        try:
+            rows = org.db.get_audit_logs_by_action('disk_sweep_night_notice')
+            if any(row['task_id'] == '' and row['agent'] == 'daemon' and row['payload'].get('scheduled_date') == date for row in rows):
+                continue
+            org.db.insert_audit_log('', 'daemon', 'disk_sweep_night_notice', payload)
+            LOG.warning('Disk sweep night record (delivery pending) org=%s: %s', slug, payload)
+        except Exception:
+            LOG.exception('Disk sweep night record unavailable org=%s date=%s', slug, date)
+
+
 async def disk_sweeper_loop(state) -> None:
     from runtime.runtime import daemon_home
+    now = datetime.now().astimezone()
+    previous = now.date() - timedelta(days=now.hour < 3)
+    try:
+        await asyncio.to_thread(_record_previous_night, state, previous.isoformat())
+    except Exception:
+        LOG.exception('Disk sweep previous-night record unavailable at startup')
     while True:
         due = next_night(datetime.now().astimezone())
         await asyncio.sleep(max(0, due.timestamp() - time.time()))
         if state.runtime is None:
             continue
+        try:
+            await asyncio.to_thread(_record_previous_night, state, (due.date() - timedelta(days=1)).isoformat())
+        except Exception:
+            LOG.exception('Disk sweep previous-night record unavailable before scheduled attempt')
         data = daemon_home() / 'disk-sweep'
         marker = data / 'last-scheduled.json'
         date = due.date().isoformat()
@@ -1683,13 +1920,20 @@ async def disk_sweeper_loop(state) -> None:
                 report.update(unloaded_orgs_unknown=sorted(state.broken_orgs))
                 if report.get('outcome') != 'suspended':
                     report['outcome'] = 'incomplete'
+                _finalize_night(report)
                 await asyncio.to_thread(atomic_json, summary, report)
             # Existing audit interface and row shape, one summary per swept org.
             # No notification interface suitable for a disk alert exists here;
             # below-20% context is carried in this audit/JSON, as approved.
             for slug, org in sorted(state.orgs_snapshot().items()):
                 item = next((r for r in report.get('orgs', []) if r['org'] == slug), None)
-                await asyncio.to_thread(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
+                try:
+                    await asyncio.to_thread(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
+                except Exception as exc:
+                    report.update(outcome='incomplete', error='summary_audit_failed:' + type(exc).__name__)
+                    _finalize_night(report)
+                    await asyncio.to_thread(atomic_json, summary, report)
+                    raise
             if cancelled is not None:
                 raise cancelled
         except asyncio.CancelledError:
@@ -1701,6 +1945,10 @@ async def disk_sweeper_loop(state) -> None:
 def _audit_payload(report: dict, item: dict | None, summary: Path) -> dict:
     return {
         'summary_path': str(summary), 'revision': report.get('revision'),
+        'night': report.get('night'), 'policy': report.get('policy'), 'elapsed_seconds': report.get('elapsed_seconds'),
+        'worker_group_stop': report.get('worker_group_stop'), 'worker_returncode': report.get('worker_returncode'),
+        'previous_interrupted_removals': report.get('previous_interrupted_removals', []),
+        'unloaded_orgs_unknown': report.get('unloaded_orgs_unknown'),
         'source_revision': report.get('source_revision'),
         'stop_cause': report.get('stop_cause'), 'measurement_history': report.get('measurement_history'),
         'scheduled_date': report.get('scheduled_date'),
