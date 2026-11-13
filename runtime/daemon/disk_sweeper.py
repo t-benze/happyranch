@@ -1151,8 +1151,10 @@ def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = Non
     if branch is not None and branch != f'refs/heads/task/{task_id}':
         raise Retain('unknown_worktree_branch_owner')
     common = git(path, deadline, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip()
-    primary = git(repo, deadline, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip()
-    if common != primary or primary != str(repo / '.git') or git(path, deadline, 'rev-parse', '--show-toplevel').strip() != str(path):
+    # The complete literal census above already proved this primary .git and
+    # rejected redirected primary pointers. Resolve the candidate afresh, but
+    # do not ask Git to rediscover the same primary common directory each gate.
+    if common != str(repo / '.git') or git(path, deadline, 'rev-parse', '--show-toplevel').strip() != str(path):
         raise Retain('unknown_git_ownership')
     with directory(Path(common), deadline):
         pass
@@ -1164,7 +1166,7 @@ def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = Non
         raise Retain('unique_head_commit')
     return row.get("HEAD"), row.get("branch"), common, rows.topology, rows.metadata[str(path)]
 
-def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None, retained: dict | None = None) -> dict:
+def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None, retained: dict | None = None, topology: dict | None = None) -> dict:
     """Fresh common gates before each candidate mutation/retry admission."""
     path, workspace = Path(candidate['path']), Path(candidate['workspace'])
     task_id = path.name
@@ -1181,7 +1183,13 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
             pass
         validate_task_scratch_manifest(read_json(manifest, deadline), expected_task_id=task_id, expected_root=path)
     else:
+        if topology is not None:
+            _worktree_location(path, Path(candidate['repo']), topology[candidate['repo']], deadline)
         git_identity = _worktree_gate(candidate, deadline, retained)
+        if topology is not None:
+            inventoried = topology[candidate['repo']][str(path)]
+            if git_identity[:2] != (inventoried.get('HEAD'), inventoried.get('branch')):
+                raise Retain('git_identity_changed_since_inventory')
     tree = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
     if candidate['phase'] == 'worktree':
         for relative in sorted(tree):
@@ -1477,7 +1485,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 if candidate['phase'] == 'worktree':
                     refusal = worktree_inventory(candidate, topology, deadline)
                     if refusal is not None: raise refusal
-                tree = admit(candidate, evidence, deadline, now=now, retained=retained)
+                tree = admit(candidate, evidence, deadline, now=now, retained=retained, topology=topology)
                 amount, _ = allocated(tree, measured_inodes)
                 phase['measured_allocated_bytes'] += amount
                 candidate['allocated_bytes'] = amount
@@ -1492,7 +1500,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 candidate['state'] = 'mutation_in_flight'
                 phase['attribution_unknown'] = True
                 report_checkpoint()
-                fresh = admit(candidate, evidence, deadline, now=now, retained=retained)
+                fresh = admit(candidate, evidence, deadline, now=now, retained=retained, topology=topology)
                 if not trees_equal(tree, fresh, deadline):
                     raise Retain('tree_changed_before_mutation')
                 if candidate['phase'] == 'scratch':
@@ -1502,7 +1510,9 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     repo, path = Path(candidate['repo']), Path(candidate['path'])
                     # Last local metadata check after fresh tree comparisons;
                     # Git must never consume a known redirected registration.
-                    registrations(repo, deadline, retained=retained).require(path, deadline)
+                    rows = registrations(repo, deadline, retained=retained)
+                    rows.require(path, deadline)
+                    admitted_branch = rows[str(path)].get('branch')
                     mutation_started = True
                     try:
                         git(repo, deadline, 'worktree', 'remove', str(path))
@@ -1512,10 +1522,10 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # contained repair AND again before Git retry. Own
                         # permission/partial changes count as recent and may
                         # conservatively refuse that retry.
-                        retry_tree = admit(candidate, evidence, deadline, now=now, retained=retained)
+                        retry_tree = admit(candidate, evidence, deadline, now=now, retained=retained, topology=topology)
                         registrations(repo, deadline, retained=retained).require(path, deadline)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
-                        admit(candidate, evidence, deadline, now=now, repairs=repairs, retained=retained)
+                        admit(candidate, evidence, deadline, now=now, repairs=repairs, retained=retained, topology=topology)
                         registrations(repo, deadline, retained=retained).require(path, deadline)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
@@ -1527,6 +1537,11 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     pass
                 else:
                     raise Retain('root_remains_after_remove')
+                if candidate['phase'] == 'worktree' and admitted_branch is not None:
+                    # Removing a worktree must preserve its named branch. A
+                    # missing/refused resolution is an unconfirmed effect,
+                    # even when the folder and registration are already gone.
+                    git(repo, deadline, 'rev-parse', '--verify', admitted_branch + '^{commit}')
                 _, attributable = allocated(fresh, removed_inodes)
                 phase['removed_attributable_bytes'] += attributable
                 candidate.update(state='removed', removed_attributable_bytes=attributable)

@@ -72,6 +72,19 @@ tree gate. There is no schema, index or classification change. Cheaper destructi
 admission remains unfinished in this partial implementation. There is no two-pass
 ordering without real-night step 1 data.
 
+Each full worktree admission also revalidates its own directory/pointer identities
+against discovery and compares freshly read HEAD/branch with that inventory.
+The saved identity is a veto on drift, never a successful deletion answer; every
+current topology, ownership, preservation and recursive-tree check still runs.
+After non-force removal, the folder must be absent, the registration gone, and
+the admitted named branch must freshly resolve as a commit. Detached worktrees
+have no named branch to resolve. Failed post-effect resolution keeps the effect
+partial/unknown and coverage incomplete under the existing error classification.
+The exhaustive literal census proves the primary common directory as repo/.git.
+Each gate still resolves the candidate's current common directory and top-level
+through Git and checks the literal directory no-follow; it omits only the
+redundant Git lookup of that primary common directory. No census is omitted.
+
 Worker report publication batches up to 32 nonmutating checkpoint requests.
 The initial report, first initialized org state, outer run boundaries, every org
 exit/error/expiry and each removal intent still flush through the unchanged

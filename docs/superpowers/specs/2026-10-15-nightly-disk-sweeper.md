@@ -230,8 +230,21 @@ including after healing. Own directory identities and reciprocal pointer
 signatures are revalidated no-follow before status; changed/unsafe locations
 hold the clone. Positive
 mapping/clean-status observations are discarded; every deletion still performs
-all existing fresh admissions. No inventory mapping enters a destructive gate.
+all existing fresh admissions. Inventory cannot supply successful delete authority.
 This partial implementation does not yet reduce destructive census frequency.
+
+Each full worktree admission also revalidates its own directory/pointer identities
+against discovery and compares freshly read HEAD/branch with that inventory.
+The saved identity is a veto on drift, never a successful deletion answer; every
+current topology, ownership, preservation and recursive-tree check still runs.
+After non-force removal, the folder must be absent, the registration gone, and
+the admitted named branch must freshly resolve as a commit. Detached worktrees
+have no named branch to resolve. Failed post-effect resolution keeps the effect
+partial/unknown and coverage incomplete under the existing error classification.
+The exhaustive literal census proves the primary common directory as repo/.git.
+Each gate still resolves the candidate's current common directory and top-level
+through Git and checks the literal directory no-follow; it omits only the
+redundant Git lookup of that primary common directory. No census is omitted.
 
 After discovery, one consistent org inventory reads tasks and unfinished/unknown
 job states once, with the same workspace/lineage evaluator and refusal priority.
