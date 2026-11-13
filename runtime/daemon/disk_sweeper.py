@@ -561,13 +561,16 @@ class _Registrations(dict):
 
 
 @observed('census')
-def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
+def _registration_metadata(repo: Path, deadline: float, *, metadata_path: Path | None = None, metadata_inventory: _Registrations | None = None) -> _Registrations:
     """Prove the entire literal mapping and safe file census BEFORE Git.
 
     Ordinary I/O/change errors after that proof can be registration-local.
     Only a final missing gitdir in an otherwise safe entry can be an unmapped
     residue. Literal unregistered TASK directories are protected local paths;
     unsafe objects, conflicting pointers and unknown locations stay shared.
+    A candidate-scoped read still stats every object and reads every pointer
+    and HEAD. Only siblings' ordinary auxiliary file reads are redundant;
+    their fresh stat signatures still detect changes between censuses.
     """
     common = repo / '.git'
     admin = common / 'worktrees'
@@ -735,6 +738,12 @@ def _registration_metadata(repo: Path, deadline: float) -> _Registrations:
                         raise Retain(f'nonregular_registration_metadata:{target}')
                     observed_files[str(target)] = signature(observed)
                     continue
+                if (metadata_path is not None and metadata_inventory is not None and path != str(metadata_path)
+                        and metadata_path not in Path(path).parents and Path(path) not in metadata_path.parents
+                        and relative not in ('HEAD', 'gitdir', 'commondir')
+                        and metadata_inventory.metadata.get(path, {}).get(str(target)) == signature(observed)):
+                    observed_files[str(target)] = signature(observed)
+                    continue
                 try:
                     seen, head = _metadata_file(target, deadline, text=relative == 'HEAD')
                 except Retain as exc:
@@ -833,11 +842,11 @@ def _registration_additions(before: _Registrations, after: _Registrations, repo:
 
 
 @observed('topology')
-def registrations(repo: Path, deadline: float, *, retained: dict | None = None) -> _Registrations:
-    before = _registration_metadata(repo, deadline)
+def registrations(repo: Path, deadline: float, *, retained: dict | None = None, metadata_path: Path | None = None, metadata_inventory: _Registrations | None = None) -> _Registrations:
+    before = _registration_metadata(repo, deadline, metadata_path=metadata_path, metadata_inventory=metadata_inventory)
     # A second literal census before Git catches mapping/type changes during
     # ordinary reads. Local churn protects its owner without poisoning peers.
-    after = _registration_metadata(repo, deadline)
+    after = _registration_metadata(repo, deadline, metadata_path=metadata_path, metadata_inventory=metadata_inventory)
     additions = _registration_additions(before, after, repo, deadline)
     errors = dict(before.errors)
     for path, error in after.errors.items():
@@ -871,7 +880,7 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None) 
         if not path or path in after:
             raise _RegistrationUnknown(f'unknown_git_registration:{repo}')
         after[path] = row
-    final = _registration_metadata(repo, deadline)
+    final = _registration_metadata(repo, deadline, metadata_path=metadata_path, metadata_inventory=metadata_inventory)
     additions |= _registration_additions(after, final, repo, deadline)
     # Git's list can precede or follow an additive TASK arrival. Only those
     # newly proven paths may be absent from the captured list; every extra row
@@ -1137,12 +1146,12 @@ def worktree_inventory(candidate: dict, topology: dict, deadline: float) -> Exce
     return None
 
 
-def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = None) -> tuple:
+def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = None, inventory: _Registrations | None = None) -> tuple:
     path = Path(candidate['path'])
     task_id = path.name
     _worktree_guard(candidate, deadline)
     repo = Path(candidate['repo'])
-    rows = registrations(repo, deadline, retained=retained)
+    rows = registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=inventory)
     rows.require(path, deadline)
     row = rows.get(str(path))
     if row is None or 'locked' in row or 'prunable' in row:
@@ -1185,7 +1194,8 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     else:
         if topology is not None:
             _worktree_location(path, Path(candidate['repo']), topology[candidate['repo']], deadline)
-        git_identity = _worktree_gate(candidate, deadline, retained)
+        inventory = topology[candidate['repo']] if topology is not None else None
+        git_identity = _worktree_gate(candidate, deadline, retained, inventory)
         if topology is not None:
             inventoried = topology[candidate['repo']][str(path)]
             if git_identity[:2] != (inventoried.get('HEAD'), inventoried.get('branch')):
@@ -1214,7 +1224,7 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
             raise Retain('changed_within_hour')
     # Re-read durable state after slow filesystem/Git observations.
     evidence.ownership(path, workspace, task_id)
-    if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained) != git_identity:
+    if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained, inventory) != git_identity:
         raise Retain('git_identity_changed_during_admission')
     latest = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
     if candidate['phase'] == 'worktree':
@@ -1229,7 +1239,7 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     with directory(path, deadline) as fd:
         if signature(os.fstat(fd)) != signature(tree['']):
             raise Retain('identity_changed')
-    if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained) != git_identity:
+    if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline, retained, inventory) != git_identity:
         raise Retain('git_identity_changed_before_action')
     return tree
 
@@ -1510,7 +1520,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     repo, path = Path(candidate['repo']), Path(candidate['path'])
                     # Last local metadata check after fresh tree comparisons;
                     # Git must never consume a known redirected registration.
-                    rows = registrations(repo, deadline, retained=retained)
+                    rows = registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)])
                     rows.require(path, deadline)
                     admitted_branch = rows[str(path)].get('branch')
                     mutation_started = True
@@ -1523,13 +1533,13 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # permission/partial changes count as recent and may
                         # conservatively refuse that retry.
                         retry_tree = admit(candidate, evidence, deadline, now=now, retained=retained, topology=topology)
-                        registrations(repo, deadline, retained=retained).require(path, deadline)
+                        registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]).require(path, deadline)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
                         admit(candidate, evidence, deadline, now=now, repairs=repairs, retained=retained, topology=topology)
-                        registrations(repo, deadline, retained=retained).require(path, deadline)
+                        registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]).require(path, deadline)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
-                    if str(path) in registrations(repo, deadline, retained=retained):
+                    if str(path) in registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]):
                         raise Retain('registration_remains_after_remove')
                 try:
                     os.lstat(candidate['path'])

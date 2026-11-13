@@ -1471,10 +1471,10 @@ def registration_signature_diagnostic(kind: str) -> dict:
                 change('complete snapshot -> ordinary read')
             return tree
 
-        def metadata(root: Path, limit: float) -> ds._Registrations:
+        def metadata(root: Path, limit: float, **kwargs) -> ds._Registrations:
             nonlocal census_count
             assert limit == deadline
-            observed = real_metadata(root, limit)
+            observed = real_metadata(root, limit, **kwargs)
             census_count += 1
             if census_count == 1 and kind in ('pre_git', 'appeared', 'disappeared', 'first_cause'):
                 before = raw(note)
@@ -1780,8 +1780,8 @@ def residue_cases(*, unsafe=False):
                     before = residue_bytes() if kind in positive else None
                     refs = f.git(repo, 'show-ref'); calls = []; events = []
                     realgit, realmeta, realsnap, realfile = ds.git, ds._registration_metadata, ds.snapshot, ds._metadata_file
-                    def metadata(root, deadline):
-                        value = realmeta(root, deadline)
+                    def metadata(root, deadline, **kwargs):
+                        value = realmeta(root, deadline, **kwargs)
                         if root == repo:
                             events.append('census')
                             if kind == 'entry_race' and events.count('census') == 1:
@@ -1902,8 +1902,8 @@ def registration_arrival(seam: str, preview: bool) -> dict:
         if seam == 'plain': introduce()
         before = candidate_contents(peer, repo / '.git', *([new] if new.exists() else []))
         census = []
-        def metadata(root, deadline):
-            value = realmeta(root, deadline)
+        def metadata(root, deadline, **kwargs):
+            value = realmeta(root, deadline, **kwargs)
             if root == repo:
                 census.append(True)
                 if len(census) == 1 and seam in ('pre_git', 'plain_pre_git', 'non_task', 'existing'): introduce()
@@ -2528,8 +2528,8 @@ def residue_topology_transitions():
                     else:
                         e.rename(e.with_name('held'));e.mkdir()
                     events.append(kind)
-                def metadata(root,deadline):
-                    value=realmeta(root,deadline)
+                def metadata(root,deadline,**kwargs):
+                    value=realmeta(root,deadline,**kwargs)
                     if root==repo and not events and when=='pre_git': change()
                     return value
                 def git(root,deadline,*args):
@@ -3335,8 +3335,8 @@ def residue_scheduled():
                 q=None; repo=z
             else: repo,c,q,e,d=projection_input(later,kind,paths[1])
             events=[];calls=[]; realmeta,realgit=ds._registration_metadata,ds.git
-            def metadata(root,deadline):
-                value=realmeta(root,deadline)
+            def metadata(root,deadline,**kwargs):
+                value=realmeta(root,deadline,**kwargs)
                 if kind=='earlier_org' and root==p and getattr(value, 'residues', {}):
                     events.append('later residue census')
                 return value
@@ -4061,8 +4061,8 @@ def c28():
             if kind == 'denied_parent': p.parent.chmod(0)
             if kind == 'conflict': (repo / '.git/worktrees/TASK-2/gitdir').write_text(str(p / '.git') + '\n')
             realmeta = ds._registration_metadata; events = []
-            def metadata(root, deadline):
-                value = realmeta(root, deadline)
+            def metadata(root, deadline, **kwargs):
+                value = realmeta(root, deadline, **kwargs)
                 if kind in ('reappeared', 'repointed') and root == repo and not events:
                     if kind == 'reappeared': p.mkdir()
                     else: (entry / 'gitdir').write_text(str(peer / '.git') + '\n')
@@ -5046,12 +5046,136 @@ def c40():
                 limits='Real disposable files/links and synthetic age clock; no mount, Darwin or full cheaper-census proof')
 
 
+def c41():
+    """Candidate census saves sibling reads, never topology or own-file proof."""
+    old = ownership_base()
+    observations, failures = [], []
+    for label in ('clean', 'unreadable_index', 'missing_head', 'malformed_head',
+                  'index_hardlink', 'admin_alias', 'conflicting_backlink', 'duplicate_target'):
+        with fixture() as f, ExitStack() as damage:
+            ownership_indexes(f)
+            repo, path = f.worktree('TASK-1'); _, peer = f.worktree('TASK-2')
+            if label != 'clean': damage.enter_context(damaged_registration(f, repo, peer, label))
+            before = candidate_contents(path, peer)
+            refs = f.git(repo, 'show-ref')
+            reports = [module.sweep_org(f.org, time.monotonic() + 20, mode='dry_run', now=NOW)
+                       for module in (old, ds)]
+            decisions = [ownership_decisions(report, f.base) for report in reports]
+            assert decisions[0] == decisions[1], (label, decisions)
+            if label in ('clean', 'unreadable_index', 'missing_head'):
+                assert row(reports[1], path)['state'] == 'eligible', (label, reports[1])
+            if label == 'clean': assert row(reports[1], peer)['state'] == 'eligible'
+            assert candidate_contents(path, peer) == before and f.git(repo, 'show-ref') == refs
+            observations.append(dict(variant='same_input/' + label, decisions=decisions, result='PASS'))
+
+    decisions, counts = [], []
+    for module in (old, ds):
+        with fixture() as f:
+            ownership_indexes(f)
+            repo, path = f.worktree('TASK-1'); _, peer = f.worktree('TASK-2')
+            f.db.execute("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'"); f.db.commit()
+            admin = repo / '.git/worktrees'
+            for target in (path, peer):
+                (admin / target.name / 'fixture-note').write_text('ordinary auxiliary metadata\n')
+            before, refs = candidate_contents(peer), f.git(repo, 'show-ref')
+            reads = []
+            original_file = module._metadata_file
+            def metadata_file(target, deadline, **kwargs):
+                reads.append(str(target.relative_to(admin)) if admin in target.parents else str(target))
+                return original_file(target, deadline, **kwargs)
+            with patch.object(module, '_metadata_file', metadata_file):
+                report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW)
+            assert row(report, path)['state'] == 'removed' and not path.exists(), report
+            retained(report, peer, 'task_or_root_not_terminal:in_progress')
+            assert candidate_contents(peer) == before and f.git(repo, 'show-ref') == refs
+            actual = {name: reads.count(name) for name in
+                      ('TASK-1/index', 'TASK-1/fixture-note', 'TASK-2/index', 'TASK-2/fixture-note',
+                       'TASK-2/gitdir', 'TASK-2/commondir', 'TASK-2/HEAD')}
+            # Independent literal cost oracles. Own files still read at every
+            # live-candidate census; all peer pointers and HEAD stay current.
+            assert actual['TASK-1/index'] == actual['TASK-1/fixture-note'] == 24, actual
+            assert actual['TASK-2/index'] == actual['TASK-2/fixture-note'] == (27 if module is old else 3), actual
+            assert actual['TASK-2/gitdir'] == actual['TASK-2/commondir'] == 54, actual
+            assert actual['TASK-2/HEAD'] == 27, actual
+            decisions.append(ownership_decisions(report, f.base)); counts.append(actual)
+    assert decisions[0] == decisions[1], decisions
+    observations.append(dict(variant='on_mode_sibling_read_cost', decisions=decisions, reads=counts, result='PASS'))
+
+    for label in ('own_auxiliary_change', 'sibling_auxiliary_change', 'sibling_unsafe_auxiliary'):
+        try:
+            with fixture() as f:
+                ownership_indexes(f)
+                repo, path = f.worktree('TASK-1'); _, peer = f.worktree('TASK-2')
+                f.db.execute("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'"); f.db.commit()
+                admin = repo / '.git/worktrees'
+                note = admin / (path.name if label == 'own_auxiliary_change' else peer.name) / 'fixture-note'
+                note.write_text('original ordinary metadata\n'); original = note.read_bytes()
+                before = candidate_contents(path, peer); refs = f.git(repo, 'show-ref')
+                events, removes, result = [], [], {}
+                original_snapshot, original_metadata, original_git = ds.snapshot, ds._registration_metadata, ds.git
+                selected = False
+                def metadata(root, deadline, **kwargs):
+                    nonlocal selected
+                    previous, selected = selected, kwargs.get('metadata_path') == path
+                    try: return original_metadata(root, deadline, **kwargs)
+                    finally: selected = previous
+                def snapshot(root, deadline, **kwargs):
+                    value = original_snapshot(root, deadline, **kwargs)
+                    if Path(root) == admin and selected and not events:
+                        if label == 'sibling_unsafe_auxiliary':
+                            note.unlink(); note.symlink_to(f.base / 'unread-target')
+                        else: note.write_bytes(original + b'racing write\n')
+                        events.append('changed_after_fresh_stat')
+                    return value
+                def checkpoint():
+                    target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                    if target and target['state'] == 'retained' and len(events) == 1:
+                        if note.is_symlink(): note.unlink()
+                        note.write_bytes(original); events.append('healed_after_refusal')
+                def git(root, deadline, *args):
+                    if args[:2] == ('worktree', 'remove'): removes.append(args[2])
+                    return original_git(root, deadline, *args)
+                with patch.object(ds, '_registration_metadata', metadata), patch.object(ds, 'snapshot', snapshot), \
+                        patch.object(ds, 'git', git):
+                    report = ds.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW,
+                                          result=result, checkpoint=checkpoint)
+                if label == 'sibling_auxiliary_change':
+                    assert events == ['changed_after_fresh_stat'], events
+                    assert row(report, path)['state'] == 'removed' and removes == [str(path)], report
+                    assert any(scope['path'] == str(peer) and 'metadata_changed:' + str(note) in scope['reason']
+                               for scope in report['discovery_scopes']), report
+                    # Successful unrelated removal never repairs a sibling.
+                    assert note.read_bytes() == original + b'racing write\n'
+                    note.write_bytes(original)
+                else:
+                    retained(report, path, ('metadata_changed:' if label == 'own_auxiliary_change' else
+                                            'aliased_or_special_metadata:') + str(note))
+                    assert events == ['changed_after_fresh_stat', 'healed_after_refusal'] and not removes, (events, removes)
+                    if label == 'own_auxiliary_change':
+                        assert 'snapshot_to_read' in row(report, path)['reason'], report
+                    else:
+                        assert report['discovery'] == 'partial' and not report['coverage']['complete'], report
+                    assert candidate_contents(path, peer) == before
+                    deadline = time.monotonic() + 10
+                    ds.admit(dict(phase='worktree', path=str(path), workspace=str(f.workspace), repo=str(repo)),
+                             ds.Evidence(f.org, deadline), deadline, now=NOW)
+                    assert row(report, path)['state'] == 'retained'
+                assert candidate_contents(peer) == {k: v for k, v in before.items() if k.startswith(str(peer))}
+                assert f.git(repo, 'show-ref') == refs
+                observations.append(dict(variant=label, events=events, result='PASS', target=row(report, path)['state']))
+        except AssertionError as exc:
+            failures.append(dict(variant=label, error=str(exc)[:2000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, equivalence_differences=[],
+                limits='Pointers, HEAD and all stat censuses retained; full Step3 topology/native/mount race proof unfinished')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,41))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,42))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -5081,7 +5205,8 @@ if __name__=='__main__':
             purposes += ('Clone keep inventory, dirty cost and healed-refusal latch',)
             purposes += ('Post-removal branch resolution and incomplete lost refs', 'Fresh HEAD branch refs and mapping identities after inventory',)
             purposes += ('Literal primary common-dir proof and base removal parity', 'Fresh recursive safety after inventory and healed refusal latch',)
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40),purposes),1):
+            purposes += ('Candidate-scoped auxiliary reads with exhaustive fresh topology',)
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

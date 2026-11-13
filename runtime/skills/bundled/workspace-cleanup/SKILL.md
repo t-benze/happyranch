@@ -128,6 +128,17 @@ Each gate still resolves the candidate's current common directory and top-level
 through Git and checks the literal directory no-follow; it omits only the
 redundant Git lookup of that primary common directory. No census is omitted.
 
+During candidate admission, final removal/repair/retry checks and post-removal
+confirmation, the census skips repeated reads of a disjoint sibling's ordinary
+index/auxiliary file only when its current full stat signature equals discovery.
+Changed or arriving files are fully read. Discovery reads them all. Every census
+still stats every admin object, checks unsafe types/hardlinks, reads all HEADs
+and reciprocal pointers, validates unique locations/ancestry and literal roots,
+and reconciles Git's complete list. Candidate/overlapping registration metadata
+and unknown-location residue validation remain fully read; siblings' stat signatures
+still latch observed changes to their owner. No successful inventory answer is
+reused, and no census, containment or fresh admission boundary is removed.
+
 Worker report publication batches up to 32 nonmutating checkpoint requests.
 The initial report, first initialized org state, outer run boundaries, every org
 exit/error/expiry and each removal intent still flush through the unchanged
