@@ -35,6 +35,17 @@ pass before true/`healthy`. Successful publications refresh at half the
 watchdog interval, capped at 100 ms. Failed startup is false/
 `waiting-for-readiness`; listener loss is false/`readiness-or-listener-lost`
 followed by nonzero exit. SIGTERM/SIGINT publish false/`stopping` before teardown.
+C6-loss also checks TCP reachability of the configured loopback `ConnectorAddr`
+every `min(1s, watchdog_interval/4)`, with dial timeout
+`min(250ms, watchdog_interval/8)` (both floored at 1ns). This avoids a dial on
+every 100ms publication tick and detects loss in at most 1.25s with the default
+30s watchdog, plus Go scheduling and publication/teardown time. For shorter
+watchdogs the combined probe budget is 3/8 interval. One failure publishes
+false/`readiness-or-listener-lost` and exits 1. Successful probes close the socket
+without sending data; TCP reachability does not prove protocol health.
+Connector-loss recovery on macOS is sidecar exit + launchd KeepAlive, without a
+second supervisor. Linux continues to rely on systemd BindsTo.
+
 Failed publication closes service admission and exits nonzero; a stalled
 publication or teardown is bounded by the independent monotonic watchdog.
 The watchdog needs Go scheduling; host sleep/runtime freeze recovery is unproven.
@@ -44,7 +55,7 @@ the durable jobs workflow. A Linux cross-build compiles Darwin tests without
 executing them; native Mac execution requires separate authorization.
 
 ```sh
-export GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOFLAGS=-mod=readonly
+export GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOFLAGS=-mod=readonly GOWORK=off
 GOOS=linux GOARCH=amd64 go test ./...
 GOOS=linux GOARCH=amd64 go vet ./...
 GOOS=darwin GOARCH=arm64 go build ./...
@@ -58,8 +69,11 @@ python3 tools/generate_inventory.py --target darwin-arm64 --check
 
 The generator defaults to the unchanged Linux files under `third_party/`.
 Darwin has a separate inventory and notices under `third_party/darwin-arm64/`.
-Both reconcile the actual build graph, existing sums and source licenses. Darwin
-adds `github.com/google/uuid@v1.6.0` and
+Darwin reconciles the executable command graph, existing sums and source
+licenses; C6-loss includes the already-pinned command import
+`github.com/mdlayher/sdnotify@v1.0.0` and its MIT notice. Linux retains its
+historical library inventory byte-for-byte. Darwin adds
+`github.com/google/uuid@v1.6.0` and
 `github.com/prometheus-community/pro-bing@v0.4.0` to its build inventory relative
 to Linux; both already exist in go.mod/go.sum. No new required module or sum is
 authorized. Distribution must include the matching notices; this slice makes

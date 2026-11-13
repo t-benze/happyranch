@@ -51,7 +51,10 @@ def main() -> None:
     out = ROOT / "third_party"
     if args.target != "linux-amd64":
         out = out / args.target
-    packages=objects(go(goos, goarch, "list", "-deps", "-json", "."))
+    # Keep the historical Linux library inventory byte-identical. Darwin's
+    # distributed executable also includes command-only imports (sdnotify).
+    package = "." if args.target == "linux-amd64" else "./cmd/happyranch-tsnet-sidecar"
+    packages=objects(go(goos, goarch, "list", "-deps", "-json", package))
     modules: dict[tuple[str,str], dict[str, object]]={}
     for pkg in packages:
         mod=pkg.get("Module")
@@ -71,6 +74,8 @@ def main() -> None:
         item.update({"source":f"https://{key[0]}","spdx":kind,"license_sha256":ident,"relationship":f"statically-linked-{goos}-build-input"})
         records.append(item); texts.setdefault(ident,{"spdx":kind,"text":text,"modules":[]})["modules"].append(coordinate)
     payload={"schema_version":1,"artifact":{"goos":goos,"goarch":goarch,"cgo_enabled":False,"package":"happyranch/linux-tsnet-sidecar"},"generator":"tools/generate_inventory.py","modules":records}
+    if args.target == "darwin-arm64":
+        payload["artifact"]["package"] = "happyranch/linux-tsnet-sidecar/cmd/happyranch-tsnet-sidecar"
     inventory = json.dumps(payload,indent=2,sort_keys=True)+"\n"
     notice=[f"# HappyRanch {platform} embedded-tailnet sidecar — third-party notices input", "", f"Generated from checksum-pinned modules that enter the GOOS={goos}/GOARCH={goarch}/CGO_ENABLED=0 artifact.", "Factual dependency identification only. No copyright-holder or contributor name implies endorsement or promotion.", "A later binary distribution must ship this generated notice content; N1 is build/test only and makes no distribution claim.", ""]
     for ident,group in sorted(texts.items()):

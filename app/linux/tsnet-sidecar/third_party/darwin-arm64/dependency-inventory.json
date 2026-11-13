@@ -3,7 +3,7 @@
     "cgo_enabled": false,
     "goarch": "arm64",
     "goos": "darwin",
-    "package": "happyranch/linux-tsnet-sidecar"
+    "package": "happyranch/linux-tsnet-sidecar/cmd/happyranch-tsnet-sidecar"
   },
   "generator": "tools/generate_inventory.py",
   "modules": [
@@ -123,6 +123,15 @@
       "spdx": "BSD-2-Clause",
       "sum": "h1:+RR6SqnTkDLWyICxS1xpjCi/3dhyV+TgZwA6Ww3KncQ=",
       "version": "v0.0.0-20200729010619-da482cc4850a"
+    },
+    {
+      "license_sha256": "caf08ffb984066dd089e070479d09e91706faff07ef5c7e5c32edf632c58680e",
+      "module": "github.com/mdlayher/sdnotify",
+      "relationship": "statically-linked-darwin-build-input",
+      "source": "https://github.com/mdlayher/sdnotify",
+      "spdx": "MIT",
+      "sum": "h1:Ma9XeLVN/l0qpyx1tNeMSeTjCPH6NtuD6/N9XdTlQ3c=",
+      "version": "v1.0.0"
     },
     {
       "license_sha256": "e1389de4d18f5f8c2c25f83061f8d808af0e9fac9f8d51886f45585670487c85",
