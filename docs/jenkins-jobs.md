@@ -41,6 +41,11 @@ installation and frozen daemon/session/cleanup observations. It records eight
 individual step results and the headless GUI/real-provider limitations. Existing
 job configuration and triggers are unchanged; each submission needs explicit
 app-build and packaged-run allocation.
+Its build child alone appends `-modcacherw` for removable private Go cache
+directories. After the exact build terminates, the
+[`collect_packaged.py` join](../ci/jenkins/mac-native-probe/README.md#packaged-app-observation)
+writes a separate collected report with actual EXIT step8 status; the original
+pre-EXIT probe stays unchanged. Missing cleanup evidence remains NOT_RUN.
 After immutable checkout/identity, its stdlib-only bootstrap takes the measured
 18-package `cleanup-helpers` import set from the checkout's `uv.lock` into a
 scratch-only venv without pip. It requires macOS arm64 regular CPython 3.14,

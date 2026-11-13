@@ -483,6 +483,9 @@ the existing pins only in job scratch, clears the job's PYTHON bootstrap control
 only for the freezer's documented environment admission, and installs with ditto
 under scratch. It performs no signing, host install, login or release publishing;
 no release/feed URL is supplied or baked by this suite.
+Only this suite's build child appends `-modcacherw` to inherited GOFLAGS, so the
+wrapper's private Go module cache remains removable by the existing outer EXIT.
+The provisioner and parent environment retain their original GOFLAGS.
 
 `probe.json.steps` always has keys `1`–`8`, each with name and
 PASS/FAIL/NOT_RUN plus bounded evidence. Linux reports every step NOT_RUN with
@@ -516,9 +519,17 @@ and disk-sweep deletion remains NOT_RUN. No gate is weakened to obtain removal.
 A helper failure or missing candidate receipt fails the step.
 
 Step8 is NOT_RUN at JSON emission because the existing outer EXIT trap has not
-yet executed. Native collection must join the exact build's `identity.txt`
-`scratch_removed=true` before reporting cleanup PASS; the suite never predicts
-that receipt or changes the job configuration. GUI/provider/signing/update
+yet executed. After exact-build terminal observation, collect both archived
+artifacts and run the source-side join (new output path):
+
+```sh
+python3 -B scripts/mac_native/collect_packaged.py --probe /owned/probe.json --identity /owned/identity.txt --source-sha "$SOURCE_SHA" --output /owned/collected-probe.json
+```
+
+The collector requires matching source/suite identities and joins the sole actual
+`scratch_removed` receipt: true→PASS, false→FAIL, absent→NOT_RUN. Duplicate or
+malformed receipts refuse. It preserves the archived originals and all other
+steps. There is no predicted cleanup PASS or job configuration change. GUI/provider/signing/update
 acceptance cannot be inferred from these narrower observations.
 
 One invocation allows provisioning240s, web-original acquisition900s, build2700s,
@@ -532,7 +543,8 @@ owns scratch disposal even on failure. No automatic resubmission is permitted.
 
 Portable manual harness checks (outside retired Python units/required CI):
 `python3 -B -m unittest scripts.mac_native.test_packaged -v`. These cover Linux
-skip fields, census selection and command failure/output/time bounds only.
+skip fields, census selection, command failure/output/time bounds, patch-bearing
+freezer argv, child-only Go cache flags and final EXIT receipt collection.
 They neither build nor execute the product.
 
 ## S7 case-safety suite

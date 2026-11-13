@@ -194,6 +194,11 @@ prefix must agree in the private installation, with raw stdlib beneath that
 base; every raw root is admitted through the existing no-follow ancestry/FD,
 owner/mode/device and identity rechecks before physical executable comparisons.
 The admitted raw base prefix remains the expectation for the project venv.
+Venv creation also uses `--python cpython@3.12.10`: in pinned uv0.12.21 a
+concrete executable-path request enables minor-version-link upgrades, routing
+`home`/`sys.base_prefix` through `cpython-3.12-…`. The patch-bearing request
+keeps them on the real CPython3.12.10 directory. No directory alias exemption or
+no-follow/owner/mode/device check is changed.
 Frozen sync and both run commands share explicit absolute project/directory,
 patch-bearing `--python cpython@3.12.10` and managed-only/no-download arguments, with
 `UV_PROJECT_ENVIRONMENT` fixed to exported-source/.venv. Both runs disable

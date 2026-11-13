@@ -314,6 +314,8 @@ def run(report: dict[str, Any]) -> None:
         # The documented freezer refuses inherited PYTHON* job-bootstrap
         # controls. Remove them only for this build; no host/global env mutation.
         build_env = {k: v for k, v in env.items() if not k.startswith('PYTHON')}
+        # The wrapper's private GOMODCACHE must remain removable by outer EXIT.
+        build_env['GOFLAGS'] = (build_env.get('GOFLAGS', '') + ' -modcacherw').strip()
         originals = area / 'web-originals'
         out = area / 'build'
         section['commands']['originals'] = checked([sys.executable, '-B',
