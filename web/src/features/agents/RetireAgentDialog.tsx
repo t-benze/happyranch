@@ -1,0 +1,104 @@
+/**
+ * RetireAgentDialog — Founder confirmation for retiring an active agent.
+ *
+ * The daemon route is the only eligibility authority: the dialog states the
+ * consequences, sends one request, and shows a refusal as the server gave it
+ * while the agent stays active. No client-side eligibility rule lives here.
+ */
+import { useRef, useState } from 'react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/design-system/primitives/Dialog';
+import { Button } from '@/design-system/primitives/Button';
+import { useRetireAgent } from '@/hooks/agents';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyRetireError, renderAgentError, type RetireErrorView } from './strings';
+
+/** Blocking items listed before the remainder is summarized as a count. */
+const SHOWN_CONFLICTS = 8;
+
+interface RetireAgentDialogProps {
+  agentName: string;
+  displayName: string;
+  /** Roster role and team; the manager-team consequence shows for managers only. */
+  role: string | null | undefined;
+  team: string | null | undefined;
+  onClose: () => void;
+  /** Called once the server confirmed the retirement. */
+  onRetired: (agentName: string) => void;
+}
+
+export function RetireAgentDialog({
+  agentName, displayName, role, team, onClose, onRetired,
+}: RetireAgentDialogProps): JSX.Element {
+  const { t } = useTranslation();
+  const retire = useRetireAgent();
+  const [error, setError] = useState<RetireErrorView | null>(null);
+  // Synchronous latch: a second activation before React re-renders is dropped.
+  const inFlight = useRef(false);
+
+  const onConfirm = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setError(null);
+    try {
+      await retire.mutateAsync({ agentName });
+      onRetired(agentName);
+    } catch (err: unknown) {
+      setError(classifyRetireError(err));
+    } finally {
+      inFlight.current = false;
+    }
+  };
+
+  const hidden = error ? error.conflicts.length - SHOWN_CONFLICTS : 0;
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !retire.isPending) onClose(); }}>
+      <DialogContent closeLabel={t('common.close')}>
+        <DialogHeader>
+          <DialogTitle>{t('agents.retire.title', { name: displayName })}</DialogTitle>
+          <DialogDescription>{t('agents.retire.intro')}</DialogDescription>
+        </DialogHeader>
+        <ul className="text-text-primary list-disc space-y-1.5 pl-5 text-sm">
+          <li>{t('agents.retire.consequence.stops')}</li>
+          <li>{t('agents.retire.consequence.preserved')}</li>
+          <li>{t('agents.retire.consequence.terminated')}</li>
+          {role === 'manager' && (
+            <li>{t('agents.retire.consequence.team', { team: team ?? '—' })}</li>
+          )}
+        </ul>
+        {error !== null && (
+          <div role="alert" className="border-border-default bg-danger-soft text-text-primary space-y-1 rounded-md border p-3 text-sm break-words">
+            <p className="font-medium">{renderAgentError(error.headline, t)}</p>
+            {error.serverMessage !== null && <p>{error.serverMessage}</p>}
+            {error.conflicts.length > 0 && (
+              <p>
+                {t('agents.retire.refusal.blocking', { items: error.conflicts.slice(0, SHOWN_CONFLICTS).join(', ') })}
+                {hidden > 0 && ` ${t('agents.retire.refusal.more', { count: hidden })}`}
+              </p>
+            )}
+            {error.members.length > 0 && (
+              <p>{t('agents.retire.refusal.members', { items: error.members.join(', ') })}</p>
+            )}
+            {error.code !== null && (
+              <p className="text-text-secondary text-xs">{t('agents.retire.refusal.code', { code: error.code })}</p>
+            )}
+            <p className="text-text-secondary text-xs">{t('agents.retire.refusal.unchanged')}</p>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose} disabled={retire.isPending}>{t('common.cancel')}</Button>
+          <Button variant="destructive" loading={retire.isPending} onClick={() => void onConfirm()}>
+            {retire.isPending ? t('agents.retire.pending') : t('agents.retire.confirm')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

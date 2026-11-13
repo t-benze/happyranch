@@ -37,6 +37,7 @@ import { AgentAvatar } from './AgentAvatar';
 import { useExecutorOptions } from '@/hooks/executor-options';
 import { TeamEscalationPolicyEntryCard } from './TeamEscalationPolicyCard';
 import { AgentKnowledge } from './instill/AgentKnowledge';
+import { RetireAgentDialog } from './RetireAgentDialog';
 import { useTranslation } from '@/hooks/i18n';
 import { formatDateShapeFor } from '@/lib/i18n/format';
 import { classifyAgentError, renderAgentError, type AgentErrorView, type Translate } from './strings';
@@ -46,6 +47,8 @@ interface AgentDetailPaneProps {
   onClose: () => void;
   /** Called when the user clicks Start Thread for this agent. */
   onStartThread?: () => void;
+  /** Called after the server confirmed this agent's retirement. */
+  onRetired?: (agentName: string) => void;
 }
 
 /** Sparse dirty-state tracker: only keys that differ from the last-saved snapshot. */
@@ -96,7 +99,7 @@ function useAccountabilityMetrics(agentName: string) {
   return { tasksQuery, done, total };
 }
 
-export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDetailPaneProps): JSX.Element {
+export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }: AgentDetailPaneProps): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   const { t, locale, render } = useTranslation();
   const agentsQuery = useAgentsList();
@@ -127,9 +130,11 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const [repoAddName, setRepoAddName] = useState('');
   const [repoAddUrl, setRepoAddUrl] = useState('');
   const [showRepoAdd, setShowRepoAdd] = useState(false);
+  const [retireOpen, setRetireOpen] = useState(false);
 
   // Reset dirty state when agent changes
   useEffect(() => {
+    setRetireOpen(false);
     setDirty({});
     setSaveError(null);
     setSaving(false);
@@ -762,7 +767,34 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             </ul>
           </section>
         )}
+
+        {/* Retire — Founder-only; the daemon decides eligibility on confirm. */}
+        {agent && (
+          <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+            <h3 className="text-overline text-text-muted mb-2 tracking-wider uppercase">
+              {t('agents.retire.action')}
+            </h3>
+            <p className="text-text-secondary mb-3 text-sm leading-relaxed">{t('agents.retire.sectionBody')}</p>
+            <Button variant="destructiveOutline" size="sm" onClick={() => setRetireOpen(true)}>
+              {t('agents.retire.open')}
+            </Button>
+          </section>
+        )}
       </div>
+
+      {retireOpen && agent && (
+        <RetireAgentDialog
+          agentName={agentName}
+          displayName={identityPresentation.name(agentName)}
+          role={agent.role}
+          team={agent.team}
+          onClose={() => setRetireOpen(false)}
+          onRetired={(name) => {
+            setRetireOpen(false);
+            (onRetired ?? onClose)(name);
+          }}
+        />
+      )}
 
       {/* --- Sticky save bar — Pasture border/background --- */}
       {isDirty && (

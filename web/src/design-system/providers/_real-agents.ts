@@ -219,4 +219,26 @@ export const realAgentsApi: AgentsApi = {
       },
     });
   },
+
+  useRetireAgent: () => {
+    const slug = useRealOrgSlug();
+    const qc = useQueryClient();
+    return useMutation({
+      mutationFn: ({ agentName }: { agentName: string }): Promise<import('./DataContext').RetireAgentResult> =>
+        agentsApi.retireAgent(slug, agentName),
+      // A refusal is the server's answer, never a transient to repeat.
+      retry: false,
+      // Settled, not success-only: a refusal changes nothing server-side, and
+      // after a lost response only a fresh read shows what the server did.
+      onSettled: (_receipt, _error, { agentName }) => {
+        // Active roster, teams (an emptied manager team is removed), the
+        // identity list behind the Terminated tab, and the retained source.
+        qc.invalidateQueries({ queryKey: ['agents', slug] });
+        qc.invalidateQueries({ queryKey: ['teams', slug] });
+        qc.invalidateQueries({ queryKey: ['agent-enrollments', slug] });
+        qc.invalidateQueries({ queryKey: ['identities', slug] });
+        qc.invalidateQueries({ queryKey: ['knowledge', slug, 'retired', agentName] });
+      },
+    });
+  },
 };

@@ -41,6 +41,9 @@ export const useSetAgentModel: ReturnType<typeof useData>['agents']['useSetAgent
 export const useManageAgentRepo: ReturnType<typeof useData>['agents']['useManageAgentRepo'] = () =>
   useData().agents.useManageAgentRepo();
 
+export const useRetireAgent: ReturnType<typeof useData>['agents']['useRetireAgent'] = () =>
+  useData().agents.useRetireAgent();
+
 export const useAgentsRoutes = () => useData().useAgentsRoutes();
 
 export const useSetAgentSystemPrompt = () => useData().agents.useSetAgentSystemPrompt();
