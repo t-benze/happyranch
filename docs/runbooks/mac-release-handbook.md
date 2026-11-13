@@ -425,3 +425,13 @@ No publication performed.
 > original; skip building/downloading it. Preserve any existing signing state,
 > sign and submit once using my existing Keychain, and return the report for
 > THR-104. Stop for me at an OS prompt, ambiguity or non-Accepted result.
+
+## Managed connector sidecar source target (C6a)
+
+The managed Go transport now supports a CGO-disabled Darwin/arm64 cross-build
+with Go 1.23.12. See [the sidecar README](../../app/linux/tsnet-sidecar/README.md)
+for its explicit readiness-file/watchdog flags, compile-only commands and separate
+Darwin dependency inventory/notices. This target is not bundled by the app yet.
+Python launchd handoff/installation is C6b; frozen entry/bundling and native
+packaged-app acceptance remain pending. No Swift HomeConnector change, signing,
+Jenkins change or native execution is part of C6a.

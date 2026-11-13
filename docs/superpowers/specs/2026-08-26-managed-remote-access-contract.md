@@ -729,8 +729,8 @@ is not exposed. The maintained contract lists every added JSON field.
 Linux sd_notify, systemd manager bytes, units, installer and status stay unchanged.
 
 No native proof is claimed in this PR; the existing sleep-agent suite is unchanged.
-The Darwin sidecar and readiness, signing, frozen entry/bundling, Swift coexistence and packaged-app
-acceptance remain future work. No change to Swift HomeConnector is included.
+Darwin sidecar integration, signing, frozen entry/bundling, Swift coexistence and packaged-app
+acceptance remain future work (C6a Go build/readiness is recorded below). No change to Swift HomeConnector is included.
 
 C5 (PR 4) adds the per-user managed installer through Darwin-only dispatch in
 `runtime.remote_access.installer.main`; Linux's installer class/parser and systemd
@@ -800,3 +800,37 @@ the 90-second observation and 1MiB command-output caps.
 QA owns execution on the existing Mac-mini job; no new job or trigger is introduced.
 Neither fake-runner tests nor this stand-in prove network, credentials,
 readiness, sidecar, installer or packaged-app acceptance.
+
+
+C6a (PR 5) adds the Go-side Darwin/arm64 CGO-disabled target under the existing
+`app/linux/tsnet-sidecar` module, using Go 1.23.12 and unchanged go.mod/go.sum.
+The required `--readiness-file` flag is an absolute clean literal path; optional
+`--watchdog-interval` defaults to 30s and must be positive. Linux refuses both
+flags and keeps its existing sd_notify/WATCHDOG_USEC behavior. Runtime Darwin
+selection uses C3's exact six-field JSON record and fixed reasons: starting,
+healthy, waiting-for-readiness, readiness-or-listener-lost, stopping. Starting
+is published before Server.Up; healthy requires all existing enrollment,
+durability, expected-peer, loopback-probe and listener gates. Healthy publication
+refreshes at half the watchdog interval, capped at 100ms. Listener loss publishes
+false and exits nonzero; SIGTERM/SIGINT publish false/stopping before teardown.
+
+The Go writer mirrors C3's descriptor-relative no-follow parent traversal,
+current-euid 0700 writable directory, exclusive 0600 temp, file fsync and atomic
+rename. The unchanged Python status reader accepts the record. A separate
+monotonic watchdog starts before publication/startup and exits 75 without waiting
+for service/filesystem locks after an interval without completed healthy
+publication; shutdown remains bounded. launchd owns restart. Go scheduling is
+required; host sleep/runtime freeze recovery is unproven. Darwin ignores
+CREDENTIALS_DIRECTORY and always uses the existing same-user 0600 one-use
+credential-file/consumed-marker/deletion/empty-key restart contract.
+
+`tools/generate_inventory.py --target darwin-arm64 [--check]` maintains separate
+`third_party/darwin-arm64/{dependency-inventory.json,THIRD_PARTY_NOTICES.md}`;
+Linux's default outputs remain byte-identical. `--check` verifies without writes.
+Darwin-only build modules are `github.com/google/uuid@v1.6.0` and
+`github.com/prometheus-community/pro-bing@v0.4.0`, already pinned in go.mod/go.sum.
+Build instructions and exact record fields are in the sidecar README. Darwin
+checks here are cross-build/test compilation/vet only; native execution is NOT
+RUN (zero authorized). Python handoff/installer integration remains C6b, so C5
+still reports sidecar=not-installed. App bundling/frozen entry, signing and
+packaged-app acceptance remain open; Swift HomeConnector is unchanged.

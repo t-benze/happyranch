@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -29,6 +30,8 @@ func run(ctx context.Context, args []string) int {
 	flags := flag.NewFlagSet("happyranch-tsnet-sidecar", flag.ContinueOnError)
 	path := flags.String("config", "", "absolute path to sidecar JSON configuration")
 	credential := flags.String("credential-file", "", "absolute path to enrollment input (never a key literal)")
+	readiness := flags.String("readiness-file", "", "Darwin only: absolute path to the launchd readiness record")
+	watchdog := flags.Duration("watchdog-interval", 30*time.Second, "Darwin only: maximum time without a completed healthy publication")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -36,12 +39,33 @@ func run(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "--config requires an absolute JSON path")
 		return 2
 	}
+	if runtime.GOOS == "darwin" {
+		if !validReadinessPath(*readiness) || *watchdog <= 0 {
+			fmt.Fprintln(os.Stderr, "sidecar: invalid Darwin readiness options")
+			return 2
+		}
+	} else {
+		invalid := false
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "readiness-file" || f.Name == "watchdog-interval" {
+				invalid = true
+			}
+		})
+		if invalid {
+			fmt.Fprintln(os.Stderr, "sidecar: readiness options require Darwin")
+			return 2
+		}
+	}
 	cfg, err := loadConfig(*path, *credential)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sidecar: configuration invalid")
 		return 2
 	}
-	return serve(ctx, sidecar.New(cfg, sidecar.NewTSNetEngine(), &net.Dialer{Timeout: 5 * time.Second}))
+	svc := sidecar.New(cfg, sidecar.NewTSNetEngine(), &net.Dialer{Timeout: 5 * time.Second})
+	if runtime.GOOS == "darwin" {
+		return serveLaunchd(ctx, svc, *readiness, *watchdog)
+	}
+	return serve(ctx, svc)
 }
 
 func loadConfig(path, credentialFile string) (sidecar.Config, error) {
