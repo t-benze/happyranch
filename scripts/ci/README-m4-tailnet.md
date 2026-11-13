@@ -506,4 +506,58 @@ native1–7 TASK-15684/15690/15691/15753/15766/15774/15847 (attempt7 run43357856
 JOB-6690); premerge JOB-6641/6643/6644/6647 remain failed/spent. No allowance is
 replenished and no certificate issuance is authorized (last observed ledger3/5).
 
+TASK-15875 adds `structural_skeletons` **only to the credential-free observer
+probe** before format validation. Native prepare and acceptance summaries
+retain their existing closed labels and bounded integer fields. The first
+unrecognized-prefix lines are projected, filling any remaining slots with the
+first recognized-prefix lines: at most three lines total, at most 2048 input
+characters and 256 output characters per line. Only `IP`, `IP6`, `pktap`,
+`proc`, `eproc`,
+`svc`, `in`, `out`, `pid`, `Flags`, `length`, `UDP`, `tcp`, `udp` and the fixed
+punctuation set `()[],:;<>.=+-/|*` survive. Decimal tokens become `N`,
+hex/address-like tokens become `A`, all other words become `W`; whitespace
+normalizes to single token separators. No raw addresses, ports, PIDs, process
+names, paths, hostnames or payload enter this field. Other printable punctuation
+becomes `W`; empty/control/non-ASCII input becomes `unknown`; overlong input
+or output becomes `overlong`. The public sink revalidates the closed vocabulary
+and bounds. This is structural evidence,
+not reconstruction of raw capture, process-attribution proof or native acceptance.
+Run43368317931 (TASK-15874) remains FAILED at prefix, captured18/received18/parsed0.
+Probe1 run43371075839 at719ad7b31ca35cc189bacb893381400e7844b306 also
+FAILED with skeleton `["unknown"]`. The actual rejected form remains UNKNOWN.
+Probe2 run43372501871 at877688acd9449f196ac60ea201619287234a4008 FAILED;
+its verbatim skeletons were `["unknown", "A ( proc N , out ) IP A > A : tcp N",
+"A ( in ) IP A > A : tcp N"]`. Thus same-line positive proc/out metadata and
+kernel ingress without proc are observed with the existing `-k PD` flags.
+Ingress still requires the reverse of a positively attributed native TCP flow.
+`unknown` alone does not identify the refused line. Apple's
+[interrupt exit](https://github.com/apple-oss-distributions/tcpdump/blob/58aef51e406a84d34352a0a05946770037a25360/tcpdump/tcpdump.c#L3159-L3175)
+adds a newline. The candidate framing fix recognizes exactly one empty terminal
+line after the final packet newline; leading/internal/whitespace-only/repeated
+empty lines and all unsupported packet records still refuse. The bounded integer
+`terminal_separator_lines` reports that recognition in capture diagnostics;
+structural skeletons remain probe-only. Captured=received=parsed, zero drops,
+positive process/reverse-flow attribution, UDP silence and all existing limits
+remain required. The third and final task probe must establish real compatibility;
+source/fixtures and the first two failed probes cannot establish it. No capture
+flag or packet filter changes. No allowance is replenished.
+Native attempt8 remains unspent; JOB-6699 and all prior failed/spent runs remain
+failed/spent, with no allowance replenished.
+
+TASK-15883 diagnostic continuation: on a transport-format refusal, the probe
+replaces its first sample with token classes from the actual rejected pktap
+metadata/body (timestamp omitted), retaining at most two earlier context samples.
+Every ASCII letter run becomes `A`, every digit run `N`; only the existing closed
+punctuation set survives. Every other non-whitespace character becomes fixed `W`,
+including control/non-ASCII characters; empty projection becomes `W`. The same
+2048-character input, 256-character output and three-line caps apply; overlong
+input/output becomes `overlong`, and the public sink revalidates every token.
+No raw addresses, ports, PIDs, process names, paths, hostnames, payload or capture
+text are published. Native summaries still exclude skeletons. This diagnostic
+adds no accepted protocol: unknown/native/unattributed unsupported packets still
+refuse, as do all existing UDP/socket, endpoint, counter/drop, identity, ordering,
+limit and cleanup failures. A separately budgeted real probe must establish the
+rejected class before any conditional non-transport ruling is implemented.
+TASK-15875's three failures remain spent; the TASK-15883 allowance is separate.
+
 Custody boundary (engineering_manager TASK-15621): the no-raw-address/PID/tuple/payload rule applies to the packet-proof and capture-diagnostic public fields. The pre-existing reviewed pairs handoff payload synthetic tailnet address and VM service journal metadata are existing public surfaces and are outside that assertion; credentials, enrollment/pairing material and raw capture lines remain forbidden everywhere.

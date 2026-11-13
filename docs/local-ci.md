@@ -242,6 +242,26 @@ trigger or Product E2E run. After the file exists on main, an authorized manager
 can dispatch a branch ref to validate later parser changes; see the M4 runbook.
 Observer compatibility does not close native relay acceptance or replenish any
 failed/spent run allowance. Source delivery authorizes no dispatch.
+The TASK-15875 probe additionally emits at most three closed structural skeletons
+for unrecognized prefixes, filling remaining slots with recognized prefixes
+(2048-character input, 256-character output per line);
+other printable punctuation maps to fixed `W`; unknown/overlong input uses fixed
+labels. The M4 runbook owns the exact vocabulary and custody bounds.
+Native summaries exclude skeletons; all packet proof gates remain required.
+
+TASK-15883 prioritizes a generic token-class skeleton of the actual rejected
+transport metadata/body over early prefix context in that same probe-only field.
+ASCII letter runs map to `A`, digit runs to `N`, other characters to fixed `W`
+except the existing closed punctuation/whitespace rules. The existing three-line,
+2048-input/256-output caps and sink revalidation remain; see the M4 runbook.
+Unknown transport still refuses. Native summaries and all proof gates are unchanged.
+
+TASK-15875 probe2 observed same-line `proc N, out` and kernel `(in)` metadata.
+The candidate parser change recognizes exactly one empty terminal tcpdump
+interrupt separator, reporting bounded `terminal_separator_lines` in capture
+diagnostics while retaining captured=received=parsed and every attribution/drop
+gate. All other empty/malformed lines refuse. The real macos-15 probe result,
+not lint or fixtures, determines compatibility; native attempt8 remains unspent.
 
 See [coverage gaps](python-test-reset.md) and [the case record](../e2e/README.md).
 

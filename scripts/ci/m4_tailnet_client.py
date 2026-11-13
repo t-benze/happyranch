@@ -86,11 +86,86 @@ def safe_packet_diagnostics(value: object) -> dict:
 
 CAPTURE_SHAPES = {'unknown', 'passed', 'prefix', 'metadata', 'multiline', 'truncated',
                   'transport', 'endpoint', 'attribution', 'counters'}
-CAPTURE_COUNTS = ('header_lines', 'metadata_lines', 'ipv4_packets', 'ipv6_packets',
+CAPTURE_COUNTS = ('header_lines', 'terminal_separator_lines', 'metadata_lines', 'ipv4_packets', 'ipv6_packets',
                   'other_process_packets', 'counter_lines', 'captured', 'received',
                   'kernel_drops', 'interface_drops', 'metadata_drops', 'stderr_other_lines',
                   *('unparsed_' + shape for shape in sorted(CAPTURE_SHAPES - {'unknown', 'passed'})))
 OBSERVER_LABELS = PACKET_PROOF_LABELS | {'observer-child-start', 'observer-request', 'observer-child-cleanup'}
+
+PROBE_WORDS = {'IP', 'IP6', 'pktap', 'proc', 'eproc', 'svc', 'in', 'out', 'pid',
+               'Flags', 'length', 'UDP', 'tcp', 'udp'}
+PROBE_PUNCTUATION = set('()[],:;<>.=+-/|*')
+PROBE_SKELETON_LINES = 3
+PROBE_SKELETON_INPUT = 2048
+PROBE_SKELETON_OUTPUT = 256
+
+
+def structural_skeleton(line: object) -> str:
+    """Probe-only closed token vocabulary; never return any unmatched text."""
+    if type(line) is not str:
+        return 'unknown'
+    if len(line) > PROBE_SKELETON_INPUT:
+        return 'overlong'
+    if not line or any(not (' ' <= char <= '~' or char == '\t') for char in line):
+        return 'unknown'
+    tokens = []
+    for token in re.findall(r'[A-Za-z0-9_.]+|[ \t]+|.', line):
+        if token.isspace():
+            continue
+        if token in PROBE_WORDS or token in PROBE_PUNCTUATION:
+            tokens.append(token)
+        elif token.isdecimal():
+            tokens.append('N')
+        elif re.fullmatch(r'(?:0x[0-9a-fA-F]+|[0-9a-fA-F.]+)', token):
+            tokens.append('A')
+        elif re.fullmatch(r'[A-Za-z0-9_.]+', token):
+            tokens.append('W')
+        else:
+            # Printable punctuation outside the structural vocabulary carries
+            # no original character into the public diagnostic.
+            tokens.append('W')
+    skeleton = ' '.join(tokens)
+    return skeleton if 0 < len(skeleton) <= PROBE_SKELETON_OUTPUT else 'overlong'
+
+
+def generic_structural_skeleton(line: object) -> str:
+    """Token classes only, including unknown protocol text; probe use only."""
+    if type(line) is not str:
+        return 'unknown'
+    if len(line) > PROBE_SKELETON_INPUT:
+        return 'overlong'
+    tokens = []
+    for token in re.findall(r'[A-Za-z]+|[0-9]+|[ \t]+|.', line):
+        if all(char in ' \t' for char in token):
+            continue
+        if re.fullmatch(r'[A-Za-z]+', token):
+            tokens.append('A')
+        elif re.fullmatch(r'[0-9]+', token):
+            tokens.append('N')
+        else:
+            tokens.append(token if token in PROBE_PUNCTUATION else 'W')
+    skeleton = ' '.join(tokens) or 'W'
+    return skeleton if len(skeleton) <= PROBE_SKELETON_OUTPUT else 'overlong'
+
+
+def safe_probe_skeletons(value: object) -> list[str]:
+    """Revalidate the closed projection at the probe's public sink."""
+    if type(value) is not list:
+        return ['unknown']
+    result = []
+    allowed = PROBE_WORDS | PROBE_PUNCTUATION | {'A', 'N', 'W'}
+    for skeleton in value[:PROBE_SKELETON_LINES]:
+        if type(skeleton) is not str:
+            result.append('unknown')
+        elif len(skeleton) > PROBE_SKELETON_OUTPUT:
+            result.append('overlong')
+        elif skeleton in {'unknown', 'overlong'}:
+            result.append(skeleton)
+        elif skeleton and all(token in allowed for token in skeleton.split(' ')):
+            result.append(skeleton)
+        else:
+            result.append('unknown')
+    return result
 
 
 def safe_capture_diagnostics(value: object) -> dict:
@@ -122,8 +197,24 @@ def packet_evidence(text: str, pid: int, diagnostic: dict, *, endpoint: tuple[st
     The local observer precondition uses this same parser with its owned endpoint.
     """
     detail = capture_detail(diagnostic)
+    # Only the credential-free observer probe enables this projection. Include
+    # recognized prefixes too: an earlier refusal must not hide later structure.
+    if type(diagnostic.get('_probe_skeletons')) is list:
+        lines = text.splitlines()
+        unrecognized = [line for line in lines if not re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)]
+        selected = unrecognized[:PROBE_SKELETON_LINES]
+        if len(selected) < PROBE_SKELETON_LINES:
+            selected += [line for line in lines if re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)][:PROBE_SKELETON_LINES - len(selected)]
+        diagnostic['_probe_skeletons'].extend(structural_skeleton(line) for line in selected)
+    # tcpdump's SIGINT exit adds one newline after the final packet newline.
+    # Only that exact terminal separator is framing, never a packet/continuation.
+    # PacketCapture.evidence still reconciles captured == received == parsed.
+    lines = text.splitlines()
+    if len(lines) > 1 and text.endswith('\n\n') and lines[-1] == '':
+        lines.pop()
+        detail['terminal_separator_lines'] += 1
     records: list[tuple[str, str, list[str]]] = []
-    for line in text.splitlines():
+    for line in lines:
         prefix = re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)
         if prefix:
             metadata, body = prefix.groups()
@@ -161,6 +252,12 @@ def packet_evidence(text: str, pid: int, diagnostic: dict, *, endpoint: tuple[st
             capture_refusal(diagnostic, 'truncated')
         match = re.fullmatch(r'(IP6?) (\S+) > (\S+): (tcp |UDP, length )([0-9]{1,10})', body)
         if not match:
+            if type(diagnostic.get('_probe_skeletons')) is list:
+                # A terminal separator/early preview must not hide the actual
+                # rejected transport. No raw metadata/body leaves this helper.
+                diagnostic['_probe_skeletons'][:] = [
+                    generic_structural_skeleton(f'({metadata}) {body}'),
+                    *diagnostic['_probe_skeletons'][:PROBE_SKELETON_LINES - 1]]
             capture_refusal(diagnostic, 'transport')
         family, source, destination, protocol, size_text = match.groups()
         detail['ipv6_packets' if family == 'IP6' else 'ipv4_packets'] += 1
